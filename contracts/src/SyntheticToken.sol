@@ -6,7 +6,6 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title SyntheticToken
 /// @notice Generic ERC-20 synthetic asset token.
-///         Each token is backed by USDC collateral in a vault at oracle price.
 ///         Minting and burning is restricted to the vault contract.
 contract SyntheticToken is ERC20, Ownable {
     address public vault;
@@ -14,7 +13,7 @@ contract SyntheticToken is ERC20, Ownable {
     error NotVault();
 
     modifier onlyVault() {
-        _onlyVault();
+        if (msg.sender != vault) revert NotVault();
         _;
     }
 
@@ -23,6 +22,7 @@ contract SyntheticToken is ERC20, Ownable {
         Ownable(_owner)
     {}
 
+    /// @notice Set the vault address (owner only). Called after vault deploys.
     function setVault(address _vault) external onlyOwner {
         vault = _vault;
     }
@@ -33,9 +33,5 @@ contract SyntheticToken is ERC20, Ownable {
 
     function burn(address from, uint256 amount) external onlyVault {
         _burn(from, amount);
-    }
-
-    function _onlyVault() internal {
-        if (msg.sender != vault) revert NotVault();
     }
 }

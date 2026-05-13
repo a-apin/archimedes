@@ -184,11 +184,11 @@ async function main() {
 
     deployed[tag] = { oracle: oracleAddr, token: tokenAddr, vault: vaultAddr };
 
+    // Fire-and-forget setVault — saved to env, run 'make setvault' to confirm
     process.stdout.write(`  setVault...`);
     try {
       const setVTx = await callContract(tokenAddr, "setVault(address)", [vaultAddr]);
-      await waitForTx(setVTx.id);
-      console.log(` ✅`);
+      console.log(` tx:${setVTx.id.slice(0,8)}`);
     } catch {
       console.log(` ⚠️ timed out — run 'make setvault' after`);
     }
