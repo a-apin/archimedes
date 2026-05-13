@@ -25,19 +25,19 @@ EC2 (t3.small, eu-west-2)
 
 | Field         | Value                                                 |
 | ------------- | ----------------------------------------------------- |
-| Instance ID   | `i-0996b8ce9bdb08aa6`                                 |
+| Instance ID   | `i-0987f70a131ed3ab1`                                 |
 | Type          | `t3.small` (2 vCPU, 2 GB RAM)                        |
 | Region        | `eu-west-2` (London)                                  |
 | AMI           | Ubuntu 24.04 LTS (x86_64)                            |
-| Public IP     | `35.179.100.89`                                       |
-| Public DNS    | `ec2-35-179-100-89.eu-west-2.compute.amazonaws.com`   |
+| Public IP     | `18.171.230.205`                                       |
+| Public DNS    | `ec2-18-171-230-205.eu-west-2.compute.amazonaws.com`   |
 | Volume        | 20 GB gp3                                             |
 | Cost          | ~$17/month                                            |
 
 ### SSH Access
 
 ```bash
-ssh -i infra/archimedes-deploy-key.pem ubuntu@35.179.100.89
+ssh -i infra/archimedes-deploy-key.pem ubuntu@18.171.230.205
 ```
 
 The private key is in `infra/archimedes-deploy-key.pem` (gitignored). Ask Chuan if
@@ -73,7 +73,7 @@ you need a copy.
 ### Manual deploy (if needed)
 
 ```bash
-ssh -i infra/archimedes-deploy-key.pem ubuntu@35.179.100.89
+ssh -i infra/archimedes-deploy-key.pem ubuntu@18.171.230.205
 cd /opt/archimedes
 git fetch origin main
 git reset --hard origin/main
@@ -84,9 +84,9 @@ docker compose up --build -d
 
 ### Backend API
 
-- **URL:** http://35.179.100.89:8000
-- **Docs:** http://35.179.100.89:8000/docs (Swagger UI)
-- **Health:** http://35.179.100.89:8000/health
+- **URL:** http://18.171.230.205:8000
+- **Docs:** http://18.171.230.205:8000/docs (Swagger UI)
+- **Health:** http://18.171.230.205:8000/health
 
 ### Environment Variables
 
@@ -94,7 +94,7 @@ The `.env` file on the EC2 instance contains database credentials and service
 URLs. To update:
 
 ```bash
-ssh -i infra/archimedes-deploy-key.pem ubuntu@35.179.100.89
+ssh -i infra/archimedes-deploy-key.pem ubuntu@18.171.230.205
 nano /opt/archimedes/.env
 docker compose restart
 ```
@@ -118,7 +118,7 @@ it's the only record of what Terraform manages. Ask Chuan for a copy if needed.
 
 ```bash
 # Check service status
-ssh -i infra/archimedes-deploy-key.pem ubuntu@35.179.100.89
+ssh -i infra/archimedes-deploy-key.pem ubuntu@18.171.230.205
 cd /opt/archimedes
 docker compose ps
 docker compose logs backend    # Backend logs
