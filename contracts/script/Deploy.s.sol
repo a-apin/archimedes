@@ -2,8 +2,8 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Script.sol";
-import "../src/TSLAPriceOracle.sol";
-import "../src/SyntheticTSLA.sol";
+import "../src/PriceOracle.sol";
+import "../src/SyntheticToken.sol";
 import "../src/SyntheticVault.sol";
 
 /// @notice Deploy all contracts to Arc testnet.
@@ -29,12 +29,12 @@ contract DeployScript is Script {
         vm.startBroadcast(deployerKey);
 
         // 1. Deploy oracle with initial price
-        TSLAPriceOracle oracle = new TSLAPriceOracle(INITIAL_TSLA_PRICE);
-        console.log("TSLAPriceOracle deployed:", address(oracle));
+        PriceOracle oracle = new PriceOracle("TSLA", INITIAL_TSLA_PRICE);
+        console.log("PriceOracle deployed:", address(oracle));
 
         // 2. Deploy synthetic TSLA token
-        SyntheticTSLA sTSLA = new SyntheticTSLA(owner);
-        console.log("SyntheticTSLA deployed:", address(sTSLA));
+        SyntheticToken sTSLA = new SyntheticToken("Synthetic TSLA", "sTSLA", owner);
+        console.log("SyntheticToken (sTSLA) deployed:", address(sTSLA));
 
         // 3. Deploy vault
         SyntheticVault vault = new SyntheticVault(
@@ -46,8 +46,6 @@ contract DeployScript is Script {
         console.log("SyntheticVault deployed:", address(vault));
 
         // 4. Set vault as the only minter/burner of sTSLA
-        //     Need to call as owner — but deployer may not be owner.
-        //     If deployer IS owner, do it now. Otherwise do it separately.
         if (owner == vm.addr(deployerKey)) {
             sTSLA.setVault(address(vault));
             console.log("sTSLA vault set to:", address(vault));
@@ -61,10 +59,10 @@ contract DeployScript is Script {
         console.log("");
         console.log("=== Deployment Summary ===");
         console.log("USDC (existing):   ", USDC_ARC_TESTNET);
-        console.log("TSLAPriceOracle:   ", address(oracle));
-        console.log("SyntheticTSLA:     ", address(sTSLA));
+        console.log("PriceOracle:       ", address(oracle));
+        console.log("SyntheticToken:    ", address(sTSLA));
         console.log("SyntheticVault:    ", address(vault));
         console.log("Owner:             ", owner);
-        console.log("Initial TSLA Price:", INITIAL_TSLA_PRICE);
+        console.log("Initial Price:     ", INITIAL_TSLA_PRICE);
     }
 }

@@ -30,6 +30,9 @@ deploy:
 feed:
 	cd wallet-setup && node --env-file=../.env feed-price.mjs
 
+setvault:
+	cd wallet-setup && node --env-file=../.env setvault.mjs
+
 # ─── Queries ─────────────────────────────────────────
 
 balance:

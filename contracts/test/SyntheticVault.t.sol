@@ -2,8 +2,8 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import "../src/TSLAPriceOracle.sol";
-import "../src/SyntheticTSLA.sol";
+import "../src/PriceOracle.sol";
+import "../src/SyntheticToken.sol";
 import "../src/SyntheticVault.sol";
 
 /// @dev Mock ERC-20 USDC for testing
@@ -23,8 +23,8 @@ contract MockUSDC is ERC20 {
 
 contract SyntheticVaultTest is Test {
     MockUSDC public usdc;
-    TSLAPriceOracle public oracle;
-    SyntheticTSLA public sTSLA;
+    PriceOracle public oracle;
+    SyntheticToken public sTSLA;
     SyntheticVault public vault;
 
     address public owner = address(0x1);
@@ -37,10 +37,10 @@ contract SyntheticVaultTest is Test {
         usdc = new MockUSDC();
 
         vm.prank(owner);
-        oracle = new TSLAPriceOracle(INITIAL_PRICE);
+        oracle = new PriceOracle("TSLA", INITIAL_PRICE);
 
         vm.prank(owner);
-        sTSLA = new SyntheticTSLA(owner);
+        sTSLA = new SyntheticToken("Synthetic TSLA", "sTSLA", owner);
 
         vm.prank(owner);
         vault = new SyntheticVault(
