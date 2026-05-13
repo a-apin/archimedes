@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Archimedes Ecosystem Architecture</title>
+<style>
+  :root {
+    --bg: #f8f9fb;
+    --text: #1a1a2e;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+
+    --orange: #f97316; --orange-bg: #fff7ed; --orange-b: #fdba74;
+    --blue:   #3b82f6; --blue-bg:   #eff6ff; --blue-b:   #93c5fd;
+    --purple: #8b5cf6; --purple-bg: #f5f3ff; --purple-b: #c4b5fd;
+    --red:    #ef4444; --red-bg:    #fef2f2; --red-b:    #fca5a5;
+    --green:  #10b981; --green-bg:  #ecfdf5; --green-b:  #6ee7b7;
+    --amber:  #eab308; --amber-bg:  #fefce8; --amber-b:  #fde047;
+    --teal:   #14b8a6; --teal-bg:   #f0fdfa; --teal-b:   #5eeadb;
+    --slate:  #475569; --slate-bg:  #f1f5f9; --slate-b:  #94a3b8;
+    --pink:   #ec4899; --pink-bg:   #fdf2f8; --pink-b:   #f9a8d4;
+    --gray:   #6b7280;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+
+  .page {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 40px 32px 80px;
+  }
+
+  h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    text-align: center;
+    margin-bottom: 8px;
+    letter-spacing: -0.5px;
+  }
+  .subtitle {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.95rem;
+    margin-bottom: 48px;
+  }
+
+  /* --- Layer container --- */
+  .layer {
+    border: 2px solid var(--border);
+    border-radius: 16px;
+    padding: 24px 28px 28px;
+    margin-bottom: 20px;
+    background: #fff;
+    position: relative;
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+  }
+  .layer-label {
+    position: absolute;
+    top: -13px;
+    left: 24px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    background: #fff;
+    padding: 2px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+
+  /* --- Flow row (user journey) --- */
+  .flow-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .flow-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 20px;
+    border-radius: 12px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    border: 2px solid var(--blue-b);
+    background: var(--blue-bg);
+    color: #1e40af;
+  }
+  .flow-step .num {
+    background: var(--blue);
+    color: #fff;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.75rem; font-weight: 700;
+  }
+  .flow-arrow { color: var(--blue); font-size: 1.2rem; font-weight: 700; }
+
+  /* --- 3-col grid --- */
+  .cols-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+  }
+  .cols-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 900px) { .cols-3, .cols-2 { grid-template-columns: 1fr; } }
+
+  /* --- Card --- */
+  .card {
+    border-radius: 12px;
+    padding: 20px 18px;
+    border: 2px solid;
+  }
+  .card-title {
+    font-size: 0.85rem;
+    font-weight: 700;
+    margin-bottom: 14px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .card .emoji { font-size: 1.1rem; }
+
+  /* Tier tags */
+  .tier {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 6px;
+    margin-bottom: 4px;
+  }
+  .tier-gold { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
+  .tier-blue { background: #dbeafe; color: #1e40af; border: 1px solid #60a5fa; }
+
+  .box {
+    background: #fff;
+    border: 1.5px solid;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-size: 0.82rem;
+  }
+  .box-title {
+    font-weight: 700;
+    font-size: 0.8rem;
+    margin-bottom: 2px;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  .box-sub {
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+
+  /* Inline tags */
+  .tag {
+    display: inline-block;
+    font-size: 0.66rem;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 4px;
+    margin: 2px 2px;
+    white-space: nowrap;
+  }
+  .tag-synth   { background: #fff7ed; color: #c2410c; border: 1px solid #fdba74; }
+  .tag-bridge  { background: #f0fdf4; color: #166534; border: 1px solid #86efac; }
+  .tag-yield   { background: #fefce8; color: #854d0e; border: 1px solid #fde047; }
+  .tag-settle  { background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; }
+  .tag-contract { background: #fdf2f8; color: #9d174d; border: 1px solid #f9a8d4; }
+  .tag-social  { background: #faf5ff; color: #6b21a8; border: 1px solid #d8b4fe; }
+
+  .features {
+    list-style: none;
+    font-size: 0.78rem;
+    margin-top: 6px;
+    color: #4b5563;
+  }
+  .features li::before { content: "· "; font-weight: 700; }
+
+  /* --- Social row --- */
+  .social-row {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .social-chip {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 16px;
+    border-radius: 10px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    background: #fef2f2;
+    color: #991b1b;
+    border: 1.5px solid #fca5a5;
+  }
+  .social-chip .icon { font-size: 1.1rem; }
+
+  /* --- Settlement bar --- */
+  .settlement-bar {
+    display: flex; align-items: center; justify-content: center;
+    gap: 24px; flex-wrap: wrap;
+    padding: 16px 24px;
+  }
+  .settlement-item {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 0.88rem; font-weight: 600;
+    color: #334155;
+  }
+
+  /* --- Legend --- */
+  .legend {
+    display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;
+    margin-bottom: 28px;
+    padding: 12px 20px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #fff;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 0.72rem; font-weight: 600; color: #4b5563;
+  }
+  .legend-swatch {
+    width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid;
+  }
+
+  /* ---------- Card color themes ---------- */
+  .card-vault   { border-color: var(--purple-b); background: var(--purple-bg); }
+  .card-exchange { border-color: var(--red-b);    background: var(--red-bg); }
+  .card-agent   { border-color: var(--teal-b);   background: var(--teal-bg); }
+  .card-synth   { border-color: var(--orange-b); background: var(--orange-bg); }
+  .card-identity { border-color: var(--blue-b);  background: var(--blue-bg); }
+
+  .box-purple { border-color: var(--purple-b); }
+  .box-red    { border-color: var(--red-b); }
+  .box-teal   { border-color: var(--teal-b); }
+  .box-orange { border-color: var(--orange-b); }
+  .box-blue   { border-color: var(--blue-b); }
+  .box-slate  { border-color: var(--slate-b); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>Archimedes Ecosystem Architecture</h1>
+  <p class="subtitle">Closed strategy &amp; portfolio marketplace on Arc · USDC Settlement · Paper‑Grounded + Community Vaults</p>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item"><span class="legend-swatch" style="background:#f5f3ff;border-color:#c4b5fd"></span> Vault Layer</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#fef2f2;border-color:#fca5a5"></span> Exchange (AMM)</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#f0fdfa;border-color:#5eeadb"></span> AI Agent</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#fff7ed;border-color:#fdba74"></span> Synthetic Protocol</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#eff6ff;border-color:#93c5fd"></span> Identity</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#fdf2f8;border-color:#f9a8d4"></span> Social</div>
+    <div class="legend-item"><span class="legend-swatch" style="background:#f1f5f9;border-color:#94a3b8"></span> Settlement</div>
+  </div>
+
+  <!-- ── USER JOURNEY ── -->
+  <div class="layer" style="border-color:#bfdbfe; background:#eff6ff;">
+    <span class="layer-label">User Journey</span>
+    <div class="flow-row">
+      <div class="flow-step"><span class="num">1</span> Explore Marketplace</div>
+      <span class="flow-arrow">→</span>
+      <div class="flow-step"><span class="num">2</span> Invest · Buy Vault Tokens</div>
+      <span class="flow-arrow">→</span>
+      <div class="flow-step"><span class="num">3</span> Create Your Own Vault</div>
+      <span class="flow-arrow">→</span>
+      <div class="flow-step"><span class="num">4</span> Trade Synths + LP</div>
+    </div>
+  </div>
+
+  <!-- ── CORE LAYERS ── -->
+  <div class="layer">
+    <span class="layer-label">Core Layers</span>
+    <div class="cols-3">
+
+      <!-- Vault Layer -->
+      <div class="card card-vault">
+        <div class="card-title"><span class="emoji">🏛️</span> Vault Layer</div>
+        <div class="box box-purple">
+          <div class="box-title">VaultFactory.sol</div>
+          <div class="box-sub">Creates ERC‑4626 vaults with 2‑and‑20 fees + HWM</div>
+        </div>
+        <div style="display:flex; gap:8px; margin-bottom:6px;">
+          <div style="flex:1; padding:10px; border-radius:8px; border:1.5px solid #fbbf24; background:#fffbeb;">
+            <span class="tier tier-gold">🏆 Tier 1</span>
+            <div style="font-size:0.78rem; margin-top:4px; font-weight:600;">Archimedes Verified<br>Paper‑Grounded Strategies</div>
+          </div>
+          <div style="flex:1; padding:10px; border-radius:8px; border:1.5px solid #60a5fa; background:#eff6ff;">
+            <span class="tier tier-blue">👥 Tier 2</span>
+            <div style="font-size:0.78rem; margin-top:4px; font-weight:600;">Community Freestyle<br>Any Asset Mix</div>
+          </div>
+        </div>
+        <ul class="features">
+          <li>Copy‑Trade = Buy Vault Token</li>
+          <li>Direct mint / redeem at NAV</li>
+          <li>Platform takes 10% of fees</li>
+        </ul>
+      </div>
+
+      <!-- Exchange Layer -->
+      <div class="card card-exchange">
+        <div class="card-title"><span class="emoji">💱</span> Exchange Layer <span class="tag tag-contract">AMM</span></div>
+        <div class="box box-red">
+          <div class="box-title">AMMRouter.sol + AMMPool.sol</div>
+          <div class="box-sub">Constant‑product x·y=k · 0.3% swap fee</div>
+        </div>
+        <div style="font-size:0.78rem; font-weight:600; margin-bottom:6px; color:#7f1d1d;">Layer 1 — Synthetic Pools</div>
+        <div style="margin-bottom:10px;">
+          <span class="tag tag-synth">USDC / sTSLA</span>
+          <span class="tag tag-synth">USDC / sSPY</span>
+          <span class="tag tag-synth">USDC / sGLD</span>
+          <span class="tag tag-synth">USDC / sBTC</span>
+          <span class="tag tag-yield">USDC / USYC</span>
+        </div>
+        <div style="font-size:0.78rem; font-weight:600; margin-bottom:4px; color:#7f1d1d;">Layer 2 — Vault Token Pools</div>
+        <span class="tag tag-bridge">USDC / vaultToken</span>
+        <span style="font-size:0.7rem; color:var(--muted);">ETF model · trades at premium/discount to NAV</span>
+        <div style="margin-top:10px; font-size:0.72rem; color:var(--muted);">Hackathon: AMM → CLOB (post)</div>
+      </div>
+
+      <!-- Agent Layer -->
+      <div class="card card-agent">
+        <div class="card-title"><span class="emoji">🤖</span> Agent Layer</div>
+        <div class="box box-teal">
+          <div class="box-title">Archimedes AI Agent</div>
+          <div class="box-sub">Claude API · Agent‑as‑a‑Service</div>
+        </div>
+        <div style="padding:10px; border-radius:8px; border:1.5px solid #fbbf24; background:#fffbeb; margin-bottom:6px;">
+          <span class="tier tier-gold">🏆 Tier 1 · Full Autonomy</span>
+          <ul class="features">
+            <li>Regime Detection (4 regimes)</li>
+            <li>Autonomous Rebalancing</li>
+            <li>Strategy Rotation</li>
+            <li>Reasoning Traces on‑chain</li>
+          </ul>
+        </div>
+        <div style="padding:10px; border-radius:8px; border:1.5px solid #60a5fa; background:#eff6ff;">
+          <span class="tier tier-blue">👥 Tier 2 · Opt‑in Tools</span>
+          <ul class="features">
+            <li>Auto‑Rebalance to Weights</li>
+            <li>Drift Threshold Alerts</li>
+            <li>Basic Regime Response</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── ASSET & IDENTITY ── -->
+  <div class="layer">
+    <span class="layer-label">Asset &amp; Identity</span>
+    <div class="cols-2">
+
+      <!-- Synthetic Protocol -->
+      <div class="card card-synth">
+        <div class="card-title"><span class="emoji">🧪</span> Synthetic Protocol</div>
+        <div class="box box-orange">
+          <div class="box-title">SyntheticFactory.sol</div>
+          <div class="box-sub">Shared USDC Collateral Pool · 100% collateral ratio</div>
+        </div>
+        <div style="margin-top:8px; line-height:2.2;">
+          <span class="tag tag-synth">sTSLA <span style="color:var(--muted);">Oracle: TSLA/USD</span></span>
+          <span class="tag tag-synth">sSPY <span style="color:var(--muted);">Oracle: SPY/USD</span></span>
+          <span class="tag tag-synth">sGLD <span style="color:var(--muted);">Oracle: XAU/USD</span></span>
+          <span class="tag tag-synth">sBTC <span style="color:var(--muted);">Oracle: BTC/USD</span></span>
+          <span class="tag tag-yield">USYC <span style="color:var(--muted);">Circle Native</span></span>
+          <span class="tag tag-settle">USDC <span style="color:var(--muted);">Settlement</span></span>
+        </div>
+        <div style="margin-top:10px; padding:8px 10px; border-radius:6px; background:#f0fdf4; border:1px solid #bbf7d0; font-size:0.75rem;">
+          <strong>Hybrid strategy:</strong> Bridge real RWAs via CCTP/Gateway (post‑hackathon) · Mint synthetics for everything else · Oracle: mock → Pyth/Chainlink (post)
+        </div>
+      </div>
+
+      <!-- Identity Layer -->
+      <div class="card card-identity">
+        <div class="card-title"><span class="emoji">🔐</span> Identity Layer</div>
+        <div class="box box-blue">
+          <div class="box-title">ReasoningTraceRegistry.sol</div>
+          <div class="box-sub">Publish SHA‑256 hashes to Arc · verifyTrace · getTraces</div>
+        </div>
+        <div class="box box-blue">
+          <div class="box-title">AssetRegistry.sol</div>
+          <div class="box-sub">Synth metadata · Vault metadata · Leaderboard queries</div>
+        </div>
+        <div class="box box-blue">
+          <div class="box-title">PriceOracle.sol</div>
+          <div class="box-sub">Mock oracle (owner‑updatable) · batchSetPrices · → Pyth/Chainlink (post)</div>
+        </div>
+        <div style="margin-top:8px; font-size:0.72rem; color:var(--muted);">
+          <strong>Philosophy:</strong> Every agent decision is hashed &amp; anchored on Arc. Anyone can verify a reasoning trace against the on‑chain hash independently of the platform.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── SOCIAL ── -->
+  <div class="layer" style="border-color:#f9a8d4; background:#fdf2f8;">
+    <span class="layer-label">Social Layer</span>
+    <div class="social-row">
+      <div class="social-chip"><span class="icon">💬</span> Per‑Vault Chat Rooms</div>
+      <div class="social-chip"><span class="icon">🔑</span> Wallet‑Native Identity</div>
+      <div class="social-chip"><span class="icon">⚡</span> WebSocket Real‑time</div>
+      <div class="social-chip"><span class="icon">🤖</span> AI @mentions <span style="font-weight:400;margin-left:4px;">in Tier 1 chats</span></div>
+      <div class="social-chip"><span class="icon">📢</span> Auto‑post on Rebalance</div>
+      <div class="social-chip"><span class="icon">💾</span> Postgres Persistence</div>
+    </div>
+    <p style="text-align:center; margin-top:12px; font-size:0.72rem; color:#9d174d; font-weight:500;">
+      Hackathon MVP: per‑vault text chat · open access · AI responds to @archimedes via Claude API
+    </p>
+  </div>
+
+  <!-- ── SETTLEMENT ── -->
+  <div class="layer" style="border-color:#94a3b8; background:#f8fafc;">
+    <span class="layer-label">Settlement</span>
+    <div class="settlement-bar" style="font-size:1rem; font-weight:700;">
+      <div class="settlement-item">⛓️ Arc Blockchain</div>
+      <span style="color:var(--muted);">│</span>
+      <div class="settlement-item">💲 USDC Settlement</div>
+      <span style="color:var(--muted);">│</span>
+      <div class="settlement-item">⛽ Paymaster <span style="font-weight:400;color:var(--muted);">(~$0.01 fees)</span></div>
+      <span style="color:var(--muted);">│</span>
+      <div class="settlement-item">⚡ &lt;1s Finality</div>
+    </div>
+  </div>
+
+  <!-- ── DATA FLOW ── -->
+  <div class="layer" style="border-color:#e5e7eb;">
+    <span class="layer-label">Data Flow</span>
+    <div style="text-align:center; font-size:0.82rem; line-height:2.2;">
+      <span style="font-weight:700; color:#c2410c;">Synthetics</span>
+      <span style="color:var(--muted);"> —mint/redeem→ </span>
+      <span style="font-weight:700; color:#991b1b;">AMM Pools</span>
+      <span style="color:var(--muted);"> —swap→ </span>
+      <span style="font-weight:700; color:#7c3aed;">Vaults</span>
+      <span style="color:var(--muted);"> —rebalance→ </span>
+      <span style="font-weight:700; color:#991b1b;">AMM</span>
+      <span style="color:var(--muted);"> —publish→ </span>
+      <span style="font-weight:700; color:#1d4ed8;">ReasoningTraceRegistry</span>
+      <br>
+      <span style="font-weight:700; color:#0f766e;">AI Agent</span>
+      <span style="color:var(--muted);"> —manages→ </span>
+      <span style="font-weight:700; color:#7c3aed;">Tier 1 Vaults</span>
+      <span style="color:var(--muted);"> · —assists→ </span>
+      <span style="font-weight:700; color:#7c3aed;">Tier 2 Vaults</span>
+      <span style="color:var(--muted);"> · —chats→ </span>
+      <span style="font-weight:700; color:#be185d;">💬 Vault Chat</span>
+      <span style="color:var(--muted);"> (auto‑post + @mentions)</span>
+    </div>
+  </div>
+
+  <!-- ── BUILD PLAN ── -->
+  <div style="background:#fff; border-radius:16px; border:2px solid var(--border); padding:24px 28px; margin-top:20px; box-shadow: 0 1px 3px rgba(0,0,0,.04);">
+    <div style="font-weight:700; margin-bottom:16px; font-size:0.9rem;">📅 Hackathon Build Order (12 days · bottom‑up)</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px,1fr)); gap:12px;">
+      <div style="padding:14px; border-radius:10px; background:#fff7ed; border:1.5px solid #fdba74;">
+        <div style="font-weight:700; color:#c2410c; font-size:0.8rem;">Days 1–3</div>
+        <div style="font-size:0.78rem; color:#431407;">🧪 SyntheticFactory · Mock oracle · 5 synths · Collateral pool · Mint/redeem</div>
+      </div>
+      <div style="padding:14px; border-radius:10px; background:#fef2f2; border:1.5px solid #fca5a5;">
+        <div style="font-weight:700; color:#991b1b; font-size:0.8rem;">Days 4–6</div>
+        <div style="font-size:0.78rem; color:#450a0a;">💱 AMMRouter + AMMPool · 5 pools · Seed liquidity · Swap integration</div>
+      </div>
+      <div style="padding:14px; border-radius:10px; background:#f5f3ff; border:1.5px solid #c4b5fd;">
+        <div style="font-weight:700; color:#6d28d9; font-size:0.8rem;">Days 7–9</div>
+        <div style="font-size:0.78rem; color:#3b0764;">🏛️ VaultFactory + ERC‑4626 · Fees · Rebalance · Agent integration · Traces</div>
+      </div>
+      <div style="padding:14px; border-radius:10px; background:#ecfdf5; border:1.5px solid #6ee7b7;">
+        <div style="font-weight:700; color:#065f46; font-size:0.8rem;">Days 10–12</div>
+        <div style="font-size:0.78rem; color:#022c22;">🎨 Frontend · Marketplace · Chat · Demo script · Traction push</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
