@@ -33,6 +33,11 @@ feed:
 setvault:
 	cd wallet-setup && node --env-file=../.env setvault.mjs
 
+# ─── UI ─────────────────────────────────────────────
+
+ui:
+	cd ui && npm run dev
+
 # ─── Queries ─────────────────────────────────────────
 
 balance:
