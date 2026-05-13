@@ -1,7 +1,6 @@
 // feed-price.mjs
 //
 // Fetches TSLA price and pushes it to the oracle on Arc Testnet.
-// Uses Circle Contracts API to execute the setPrice() call.
 //
 // Usage: node --env-file=../.env feed-price.mjs
 
@@ -12,8 +11,14 @@ const ENTITY_SECRET = process.env.CIRCLE_ENTITY_SECRET;
 const WALLET_ID = process.env.WALLET_ID;
 const ORACLE_ADDRESS = process.env.ORACLE_ADDRESS;
 
-if (!API_KEY || !ENTITY_SECRET || !WALLET_ID || !ORACLE_ADDRESS) {
-  console.error("ERROR: Need CIRCLE_API_KEY, CIRCLE_ENTITY_SECRET, WALLET_ID, ORACLE_ADDRESS");
+if (!API_KEY || !ENTITY_SECRET || !WALLET_ID) {
+  console.error("ERROR: Need CIRCLE_API_KEY, CIRCLE_ENTITY_SECRET, WALLET_ID");
+  process.exit(1);
+}
+
+if (!ORACLE_ADDRESS) {
+  console.error("ERROR: ORACLE_ADDRESS not set in .env");
+  console.error("Run 'make deploy' first, then add ORACLE_ADDRESS to .env");
   process.exit(1);
 }
 

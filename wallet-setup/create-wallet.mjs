@@ -1,8 +1,8 @@
 // create-wallet.mjs
 //
-// Creates a Circle Dev-Controlled Wallet on Arc Testnet and funds it via faucet.
+// Creates a Circle Dev-Controlled Wallet on Arc Testnet.
+// Idempotent: skips if WALLET_ID already set in .env.
 //
-// Prerequisites: CIRCLE_API_KEY + CIRCLE_ENTITY_SECRET in ../.env
 // Usage: node --env-file=../.env create-wallet.mjs
 
 import fs from "node:fs";
@@ -12,10 +12,19 @@ import { initiateDeveloperControlledWalletsClient } from "@circle-fin/developer-
 
 const API_KEY = process.env.CIRCLE_API_KEY;
 const ENTITY_SECRET = process.env.CIRCLE_ENTITY_SECRET;
+const EXISTING_WALLET = process.env.WALLET_ID;
 
 if (!API_KEY || !ENTITY_SECRET) {
-  console.error("ERROR: CIRCLE_API_KEY and CIRCLE_ENTITY_SECRET required in ../.env");
+  console.error("ERROR: Need CIRCLE_API_KEY + CIRCLE_ENTITY_SECRET in ../.env");
+  console.error("Run: make register");
   process.exit(1);
+}
+
+if (EXISTING_WALLET) {
+  console.log(`Wallet already exists: ${EXISTING_WALLET}`);
+  console.log(`Address: ${process.env.WALLET_ADDRESS}`);
+  console.log("To create a new one, remove WALLET_ID/WALLET_ADDRESS from .env.");
+  process.exit(0);
 }
 
 const client = initiateDeveloperControlledWalletsClient({
@@ -26,13 +35,11 @@ const client = initiateDeveloperControlledWalletsClient({
 async function main() {
   console.log("=== Create Arc Testnet Wallet ===\n");
 
-  // Step 1: Create wallet set
   console.log("Creating wallet set...");
   const walletSetRes = await client.createWalletSet({ name: "Archimedes Arc" });
   const walletSetId = walletSetRes.data?.walletSet?.id;
   console.log(`Wallet Set ID: ${walletSetId}\n`);
 
-  // Step 2: Create SCA wallet on Arc Testnet
   console.log("Creating SCA wallet on Arc Testnet...");
   const walletRes = await client.createWallets({
     walletSetId,
@@ -43,37 +50,29 @@ async function main() {
 
   const wallet = walletRes.data?.wallets?.[0];
   if (!wallet) {
-    console.error("Failed to create wallet:", JSON.stringify(walletRes, null, 2));
+    console.error("Failed:", JSON.stringify(walletRes, null, 2));
     process.exit(1);
   }
 
   console.log("✅ Wallet created!");
   console.log(`   Wallet ID:    ${wallet.id}`);
   console.log(`   Address:      ${wallet.address}`);
-  console.log(`   Blockchain:   ${wallet.blockchain}`);
-  console.log(`   Account Type: ${wallet.accountType}\n`);
+  console.log(`   Blockchain:   ${wallet.blockchain}\n`);
 
-  // Step 3: Request testnet USDC from faucet
-  console.log("Requesting 20 testnet USDC from Circle Faucet...");
+  console.log("Requesting testnet USDC from faucet...");
   try {
     const faucetRes = await client.requestTestnetTokens({
       walletId: wallet.id,
       blockchain: "ARC-TESTNET",
       usdc: true,
     });
-    console.log("✅ Faucet request submitted!");
-    console.log(`   Transaction ID: ${faucetRes.data?.transactionId}`);
-  } catch (err) {
-    console.error("⚠️  Faucet request failed (may need manual request):", err.message);
-    console.log("   Go to https://faucet.circle.com/ and paste your address manually.");
+    console.log(`✅ Faucet: ${faucetRes.data?.transactionId}`);
+  } catch {
+    console.log("⚠️  API faucet failed. Use: make fund");
   }
 
-  // Step 4: Save wallet info to .env
   const envPath = path.resolve(import.meta.dirname, "../.env");
-  let envContent = "";
-  if (fs.existsSync(envPath)) {
-    envContent = fs.readFileSync(envPath, "utf8");
-  }
+  let envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
 
   const additions = [
     `WALLET_ID=${wallet.id}`,
@@ -91,10 +90,8 @@ async function main() {
   }
 
   fs.writeFileSync(envPath, envContent);
-  console.log(`\n💾 Wallet info saved to root .env`);
-  console.log("\n=== Summary ===");
-  console.log(`Wallet Address: ${wallet.address}`);
-  console.log("Check balance at: https://testnet.arcscan.app/address/" + wallet.address);
+  console.log(`\n💾 Saved to .env`);
+  console.log(`\nNext: make fund`);
 }
 
 main().catch((err) => {
