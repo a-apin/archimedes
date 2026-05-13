@@ -34,10 +34,10 @@ async function getCiphertext() {
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function waitForTx(txId, timeoutMs = 300_000) {
+async function waitForTx(txId, timeoutMs = 60_000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const res = await fetch(`${API}/developer/transactions/${txId}`, {
+    const res = await fetch(`${API}/transactions/${txId}`, {
       headers: { Authorization: `Bearer ${API_KEY}`, Accept: "application/json" },
     });
     const data = await res.json();

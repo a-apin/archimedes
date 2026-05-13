@@ -88,10 +88,10 @@ async function waitForContract(contractId, timeoutMs = 180_000) {
   throw new Error(`Timeout for contract ${contractId}`);
 }
 
-async function waitForTx(txId, timeoutMs = 300_000) {
+async function waitForTx(txId, timeoutMs = 60_000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const res = await fetch(`${API}/developer/transactions/${txId}`, {
+    const res = await fetch(`${API}/transactions/${txId}`, {
       headers: { Authorization: `Bearer ${API_KEY}`, Accept: "application/json" },
     });
     const data = await res.json();
@@ -188,7 +188,8 @@ async function main() {
     process.stdout.write(`  setVault...`);
     try {
       const setVTx = await callContract(tokenAddr, "setVault(address)", [vaultAddr]);
-      console.log(` tx:${setVTx.id.slice(0,8)}`);
+      await waitForTx(setVTx.id);
+      console.log(` ✅`);
     } catch {
       console.log(` ⚠️ timed out — run 'make setvault' after`);
     }
