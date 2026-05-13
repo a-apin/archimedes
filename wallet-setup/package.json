@@ -1,0 +1,11 @@
+{
+  "name": "archimedes-wallet-setup",
+  "type": "module",
+  "scripts": {
+    "register": "node --env-file=../.env register-entity-secret.mjs",
+    "create-wallet": "node --env-file=../.env create-wallet.mjs"
+  },
+  "dependencies": {
+    "@circle-fin/developer-controlled-wallets": "^7.0.0"
+  }
+}
