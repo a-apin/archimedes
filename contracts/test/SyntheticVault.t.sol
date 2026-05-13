@@ -37,7 +37,7 @@ contract SyntheticVaultTest is Test {
         usdc = new MockUSDC();
 
         vm.prank(owner);
-        oracle = new PriceOracle("TSLA", INITIAL_PRICE);
+        oracle = new PriceOracle("TSLA", INITIAL_PRICE, owner);
 
         vm.prank(owner);
         sTSLA = new SyntheticToken("Synthetic TSLA", "sTSLA", owner);

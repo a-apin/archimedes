@@ -168,7 +168,7 @@ async function main() {
     console.log(`── ${tag} ──`);
 
     process.stdout.write(`  Oracle...`);
-    const oracleDep = await deployContract(`Archimedes ${tag} Oracle`, oracleArt, [tag, asset.price.toString()]);
+    const oracleDep = await deployContract(`Archimedes ${tag} Oracle`, oracleArt, [tag, asset.price.toString(), WALLET_ADDRESS]);
     const oracleAddr = await waitForContract(oracleDep.contractId);
     console.log(` ${oracleAddr}`);
 

@@ -24,7 +24,7 @@ contract PriceOracle is Ownable {
 
     error StalePrice();
 
-    constructor(string memory _symbol, uint256 _initialPrice) Ownable(msg.sender) {
+    constructor(string memory _symbol, uint256 _initialPrice, address _owner) Ownable(_owner) {
         symbol = _symbol;
         price = _initialPrice;
         lastUpdated = block.timestamp;

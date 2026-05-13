@@ -29,7 +29,7 @@ contract DeployScript is Script {
         vm.startBroadcast(deployerKey);
 
         // 1. Deploy oracle with initial price
-        PriceOracle oracle = new PriceOracle("TSLA", INITIAL_TSLA_PRICE);
+        PriceOracle oracle = new PriceOracle("TSLA", INITIAL_TSLA_PRICE, msg.sender);
         console.log("PriceOracle deployed:", address(oracle));
 
         // 2. Deploy synthetic TSLA token
