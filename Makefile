@@ -23,7 +23,7 @@ test:
 	cd contracts && forge test -vv
 
 deploy:
-	cd contracts && forge script script/Deploy.s.sol --rpc-url arc-testnet --broadcast
+	cd wallet-setup && node --env-file=../.env deploy.mjs
 
 # ─── Oracle ──────────────────────────────────────────
 
