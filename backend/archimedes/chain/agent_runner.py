@@ -270,13 +270,36 @@ class StrategyRunner:
                 tick_id, t.direction.value, t.symbol, t.estimated_usdc_value,
             )
 
-        # Execute
+        # ── Commit-Reveal Flow ────────────────────────────────────
+        # Phase 1: COMMIT — compute hash and anchor on-chain BEFORE trade
+        reasoning = self._build_reasoning(all_signals, regime, trades)
+        commit_tx = None
+        commit_block = None
+
+        if not DRY_RUN:
+            commit_tx, commit_block = await self._commit_trace(
+                vault_address, trades, all_signals, regime, tick_id, reasoning,
+                portfolio,
+            )
+
+        # Phase 2: TRADE — execute the rebalance
         if DRY_RUN:
             logger.info("[tick %s] DRY RUN — skipping on-chain execution", tick_id)
             tx_hashes: list[str] = []
+            trade_block = None
         else:
             try:
                 tx_hashes = await chain_executor.execute_trades(vault_address, trades)
+                # Get trade block number from first tx
+                trade_block = None
+                if tx_hashes:
+                    try:
+                        receipt = await chain_client.w3.eth.get_transaction_receipt(
+                            chain_client.w3.to_bytes(hexstr=tx_hashes[0].removeprefix("0x"))
+                        )
+                        trade_block = receipt.blockNumber
+                    except Exception:
+                        pass
                 logger.info(
                     "[tick %s] Executed %d trades: %s",
                     tick_id, len(tx_hashes), [h[:16] for h in tx_hashes],
@@ -291,18 +314,18 @@ class StrategyRunner:
                     vault_address, DecisionType.SKIP, "execution_failed",
                     portfolio, [], all_signals, regime, tick_id,
                     f"Execution failed: {e}",
+                    commit_tx=commit_tx, commit_block=commit_block,
                     error=str(e),
                 )
                 return
 
-        # Build reasoning from strategy signals
-        reasoning = self._build_reasoning(all_signals, regime, trades)
-
-        # Publish trace
-        await self._publish_trace(
+        # Phase 3: REVEAL — publish full trace with all data AFTER trade settles
+        await self._reveal_trace(
             vault_address, DecisionType.REBALANCE, "strategy_signal_drift",
             portfolio, trades, all_signals, regime, tick_id,
-            reasoning, tx_hashes=tx_hashes,
+            reasoning, tx_hashes,
+            commit_tx=commit_tx, commit_block=commit_block,
+            trade_block=trade_block,
         )
 
     # ─── Signal → target allocation ───────────────────────────────
@@ -361,7 +384,199 @@ class StrategyRunner:
 
         return trades
 
-    # ─── Reasoning trace ───────────────────────────────────────────
+    # ─── Commit-Reveal Trace ────────────────────────────────────
+
+    async def _commit_trace(
+        self,
+        vault_address: str,
+        trades: list[TradeOrder],
+        all_signals: list[StrategySignals],
+        regime: str,
+        tick_id: str,
+        reasoning: str,
+        portfolio: Portfolio,
+    ) -> tuple[str | None, int | None]:
+        """Commit phase: publish trace hash on-chain BEFORE the trade executes.
+
+        Returns (commit_tx_hash, commit_block_number) or (None, None) on failure.
+        """
+        trace = ReasoningTrace(
+            id=str(uuid.uuid4()),
+            vault_address=vault_address,
+            decision_type=DecisionType.REBALANCE,
+            trigger="commit_phase",
+            timestamp=datetime.now(timezone.utc),
+            market_context={
+                "regime": regime,
+                "strategy_count": len(all_signals),
+                "phase": "commit",
+            },
+            portfolio_before={
+                "vault": vault_address[:10],
+                "aum_usdc": portfolio.total_value_usdc,
+                "holdings": {
+                    h.symbol: {"weight": f"{h.weight:.1%}", "value_usdc": h.value_usdc}
+                    for h in portfolio.holdings
+                },
+            },
+            reasoning=f"[COMMIT] {reasoning}",
+            confidence=1.0 - (sum(1 for ss in all_signals for s in ss.signals if s.signal.value == "flat") /
+                              max(sum(len(ss.signals) for ss in all_signals), 1)),
+            trades_executed=[
+                {"symbol": t.symbol, "direction": t.direction.value, "amount": t.amount,
+                 "phase": "intended"}
+                for t in trades
+            ],
+            strategies_referenced=[ss.strategy_id for ss in all_signals],
+        )
+
+        trace.compute_hash()
+        logger.info("[tick %s] COMMIT hash: %s", tick_id, trace.trace_hash[:16])
+
+        try:
+            arc_tx = await trace_publisher.publish(trace)
+            if arc_tx:
+                # Get block number from commit tx
+                try:
+                    receipt = await chain_client.w3.eth.get_transaction_receipt(
+                        chain_client.w3.to_bytes(hexstr=arc_tx.removeprefix("0x"))
+                    )
+                    block_num = receipt.blockNumber
+                    logger.info(
+                        "[tick %s] COMMIT anchored: tx=%s block=%d",
+                        tick_id, arc_tx[:16], block_num,
+                    )
+                    return arc_tx, block_num
+                except Exception as e:
+                    logger.warning("[tick %s] Cannot get commit block: %s", tick_id, e)
+                    return arc_tx, None
+            return None, None
+        except Exception as e:
+            logger.error("[tick %s] COMMIT publish FAILED: %s", tick_id, e)
+            return None, None
+
+    async def _reveal_trace(
+        self,
+        vault_address: str,
+        decision_type: DecisionType,
+        trigger: str,
+        portfolio: Portfolio,
+        trades: list[TradeOrder],
+        all_signals: list[StrategySignals],
+        regime: str,
+        tick_id: str,
+        reasoning: str,
+        tx_hashes: list[str] | None = None,
+        commit_tx: str | None = None,
+        commit_block: int | None = None,
+        trade_block: int | None = None,
+    ) -> None:
+        """Reveal phase: publish full trace AFTER the trade settles.
+
+        Records commit/reveal/trade block numbers for temporal binding verification.
+        """
+        trace = ReasoningTrace(
+            id=str(uuid.uuid4()),
+            vault_address=vault_address,
+            decision_type=decision_type,
+            trigger=trigger,
+            timestamp=datetime.now(timezone.utc),
+            market_context={
+                "regime": regime,
+                "strategy_count": len(all_signals),
+                "signal_summary": {
+                    ss.paper_title[:30]: {
+                        s.asset: f"{s.signal.value}({s.weight:.0%})"
+                        for s in ss.signals[:5]
+                    }
+                    for ss in all_signals
+                },
+                "phase": "reveal",
+            },
+            portfolio_before={
+                "vault": vault_address[:10],
+                "aum_usdc": portfolio.total_value_usdc,
+                "holdings": {
+                    h.symbol: {"weight": f"{h.weight:.1%}", "value_usdc": h.value_usdc}
+                    for h in portfolio.holdings
+                },
+            },
+            portfolio_after={"tx_hashes": tx_hashes or []},
+            reasoning=f"[REVEAL] {reasoning}",
+            confidence=1.0 - (sum(1 for ss in all_signals for s in ss.signals if s.signal.value == "flat") /
+                              max(sum(len(ss.signals) for ss in all_signals), 1)),
+            trades_executed=[
+                {"symbol": t.symbol, "direction": t.direction.value, "amount": t.amount}
+                for t in trades
+            ],
+            strategies_referenced=[ss.strategy_id for ss in all_signals],
+            # Commit-reveal temporal binding
+            commit_tx_hash=commit_tx,
+            commit_block_number=commit_block,
+            trade_tx_hash=tx_hashes[0] if tx_hashes else None,
+            trade_block_number=trade_block,
+        )
+
+        trace.compute_hash()
+        logger.info("[tick %s] REVEAL hash: %s", tick_id, trace.trace_hash[:16])
+
+        # Publish reveal trace on-chain
+        reveal_tx = None
+        reveal_block = None
+        if not DRY_RUN:
+            try:
+                reveal_tx = await trace_publisher.publish(trace)
+                if reveal_tx:
+                    try:
+                        receipt = await chain_client.w3.eth.get_transaction_receipt(
+                            chain_client.w3.to_bytes(hexstr=reveal_tx.removeprefix("0x"))
+                        )
+                        reveal_block = receipt.blockNumber
+                    except Exception:
+                        pass
+                    logger.info(
+                        "[tick %s] REVEAL anchored: tx=%s block=%s",
+                        tick_id, reveal_tx[:16], reveal_block,
+                    )
+            except Exception as e:
+                logger.error("[tick %s] REVEAL publish FAILED: %s", tick_id, e)
+
+        # Persist off-chain with full temporal binding data
+        try:
+            off_chain_data = {
+                "id": trace.id,
+                "vault_address": trace.vault_address,
+                "decision_type": trace.decision_type.value,
+                "trigger": trace.trigger,
+                "timestamp": trace.timestamp.isoformat(),
+                "market_context": trace.market_context,
+                "portfolio_before": trace.portfolio_before,
+                "portfolio_after": trace.portfolio_after,
+                "reasoning": trace.reasoning,
+                "confidence": trace.confidence,
+                "trades_executed": trace.trades_executed,
+                "strategies_referenced": trace.strategies_referenced,
+                "trace_hash": trace.trace_hash,
+                "arc_tx_hash": reveal_tx,
+                "is_verified": reveal_tx is not None,
+                # Temporal binding fields
+                "commit_tx_hash": commit_tx,
+                "commit_block_number": commit_block,
+                "reveal_tx_hash": reveal_tx,
+                "reveal_block_number": reveal_block,
+                "trade_tx_hash": tx_hashes[0] if tx_hashes else None,
+                "trade_block_number": trade_block,
+                "temporal_binding_valid": (
+                    commit_block is not None
+                    and trade_block is not None
+                    and commit_block < trade_block
+                ),
+            }
+            await self.state.save_trace(off_chain_data)
+        except Exception as e:
+            logger.error("[tick %s] REVEAL Redis save FAILED: %s", tick_id, e)
+
+    # ─── Reasoning trace (legacy) ──────────────────────────────────
 
     async def _publish_trace(
         self,
@@ -376,6 +591,8 @@ class StrategyRunner:
         reasoning: str,
         tx_hashes: list[str] | None = None,
         error: str | None = None,
+        commit_tx: str | None = None,
+        commit_block: int | None = None,
     ) -> None:
         """Build and publish a reasoning trace."""
         trace = ReasoningTrace(
@@ -446,6 +663,9 @@ class StrategyRunner:
                 "trace_hash": trace.trace_hash,
                 "arc_tx_hash": arc_tx,
                 "is_verified": arc_tx is not None,
+                # Commit-reveal fields (if available)
+                "commit_tx_hash": commit_tx,
+                "commit_block_number": commit_block,
             }
             await self.state.save_trace(off_chain_data)
         except Exception as e:

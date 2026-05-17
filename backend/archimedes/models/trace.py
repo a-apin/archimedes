@@ -56,6 +56,14 @@ class ReasoningTrace:
     trace_hash: str = ""  # keccak256 of the canonical trace content
     arc_tx_hash: str | None = None  # Arc transaction that recorded this hash
 
+    # Commit-reveal temporal binding (v1.5)
+    commit_tx_hash: str | None = None  # Tx that committed the hash BEFORE the trade
+    commit_block_number: int | None = None  # Block number of commit tx
+    reveal_tx_hash: str | None = None  # Tx that revealed full content AFTER trade
+    reveal_block_number: int | None = None  # Block number of reveal tx
+    trade_tx_hash: str | None = None  # The actual rebalance trade tx hash
+    trade_block_number: int | None = None  # Block number of trade tx
+
     # Canonical field order for hash computation — must match contract's verifyTrace
     _HASH_FIELDS = (
         "id", "vault_address", "decision_type", "trigger", "timestamp",

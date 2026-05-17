@@ -538,6 +538,14 @@ async def list_traces(
                     regime_at_decision=t.get("market_context", {}).get("regime"),
                     trades_executed=t.get("trades_executed", []),
                     strategies_referenced=t.get("strategies_referenced", []),
+                    # Commit-reveal temporal binding
+                    commit_tx_hash=t.get("commit_tx_hash"),
+                    commit_block_number=t.get("commit_block_number"),
+                    reveal_tx_hash=t.get("reveal_tx_hash"),
+                    reveal_block_number=t.get("reveal_block_number"),
+                    trade_tx_hash=t.get("trade_tx_hash"),
+                    trade_block_number=t.get("trade_block_number"),
+                    temporal_binding_valid=t.get("temporal_binding_valid"),
                 ))
             return TraceListResponse(traces=traces, total=total)
 
@@ -610,6 +618,14 @@ async def get_trace(trace_id: str):
                 regime_at_decision=off_chain.get("market_context", {}).get("regime"),
                 trades_executed=off_chain.get("trades_executed", []),
                 strategies_referenced=off_chain.get("strategies_referenced", []),
+                # Commit-reveal temporal binding
+                commit_tx_hash=off_chain.get("commit_tx_hash"),
+                commit_block_number=off_chain.get("commit_block_number"),
+                reveal_tx_hash=off_chain.get("reveal_tx_hash"),
+                reveal_block_number=off_chain.get("reveal_block_number"),
+                trade_tx_hash=off_chain.get("trade_tx_hash"),
+                trade_block_number=off_chain.get("trade_block_number"),
+                temporal_binding_valid=off_chain.get("temporal_binding_valid"),
             )
 
         # Try on-chain numeric ID
@@ -810,6 +826,11 @@ async def verify_trace(trace_id: str):
             vault=vault,
             on_chain_timestamp=on_chain_ts,
             details=details,
+            # Temporal binding verification
+            commit_block_number=off_chain.get("commit_block_number"),
+            trade_block_number=off_chain.get("trade_block_number"),
+            reveal_block_number=off_chain.get("reveal_block_number"),
+            temporal_binding_valid=off_chain.get("temporal_binding_valid"),
         )
     finally:
         await state.close()

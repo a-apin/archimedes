@@ -226,6 +226,15 @@ class TraceResponse(BaseModel):
     trades_executed: list[TradeExecutedResponse] = []
     strategies_referenced: list[str] = []
 
+    # Commit-reveal temporal binding (v1.5)
+    commit_tx_hash: str | None = None
+    commit_block_number: int | None = None
+    reveal_tx_hash: str | None = None
+    reveal_block_number: int | None = None
+    trade_tx_hash: str | None = None
+    trade_block_number: int | None = None
+    temporal_binding_valid: bool | None = None
+
 
 class TradeExecutedResponse(BaseModel):
     symbol: str
@@ -272,10 +281,15 @@ class TraceVerifyResponse(BaseModel):
     trace_id: int  # On-chain trace ID
     trace_hash: str
     is_verified: bool
-    agent: str
-    vault: str
-    on_chain_timestamp: int
+    agent: str = ""
+    vault: str = ""
+    on_chain_timestamp: int = 0
     details: str  # Human-readable result
+    # Temporal binding verification
+    temporal_binding_valid: bool | None = None
+    commit_block_number: int | None = None
+    trade_block_number: int | None = None
+    reveal_block_number: int | None = None
 
 
 # ═══════════════════════════════════════════════════════════════

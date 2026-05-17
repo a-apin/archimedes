@@ -486,7 +486,7 @@ function OnChainTraces() {
                 )}
 
                 {/* Verify button */}
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <button
                     className="btn btn-outline btn-sm"
                     onClick={() => verifyTrace(t.id)}
@@ -500,6 +500,27 @@ function OnChainTraces() {
                     </span>
                   )}
                 </div>
+
+                {/* Temporal binding verification */}
+                {t.temporal_binding_valid != null && (
+                  <div style={{ marginTop: 8, padding: '8px 12px', background: t.temporal_binding_valid ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)', borderRadius: 6 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                      <span style={{ fontSize: '1rem' }}>{t.temporal_binding_valid ? '✅' : '❌'}</span>
+                      <strong style={{ fontSize: '0.85rem' }}>Temporal Binding</strong>
+                      {t.temporal_binding_valid && <span className="tag tag-positive" style={{ fontSize: '0.7rem' }}>VERIFIED</span>}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-3)', lineHeight: 1.5 }}>
+                      {t.commit_block_number != null && <div>Commit block: <strong>#{t.commit_block_number}</strong></div>}
+                      {t.trade_block_number != null && <div>Trade block: <strong>#{t.trade_block_number}</strong></div>}
+                      {t.reveal_block_number != null && <div>Reveal block: <strong>#{t.reveal_block_number}</strong></div>}
+                      {t.temporal_binding_valid && (
+                        <div style={{ marginTop: 4, fontStyle: 'italic' }}>
+                          Trace committed before trade executed (commit &lt; trade &lt; reveal)
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )
           })}
