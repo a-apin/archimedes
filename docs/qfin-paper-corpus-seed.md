@@ -1,348 +1,247 @@
-# Q-Fin Paper Corpus — Seed List for v1 Strategy Library
+# Q-Fin Paper Corpus — Bleeding-Edge arXiv Preprint Stream
 
-> **Date:** 2026-05-12 (Day 2)
-> **Author:** Initial seed list — to be curated and validated by Dan against the criteria
-> in [`mvp-scope-memo.md`](mvp-scope-memo.md). Treat as a starting menu, not a commitment.
-> **Audience:** Dan (curator), Önder (math validator), team (review)
-> **Purpose:** Propose a structured, categorized seed list of ~30 peer-reviewed quant
-> finance papers from which v1's 5–10 strategies can be sourced. Each entry includes
-> arxiv/DOI, why it's a good candidate, and what's needed to validate it.
+> **Date:** 2026-05-17 (Day 7) — full rewrite, supersedes the 2026-05-12 classical seed list
+> **Author:** Corpus reorientation pass. Curation gate still owned by Dan; numbers below
+> are derived from the real scraped manifest, not curated by hand yet.
+> **Audience:** Dan (curator), Önder (math validator), team (review ahead of standup)
+> **Purpose:** Replace the canonical-literature seed menu with a description of, and
+> rationale for, a **living bleeding-edge arXiv q-fin preprint corpus**. The earlier
+> version of this file proposed ~30 textbook-famous papers (Jegadeesh-Titman, Fama-French,
+> López de Prado, Hamilton). That list is the *opposite* of what Archimedes should be
+> reading. This rewrite explains why, and grounds the new direction in the 200-paper
+> corpus Stream A actually scraped.
 
-## Curation criteria (recap from MVP scope memo)
+## Why the classical seed was the wrong instinct
 
-A paper qualifies for the v1 strategy library if and only if:
+The previous seed list opened with "These are the canonical quant strategies. Every quant
+team in the world has implemented them." That sentence is the bug, not the feature.
 
-1. **Published in a peer-reviewed journal OR on arxiv with significant citations** (>50 or
-   from an established author).
-2. **Strategy is implementable** — well-defined entry/exit signals, available historical
-   data, no proprietary feeds.
-3. **Backtest period ≥ 10 years** of accessible data on liquid markets.
-4. **Re-runnable to Sharpe ≥ 0.5** at conservative transaction costs (10bps round-trip).
-5. **No look-ahead bias** in our re-implementation (walk-forward only).
+Archimedes' entire thesis is that **published alpha decays as its novelty wears off**. The
+cleanest evidence is McLean & Pontiff (2016), "Does Academic Research Destroy Stock Return
+Predictability?" (*Journal of Finance* 71(1), 5–32): they re-tested 97 documented
+anomalies and found returns decay roughly **58% out-of-sample after publication** — about
+26% from genuine statistical mean-reversion and the rest from arbitrageurs trading the
+signal once it is public knowledge. The half-life of an academic edge starts ticking the
+moment the paper is widely read.
 
-Papers below are organized by arxiv [q-fin category](https://arxiv.org/list/q-fin/recent).
-**Validation status to be filled by Dan:** ✓ = re-validated; ⚠ = re-implementation in
-progress; ☐ = candidate not yet evaluated; 🌱 = seeded as analytics-engine strategy file
-awaiting backtest run.
+Run that mechanism forward and the conclusion is uncomfortable for a "canonical anchors of
+trust" library: a corpus built from the *most-cited, most-implemented* papers in finance is
+a corpus of signals that have been arbitraged for one to three decades. Jegadeesh-Titman
+momentum has ~30,000 citations precisely *because* it is old, famous, and everyone trades
+it — which is exactly why its post-2010 Sharpe is a shadow of its 1993 in-sample number.
+**Citation count is anti-correlated with surviving alpha.** Fame is the tombstone of an
+edge, not a certificate of one.
 
-## Day 3 seeded strategies (2026-05-13)
+So the corpus that feeds Archimedes' strategy engine should live as close to the
+**bleeding edge of arXiv preprints** as the scrape pipeline can keep it. Not because new
+preprints are automatically *correct* — most are not — but because the *undiscovered* and
+*not-yet-arbitraged* ideas only exist there. Novelty is the moat. A strategy whose backing
+paper is six weeks old and uncited has, at minimum, not yet been competed away by the rest
+of the market reading the same paper. The classical canon is the control group we expect to
+*lose* to fresh research, not the trust anchor we lean on.
 
-Three strategies have been written as runnable backtrader files in
-[`analytics-engine/strategies/`](../analytics-engine/strategies/) and are loadable by
-[`backend/archimedes/services/strategy_provider.py`](../backend/archimedes/services/strategy_provider.py):
+This does not abandon rigor — it relocates it. We do not trust a preprint because it is new;
+we trust a strategy because it survives the four-primitive selection-bias gate (DSR + PBO +
+walk-forward OOS + look-ahead audit, per
+[`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md)).
+Novelty decides *what enters the funnel*; rigor decides *what survives it*. The old seed
+list inverted that — it used fame as a proxy for rigor and never looked for novelty at all.
 
-- 🌱 **A2** Moskowitz, Ooi & Pedersen 2012 — Time Series Momentum
-  ([`moskowitz_ooi_pedersen_2012_tsmom.py`](../analytics-engine/strategies/moskowitz_ooi_pedersen_2012_tsmom.py))
-- 🌱 **A new — single-asset SMA200 trend filter** — Faber 2007
-  ([`faber_2007_sma200_timing.py`](../analytics-engine/strategies/faber_2007_sma200_timing.py))
-- 🌱 **A new — volatility-managed long** — Moreira & Muir 2017
-  ([`moreira_muir_2017_volatility_managed.py`](../analytics-engine/strategies/moreira_muir_2017_volatility_managed.py))
+## The corpus as it actually exists today
 
-All three are *single-asset* per the analytics-engine's one-feed-per-backtest constraint.
-Cross-sectional papers like A1 (Jegadeesh-Titman) and A3 (HRP) require multi-feed
-support and stay deferred for v1.5. Per-asset backtests pending Önder's
-`IBacktestEvaluator` implementation; until then the strategies load with `status =
-CANDIDATE` and no `BacktestResult`.
+Stream A has built a real scraped corpus. The numbers below come directly from
+`data/corpus/manifest.jsonl` (read cross-worktree from `stream-a`; 200 JSON-per-line
+records) — they are measured, not aspirational.
 
----
+| Property | Value |
+| --- | --- |
+| Total papers | **200** |
+| Published date range | **2026-04-03 → 2026-05-14** (a 41-day window) |
+| Span | ~6 weeks; roughly evenly spread (≈27–40 papers per trailing week) |
+| Distinct primary categories | **30** |
+| q-fin coverage | **200/200** carry at least one `q-fin.*` tag; 133 have a `q-fin.*` *primary* category, the remaining 67 are q-fin cross-listings from `cs.*` / `stat.*` / `econ.*` / `math.*` |
+| Already-revised preprints | **34/200** have `updated` ≠ `published` (a v2+ already exists) |
+| Fetch timestamp | single batch, `2026-05-17T04:51:54Z` |
 
-## Tier A — Foundational strategies (high confidence, well-known)
+The corpus is, in plain terms, **a snapshot of the most recent ~200 q-fin submissions to
+arXiv as of mid-May 2026** — not a hand-picked historical reading list.
 
-These are the canonical quant strategies. Every quant team in the world has implemented
-them. They serve as **anchors of trust** in the v1 library — judges and users immediately
-recognize the references.
+### Primary-category distribution
 
-### A1. Momentum (Jegadeesh & Titman 1993)
+The scrape is genuinely broad across the q-fin taxonomy and its machine-learning /
+econometrics borderlands:
 
-- **Citation:** Jegadeesh, N., & Titman, S. (1993). "Returns to buying winners and selling
-  losers: Implications for stock market efficiency." *Journal of Finance*, 48(1), 65–91.
-- **DOI:** [10.1111/j.1540-6261.1993.tb04702.x](https://doi.org/10.1111/j.1540-6261.1993.tb04702.x)
-- **Strategy shape:** Rank assets by 3–12 month returns; long top decile, short bottom
-  decile; rebalance monthly. The seminal momentum paper. **~30,000+ citations.**
-- **Why include:** Most-cited momentum paper in the literature. Easy to implement; robust
-  across decades and markets.
-- **Validation status:** ☐ Pending Dan's re-run with 10bps costs on a US-equity universe.
-- **Likely Sharpe:** ~0.5–1.0 historically; degraded post-2010 but still positive.
+| Primary category | Count | | Primary category | Count |
+| --- | --- | --- | --- | --- |
+| q-fin.TR (Trading & Microstructure) | 26 | | math.OC (Optimization & Control) | 6 |
+| q-fin.MF (Mathematical Finance) | 23 | | stat.ME (Methodology) | 5 |
+| q-fin.RM (Risk Management) | 22 | | stat.AP / cs.AI / cs.CE | 4 each |
+| q-fin.PM (Portfolio Management) | 18 | | math.PR / cs.MA / stat.ML / math.ST / physics.soc-ph | 3 each |
+| q-fin.CP (Computational Finance) | 17 | | econ.GN | 2 |
+| cs.LG (Machine Learning) | 11 | | nlin.PS, cs.IT, eess.SY, math.NA, econ.TH, cs.GT, quant-ph, cs.SD, math.GN | 1 each |
+| q-fin.PR (Pricing of Securities) | 10 | | | |
+| q-fin.ST (Statistical Finance) | 10 | | | |
+| q-fin.GN (General Finance) | 7 | | | |
+| econ.EM (Econometrics) | 7 | | | |
 
-### A2. Time-series momentum (Moskowitz, Ooi & Pedersen 2012)
+The long tail matters: a `cs.LG` paper that cross-lists to `q-fin.PM` is exactly the kind
+of not-yet-canonical, ML-meets-portfolio idea the classical seed list reached for
+(Gu-Kelly-Xiu) but could only find a *six-years-old, >1000-citation* example of. The scrape
+surfaces eleven `cs.LG`-primary q-fin crossovers from the last six weeks alone.
 
-- **Citation:** Moskowitz, T. J., Ooi, Y. H., & Pedersen, L. H. (2012). "Time series
-  momentum." *Journal of Financial Economics*, 104(2), 228–250.
-- **Strategy shape:** Long an asset if its trailing 12-month return is positive; short if
-  negative. Each asset independently. Works across asset classes (equities, bonds,
-  commodities, currencies).
-- **Why include:** Strong out-of-sample evidence; complements cross-sectional momentum
-  (A1). Pedersen is AQR — quality of source matters.
-- **Validation status:** ☐
-- **Likely Sharpe:** ~1.0 in cross-asset universe.
+### A representative sample (real records, pulled from the manifest)
 
-### A3. Hierarchical Risk Parity (López de Prado 2016)
+Every row below is a real record from `manifest.jsonl` — `arxiv_id`, exact title, primary
+category, publish date. Selected to span the major categories and the full date range; **no
+titles or IDs are invented**. This is a cross-section, not a curation verdict — none of
+these has been through the selection-bias gate.
 
-- **Citation:** López de Prado, M. (2016). "Building diversified portfolios that
-  outperform out-of-sample." *Journal of Portfolio Management*, 42(4), 59–69.
-- **DOI:** [10.3905/jpm.2016.42.4.059](https://doi.org/10.3905/jpm.2016.42.4.059)
-- **Strategy shape:** Cluster assets by correlation; allocate hierarchically. Avoids the
-  ill-conditioning of mean-variance optimization without using factor models.
-- **Why include:** Modern portfolio construction. López de Prado is a serious source
-  (Cornell, AQR). Methodology is mathematically rigorous and code is well-known
-  (PyPortfolioOpt has it built in).
-- **Validation status:** ☐
-- **Likely Sharpe:** Comparable to risk parity; lower drawdown than equal-weight.
+| arXiv ID | Title | Primary | Published |
+| --- | --- | --- | --- |
+| `2605.09310` | Beyond ESG Scores: Learning Dynamic Constraints for Sequential Portfolio Optimization | cs.AI | 2026-05-10 |
+| `2605.13407` | Vector-Quantized Discrete Latent Factors Meet Financial Priors: Dynamic Cross-Sectional Stock Ranking Prediction for Portfolio Construction | cs.LG | 2026-05-13 |
+| `2605.11645` | GeomHerd: A Forward-looking Herding Quantification via Ricci Flow Geometry on Agent Interactive Simulations | cs.MA | 2026-05-12 |
+| `2605.09712` | Quantifying the Risk-Return Tradeoff in Forecasting | econ.EM | 2026-05-10 |
+| `2605.01178` | Modeling Stochastic Multi-Agent Interaction in Intraday Battery Energy Storage Dispatch with Market Power | math.OC | 2026-05-02 |
+| `2605.09061` | A Market-Rule-Informed Neural Network for Efficient Imbalance Electricity Price Forecasting | q-fin.CP | 2026-05-09 |
+| `2605.13998` | Synthetic American Option Pricing via Jump-HMM-Driven Heston Implied Volatility | q-fin.CP | 2026-05-13 |
+| `2605.13320` | The fine structure of electricity price volatility | q-fin.GN | 2026-05-13 |
+| `2605.12764` | Yield Curves Dynamics Using Variational Autoencoders Under No-arbitrage | q-fin.MF | 2026-05-12 |
+| `2605.12698` | Optimal investment and Pension policy in Pay-As-You-Go systems under forward utility and ageing population | q-fin.MF | 2026-05-12 |
+| `2605.01176` | Decision-Induced Ranking Explains Prediction Inflation and Excessive Turnover in SPO-Based Portfolio Optimization | q-fin.PM | 2026-05-02 |
+| `2605.09123` | The Engineering of Skew: A Path-Dependent Framework for Asymmetric Volatility Management | q-fin.PM | 2026-05-09 |
+| `2605.12189` | A deep learning approach for pricing convertible bonds with path-dependent reset and call provisions | q-fin.PR | 2026-05-12 |
+| `2605.11200` | The Epistemic Risk of Risk: A Modal Framework for Quantitative Risk Management | q-fin.RM | 2026-05-11 |
+| `2605.10066` | On the modeling assumptions of Historical Simulation for Value-at-Risk | q-fin.RM | 2026-05-11 |
+| `2604.19580` | Probabilistic Forecasting for Day-ahead Electricity Prices, Battery Trading Strategies and the Economic Evaluation of Predictive Accuracy | q-fin.ST | 2026-04-21 |
+| `2605.12151` | RED-2400: A Public Benchmark of Algorithmically-Rejected Trading Events with Outcome Labels | q-fin.TR | 2026-05-12 |
+| `2605.11640` | Fill-Side Non-Retail Trading on Polymarket: An Empirical Study of Behavioral Tiers and Microstructure Signatures Under Quote-Attribution Constraints | q-fin.TR | 2026-05-12 |
+| `2605.14976` | Multi-regime Markov-switching models with time-varying transition probabilities: An application to U.S. Treasury yields | stat.ME | 2026-05-14 |
+| `2605.06438` | Neural-Actuarial Longevity Forecasting: Anchoring LSTMs for Explainable Risk Management | stat.ML | 2026-05-07 |
 
-### A4. Risk Parity (Asness, Frazzini & Pedersen 2012)
+**20 real papers** are referenced above, spanning 13 primary categories and the full
+publish window (`2604.19580` on the early edge, `2605.14976` on the late edge). The flavor
+is unmistakably current: VQ discrete latent factors for stock ranking, Ricci-flow geometry
+for herding, decision-focused-learning failure modes in SPO portfolios, VAE yield curves
+under no-arbitrage. None of these is in any textbook. That is the point.
 
-- **Citation:** Asness, C. S., Frazzini, A., & Pedersen, L. H. (2012). "Leverage aversion
-  and risk parity." *Financial Analysts Journal*, 68(1), 47–59.
-- **Strategy shape:** Allocate risk equally across asset classes (typically equities,
-  bonds, commodities); rebalance to maintain risk contributions. Foundational for the
-  Bridgewater All-Weather approach.
-- **Why include:** Well-understood, robustly performant, fits naturally with the
-  Conservative / Moderate risk profiles.
-- **Validation status:** ☐
-- **Likely Sharpe:** ~0.7–1.0.
+### The honest characteristic: fresh but temporally narrow
 
-### A5. Pairs Trading (Gatev, Goetzmann, & Rouwenhorst 2006)
+This corpus is **bleeding-edge but only six weeks deep**. The 200 records are the *most
+recent* q-fin submissions, scraped in a single batch — they cluster between 2026-04-03 and
+2026-05-14 and were all fetched at one timestamp. There is no 2024 paper here, no 2025
+paper, nothing from January–March 2026.
 
-- **Citation:** Gatev, E., Goetzmann, W. N., & Rouwenhorst, K. G. (2006). "Pairs trading:
-  Performance of a relative-value arbitrage rule." *Review of Financial Studies*, 19(3),
-  797–827.
-- **DOI:** [10.1093/rfs/hhj020](https://doi.org/10.1093/rfs/hhj020)
-- **Strategy shape:** Find pairs of stocks with historically correlated prices; trade the
-  spread when it diverges.
-- **Why include:** Classic statistical arbitrage. Market-neutral. Demonstrates a
-  *different* category of strategy from trend/factor.
-- **Validation status:** ☐
-- **Likely Sharpe:** ~0.5–1.5 in early periods; degraded but still useful for
-  diversification.
+That is a deliberate freshness-vs-breadth tradeoff and we should be honest about both
+sides:
 
----
+- **Upside (why we want this):** every paper is pre-arbitrage by the McLean-Pontiff clock.
+  Nothing here has had time to be competed away. This is precisely the regime where
+  undiscovered alpha can still exist.
+- **Downside (what we give up):** a six-week window is not a research *library*; it is a
+  research *feed*. Methodological diversity is high, but a strategy that needs a long
+  out-of-sample track record cannot be sourced from a paper that is six weeks old, and a
+  single batch will go stale the moment the next week of arXiv lands.
 
-## Tier B — Factor and asset-pricing strategies
+The correct response is **not** to widen the scrape backward into older papers — that would
+reintroduce exactly the arbitraged-away canon we are trying to escape. The correct response
+is to **make the scrape recurrent**: a continuously-refreshed rolling window, not a
+one-time seed. Treat `manifest.jsonl` as the current frame of a stream, not a static
+catalogue. See *Recurrent auto-scrape* below.
 
-Modern factor literature. These strategies form the bedrock of "smart beta" and
-quantitative equity portfolios.
+## Curation criteria, reoriented for preprints
 
-### B1. Fama-French 5-Factor Model (Fama & French 2015)
+The old criteria were written for famous published papers and do not survive contact with
+a six-week-old preprint. They are replaced, not amended:
 
-- **Citation:** Fama, E. F., & French, K. R. (2015). "A five-factor asset pricing model."
-  *Journal of Financial Economics*, 116(1), 1–22.
-- **DOI:** [10.1016/j.jfineco.2014.10.010](https://doi.org/10.1016/j.jfineco.2014.10.010)
-- **Strategy shape:** Long-short portfolios sorted on size, book-to-market, profitability,
-  investment, and market beta. The factor zoo's most cited model.
-- **Why include:** Reference factor model. Even if we don't trade the factors directly,
-  this informs how we interpret strategy performance.
-- **Validation status:** ☐ (factor returns from Ken French's data library are public).
+| Old criterion (retired) | New criterion (preprint-native) |
+| --- | --- |
+| Peer-reviewed journal **or** arXiv with >50 citations / established author | **Novelty signal.** Preprints are too new to be cited at all — citation count is structurally unavailable and, per the thesis above, *negatively* informative if it weren't. Screen on idea novelty and the absence of a known canonical equivalent, not on social proof. |
+| Strategy implementable, no proprietary feeds | **Implementability from the abstract.** Same intent, but assessed early: does the abstract describe a signal with definable entry/exit on data we can actually get (liquid public markets, public benchmarks)? Papers like `2605.12151` (RED-2400) even ship their own public benchmark — that is a strong signal. |
+| Backtest period ≥ 10 years | **Data availability over track-record length.** A six-week-old paper has no decade of OOS by construction. Require that *we* can assemble a defensible walk-forward window from public data — the paper's own backtest length is informational, not a gate. |
+| Re-runnable to Sharpe ≥ 0.5 | **Methodological signal in the abstract.** Before any code is written, the abstract must contain enough method (the mechanism, the inputs, the claimed effect) for Dan to judge whether it is even worth implementing. Vague "we use deep learning" abstracts are screened out cheaply. |
+| No look-ahead bias in re-implementation | **Unchanged — and now the load-bearing gate.** With novelty cheap and citations gone, the look-ahead audit + full four-primitive selection-bias gate is what separates a real edge from a six-week-old overfit. This is where rigor moved to. |
 
-### B2. Carhart 4-Factor Model (Carhart 1997)
+Net: **novelty gets a paper into the funnel; the selection-bias gate decides if it
+survives.** Quality is, at this stage, *abstract-screened, not full-text-vetted* — see
+limitations.
 
-- **Citation:** Carhart, M. M. (1997). "On persistence in mutual fund performance."
-  *Journal of Finance*, 52(1), 57–82.
-- **Why include:** Added momentum to Fama-French 3-factor. Standard reference for any
-  momentum-related strategy's risk-adjusted returns.
-- **Validation status:** ☐
+## How this corpus feeds strategy fusion
 
-### B3. Quality Minus Junk (Asness, Frazzini & Pedersen 2019)
+A bleeding-edge preprint stream is the natural input to the **multi-paper strategy fusion**
+direction (companion spec `docs/specs/strategy-fusion-spec.md`, branch
+`dbrowneup/strategy-fusion` — referenced here, not required reading for this doc). The
+relevant properties:
 
-- **Citation:** Asness, C. S., Frazzini, A., & Pedersen, L. H. (2019). "Quality minus
-  junk." *Review of Accounting Studies*, 24, 34–112.
-- **Strategy shape:** Long high-quality stocks (profitable, growing, safe, well-managed);
-  short low-quality stocks. AQR's flagship factor.
-- **Why include:** Strong out-of-sample evidence; complements value and momentum;
-  defensive characteristics.
-- **Validation status:** ☐
+- **Cross-paper amalgamation.** No single six-week-old preprint is a finished, validated
+  strategy. The value is in *combining* primitives across papers — e.g. a regime model
+  from a `stat.ME` paper, a portfolio constraint from a `cs.AI` ESG-constraint paper, a
+  transaction-cost-aware ranking correction from a `q-fin.PM` SPO paper — into a fused
+  candidate that no individual paper proposed. A broad, current corpus is the raw material;
+  fusion is the synthesis step.
+- **User-steered.** The 30-category breadth lets fusion be steered by user intent
+  (risk-management-heavy vs. portfolio-construction-heavy vs. microstructure) because the
+  corpus actually has depth in each lane this month.
+- **Novelty-optimizing.** Fusion should prefer combinations grounded in the freshest,
+  least-arbitraged inputs — which only works if the corpus is kept fresh. A fusion engine
+  pointed at the classical canon would amalgamate already-dead signals into a more elaborate
+  dead signal.
 
-### B4. Betting Against Beta (Frazzini & Pedersen 2014)
+## Recurrent auto-scrape (the direction, not a one-time seed)
 
-- **Citation:** Frazzini, A., & Pedersen, L. H. (2014). "Betting against beta." *Journal of
-  Financial Economics*, 111(1), 1–25.
-- **Strategy shape:** Long low-beta stocks (leveraged); short high-beta stocks. Exploits
-  the low-volatility anomaly with leverage.
-- **Why include:** Real edge from a behavioral source (institutional leverage
-  constraints). Important for the Conservative profile.
-- **Validation status:** ☐
-- **Note:** v1 doesn't allow user-side leverage, but the long-only version is
-  implementable.
+The single most important architectural consequence of the alpha-decay thesis: **the
+corpus must be a recurring job, not a deliverable.** A static `manifest.jsonl` is
+already aging the moment it is written — by McLean-Pontiff logic its contents are
+*monotonically losing value* as the rest of the market reads the same arXiv listing.
 
-### B5. Value and Momentum Everywhere (Asness, Moskowitz & Pedersen 2013)
+The intended shape (sketch, for the team — not a built feature yet):
 
-- **Citation:** Asness, C. S., Moskowitz, T. J., & Pedersen, L. H. (2013). "Value and
-  momentum everywhere." *Journal of Finance*, 68(3), 929–985.
-- **Strategy shape:** Cross-asset value and momentum strategies. Documents that V/M
-  factors work across equity countries, bonds, currencies, commodities.
-- **Why include:** Best multi-asset cross-validation. Supports the multi-asset RWA
-  framing in Chuan's design.
+1. A scheduled scrape (daily or weekly) pulls the newest q-fin submissions and appends to
+   the manifest, keyed by `arxiv_id` + `pdf_sha256`.
+2. A rolling window (e.g. trailing N weeks) defines the *active* corpus the strategy engine
+   reads; older records age out of "active" but are retained for OOS once enough calendar
+   time has accrued — that is how a six-week-old paper *earns* a real walk-forward window
+   without us widening the scrape backward into the arbitraged canon.
+3. New records enter the funnel under the preprint curation criteria above; only
+   selection-bias-gate survivors get a strategy passport.
 
----
+This turns the freshness-vs-breadth tradeoff from a static compromise into a process: the
+corpus stays bleeding-edge *and* eventually accumulates the OOS depth that a single batch
+cannot have.
 
-## Tier C — Machine learning factor strategies
+## Limitations & next steps
 
-Modern ML approaches to asset pricing. These add the AI flavor to the curated library
-without departing from peer-reviewed rigor.
+Honest accounting of what this corpus is *not* yet:
 
-### C1. Empirical Asset Pricing via Machine Learning (Gu, Kelly & Xiu 2020)
+- **Temporal breadth is six weeks.** No history before 2026-04-03; no walk-forward depth is
+  derivable from the papers themselves yet. Mitigation is the recurrent scrape + age-out
+  retention above, not a backward widening of the scrape.
+- **No dedup against published versions.** 34/200 records already have a `v2+`
+  (`updated` ≠ `published`); none are checked against a later peer-reviewed journal
+  version. A preprint that has since been published (and therefore started its decay clock)
+  is not currently distinguished from a still-obscure one. Dedup-against-published is an
+  open task.
+- **Quality is abstract-screened, not full-text-vetted.** The curation criteria above
+  operate on titles/abstracts/categories. No paper here has been read in full, implemented,
+  or run through the four-primitive selection-bias gate. Nothing in this corpus is a
+  validated strategy — it is a *candidate stream*.
+- **Single-batch fetch.** Everything was pulled at one timestamp. Until the scrape is
+  recurrent, this file describes a snapshot that is already aging.
 
-- **Citation:** Gu, S., Kelly, B., & Xiu, D. (2020). "Empirical asset pricing via machine
-  learning." *Review of Financial Studies*, 33(5), 2223–2273.
-- **DOI:** [10.1093/rfs/hhaa009](https://doi.org/10.1093/rfs/hhaa009)
-- **Strategy shape:** Use neural networks, gradient-boosted trees, and other ML methods
-  on a large feature set (94 firm characteristics + 74 industry features). Long-short on
-  ML-predicted returns.
-- **Why include:** *The* canonical ML-meets-asset-pricing paper. >1000 citations. Shows
-  ML methods substantially outperform linear factor models.
-- **Validation status:** ☐ (data and code available from authors).
-- **Pitch value:** This is the AI strategy in the library. Strong "see, AI does help"
-  evidence for the agentic-portfolio thesis.
+**Next steps:**
 
-### C2. Deep Hedging (Buehler, Gonon, Teichmann & Wood 2019)
-
-- **Citation:** Buehler, H., Gonon, L., Teichmann, J., & Wood, B. (2019). "Deep hedging."
-  *Quantitative Finance*, 19(8), 1271–1291.
-- **arxiv:** [1802.03042](https://arxiv.org/abs/1802.03042)
-- **Strategy shape:** Use deep RL to learn optimal hedging policies under realistic
-  market frictions (transaction costs, market impact).
-- **Why include:** Shows ML applied to risk management (a key theme for the Conservative
-  profile). Less directly tradeable but instructive.
-
-### C3. Machine Learning Trading Agent Frameworks
-
-- **TradingAgents** (Xiao et al. 2024) — [arxiv:2412.20138](https://arxiv.org/abs/2412.20138).
-  Multi-agent LLM-based trading framework. Adjacent to our work but at the agent
-  framework level, not the strategy level.
-- **Trading-R1** (Wang et al. 2025) — [arxiv:2509.11420](https://arxiv.org/abs/2509.11420).
-  Reasoning-trace-as-product. **Directly relevant to our reasoning-trace primitive.**
-- **QuantAgent** ([Stony Brook 2024](https://github.com/stonybrook-edu/quantagent)) —
-  Trading agent framework with vision-LLM-on-charts. Adjacent.
-
-**Note:** These are agent frameworks, not strategies per se. They influence the agent
-runtime, not the strategy library. Cited in the pitch deck for context.
-
----
-
-## Tier D — Risk management and execution
-
-Critical for the Önder math module and the live-agent risk infrastructure.
-
-### D1. Kelly Criterion (Kelly 1956 / Thorp 1969)
-
-- **Citation:** Kelly, J. L. (1956). "A new interpretation of information rate." *Bell
-  System Technical Journal*, 35(4), 917–926. + Thorp, E. O. (1969). "Optimal gambling
-  systems for favorable games." *Review of the International Statistical Institute*,
-  37(3), 273–293.
-- **Strategy shape:** Position sizing rule that maximizes long-run log-wealth growth.
-- **Why include:** Önder's stated math foundation. Used in v1 for position-sizing within
-  each risk profile.
-
-### D2. Walk-Forward Validation Best Practices (López de Prado 2018)
-
-- **Citation:** López de Prado, M. (2018). *Advances in Financial Machine Learning*.
-  Wiley. (Book, not paper, but the canonical reference.)
-- **Why include:** Reference for our backtest validation discipline. Walk-forward,
-  combinatorial purged k-fold, deflated Sharpe ratio.
-
-### D3. Deflated Sharpe Ratio (Bailey & López de Prado 2014)
-
-- **Citation:** Bailey, D. H., & López de Prado, M. (2014). "The deflated Sharpe ratio:
-  Correcting for selection bias, backtest overfitting and non-normality." *Journal of
-  Portfolio Management*, 40(5), 94–107.
-- **Why include:** Honest backtest accounting. The "paper-claimed-Sharpe vs
-  out-of-sample-Sharpe" delta we surface in the passport is an applied form of this.
-
-### D4. Combinatorially Symmetric Cross-Validation (Bailey, Borwein, López de Prado &
-Zhu 2017)
-
-- **Citation:** Bailey, D. H., et al. (2017). "The probability of backtest overfitting."
-  *Journal of Computational Finance*, 20(4), 39–69.
-- **Why include:** Backtest validation methodology. Cited in the passport spec for the
-  `look_ahead_audit_passed` flag.
+1. Team review of this reorientation (this doc, ahead of standup).
+2. Wire the scrape into a recurring job; define the active-window length and the age-out
+   retention policy.
+3. Add dedup-against-published-version (arXiv `v2+` and external DOI match).
+4. First curation pass: Dan runs ~5 candidates from the live manifest through the
+   selection-bias gate to validate the preprint-native criteria end to end.
+5. Connect the active corpus to the strategy-fusion intake per
+   `docs/specs/strategy-fusion-spec.md`.
 
 ---
 
-## Tier E — Regime detection
-
-For the live agent's regime classifier (design.md § 4.3.3).
-
-### E1. Markov Regime-Switching Models (Hamilton 1989)
-
-- **Citation:** Hamilton, J. D. (1989). "A new approach to the economic analysis of
-  nonstationary time series and the business cycle." *Econometrica*, 57(2), 357–384.
-- **Why include:** Canonical regime-switching framework. Chuan's regime detection
-  (risk-on / risk-off / transition / crisis) is structurally Markov.
-
-### E2. Markov-Switching Vector Autoregression for Asset Allocation (Ang & Bekaert 2002)
-
-- **Citation:** Ang, A., & Bekaert, G. (2002). "International asset allocation with
-  regime shifts." *Review of Financial Studies*, 15(4), 1137–1187.
-- **Why include:** Application of regime-switching to portfolio construction. Directly
-  informs the regime → allocation mapping.
-
-### E3. Macroeconomic Regime Detection via Composite Indicators (Various, 2010s)
-
-- **Note:** A line of literature on combining VIX, term spread, credit spread, etc., into
-  a composite regime indicator. Worth surveying for the specific feature set Chuan's
-  design uses.
-
----
-
-## How the seed list maps to the v1 library
-
-Target: 5–10 strategies for the v1 library, drawn from:
-
-| Tier | Strategies for v1 library                                         |
-| ---- | ----------------------------------------------------------------- |
-| A    | At least 3 of (A1 momentum, A2 time-series momentum, A3 HRP, A4 risk parity, A5 pairs) |
-| B    | 1–2 factor strategies (B3 quality, B4 BAB, or B5 cross-asset V/M)  |
-| C    | 1 ML-based strategy (C1 Gu-Kelly-Xiu or similar)                  |
-| D    | Math primitives, not standalone strategies (used in sizing/validation) |
-| E    | Regime classifier, not a tradeable strategy                       |
-
-**Suggested v1 library composition:**
-
-1. Cross-sectional momentum (A1)
-2. Time-series momentum (A2)
-3. Hierarchical Risk Parity (A3)
-4. Risk Parity all-weather (A4)
-5. Pairs trading on liquid US equity pairs (A5)
-6. Quality factor (B3)
-7. Cross-asset value-and-momentum (B5)
-8. ML-predicted factor returns (C1 simplified)
-
-That's 8 strategies. Each has a paper-grounded methodology, each has a known historical
-performance envelope, each fits naturally inside one or more of the Conservative /
-Moderate / Aggressive / Hyper-Risky risk profiles.
-
-## Process notes
-
-- **Dan does the curation pass.** ~2–4 hours of work per strategy: read the paper,
-  implement the strategy as a `bt.Strategy` subclass, run the backtest, fill in the
-  passport metadata, document the methodology. ~30 hours total for 8 strategies. Spread
-  across week-1 evenings + weekend.
-- **Önder reviews each strategy's math.** Particularly Kelly sizing inside each
-  strategy's position rules. ~30 min per strategy.
-- **Methodology hash:** generated deterministically from the canonical methodology text +
-  the paper arxiv ID. Documented in
-  [`specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md).
-- **For the arxiv ingest pipeline demo (Day 11):** pick 2–3 *recent* (2024–2026) arxiv
-  q-fin papers we haven't pre-curated. Show the LLM extracting methodology, generating
-  code, running a validation backtest, and the human curator (Dan) reviewing the result.
-
-## What's deliberately NOT in this seed list
-
-- Crypto-native strategies (DeFi yield farming, MEV, etc.). The v1 library is
-  TradFi-grounded; crypto-side allocation is via USYC + RWA tokens.
-- Strategies that require leverage > 2x (the Hyper-Risky profile allows modest leverage
-  but no portfolio-margin / perpetual-futures patterns).
-- Strategies from non-peer-reviewed sources (Medium, Substack, anonymous Twitter, etc.)
-  even if intriguing.
-- High-frequency / latency-sensitive strategies. Backtester can't realistically simulate
-  these.
-
----
-
-## Next steps
-
-1. **Dan reviews and approves this seed list** (or proposes changes). Day 3.
-2. **Dan starts implementation pass** with A1 (Jegadeesh-Titman momentum) as the
-   reference implementation. Day 3–4.
-3. **Önder reviews A1's Kelly sizing and look-ahead audit.** Day 4.
-4. **Repeat for remaining strategies** through Day 7.
-5. **By Day 7,** the strategy library is populated and live in the database.
+_This file used to be a menu of canonical papers. It is now a description of a living
+preprint stream and the rationale for keeping it that way. If the team disagrees with the
+reorientation, the place to resolve it is Discord — not a silent re-add of the classical
+list._
