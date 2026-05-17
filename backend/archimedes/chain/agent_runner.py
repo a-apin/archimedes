@@ -210,6 +210,40 @@ class StrategyRunner:
             )
             return
 
+        # Set target allocations on the vault first (needed for rebalance)
+        try:
+            alloc_tokens = []
+            alloc_weights = []
+            for t in targets:
+                if t.weight > 0 and t.token_address:
+                    alloc_tokens.append(t.token_address)
+                    alloc_weights.append(int(t.weight * 10000))  # BPS
+
+            if alloc_tokens:
+                # Normalize to exactly 10000 BPS
+                total_bps = sum(alloc_weights)
+                if total_bps > 0 and total_bps != 10000:
+                    scale = 10000 / total_bps
+                    alloc_weights = [int(round(w * scale)) for w in alloc_weights]
+                    # Fix rounding residue
+                    diff = 10000 - sum(alloc_weights)
+                    if diff != 0 and alloc_weights:
+                        alloc_weights[0] += diff
+
+                await chain_executor.set_target_allocations(
+                    vault_address, alloc_tokens, alloc_weights,
+                )
+                logger.info(
+                    "[tick %s] Set target allocations on vault %s",
+                    tick_id, vault_address[:10],
+                )
+        except Exception as e:
+            logger.warning(
+                "[tick %s] Failed to set allocations on %s: %s",
+                tick_id, vault_address[:10], e,
+            )
+            # Continue anyway — try rebalance with existing allocations
+
         # Compute drift between current and target
         current_weights = portfolio.weights_dict
         target_weight_map = {t.symbol: t for t in targets}

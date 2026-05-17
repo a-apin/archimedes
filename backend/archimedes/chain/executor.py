@@ -88,8 +88,15 @@ class ChainExecutor:
         """Execute rebalance trades for a vault.
 
         Uses Circle dev-controlled wallet if configured, falls back to raw private key.
+
+        Amounts in TradeOrder are in human-readable USDC units (e.g. 8.0 for $8).
+        The vault's rebalance() expects raw token amounts:
+          - BUY (USDC → synth): amount in USDC raw (6 decimals)
+          - SELL (synth → USDC): amount in synth raw (18 decimals)
         """
-        # Split trades into buys and sells
+        usdc_address = chain_client.settings.usdc_address
+
+        # Split trades into buys and sells with proper decimal conversion
         tokens_in: list[str] = []
         amounts_in: list[int] = []
         tokens_out: list[str] = []
@@ -98,11 +105,16 @@ class ChainExecutor:
         for trade in trades:
             token_addr = chain_client.to_checksum(trade.token_address)
             if trade.direction == TradeDirection.BUY:
+                # BUY: amount is USDC to spend → convert to raw (6 decimals)
                 tokens_in.append(token_addr)
-                amounts_in.append(int(trade.amount))
+                amounts_in.append(int(trade.amount * 1e6))
             else:
+                # SELL: amount is USDC value → convert to token raw amount via oracle price
+                token_raw = await self._usdc_value_to_token_raw(
+                    token_addr, trade.estimated_usdc_value,
+                )
                 tokens_out.append(token_addr)
-                amounts_out.append(int(trade.amount))
+                amounts_out.append(token_raw)
 
         # Circle path
         if circle_signer.is_configured:
@@ -326,6 +338,43 @@ class ChainExecutor:
 
         logger.info(f"setTargetAllocations tx sent: {tx_hash.hex()} for vault {vault_address}")
         return tx_hash.hex()
+
+    async def _usdc_value_to_token_raw(
+        self, token_address: str, usdc_value: float,
+    ) -> int:
+        """Convert a USDC value to raw token amount using oracle price.
+
+        Args:
+            token_address: The synth token address.
+            usdc_value: Value in USDC units (e.g. 8.0 for $8).
+
+        Returns:
+            Raw token amount in the token's native decimals (18 for synths).
+        """
+        # Check if it's USDC itself
+        if token_address.lower() == chain_client.settings.usdc_address.lower():
+            return int(usdc_value * 1e6)
+
+        # Look up oracle price for the synth token
+        loader = self.loader
+        for sym, addr in chain_client.settings.synth_addresses.items():
+            if addr and addr.lower() == token_address.lower():
+                try:
+                    oracle = loader.oracle_for(sym)
+                    price_raw = await oracle.functions.price().call()  # 6 decimals
+                    price_usd = price_raw / 1e6  # e.g. 592.40 for sSPY
+                    if price_usd > 0:
+                        token_amount = usdc_value / price_usd
+                        return int(token_amount * 1e18)  # synths have 18 decimals
+                except Exception as e:
+                    logger.warning(f"Oracle price lookup failed for {sym}: {e}")
+                    break
+
+        # Fallback: treat as 18-decimal token, estimate at $1
+        logger.warning(
+            f"No oracle for {token_address[:10]}, estimating 1:1 USDC for SELL amount"
+        )
+        return int(usdc_value * 1e18)
 
     # ─── Helpers ───────────────────────────────────────────────────
 

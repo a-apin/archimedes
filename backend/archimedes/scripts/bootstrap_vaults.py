@@ -357,10 +357,130 @@ async def fund_and_allocate_vaults(vaults: list[dict], minted: dict[str, float])
         except Exception as e:
             print(f"  ⚠️  {vault_info['symbol']}: setTargetAllocations failed — {e}")
 
+        # Set agent address so the Circle wallet can call rebalance()
+        # Since the Circle wallet IS the creator, this is redundant but ensures
+        # the agent field is set for display purposes
+        try:
+            await circle_signer.execute_contract(
+                contract_address=vault_addr,
+                abi_function="setAgent(address)",
+                abi_params=[os.getenv("WALLET_ADDRESS", "")],
+            )
+            print(f"  🤖 {vault_info['symbol']}: agent set")
+        except Exception as e:
+            print(f"  ⚠️  {vault_info['symbol']}: setAgent failed — {e}")
+
+
+async def add_amm_liquidity(minted: dict[str, float]) -> None:
+    """Add liquidity to AMM pools so vault rebalances can execute swaps.
+
+    For each synth token with an existing pool, add a proportional amount
+    of USDC and synth tokens. Uses the oracle price to determine the ratio.
+    """
+    print("\n🏊 Step 3: Adding AMM pool liquidity...")
+    loader = get_contract_loader()
+    router = loader.amm_router
+    usdc_address = chain_client.settings.usdc_address
+    synth_addresses = chain_client.settings.synth_addresses
+    oracle_addresses = chain_client.settings.oracle_addresses
+
+    # How much USDC to allocate per pool for liquidity
+    USDC_PER_POOL = 5.0  # USDC units
+
+    for symbol, token_addr in synth_addresses.items():
+        if not token_addr or minted.get(symbol, 0) <= 0:
+            print(f"  ⏭️  {symbol}: no minted tokens — skipping pool liquidity")
+            continue
+
+        # Check if pool exists
+        try:
+            pool_addr = await router.functions.getPool(
+                chain_client.to_checksum(usdc_address),
+                chain_client.to_checksum(token_addr),
+            ).call()
+        except Exception:
+            print(f"  ⚠️  {symbol}: pool lookup failed")
+            continue
+
+        if pool_addr == "0x0000000000000000000000000000000000000000":
+            print(f"  ⚠️  {symbol}: no AMM pool exists — skipping")
+            continue
+
+        # Get oracle price to compute proper ratio
+        oracle_addr = oracle_addresses.get(symbol)
+        if not oracle_addr:
+            print(f"  ⚠️  {symbol}: no oracle — skipping")
+            continue
+
+        try:
+            oracle = loader.oracle_for(symbol)
+            price_raw = await oracle.functions.price().call()  # 6 decimals
+            price_usd = price_raw / 1e6
+        except Exception as e:
+            print(f"  ⚠️  {symbol}: oracle read failed — {e}")
+            continue
+
+        if price_usd <= 0:
+            print(f"  ⚠️  {symbol}: zero price — skipping")
+            continue
+
+        # Compute amounts
+        # We want to add USDC_PER_POOL USDC worth of liquidity on each side
+        usdc_raw = int(USDC_PER_POOL * 1e6)  # 6 decimals
+        # Token amount = USDC value / price per token, in 18 decimals
+        token_amount = USDC_PER_POOL / price_usd
+        token_raw = int(token_amount * 1e18)
+
+        # Cap token amount to what we actually have minted
+        available_raw = int(minted[symbol] * 1e18)
+        if token_raw > available_raw:
+            token_raw = available_raw
+            # Adjust USDC proportionally
+            actual_token_units = token_raw / 1e18
+            usdc_raw = int(actual_token_units * price_usd * 1e6)
+
+        if token_raw <= 0 or usdc_raw <= 0:
+            print(f"  ⚠️  {symbol}: amounts too small — skipping")
+            continue
+
+        try:
+            # Approve router to spend USDC
+            await circle_signer.execute_contract(
+                contract_address=usdc_address,
+                abi_function="approve(address,uint256)",
+                abi_params=[chain_client.settings.amm_router_address, usdc_raw],
+            )
+
+            # Approve router to spend synth token
+            await circle_signer.execute_contract(
+                contract_address=token_addr,
+                abi_function="approve(address,uint256)",
+                abi_params=[chain_client.settings.amm_router_address, token_raw],
+            )
+
+            # Add liquidity
+            tx_hash = await circle_signer.execute_contract(
+                contract_address=chain_client.settings.amm_router_address,
+                abi_function="addLiquidity(address,address,uint256,uint256,uint256)",
+                abi_params=[
+                    chain_client.to_checksum(usdc_address),
+                    chain_client.to_checksum(token_addr),
+                    usdc_raw,
+                    token_raw,
+                    0,  # min LP tokens
+                ],
+            )
+            print(
+                f"  ✅ {symbol}: added ${USDC_PER_POOL:.0f} USDC + "
+                f"{token_amount:.4f} tokens to pool (tx {tx_hash[:16]}...)"
+            )
+        except Exception as e:
+            print(f"  ❌ {symbol}: addLiquidity failed — {e}")
+
 
 async def verify_ecosystem(vaults: list[dict]) -> None:
     """Verify the final state of all vaults."""
-    print("\n✅ Step 5: Verifying ecosystem...")
+    print("\n✅ Step 6: Verifying ecosystem...")
     loader = get_contract_loader()
 
     total_aum = 0.0
@@ -413,17 +533,20 @@ async def main() -> None:
     # Step 2: Mint synthetic tokens
     minted = await mint_synthetic_tokens()
 
-    # Step 3: Create vaults
+    # Step 3: Add AMM pool liquidity
+    await add_amm_liquidity(minted)
+
+    # Step 4: Create vaults
     vaults = await create_vaults(minted)
 
     if not vaults:
         print("❌ No vaults created — aborting.")
         sys.exit(1)
 
-    # Step 4: Fund and allocate
+    # Step 5: Fund and allocate
     await fund_and_allocate_vaults(vaults, minted)
 
-    # Step 5: Verify
+    # Step 6: Verify
     await verify_ecosystem(vaults)
 
     print("\n🎉 Bootstrap complete!")
