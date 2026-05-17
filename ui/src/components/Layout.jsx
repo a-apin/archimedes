@@ -19,14 +19,15 @@ const NAV = [
 ]
 
 const PAGE_LABELS = {
-  explore:    'Explore',
-  strategies: 'Strategies',
-  trade:      'Trade',
-  dashboard:  'Dashboard',
-  mint:       'Mint / Burn',
-  liquidity:  'Liquidity',
-  vaults:     'Vaults',
-  reasoning:  'Reasoning',
+  explore:      'Explore',
+  strategies:   'Strategies',
+  trade:        'Trade',
+  dashboard:    'Dashboard',
+  mint:         'Mint / Burn',
+  liquidity:    'Liquidity',
+  vaults:       'Vaults',
+  'vault-detail': 'Vault Details',
+  reasoning:    'Reasoning',
 }
 
 export default function Layout({ page, setPage, walletAddr, onConnect, onDisconnect, children }) {
@@ -56,7 +57,7 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
                 <button
                   key={item.id}
                   type="button"
-                  className={`nav-link${page === item.id ? ' active' : ''}`}
+                  className={`nav-link${page === item.id || (item.id === 'vaults' && page === 'vault-detail') ? ' active' : ''}`}
                   onClick={() => setPage(item.id)}
                 >
                   {item.label}

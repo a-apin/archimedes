@@ -287,6 +287,17 @@ multi-stage Dockerfile in [`nginx/`](nginx/) and serves the built static bundle 
 development, run `npm install && npm run dev` from inside `ui/` to use the Vite dev
 server directly.
 
+Demo deep links (client-side routes exposed via nginx SPA fallback):
+- `/`
+- `/markets/explore`
+- `/markets/strategies`
+- `/markets/trade`
+- `/portfolio/dashboard`
+- `/portfolio/mint-burn`
+- `/portfolio/liquidity`
+- `/portfolio/vaults`
+- `/intelligence/reasoning`
+
 [`ui-mockups/`](ui-mockups/) carries the earlier static-HTML prototypes — retained for
 reference, no longer wired into the stack.
 
