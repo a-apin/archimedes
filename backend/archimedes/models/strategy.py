@@ -108,6 +108,22 @@ class Strategy:
     # ── On-chain anchor ─────────────────────────────────────
     on_chain_registration_tx: str | None = None  # StrategyRegistry contract tx hash
 
+    # ── Paper claims (for paper-vs-actual delta in UI) ───────
+    # Parsed from PAPER_CLAIMED_* constants in strategy files.
+    paper_claimed_sharpe: float | None = None
+    paper_claimed_cagr: float | None = None
+    paper_claimed_max_dd: float | None = None
+
+    # ── Placeholder backtest stubs (pre-analytics-engine-run) ──
+    # Sourced from BACKTEST_* constants in strategy files.
+    # Replaced by real BacktestResult when IBacktestEvaluator runs.
+    stub_sharpe: float | None = None
+    stub_cagr: float | None = None
+    stub_max_dd: float | None = None
+    stub_win_rate: float | None = None
+    stub_calmar: float | None = None
+    stub_corr_spy: float | None = None
+
     @property
     def is_active(self) -> bool:
         return self.status in (StrategyStatus.VALIDATED, StrategyStatus.LIVE)

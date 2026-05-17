@@ -46,8 +46,15 @@ infra/terraform.tfstate
 infra/terraform.tfstate.backup
 infra/*.pem
 
+# arXiv corpus — track the manifest + README, not the cached binaries
+data/corpus/pdfs/
+data/corpus/text/
+
 # Misc
 *.log
 .pytest_cache/
 .coverage
 htmlcov/
+
+.loom/
+!.loom/loom.config.json

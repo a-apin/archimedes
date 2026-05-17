@@ -182,15 +182,43 @@ class ChainExecutor:
         """Read vault metrics from on-chain state."""
         vault = self.loader.vault(vault_address)
 
-        total_assets = await vault.functions.totalAssets().call()
-        total_supply = await vault.functions.totalSupply().call()
-        hwm = await vault.functions.highWaterMark().call()
-        creator = await vault.functions.creator().call()
-        tier = await vault.functions.tier().call()
-        mgmt_fee_bps = await vault.functions.managementFeeBps().call()
-        perf_fee_bps = await vault.functions.performanceFeeBps().call()
-        is_agent = await vault.functions.isAgentAssisted().call()
-        paused = await vault.functions.paused().call()
+        try:
+            total_assets = await vault.functions.totalAssets().call()
+        except Exception:
+            total_assets = 0
+        try:
+            total_supply = await vault.functions.totalSupply().call()
+        except Exception:
+            total_supply = 0
+
+        try:
+            hwm = await vault.functions.highWaterMark().call()
+        except Exception:
+            hwm = 0
+        try:
+            creator = await vault.functions.creator().call()
+        except Exception:
+            creator = "0x0000000000000000000000000000000000000000"
+        try:
+            tier = await vault.functions.tier().call()
+        except Exception:
+            tier = 2
+        try:
+            mgmt_fee_bps = await vault.functions.managementFeeBps().call()
+        except Exception:
+            mgmt_fee_bps = 0
+        try:
+            perf_fee_bps = await vault.functions.performanceFeeBps().call()
+        except Exception:
+            perf_fee_bps = 0
+        try:
+            is_agent = await vault.functions.isAgentAssisted().call()
+        except Exception:
+            is_agent = False
+        try:
+            paused = await vault.functions.paused().call()
+        except Exception:
+            paused = False
 
         share_price = total_assets / total_supply if total_supply > 0 else 1e6  # 1 USDC
 

@@ -46,6 +46,14 @@ export default function VaultDetail({ address, onBack }) {
     apiGet(`/api/vaults/${address}`)
       .then(data => { if (!cancelled) setDetail(data) })
       .catch(() => {})
+    // Also fetch off-chain metadata (name, symbol, strategies)
+    apiGet(`/api/vaults/${address}/metadata`)
+      .then(meta => {
+        if (!cancelled && meta) {
+          setDetail(prev => prev ? { ...prev, ...meta } : prev)
+        }
+      })
+      .catch(() => {})
     return () => { cancelled = true }
   }, [address])
 
@@ -146,6 +154,21 @@ export default function VaultDetail({ address, onBack }) {
                 <span className="vault-holding-amount">{h.amount?.toFixed(6) ?? '—'}</span>
                 <span className="vault-holding-value">${h.value_usdc?.toFixed(2) ?? '—'}</span>
                 <span className="vault-holding-weight">{h.weight_pct?.toFixed(1) ?? '—'}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Associated Strategies */}
+      {detail?.strategy_ids && detail.strategy_ids.length > 0 && (
+        <div className="vault-section">
+          <h3>Associated Strategies</h3>
+          <div className="vault-holdings-list">
+            {detail.strategy_ids.map((sid, i) => (
+              <div key={i} className="vault-holding-row">
+                <span className="vault-holding-symbol">{(detail.strategy_names?.[i]) || sid.slice(0, 12)}…</span>
+                <span className="badge tier-1">paper-grounded</span>
               </div>
             ))}
           </div>

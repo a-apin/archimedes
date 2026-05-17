@@ -43,6 +43,8 @@ from archimedes.api.architect_schemas import (
     StrategyConstructionRequest,
     StrategyConstructionResponse,
 )
+from archimedes.api.vault_schemas import VaultCreateRequest, VaultCreateResponse, VaultMetadataRequest, VaultMetadataResponse
+from archimedes.models.chat import VaultMetadata
 from archimedes.chain.oracle_updater import OracleUpdater
 from archimedes.chain.executor import chain_executor
 
@@ -71,10 +73,12 @@ _architect = default_architect()
 def _to_strategy_response(s: Strategy) -> StrategyResponse:
     """Map the shared Strategy dataclass to the frontend response shape.
 
-    Backtest fields are left None until Önder's IBacktestEvaluator runs and
-    populates a BacktestResult — surfacing them as null is honest (no
-    evaluation yet) and matches the "deltas surfaced, not hidden" principle.
+    Backtest fields sourced from BACKTEST_* stub constants in strategy files
+    (is_backtest_placeholder=True) until Önder's IBacktestEvaluator runs and
+    populates a real BacktestResult. Stub values are clearly labelled so the UI
+    can render them with an honest "estimate" disclaimer.
     """
+    has_stubs = s.stub_sharpe is not None
     return StrategyResponse(
         id=s.id,
         paper_arxiv_id=s.paper_arxiv_id,
@@ -85,6 +89,27 @@ def _to_strategy_response(s: Strategy) -> StrategyResponse:
         position_sizing=s.position_sizing.value,
         rebalance_frequency=s.rebalance_frequency.value,
         status=s.status.value,
+        # Paper provenance
+        paper_venue=s.paper_venue,
+        paper_year=s.paper_year,
+        paper_doi=s.paper_doi,
+        paper_citation_count=s.paper_citation_count,
+        # Passport integrity
+        methodology_hash=s.methodology_hash,
+        extraction_llm=s.extraction_llm,
+        curator_wallet=s.curator_wallet,
+        curator_note=s.curator_note,
+        on_chain_registration_tx=s.on_chain_registration_tx,
+        # Paper claims (for delta display)
+        paper_claimed_sharpe=s.paper_claimed_sharpe,
+        # Backtest (stubs from strategy file; None when IBacktestEvaluator has not run)
+        sharpe_ratio=s.stub_sharpe,
+        cagr=s.stub_cagr,
+        max_drawdown=s.stub_max_dd,
+        win_rate=s.stub_win_rate,
+        calmar_ratio=s.stub_calmar,
+        correlation_to_spy=s.stub_corr_spy,
+        is_backtest_placeholder=has_stubs,
     )
 
 
@@ -129,6 +154,31 @@ async def list_vaults(
     )
 
 
+@vaults_router.post("/create", response_model=VaultCreateResponse)
+async def create_vault(req: VaultCreateRequest):
+    """Deploy a new vault on Arc via VaultFactory.
+
+    strategy_ids are accepted as off-chain metadata and echoed back in the
+    response — they are not passed to the contract (v2 persistence hook).
+    """
+    from fastapi import HTTPException
+
+    try:
+        vault_address = await chain_executor.create_vault(
+            name=req.name,
+            symbol=req.symbol,
+            management_fee_bps=req.management_fee_bps,
+            performance_fee_bps=req.performance_fee_bps,
+            agent_assisted=req.agent_assisted,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Vault deployment failed: {exc}") from exc
+
+    return VaultCreateResponse(vault_address=vault_address, strategy_ids=req.strategy_ids)
+
+
 @vaults_router.get("/{address}", response_model=VaultDetailResponse)
 async def get_vault_detail(address: str):
     """Get full vault detail including holdings, performance, traces."""
@@ -137,6 +187,64 @@ async def get_vault_detail(address: str):
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Vault not found")
     return detail
+
+
+# ── Vault Metadata (off-chain) ───────────────────────────────
+
+
+@vaults_router.post("/metadata", response_model=VaultMetadataResponse)
+async def store_vault_metadata(req: VaultMetadataRequest):
+    """Store off-chain vault metadata (strategy associations, display name).
+
+    Called by the frontend after a successful on-chain vault deployment.
+    Idempotent — upserts on vault_address.
+    """
+    from archimedes.db import get_session
+
+    session = get_session()
+    try:
+        meta = (
+            session.query(VaultMetadata)
+            .filter(VaultMetadata.vault_address == req.vault_address)
+            .first()
+        )
+        if meta is None:
+            meta = VaultMetadata(vault_address=req.vault_address)
+            session.add(meta)
+
+        meta.name = req.name
+        meta.symbol = req.symbol
+        meta.creator_address = req.creator_address or ""
+        meta.set_strategy_ids(req.strategy_ids)
+        session.commit()
+        session.refresh(meta)
+        return VaultMetadataResponse(**meta.to_dict())
+    except Exception as exc:
+        session.rollback()
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@vaults_router.get("/{address}/metadata", response_model=VaultMetadataResponse)
+async def get_vault_metadata(address: str):
+    """Get off-chain vault metadata (strategy associations, display name)."""
+    from fastapi import HTTPException
+    from archimedes.db import get_session
+
+    session = get_session()
+    try:
+        meta = (
+            session.query(VaultMetadata)
+            .filter(VaultMetadata.vault_address == address)
+            .first()
+        )
+        if meta is None:
+            raise HTTPException(status_code=404, detail="No metadata for this vault")
+        return VaultMetadataResponse(**meta.to_dict())
+    finally:
+        session.close()
 
 
 # ── Strategies ────────────────────────────────────────────────
@@ -156,6 +264,66 @@ async def list_strategies(
     return StrategyListResponse(
         strategies=[_to_strategy_response(s) for s in window],
         total=total,
+    )
+
+
+@strategies_router.get("/signals", response_model=StrategySignalsResponse)
+async def get_strategy_signals():
+    """Evaluate all strategies against live market data and return signals.
+
+    This is the intelligence layer surfaced as an API — the same evaluation
+    the agent runner performs each tick, but on-demand for the frontend.
+    """
+    from datetime import datetime, timezone
+
+    from archimedes.services.strategy_signal_evaluator import strategy_evaluator
+    from archimedes.services.redis_state import AgentStateStore
+
+    strategies = _strategy_provider.list_strategies()
+    from archimedes.chain.client import chain_client
+    synth_assets = [sym for sym, addr in chain_client.settings.synth_addresses.items() if addr]
+
+    all_signals = await asyncio.to_thread(
+        strategy_evaluator.evaluate_strategies, strategies, synth_assets,
+    )
+
+    target_weights = strategy_evaluator.aggregate_signals(all_signals, usdc_floor=0.20)
+
+    flat_count = sum(1 for ss in all_signals for s in ss.signals if s.signal.value == "flat")
+    total_count = sum(len(ss.signals) for ss in all_signals)
+    flat_pct = flat_count / total_count if total_count > 0 else 0
+
+    if flat_pct > 0.6:
+        regime = "risk_off"
+    elif flat_pct > 0.3:
+        regime = "transition"
+    else:
+        regime = "risk_on"
+
+    strat_responses = []
+    for ss in all_signals:
+        strat_responses.append(StrategySignalResponse(
+            strategy_id=ss.strategy_id,
+            paper_title=ss.paper_title,
+            signals=[
+                SignalResponse(
+                    asset=s.asset,
+                    signal=s.signal.value,
+                    weight=s.weight,
+                    reason=s.reason,
+                    strategy_name=s.strategy_name,
+                )
+                for s in ss.signals
+            ],
+        ))
+
+    return StrategySignalsResponse(
+        strategy_count=len(all_signals),
+        regime=regime,
+        confidence=round(1.0 - flat_pct, 2),
+        target_weights=target_weights,
+        strategies=strat_responses,
+        timestamp=datetime.now(timezone.utc).isoformat(),
     )
 
 
@@ -501,70 +669,6 @@ async def list_swap_pools():
 async def get_contract_addresses():
     """Get all deployed contract addresses."""
     return await _config_svc.get_contract_addresses()
-
-
-# ── Strategy Signals (live evaluation) ───────────────────────
-
-
-@strategies_router.get("/signals", response_model=StrategySignalsResponse)
-async def get_strategy_signals():
-    """Evaluate all strategies against live market data and return signals.
-
-    This is the intelligence layer surfaced as an API — the same evaluation
-    the agent runner performs each tick, but on-demand for the frontend.
-    """
-    from datetime import datetime, timezone
-
-    from archimedes.services.strategy_signal_evaluator import strategy_evaluator
-    from archimedes.services.redis_state import AgentStateStore
-
-    strategies = _strategy_provider.list_strategies()
-    from archimedes.chain.client import chain_client
-    synth_assets = [sym for sym, addr in chain_client.settings.synth_addresses.items() if addr]
-
-    all_signals = await asyncio.to_thread(
-        strategy_evaluator.evaluate_strategies, strategies, synth_assets,
-    )
-
-    target_weights = strategy_evaluator.aggregate_signals(all_signals, usdc_floor=0.20)
-
-    # Derive regime from signal consensus
-    flat_count = sum(1 for ss in all_signals for s in ss.signals if s.signal.value == "flat")
-    total_count = sum(len(ss.signals) for ss in all_signals)
-    flat_pct = flat_count / total_count if total_count > 0 else 0
-
-    if flat_pct > 0.6:
-        regime = "risk_off"
-    elif flat_pct > 0.3:
-        regime = "transition"
-    else:
-        regime = "risk_on"
-
-    strat_responses = []
-    for ss in all_signals:
-        strat_responses.append(StrategySignalResponse(
-            strategy_id=ss.strategy_id,
-            paper_title=ss.paper_title,
-            signals=[
-                SignalResponse(
-                    asset=s.asset,
-                    signal=s.signal.value,
-                    weight=s.weight,
-                    reason=s.reason,
-                    strategy_name=s.strategy_name,
-                )
-                for s in ss.signals
-            ],
-        ))
-
-    return StrategySignalsResponse(
-        strategy_count=len(all_signals),
-        regime=regime,
-        confidence=round(1.0 - flat_pct, 2),
-        target_weights=target_weights,
-        strategies=strat_responses,
-        timestamp=datetime.now(timezone.utc).isoformat(),
-    )
 
 
 # ── Agent Status ─────────────────────────────────────────────

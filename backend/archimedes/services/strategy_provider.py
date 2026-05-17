@@ -61,6 +61,16 @@ _METADATA_KEYS: tuple[str, ...] = (
     "CURATOR_WALLET",
     "CURATOR_NOTE",
     "EXTRACTION_LLM",
+    # Lifecycle status
+    "STATUS",
+    # Placeholder backtest stubs — sourced from BACKTEST_* constants in strategy files.
+    # Replaced by real BacktestResult when IBacktestEvaluator runs.
+    "BACKTEST_SHARPE",
+    "BACKTEST_CAGR",
+    "BACKTEST_MAX_DD",
+    "BACKTEST_WIN_RATE",
+    "BACKTEST_CALMAR",
+    "BACKTEST_CORR_SPY",
 )
 
 
@@ -164,6 +174,25 @@ def _to_strategy(path: Path, metadata: dict[str, Any], code_hash: str) -> Strate
     if paper_year is not None:
         paper_year = int(paper_year)
 
+    status_raw = str(metadata.get("STATUS") or "candidate").lower()
+    try:
+        status = StrategyStatus(status_raw)
+    except ValueError:
+        logger.warning("unknown STATUS=%s in %s, defaulting to candidate", status_raw, path)
+        status = StrategyStatus.CANDIDATE
+
+    paper_claimed_sharpe = metadata.get("PAPER_CLAIMED_SHARPE")
+    paper_claimed_cagr = metadata.get("PAPER_CLAIMED_CAGR")
+    paper_claimed_max_dd = metadata.get("PAPER_CLAIMED_MAX_DD")
+
+    # Stub backtest values from BACKTEST_* constants (PLACEHOLDER until IBacktestEvaluator runs)
+    stub_sharpe = metadata.get("BACKTEST_SHARPE")
+    stub_cagr = metadata.get("BACKTEST_CAGR")
+    stub_max_dd = metadata.get("BACKTEST_MAX_DD")
+    stub_win_rate = metadata.get("BACKTEST_WIN_RATE")
+    stub_calmar = metadata.get("BACKTEST_CALMAR")
+    stub_corr_spy = metadata.get("BACKTEST_CORR_SPY")
+
     # Use file mtime so timestamps reflect the strategy file's curation
     # time rather than process start time — otherwise every restart would
     # bump created_at/updated_at for unchanged strategies.
@@ -182,7 +211,7 @@ def _to_strategy(path: Path, metadata: dict[str, Any], code_hash: str) -> Strate
         rebalance_frequency=rebalance_frequency,
         risk_constraints=dict(metadata.get("RISK_CONSTRAINTS") or {}),
         risk_profiles=list(risk_profiles),
-        status=StrategyStatus.CANDIDATE,
+        status=status,
         extraction_reasoning="",
         created_at=file_mtime,
         updated_at=file_mtime,
@@ -190,6 +219,9 @@ def _to_strategy(path: Path, metadata: dict[str, Any], code_hash: str) -> Strate
         paper_year=paper_year,
         paper_doi=metadata.get("PAPER_DOI"),
         paper_citation_count=metadata.get("PAPER_CITATION_COUNT"),
+        paper_claimed_sharpe=float(paper_claimed_sharpe) if paper_claimed_sharpe is not None else None,
+        paper_claimed_cagr=float(paper_claimed_cagr) if paper_claimed_cagr is not None else None,
+        paper_claimed_max_dd=float(paper_claimed_max_dd) if paper_claimed_max_dd is not None else None,
         methodology_hash=_methodology_hash(metadata),
         extraction_llm=metadata.get("EXTRACTION_LLM"),  # None for hand-curated
         extraction_prompt_hash=None,
@@ -199,6 +231,12 @@ def _to_strategy(path: Path, metadata: dict[str, Any], code_hash: str) -> Strate
         strategy_code_path=str(path),
         strategy_code_hash=code_hash,
         on_chain_registration_tx=None,
+        stub_sharpe=float(stub_sharpe) if stub_sharpe is not None else None,
+        stub_cagr=float(stub_cagr) if stub_cagr is not None else None,
+        stub_max_dd=float(stub_max_dd) if stub_max_dd is not None else None,
+        stub_win_rate=float(stub_win_rate) if stub_win_rate is not None else None,
+        stub_calmar=float(stub_calmar) if stub_calmar is not None else None,
+        stub_corr_spy=float(stub_corr_spy) if stub_corr_spy is not None else None,
     )
 
 

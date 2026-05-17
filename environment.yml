@@ -43,6 +43,7 @@ dependencies:
       - web3>=7.0                     # Python EVM client; works with Arc (EVM-compatible)
       - eth-account>=0.13             # Local key management for testnet wallets
       - eth-utils>=5.0
+      - cryptography>=42.0            # RSA sign/serialize for the oracle signer (backend/archimedes/chain/oracle_updater.py); mirrors backend/requirements.txt
 
       # --- Paper ingestion (Q-fin corpus) ---
       - arxiv>=2.1                    # arxiv API client

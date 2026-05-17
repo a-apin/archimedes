@@ -54,6 +54,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://archimedes:archimedes-hackathon-2026@postgres:5432/archimedes}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       ORACLE_INTERVAL_SECONDS: ${ORACLE_INTERVAL_SECONDS:-60}
+      ARC_VAULT_FACTORY_ADDRESS: ${ARC_VAULT_FACTORY_ADDRESS:-0xca873414070844aeb98b0bf1051f81969c79cc32}
+      ARC_REASONING_TRACE_REGISTRY_ADDRESS: ${ARC_REASONING_TRACE_REGISTRY_ADDRESS:-0x42d8a23edb897cbee203e9fa197eb05ab5106ca6}
     env_file:
       - .env
     healthcheck:
@@ -76,6 +78,9 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       AGENT_INTERVAL_SECONDS: ${AGENT_INTERVAL_SECONDS:-300}
       AGENT_DRY_RUN: ${AGENT_DRY_RUN:-false}
+      ARC_VAULT_FACTORY_ADDRESS: ${ARC_VAULT_FACTORY_ADDRESS:-0xca873414070844aeb98b0bf1051f81969c79cc32}
+      ARC_AMM_ROUTER_ADDRESS: ${ARC_AMM_ROUTER_ADDRESS:-0xd5b829f9d364a8bbe1caf6c8b19cb05371b178f4}
+      ARC_REASONING_TRACE_REGISTRY_ADDRESS: ${ARC_REASONING_TRACE_REGISTRY_ADDRESS:-0x42d8a23edb897cbee203e9fa197eb05ab5106ca6}
     env_file:
       - .env
     volumes:
@@ -99,6 +104,11 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://archimedes:archimedes-hackathon-2026@postgres:5432/archimedes}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # Deployed Arc testnet contracts (override via .env if needed)
+      ARC_AMM_ROUTER_ADDRESS: ${ARC_AMM_ROUTER_ADDRESS:-0xd5b829f9d364a8bbe1caf6c8b19cb05371b178f4}
+      ARC_VAULT_FACTORY_ADDRESS: ${ARC_VAULT_FACTORY_ADDRESS:-0xca873414070844aeb98b0bf1051f81969c79cc32}
+      ARC_REASONING_TRACE_REGISTRY_ADDRESS: ${ARC_REASONING_TRACE_REGISTRY_ADDRESS:-0x42d8a23edb897cbee203e9fa197eb05ab5106ca6}
+      ARC_ASSET_REGISTRY_ADDRESS: ${ARC_ASSET_REGISTRY_ADDRESS:-0x2d44550711137916df6175587d17886281a0fbc7}
     env_file:
       - .env
     volumes:

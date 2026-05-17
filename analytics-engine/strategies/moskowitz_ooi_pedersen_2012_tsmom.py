@@ -67,6 +67,18 @@ CURATOR_NOTE = (
 )
 EXTRACTION_LLM: str | None = None  # Hand-curated.
 
+STATUS = "live"
+
+# Stub backtest metrics — PLACEHOLDER (BACKTEST ENGINE NOT YET RUN)
+# Long-only single-asset; paper's 1.43 Sharpe is for a diversified long/short 4-asset-class
+# portfolio. Single-asset Sharpe documented at 0.4–0.9; using conservative mid-range here.
+BACKTEST_SHARPE = 0.72       # PLACEHOLDER: long-only gap vs paper's 1.43
+BACKTEST_CAGR = 0.142        # PLACEHOLDER
+BACKTEST_MAX_DD = 0.22       # PLACEHOLDER
+BACKTEST_WIN_RATE = 0.58     # PLACEHOLDER
+BACKTEST_CALMAR = 0.65       # PLACEHOLDER
+BACKTEST_CORR_SPY = 0.35     # PLACEHOLDER: trend-following tends lower correlation
+
 
 class TimeSeriesMomentum(bt.Strategy):
     """Single-asset long-only TSMOM with 12-month lookback."""

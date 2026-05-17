@@ -23,7 +23,7 @@ class ChainSettings(BaseSettings):
 
     # RPC
     arc_rpc_url: str = "https://rpc.testnet.arc.network"
-    chain_id: int =  13068200  # Arc testnet chain ID (update if different)
+    chain_id: int =  5042002  # Arc testnet chain ID (0x4cef52)
 
     # Agent account (the address that calls rebalance, publishes traces, etc.)
     agent_private_key: str = ""

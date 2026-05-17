@@ -161,14 +161,35 @@ class StrategyResponse(BaseModel):
     rebalance_frequency: str
     status: str  # "candidate" | "validated" | "live" | "retired"
 
-    # Backtest results (if evaluated)
+    # Paper provenance (passport fields)
+    paper_venue: str | None = None
+    paper_year: int | None = None
+    paper_doi: str | None = None
+    paper_citation_count: int | None = None
+
+    # Passport integrity
+    methodology_hash: str | None = None
+    extraction_llm: str | None = None
+    curator_wallet: str | None = None
+    curator_note: str | None = None
+    on_chain_registration_tx: str | None = None
+
+    # Backtest results (if evaluated; None = not yet run)
+    # is_backtest_placeholder=True means values come from BACKTEST_* stubs in strategy files,
+    # not from a real BacktestResult — surfaced so the UI can label them honestly.
     sharpe_ratio: float | None = None
     sortino_ratio: float | None = None
     max_drawdown: float | None = None
     cagr: float | None = None
     win_rate: float | None = None
     total_trades: int | None = None
+    calmar_ratio: float | None = None
+    correlation_to_spy: float | None = None
+    deflated_sharpe_ratio: float | None = None
+    pbo_score: float | None = None
+    out_of_sample_sharpe: float | None = None
     paper_claimed_sharpe: float | None = None
+    is_backtest_placeholder: bool = False
 
     # Equity curve for charting
     equity_curve: list[PricePoint] = []

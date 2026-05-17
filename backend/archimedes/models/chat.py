@@ -20,6 +20,50 @@ class Base(DeclarativeBase):
     pass
 
 
+class VaultMetadata(Base):
+    """Off-chain vault metadata — strategy associations, display name, etc.
+
+    Created when a user deploys a vault via the UI. The on-chain vault
+    contract holds the financial state; this table holds the metadata
+    the frontend needs (strategy_ids, display name, symbol).
+    """
+
+    __tablename__ = "vault_metadata"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vault_address: Mapped[str] = mapped_column(String(42), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    creator_address: Mapped[str] = mapped_column(String(42), nullable=False, default="")
+    strategy_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")  # JSON array
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    def get_strategy_ids(self) -> list[str]:
+        import json
+        try:
+            return json.loads(self.strategy_ids)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def set_strategy_ids(self, ids: list[str]) -> None:
+        import json
+        self.strategy_ids = json.dumps(ids)
+
+    def to_dict(self) -> dict:
+        return {
+            "vault_address": self.vault_address,
+            "name": self.name,
+            "symbol": self.symbol,
+            "creator_address": self.creator_address,
+            "strategy_ids": self.get_strategy_ids(),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class ChatMessage(Base):
     """A single chat message in a vault's chat room."""
 

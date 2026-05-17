@@ -1,4 +1,5 @@
 import WalletConnect from './WalletConnect'
+import Breadcrumbs from './Breadcrumbs'
 import { NEW_CONTRACTS } from '../config'
 
 const NAV = [
@@ -8,26 +9,34 @@ const NAV = [
     { id: 'trade',      label: 'Trade' },
   ]},
   { group: 'Portfolio', items: [
-    { id: 'dashboard',  label: 'Dashboard' },
-    { id: 'mint',       label: 'Mint / Burn' },
-    { id: 'liquidity',  label: 'Liquidity' },
-    { id: 'vaults',     label: 'Vaults' },
+    { id: 'dashboard',    label: 'Dashboard' },
+    { id: 'mint',         label: 'Mint / Burn' },
+    { id: 'liquidity',    label: 'Liquidity' },
+    { id: 'vaults',       label: 'Vaults' },
+    { id: 'create-vault', label: 'Create Vault' },
+    { id: 'financial',    label: 'Financial Analysis' },
   ]},
   { group: 'Intelligence', items: [
     { id: 'reasoning',  label: 'Reasoning' },
+    { id: 'risk',        label: 'Risk Analysis' },
   ]},
 ]
 
-const PAGE_LABELS = {
-  explore:      'Explore',
-  strategies:   'Strategies',
-  trade:        'Trade',
-  dashboard:    'Dashboard',
-  mint:         'Mint / Burn',
-  liquidity:    'Liquidity',
-  vaults:       'Vaults',
+export const PAGE_LABELS = {
+  explore: 'Explore',
+  strategies: 'Strategies',
+  trade: 'Trade',
+  dashboard: 'Dashboard',
+  mint: 'Mint / Burn',
+  liquidity: 'Liquidity',
+  vaults: 'Vaults',
+  'create-vault': 'Create Vault',
+  financial: 'Financial Analysis',
   'vault-detail': 'Vault Details',
-  reasoning:    'Reasoning',
+  reasoning: 'Reasoning',
+  risk: 'Risk Analysis',
+  about: 'About',
+  imprint: 'Imprint',
 }
 
 export default function Layout({ page, setPage, walletAddr, onConnect, onDisconnect, children }) {
@@ -75,7 +84,7 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
 
       <div className="main-area">
         <div className="topbar">
-          <span className="topbar-label">{PAGE_LABELS[page] ?? ''}</span>
+          <Breadcrumbs page={page} setPage={setPage} />
           <WalletConnect address={walletAddr} onConnect={onConnect} onDisconnect={onDisconnect} />
         </div>
         <main className="page-content">{children}</main>

@@ -10,8 +10,13 @@ import {
 import Layout from './components/Layout'
 import Trade from './components/Trade'
 import Strategies from './components/Strategies'
+import CreateVault from './components/CreateVault'
 import VaultDetail from './components/VaultDetail'
 import VaultChat from './components/VaultChat'
+import Reasoning from './components/Reasoning'
+import RiskAnalysis from './components/RiskAnalysis'
+import FinancialAnalysis from './components/FinancialAnalysis'
+import Marketplace from './Marketplace'
 import './App.css'
 
 const PRICE_DECIMALS = 6
@@ -25,11 +30,16 @@ const PAGE_TO_PATH = {
   mint: '/portfolio/mint-burn',
   liquidity: '/portfolio/liquidity',
   vaults: '/portfolio/vaults',
+  'create-vault': '/portfolio/create-vault',
+  financial: '/portfolio/financial',
   reasoning: '/intelligence/reasoning',
+  risk: '/intelligence/risk',
+  about: '/about',
+  imprint: '/imprint',
 }
 
 const PATH_TO_PAGE = {
-  '/': 'trade',
+  '/': 'explore',
   ...Object.fromEntries(Object.entries(PAGE_TO_PATH).map(([page, path]) => [path, page])),
 }
 
@@ -92,6 +102,64 @@ async function fetchAssetData(asset) {
 
 function Dashboard({ data, prevData, errors, loading, lastFetch, countdown, fetchAll }) {
   const liveCount = Object.values(data).filter(d => d?.isFresh).length
+  const walletAddr = getAddress()
+  const [userVaults, setUserVaults] = useState([])
+  const [agentStatus, setAgentStatus] = useState(null)
+  const [regime, setRegime] = useState(null)
+  const [signals, setSignals] = useState(null)
+
+  // Fetch user's vaults, agent status, regime, and signals
+  useEffect(() => {
+    const load = async () => {
+      const factoryAddr = NEW_CONTRACTS.vaultFactory
+      if (factoryAddr && walletAddr) {
+        try {
+          // Get vaults created by this user
+          const creatorVaults = await publicClient.readContract({
+            address: factoryAddr,
+            abi: [{ name: 'getVaultsByCreator', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'address[]' }] }],
+            functionName: 'getVaultsByCreator',
+            args: [walletAddr],
+          })
+          // Read basic data for each vault
+          const vaultData = await Promise.all((creatorVaults || []).map(async (addr) => {
+            try {
+              const [totalAssets, tier] = await Promise.all([
+                publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'totalAssets' }),
+                publicClient.readContract({ address: addr, abi: VAULT_ABI, functionName: 'tier' }),
+              ])
+              return { address: addr, aum: Number(totalAssets) / 1e6, tier: Number(tier) }
+            } catch { return null }
+          }))
+          setUserVaults(vaultData.filter(Boolean))
+        } catch { /* no vaults yet */ }
+      }
+
+      // Agent status
+      try {
+        const res = await fetch(`${API_BASE}/api/agent/status`)
+        if (res.ok) setAgentStatus(await res.json())
+      } catch {}
+
+      // Regime
+      try {
+        const res = await fetch(`${API_BASE}/api/regime/current`)
+        if (res.ok) setRegime(await res.json())
+      } catch {}
+
+      // Strategy signals
+      try {
+        const res = await fetch(`${API_BASE}/api/strategies/signals`)
+        if (res.ok) setSignals(await res.json())
+      } catch {}
+    }
+    load()
+    const interval = setInterval(load, 30000)
+    return () => clearInterval(interval)
+  }, [walletAddr])
+
+  const API_BASE = import.meta.env.VITE_API_BASE ?? ''
+  const totalAum = userVaults.reduce((s, v) => s + v.aum, 0)
 
   return (
     <div>
@@ -104,6 +172,87 @@ function Dashboard({ data, prevData, errors, loading, lastFetch, countdown, fetc
           </>
         )}
       </div>
+
+      {/* Portfolio Overview */}
+      {walletAddr && (
+        <div style={{ marginBottom: 24 }}>
+          <div className="grid g-4" style={{ gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24 }}>
+            <div className="card-flat" style={{ padding: 16 }}>
+              <div className="label mb-2">Your Vaults</div>
+              <div style={{ fontSize: '1.8rem', fontWeight: 700 }}>{userVaults.length}</div>
+              <div className="caption" style={{ marginTop: 6 }}>{userVaults.filter(v => v.tier === 1).length} Tier 1 · {userVaults.filter(v => v.tier === 2).length} Tier 2</div>
+            </div>
+            <div className="card-flat" style={{ padding: 16 }}>
+              <div className="label mb-2">Total AUM</div>
+              <div style={{ fontSize: '1.8rem', fontWeight: 700 }}>${totalAum.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+              <div className="caption positive" style={{ marginTop: 6 }}>On Arc Testnet</div>
+            </div>
+            <div className="card-flat" style={{ padding: 16 }}>
+              <div className="label mb-2">Agent Status</div>
+              <div style={{ fontSize: '1.8rem', fontWeight: 700 }}>{agentStatus?.alive ? '🟢' : '🔴'} {agentStatus?.alive ? 'Alive' : 'Offline'}</div>
+              <div className="caption" style={{ marginTop: 6 }}>Managing {agentStatus?.managed_vaults ?? 0} vaults</div>
+            </div>
+            <div className="card-flat" style={{ padding: 16 }}>
+              <div className="label mb-2">Market Regime</div>
+              <div style={{ fontSize: '1.8rem', fontWeight: 700 }}>{regime?.regime === 'risk_on' ? '📈' : regime?.regime === 'risk_off' ? '📉' : '🔄'} {regime?.regime?.replace('_', ' ') || '—'}</div>
+              <div className="caption" style={{ marginTop: 6 }}>Confidence: {regime?.confidence ? (regime.confidence * 100).toFixed(0) + '%' : '—'}</div>
+            </div>
+          </div>
+
+          {/* User Vaults */}
+          {userVaults.length > 0 && (
+            <div style={{ marginBottom: 24 }}>
+              <div className="label mb-3">Your Vault Positions</div>
+              <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+                {userVaults.map(v => (
+                  <div key={v.address} className="card" style={{ cursor: 'pointer' }} onClick={() => window.location.hash = '#vaults'}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <code style={{ fontSize: '0.8rem' }}>{v.address.slice(0, 10)}...{v.address.slice(-6)}</code>
+                      <span className={`tag ${v.tier === 1 ? 'tag-accent' : 'tag-muted'}`}>T{v.tier}</span>
+                    </div>
+                    <div style={{ fontSize: '1.2rem', fontWeight: 700 }}>${v.aum.toFixed(2)}</div>
+                    <div className="caption">AUM</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Strategy Signals Summary */}
+      {signals && (
+        <div style={{ marginBottom: 24 }}>
+          <div className="label mb-3">Strategy Signals</div>
+          <div className="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Strategy</th>
+                  <th>Asset</th>
+                  <th>Signal</th>
+                  <th className="text-right">Weight</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {signals.strategies?.flatMap(s => s.signals?.map((sig, i) => (
+                  <tr key={`${s.strategy_id}-${i}`}>
+                    <td className="caption">{s.paper_title?.slice(0, 30)}…</td>
+                    <td><span className="tag tag-muted">{sig.asset}</span></td>
+                    <td><span className={`tag ${sig.signal === 'long' ? 'tag-positive' : sig.signal === 'short' ? 'tag-negative' : 'tag-muted'}`}>{sig.signal}</span></td>
+                    <td className="text-right mono">{(sig.weight * 100).toFixed(1)}%</td>
+                    <td className="caption" style={{ maxWidth: 200 }}>{sig.reason?.slice(0, 60)}…</td>
+                  </tr>
+                )))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Oracle Price Grid */}
+      <div className="label mb-3">Oracle Prices</div>
       <div className="grid">
         {ASSETS.map(asset => {
           if (loading && !data[asset.id]) return <LoadingCard key={asset.id} asset={asset} />
@@ -599,6 +748,17 @@ function Traces() {
 
 // ─── Placeholder for pages not yet implemented ───────────────
 
+function StaticPage({ title, content }) {
+  return (
+    <div className="panel" style={{ maxWidth: 640, margin: '0 auto', paddingTop: 40 }}>
+      <h2 style={{ fontFamily: 'var(--serif)', fontSize: '2rem', marginBottom: 20 }}>{title}</h2>
+      {content.split('\n\n').map((p, i) => (
+        <p key={i} className="body" style={{ lineHeight: 1.7, marginBottom: 16 }}>{p}</p>
+      ))}
+    </div>
+  )
+}
+
 function ComingSoon({ title }) {
   return (
     <div className="panel" style={{ textAlign: 'center', paddingTop: 80 }}>
@@ -709,15 +869,20 @@ export default function App() {
 
   const renderPage = () => {
     switch (page) {
-      case 'explore':       return <ComingSoon title="Marketplace" />
+      case 'explore':       return <Marketplace />
       case 'strategies':    return <Strategies />
       case 'trade':         return <Trade />
       case 'dashboard':     return <Dashboard data={data} prevData={prevData} errors={errors} loading={loading} lastFetch={lastFetch} countdown={countdown} fetchAll={fetchAll} />
       case 'mint':          return <MintBurn />
       case 'liquidity':     return <Liquidity />
       case 'vaults':        return <Vaults onSelectVault={selectVault} />
+      case 'create-vault':  return <CreateVault onVaultCreated={selectVault} />
+      case 'financial':     return <FinancialAnalysis />
       case 'vault-detail':  return <VaultDetail address={selectedVault} onBack={backToVaults} />
-      case 'reasoning':     return <Traces />
+      case 'reasoning':     return <Reasoning />
+      case 'risk':           return <RiskAnalysis />
+      case 'about':          return <StaticPage title="About Archimedes" content="Archimedes is a fund-of-funds portfolio agent that turns published quant finance research into investable, backtested strategies, then constructs personalized portfolios of RWA tokens and yield instruments on Arc with USDC settlement.\n\nBuilt for the Agora Agents Hackathon — Canteen × Circle × Arc, May 2026.\n\nEvery position the agent takes, every rebalance it executes, every regime shift it responds to, is hashed and verifiable on-chain. The mathematician's name is fitting: he was the original empiricist working from first principles. We work from peer-reviewed first principles." />
+      case 'imprint':        return <StaticPage title="Imprint" content="Archimedes Arcadia\nHackathon Team\n\nThis project was built for the Agora Agents Hackathon (May 11-25, 2026).\n\nTeam: Dan Browne, Marten Windler, Daniel Reis dos Santos, Chuan Bai, Önder Akkaya\n\nLicense: Unlicense — full public-domain dedication." />
       default:              return <Trade />
     }
   }

@@ -305,6 +305,15 @@ export const VAULT_FACTORY_ABI = [
   { name: 'getVaults',      type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'address[]' }] },
   { name: 'vaultCount',     type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { name: 'agentAddress',   type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+  { name: 'getVaultsByCreator', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'address[]' }] },
+  // VaultCreated event — used to extract new vault address from receipt
+  { name: 'VaultCreated',   type: 'event', inputs: [
+    { name: 'vault',   type: 'address', indexed: true },
+    { name: 'creator', type: 'address', indexed: true },
+    { name: 'name',    type: 'string',  indexed: false },
+    { name: 'symbol',  type: 'string',  indexed: false },
+    { name: 'tier',    type: 'uint8',   indexed: false },
+  ]},
 ]
 
 // ─── Deployed addresses from .env ────────────────────────────

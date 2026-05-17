@@ -59,6 +59,18 @@ CURATOR_NOTE = (
 )
 EXTRACTION_LLM: str | None = None
 
+STATUS = "live"
+
+# Stub backtest metrics — PLACEHOLDER (BACKTEST ENGINE NOT YET RUN)
+# Estimated from paper claims * McLean-Pontiff (2016) ~0.42 post-publication decay.
+# Replace with real BacktestResult once analytics-engine is wired (Önder's IBacktestEvaluator).
+BACKTEST_SHARPE = 0.51       # PLACEHOLDER: paper 0.78 * decay
+BACKTEST_CAGR = 0.073        # PLACEHOLDER: paper 11.27% * decay
+BACKTEST_MAX_DD = 0.20       # PLACEHOLDER: single-asset worse than 5-asset paper figure
+BACKTEST_WIN_RATE = 0.55     # PLACEHOLDER
+BACKTEST_CALMAR = 0.37       # PLACEHOLDER
+BACKTEST_CORR_SPY = 0.62     # PLACEHOLDER: tactical tends to be correlated
+
 
 class FaberSMA200(bt.Strategy):
     """Long when close > 200d SMA; flat otherwise."""
