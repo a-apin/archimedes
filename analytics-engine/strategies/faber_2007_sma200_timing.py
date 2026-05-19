@@ -46,7 +46,7 @@ PAPER_CLAIMED_MAX_DD = 0.095  # For the 5-asset combined portfolio; single-asset
 
 ASSET_UNIVERSE: list[str] = ["SPY", "NIKKEI", "GOLD", "TREASURY", "OIL"]
 POSITION_SIZING = "equal_weight"
-REBALANCE_FREQUENCY = "monthly"
+REBALANCE_FREQUENCY = "daily"  # Implementation evaluates signal on every bar; Faber's original uses monthly closes.
 RISK_PROFILES: list[str] = ["conservative", "moderate"]
 
 CURATOR_WALLET: str | None = None
@@ -61,15 +61,14 @@ EXTRACTION_LLM: str | None = None
 
 STATUS = "live"
 
-# Stub backtest metrics — PLACEHOLDER (BACKTEST ENGINE NOT YET RUN)
-# Estimated from paper claims * McLean-Pontiff (2016) ~0.42 post-publication decay.
-# Replace with real BacktestResult once analytics-engine is wired (Önder's IBacktestEvaluator).
-BACKTEST_SHARPE = 0.51       # PLACEHOLDER: paper 0.78 * decay
-BACKTEST_CAGR = 0.073        # PLACEHOLDER: paper 11.27% * decay
-BACKTEST_MAX_DD = 0.20       # PLACEHOLDER: single-asset worse than 5-asset paper figure
-BACKTEST_WIN_RATE = 0.55     # PLACEHOLDER
-BACKTEST_CALMAR = 0.37       # PLACEHOLDER
-BACKTEST_CORR_SPY = 0.62     # PLACEHOLDER: tactical tends to be correlated
+# Stub backtest metrics — superseded by real values in backtest_fixtures.json.
+# strategy_provider ignores these when a fixture entry exists; kept as documentation fallback.
+BACKTEST_SHARPE = 0.51
+BACKTEST_CAGR = 0.073
+BACKTEST_MAX_DD = 0.20
+BACKTEST_WIN_RATE = 0.55
+BACKTEST_CALMAR = 0.37
+BACKTEST_CORR_SPY = 0.62
 
 
 class FaberSMA200(bt.Strategy):
@@ -86,19 +85,17 @@ class FaberSMA200(bt.Strategy):
         )
 
     def next(self) -> None:
-        if len(self) <= int(self.params.sma_period):
+        if len(self) < int(self.params.sma_period):
             return
 
         price = float(self.data.close[0])
         sma_value = float(self.sma[0])
 
         if price > sma_value:
-            if not self.position:
-                account_value = float(self.broker.getvalue())
-                target_notional = account_value * float(self.params.exposure_fraction)
-                size = int(target_notional // price)
-                if size > 0:
-                    self.buy(size=size)
+            account_value = float(self.broker.getvalue())
+            target_size = int(account_value * float(self.params.exposure_fraction) // price)
+            if target_size > 0 and self.position.size != target_size:
+                self.order_target_size(target=target_size)
         else:
             if self.position:
                 self.close()
