@@ -1,320 +1,215 @@
 # Competitor Landscape — Portfolio Management Agents
 
-> **Date:** 2026-05-12 (Day 2)
-> **Audience:** Archimedes hackathon team
-> **Purpose:** Map the competitive space for an AI-driven, paper-grounded portfolio agent
-> with on-chain settlement on Arc. The landscape spans three distinct categories — TradFi
-> robo-advisors, crypto-native DeFi/AI portfolio products, and quant-research platforms —
-> with overlap at the edges.
->
-> **Every claim below carries a primary-source link.** Crypto and AI move fast; verify
-> specifics before any of this lands in a public pitch deck.
+> **Date:** 2026-05-12 (Day 2); **overhauled 2026-05-19** with the on-chain
+> curation-infrastructure tier (Gauntlet/Morpho/Upshift/Accountable), the Arc
+> hackathon peer set, and the testnet-only reality.
+> **Audience:** Archimedes team — pitch + strategy.
+> **Sourcing:** figures below are verified in `/tmp/research/*.md` briefs (inline
+> links). Crypto moves in weeks — re-validate before pitch day. Flag unverified
+> numbers as unverified; we did.
 
-## TL;DR (pitch-ready positioning)
+## TL;DR — the one thesis
 
-> Every competitor is missing at least one of: **paper-grounded provenance, verifiable
-> on-chain reasoning trace, pure-USDC settlement without a native token, OR
-> end-to-end autonomous rebalancing.** Archimedes is the only product positioned to ship
-> all four in the same package — TradFi robo-advisors don't touch on-chain; crypto-native
-> AI portfolio products don't ground in academic research; quant-research platforms are
-> developer-facing not user-facing. The wedge is the combination.
+**Curation without proof is the industry's open wound, and it is exactly our
+product.** The on-chain asset-management stack now has billion-dollar rails
+(Morpho) and billion-dollar curators (Gauntlet) — and the **November 2025 curator
+crisis proved the rails held while the curation layer above them broke precisely
+on rigor.** Every funded incumbent runs **trust-based** curation. Archimedes is
+the **proof-based** answer: strategies grounded in peer-reviewed research and
+admitted only through a selection-bias rigor gate (DSR / PBO / walk-forward /
+look-ahead), with the reasoning trace anchored on-chain.
 
-**One-sentence pitch:**
+Three competitive tiers, and we must be honest about which we're in:
 
-> "Wealthfront gives you tax-loss harvesting. Yearn gives you yield. Numerai gives you
-> ML models. Archimedes gives you a portfolio built from peer-reviewed quant research,
-> rebalanced autonomously on Arc, with every decision hashed and auditable."
+| Tier | Who | Our relationship |
+| --- | --- | --- |
+| **0 — On-chain curation infra** (live mainnet, $B) | Morpho, Gauntlet, Upshift, Accountable | **Vision / TAM**, not today's competitor — they prove the market *and* its failure mode |
+| **1 — Our real peer set** (Arc, pre-product) | Pantheon-Trades, ReasoningReceipt, CronusCapital + the hackathon field | **Actual competition right now** |
+| **2 — Broader landscape** (context) | Robo-advisors, crypto-AI agents, quant platforms | Adjacent; the Day-2 framing, compressed below |
 
----
-
-## Category 1 — TradFi robo-advisors
-
-Mature, regulated, large AUM. Different category of product but the closest analog for
-"AI manages your portfolio."
-
-### Wealthfront
-
-[Wealthfront](https://www.wealthfront.com/) — leading US robo-advisor.
-
-- **AUM:** ~$50B+ (publicly disclosed).
-- **Fee:** [0.25% AUM annually](https://www.nerdwallet.com/investing/reviews/wealthfront-2026).
-- **Features:** Tax-loss harvesting, direct indexing (at $100K+), automated rebalancing,
-  dividend reinvestment, multi-account types (529, IRA, taxable).
-- **AI?** [Largely rule-based, not AI](https://portfoliogenius.ai/blog/ai-vs-robo-advisors).
-  The "robo" refers to automation, not intelligence.
-- **On-chain?** No.
-- **Stablecoin?** No.
-
-**What they're missing relative to Archimedes:** no on-chain settlement, no verifiable
-provenance for strategy decisions, rule-based not AI-driven, no crypto/RWA assets.
-
-**Honest read:** They serve a regulated TradFi audience that Archimedes does not target
-in v1. Direct competition only if/when Archimedes expands beyond crypto-native users.
-
-### Betterment
-
-[Betterment](https://www.betterment.com/) — Wealthfront's primary competitor.
-
-- **Fee:** [0.25% AUM / 0.40% for Premium with CFP access](https://www.nerdwallet.com/investing/learn/betterment-vs-wealthfront).
-- **Features:** Goal-based investing, [crypto portfolio option](https://www.betterment.com/crypto),
-  fractional shares, human advisors (Premium).
-- **AI?** Same as Wealthfront — rule-based.
-- **On-chain?** No (their crypto portfolio is custodied centralized).
-
-**What they're missing:** same as Wealthfront. Their crypto offering is centralized
-exposure, not on-chain native.
-
-### Schwab Intelligent Portfolios / Vanguard Personal Advisor / Fidelity Go
-
-Generic robo-advisor offerings from the major brokerages. Similar fee structure
-(~0.25–0.50%), rule-based, TradFi-only. Not direct comps; relevant as "what the
-non-crypto-native user might compare you to."
+> **Testnet reality (load-bearing for honesty):** **Arc has no mainnet** — Circle's
+> docs list mainnet as "upcoming"; the public testnet "mirrors mainnet behavior,
+> no real assets." Every Arc project, ours included, is **pre-product**. Tier-0
+> incumbents are *live on mainnet with real AUM* — a different league. Our honest
+> current peer set is Tier 1. Stating this is a strength: it is the correct
+> posture, and it defuses the regulatory/custody concerns (no real funds ⇒ no RIA
+> trigger yet — those are mainnet/business-plan roadmap, see § Regulatory).
 
 ---
 
-## Category 2 — Crypto-native AI portfolio products
+## Tier 0 — On-chain curation infrastructure (the vision, and the wound)
 
-This is where the direct competition lives. Several products in 2025–2026 cover overlapping
-ground.
+These are live, funded, mainnet incumbents. We do **not** compete with them in a
+hackathon. They matter because they (a) prove the TAM is real and institutional,
+and (b) every one of them exposes the trust-vs-proof gap Archimedes closes.
 
-### Yield Seeker
+### Morpho — the rails
 
-[Yield Seeker](https://www.coininterestrate.com/guides/4-agentic-ai-crypto-yield-services-making-defi-accessible/)
-— consumer-facing AI agent for DeFi stablecoin yields on Base.
+[morpho.org](https://morpho.org). Modular lending substrate: immutable Morpho Blue
+primitive + curator-run MetaMorpho/V2 vaults. **~$7.5B TVL, 30+ chains**, powering
+Coinbase / Gemini / Société Générale credit rails. Funding **~$73.6M**: $18M (2022,
+a16z + Variant) + **$50M (2024, Ribbit-led**; a16z, Coinbase, Pantera, Brevan
+Howard). *This $50M round is the raise rumored in the team chat — it's Morpho's,
+not Gauntlet's.*
 
-- **Mechanism:** Continuously scans DeFi protocols, allocates user USDC to top-yielding
-  opportunities, autonomously rebalances. Conversational interface ("plain language
-  commands").
-- **Settlement:** USDC on Base.
-- **Coverage:** Stablecoin yields only.
-- **Provenance:** Not paper-grounded; allocations driven by current-yield + risk scoring.
+**Nov-2025 crisis (the evidence slide):** Stream Finance / xUSD (~$93M) cascaded
+ecosystem-wide — ~$160M frozen, Euler ~$137M bad debt. Morpho's isolation
+architecture **contained it to ~$700K across ~1 of ~320 vaults**. The rails held;
+**curator judgment failed.** Response: Vaults V2 hardened curator controls
+(ID caps, role separation, Sentinels).
 
-**What they're missing:** Paper-grounded strategies (they chase current yields, not
-academic alpha), verifiable reasoning trace, RWA exposure beyond stablecoin yield, regime
-detection.
+**Read:** Morpho is the infra layer *below* curation — potential rail and the
+clearest proof that the gap above it (rigorous curation) is unsolved. *That gap is
+Archimedes' product, not its competitor.*
 
-**Honest read:** Closest direct comp on "AI agent for portfolio rebalancing in USDC."
-They're narrower (stablecoin yield only) and on Base (not Arc). Differentiation against
-them: Archimedes covers **multi-asset RWA portfolios with paper-grounded strategy
-selection**, not just stablecoin yield maximization.
+### Gauntlet — the curator, and the failure mode
 
-### SingularityDAO DynaSets
+[gauntlet.xyz](https://www.gauntlet.xyz/) (founded 2018, Tarun Chitra). Pivoted
+from risk-simulation consulting to **vault curation** — now the largest curator by
+TVL (**~$1.5–1.9B**), deeply tied to Morpho. Funding **~$44.7M total**; last
+confirmed is **$23.8M Series B (2022, ~$1B valuation, Ribbit-led)**. **The ~$50M
+Gauntlet raise is unverified** — no public Series C in any database (that figure is
+Morpho's).
 
-[SingularityDAO DynaSets](https://medium.com/@trentice.bolar/agentic-ai-in-defi-the-dawn-of-autonomous-on-chain-finance-584652364d08)
-— shared on-chain vaults for portfolio rebalancing.
+**The "big mistake":** the confirmed, acrimonious **Feb 2024 Aave divorce** —
+quit a ~$1.6M/yr Aave risk-steward role and moved to rival Morpho days later
+(conflict-of-interest optics). Survived the Nov-2025 curator crisis (claims zero
+bad debt) but the episode tarred the **whole fee-incentivized curator model** as
+"cosplaying risk."
 
-- **Mechanism:** Tokenized vault that holds a portfolio of assets; AI rebalances based on
-  internal models.
-- **Settlement:** On-chain (multi-chain).
-- **AI?** Yes, but methodology not paper-grounded or transparently auditable.
-- **Token:** Native SingularityDAO token + per-DynaSet tokens.
+**Read:** Gauntlet *is* the trust-based curation failure mode, embodied. Our
+one-liner: *the auditable, research-grounded, rigor-gated alternative to
+"trust-me" black-box curation.*
 
-**What they're missing:** Paper-grounded provenance, verifiable per-decision reasoning
-trace, pure-stablecoin pricing (they use native tokens), risk-profile customization at
-user onboarding.
+### Upshift — curated yield, still trust-based
 
-**Honest read:** They solve a similar shape of problem but with shared vaults (everyone
-in a DynaSet gets the same portfolio) and tokenized exposure. Archimedes' per-user
-risk-profile-customized portfolios + paper-grounded strategy selection is a meaningfully
-different product.
+[upshift.finance](https://upshift.finance/) — retail-facing spinout of prime
+broker **August Digital** (ex-FalconX founders). A vault-infra layer where
+institutional curators (Sentora, UltraYield, M1, MEV Capital) build ERC-4626
+strategies on non-custodial prime-broker rails. **No separate "$50M Upshift
+raise"** — only August's **~$10M Series A (Dragonfly, Mar 2025)** + ~$6M seed.
+TVL ≈ **$287M / 12 chains**; revenue down ~6× from a Q4'25 peak.
 
-### Theoriq
+**Read:** proves institutions pay for curated on-chain yield rails — but **trusts
+curators instead of proving them.** Don't rebuild Upshift's plumbing; out-rigor it.
 
-[Theoriq](https://www.theoriq.ai/) — decentralized protocol for "agent collectives" with
-verifiable attestations.
+### Accountable — partner-shaped, not rival
 
-- **Mechanism:** Composable agents for DeFi automation (liquidity provision, yield, treasury
-  management). Proof of Collaboration + Proof of Contribution attestations.
-- **Settlement:** Native THQ token.
-- **Provenance:** Their attestation primitive is closest to Archimedes' reasoning trace,
-  but lives inside a typed-interface abstraction with THQ-token economics.
+[accountable.capital](https://www.accountable.capital/) (CEO Wojtek Pawlowski). A
+ZK/FHE/zkTLS real-time financial-verification network proving solvency, reserves,
+and yield **without exposing strategy**. Funding: $2.3M seed (MitonC / Zee Prime,
+2024) + **$7.5M led by Pantera (Oct 2025)**; >$1B verified for Galaxy, Amber, K3;
+OKX on the cap table.
 
-**What they're missing:** Consumer simplicity (their "modular agent collectives" framing
-is developer-attractive but user-confusing), stablecoin pricing, paper-grounded strategy
-sourcing.
+**Read:** Accountable verifies *capital is real*; Archimedes verifies *the method
+is real*. Same verifiable-finance thesis, different proof object — **adjacent rails
+of the same stack, partner-shaped not rival-shaped**, and live proof the
+"auditable trust" TAM is funded and institutional.
 
-**Honest read:** Theoriq is the closest competitor on the **verifiable provenance axis**.
-The OpenLedger partnership ([Jan 2026 announcement](https://www.prnewswire.com/news-releases/openledger-partners-with-theoriq-to-bring-verifiable-ai-agents-into-live-defi-markets-302664498.html))
-brings their attestations onchain for live DeFi markets. If they ship a consumer-facing
-portfolio surface before we do, the verifiable-trace differentiation narrows considerably.
-**Worth tracking actively.**
-
-### Olas / Pearl
-
-[Olas](https://olas.network/) — already covered in prior agent-marketplace research.
-Relevant here because Pearl agents include prediction-market trading and portfolio-
-management flavors. With [Pearl v1's x402 integration](https://x.com/autonolas/status/1837325890579222712),
-Olas agents can now pay external services in USDC stablecoins.
-
-**What they're missing:** Curated paper-grounded strategy library, single-user portfolio
-construction with risk profiling, regime-aware autonomous rebalancing.
-
-**Honest read:** Olas is staking-based; users stake OLAS to run an agent. Different
-mental model from "deposit USDC, get a portfolio." Adjacent rather than direct competition
-for the Archimedes v1 demo.
-
-### Virtuals Protocol
-
-[Virtuals Protocol](https://www.virtuals.io/) — already covered. 18,000+ agents, $470M+
-Agentic GDP. Some of those agents are portfolio-flavored.
-
-**What they're missing:** All agents are tokenized (each has its own ERC-20); the model
-is "buy the agent's token" not "hire the agent."
-
-**Honest read:** Different fundamental relationship to the agent. "Virtuals lets you bet
-on an agent; Archimedes hires one to manage your money."
-
-### Other AI-flavored DeFi portfolio products
-
-[Coincub's 2026 survey](https://coincub.com/blog/crypto-ai-agents/) and
-[ETHDenver 2026 showcase](https://medium.com/@trentice.bolar/agentic-ai-in-defi-the-dawn-of-autonomous-on-chain-finance-584652364d08)
-mention several other entrants — ChainGPT's AI VM, Coinbase Agentic Wallets, various
-AI-portfolio-managers in the Base + Ethereum ecosystem. None of them are
-paper-grounded; most are token-economy-mediated; none have shipped the verifiable-trace
-primitive at consumer-facing UX.
+> **Strategic implication.** Max's read is right: serious money, likely-acquisition
+> targets, a race to ship the trustworthy product first. Our wedge isn't building
+> rails (Morpho) or plumbing (Upshift) — it's being the **proof layer for
+> curation** the Nov-2025 crisis showed is missing. Vision narrative for the
+> README/deck; not a claim that we compete with $7.5B TVL today.
 
 ---
 
-## Category 3 — Quant-research platforms
+## Tier 1 — Our actual peer set: the Arc hackathon field
 
-Developer-facing, not consumer-facing, but worth knowing because they're where
-sophisticated retail traders go.
+Given testnet-only reality, *this* is who we're really up against now. Full sweep
+in `/tmp/research/rivals.md`. Threat-ranked:
 
-### QuantConnect
+| Rival | What it is | Threat | Why |
+| --- | --- | --- | --- |
+| **Pantheon-Trades** | Council-of-agents trade gating with on-chain Proof-of-Restraint (live, Arc block 42,337,549) | **High** | Competes on agentic sophistication + rigor-proof + Arc settlement; shipped & working |
+| **ReasoningReceipt** | Reasoning-trace-as-product: 3000+ live receipts, Merkle proofs, x402 paywall on Arc | **High** | Hits our auditable-trace angle with simplicity + existing traction |
+| **CronusCapital** | 3-agent prediction-market trader on Arc, decision logging | **Med** | Less sophisticated but fast-shipped; judges reward velocity |
+| Field (regimeshift-fx, trading-r1, rosetta-alpha, vrp-agent, signal-to-settlement, ArcLayer, storescope, arc-agent-pay) | Various Arc trading/agent angles | Low–Med | None claim research-grounded rigor |
 
-[QuantConnect](https://www.quantconnect.com/) — successor to Quantopian.
-
-- **Mechanism:** SaaS platform for algorithmic trading research, backtesting, live
-  execution. LEAN open-source engine (180+ contributors, 300+ hedge funds use it).
-- **Users:** Developers and quants who write their own strategies.
-- **Revenue:** Subscriptions for compute + live execution nodes.
-- **Provenance:** No paper-grounded library; users bring their own strategies.
-
-**Honest read:** They're upstream of Archimedes. A QuantConnect user is the kind of
-person who could **build a strategy** that Archimedes might **list**. Not direct
-competition; potential ecosystem partner in v2.
-
-### Numerai
-
-[Numerai](https://numer.ai/) — crowdsourced ML hedge fund.
-
-- **Mechanism:** Data scientists build ML models on obfuscated financial data; stake NMR
-  tokens on their predictions; payouts based on out-of-sample performance.
-- **Revenue:** Hedge-fund returns from the meta-model.
-- **Users:** Data scientists, not retail investors.
-
-**Honest read:** Different model entirely — Numerai is a hedge fund where the "alpha" is
-the meta-model trained on contributors' predictions. Not a portfolio product for end-users.
-Interesting reference for the "stake skin-in-the-game to ensure quality" pattern that
-Archimedes deliberately does NOT use (we use curator-vetted strategy library instead).
-
-### Quantopian (defunct)
-
-[Quantopian](https://en.wikipedia.org/wiki/Quantopian) shut down November 2020 after 9
-years. Historical reference; the crowdsourced-hedge-fund model didn't survive at scale.
-Useful as a cautionary tale — and as evidence that strategy-curation matters more than
-strategy-volume.
+**The uncontested wedge:** Pantheon *deliberates*, ReasoningReceipt *attests* —
+**none anchor to peer-reviewed methodology with a DSR/PBO selection-bias gate.**
+If we visibly ship live peer-reviewed signals + on-chain rigor proof + verifiable
+traces, we own "AI agents with research credibility" outright. Defend the trace
+narrative against ReasoningReceipt by leading with *rigor*, not just *receipts*.
 
 ---
 
-## Cross-cutting positioning matrix
+## Where Archimedes wedges (the honest claims)
 
-| Player                       | Paper-grounded | Verifiable reasoning trace | Pure USDC | Autonomous rebalancing | Multi-asset RWA | Consumer UX  |
-| ---------------------------- | -------------- | -------------------------- | --------- | ---------------------- | --------------- | ------------ |
-| Wealthfront                  | No             | No                         | n/a       | Yes                    | Equity/bond ETFs| **Yes**      |
-| Betterment                   | No             | No                         | n/a       | Yes                    | Equity/bond ETFs| **Yes**      |
-| Yield Seeker                 | No             | No                         | **Yes**   | **Yes**                | Stablecoin yield only | Conversational |
-| SingularityDAO DynaSets      | No             | Partial                    | No (token)| **Yes**                | Crypto + some RWA | Limited     |
-| Theoriq                      | No             | **Partial (attestations)** | No (THQ)  | DeFi-focused           | DeFi             | Developer    |
-| Olas / Pearl                 | No             | No                         | x402 only | Staking-based          | Various          | Operator-shaped |
-| Virtuals                     | No             | No                         | No (token)| n/a (own-not-hire)     | Various          | Speculator   |
-| QuantConnect                 | User-supplied  | No                         | n/a       | User-built             | User-built       | Developer    |
-| Numerai                      | No             | No                         | No (NMR)  | Hedge fund operates    | Internal         | Data scientist|
-| **Archimedes (proposed)**    | **Yes**        | **Yes**                    | **Yes**   | **Yes**                | **Yes**          | **Yes**      |
+1. **Research-grounded + rigor-gated provenance.** No Tier-0 or Tier-1 player
+   sources strategies from peer-reviewed research and gates them through
+   DSR/PBO/walk-forward/look-ahead. This is the answer to the Nov-2025 curation
+   failure and the single cleanest differentiator.
+2. **Verifiable per-decision reasoning trace anchored on Arc.** ReasoningReceipt
+   is closest; we differentiate by *rigor first, receipt second*.
+3. **Pure-USDC settlement on Arc, no native token.** Structurally different from
+   token-mediated products; aligned with Circle's agentic-economy framing.
+4. **Consumer UX (with humility).** If the UI reads like a regulated TradFi
+   product crossed with an on-chain explorer, that's the right aesthetic.
 
-The bottom row is the four-axis combination no competitor currently delivers. Each
-column has at least one credible competitor; the **combination** is empty.
+## Regulatory / risk — mainnet roadmap, not hackathon scope
 
----
+Per Max, parked here deliberately (testnet ⇒ no real funds ⇒ not triggered yet):
 
-## Where Archimedes wedges (the three honest claims)
+- **Off-chain redemptions** to reduce risk — note for the business-plan/mainnet
+  architecture.
+- **Preset strategies** keep us out of RIA territory; *or* the company explicitly
+  plans to **register as an RIA**. State the chosen posture in the business plan.
+- **Hypernative** (or equivalent) for exploit/hack alerting on approved
+  strategies — mainnet operational requirement.
 
-1. **Paper-grounded provenance.** No competitor sources strategies from peer-reviewed
-   quant research and surfaces the paper, methodology, and backtest comparison to users.
-   QuantConnect's users *could* implement paper-derived strategies but the platform doesn't
-   make this a first-class feature. Numerai uses ML models on obfuscated data — explicitly
-   non-paper-grounded. **This is the cleanest single differentiator.**
-
-2. **Verifiable per-decision reasoning trace anchored on Arc.** Theoriq has the closest
-   primitive but DeFi-focused with THQ-token economics. All other competitors surface
-   either aggregate metrics (Wealthfront, Yield Seeker) or self-reported model outputs
-   (Numerai). Archimedes anchors every decision's reasoning hash on-chain.
-
-3. **Pure USDC settlement, no native token to learn.** Wealthfront/Betterment use fiat;
-   Yield Seeker uses USDC on Base; everyone else uses a native token. Archimedes
-   on Arc with sub-second finality + $0.01 fees via Paymaster is structurally different
-   from any token-mediated portfolio product.
-
-**A fourth wedge worth claiming with humility:** the consumer UX. Wealthfront and Betterment
-have polished UIs; most crypto-native portfolio products do not. Daniel as the frontend
-owner is a meaningful asset — if the Archimedes UI looks like a regulated TradFi product
-crossed with an on-chain explorer, that's the right aesthetic for the audience.
+These strengthen the pitch as a *designed-for-mainnet* risk architecture; they are
+not v1 demo work.
 
 ---
 
-## Risks the landscape implies
+## Tier 2 — Broader landscape (Day-2 context, compressed)
 
-- **Theoriq shipping a consumer-facing portfolio surface narrows the verifiable-trace
-  differentiation.** Worth monitoring weekly.
-- **Yield Seeker on Base is close on the "USDC + autonomous rebalancing" axis.** Our
-  differentiation against them is multi-asset RWA + paper-grounded strategies; ship those
-  visibly in the demo.
-- **Circle's Agent Stack** ([launched May 11, 2026](https://decrypt.co/367490/circle-ai-agents-usdc-stablecoin-powers-222m-arc-token-sale))
-  could include first-party portfolio primitives in future updates. We consume Circle's
-  primitives; if Circle ships a competing first-party product, we compete on UX +
-  curation rather than infrastructure.
-- **TradFi robo-advisors moving on-chain.** Wealthfront/Betterment haven't shown signals
-  of this, but it's the obvious eventual move. Our 6–12 month window to establish
-  paper-grounded provenance as a moat is real.
-- **Quant-research platform (QuantConnect, Numerai) building consumer-facing
-  portfolio products.** Unlikely on their current trajectories but not impossible.
+Still valid as "what a non-crypto user compares us to." Detail retained from the
+Day-2 brief; not the competitive front line.
+
+- **TradFi robo-advisors** — [Wealthfront](https://www.wealthfront.com/) (~$50B+
+  AUM, 0.25%, rule-based), [Betterment](https://www.betterment.com/), Schwab/
+  Vanguard/Fidelity. No on-chain, no provenance. The competitive *foil* ("not a
+  robo-advisor"), not a comp.
+- **Crypto-native AI portfolio** — Yield Seeker (USDC yield on Base, no academic
+  provenance — closest legacy comp on "USDC + autonomous rebalancing"),
+  SingularityDAO DynaSets (shared vaults, native token),
+  [Theoriq](https://www.theoriq.ai/) (DeFi attestations, THQ token — closest on
+  the verifiable axis; [OpenLedger partnership Jan 2026](https://www.prnewswire.com/news-releases/openledger-partners-with-theoriq-to-bring-verifiable-ai-agents-into-live-defi-markets-302664498.html)),
+  Olas/Pearl (staking-based), Virtuals (own-the-token, not hire).
+- **Quant-research platforms** — [QuantConnect](https://www.quantconnect.com/)
+  (developer-facing; potential v2 ecosystem partner), [Numerai](https://numer.ai/)
+  (crowdsourced ML hedge fund), Quantopian (defunct 2020 — strategy-*curation*
+  beats strategy-*volume*; the cautionary tale that validates our rigor gate).
+
+Cross-cutting matrix and per-player detail preserved in git history (pre-2026-05-19
+revision) if needed for a deep pitch Q&A.
 
 ---
 
 ## Recommended pitch-deck slide
 
 ```
-TODAY'S PORTFOLIO PRODUCTS                         ARCHIMEDES' WEDGE
-─────────────────────────────                      ────────────────────
-Wealthfront — TradFi robo, no on-chain             Multi-asset RWA on Arc, settled in USDC.
-Yield Seeker — USDC yield, no academic provenance  Strategies sourced from peer-reviewed papers.
-DynaSets — shared on-chain vaults, native token    Per-user risk-profiled portfolios.
-Theoriq — DeFi attestations, THQ-token             Pure USDC. No token to learn. Verifiable.
-Olas Pearl — staking-based, operator-shaped        Hire-shaped: deposit USDC, get a portfolio.
-Virtuals — buy the agent's token                   Hire the agent. Audit every decision.
-Numerai — crowdsourced ML, opaque                  Paper-grounded, methodology in plain sight.
+THE CURATION LAYER IS BROKEN                  ARCHIMEDES CLOSES IT
+──────────────────────────────                ──────────────────────
+Morpho — $7.5B rails held; curation broke     Strategies from peer-reviewed research
+Gauntlet — largest curator, "cosplaying risk" Admitted only via DSR/PBO rigor gate
+Upshift — trusts curators, doesn't prove them  Every decision hashed + on-chain
+Accountable — proves capital is real          We prove the *method* is real
+(Nov-2025 crisis: rails OK, rigor failed)     Verifiable history, not promised alpha
 
-→ Rule-based, opaque, or token-mediated              → AI-driven, paper-provenanced, USDC-native
+→ Trust-based curation, billion-dollar wound   → Proof-based curation on Arc (USDC)
 ```
 
-The slide tells the truth: the category is real, the competition has many shapes, and we
-have a narrow but defensible wedge that depends on shipping the **paper-grounded provenance
-primitive** plus the **verifiable on-chain reasoning trace** plus the **multi-asset RWA +
-USYC architecture** Chuan has designed.
+## Open data points to confirm before pitch day
+
+- Gauntlet Series C / valuation refresh (the ~$50M is unconfirmed).
+- Live AUM/TVL deltas for Morpho/Gauntlet/Upshift (move weekly).
+- Which Arc hackathon rivals ship a portfolio surface before submission.
+- Circle Agent Stack roadmap — first-party portfolio primitives?
 
 ---
 
-## Open data points still worth confirming
-
-- Theoriq's roadmap for consumer-facing surface.
-- Yield Seeker's actual user count + AUM.
-- Whether any "AI-portfolio-on-Arc" product has launched since May 11, 2026 (a few teams
-  at this hackathon may ship something).
-- Wealthfront / Betterment any on-chain experiments.
-
-A 1–2 hour validation pass before pitch day is warranted.
-
----
-
-_Maintainer note: this brief is live as of 2026-05-12 (Day 2). Re-validate before pitch
-day — the on-chain AI portfolio agent landscape is moving in weeks._
+_Live as of 2026-05-19. The on-chain curation landscape moves in weeks —
+re-validate Tier 0/1 figures before submission._
