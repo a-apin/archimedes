@@ -1,6 +1,6 @@
 # Archimedes — User Stories & The One Spine
 
-> **Status:** Draft, 2026-05-18. Spine locked by product-lead decision (Dan). Visual
+> **Status:** Draft, 2026-05-19 (testnet-reality reframe). Spine locked by product-lead decision (Dan). Visual
 > items marked 🔍 await Marten/Daniel's UX walkthrough (per issue #39). Read with
 > [`design.md`](design.md) and [`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md).
 
@@ -11,6 +11,17 @@ Linus turns a research corpus into a curated, provenance-anchored knowledge
 substrate that compounds over time. Archimedes turns the q-fin literature into a
 curated, provenance-anchored **strategy library** that compounds a user's
 portfolio over time.
+
+> **Testnet reality (read this first).** Arc has **no mainnet** — it is
+> testnet-only (Circle's Arc docs list mainnet as "upcoming"; the public testnet
+> "mirrors mainnet behavior, no real assets"). The honest user story is *"try the
+> full flow on the Arc public testnet with faucet USDC"* (<https://faucet.circle.com/>,
+> 20 USDC / 2h, USDC-is-gas) — **no real funds at risk, by design.** This is a
+> strength, not a hedge: it is the correct posture for an Arc-stage project, and
+> it means the "Deposit" step is a *testnet deposit*. Real-funds custody, mainnet,
+> and the regulatory architecture (off-chain redemptions, preset-strategy / RIA
+> posture, exploit alerting) are the **mainnet / business-plan roadmap** — see
+> [`competitor-landscape.md`](competitor-landscape.md) § Regulatory.
 
 ## Lineage — what we port from Linus / KnowledgeBase, and what we don't
 
@@ -132,7 +143,8 @@ product** → group under "Advanced"; they are not on the spine or the demo path
 ## Scope
 
 **In (the MVP we ship & demo):** the single-user spine end-to-end, one user at a
-time, GLM-backed, hosted.
+time, GLM-backed, hosted, **on the Arc public testnet with faucet USDC (no real
+funds)**.
 
 **Out (stated vision / roadmap — narrate, do not build):** multi-user accounts;
 **a social network of shared strategies & vaults** — users publishing strategies
