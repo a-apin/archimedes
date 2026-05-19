@@ -21,24 +21,35 @@
 ## What is Archimedes?
 
 Archimedes is an autonomous portfolio agent that turns peer-reviewed quant finance research
-into investable, backtested strategies. Users connect a wallet, pick a risk profile, and the
-agent constructs a personalized portfolio of RWA tokens and yield instruments on Arc —
-settled in USDC. Every decision the agent makes is hashed and anchored on-chain, so
-reputation is **verifiable history, not predicted performance**.
+into investable, rigor-gated strategies. A user describes what they want; the agent
+**generates** a research-grounded strategy, **rigor-gates** it (DSR / PBO — the curation
+protocol), **executes** it into a non-custodial vault, and lets them **monitor** results
+and **explore** their strategy library — settled in USDC on Arc. Every decision is hashed
+and anchored on-chain, so reputation is **verifiable history, not predicted performance**.
+The product spine is locked in [`docs/user-stories.md`](docs/user-stories.md).
 
 Built for the [**Agora Agents Hackathon**](https://luma.com/7i50p2r9) — Canteen × Circle ×
 Arc, May 11–25, 2026.
 
-**Status (2026-05-18):** live testnet deploy + 10 Solidity contracts on Arc testnet
-(chain ID `5042002`). React/Vite UI with multi-wallet connect. The autonomous agent
-loop, statistical regime detector, Kelly/risk-parity portfolio constructor, and the
-four-control selection-bias gate (DSR / PBO / walk-forward OOS / look-ahead audit) are
-all implemented and run as services in the docker-compose stack. The
-analytics-engine → strategy-passport pipeline is now wired end-to-end: real persisted
+**Status (2026-05-19): Arc is testnet-only — there is no Arc mainnet yet** (Circle's
+Arc docs list mainnet as "upcoming"; the public testnet "mirrors mainnet behavior, no
+real assets"). Archimedes runs live on the **Arc public testnet** (chain ID `5042002`):
+grab faucet USDC at <https://faucet.circle.com/> (20 USDC / 2h — on Arc, USDC *is* gas,
+so one drip funds everything) and try the full flow with test funds. **No real money is
+at risk, by design.** Mainnet launch, real-funds custody, and the associated regulatory
+architecture (off-chain redemptions, preset-strategy / RIA posture) are the
+**business-plan roadmap**, not hackathon scope — see
+[`docs/competition-landscape.md`](docs/competition-landscape.md).
+
+Built today: live testnet deploy + 10 Solidity contracts on Arc (chain ID `5042002`);
+React/Vite multi-wallet UI; the autonomous agent loop, statistical regime detector,
+Kelly/risk-parity constructor, and the four-control selection-bias gate (DSR / PBO /
+walk-forward OOS / look-ahead audit) all run as services in the docker-compose stack.
+The analytics-engine → strategy-passport pipeline is wired end-to-end: real persisted
 backtests feed the selection-bias gate and the passport surfaces real backtest-backed
-metrics rather than placeholders, with backtest seeding run by the deploy pipeline.
-See [`docs/judging-rubric-assessment.md`](docs/judging-rubric-assessment.md)
-for the running self-score and [`docs/`](docs/) for design + planning artifacts.
+metrics, not placeholders. See
+[`docs/judging-rubric-assessment.md`](docs/judging-rubric-assessment.md) for the running
+self-score and [`docs/`](docs/) for design + planning artifacts.
 
 ## Why Archimedes?
 
