@@ -544,13 +544,13 @@ Or via the canteen CLI: `arc-canteen context sync` (drops a copy into `~/.arc-ca
 
 ## Platform-specific notes
 
-### macOS (Dan, Chuan)
+### macOS (Dan, Chuan, Önder)
 
 mambaforge + everything else works natively. No special setup. If on Apple Silicon, the
 osx-arm64 conda channels are well-supported; psycopg2-binary, web3.py, and backtrader all
 have arm64 wheels.
 
-### Linux (Daniel, Önder)
+### Linux (Daniel)
 
 Native experience. Identical to macOS for our purposes. Standard apt/dnf installs for
 docker + node if not already present.
