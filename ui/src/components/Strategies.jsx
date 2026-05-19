@@ -122,6 +122,45 @@ function FeaturedCard({ s }) {
                   </div>
                 </>
               )}
+              {(s.deflated_sharpe_ratio != null || s.pbo_score != null || s.kelly_fraction != null) && (
+                <>
+                  <div className="divider" style={{ margin: '10px 0 8px' }} />
+                  <div className="caption" style={{ marginBottom: 6, color: 'var(--text-3)', letterSpacing: '0.05em', fontSize: '0.7rem', textTransform: 'uppercase' }}>Rigor Metrics</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 8 }}>
+                    {s.deflated_sharpe_ratio != null && (
+                      <div>
+                        <div className="caption" style={{ fontSize: '0.7rem' }}>DSR</div>
+                        <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>{fmt(s.deflated_sharpe_ratio)}</div>
+                      </div>
+                    )}
+                    {s.pbo_score != null && (
+                      <div>
+                        <div className="caption" style={{ fontSize: '0.7rem' }}>PBO</div>
+                        <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>{fmtPct(s.pbo_score)}</div>
+                      </div>
+                    )}
+                    {s.kelly_fraction != null && (
+                      <div>
+                        <div className="caption" style={{ fontSize: '0.7rem' }}>Kelly f*</div>
+                        <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>{fmtPct(s.kelly_fraction)}</div>
+                      </div>
+                    )}
+                  </div>
+                  {s.out_of_sample_sharpe != null && (
+                    <div className="caption" style={{ marginBottom: 6 }}>
+                      OOS Sharpe: <strong>{fmt(s.out_of_sample_sharpe)}</strong>
+                      <span className="caption" style={{ marginLeft: 4, color: 'var(--text-4)' }}>(walk-forward)</span>
+                    </div>
+                  )}
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 8px', borderRadius: 4, fontSize: '0.72rem', fontWeight: 600,
+                    background: s.status === 'validated' || s.status === 'live' ? 'rgba(16,185,129,0.12)' : 'rgba(255,255,255,0.06)',
+                    color: s.status === 'validated' || s.status === 'live' ? 'var(--positive)' : 'var(--text-3)',
+                    border: `1px solid ${s.status === 'validated' || s.status === 'live' ? 'rgba(16,185,129,0.3)' : 'var(--glass-border)'}`,
+                  }}>
+                    {s.status === 'validated' || s.status === 'live' ? '✓ Rigor Gate: Passed' : '◌ Rigor Gate: Candidate'}
+                  </div>
+                </>
+              )}
             </>
           ) : (
             <div className="caption" style={{ color: 'var(--text-4)', paddingTop: 8 }}>Not yet evaluated — awaiting backtest engine run.</div>
@@ -204,12 +243,41 @@ function StrategyCard({ s }) {
         {s.paper_venue ? ` · ${s.paper_venue}` : ''}
       </div>
       {hasBacktest ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 12 }}>
-          <div><div className="caption">Sharpe</div><div style={{ fontWeight: 700 }}>{fmt(s.sharpe_ratio)}{s.is_backtest_placeholder ? '*' : ''}</div></div>
-          <div><div className="caption">CAGR</div><div className="positive" style={{ fontWeight: 700 }}>{fmtPct(s.cagr)}</div></div>
-          <div><div className="caption">Max DD</div><div className="negative" style={{ fontWeight: 700 }}>−{fmtPct(s.max_drawdown)}</div></div>
-          <div><div className="caption">Corr SPY</div><div style={{ fontWeight: 700 }}>{fmt(s.correlation_to_spy)}</div></div>
-        </div>
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 8 }}>
+            <div><div className="caption">Sharpe</div><div style={{ fontWeight: 700 }}>{fmt(s.sharpe_ratio)}{s.is_backtest_placeholder ? '*' : ''}</div></div>
+            <div><div className="caption">CAGR</div><div className="positive" style={{ fontWeight: 700 }}>{fmtPct(s.cagr)}</div></div>
+            <div><div className="caption">Max DD</div><div className="negative" style={{ fontWeight: 700 }}>−{fmtPct(s.max_drawdown)}</div></div>
+            <div><div className="caption">Corr SPY</div><div style={{ fontWeight: 700 }}>{fmt(s.correlation_to_spy)}</div></div>
+          </div>
+          {(s.deflated_sharpe_ratio != null || s.pbo_score != null || s.kelly_fraction != null) && (
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+              {s.deflated_sharpe_ratio != null && (
+                <span className="caption" style={{ background: 'rgba(255,255,255,0.04)', padding: '2px 7px', borderRadius: 4, border: '1px solid var(--glass-border)' }}>
+                  DSR <strong>{fmt(s.deflated_sharpe_ratio)}</strong>
+                </span>
+              )}
+              {s.pbo_score != null && (
+                <span className="caption" style={{ background: 'rgba(255,255,255,0.04)', padding: '2px 7px', borderRadius: 4, border: '1px solid var(--glass-border)' }}>
+                  PBO <strong>{fmtPct(s.pbo_score)}</strong>
+                </span>
+              )}
+              {s.kelly_fraction != null && (
+                <span className="caption" style={{ background: 'rgba(255,255,255,0.04)', padding: '2px 7px', borderRadius: 4, border: '1px solid var(--glass-border)' }}>
+                  Kelly <strong>{fmtPct(s.kelly_fraction)}</strong>
+                </span>
+              )}
+              <span style={{
+                fontSize: '0.68rem', fontWeight: 600, padding: '2px 7px', borderRadius: 4,
+                background: s.status === 'validated' || s.status === 'live' ? 'rgba(16,185,129,0.12)' : 'rgba(255,255,255,0.04)',
+                color: s.status === 'validated' || s.status === 'live' ? 'var(--positive)' : 'var(--text-4)',
+                border: `1px solid ${s.status === 'validated' || s.status === 'live' ? 'rgba(16,185,129,0.3)' : 'var(--glass-border)'}`,
+              }}>
+                {s.status === 'validated' || s.status === 'live' ? '✓ Rigor Gate' : '◌ Candidate'}
+              </span>
+            </div>
+          )}
+        </>
       ) : (
         <div className="caption" style={{ marginBottom: 12, color: 'var(--text-4)' }}>Backtest pending</div>
       )}

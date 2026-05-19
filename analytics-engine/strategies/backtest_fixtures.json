@@ -110,5 +110,33 @@
     "pbo_score": 0.389899,
     "passes_rigor_gate": false,
     "kelly_fraction": 0.0
+  },
+  "george_hwang_2004_52w_high": {
+    "sharpe_ratio": 0.6198650403,
+    "sortino_ratio": 0.6929249859,
+    "max_drawdown": 0.314844820243875,
+    "cagr": 0.069506523829677,
+    "calmar_ratio": 0.220764387280814,
+    "win_rate": 0.2777777778,
+    "profit_factor": null,
+    "total_trades": 54,
+    "avg_holding_period_days": null,
+    "correlation_to_spy": 1.0,
+    "correlation_to_btc": null,
+    "out_of_sample_sharpe": 0.910213,
+    "look_ahead_audit_passed": true,
+    "backtest_engine": "backtrader",
+    "transaction_cost_bps": 10,
+    "backtest_start": "2004-01-02T00:00:00",
+    "backtest_end": "2026-04-30T00:00:00",
+    "paper_claimed_sharpe": 0.9,
+    "paper_claimed_cagr": 0.135,
+    "paper_claimed_max_dd": 0.18,
+    "deflated_sharpe_ratio": 0.277212,
+    "dsr_p_value": 0.609191,
+    "num_trials_in_selection": 5,
+    "pbo_score": 0.339938,
+    "passes_rigor_gate": false,
+    "kelly_fraction": 0.847369
   }
 }
