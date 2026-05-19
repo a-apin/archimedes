@@ -1,8 +1,16 @@
 """Portfolio constructor — computes target allocations from strategies + regime.
 
 Given the current regime, a set of active strategies, and a risk profile,
-produce target allocation weights for the portfolio. This is the simplified
-v1 — Önder's full Kelly/risk-parity engine plugs in here post-hackathon.
+produce target allocation weights for the portfolio.
+
+When price_histories are supplied to construct(), weights are computed via
+mean-variance optimization (portfolio_optimizer.py):
+  - CONSERVATIVE  → Global Minimum Variance
+  - MODERATE / AGGRESSIVE → Max Sharpe
+  - HYPER_RISKY   → Max Expected Return
+
+Without price histories the constructor falls back to equal weight across
+the strategy asset universe.
 
 Design reference: design.md § 4.3, ecosystem-design-spec.md § 3.3
 """
@@ -11,6 +19,8 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+
+import pandas as pd
 
 from archimedes.models.portfolio import (
     Portfolio,
@@ -23,8 +33,17 @@ from archimedes.models.portfolio import (
 from archimedes.models.regime import Regime, RegimeClassification
 from archimedes.models.strategy import Strategy
 from archimedes.chain.client import chain_client
+from archimedes.services.portfolio_optimizer import optimize_weights
 
 logger = logging.getLogger(__name__)
+
+
+def _equal_weights(symbols: list[str], budget: float) -> dict[str, float]:
+    n = len(symbols)
+    if n == 0:
+        return {}
+    return {s: round(budget / n, 6) for s in symbols}
+
 
 # Regime-based allocation tilts — how much to shift from synthetics → USDC
 _REGIME_USDC_FLOOR: dict[Regime, float] = {
@@ -50,18 +69,24 @@ class PortfolioConstructor:
         strategies: list[Strategy],
         regime: RegimeClassification,
         risk_profile: RiskProfile = RiskProfile.MODERATE,
+        price_histories: dict[str, pd.Series] | None = None,
     ) -> list[TargetAllocation]:
         """Build target allocations.
 
-        v1 logic:
+        Steps:
           1. Determine USDC floor from regime + risk profile
-          2. Spread remaining weight equally across strategy asset universe
-          3. Clamp to risk-profile constraints
+          2. Collect synth asset universe from active strategies
+          3. If price_histories provided: compute MVO weights via
+             portfolio_optimizer; otherwise fall back to equal weight
+          4. Emit TargetAllocation list (weights sum to 1.0)
+
+        Args:
+            price_histories: Optional {synth_symbol: pd.Series of closing prices}.
+                             When provided, MVO replaces equal-weight distribution.
         """
-        # Get risk parameters
         params = RISK_PROFILE_PARAMS.get(risk_profile, RISK_PROFILE_PARAMS[RiskProfile.MODERATE])
 
-        # USDC floor: max of regime floor and risk-profile floor
+        # USDC floor: stricter of regime and risk-profile floors
         regime_floor = _REGIME_USDC_FLOOR.get(regime.regime, 0.20)
         profile_floor = params["usyc_floor"]
         usdc_weight = max(regime_floor, profile_floor)
@@ -80,12 +105,29 @@ class PortfolioConstructor:
         else:
             assets = _DEFAULT_SYNTHS[:3]
 
-        # Map yfinance-style tickers to synth symbols
         synth_assets = self._map_to_synths(assets)
-
-        # Equal weight across synth assets, rest in USDC
         synth_budget = 1.0 - usdc_weight
-        per_asset = synth_budget / len(synth_assets) if synth_assets else 0.0
+
+        # Weight computation: MVO if price histories available, else equal weight
+        if price_histories and synth_assets:
+            daily_returns = {
+                sym: list(price_histories[sym].pct_change().dropna())
+                for sym in synth_assets
+                if sym in price_histories and not price_histories[sym].empty
+            }
+            available = [s for s in synth_assets if s in daily_returns]
+            if available:
+                mvo_weights = optimize_weights(
+                    symbols=available,
+                    daily_returns=daily_returns,
+                    risk_profile=risk_profile,
+                    synth_budget=synth_budget,
+                )
+                synth_weights = mvo_weights
+            else:
+                synth_weights = _equal_weights(synth_assets, synth_budget)
+        else:
+            synth_weights = _equal_weights(synth_assets, synth_budget)
 
         allocations: list[TargetAllocation] = []
 
@@ -104,20 +146,25 @@ class PortfolioConstructor:
         synth_addrs = chain_client.settings.synth_addresses
         for sym in synth_assets:
             addr = synth_addrs.get(sym, "")
+            w = synth_weights.get(sym, 0.0)
             allocations.append(
                 TargetAllocation(
                     symbol=sym,
                     token_address=addr,
-                    weight=round(per_asset, 4),
-                    strategy_ids=[s.id for s in strategies if sym in self._map_to_synths(s.asset_universe)],
+                    weight=round(w, 4),
+                    strategy_ids=[
+                        s.id for s in strategies
+                        if sym in self._map_to_synths(s.asset_universe)
+                    ],
                 )
             )
 
         logger.info(
-            "Target allocations: %s (regime=%s, usdc_floor=%.0f%%)",
+            "Target allocations: %s (regime=%s, usdc_floor=%.0f%%, method=%s)",
             {a.symbol: f"{a.weight:.0%}" for a in allocations},
             regime.regime.value,
             usdc_weight * 100,
+            "MVO" if price_histories else "equal-weight",
         )
         return allocations
 
