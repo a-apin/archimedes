@@ -39,7 +39,7 @@ so one drip funds everything) and try the full flow with test funds. **No real m
 at risk, by design.** Mainnet launch, real-funds custody, and the associated regulatory
 architecture (off-chain redemptions, preset-strategy / RIA posture) are the
 **business-plan roadmap**, not hackathon scope — see
-[`docs/competition-landscape.md`](docs/competition-landscape.md).
+[`docs/competitor-landscape.md`](docs/competitor-landscape.md).
 
 Built today: live testnet deploy + 10 Solidity contracts on Arc (chain ID `5042002`);
 React/Vite multi-wallet UI; the autonomous agent loop, statistical regime detector,
