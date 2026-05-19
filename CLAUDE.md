@@ -115,7 +115,7 @@ Read [`README.md`](README.md) for the full setup walkthrough — Python conda en
 [`environment.yml`](environment.yml), Node.js frontend, Foundry for contracts, the
 [arc-canteen CLI](https://github.com/the-canteen-dev/ARC-cli) for traction tracking,
 and a Docker-compose-driven local stack that mirrors the production EC2 deployment.
-Platform-specific notes for macOS / Linux / Windows (WSL2 recommended for Marten).
+Platform-specific notes for macOS / Linux / Windows (Önder on macOS; WSL2 recommended for Marten).
 
 **Spinning up locally is one command** once `.env` is filled in:
 

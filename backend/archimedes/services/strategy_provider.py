@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import logging
 import os
 from datetime import datetime
@@ -151,7 +152,19 @@ def _infer_risk_profiles(methodology_summary: str) -> list[str]:
     return matched or ["moderate"]
 
 
-def _to_strategy(path: Path, metadata: dict[str, Any], code_hash: str) -> Strategy:
+def _load_fixtures(strategies_dir: Path) -> dict[str, Any]:
+    """Load backtest_fixtures.json from the strategies directory, if present."""
+    fixture_path = strategies_dir / "backtest_fixtures.json"
+    if not fixture_path.exists():
+        return {}
+    try:
+        return json.loads(fixture_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("could not load backtest_fixtures.json: %s", exc)
+        return {}
+
+
+def _to_strategy(path: Path, metadata: dict[str, Any], code_hash: str, fixture: dict[str, Any] | None = None) -> Strategy:
     methodology_summary = str(metadata.get("METHODOLOGY_SUMMARY") or metadata.get("METHODOLOGY_TEXT") or "")
     methodology_text = metadata.get("METHODOLOGY_TEXT")
     risk_profiles = metadata.get("RISK_PROFILES") or _infer_risk_profiles(methodology_summary)
@@ -181,6 +194,11 @@ def _to_strategy(path: Path, metadata: dict[str, Any], code_hash: str) -> Strate
         logger.warning("unknown STATUS=%s in %s, defaulting to candidate", status_raw, path)
         status = StrategyStatus.CANDIDATE
 
+    # Promote status from fixture when the strategy passes the rigor gate,
+    # unless the file already declares a more advanced state (live/retired).
+    if fixture and fixture.get("passes_rigor_gate") and status == StrategyStatus.CANDIDATE:
+        status = StrategyStatus.VALIDATED
+
     paper_claimed_sharpe = metadata.get("PAPER_CLAIMED_SHARPE")
     paper_claimed_cagr = metadata.get("PAPER_CLAIMED_CAGR")
     paper_claimed_max_dd = metadata.get("PAPER_CLAIMED_MAX_DD")
@@ -192,6 +210,24 @@ def _to_strategy(path: Path, metadata: dict[str, Any], code_hash: str) -> Strate
     stub_win_rate = metadata.get("BACKTEST_WIN_RATE")
     stub_calmar = metadata.get("BACKTEST_CALMAR")
     stub_corr_spy = metadata.get("BACKTEST_CORR_SPY")
+
+    # ── Real backtest results from fixture ─────────────────────
+    fx = fixture or {}
+    real_sharpe = fx.get("sharpe_ratio")
+    real_sortino = fx.get("sortino_ratio")
+    real_cagr = fx.get("cagr")
+    real_max_dd = fx.get("max_drawdown")
+    real_win_rate = fx.get("win_rate")
+    real_calmar = fx.get("calmar_ratio")
+    real_corr_spy = fx.get("correlation_to_spy")
+    real_total_trades = fx.get("total_trades")
+    deflated_sharpe_ratio = fx.get("deflated_sharpe_ratio")
+    dsr_p_value = fx.get("dsr_p_value")
+    num_trials_in_selection = fx.get("num_trials_in_selection")
+    pbo_score = fx.get("pbo_score")
+    out_of_sample_sharpe = fx.get("out_of_sample_sharpe")
+    passes_rigor_gate = bool(fx.get("passes_rigor_gate", False))
+    kelly_fraction = fx.get("kelly_fraction")
 
     # Use file mtime so timestamps reflect the strategy file's curation
     # time rather than process start time — otherwise every restart would
@@ -237,6 +273,21 @@ def _to_strategy(path: Path, metadata: dict[str, Any], code_hash: str) -> Strate
         stub_win_rate=float(stub_win_rate) if stub_win_rate is not None else None,
         stub_calmar=float(stub_calmar) if stub_calmar is not None else None,
         stub_corr_spy=float(stub_corr_spy) if stub_corr_spy is not None else None,
+        real_sharpe=float(real_sharpe) if real_sharpe is not None else None,
+        real_sortino=float(real_sortino) if real_sortino is not None else None,
+        real_cagr=float(real_cagr) if real_cagr is not None else None,
+        real_max_dd=float(real_max_dd) if real_max_dd is not None else None,
+        real_win_rate=float(real_win_rate) if real_win_rate is not None else None,
+        real_calmar=float(real_calmar) if real_calmar is not None else None,
+        real_corr_spy=float(real_corr_spy) if real_corr_spy is not None else None,
+        real_total_trades=int(real_total_trades) if real_total_trades is not None else None,
+        deflated_sharpe_ratio=float(deflated_sharpe_ratio) if deflated_sharpe_ratio is not None else None,
+        dsr_p_value=float(dsr_p_value) if dsr_p_value is not None else None,
+        num_trials_in_selection=int(num_trials_in_selection) if num_trials_in_selection is not None else None,
+        pbo_score=float(pbo_score) if pbo_score is not None else None,
+        out_of_sample_sharpe=float(out_of_sample_sharpe) if out_of_sample_sharpe is not None else None,
+        passes_rigor_gate=passes_rigor_gate,
+        kelly_fraction=float(kelly_fraction) if kelly_fraction is not None else None,
     )
 
 
@@ -254,6 +305,7 @@ class LocalStrategyProvider:
     def __init__(self, strategies_dir: Path) -> None:
         self._strategies_dir = strategies_dir
         self._strategies: dict[str, Strategy] = {}
+        self._fixtures: dict[str, Any] = {}
         self.refresh()
 
     def refresh(self) -> int:
@@ -262,6 +314,8 @@ class LocalStrategyProvider:
             logger.warning("strategies dir not found: %s", self._strategies_dir)
             self._strategies = {}
             return 0
+
+        self._fixtures = _load_fixtures(self._strategies_dir)
 
         loaded: dict[str, Strategy] = {}
         for path in sorted(self._strategies_dir.glob("*.py")):
@@ -273,7 +327,8 @@ class LocalStrategyProvider:
                     logger.debug("no PAPER_TITLE in %s, skipping", path)
                     continue
                 code_hash = _hash_file(path)
-                strategy = _to_strategy(path, metadata, code_hash)
+                fixture = self._fixtures.get(path.stem)
+                strategy = _to_strategy(path, metadata, code_hash, fixture)
                 loaded[strategy.id] = strategy
             except Exception as exc:  # noqa: BLE001 — defensive on startup
                 logger.exception("failed to load strategy %s: %s", path, exc)

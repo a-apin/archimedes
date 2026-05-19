@@ -73,12 +73,11 @@ _architect = default_architect()
 def _to_strategy_response(s: Strategy) -> StrategyResponse:
     """Map the shared Strategy dataclass to the frontend response shape.
 
-    Backtest fields sourced from BACKTEST_* stub constants in strategy files
-    (is_backtest_placeholder=True) until Önder's IBacktestEvaluator runs and
-    populates a real BacktestResult. Stub values are clearly labelled so the UI
-    can render them with an honest "estimate" disclaimer.
+    Real backtest results from backtest_fixtures.json take priority over
+    BACKTEST_* stub constants. is_backtest_placeholder=False when real data
+    is present.
     """
-    has_stubs = s.stub_sharpe is not None
+    has_real = s.real_sharpe is not None
     return StrategyResponse(
         id=s.id,
         paper_arxiv_id=s.paper_arxiv_id,
@@ -102,14 +101,20 @@ def _to_strategy_response(s: Strategy) -> StrategyResponse:
         on_chain_registration_tx=s.on_chain_registration_tx,
         # Paper claims (for delta display)
         paper_claimed_sharpe=s.paper_claimed_sharpe,
-        # Backtest (stubs from strategy file; None when IBacktestEvaluator has not run)
-        sharpe_ratio=s.stub_sharpe,
-        cagr=s.stub_cagr,
-        max_drawdown=s.stub_max_dd,
-        win_rate=s.stub_win_rate,
-        calmar_ratio=s.stub_calmar,
-        correlation_to_spy=s.stub_corr_spy,
-        is_backtest_placeholder=has_stubs,
+        # Backtest — real values when available, stubs otherwise
+        sharpe_ratio=s.real_sharpe if has_real else s.stub_sharpe,
+        sortino_ratio=s.real_sortino if has_real else None,
+        cagr=s.real_cagr if has_real else s.stub_cagr,
+        max_drawdown=s.real_max_dd if has_real else s.stub_max_dd,
+        win_rate=s.real_win_rate if has_real else s.stub_win_rate,
+        calmar_ratio=s.real_calmar if has_real else s.stub_calmar,
+        correlation_to_spy=s.real_corr_spy if has_real else s.stub_corr_spy,
+        total_trades=s.real_total_trades,
+        deflated_sharpe_ratio=s.deflated_sharpe_ratio,
+        pbo_score=s.pbo_score,
+        out_of_sample_sharpe=s.out_of_sample_sharpe,
+        kelly_fraction=s.kelly_fraction,
+        is_backtest_placeholder=not has_real,
     )
 
 

@@ -246,6 +246,61 @@ def compute_oos_sharpe(
     return round(float((oos.mean() / sigma) * math.sqrt(_ANNUALIZATION)), 6)
 
 
+# ─── 4. Kelly Criterion position sizing ─────────────────────────────
+
+
+def compute_kelly_fraction(
+    daily_returns: list[float],
+    rf_annual: float = 0.05,
+    fractional: float = 0.5,
+) -> float | None:
+    """Fractional Kelly position size for a single-asset strategy.
+
+    Implements the continuous-time Kelly formula:
+
+        f* = (μ_ann - rf_ann) / σ_ann²
+
+    where μ_ann and σ_ann² are the annualized mean return and variance.
+    A fractional Kelly (default 0.5×) is applied to reduce drawdown
+    volatility — the theoretical full-Kelly bet is too aggressive for
+    practical use and is highly sensitive to estimation error.
+
+    Args:
+        daily_returns: Per-bar (daily) return series, un-annualized.
+        rf_annual: Annual risk-free rate (default 5%).
+        fractional: Kelly multiplier — 0.5 = half-Kelly (recommended),
+            1.0 = full Kelly (academic reference only).
+
+    Returns:
+        Fractional Kelly weight ∈ (0, 1], clipped to [0, 1] to prevent
+        leverage beyond 100%. Returns None if data is insufficient or
+        degenerate (< 4 bars, zero variance, negative excess return).
+    """
+    arr = np.asarray(daily_returns, dtype=float)
+    T = len(arr)
+    if T < 4:
+        return None
+
+    if float(np.ptp(arr)) == 0.0:
+        return None
+
+    sigma_daily = float(arr.std(ddof=1))
+    if sigma_daily <= 0.0:
+        return None
+
+    mu_ann = float(arr.mean()) * _ANNUALIZATION
+    sigma_sq_ann = (sigma_daily**2) * _ANNUALIZATION
+
+    excess_return = mu_ann - rf_annual
+    if excess_return <= 0.0:
+        return 0.0
+
+    f_full = excess_return / sigma_sq_ann
+    f_fractional = fractional * f_full
+
+    return round(float(np.clip(f_fractional, 0.0, 1.0)), 6)
+
+
 # ─── Private helpers ─────────────────────────────────────────────────
 
 

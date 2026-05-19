@@ -188,6 +188,7 @@ class StrategyResponse(BaseModel):
     deflated_sharpe_ratio: float | None = None
     pbo_score: float | None = None
     out_of_sample_sharpe: float | None = None
+    kelly_fraction: float | None = None
     paper_claimed_sharpe: float | None = None
     is_backtest_placeholder: bool = False
 

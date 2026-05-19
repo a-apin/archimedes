@@ -581,7 +581,7 @@ WSL2 docs: [microsoft.com/wsl](https://learn.microsoft.com/en-us/windows/wsl/ins
   even on Option B.
 
 Practical take: **Marten, set up WSL2.** It removes every Windows-specific pain point and
-matches Dan + Daniel + Önder's Linux/macOS workflow exactly.
+matches Dan + Chuan + Önder's macOS and Daniel's Linux workflow exactly.
 
 ---
 

@@ -124,6 +124,26 @@ class Strategy:
     stub_calmar: float | None = None
     stub_corr_spy: float | None = None
 
+    # ── Real backtest results (from backtest_fixtures.json) ────
+    # Populated by strategy_provider after the backtest engine runs.
+    # When present, routes.py serves these instead of stub_* fields
+    # and sets is_backtest_placeholder=False.
+    real_sharpe: float | None = None
+    real_sortino: float | None = None
+    real_cagr: float | None = None
+    real_max_dd: float | None = None
+    real_win_rate: float | None = None
+    real_calmar: float | None = None
+    real_corr_spy: float | None = None
+    real_total_trades: int | None = None
+    deflated_sharpe_ratio: float | None = None
+    dsr_p_value: float | None = None
+    num_trials_in_selection: int | None = None
+    pbo_score: float | None = None
+    out_of_sample_sharpe: float | None = None
+    passes_rigor_gate: bool = False
+    kelly_fraction: float | None = None
+
     @property
     def is_active(self) -> bool:
         return self.status in (StrategyStatus.VALIDATED, StrategyStatus.LIVE)

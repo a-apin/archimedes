@@ -24,6 +24,7 @@ import pytest
 from archimedes.services.rigor_evaluator import (
     _dsr_from_stats,
     compute_dsr,
+    compute_kelly_fraction,
     compute_oos_sharpe,
     compute_pbo,
 )
@@ -207,3 +208,61 @@ def test_oos_sharpe_respects_train_fraction():
     oos = compute_oos_sharpe(returns, train_fraction=0.70)
     assert oos is not None
     assert oos > 0.0, "OOS slice has positive drift; Sharpe should be positive"
+
+
+# ─── Kelly Criterion ─────────────────────────────────────────────────
+
+
+def test_kelly_returns_none_for_short_series():
+    assert compute_kelly_fraction([0.001] * 3) is None
+
+
+def test_kelly_returns_none_for_zero_vol():
+    returns = [0.001] * 100  # constant → zero std
+    assert compute_kelly_fraction(returns) is None
+
+
+def test_kelly_returns_zero_for_negative_excess_return():
+    """Strategy with negative excess return → Kelly says don't bet."""
+    rng = np.random.default_rng(10)
+    # Mean ≈ -0.001/day → annualized ≈ -25% → well below 5% rf
+    returns = rng.normal(-0.001, 0.01, 252).tolist()
+    f = compute_kelly_fraction(returns, rf_annual=0.05)
+    assert f is not None
+    assert f == 0.0, "Negative excess return → Kelly fraction should be 0"
+
+
+def test_kelly_positive_for_strong_positive_returns():
+    """A high-drift strategy should get a positive half-Kelly allocation."""
+    rng = np.random.default_rng(11)
+    # Mean ≈ 0.002/day → annualized ≈ 50%, vol ≈ 1% daily ≈ 16% ann
+    # Full Kelly ≈ (0.50 - 0.05) / 0.16² ≈ 17.6  (capped to 1.0 after fractional)
+    returns = rng.normal(0.002, 0.01, 500).tolist()
+    f = compute_kelly_fraction(returns, rf_annual=0.05, fractional=0.5)
+    assert f is not None
+    assert f > 0.0, "High-drift strategy should have positive Kelly fraction"
+    assert f <= 1.0, "Kelly fraction must not exceed 1.0 (no leverage)"
+
+
+def test_kelly_half_kelly_is_smaller_than_full():
+    """half-Kelly must be strictly less than full-Kelly when neither is capped."""
+    rng = np.random.default_rng(12)
+    # High vol (5% daily) keeps full-Kelly below 1.0 so neither value is capped.
+    # μ_ann ≈ 0.5, σ_ann² ≈ 0.63 → f_full ≈ 0.72; f_half ≈ 0.36
+    returns = rng.normal(0.002, 0.05, 500).tolist()
+    f_half = compute_kelly_fraction(returns, rf_annual=0.05, fractional=0.5)
+    f_full = compute_kelly_fraction(returns, rf_annual=0.05, fractional=1.0)
+    assert f_half is not None and f_full is not None
+    assert f_full <= 1.0, "full-Kelly should not be capped for this series"
+    assert f_half < f_full, "half-Kelly must be smaller than full-Kelly"
+    assert f_half > 0.0, "half-Kelly must be positive for this series"
+
+
+def test_kelly_is_clipped_to_unit_interval():
+    """Extremely high-drift series → fractional Kelly is clipped to 1.0."""
+    # very high mean, very low vol → f* >> 1 before clipping
+    returns = [0.01] * 499 + [0.009]  # near-constant high drift
+    f = compute_kelly_fraction(returns, rf_annual=0.05, fractional=1.0)
+    assert f is not None
+    assert f <= 1.0, "Kelly fraction must be clipped to ≤ 1.0"
+    assert f >= 0.0
