@@ -1,14 +1,21 @@
 # Claude Design — Prompts for Archimedes
 
-> **Audience:** Dan (using Claude Design at [claude.ai/design](https://claude.ai/design))
-> **Purpose:** Concrete prompts to paste into Claude Design for slides, UI prototypes,
-> and logo variants. Each prompt is self-contained so the design session has the context
-> it needs without you re-explaining the project.
-> **Status:** Day-4 revision (2026-05-14). Prompts updated to match what the team has
-> actually shipped — a live React/Vite UI at [`http://18.171.230.205/`](http://18.171.230.205/),
-> 10 contracts deployed on Arc testnet, and the
-> [`architecture-diagram.html`](architecture-diagram.html) reference. The UI prompts now
-> work as **refinement** prompts against the live UI rather than greenfield design.
+> **Audience:** Dan (and anyone on the team) using Claude Design at
+> [claude.ai/design](https://claude.ai/design).
+> **Purpose:** Concrete, paste-ready prompts for slides, UI prototypes, logos, and
+> explanatory visualizations. Each prompt is self-contained so the design session has
+> the context it needs without you re-explaining the project.
+> **Status:** Day-9 revision (2026-05-20). Significant cleanup against Day-4 content
+> that had drifted out of sync with shipped reality. Current snapshot the prompts
+> reflect: live React/Vite UI at [`http://18.171.230.205/`](http://18.171.230.205/);
+> 10 Arc-testnet contracts; engine v2 (`POST /api/strategies/generate` with 3-input
+> fusion); the full rigor wedge live (DSR/PBO/Kelly/MVO, 2 Tier-1 strategies — Faber
+> 2007 + Moreira-Muir 2017 — with real 22-year SPY backtest numbers); a DB-backed
+> 10,000-paper q-fin corpus with the Corpus Explorer UI shipped; "Linus for
+> quantitative finance" as the locked product framing per
+> [`docs/user-stories.md`](user-stories.md); 265 backend tests + 16 analytics-engine
+> tests green; 5 days to submission. UI prompts work as **refinement** prompts
+> against the live UI, not greenfield.
 
 ## Quick notes on using Claude Design
 
@@ -184,316 +191,440 @@ that looks like it could be a generic crypto logo.
 
 ---
 
-## Prompt 2 — Slide deck (full 9 slides)
+## Prompt 2 — Slide deck (full 10 slides, Day-9 framing)
 
 **Setup notes:** Use Claude Design's **Slide deck** mode. Make sure the design system is
-set (or pass colors inline). The deck structure mirrors
-[`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md).
+set (or paste the palette/typography block inline). The deck structure mirrors
+[`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md). The
+substantive Day-9 shifts vs the Day-4 deck: the product is now framed as **"Linus for
+quantitative finance"** (a strategy-generation *instrument*, not a static menu); the
+3-input fusion engine (engine v2) is live; the rigor wedge is real with 22 years of
+SPY data; 2 Tier-1 strategies actually pass the gate. The deck should sound like the
+product, not aspire to it.
 
 ```
 Project: Archimedes — pitch deck for the Agora Agents Hackathon (Canteen × Circle ×
 Arc), submission deadline May 25, 2026. 3-minute pitch + live demo + Q&A.
 
-The deck has 9 slides. Visual style: clean, professional, financial-grade. Think a
-crossover between Wealthfront's marketing site and a serious crypto-native product
-like Circle's own site or Arc.network. Color palette: dark mode primary
-(near-black background, off-white text), with a single brand color accent — use deep
-blue (#2A4DD1 or similar) or violet (#7B2CBF). Typography: a clean serif for
-headlines (the academic-rigor cue), a modern sans-serif for body. No clip art, no
-emojis, no busy decoration.
+The deck is 10 slides. Visual style: clean, professional, financial-grade. Think a
+crossover between Wealthfront's marketing and Arc.network / Stripe / Linear. Dark-mode
+primary (#0E1116 background, #F3F4F6 text), single brand accent (#2A4DD1 deep blue
+OR #7B2CBF violet — pick one and commit). Serif for headlines (Crimson Pro or Source
+Serif Pro — the academic cue); sans for body (Inter or Geist Sans); monospace for
+hashes, addresses, paper IDs. No clip art, no emojis in the artifact, no busy
+decoration, no Greek-temple imagery.
 
-Use this slide-by-slide content:
+Slide-by-slide content:
 
 SLIDE 1 — Title
 Header: Archimedes
-Tagline: Peer-reviewed AI portfolios, settled on Arc.
-Subtitle: The original empiricist meets autonomous on-chain finance.
+Tagline: Linus for quantitative finance.
+Subtitle: A research-grounded strategy-generation instrument — fusion + rigor +
+on-chain provenance, on Arc.
 Attribution: Agora Agents Hackathon — Canteen × Circle × Arc, May 11–25, 2026
 
-SLIDE 2 — The problem
-Title: Today's portfolio products force a tradeoff.
-Three columns:
-- TradFi robo-advisors (Wealthfront, Betterment): rule-based, opaque,
-  no on-chain settlement.
-- DeFi yield aggregators (Yearn, Yield Seeker): chase current yields,
-  no academic rigor, stablecoin-only.
-- AI-flavored crypto agents (Virtuals, SingularityDAO, Theoriq):
-  token-mediated speculation, reasoning opaque.
-Empty fourth column with a "?" — implying Archimedes goes here.
+SLIDE 2 — The problem (one paragraph, centered, no bullets)
+Title: AI portfolio tools today are unfalsifiable.
+Body: "Robo-advisors are rule-based black boxes. AI-flavored crypto agents are
+token-mediated speculation with opaque reasoning. Both ask you to trust. Neither
+surfaces the research their claims rest on — and neither gates against the failure
+mode that breaks most quant strategies in production: in-sample overfitting that
+doesn't survive contact with reality."
+Small footer line: "Curation crisis Nov 2025: $400M+ in DeFi vault losses driven by
+exactly this gap."
 
-SLIDE 3 — What we built
-Title: Archimedes — Peer-reviewed AI portfolios on Arc
-Five bullets with icons:
-- Paper-grounded strategy passport — paper citation + methodology hash + paper-claim
-  delta surfaced honestly (3 strategies seeded: Faber 2007, Moreira-Muir 2017,
-  Moskowitz-Ooi-Pedersen 2012 + buy-and-hold baseline).
-- Selection-bias gate (DSR + PBO + walk-forward OOS + look-ahead audit) at admission.
-- Autonomous agent: regime detection → strategy rotation → rebalancing, with every
-  decision producing a reasoning trace.
-- 10 contracts on Arc testnet today — Vault, AMM, Synthetic Factory, Reasoning Trace
-  Registry — with multi-wallet UX (MetaMask / Coinbase / generic).
-- Commit-reveal trace anchoring: "trace existed *before* the trade," verifiable
-  on-chain.
-Background: stylized version of the architecture diagram from
-docs/architecture-diagram.html (Strategy Engine + Passport → Selection-Bias Gate →
-Autonomous Portfolio Agent → ReasoningTraceRegistry on Arc).
+SLIDE 3 — The product (the spine)
+Title: Describe → Generate → Rigor-gate → Execute → Monitor → Explore
+A horizontal 6-step subway map (see Prompt 9 below for the standalone version). Each
+stop has an icon + one-line caption. Two of the stops are tagged "User" (Describe,
+Monitor+Explore); the others are tagged "System." Below the track, a thin banner:
+"Every step's reasoning is hashed and anchored on Arc — anyone can verify."
 
-SLIDE 4 — DEMO
-Full-bleed slide: just the word "DEMO" in large type, with a small URL underneath —
-either archimedes.hackagora.com (if locked) or 18.171.230.205 (the EC2 IP fallback,
-which works today). This slide gets minimum 90 seconds of live demo time.
+SLIDE 4 — What's actually built (status as of submission)
+Title: Shipped, not planned.
+Two columns:
 
-SLIDE 5 — Competitive landscape
-Title: We fill the gap.
-A two-column "what others do vs. what we do" layout. Reuse the content from the
-competitive slide in demo-script-pitch-deck-outline.md (paste in if Claude Design
-needs it).
-Bottom tagline: "Rule-based, opaque, or token-mediated → AI-driven, paper-
-provenanced, USDC-native"
+LEFT — Generation + intelligence
+- 3-input fusion engine live: user brief × live market regime × 10,000-paper q-fin
+  corpus → grounded strategy
+- 10,000 q-fin papers in a Postgres-canonical corpus with the Corpus Explorer UI
+- 5 reference strategies (Faber 2007 SMA200, Moreira-Muir 2017 vol-managed,
+  Moskowitz-Ooi-Pedersen 2012 TSMOM, George-Hwang 2004 52-week high, buy-and-hold)
+  + a Fixed Income tier for capital-preservation
+- 22 years of real SPY backtest data — no placeholder numbers anywhere
 
-SLIDE 6 — Why we'll score well
-Title: How Archimedes maps to the judging criteria
+RIGHT — Rigor + on-chain
+- Selection-bias gate live: Deflated Sharpe (Bailey & López de Prado 2014) +
+  Probability of Backtest Overfitting (CSCV) + walk-forward OOS + look-ahead audit
+- 2 Tier-1 strategies passing all four gates today (Faber, Moreira-Muir) —
+  the failures are visible, not hidden
+- 10 Arc-testnet contracts deployed: Vault, VaultFactory, SyntheticVault,
+  SyntheticFactory, SyntheticToken, AMMPool, AMMRouter, AssetRegistry,
+  PriceOracle, ReasoningTraceRegistry
+- Multi-wallet UX (MetaMask / Coinbase / generic). 265 backend tests + 16
+  analytics-engine tests green.
+
+SLIDE 5 — DEMO
+Full-bleed slide: the word "DEMO" in large serif type, brand accent, with the live
+URL below in monospace: "http://18.171.230.205" (or the locked domain once announced).
+This slide is the demo timer — minimum 90 seconds of live click-through, ending on
+a strategy passport showing the DSR p-value + PBO + OOS Sharpe + the source-paper
+citations.
+
+SLIDE 6 — The wedge (why "research-grounded" is real)
+Title: We fill the gap others can't.
+A 3-column comparison:
+- TradFi robos (Wealthfront, Betterment): rule-based · opaque · no on-chain
+  settlement · no research provenance
+- DeFi yield (Yearn, Morpho's curated vaults): chase live yield · curation
+  without proof · documented losses in Nov-2025 curation crisis
+- AI crypto agents (Virtuals, SingularityDAO, Theoriq): token-mediated
+  speculation · opaque reasoning · no rigor gate
+- ARCHIMEDES (highlighted column): research-grounded generation · selection-bias
+  rigor gate · on-chain reasoning trace · non-custodial settlement on Arc
+Bottom callout: "Curation-without-proof is the industry default. Curation-with-proof
+is the wedge."
+
+SLIDE 7 — Why we'll score well (judging criteria)
+Title: How Archimedes maps to the rubric.
 Four columns (one per criterion):
-- Agentic Sophistication (30%): regime detection, autonomous rebalancing,
-  strategy rotation, on-chain reasoning traces.
-- Traction (30%): pre-curated strategies, day-1 portfolios, strategy
-  leaderboard, target 50+ users.
-- Circle Tool Usage (20%): Wallets, USYC, CCTP, Gateway, Paymaster,
-  Contracts — full stack.
-- Innovation (20%): paper-grounded provenance, on-chain reasoning traces,
-  academic accountability for autonomous trading.
-RFB tagline at bottom: "RFB 04 primary. RFB 02 math primitive. RFB 06 adjacent."
+- Agentic Sophistication (30%): 3-input fusion, autonomous rebalancing on regime
+  change, on-chain reasoning traces, agentic-issue pipeline self-iterating the
+  codebase.
+- Traction (30%): live testnet deploy, arc-canteen telemetry surface wired,
+  coordinated launch within submission window.
+- Circle Tool Usage (20%): Wallets, USYC, CCTP, Gateway, Paymaster, full
+  Contracts stack on Arc.
+- Innovation (20%): paper-grounded provenance, externally-verifiable rigor gate
+  (DSR/PBO), commit-reveal trace anchoring (provable causal ordering).
+RFB tagline: "RFB 04 primary. RFB 02 math primitive. RFB 06 adjacent."
 
-SLIDE 7 — Why now
-Title: The agent economy is real.
+SLIDE 8 — Why now (one slide, 3 numbers)
+Title: The agent economy is real, but unaccountable.
 Three big-number callouts:
 - $222M — Circle Arc presale at $3B FDV, May 11, 2026 (BlackRock among investors)
-- 700K tx/month — Olas Pearl, 30% MoM growth
-- $470M aGDP — Virtuals Protocol, 18K+ agents
-Sub-tagline: "But nobody is building paper-grounded, verifiably auditable
-portfolio agents. That's the gap."
+- $400M+ — DeFi curated-vault losses in the Nov 2025 curation crisis
+- 18,000+ — AI agents deployed via Virtuals Protocol ($470M aGDP)
+Sub-tagline: "Capital is flowing into agentic finance faster than accountability is
+being built. Archimedes is the accountability layer."
 
-SLIDE 8 — Roadmap
-Title: What we ship next.
-A horizontal timeline with four milestones:
-- Now: Hackathon submission, curated v1 library, autonomous rebalancing on Arc.
-- 30 days: Productize the arxiv ingest pipeline.
-- 90 days: Strategy marketplace, EURC support, DAO-governed curation.
-- 180 days: v2 verticals (prediction markets, perp-aware portfolios).
+SLIDE 9 — Honest framing (the "anti-claims" slide)
+Title: What we're NOT promising.
+Three bullets, plain text, no decoration:
+- We don't promise alpha. We promise *evidence-grounded generation with externally
+  verifiable rigor*. Past performance, even of validated strategies, doesn't
+  guarantee future returns.
+- Arc is testnet — by design. Putting real funds on a chain that's <6 months from
+  mainnet would be reckless. The contracts are real; the settlement is real
+  testnet USDC.
+- The corpus is generated-from, not retrieved-from. The LLM reads cited papers
+  and produces a strategy spec; it does not lift strategies verbatim from any
+  single paper.
+Sub-tagline: "Honest framing is the wedge. Anyone can promise 100x. We can
+*prove* what our agent reasoned about and why."
 
-SLIDE 9 — Team + ask
+SLIDE 10 — Team + ask
 Title: The team.
-5 photos + one-line credentials:
-- Dan Browne — PhD biochemistry, LanzaTech.
-- Marten Windler — Systems Engineering, U. Bremen.
-- Daniel Reis dos Santos — Backend engineer, distributed systems.
-- Chuan Bai — CTO @ Gyld Finance; ex-CoinShares trading platform.
-- Önder Akkaya — ASA Statistical Insight World Champion; trainee actuary.
+5 names + one-line credentials each:
+- Dan Browne — Senior Scientist @ LanzaTech, PhD biochemistry. Strategy engine, pitch.
+- Marten Windler — Systems Engineering, U. Bremen. Off-chain ↔ on-chain integration.
+- Daniel Reis dos Santos — Backend engineer, distributed systems. Frontend lead.
+- Chuan Bai — CTO @ Gyld Finance; ex-CoinShares trading platform. Contracts + infra.
+- Önder Akkaya — ASA Statistical Insight World Champion. Portfolio math + rigor.
+5 timezones, 5 days, a day-job constraint on two of us, and we shipped it.
 
-Ask: "We're asking for: feedback on the strategy passport as a candidate open
-standard; introductions to quant researchers who'd contribute strategies;
-partnerships with RWA-token issuers."
+Ask: "Feedback on the strategy passport as a candidate open standard. Introductions
+to quant researchers who'd contribute strategies. Partnerships with RWA-token
+issuers who want their assets in research-grounded portfolios."
 
 End-of-deck tagline: "The lever is academic research. The fulcrum is autonomous AI.
 The world is your portfolio."
 
-Generate all 9 slides. Maintain visual consistency throughout — same color palette,
-same typography, same density of information.
+Generate all 10 slides with consistent palette / typography / information density.
+Where I've called out a comparison diagram (Slides 3, 6) or a status grid (Slide 4),
+preserve the layout — those visual structures are load-bearing for the pitch.
 ```
 
 **What to do with the output:**
 
-- Review each slide; iterate on the ones that don't land.
-- Export to a deck format (Keynote, PowerPoint, PDF) for the actual pitch.
-- Print one as a one-page handout (Slide 1 + Slide 3 + Slide 5 condensed) if Canteen
-  allows handouts.
+- Review each slide; iterate the ones that don't land. Slides 4 (status) and 6 (the
+  wedge) are the two most likely to need refinement — both carry a lot of substance.
+- Export to a deck format (Keynote / PowerPoint / PDF) for the actual pitch.
+- Pull the wedge diagram from Slide 6 as a standalone image for the launch tweet and
+  the Discord pin.
 
 ---
 
-## Prompt 3 — High-fidelity UI refinement (onboarding + dashboard)
+## Prompt 3 — UI refinement toward the simplified page tree (Day-9 generator-first)
 
 **Setup notes:** Use Claude Design's **Prototype** mode with **High fidelity** selected.
-**Updated framing (Day 4):** the team has shipped a live React/Vite UI at
-[`http://18.171.230.205/`](http://18.171.230.205/) with `Layout`, `WalletConnect`, and
-`Trade` components. This prompt now serves as **visual refinement** — give Claude Design
-the live URL as a starting reference and ask it to propose evolutions, rather than
-generating from scratch.
+This is a refinement prompt against the live UI at
+[`http://18.171.230.205/`](http://18.171.230.205/), targeting the proposed
+simplification in [`docs/ui-simplification-proposal.md`](ui-simplification-proposal.md).
+**The Day-4 risk-tier-cards onboarding flow is retired** — the product is now
+generator-first: users describe what they want, fusion produces a candidate strategy,
+the rigor gate admits or rejects, and the user inspects + deposits. Risk tolerance is
+*an input to the brief*, not a top-level page.
 
 ```
-Project: Archimedes — frontend visual refinement.
+Project: Archimedes — frontend visual refinement toward a simplified page tree.
 
 Live reference URL (please fetch + study before generating): http://18.171.230.205/
-This is our current shipped UI — React 19 + Vite 8 + viem 2.48. The wallet-connect
-modal is already wired (MetaMask / Coinbase / generic browser wallet) and the Trade
-tab is live against deployed AMM contracts on Arc testnet (chain ID 5042002).
+This is the shipped UI — React 19 + Vite 8 + viem 2.48 + plain CSS (no Tailwind,
+no Next.js). Wallet connect (MetaMask / Coinbase / generic), Marketplace, Trade,
+Vaults, Intelligence (Corpus Explorer + Risk Analysis) all live.
 
-Tech stack target: React 19 + Vite 8 + plain CSS (we are not using a CSS framework;
-no Tailwind, no Next.js). The refined screens should be implementable in that stack —
-don't generate UI that requires custom canvas/WebGL or anything exotic.
+Goal: refine the live UI toward a tighter top-level navigation:
+- LANDING (current, lightly polished)
+- GENERATE (NEW top-level page — promotes the strategy generator from buried to
+  primary call-to-action)
+- MY PORTFOLIO (consolidates current Trade + Vaults + the personalized Risk view)
+- LIBRARY (consolidates current Marketplace + Strategies + Corpus Explorer)
+- LEARNINGS (NEW page — surfaces winning AND losing strategies with reasoning
+  traces fully readable; "what worked, what didn't, why")
 
-I need three connected screens that walk a user through the core flow:
+Generate four connected screens that walk a non-expert user through the spine.
+Information density should feel like a serious financial product — like Wealthfront
+crossed with Linear — not like a crypto degen app.
 
-SCREEN 1 — Landing / Risk Profile Selection
-The first screen after wallet connect. Header with logo, wallet address in top-right.
-Hero section: short headline ("Peer-reviewed AI portfolios, autonomous on Arc"),
-subhead, primary CTA implied.
-Below the hero: four cards (Conservative / Moderate / Aggressive / Hyper-Risky).
-Each card shows:
-- Profile name + a one-line description
-- Target volatility band
-- Max drawdown
-- USYC floor percentage
-- A small horizontal stacked bar showing approximate asset-class breakdown
-- "Select this profile" button
-The cards should look like the user could comfortably skim them and choose. Use
-distinct accent colors per profile (Conservative = green, Moderate = blue,
-Aggressive = orange, Hyper-Risky = red), but keep them tasteful — no clip art.
+SCREEN 1 — Generate (the new top-level page)
+The page that replaces "where do I start" with "tell us what you want."
+Layout:
+- Header: "Generate a strategy"
+- Subheader: "Describe what you want. We'll fuse your intent with live market data
+  and 10,000 q-fin papers into a candidate strategy, then run it through our
+  rigor gate."
+- Input area: a single large prose textarea — "Tell us about your goal" — with
+  3-4 example chips below it the user can click ("Steady income, low drawdown",
+  "Growth-oriented, OK with volatility", "Capital preservation", "Diversified
+  cross-asset").
+- Three optional structured inputs below (collapsible "Advanced"):
+  - Asset class slider (Fixed Income → Equities → Crypto)
+  - Risk tolerance slider (Conservative → Hyper-Risky)
+  - Time horizon (3 mo / 1 yr / 5 yr / 10 yr)
+- A single "Generate" CTA button
+- Below: a small panel showing what fusion will see — "Your brief" + "Current
+  market regime: VIX 14, equity-bond corr +0.3" + "Corpus: 10,000 papers across
+  9 q-fin categories" — making the 3 inputs visible
 
-SCREEN 2 — Portfolio Preview
-After selecting a profile, the user sees the constructed portfolio before depositing.
-Layout: top section shows a donut chart of asset weights, with a legend.
-Middle section: a list of selected strategies (4–6 cards horizontally scrollable),
-each showing:
-- Strategy name (with paper citation in small text: "Jegadeesh & Titman 1993")
-- Backtest Sharpe (with paper-claimed Sharpe in parentheses for comparison)
-- One-line methodology summary
-- Weight in the portfolio
-- "View paper" link
-Bottom section: a "Deposit USDC" CTA, plus a small "Customize" link for users who
-want to manually adjust strategy weights.
+SCREEN 2 — Generate (live result, after click)
+Shows the candidate strategy as it comes back from the engine.
+Layout:
+- Top: the strategy name + a colored rigor badge (Tier-1 / Tier-2 / Rejected)
+- The strategy spec card (entry/exit rules, sizing, asset universe, 3-4 source
+  papers cited with arXiv IDs in monospace)
+- Backtest results in a strip: Sharpe, Max DD, CAGR, Win Rate, all with the
+  paper-claim deltas visible
+- Rigor gate verdict panel (collapsible — open by default for Tier-1):
+  - DSR p-value (with "what this means" inline tooltip)
+  - PBO score (same)
+  - OOS Sharpe / IS Sharpe ratio
+  - Look-ahead audit check
+  - Trade count
+- Two CTAs: "Deploy to vault" (primary, only for Tier-1) and "Generate another"
+- "Why these papers?" expandable section listing the cited papers with one-line
+  reasoning for each — surfaces fusion's selection logic
 
-SCREEN 3 — Portfolio Dashboard (after deposit)
-The live state. Layout:
-- Top stat row: Total value (USDC), 24h change, 7d change, current regime
-  classification (Risk-On / Risk-Off / Transition / Crisis).
-- Performance chart: line chart of portfolio value over time, with benchmark line
-  (BTC or S&P 500 for comparison).
-- Current positions table: token, weight, current value, % from target, last
-  rebalance.
-- "Decisions" tab (this is the differentiator) — a chronological feed of agent
-  decisions:
-  - Each decision has: timestamp, decision type, trigger, one-sentence summary,
-    "View reasoning trace" link.
-  - The first item in the feed has a "Verify trace hash" button that, when clicked,
-    shows a small modal with the hash recomputation result (green checkmark animation).
-- Sidebar with: deposit/withdraw buttons, portfolio stats, link to the strategy
-  leaderboard.
+SCREEN 3 — My Portfolio (consolidates Trade + Vaults + personalized Risk)
+Layout:
+- Top stat row: Total USDC value · 24h change · 7d change · current portfolio
+  risk profile (computed, not chosen)
+- Performance chart (large) — portfolio equity curve with SPY benchmark line
+- Two-column body:
+  LEFT: "Holdings" — table of vault tokens with weight, value, last rebalance
+  RIGHT: "Active strategies" — cards of the strategies in your portfolio with
+  one-line status and a link to each strategy's detail page (Prompt 4)
+- Bottom: "Agent activity feed" — chronological list of agent decisions
+  (rebalances, risk-off rotations, position adjustments), each with timestamp,
+  one-line summary, and "View reasoning trace" link (opens Prompt 5's modal)
+- Sidebar: deposit / withdraw / rebalance buttons + a small "Risk profile
+  comparison" card (the band visualization currently on the standalone Risk
+  page — consolidated here)
 
-Visual style: Dark mode primary, off-white text, brand accent color (deep blue or
-violet). Typography: clean and modern; small monospace where on-chain hashes /
-addresses appear; serif for big headlines (the academic-rigor cue). Information
-density: high but not crowded — this user is checking on a portfolio, not browsing.
+SCREEN 4 — Library (consolidates Marketplace + Strategies + Corpus Explorer)
+The "browse what exists" surface. Three tabs at the top: All Strategies / Papers /
+Vault Leaderboard. Each shipping today; here we just consolidate them into one
+top-level nav entry.
+Default tab: All Strategies.
+- Left filter rail: Asset class · Risk tier · Rigor verdict (Tier-1 only / All) ·
+  Sort (Sharpe / OOS Sharpe / Recently added)
+- Main: grid of strategy cards, each showing name, rigor badge, key metrics
+  (Sharpe, max DD, CAGR), source paper count, and "View detail" link
+- Empty-state copy that nudges back to Generate: "Don't see one that fits?
+  → Generate a custom strategy"
 
-Make the prototype interactive enough that I can flow from screen 1 → 2 → 3 with
-the navigation working. Don't worry about real data; placeholder values are fine.
+Add ONE new convention across all screens: **in-line term definitions, not a
+glossary page.** Any finance acronym (DSR, PBO, Sharpe, Calmar, OOS, MVO, Kelly,
+CAGR, MDD) on first appearance gets a small dotted-underline link; hover or tap
+opens a 1-2-sentence definition popover. Acronyms expanded inline on first use
+within a section.
+
+Visual style: Dark mode (#0E1116 background, #F3F4F6 text, #2A4DD1 or #7B2CBF
+accent), serif headlines (Crimson Pro / Source Serif Pro), sans body
+(Inter / Geist Sans), monospace for arXiv IDs and hashes. Information density:
+medium-high. Each screen should feel like one coherent picture, not a wall of
+panels.
+
+Make the prototype interactive enough that the user can flow Generate → result →
+Deploy → My Portfolio → strategy detail → reasoning trace. Don't worry about real
+data; placeholder values are fine.
 ```
 
 **What to do with the output:**
 
-- Share with Marten + Daniel R. (current UI contributors). They evolve the live React
-  components using the refined visuals as a reference.
-- Iterate on any screens that don't match the intended feel.
-- Export key screens for the pitch deck (Slide 3 can use Screen 2; Slide 4's demo will
-  use the real implementation at `18.171.230.205`).
+- Share with Marten + Daniel R. as the **refinement target** for the post-MVP UI
+  polish pass (not a from-scratch reimplementation — incremental moves toward this
+  page tree). The page consolidation moves (Trade + Vaults → My Portfolio;
+  Marketplace + Strategies + Corpus Explorer → Library) are the structural lift.
+- The Generate screen (Screen 1) is the biggest user-facing move — feedback on that
+  one is highest-leverage.
+- Use Screen 2 (the generated-strategy result) as the screenshot for the Library /
+  README hero — it visually carries the "research-grounded" claim.
 
 ---
 
-## Prompt 4 — Strategy detail page (single screen, for the deck)
+## Prompt 4 — Strategy passport / detail page (Day-9 refresh, real numbers)
 
-**Setup notes:** Single screen. Use **Prototype / High fidelity**.
+**Setup notes:** Single screen. Use **Prototype / High fidelity**. This is the most
+important content surface in the entire product — judges will land here when they
+click any strategy from the demo. The example uses Moreira-Muir 2017 because it's
+one of the 2 Tier-1 strategies that actually passes the rigor gate today (real
+numbers, not aspirational).
 
 ```
-Single screen: the Archimedes Strategy Detail page.
+Single screen: the Archimedes Strategy Passport.
 
-Context: the user clicked on a strategy in their portfolio. This screen surfaces the
-strategy's "passport" — the verifiable provenance.
+Context: a user clicked on a strategy from the Library or from their portfolio.
+This screen surfaces the strategy's "passport" — the verifiable provenance + the
+full rigor verdict.
 
-Layout:
-- Header: Strategy name + "Paper-grounded" badge.
-- Subheader: paper citation, formatted like an academic reference:
-  "Jegadeesh, N., & Titman, S. (1993). Returns to buying winners and selling losers:
-  Implications for stock market efficiency. Journal of Finance, 48(1), 65–91.
-  [arxiv:... | doi:...]"
-- Three-column metadata strip:
-  - Paper-claimed Sharpe: 1.16
-  - Our backtest Sharpe (10-year, 10bps costs): 0.87
-  - Delta: -25%
-  - All three should be hash-anchored on Arc (small "View on Arc" link)
-- Methodology section: ~3 paragraphs of plain-English explanation, with key terms
-  bolded.
-- Backtest section: equity curve chart with our backtest, plus a comparison line
-  for the paper's claimed equity curve if available.
-- Validation section: list of audit checks passed:
-  ✓ Walk-forward (70/30 split)
-  ✓ No look-ahead bias detected
-  ✓ Out-of-sample Sharpe > 0.5
-  ✓ Curator validated (with curator wallet address)
-- On-chain registration: tx hash + "View on Arc Explorer" link.
+Use Moreira-Muir 2017 as the worked example (it's one of our 2 currently-Tier-1
+strategies). Layout:
 
-Visual style: same dark-mode + deep-blue accent as the rest of the prototype. This
-screen should feel like a research report, not a marketing page — that's the "we're
-serious about academic rigor" cue.
+Header strip:
+- Strategy name: "Moreira-Muir Volatility-Managed"
+- Rigor badge: large pill saying "TIER-1 — Archimedes Verified" with a small
+  checkmark icon, brand-accent fill
+- Sub-header: paper citation, formatted like an academic reference —
+  "Moreira, A., & Muir, T. (2017). Volatility-Managed Portfolios.
+  Journal of Finance, 72(4), 1611–1644. [arxiv: 1604.05601 | doi:10.1111/jofi.12513]"
+
+Three-column metadata strip (each card monospace for the numeric):
+- Backtest Sharpe (2004–2026, real SPY, 10bps costs): 0.769
+- Paper-claimed Sharpe: 0.60
+- Delta vs paper: +28% (small green chip — we BEAT the paper)
+- Sub-line: "Computed against 22 years of SPY data. Backtest code hash: 0x4f7a…2c91
+  on Arc."
+
+Methodology section (~3 paragraphs of plain-English explanation):
+- What the strategy does
+- Why it's expected to work (the economic intuition)
+- The implementation details (vol-targeting window, leverage cap, costs assumed)
+- Key terms bolded with the same dotted-underline inline-definition convention
+  used elsewhere
+
+Rigor gate verdict panel (the headline differentiator — give it visual weight):
+- "Selection-bias gate: PASSED" header
+- A 2-column grid of the four gates with the value + threshold + pass indicator:
+  - DSR (Deflated Sharpe Ratio): p = 0.995 · threshold > 0.95 · ✓
+  - PBO (Probability of Backtest Overfitting): 0.39 · threshold < 0.5 · ✓
+  - Walk-forward OOS Sharpe ratio: 1.26× in-sample · threshold ≥ 0.5× · ✓
+  - Look-ahead audit: passed · ✓
+- Below the grid: "What this means" plain-English explainer (~2 sentences) —
+  "DSR says the observed Sharpe is statistically distinguishable from zero after
+  correcting for non-normal returns and the number of strategies considered. PBO
+  says this strategy is not expected to underperform the median strategy out of
+  sample."
+
+Backtest section:
+- Equity curve chart (large): our backtest vs SPY buy-and-hold benchmark, with
+  the paper's claimed equity curve as a third line (dashed) where available
+- Below the chart: a strip of the 22-year stats — CAGR · Max DD · Calmar · Win
+  Rate · Volatility · Correlation to SPY
+
+Provenance section (the on-chain layer):
+- "Reasoning trace anchored on Arc"
+- Trace hash (monospace, truncated, with copy-icon): 0x4f7a…2c91
+- Block: 12,847,331 · Timestamp: 2026-05-20T14:23Z
+- "View on Arc Explorer" link (opens https://explorer.testnet.arc.network/tx/...)
+- "Verify trace" button — when clicked, animates a recomputation of the hash from
+  the published off-chain trace and shows a green-checkmark "Verified" badge
+
+Source-papers section:
+- 3-4 small cards, each with: arXiv ID (monospace), title (truncated), authors,
+  primary category, and a "Why fusion chose this" one-line annotation
+- Click → opens the paper detail (from Corpus Explorer)
+
+Visual style: dark mode primary, brand accent for the Tier-1 badge + the
+verification button, serif for big headlines, monospace for numerics + hashes +
+arXiv IDs. This screen should feel like a research report, not a marketing page —
+that's the "we're serious about academic rigor" cue.
 ```
 
 ---
 
-## Prompt 5 — Reasoning trace viewer modal
+## Prompt 5 — Reasoning trace viewer modal (Day-9 refresh)
 
-**Setup notes:** Modal / overlay component within the portfolio dashboard. Use
-**Prototype / High fidelity**.
+**Setup notes:** Modal / overlay component opened from the "Agent activity feed"
+on the My Portfolio screen (Prompt 3 Screen 3) or from any strategy passport
+(Prompt 4). Use **Prototype / High fidelity**.
 
 ```
 Component: the Reasoning Trace Viewer modal.
 
-Context: the user clicked "View reasoning trace" on a specific agent decision in the
-Decisions tab. A modal opens showing the full trace.
+Context: the user clicked "View reasoning trace" on a specific agent decision.
+The modal opens showing the full trace — every step the agent considered, every
+tool it called, what it decided, what it did on-chain, and how to verify.
 
-Layout:
-- Header: Decision type + trigger + timestamp
-  ("Autonomous Rebalance — Regime change to Risk-Off — 2026-05-23 14:32 UTC")
-- Market context section: a compact grid showing the metrics the agent saw at
-  decision time (VIX, S&P 50/200 crossover, credit spreads, BTC dominance,
-  cross-asset correlation, USYC yield).
-- Reasoning section: the LLM-generated explanation as plain prose. Should look
-  like writing, not bullet points — this is what a thoughtful analyst would write.
-- Action taken section: a "before vs. after" portfolio weights comparison, plus
-  a list of trades executed with on-chain tx hashes for each.
-- Tool calls section: collapsible — by default shows count ("9 tool calls"), expand
-  to see each tool, input hash, output hash, latency.
-- Verification footer: content hash + storage pointer + "Verify trace" button.
-  When clicked, animates a recomputation of the hash and shows pass/fail with
-  green checkmark or red X.
+Layout (header sticky, body scrolls):
 
-Visual style: dense but organized. The header should be sticky if the modal
-scrolls. Hash strings displayed in small monospace with copy-to-clipboard buttons.
+Header (sticky):
+- Decision type + trigger + UTC timestamp
+  (e.g. "Autonomous Rebalance — Vol-targeting threshold crossed — 2026-05-23 14:32 UTC")
+- Status pill: "Executed" or "Considered, not executed"
+- Close button (X) in the top-right
+
+Market context section:
+- A compact grid showing the metrics the agent saw at decision time —
+  VIX · S&P 50/200 crossover · credit spreads · BTC dominance · cross-asset
+  correlation · USYC yield · realized vs implied vol delta
+- Each value monospace, with a small "↑ / ↓ / ↔" indicator vs the previous decision
+
+Source signals section:
+- Which corpus papers the fusion engine referenced when this decision was
+  considered. 2-3 small cards with arXiv ID + title + the specific claim invoked
+  ("paper claims vol-targeting reduces tail risk in this regime")
+
+Reasoning section:
+- The LLM-generated explanation as plain prose. Should read like a thoughtful
+  analyst wrote it, not a bullet-pointed checklist. 2-4 paragraphs typically.
+- Inline definitions for any acronym on first use (same dotted-underline pattern
+  as Prompts 3 and 4)
+
+Action taken section:
+- "Before vs After" portfolio weights comparison (two stacked horizontal bars)
+- A short list of trades executed, each with: from-asset → to-asset, USDC
+  amount, slippage, on-chain tx hash (monospace, truncated, copyable, link to
+  Arc Explorer)
+
+Tool calls section (collapsible, collapsed by default):
+- Header: "9 tool calls" with expand chevron
+- When expanded: a table of (tool name, input hash, output hash, latency)
+- Useful for technical judges; doesn't clutter the default view
+
+Verification footer (always visible):
+- Trace content hash (monospace) — the hash that was anchored on Arc
+- Storage pointer (where the full off-chain trace lives — could be S3 URL or
+  IPFS CID, monospace)
+- "Verify trace" button — when clicked, animates a recomputation of the hash
+  from the published off-chain JSON and shows pass/fail with a green-checkmark
+  or red-X animation
+- "View on Arc Explorer" link to the on-chain anchor tx
+
+Visual style: dense but organized. Header sticky. Hash strings always monospace
+with copy-to-clipboard buttons. Generous whitespace between sections so the modal
+doesn't feel like a wall of text.
 ```
-
----
-
-## Logo color and typography proposal (use across all prompts)
-
-If you want consistency across the slide deck and the UI prototype, propose this
-design system up front:
-
-**Primary palette:**
-
-- Background: `#0E1116` (near-black)
-- Surface: `#1A1F2E` (slightly lighter for cards)
-- Text primary: `#F3F4F6` (off-white)
-- Text secondary: `#9CA3AF` (muted gray)
-- Brand accent: `#2A4DD1` (deep blue) — or alternative `#7B2CBF` (violet)
-- Success: `#10B981` (green, for "Verify trace" checkmarks)
-- Warning: `#F59E0B` (amber, for "paper-claim delta" if > 30%)
-- Error: `#EF4444` (red, for failed verifications)
-
-**Typography:**
-
-- Headlines: `Crimson Pro` or `Source Serif Pro` (serif — the academic cue)
-- Body: `Inter` or `Geist Sans` (clean modern sans)
-- Monospace (hashes, addresses): `JetBrains Mono` or `Geist Mono`
-
-You can paste this design-system block into any Claude Design prompt to maintain
-consistency.
 
 ---
 
@@ -517,6 +648,349 @@ density.
 
 ---
 
+## Explainer prompts (Day-9 addition, 2026-05-20)
+
+These prompts produce **explanatory visualizations** rather than UI screens or branding.
+The intent: make the corpus-→-fusion-→-strategy chain visually graspable for the team,
+for judges, for non-finance audiences. Suitable for embedding in the deck, the README,
+the live app's "How it works" section, or as standalone images to share in Discord /
+on social during the launch.
+
+All of these reference the design system above. If you've already done the design-system
+setup in your Claude Design workspace, the prompts will inherit it; otherwise paste the
+palette + typography block above into the conversation first.
+
+### Prompt 6 — Corpus substrate diagram (3 layers)
+
+**Mode:** From template / Other → "Diagram" (or "Slide" if you want it deck-ready)
+
+```
+Create a 3-layer architecture diagram showing how the Archimedes q-fin paper corpus is
+built and consumed. Vertical orientation, top-to-bottom data flow with arrows.
+
+LAYER 1 (top) — "Seed (committed, deterministic)"
+- A file labeled "data/corpus/manifest.jsonl"
+- Subtitle: "10,000 curated arXiv papers, 14 MB, ships with the repo"
+- Small icon for "no network required"
+
+LAYER 2 (middle) — "Truth (Postgres, mutable)"
+- A database cylinder labeled "papers + corpus_meta tables"
+- Subtitle: "Persisted in pgdata volume, survives redeploys"
+- Two arrows entering from the top:
+  - Left arrow from Layer 1: "Idempotent seed at every startup"
+  - Right arrow from a small arXiv logo (outside Layer 1): "Live intake (incremental)"
+
+LAYER 3 (bottom) — "Heavy artifact (persistent volume, lazy)"
+- A volume icon labeled "archimedes-corpus-artifact"
+- Subtitle: "Embeddings, clusters, knowledge graph, summaries"
+- Small badge: "Built out-of-band, never on the deploy path"
+- Note in italics: "Empty for now — boots fine if missing (loud degradation)"
+
+Below all three layers, a single arrow pointing down to a box labeled:
+"Consumed by: strategy_fusion.load_corpus() + /api/papers + Corpus Explorer UI"
+
+Visual style: clean technical diagram, dark background per the design system, single
+brand accent for arrows, monospace for table/file names, serif for layer titles. No
+clip art. Should read like an architecture diagram an engineer would draw on a
+whiteboard, not a marketing illustration.
+
+Use case: Slide in the pitch deck explaining "the substrate"; also embedded in
+docs/architectural-principles.md as the canonical reference.
+```
+
+### Prompt 7 — 3-input fusion explainer (the wedge in one image)
+
+**Mode:** From template / Other → "Diagram"
+
+```
+Create a fusion diagram showing how Archimedes generates a research-grounded strategy
+from three inputs. This is the single most important "what makes us different" image
+in the deck — it must read clearly in 5 seconds.
+
+CENTER: A large hexagon or rounded square labeled "FUSION" with subtitle
+"strategy_fusion.py + LLM (GLM)".
+
+THREE INPUTS feeding in from the left, top, and right (or all from the left, stacked
+— pick whichever reads cleaner):
+
+INPUT 1 — "User brief"
+- Icon: person silhouette or speech bubble
+- Caption: "What you want — asset class, risk tolerance, time horizon"
+- Example bubble: "Steady income, low drawdown, 5-year horizon"
+
+INPUT 2 — "Live market regime"
+- Icon: candlestick chart or volatility curve
+- Caption: "Current conditions — volatility, asset correlations, regime indicators"
+- Example bubble: "VIX 14, rates flat, equity-bond corr +0.3"
+
+INPUT 3 — "Research corpus"
+- Icon: stack of papers or a small database cylinder
+- Caption: "10,000 q-fin papers — methods, evidence, paper-claimed Sharpe"
+- Example bubble: "Moreira-Muir 2017, Faber 2007, George-Hwang 2004…"
+
+OUTPUT (arrow leaving the right or bottom of the fusion box):
+- A strategy spec card showing:
+  - Strategy name
+  - Entry/exit rules (1-2 lines)
+  - Citations: 3-4 arXiv IDs in monospace
+  - A small badge: "Reasoning trace → on-chain"
+
+Beneath the output, a thin downward arrow labeled "Rigor gate (next prompt)" so this
+diagram is composable with Prompt 8.
+
+Visual style: dark background, brand-accent arrows, the three inputs sized equally so
+no one input dominates (that's the point — none of them alone gives you the answer).
+Monospace for the arxiv IDs and rule snippets. Serif for the section headings.
+
+Use case: Deck slide titled "How fusion works"; also the hero image for the
+"research-grounded" section of the live app's landing page.
+```
+
+### Prompt 8 — Rigor gate flowchart
+
+**Mode:** From template / Other → "Diagram" (flowchart)
+
+```
+Create a flowchart showing the rigor gate that every Archimedes-generated strategy
+passes through before being admitted to the library. Vertical orientation, top-down.
+
+START at the top with a card labeled "Candidate strategy"
+- Subtitle: "From fusion (Prompt 7)"
+
+Then a series of decision diamonds, each in sequence, each with a green check (pass)
+arrow continuing down and a red X (fail) arrow exiting to the right into a single
+"Reject + preserve trace" terminal box on the right side:
+
+GATE 1: "DSR (Deflated Sharpe Ratio)"
+- Subtitle: "Bailey & López de Prado 2014"
+- Pass criterion: "p-value > 0.95 — Sharpe credibly > 0 after multiple-testing correction"
+
+GATE 2: "PBO (Probability of Backtest Overfitting)"
+- Subtitle: "CSCV framework"
+- Pass criterion: "< 0.5 — not expected to underperform median out-of-sample"
+
+GATE 3: "Walk-forward OOS"
+- Subtitle: "70/30 train/test split"
+- Pass criterion: "OOS Sharpe within 50% of in-sample — no cliff"
+
+GATE 4: "Look-ahead audit"
+- Subtitle: "Static analysis of strategy code"
+- Pass criterion: "No future-data leakage detected"
+
+GATE 5: "Trade count + paper-claim delta"
+- Subtitle: "Sanity checks"
+- Pass criterion: "Trades ≥ 10 (or always-on) AND backtest Sharpe ≥ 0.5 × paper claim"
+
+If all five pass → green terminal box at the bottom: "ADMITTED — Tier-1 (Archimedes
+Verified 🏆)"
+
+To the right of the entire pipeline, a small panel listing "What's surfaced in the
+strategy passport regardless of pass/fail": DSR value, PBO score, OOS/IS Sharpe ratio,
+paper-claim delta, look-ahead audit result, the reasoning trace.
+
+Visual style: clean flowchart, dark background, green = pass, red = fail, brand
+accent for the gates themselves. Serif for gate names, sans for criteria, monospace
+for thresholds (>0.95, <0.5, etc.).
+
+Use case: Deck slide titled "How we gate strategies"; also the canonical reference
+diagram in docs/specs/selection-bias-corrections-spec.md and on the strategy passport
+page in the live app.
+```
+
+### Prompt 9 — End-to-end user journey
+
+**Mode:** Slide deck (single slide, horizontal)
+
+```
+Create a 5-step horizontal user-journey diagram for Archimedes. This is the spine of
+the product — every other prompt feeds into one of these steps. Should read like a
+subway map: clean, sequenced, each stop has a name and a one-line outcome.
+
+LEFT TO RIGHT, FIVE STOPS connected by a single horizontal track:
+
+STOP 1: "Describe"
+- Icon: chat bubble
+- Caption: "Tell Archimedes what you want — asset class, risk, horizon"
+
+STOP 2: "Generate"
+- Icon: small spark / lightbulb on top of the fusion hexagon
+- Caption: "3-input fusion produces a research-grounded strategy"
+- Tiny note below: "See Prompt 7"
+
+STOP 3: "Rigor-gate"
+- Icon: shield with a checkmark
+- Caption: "DSR + PBO + OOS + audit. Pass → admit. Fail → preserve trace."
+- Tiny note below: "See Prompt 8"
+
+STOP 4: "Execute"
+- Icon: vault / safe (the non-custodial ERC-4626 vault)
+- Caption: "Deploy into your non-custodial vault on Arc. USDC settlement."
+
+STOP 5: "Monitor + Explore"
+- Icon: dashboard / line chart
+- Caption: "Watch performance, inspect reasoning traces, explore the library that grew with you"
+
+BELOW THE TRACK, a horizontal banner spanning all 5 stops:
+"Every step's reasoning is hashed and anchored on Arc via ReasoningTraceRegistry —
+anyone can verify."
+
+Visual style: brand accent for the track, dark background, each stop styled like a
+subway-station node (filled circle + label above + caption below). Stops 1 and 5 are
+labeled "User" (the person), stops 2/3/4 are labeled "System" (the agent) — make this
+distinction visible (small subtitle under each station).
+
+Use case: The single most important slide in the deck — appears right after the
+problem framing, before any architecture detail. Also the hero image on the live app's
+landing page and the README. If this image works on its own, the rest of the deck is
+support.
+```
+
+### Prompt 10 — On-chain reasoning trace anchoring
+
+**Mode:** From template / Other → "Diagram"
+
+```
+Create a diagram showing how Archimedes anchors a reasoning trace on Arc — the
+provenance primitive that makes our claims externally verifiable.
+
+LEFT SIDE — "Off-chain (full trace)"
+- A document/scroll icon labeled "Reasoning trace"
+- Bullets inside:
+  - "Fusion brief (your intent + market + papers)"
+  - "Selected source papers (arXiv IDs)"
+  - "LLM reasoning steps"
+  - "Backtest results (DSR, PBO, OOS Sharpe)"
+  - "Rigor-gate verdict"
+- Subtitle: "Stored in Postgres + Redis; full text recoverable"
+
+MIDDLE — a hash function symbol with an arrow leading into it from the left and out
+of it on the right
+- Caption: "SHA-256"
+
+RIGHT SIDE — "On-chain (anchor)"
+- A small smart-contract icon labeled "ReasoningTraceRegistry"
+- Subtitle: "Deployed on Arc testnet"
+- Inside the contract box:
+  - "traceHash: 0x4f7a…2c91"  (monospace, truncated)
+  - "blockNumber: 12,847,331"
+  - "blockTime: 2026-05-20T14:23Z"
+- Bottom annotation: "Atomic. Sub-second finality. USDC for gas."
+
+BELOW THE WHOLE THING, a small verification panel:
+"Anyone can: recompute the hash of the published off-chain trace, compare against the
+on-chain anchor, and prove the trace existed at the recorded block time."
+
+Optional callout (top right corner): "v1.5 upgrade — commit-reveal — proves the trace
+existed BEFORE the trade (causal ordering, not just temporal coexistence)."
+
+Visual style: dark background, monospace for hashes/block numbers, the SHA-256 step is
+the visual centerpiece (slightly larger, brand accent), arrows are subtle.
+
+Use case: Deck slide titled "Verifiable provenance"; also the canonical reference
+in docs/specs/commit-reveal-trace-spec.md.
+```
+
+### Prompt 11 — One-page explainer (launch-ready)
+
+**Mode:** Slide deck (single landscape slide) OR Prototype (single 1200×1600 page)
+
+```
+Create a single-page explainer for Archimedes — the artifact we share in Discord, on
+social, and as a thumbnail for the deck. One page. Should be self-contained: a person
+who knows nothing about us should grasp the product in 30 seconds.
+
+LAYOUT (top to bottom):
+
+HEADER STRIP
+- Logo (left) + "Archimedes" (serif headline) + tagline (right): "Research-grounded
+  strategies, generated on demand, gated by selection-bias rigor, executed on Arc."
+
+PROBLEM (one paragraph, centered)
+- "AI portfolio tools today are either black-box robo-advisors, opaque copy-trade
+  influencer plays, or LLM 'just trust me' strategy generators. None of them surface
+  the research their claims rest on, and none of them gate against the most common
+  failure mode: in-sample overfitting that doesn't survive contact with reality."
+
+WHAT WE DO (the 5-step subway-map from Prompt 9, simplified and compressed)
+- Just the 5 stops with their captions, horizontal strip
+
+THE WEDGE (3 columns, equal weight)
+- Column 1: "Research-grounded"
+  - "Every strategy cites the q-fin papers that informed it. 10,000-paper corpus.
+    Generated, not retrieved."
+- Column 2: "Rigor-gated"
+  - "Every Tier-1 strategy passes DSR + PBO + walk-forward OOS + look-ahead audit
+    before admission. No black box."
+- Column 3: "Provenance-anchored"
+  - "Every reasoning trace is hashed and anchored on Arc. Verifiable history, not
+    marketing copy."
+
+CURRENT STATUS (small footer band, italic)
+- "Built for the Agora Agents Hackathon — Canteen × Circle × Arc, May 11–25, 2026.
+  Currently on Arc testnet (no mainnet — that's the correct posture). Open-source under
+  the Unlicense."
+- Small QR or short URL pointing to the live app and the GitHub repo.
+
+Visual style: dark background, generous white-space, brand accent used sparingly to
+draw the eye to the 3-column wedge section. Serif headlines, sans body. No emojis in
+the artifact itself.
+
+Use case: Discord pin, social-share image, README hero. Generate once, use everywhere.
+```
+
+### Prompt 12 — Page map: current vs proposed UI
+
+**Mode:** From template / Other → "Diagram" (two-column comparison)
+
+```
+Create a two-column visual page-map comparison for the Archimedes web app — current
+state on the left, proposed simplification on the right.
+
+LEFT COLUMN — "Current (as shipped)"
+Show the existing top-level navigation as a tree, listing every primary page:
+- Landing
+- Marketplace (Explore)
+  - Synthetic Assets
+  - Vault Leaderboard
+  - Trending This Week
+  - All Strategies
+  - Agent Activity
+- Strategies
+- Trade
+- Vaults
+- Intelligence
+  - Corpus Explorer
+  - Risk Analysis
+- (any other pages — check ui/src/components/Layout.jsx)
+
+RIGHT COLUMN — "Proposed (simplified)"
+Show a tighter tree with 4-5 top-level sections:
+- Landing
+- Generate (the strategy generator, prominently surfaced)
+- My Portfolio (consolidates Trade + Vaults + Risk Analysis personalized view)
+- Library (consolidates Marketplace + Strategies + Corpus Explorer)
+- Learnings (NEW — what worked, what didn't, why; reasoning traces fully accessible)
+
+BETWEEN THE COLUMNS, a few annotation arrows showing where current pages map into
+proposed sections (e.g., "Trade + Vaults → My Portfolio").
+
+BELOW THE COMPARISON, a 2-sentence rationale:
+"Current navigation reflects what was built; proposed reflects what users do. Generate
+moves from buried to top-level. Performance, allocation, and risk for YOUR positions
+consolidate into one place. Public corpus + strategies become a single 'Library' surface.
+A new 'Learnings' page makes losing strategies first-class learning material, not
+hidden failures."
+
+Visual style: tree diagram, dark background, current side in muted secondary text
+color, proposed side in primary text + brand accent for the "Generate" and "Learnings"
+nodes (the structural moves). Sans throughout.
+
+Use case: PR description for the UI simplification proposal; also a slide in the deck
+showing "we know our own UX, here's how we'd polish it post-hackathon."
+```
+
+---
+
 ## Workflow recap
 
 1. **Set up a design system** in Claude Design with the palette/typography above.
@@ -524,10 +998,13 @@ density.
    as of Day 4: not yet started. Smallest-scope test of Claude Design for the team.)
 3. **Run Prompt 2** (slide deck) — generate, iterate, export. Make sure the bullets
    match what the team has actually shipped per the Day-4 revision above.
-4. **Run Prompt 3, 4, 5** (UI screens) — give Claude Design the live URL
+4. **Run Prompts 3, 4, 5** (UI screens) — give Claude Design the live URL
    (`http://18.171.230.205/`) as starting reference. These prompts are now **refinement**
    prompts against the shipped React UI, not greenfield.
-5. **Iterate** — Claude Design is conversational; refine outputs based on your eye.
+5. **Run Prompts 6–12** (explainer set) when you want explanatory visualizations for
+   the deck, README, Discord pin, or social-share assets. They're independent of each
+   other — pick the one(s) the moment calls for.
+6. **Iterate** — Claude Design is conversational; refine outputs based on your eye.
 
 If you take screenshots of references along the way, drop them in the conversation —
 both Claude Design and this Linus session can ingest them. URLs work too. Either is

@@ -18,6 +18,9 @@
 > - [`docs/specs/strategy-passport-spec.md`](docs/specs/strategy-passport-spec.md) +
 >   [`docs/specs/selection-bias-corrections-spec.md`](docs/specs/selection-bias-corrections-spec.md)
 >   — the four-primitive admission gate for Tier 1 strategies
+> - [`docs/corpus-architecture.md`](docs/corpus-architecture.md) — Day-9 reference
+>   for how the 10k q-fin corpus is built, stored, and fused into strategies
+>   (seed/intake/artifact + the fusion path)
 > - [`docs/agora_project_analysis.md`](docs/agora_project_analysis.md) — red-team synthesis
 >   driving the Day-3 rigor-as-wedge framing
 
