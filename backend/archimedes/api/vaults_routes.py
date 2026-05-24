@@ -6,9 +6,9 @@ import asyncio
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from archimedes.api._route_helpers import strategy_provider, vault_svc
 from archimedes.api.auth_guard import require_internal_agent_key
 from archimedes.api.limiter import limiter
-from archimedes.api._route_helpers import strategy_provider, vault_svc
 from archimedes.api.schemas import (
     VaultDetailResponse,
     VaultListResponse,

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi import HTTPException
-from unittest.mock import MagicMock
 
 
 def _make_request(header_value: str | None) -> MagicMock:

@@ -7,13 +7,9 @@ page (shows full gate breakdown).
 
 from __future__ import annotations
 
-from fastapi import APIRouter
-
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Request
 
 from archimedes.api.limiter import limiter
-from archimedes.api.schemas import StrategyListResponse, StrategyResponse
-from archimedes.models.strategy import StrategyStatus
 from archimedes.services.rigor_evaluator import (
     compute_pbo,
     run_rigor_gate,

@@ -1,9 +1,12 @@
 """Reasoning trace endpoints — /api/traces/*."""
 
 from __future__ import annotations
-from archimedes.api.auth_guard import require_internal_agent_key
+
 from datetime import UTC
-from fastapi import APIRouter, Query, Request, Depends
+
+from fastapi import APIRouter, Depends, Query, Request
+
+from archimedes.api.auth_guard import require_internal_agent_key
 from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
     TraceListResponse,
