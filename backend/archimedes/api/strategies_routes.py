@@ -16,11 +16,12 @@ from fastapi import APIRouter, Query, Request
 
 from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
+    SignalResponse,
     StrategyListResponse,
     StrategyResponse,
     StrategySignalResponse,
     StrategySignalsResponse,
-    SignalResponse,
+)
 from archimedes.api._route_helpers import (
     architect,
     persist_trace_off_chain,
@@ -31,13 +32,6 @@ from archimedes.api.architect_schemas import (
     ConstructionTraceResponse,
     StrategyConstructionRequest,
     StrategyConstructionResponse,
-)
-from archimedes.api.schemas import (
-    SignalResponse,
-    StrategyListResponse,
-    StrategyResponse,
-    StrategySignalResponse,
-    StrategySignalsResponse,
 )
 from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.services.construction_trace import build_construction_trace

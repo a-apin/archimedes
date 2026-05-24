@@ -118,9 +118,7 @@ async def upsert_profile(payload: UserProfileCreate, request: Request, response:
 
     session: Session = get_session()
     try:
-        profile = session.query(UserProfile).filter(
-            UserProfile.wallet_address == wallet
-        ).first()
+        profile = session.query(UserProfile).filter(UserProfile.wallet_address == wallet).first()
 
         interests_json = json.dumps(payload.interests) if payload.interests else "[]"
         encrypted_email = encrypt_email(payload.email)
