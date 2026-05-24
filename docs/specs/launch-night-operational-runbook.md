@@ -136,13 +136,76 @@ Linus orient (validates K=1 + externally-verifiable-hashes choices):
 |---|---|---|---|
 | M.11 | **partial-done** (product side) | 8 `arc-canteen update-product` calls submitted covering: launch plan + 36-issue execution kickoff, Phase 4+5 scaffolding (PR #142/#143), Track E Strategy Passport architecture spec, DevOps quality bar (PR #146), Linus + KB submodule pins + audit fold-in, Phase 8+9 UI ships, 10-contract Arc testnet deploy retrospective, Daniel R UI fixes (PR #144), KB pipeline integration Day-11 with corpus seed breakdown. **One stray test entry exists in history** (`TEST: Maestro telemetry probe`) — pushed off the visible 5-entry recent-updates window by the 8 real entries above; no delete CLI exists, but no longer surface-visible. **Traction backfill skipped** — needs Dan's first-hand knowledge of which users/judges he's talked to (the M.11 plan target is ≥10 traction events; Dan should backfill in AM). |
 | M.4 | pending | docs refresh | |
-| M.5 | pending | docs/archive/ sweep | |
-| M.9 | pending | visual review report | |
+| M.5 | **audit-done; AM execution pending** | docs/archive/ sweep punch list captured below | Mechanical `git mv` job — left for Dan AM so the `docs/README.md` index update happens in the same commit (avoid link breakage on `main`) |
+| M.9 | **deferred to Dan AM** | visual review report | Marten already shipped demo video v1 + early submission; M.9 is polish-tier; live HTTPS site (`archimedes-arc.app`) doesn't exist yet (TS.1 #148 still queued); recommend Dan AM runs visual review against localhost OR after TS.1 lands so screenshots reflect the production URL bar |
 
 ### Decisions made overnight (Dan reads in AM)
 
-- (Maestro records here)
+- **Override on overnight t2o2 assignment authority used selectively.** Dan authorized "assign t2o2 to trigger all the issues when they are ready and finally validated by Maestro (you)." I assigned 30 of 35; held 5 UNASSIGNED with comments where blast radius warranted Dan triage (T3.5 OPTIONAL, T3.6 production routing replacement, T-PE.3 irreversible migration, T-PE.6 2x LLM cost, T-PE.7 live trading rebalance). Each held issue has a comment explaining the recommended sequencing.
+- **Spec-drift handling.** 4 specs had non-trivial path drift vs `main` (TS.1 + TS.3 nginx path; T-PE.1 multiple; T1.3 config.js; T3.6 9 corrections). All corrections folded into issue bodies BEFORE assigning t2o2, so the bot reads the corrected spec, not the stale plan reference. Per runbook rule 7 ("three subagents fail = stop") — drift was correctable each time, did not trigger the stop condition.
+- **M.4 sweep executed as PR #182 (not auto-merged).** Mechanical `hackagora → a-apin` rename across 16 files. Dan reviews + merges in AM. Quality gate will run on it. Note: this PR also folds in the runbook progress log (this file) so the AM read is one diff to scan.
+- **M.5 docs sweep: audit-only tonight.** Subagent surfaced 14 ARCHIVE + 2 DELETE + 9 UPDATE candidates. **Mechanical `git mv` deferred to Dan AM** so the `docs/README.md` index update happens in the same commit (avoids breaking internal doc links on main between commits).
+- **M.9 visual review deferred.** Marten's demo v1 already shipped + early submission filed. Recommend Dan runs M.9 either against localhost OR after TS.1 (#148) lands so screenshots show the production HTTPS URL.
+- **arc-canteen telemetry: product side done (8 real updates); traction side skipped.** I don't have first-hand knowledge of which judges/users Dan has talked to. Recommend Dan logs `update-traction` calls in AM for any user/judge conversations from the past week.
 
 ### Blockers encountered (Dan reads in AM)
 
-- (Maestro records here)
+- **One stray arc-canteen test entry in history.** Probed `arc-canteen update product` stdin behavior with a test message; the test landed as a visible product update. No delete CLI exists. Pushed off the visible 5-entry window by 8 real updates, but it's still in `arc-canteen ls` history. **Recommend Dan asks Canteen admin (Anuhya) whether stray entries can be retroactively deleted** if it matters for the rubric. If not, the 8 real ones dwarf it.
+- **None of the 30 assigned t2o2 issues had landed PRs as of session end (~05:30 UTC).** Bot system queue + parallel execution + dependency chains mean realistic landing window is hours, not minutes. Dan should expect a stream of PRs by Sun AM/early afternoon. **Verification protocol per launch plan § 2.5**: for each landed PR, run the originating issue's acceptance commands on a cold clone OR spawn a verification subagent; do NOT trust "closed" without grep proof.
+- **The 5 HELD UNASSIGNED specs need explicit Dan green-light** before t2o2 picks them up. Each has a comment recommending sequencing.
+
+### M.5 docs-sweep punch list (from M.5 audit subagent 2026-05-24)
+
+Subagent summary: 17 KEEP / 9 UPDATE / 14 ARCHIVE / 2 DELETE / 42 total audited.
+
+**ARCHIVE (14 files — mechanical `git mv` to `docs/archive/`):**
+- `docs/launch-plan.md` — Day-8 reveal narrative; superseded by `docs/specs/launch-execution-plan-2026-05-23.md`
+- `docs/ui-simplification-proposal.md` — Day-9 proposal; PR #118 shipped strip-to-spine
+- `docs/specs/fusion-to-backtest-t2o2-issue.md` — shipped (#128, #133)
+- `docs/specs/ipfs-reasoning-traces-design-note.md` — never implemented; superseded by keccak256 anchor that did ship
+- `docs/specs/phase7-llm-backend-unification-t2o2-issue.md` — shipped (#130, dc91b43)
+- `docs/specs/phase7-portfolio-constructor-retirement-t2o2-issue.md` — shipped (#131, a4a09fb)
+- `docs/specs/phase7-rigor-consolidation-t2o2-issue.md` — shipped (#129, e030ee4)
+- `docs/specs/phase7-routes-py-split-t2o2-issue.md` — shipped (#132, be9260b)
+- `docs/specs/phase8-9-landing-and-fusion-spec.md` — shipped (PR #140 + #141)
+- `docs/specs/portfolio-constructor-decision-tree.md` — decision was executed in #131
+- `docs/specs/spine-plus-v2-plan.md` — Phases 0,1,2,3a,3b,6,7 LANDED; substantive content is now history
+
+**DELETE (2 files — stale HTML artifacts):**
+- `docs/architecture-diagram.html` — May-13; superseded by `docs/diagrams/strategy-passport-architecture.md`
+- `docs/specs/ecosystem-architecture.html` — May-13; superseded by `docs/specs/ecosystem-design-spec.md`
+
+**UPDATE (9 files — content refresh per launch plan § 8 M.4; defer to M.4 refresh pass):**
+- `README.md` — top-fold + `archimedes-arc.app` URL + Cited-literature + RFB-04 statement
+- `CLAUDE.md` — pitch frame § 3.1 + HTTPS domain + K=1+rigor as 5th primitive
+- `ARC-OSS-SHOWCASE.md` — TS + T3.6 + T3.7 + T3.9 + T-PE.8 forkable primitives
+- `docs/README.md` — index trim after archive sweep
+- `docs/anti-features.md` — security/BYOK/no-returns + StockBench non-claim
+- `docs/architectural-principles.md` — Xia/StockBench + K=1+rigor
+- `docs/competitor-landscape.md` — rosetta-alpha + Xia 19-study positioning
+- `docs/demo-script-pitch-deck-outline.md` — Xia slide 1, RFB-04 slide 2, StockBench bar, K=1 + substrate slides
+- `docs/judging-rubric-assessment.md` — Day-12 score with TS + T3.6/7/8/9 + T-PE.8
+- `docs/specs/strategy-fusion-spec.md` — Day-12 truth-up (post-#128/#133 fusion-to-backtest)
+
+**KEEP (17 — leave alone):** all `docs/adr/`, `docs/diagrams/`, `docs/research/` files; `docs/{arc-alignment,chuan-architecture-survey,claude-design-prompts,corpus-architecture,infra-setup,pitch-talking-points-rigor-track,portfolio-advisor-demo-cues,rigor-methods,traction-logging,user-stories}.md`; `docs/specs/{commit-reveal-trace-spec,component-interfaces-spec,ecosystem-design-spec,generation-streaming-spec,kb-integration-spec,launch-execution-plan-2026-05-23,launch-night-operational-runbook,page-roles-spec,paper-replication-spec,phase5-execution-runbook,selection-bias-corrections-spec,strategy-dsl-spec,strategy-lifecycle-spec,strategy-passport-spec,vault-semantics-spec}.md`; top-level `ARC.md`, `ARC-OSS-FORM-DRAFT.md`, `OPERATIONS.md`, `SETUP.md`.
+
+**Caveat from subagent:** `docs/specs/phase5-execution-runbook.md` is referenced by canonical launch plan § 4 + T1.5 spec. KEEP through Track A landing; auto-archives once T1.5 ships (handled by M.10 final-polish subagent).
+
+### Session-end summary (Maestro, 2026-05-24 ~05:35 UTC)
+
+**Filed:** 35 bot issues #147-#181 across all 5 tracks (T1.x, T2.x, T3.x, T-PE.x, TS.x).
+**Assigned t2o2:** 30 issues — bot system will process per Depends-on chain.
+**Held UNASSIGNED for Dan AM triage:** 5 — T3.5 (OPTIONAL Bedrock), T3.6 (high-blast ALB+CloudFront), T-PE.3 (irreversible migration), T-PE.6 (2x LLM cost), T-PE.7 (live trading). Each has a Maestro comment.
+**M.11 partial:** 8 real product updates submitted; traction backfill needs Dan first-hand.
+**M.4 partial:** hackagora→a-apin sweep done (PR #182 open); doc-content refresh deferred to AM.
+**M.5 audit-done:** 14 ARCHIVE + 2 DELETE + 9 UPDATE punch list above; mechanical execution deferred to AM.
+**M.9 deferred:** Marten already shipped demo v1; M.9 polish-tier; recommend post-TS.1.
+
+**Recommended first AM moves for Dan (in order):**
+1. Read this runbook (you're doing that).
+2. Review + merge (or close + comment) PR #182 (M.4 sweep + runbook progress).
+3. Triage the 5 HELD UNASSIGNED specs: comment-by-comment for each, decide assign-now / assign-after-X-lands / re-spec.
+4. Execute M.5 archive sweep (15-20 min): `git mv` the 14 files + `git rm` the 2 + update `docs/README.md` index in one PR.
+5. Check landed t2o2 PRs (likely a stream by Sun AM): for each, run the originating issue's acceptance commands on cold-clone OR spawn verification subagent per launch plan § 2.5.
+6. Backfill arc-canteen traction with any user/judge conversations from past week.
+7. Then M.4 content refreshes (deck, README, etc.) + M.9 visual review when ready.
