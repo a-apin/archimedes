@@ -1,12 +1,18 @@
-# Judging-Rubric Self-Assessment — Day-10 (2026-05-22)
+# Judging-Rubric Self-Assessment — Day-12 (2026-05-24)
 
-> **Status:** Day-10 rewrite (2026-05-22). The Day-3 version of this doc scored us
+> **Status:** Day-12 date-bump on top of the Day-10 rewrite (2026-05-22). The Day-3 version of this doc scored us
 > 13/40 ≈ 33%; almost every line item it called out as "missing" has since shipped.
 > This version re-scores against shipped reality, adds the new **Arc OSS Showcase**
-> dimension, and lays out the remaining gap-closure work for the final 3 days to
+> dimension, and lays out the remaining gap-closure work for the **~30 hours to**
 > submission.
+> **Day-12 ships not yet folded into the scoring rationale below** (Önder owns the rigor-track
+> rewrite): #216 PortfolioAdvisor resurfaced on `/generate` as preview-before-deploy,
+> #217 regime-conditional γ in the Kelly optimizer citing Ang & Bekaert 2002 *RFS*,
+> #213 wallet menu dropdown + Profile, plus the doc-prune + UX leak-scrub (#215) and
+> ESLint 0/0 + ruff cleanup. **Innovation 9/10 score likely strengthens** with the
+> Ang-Bekaert citation as additional academic backstop.
 > **Audience:** Archimedes hackathon team.
-> **Purpose:** Honest assessment of where we stand against the rubric with 3 days
+> **Purpose:** Honest assessment of where we stand against the rubric with ~30 hours
 > to go. Identifies the biggest *remaining* gaps and what's already done. Re-read
 > daily.
 > **Source for rubric weights / categories:** original Canteen rubric (see

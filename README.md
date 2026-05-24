@@ -48,7 +48,7 @@ make clean      # nuke __pycache__/.pytest_cache/.ruff_cache
 
 Foundry, Circle wallet, and oracle targets (`compile`, `test`, `wallet`, `feed`, …) are also there — see `make help`.
 
-## Status (2026-05-22)
+## Status (2026-05-24)
 
 **Live on the Arc public testnet** (chain ID `5042002`): grab faucet USDC at <https://faucet.circle.com/> (20 USDC / 2h — on Arc, USDC *is* gas) and try the full flow with test funds. **No real money at risk, by design.** Arc has no mainnet yet (Circle's docs list mainnet as "upcoming"); mainnet launch, real-funds custody, and the regulatory architecture (off-chain redemptions, preset-strategy / RIA posture) are the **business-plan roadmap**, not hackathon scope — see [`docs/competitor-landscape.md`](docs/competitor-landscape.md).
 
@@ -56,12 +56,14 @@ Foundry, Circle wallet, and oracle targets (`compile`, `test`, `wallet`, `feed`,
 
 - Live testnet deploy: <http://13.40.112.220> · 10 Solidity contracts on Arc
 - 3-input fusion engine: user brief × live market regime × 10,000-paper q-fin corpus → grounded strategy spec
-- LLM-driven agentic portfolio advisor (`portfolio_agent.py`, 850 lines) — picks individual instruments and anchors each to a strategy passport
-- Four-control selection-bias rigor gate (DSR + PBO + walk-forward OOS + look-ahead audit) — **2 Tier-1 strategies pass today** against 22 years of real SPY data
+- LLM-driven agentic portfolio advisor (`portfolio_agent.py`, 850 lines) surfaced **before deposit** on `/generate` — picks individual instruments and anchors each to a strategy passport
+- Four-control selection-bias rigor gate (DSR + PBO + walk-forward OOS + look-ahead audit) — **2 Tier-1 strategies pass today** against 22.3 years of real SPY data
+- Regime-conditional risk aversion in the Kelly optimizer (Ang & Bekaert 2002, *RFS*) — effective γ scales with the live regime
 - Multi-asset NAV vaults — `Vault.totalAssets()` prices all synthetic holdings via oracles
 - On-chain reasoning trace anchoring via the deployed `ReasoningTraceRegistry`
+- Multi-wallet UX (MetaMask / Coinbase / generic) with profile dropdown + per-wallet display name
 - 6-container docker stack: backend (FastAPI) + postgres + redis + nginx + oracle + agent
-- 302 backend tests + 16 analytics-engine tests green
+- 564 backend tests + 16 analytics-engine tests collected
 
 ## Why Archimedes
 

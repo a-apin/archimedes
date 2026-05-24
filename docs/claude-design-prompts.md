@@ -5,7 +5,7 @@
 > **Purpose:** Concrete, paste-ready prompts for slides, UI prototypes, logos, and
 > explanatory visualizations. Each prompt is self-contained so the design session has
 > the context it needs without you re-explaining the project.
-> **Status:** **Day-11 revision (2026-05-23).** Refreshes the Day-10 baseline
+> **Status:** **Day-12 revision (2026-05-24).** Refreshes the Day-11 baseline
 > against spine-plus-v2 (8 commits ahead of `origin/main`: Phases 0–3 + follow-ups
 > + Makefile + the Day-11 docs cleanup) and Chuan's `bd6935b` (Strategy DSL +
 > interpreter + fusion evaluator pipeline). Current snapshot the prompts reflect:
@@ -27,7 +27,7 @@
 > 2007 + Moreira-Muir 2017 — pass all four gates on 22-year SPY); DB-backed
 > 10,000-paper q-fin corpus with the Corpus Explorer UI shipped; "Linus for
 > quantitative finance" framing locked per [`docs/user-stories.md`](user-stories.md);
-> **343 backend tests** + 16 analytics-engine tests green; **2 days to submission**.
+> **564 backend tests** + 16 analytics-engine tests collected; **~30 hours to submission**.
 > UI prompts work as **refinement** prompts against the live UI, not greenfield.
 >
 > **Aligned with [`docs/chuan-architecture-survey.md`](chuan-architecture-survey.md)
@@ -45,9 +45,18 @@
 >     Reasoning lost its Strategies tab (details moved to Library); Generate is
 >     streaming with a mode toggle (Streaming agent vs Architect fast preview);
 >     onboarding tour appears on first visit + via the "?" icon in the topbar.
->   - **Test counts**: 302 → 343 backend tests; 5 t2o2 issues open in the
->     queue ([#129](https://github.com/a-apin/archimedes-arcadia/issues/129)–
->     [#133](https://github.com/a-apin/archimedes-arcadia/issues/133)).
+>   - **Test counts**: 564 backend tests collected (Day-12 truth; prior 302/343
+>     references were stale). All six original t2o2 issues
+>     ([#128](https://github.com/a-apin/archimedes-arcadia/issues/128)–
+>     [#133](https://github.com/a-apin/archimedes-arcadia/issues/133)) closed;
+>     spec files archived under [`docs/archive/`](archive/).
+>   - **Day-12 ships to fold into prompts**: PortfolioAdvisor resurfaced on
+>     `/generate` as preview-before-deploy banner ([#216](https://github.com/a-apin/archimedes-arcadia/pull/216));
+>     regime-conditional γ scaling in `kelly_optimize_from_prices` cites Ang
+>     & Bekaert 2002 *RFS* ([#217](https://github.com/a-apin/archimedes-arcadia/pull/217));
+>     wallet menu dropdown + Profile view/edit
+>     ([#213](https://github.com/a-apin/archimedes-arcadia/pull/213)); ESLint
+>     at 0 errors / 0 warnings + ruff cleanup.
 
 ## Quick notes on using Claude Design
 
@@ -330,8 +339,8 @@ RIGHT — Rigor + on-chain
   PriceOracle, ReasoningTraceRegistry. **Vault.sol is now multi-asset NAV** —
   `totalAssets()` prices every holding via the oracle, so the share price is
   honest under mixed-asset allocations
-- Multi-wallet UX (MetaMask / Coinbase / generic). 302 backend tests + 16
-  analytics-engine tests green.
+- Multi-wallet UX (MetaMask / Coinbase / generic) with profile dropdown.
+  564 backend tests + 16 analytics-engine tests collected.
 
 SLIDE 5 — DEMO
 Full-bleed slide: the word "DEMO" in large serif type, brand accent, with the live

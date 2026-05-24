@@ -1,7 +1,7 @@
 # Demo Script & Pitch Deck Outline
 
 > **Audience:** Archimedes hackathon team (deck owner + demo runner + Q&A primaries).
-> **Status:** Day-10 update (2026-05-22) on top of the 2026-05-19 rewrite to the
+> **Status:** Day-12 date-bump (2026-05-24) on top of the Day-10 update (2026-05-22) atop the 2026-05-19 rewrite to the
 > **locked product spine** ([`user-stories.md`](user-stories.md)) and the
 > **tiered competitive thesis** ([`competitor-landscape.md`](competitor-landscape.md)).
 > Day-10 deltas to fold into the deck on next pass: (a) the LLM-driven agentic
@@ -14,6 +14,7 @@
 > "what does my position actually mean" judge question; (d) Arc OSS Showcase
 > dimension added — see [`../ARC-OSS-SHOWCASE.md`](../ARC-OSS-SHOWCASE.md) and the
 > Day-10 rubric assessment in [`judging-rubric-assessment.md`](judging-rubric-assessment.md).
+> **Day-12 deltas not yet folded into the slide-by-slide bullets below** (Önder owns the rigor-track refresh per the lane split): (a) **[#216](https://github.com/a-apin/archimedes-arcadia/pull/216)** PortfolioAdvisor surfaced on `/generate` as preview-before-deploy banner — judges see Kelly + risk-parity allocation + DSR/PBO/stress matrix BEFORE any signature; (b) **[#217](https://github.com/a-apin/archimedes-arcadia/pull/217)** regime-conditional γ scaling in `kelly_optimize_from_prices` citing Ang & Bekaert 2002 *Review of Financial Studies* — new academic backstop for SLIDE 4's rigor row; (c) doc directory pruned + UX path-leak scrubs ([#215](https://github.com/a-apin/archimedes-arcadia/pull/215)) — cold-clone judges see a clean repo; (d) test count is **564 backend tests collected** (prior 302/343 references stale).
 > Supersedes the Day-4 "connect wallet → pick a risk profile" script entirely.
 > **Length assumption:** ~3-minute pitch + ~2-minute live demo + Q&A. Adjust if Canteen says otherwise.
 >
