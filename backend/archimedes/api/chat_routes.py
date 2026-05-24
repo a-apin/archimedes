@@ -13,8 +13,9 @@ Design (per ecosystem-design-spec.md § 16–17):
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from archimedes.api.auth_guard import require_internal_agent_key
 from archimedes.api.schemas import (
     ChatMessageListResponse,
     ChatMessageResponse,
@@ -113,7 +114,7 @@ async def get_chat_count(address: str):
 
 
 @chat_router.post("/{address}/chat/rebalance")
-async def post_rebalance_event(address: str, body: dict):
+async def post_rebalance_event(address: str, body: dict, _: None = Depends(require_internal_agent_key)):
     """Post a rebalance event from the agent runner.
 
     Body: {"reasoning": "...", "trades": [{"direction": "sell", "amount": 1000, "symbol": "sTSLA"}]}
@@ -128,7 +129,7 @@ async def post_rebalance_event(address: str, body: dict):
 
 
 @chat_router.post("/{address}/chat/regime-change")
-async def post_regime_change(address: str, body: dict):
+async def post_regime_change(address: str, body: dict, _: None = Depends(require_internal_agent_key)):
     """Post a regime change event from the agent runner.
 
     Body: {"old_regime": "risk_on", "new_regime": "risk_off", "confidence": 0.85}

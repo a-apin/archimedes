@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
+from archimedes.api.limiter import limiter
 from archimedes.api.schemas import StrategyListResponse, StrategyResponse
 from archimedes.models.strategy import StrategyStatus
 from archimedes.services.rigor_evaluator import (
@@ -223,7 +224,8 @@ async def evaluate_strategy_rigor(strategy_id: str):
 
 
 @selection_bias_router.post("/pbo", response_model=PBOResponse)
-async def compute_pbo_endpoint(req: PBORequest):
+@limiter.limit("10/minute")
+async def compute_pbo_endpoint(req: PBORequest, request: Request):
     """Compute PBO across a set of strategy return series.
 
     This is the library-level metric — all strategies get the same score.

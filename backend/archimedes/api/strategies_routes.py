@@ -10,8 +10,9 @@ import asyncio
 import json
 import math
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
+from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
     StrategyListResponse,
     StrategyResponse,
@@ -1010,7 +1011,8 @@ async def list_stress_scenarios():
 
 
 @strategies_router.post("/stress/run")
-async def run_stress_test(payload: dict):
+@limiter.limit("10/minute")
+async def run_stress_test(payload: dict, request: Request):
     """Apply a stress scenario to a caller-supplied portfolio."""
     from fastapi import HTTPException
     from archimedes.services.stress_engine import stress_all, stress_one, SCENARIOS
@@ -1056,7 +1058,9 @@ async def get_strategy(strategy_id: str):
 
 
 @strategies_router.post("/generate", status_code=202)
+@limiter.limit("3/minute")
 async def generate_strategy(
+    request: Request,
     asset_classes: str = "",
     risk_appetite: str = "moderate",
     strategic_direction: str = "",
@@ -1398,7 +1402,8 @@ async def _run_fusion_job(job_id: str) -> None:
 
 
 @strategies_router.post("/construct", response_model=StrategyConstructionResponse)
-async def construct_strategy(req: StrategyConstructionRequest):
+@limiter.limit("5/minute")
+async def construct_strategy(req: StrategyConstructionRequest, request: Request):
     """Interactive strategy architect -- the 'design me a portfolio' path."""
     from fastapi import HTTPException
 

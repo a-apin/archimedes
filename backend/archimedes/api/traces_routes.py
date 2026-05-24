@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 
+from archimedes.api.auth_guard import require_internal_agent_key
 from archimedes.api.schemas import (
     TraceListResponse,
     TraceResponse,
@@ -170,7 +171,7 @@ async def get_trace(trace_id: str):
 
 
 @traces_router.post("/publish", response_model=TracePublishResponse)
-async def publish_trace(req: TracePublishRequest):
+async def publish_trace(req: TracePublishRequest, _: None = Depends(require_internal_agent_key)):
     """Publish a reasoning trace: compute hash, anchor on Arc, persist off-chain."""
     import uuid
     from datetime import datetime, timezone

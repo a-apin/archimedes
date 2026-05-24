@@ -111,9 +111,13 @@ async def upsert_profile(payload: UserProfileCreate, request: Request, response:
 
     Email is encrypted at rest before storage.
     """
+    caller = _extract_caller_wallet(request)
+    wallet = payload.wallet_address.lower()
+    if caller != wallet:
+        raise HTTPException(status_code=403, detail="Forbidden: wallet mismatch")
+
     session: Session = get_session()
     try:
-        wallet = payload.wallet_address.lower()
         profile = session.query(UserProfile).filter(
             UserProfile.wallet_address == wallet
         ).first()

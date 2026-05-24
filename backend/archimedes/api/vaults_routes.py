@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query, Request
 
+from archimedes.api.auth_guard import require_internal_agent_key
+from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
     VaultDetailResponse,
     VaultListResponse,
@@ -37,7 +39,7 @@ async def list_vaults(
 
 
 @vaults_router.post("/create", response_model=VaultCreateResponse)
-async def create_vault(req: VaultCreateRequest):
+async def create_vault(req: VaultCreateRequest, _: None = Depends(require_internal_agent_key)):
     """Deploy a new vault on Arc via VaultFactory."""
     from fastapi import HTTPException
 
@@ -79,7 +81,7 @@ async def get_vault_detail(address: str):
 
 
 @vaults_router.post("/metadata", response_model=VaultMetadataResponse)
-async def store_vault_metadata(req: VaultMetadataRequest):
+async def store_vault_metadata(req: VaultMetadataRequest, _: None = Depends(require_internal_agent_key)):
     """Store off-chain vault metadata (strategy associations, display name)."""
     from fastapi import HTTPException
     from archimedes.db import get_session
@@ -130,7 +132,8 @@ async def get_vault_metadata(address: str):
 
 
 @vaults_router.post("/{address}/derive-allocations", response_model=SetAllocationsResponse)
-async def derive_vault_allocations(address: str, req: SetAllocationsRequest):
+@limiter.limit("10/minute")
+async def derive_vault_allocations(address: str, req: SetAllocationsRequest, request: Request):
     """Derive target allocations from selected strategies."""
     from archimedes.chain.client import chain_client
     from archimedes.services.strategy_signal_evaluator import strategy_evaluator
