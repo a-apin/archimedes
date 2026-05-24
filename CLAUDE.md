@@ -194,6 +194,18 @@ The repo carries three git submodules at [`submodules/`](submodules/):
     - `papers_analysis/extract.py` — PyMuPDF caching pattern (~71 files/s)
     - `papers_analysis/metadata.py` — paper-corpus schema (maps to our `paper_corpus` table)
     - `papers_analysis/summarize.py` — Ollama-driven methodology synthesis (we'd use Claude)
+
+  **KB pipeline integration — provenance discipline:** The Corpus page (`/corpus`)
+  uses [`corpus_routes.py`](backend/archimedes/api/corpus_routes.py) at the
+  `/api/corpus/*` prefix, which reads real KB pipeline output (SPECTER2
+  embeddings, HDBSCAN clusters, REBEL/SciSpacy triples) and returns 503 when no
+  artifact exists yet. The legacy metadata-derived `/api/papers/corpus/*`
+  endpoints were deleted in issue #201 — do NOT reintroduce them. Any "graph"
+  or "knowledge graph" surface MUST come from real KB pipeline output, not
+  arxiv-metadata synthesis. When the KB pipeline (issue #151, gated on AWS
+  infra #147) actually produces an artifact, the honest endpoints start
+  returning data; until then the page renders an explicit "KB pipeline still
+  running — first artifact pending" empty state from the 503 response.
 - **[`submodules/Linus/`](submodules/Linus/)** — Dan's personal AI orchestration
   project. Reference only; nothing to port to Archimedes. The
   [`experiments/archimedes/`](submodules/Linus/experiments/archimedes/) and
@@ -333,6 +345,27 @@ PR title: "Launch-ready rebalancer !version-release" → v1.0.0
 PR title: "Fix corpus manifest path"                 → v0.0.1
 ```
 
+**Release tagging — conventions for direct-to-main commits (applies especially to
+bot-driven work):** `release-tag.yml` only fires on PR merges. **Direct pushes to
+`main` without an associated PR are silently skipped — no tag is created.** Two
+implications:
+
+1. **Prefer PRs over direct push** for any change that warrants a version tag (i.e.
+   anything except trivial doc fixes you'd be comfortable losing in `git log`).
+   This includes work done by Chuan's agentic system (`t2o2`): if a change is
+   meaningful enough to read later, it's meaningful enough to PR.
+2. **Choose the right marker for the PR title.** Most changes are patches and
+   need no marker. But:
+   - **`!minor`** — new user-facing capability (new endpoint, new UI surface,
+     new strategy in the library, new contract method, new pipeline stage).
+   - **`!version-release`** — major milestones (live demo cutover, multi-chain
+     mainnet, custodial-vault → non-custodial-vault migration, etc.). Use
+     sparingly — most weeks see zero of these.
+   - **(no marker)** — bug fixes, refactors, doc updates, dep bumps, telemetry.
+
+When in doubt, default to **no marker** (patch). Over-bumping minor/major dilutes
+the signal; under-bumping is recoverable later.
+
 ### Python linting + formatting (ruff)
 
 Convention: **`line-length = 120`, ruff defaults plus `I,UP,B,SIM,RUF`.** Config
@@ -346,9 +379,8 @@ PR via the `ruff-gate` job:
 | Broader lint | `ruff check .` | Informational (continue-on-error) |
 
 The blocking subset is deliberately narrow today (syntax + undefined-module
-rules) so the gate doesn't trip on pre-existing style debt. It grows as we
-clean things up: next add is `F82` once PR-4 cluster fixes the `agent_runner.py`
-`consulted_hashes` bug (currently the only remaining undefined-name).
+rules) so the gate doesn't trip on pre-existing style debt. It can grow as we
+clean things up — next candidate is `F82` (undefined-name).
 
 **Local feedback loop — install pre-commit once per clone:**
 ```bash
@@ -369,8 +401,8 @@ ruff check --fix .                 # all other safe auto-fixes
 ruff format .                      # apply formatting (line-length 120)
 ```
 
-The `--unsafe-fixes` flag is intentionally NOT in our workflow — those fixes
-need human review and are tracked as follow-up issues, not auto-applied.
+The `--unsafe-fixes` flag should be reviewed line-by-line — those fixes need
+human judgment and are not auto-applied in CI or pre-commit.
 
 ### Smoke-test before deploy
 
