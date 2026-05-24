@@ -39,6 +39,7 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [userProfile, setUserProfile] = useState(null)
   const [showWelcomeModal, setShowWelcomeModal] = useState(false)
+  const [showEditProfile, setShowEditProfile] = useState(false)
   const blockLabel = Object.keys(NEW_CONTRACTS).length ? 'Arc · Testnet live' : 'Arc · Connecting'
 
   const API_BASE = import.meta.env.VITE_API_BASE ?? ''
@@ -70,6 +71,11 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
 
   const handleWelcomeDone = (profile) => {
     setShowWelcomeModal(false)
+    if (profile) setUserProfile(profile)
+  }
+
+  const handleEditProfileDone = (profile) => {
+    setShowEditProfile(false)
     if (profile) setUserProfile(profile)
   }
 
@@ -169,12 +175,9 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
             <Breadcrumbs page={page} setPage={setPage} />
           </div>
           <div className="flex items-center gap-2">
-            {/* Personalized greeting when profile set */}
-            {walletAddr && displayName && (
-              <span className="caption text-[var(--text-3)]" style={{ whiteSpace: 'nowrap' }}>
-                Welcome, <strong className="text-[var(--text-1)]">{displayName}</strong>
-              </span>
-            )}
+            {/* Personalized greeting moved into the WalletConnect dropdown
+                header so the topbar stays compact + the greeting lives next
+                to the wallet identity it belongs to. */}
             {onOpenTour && (
               <button
                 type="button"
@@ -186,7 +189,13 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
                 <span className="i-lucide-help-circle" style={{width:18,height:18}} />
               </button>
             )}
-            <WalletConnect address={walletAddr} onConnect={onConnect} onDisconnect={onDisconnect} />
+            <WalletConnect
+              address={walletAddr}
+              displayName={displayName}
+              onConnect={onConnect}
+              onDisconnect={onDisconnect}
+              onEditProfile={() => setShowEditProfile(true)}
+            />
           </div>
         </div>
         <main className={`page-content page-${page}`}>{children}</main>
@@ -197,6 +206,16 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
         <WelcomeProfileModal
           walletAddr={walletAddr}
           onDone={handleWelcomeDone}
+        />
+      )}
+
+      {/* Edit profile modal — triggered from the wallet menu dropdown */}
+      {showEditProfile && walletAddr && (
+        <WelcomeProfileModal
+          walletAddr={walletAddr}
+          onDone={handleEditProfileDone}
+          mode="edit"
+          existingProfile={userProfile}
         />
       )}
     </div>

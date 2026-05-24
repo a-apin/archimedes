@@ -6,15 +6,22 @@ const STORAGE_PREFIX = 'archimedes.welcomeProfileSeen.'
 
 const INTEREST_OPTIONS = ['Equities', 'Bonds', 'Commodities', 'Crypto', 'FX']
 
-// WelcomeProfileModal — appears once on first wallet connect.
-// All fields optional. User can Skip to dismiss without saving.
-// After Submit or Skip, localStorage gate prevents re-showing.
-export default function WelcomeProfileModal({ walletAddr, onDone }) {
-  const [displayName, setDisplayName] = useState('')
-  const [email, setEmail] = useState('')
-  const [selectedInterests, setSelectedInterests] = useState([])
-  const [attribution, setAttribution] = useState('')
-  const [marketingOptIn, setMarketingOptIn] = useState(false)
+// WelcomeProfileModal — two modes:
+//   `mode="welcome"` (default): first wallet-connect prompt. Has a "Skip"
+//     button; on submit OR skip, sets the localStorage gate so it never
+//     re-shows for this wallet.
+//   `mode="edit"`: invoked from the wallet menu dropdown to view + edit
+//     an existing profile. Pre-fills from `existingProfile`. Has Cancel
+//     instead of Skip; never touches the localStorage gate.
+//
+// All fields remain optional in both modes.
+export default function WelcomeProfileModal({ walletAddr, onDone, mode = 'welcome', existingProfile = null }) {
+  const isEdit = mode === 'edit'
+  const [displayName, setDisplayName] = useState(existingProfile?.display_name || '')
+  const [email, setEmail] = useState(existingProfile?.email || '')
+  const [selectedInterests, setSelectedInterests] = useState(existingProfile?.interests || [])
+  const [attribution, setAttribution] = useState(existingProfile?.attribution || '')
+  const [marketingOptIn, setMarketingOptIn] = useState(existingProfile?.marketing_opt_in || false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -27,12 +34,16 @@ export default function WelcomeProfileModal({ walletAddr, onDone }) {
   }
 
   const markSeen = () => {
+    // Edit mode never touches the gate — only the welcome flow sets it.
+    if (isEdit) return
     if (walletAddr) {
       localStorage.setItem(STORAGE_PREFIX + walletAddr.toLowerCase(), '1')
     }
   }
 
-  const handleSkip = () => {
+  const handleCancel = () => {
+    // Welcome mode: cancel = skip, sets the gate.
+    // Edit mode: cancel = dismiss, no gate change.
     markSeen()
     onDone?.()
   }
@@ -80,14 +91,15 @@ export default function WelcomeProfileModal({ walletAddr, onDone }) {
         style={{ background: 'var(--surface-1)', maxHeight: '90vh', overflowY: 'auto' }}
       >
         <div className="caption mb-2 uppercase tracking-wider text-[var(--text-4)]">
-          Welcome to Archimedes
+          {isEdit ? 'Your Profile' : 'Welcome to Archimedes'}
         </div>
         <h3 id="welcome-modal-title" className="font-serif text-[1.5rem] mb-1">
-          Personalize your experience
+          {isEdit ? 'Edit your profile' : 'Personalize your experience'}
         </h3>
         <p className="caption mb-4 leading-relaxed">
-          All fields are optional. Your wallet is your identity — this just helps
-          us show a friendly name and tailor the experience. You can skip this entirely.
+          {isEdit
+            ? 'Update what we show alongside your wallet. All fields remain optional; leave any blank to clear it.'
+            : 'All fields are optional. Your wallet is your identity — this just helps us show a friendly name and tailor the experience. You can skip this entirely.'}
         </p>
 
         <div className="grid grid-cols-1 gap-3">
@@ -164,17 +176,17 @@ export default function WelcomeProfileModal({ walletAddr, onDone }) {
         <div className="flex justify-between gap-3 mt-5">
           <button
             className="btn btn-outline"
-            onClick={handleSkip}
+            onClick={handleCancel}
             disabled={submitting}
           >
-            Skip for now
+            {isEdit ? 'Cancel' : 'Skip for now'}
           </button>
           <button
             className="btn btn-primary"
             onClick={handleSubmit}
             disabled={submitting}
           >
-            {submitting ? 'Saving…' : 'Save Profile'}
+            {submitting ? 'Saving…' : (isEdit ? 'Save Changes' : 'Save Profile')}
           </button>
         </div>
       </div>
