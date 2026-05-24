@@ -59,9 +59,9 @@ def _is_recursive(source: str, name: str) -> bool:
     return False
 
 
-def _is_orphan(filepath: str, name: str) -> bool:
+def _is_orphan(filepath: str, name: str, backend_root: str = "backend/") -> bool:
     r = subprocess.run(
-        ["grep", "-r", "--include=*.py", "-l", rf"\b{re.escape(name)}\b", "backend/"],
+        ["grep", "-r", "--include=*.py", "-l", rf"\b{re.escape(name)}\b", backend_root],
         capture_output=True,
         text=True,
     )
@@ -72,6 +72,7 @@ def _collect(files: list[str], root: str = "") -> dict:
     """Collect aggregate metrics across all functions in the given files."""
     cc_values, nesting_values = [], []
     recursive_count, orphan_count = 0, 0
+    backend_root = str(Path(root) / "backend") if root else "backend/"
 
     for filepath in files:
         p = Path(root) / filepath if root else Path(filepath)
@@ -86,7 +87,7 @@ def _collect(files: list[str], root: str = "") -> dict:
             cc_values.append(fn.cyclomatic_complexity)
             if is_py and _is_recursive(source, fn.name):
                 recursive_count += 1
-            if is_py and _is_orphan(str(p), fn.name):
+            if is_py and _is_orphan(str(p), fn.name, backend_root):
                 orphan_count += 1
         if is_py and source:
             nesting_values.append(_max_nesting(source))
