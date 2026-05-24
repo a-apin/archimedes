@@ -147,19 +147,37 @@ acceptance":
   empty state). File new issue + assign t2o2 with explicit "the original
   closure was premature, here's what specifically still needs to happen."
 
-## Workstream 3: Branch + dependabot cleanup
+## Workstream 3: Branch + PR rebase/merge cleanup (EXPANDED)
 
-- Delete 12 merged remote dependabot branches:
-  ```bash
-  for b in $(git branch -r | grep dependabot | grep -v "redis-gte-7.4.0"); do
-    git push origin --delete "${b#origin/}"
-  done
-  ```
-- PR #189 (redis dep) — re-evaluate after PR-6 lands; if CI clears,
-  auto-merges; if not, address conflict in a separate small PR.
-- Rebase PR #182 onto current main + retitle to
-  "[docs] M.4 sweep half — hackagora → a-apin + runbook log" (content
-  refresh is separate work).
+**State (verified 2026-05-24):**
+- 12 merged remote dependabot branches lingering (origin/dependabot/...)
+  — code is on main, branches not deleted
+- **PR #189** (redis dep bump) — ONLY open dependabot PR; MERGEABLE
+  but CI failing on main regression (`test_run_backtests_is_idempotent`)
+- **PR #182** (overnight M.4 sweep) — open; 40+ commits behind main;
+  pure docs; safe to rebase
+- **PR #196** (this morning plan artifact) — open; pure docs
+
+**Sub-plan (explicit, ordered):**
+
+| Step | Action | Depends on | Risk |
+|---|---|---|---|
+| 3a | Delete 12 merged remote dependabot branches (`git push origin --delete origin/dependabot/...` for each except `redis-gte-7.4.0`) | none | zero — pure cleanup |
+| 3b | Rebase PR #182 onto current main: `git checkout dbrowneup/m4-hackagora-sweep && git pull --rebase origin main && git push --force-with-lease` | none | low — pure docs; rebase will likely have minor conflicts in runbook (m4 branch has overnight runbook updates; main has empty stub) |
+| 3c | Retitle PR #182 to `[docs] M.4 sweep half — hackagora → a-apin + runbook log` (gh pr edit) | 3b | none |
+| 3d | Verify PR #182 CI green; if green, merge | 3b, 3c | none |
+| 3e | After PR-6 lands and `test_run_backtests_is_idempotent` passes on main, PR #189 CI auto-re-runs | PR-6 | none — let CI gate; do NOT manually rebase |
+| 3f | If PR #189 CI clears, merge | 3e | low — safe minor dep bump |
+| 3g | Delete `origin/dependabot/pip/backend/redis-gte-7.4.0` branch after merge | 3f | zero |
+| 3h | Merge PR #196 (this artifact) when Dan reviews | Dan review | zero |
+
+**Anti-goals for Workstream 3:**
+- DO NOT rebase PR #189 manually — Dependabot manages its own rebases
+  via comments (`@dependabot rebase`); manual rebase fights the bot
+- DO NOT delete `origin/dependabot/pip/backend/redis-gte-7.4.0` until
+  PR #189 merges or is closed
+- DO NOT force-push main; PR #182 + PR #196 + PR #189 each go through
+  PR merge flow
 
 ## Workstream 4: M.4 content refresh (defer to Sunday afternoon)
 
