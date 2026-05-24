@@ -1,38 +1,4 @@
-import { useState, useEffect } from 'react'
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? ''
-
-async function apiGet(path) {
-  try {
-    const res = await fetch(`${API_BASE}${path}`)
-    if (!res.ok) return null
-    return res.json()
-  } catch { return null }
-}
-
 export default function Landing({ onNavigate }) {
-  const [stats, setStats]           = useState(null)
-  const [agentStatus, setAgentStatus] = useState(null)
-  const [regime, setRegime]         = useState(null)
-
-  useEffect(() => {
-    async function load() {
-      const [contracts, agent, reg, strategies] = await Promise.all([
-        apiGet('/api/config/contracts'),
-        apiGet('/api/agent/status'),
-        apiGet('/api/regime/current'),
-        apiGet('/api/strategies/'),
-      ])
-      setStats({
-        strategyCount: strategies?.strategies?.length || 0,
-        contracts: contracts?.vault_factory ? 10 : 0,
-      })
-      setAgentStatus(agent)
-      setRegime(reg)
-    }
-    load()
-  }, [])
-
   return (
     <div className="min-h-screen bg-[var(--canvas)] overflow-x-hidden font-[var(--sans)]">
 
@@ -81,15 +47,6 @@ export default function Landing({ onNavigate }) {
         </div>
       </section>
 
-      {/* ── Live status bar ──────────────────────────────────────── */}
-      <div className="flex flex-wrap justify-center gap-x-8 gap-y-2 px-5 py-3.5 overflow-hidden bg-[var(--surface-1)] border-b border-[var(--glass-border)]">
-        <StatusItem dot="live"   label="Agent"      value={agentStatus?.alive ? 'LIVE' : '…'} />
-        <StatusItem dot="regime" label="Regime"     value={regime?.regime || '…'} />
-        <StatusItem              label="Confidence" value={regime?.confidence ? `${(regime.confidence * 100).toFixed(0)}%` : '…'} />
-        <StatusItem              label="Strategies" value={stats?.strategyCount ?? '…'} />
-        <StatusItem              label="Contracts"  value={stats?.contracts ?? '…'} />
-      </div>
-
       {/* ── Why Archimedes ───────────────────────────────────────── */}
       <LSection>
         <SectionTitle>Why Archimedes?</SectionTitle>
@@ -110,32 +67,6 @@ export default function Landing({ onNavigate }) {
             Your funds never pass through platform custody. ERC-4626 vault contracts
             hold your USDC and synth tokens — agent has rebalance authority only.
           </FeatureCard>
-        </div>
-      </LSection>
-
-      {/* ── Two-Tier Marketplace ─────────────────────────────────── */}
-      <LSection>
-        <SectionTitle>Two-Tier Strategy Marketplace</SectionTitle>
-        <div className="lg-grid-2">
-          <TierCard tier={1} title="Archimedes Verified" items={[
-            'Paper-grounded provenance',
-            'Selection-bias corrected (DSR + PBO + walk-forward + look-ahead audit)',
-            'Full agent autonomy',
-            'Reasoning trace on-chain',
-            'Paper-claim deltas surfaced honestly',
-          ]} />
-          <TierCard tier={2} title="Community" items={[
-            'Permissionless strategy submission',
-            'Opt-in agent features',
-            'Community curation',
-            'Transparent performance history',
-            'Open to all strategies',
-          ]} />
-        </div>
-        <div className="mt-4 text-center">
-          <button className="btn-secondary" onClick={() => onNavigate('library', { tab: 'examples' })}>
-            Browse {stats?.strategyCount || 6} Strategies →
-          </button>
         </div>
       </LSection>
 
@@ -249,21 +180,6 @@ export default function Landing({ onNavigate }) {
 
 /* ── Sub-components ──────────────────────────────────────────── */
 
-function StatusItem({ dot, label, value }) {
-  const dotCls =
-    dot === 'live'   ? 'bg-[var(--positive)] shadow-[0_0_6px_var(--positive)]' :
-    dot === 'regime' ? 'bg-[var(--accent)]' : null
-  return (
-    <div className="flex items-center gap-1.5 text-[0.82rem]">
-      {dotCls && (
-        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotCls}`} />
-      )}
-      <span className="text-[var(--text-3)]">{label}</span>
-      <span className="text-[var(--text-1)] font-semibold tabular-nums">{value}</span>
-    </div>
-  )
-}
-
 function LSection({ children }) {
   return (
     <section className="l-section">
@@ -293,25 +209,3 @@ function FeatureCard({ icon, title, tag, children }) {
   )
 }
 
-function TierCard({ tier, title, items }) {
-  const borderCls = tier === 1 ? 'border-[var(--accent)]' : 'border-[var(--text-3)]'
-  const colorCls  = tier === 1 ? 'text-[var(--accent)]'   : 'text-[var(--text-3)]'
-  const iconName  = tier === 1 ? 'i-lucide-trophy'        : 'i-lucide-users'
-  return (
-    <div className={`bg-[var(--surface-1)] border-2 ${borderCls} rounded-2xl p-8 flex flex-col items-center text-center`}>
-      <span className={`${iconName} w-8 h-8 mb-3 ${colorCls}`} />
-      <div className={`text-xs font-bold uppercase tracking-[0.08em] ${colorCls} mb-2`}>
-        Tier {tier}
-      </div>
-      <h3 className="font-serif text-[1.15rem] font-normal mb-5 text-[var(--text-1)]">{title}</h3>
-      <ul className="space-y-2 text-left w-full">
-        {items.map(item => (
-          <li key={item} className="flex items-start gap-2 text-[0.85rem] text-[var(--text-2)]">
-            <span className="i-lucide-check w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-[var(--positive)]" />
-            {item}
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
