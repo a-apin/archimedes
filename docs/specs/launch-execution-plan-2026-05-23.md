@@ -67,7 +67,7 @@ Pitch framing locked: Wall Street has the rigor toolkit (DSR/PBO/walk-forward OO
 | **Scalability + load-balancing** | First-class architectural pillar — virality-ready from day one. AWS Application Load Balancer in front of an auto-scaling group of EC2 (min=2, max=4, desired=2) for the backend tier; CloudFront distribution in front of ALB caches static assets at the edge and absorbs cold spikes. Postgres + Redis move to a dedicated database EC2 (v1) — RDS + ElastiCache is the v2 hop. Closes the "we go viral and our single EC2 dies" failure mode that would forfeit traction at the worst possible moment. T3.6 ships this; § 11 confirms the risk is mitigated, not just accepted. |
 | **LLM backend** | GLM-4.7 stays primary (working, tested, free tier). **Empirically validated:** GLM-4.5 ranks #3 globally on the StockBench benchmark (Chen et al. 2026, [arxiv 2510.02209](https://arxiv.org/abs/2510.02209)) — behind only Kimi-K2 (Moonshot) and Qwen3-235B-Instruct, ahead of Claude-4-Sonnet (#7) and GPT-5 (#9). StockBench also found that reasoning-tuned models DO NOT systematically outperform instruction-tuned in trading workflows — sharpens our skepticism of reasoning-mode-by-default. Ship BYOK header support (`X-Anthropic-Api-Key`) so judges + users can self-fund Claude direct. Bedrock spec is filed on-record but **unassigned** to `t2o2`; we activate it only if we choose to deploy. |
 | **Submission deadline** | Hard: Monday 2026-05-25 23:59 ET (Tue 04:59 UTC). Personal target: Sunday 2026-05-24 23:59 CT. Monday is buffer (final video re-record, late docs polish). |
-| **Delivery surface** | Three artifacts: (1) public GitHub repo at `a-apin/archimedes-arcadia` (org renamed from `hackagora` 2026-05-23 PM; GitHub auto-redirects old URLs), (2) live HTTPS website at `https://archimedes-arc.app`, (3) ≤ 3-minute demo video. All other docs are supporting evidence. |
+| **Delivery surface** | Three artifacts: (1) public GitHub repo at `a-apin/archimedes-arcadia` (org renamed from `a-apin` 2026-05-23 PM; GitHub auto-redirects old URLs), (2) live HTTPS website at `https://archimedes-arc.app`, (3) ≤ 3-minute demo video. All other docs are supporting evidence. |
 | **RFB alignment** | **Primary: [RFB 04 Adaptive Portfolio Manager](https://luma.com/7i50p2r9)** — direct hit (regime detection, asset allocation, rebalancing, risk management; goal-based PM interface; correlation-based diversification; cross-chain-ready rebalancing infra). **Adjacent: RFB 02 Prediction Market Trader Intelligence** (our Kelly Criterion + risk parity + +EV sizing maps to the "optimal bet sizing" primitive) and **RFB 06 Social Trading Intelligence** (our Tier-1 verified strategy library + paper-anchored passport + DSR/PBO rigor IS the "AI selects, weights, and monitors" pattern applied to strategies-as-traders; the rigor-gated library IS the leaderboard). Every refreshed doc in M.4 makes this alignment explicit. |
 | **Security posture** | First-class pillar (Section 7). Zero-trust, secrets out of `.env` into AWS SSM Parameter Store + IAM instance profile, HTTPS everywhere, security headers, CORS lockdown, rate limits, dependency scanning, secret-leak detection, user-data minimization with KMS encryption. Same rigor as the statistical pipeline. |
 | **Reproducibility target** | **R3 per Xia et al. 2026** ([arxiv 2605.19337](https://arxiv.org/abs/2605.19337)). Their audit of 19 trading-agent papers found **15/19 are R0** (no code/data artifacts), **0/19 reach R3** (fully replayable with artifact versioning + immutable provenance). Archimedes is engineered to be the first production trading-agent system to ship at R3: on-chain `ReasoningTraceRegistry` provides immutable timestamped anchors for every agent decision; KB pipeline artifacts persisted to S3 with versioned manifests; strategy DSLs + backtest seeds committed to git; vault contracts + ABIs verifiable on Arc. This is a pitch beat and a verification goal. |
@@ -86,7 +86,7 @@ Pitch framing locked: Wall Street has the rigor toolkit (DSR/PBO/walk-forward OO
 - **Chuan** = the human teammate (CTO @ Gyld Finance; owner of contracts + on-chain integration + infra).
 - **t2o2** = Chuan's GitHub bot system handle. Assignment of an issue to `t2o2` triggers autonomous execution against `main`.
 - **moonshot** = Chuan's Discord handle in the Archimedes Arcadia server. **Not the same** as the unrelated `moonshot` Discord handle in the Canteen admin server (which is Anuhya, a Canteen admin). Avoid the name "moonshot" in this plan to prevent confusion; we use Chuan and t2o2 instead.
-- **a-apin** = our GitHub organization (`github.com/a-apin`), renamed from `hackagora` on 2026-05-23 PM. GitHub auto-redirects the old `hackagora/archimedes-arcadia` URL, but every committed reference + the git remote should be updated to the new org name when convenient.
+- **a-apin** = our GitHub organization (`github.com/a-apin`), renamed from `a-apin` on 2026-05-23 PM. GitHub auto-redirects the old `a-apin/archimedes-arcadia` URL, but every committed reference + the git remote should be updated to the new org name when convenient.
 - **archimedes-arc.app** = our live HTTPS domain (registered via Route 53 in T3.6 / TS.1). All deploy + demo links use this. The IP `13.40.112.220` is the legacy EC2 origin; CloudFront sits in front of the ALB which sits in front of the auto-scaling backend tier.
 
 ### 2.2 Issue lifecycle (manual `t2o2` assignment)
@@ -2722,25 +2722,25 @@ TS.1 (needs 443 server block to exist)
 - `docs/competitor-landscape.md` (add rosetta-alpha as the most credible competitor; refresh framing; explicitly position Archimedes against the 19-study primary subset Xia audits)
 - `docs/judging-rubric-assessment.md` (refresh Day-12 score with TS + T3.6 ALB-CloudFront + T3.7 named protocols + T3.8 StockBench rank + T3.9 paper-qa semantic-retrieval + T-PE.8 episodic memory)
 - `docs/anti-features.md` (add security non-claims + BYOK posture + we-don't-promise-returns posture + "all LLM agents underperform passive baseline in downturns per StockBench — we don't pretend otherwise")
-- `README.md` — top fold updated; quick-start updated to `https://archimedes-arc.app`; explicit "Built for [RFB 04 Adaptive Portfolio Manager](https://luma.com/7i50p2r9) with adjacent fit to RFB 02 + RFB 06" badge or statement near the title; **org references updated to `a-apin` (grep-and-replace every `hackagora` reference — `a-apin` is the canonical org going forward)**; **add Xia et al. 2026 + Chen et al. 2026 + Trading-R1 + TradingAgents to a "Cited literature" section** with arxiv links; add the cross-project lineage paragraph ("three repos, one lineage: Linus + Archimedes + KnowledgeBase debut together — the Linus orient at submodules/Linus/docs/audits/2026-05-22-reveal-prep/archimedes-orient.md is the canonical sibling-perspective read"). Cite Linus-Maestro audit explicitly as validation of the externally-verifiable-hashes design choice (lesson #2 — "shifting provenance enforcement from runtime types to externally-verifiable hashes is a strict upgrade").
+- `README.md` — top fold updated; quick-start updated to `https://archimedes-arc.app`; explicit "Built for [RFB 04 Adaptive Portfolio Manager](https://luma.com/7i50p2r9) with adjacent fit to RFB 02 + RFB 06" badge or statement near the title; **org references updated to `a-apin` (grep-and-replace every `a-apin` reference — `a-apin` is the canonical org going forward)**; **add Xia et al. 2026 + Chen et al. 2026 + Trading-R1 + TradingAgents to a "Cited literature" section** with arxiv links; add the cross-project lineage paragraph ("three repos, one lineage: Linus + Archimedes + KnowledgeBase debut together — the Linus orient at submodules/Linus/docs/audits/2026-05-22-reveal-prep/archimedes-orient.md is the canonical sibling-perspective read"). Cite Linus-Maestro audit explicitly as validation of the externally-verifiable-hashes design choice (lesson #2 — "shifting provenance enforcement from runtime types to externally-verifiable hashes is a strict upgrade").
 - `ARC-OSS-SHOWCASE.md` — add TS pillar as forkable primitives; add T3.6 scalability architecture as a forkable primitive; add T3.7 named-protocols implementation as a forkable primitive ("Outcome Embargo, Time-Aware Retrieval, Hierarchy of Truth, Source Tracking, V_check — every Xia 2026 protocol, in production code"); add T3.9 paper-qa wrapping as a forkable primitive (Linus + Archimedes cross-project semantic-retrieval bridge); add T-PE.8 strategy_proposals table as a forkable primitive (Linus DEC-0029 Layer-C shape, Postgres-realized).
-- `CLAUDE.md` (this repo's project context) — **grep `hackagora` and replace with `a-apin` (canonical org)**; verify the team table + the canonical pitch frame match Section 3.1; update HTTPS domain reference; verify RFB 04 + RFB 02 + RFB 06 alignment is named in the Scope section; add Xia + StockBench to the architectural primitives section; add the K=1 + externalized rigor architectural commitment as a 5th architectural primitive
+- `CLAUDE.md` (this repo's project context) — **grep `a-apin` and replace with `a-apin` (canonical org)**; verify the team table + the canonical pitch frame match Section 3.1; update HTTPS domain reference; verify RFB 04 + RFB 02 + RFB 06 alignment is named in the Scope section; add Xia + StockBench to the architectural primitives section; add the K=1 + externalized rigor architectural commitment as a 5th architectural primitive
 - `docs/benchmarks/stockbench-results.md` — committed by T3.8; referenced from README + deck
 - `docs/specs/xia-2026-protocols.md` — committed by T3.7; referenced from ARC-OSS-SHOWCASE
 
 **M.4 grep-and-replace truth-up (do this in one pass across the whole tree, NOT just the listed docs above):**
 
 ```bash
-# `a-apin` is the canonical org name going forward. Any remaining `hackagora`
+# `a-apin` is the canonical org name going forward. Any remaining `a-apin`
 # references in docs or code are stale (org was renamed; git remote already points
 # at a-apin). Sweep + replace, EXCEPT inside docs/archive/ (preserve historical truth).
-rg -l 'hackagora' --glob '!docs/archive/' --glob '!submodules/**'
+rg -l 'a-apin' --glob '!docs/archive/' --glob '!submodules/**'
 # Review the hit list, then:
-rg -l 'hackagora' --glob '!docs/archive/' --glob '!submodules/**' \
-  | xargs sed -i.bak 's|hackagora|a-apin|g' && find . -name '*.bak' -delete
+rg -l 'a-apin' --glob '!docs/archive/' --glob '!submodules/**' \
+  | xargs sed -i.bak 's|a-apin|a-apin|g' && find . -name '*.bak' -delete
 # Spot-check: `archimedes-arcadia.com` urls, github org links, Discord references
 # (the Discord SERVER is still "Archimedes Arcadia" — that's a brand, not an org;
-# only `github.com/hackagora` / `hackagora/archimedes-arcadia` / similar code-org
+# only `github.com/a-apin` / `a-apin/archimedes-arcadia` / similar code-org
 # references need the swap).
 ```
 
@@ -2776,7 +2776,7 @@ Do a DEEP and AGGRESSIVE audit:
 4. Confirm submodule states (KnowledgeBase + Linus + context-arc) reflect latest pins.
 
 5. URL truth-up audit. Run:
-     rg -n 'hackagora' --glob '!docs/archive/' --glob '!submodules/**'
+     rg -n 'a-apin' --glob '!docs/archive/' --glob '!submodules/**'
    Verify M.4's grep-and-replace pass already ran cleanly — there should be ZERO matches
    outside docs/archive/ and submodules/. Any remaining matches are stale references the
    M.4 sweep missed; fix them now (a-apin is canonical). Then verify the live URLs the
@@ -2790,7 +2790,7 @@ Do a DEEP and AGGRESSIVE audit:
    "unfinished" / "we were planning to".
 
 Output: a punch list of (a) files moved to archive, (b) files updated and what changed,
-(c) files deleted, (d) URL audit results (hackagora matches + URL resolution checks),
+(c) files deleted, (d) URL audit results (a-apin matches + URL resolution checks),
 (e) remaining issues you couldn't fix yourself + recommended owner.
 
 Don't sanitize honesty — the pitch wedge IS operational candor. But DO remove stale

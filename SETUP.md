@@ -26,7 +26,7 @@ The local docker-compose stack reproduces the production EC2 deployment exactly.
 ## Step 1 — Clone the repository (with submodules)
 
 ```bash
-git clone --recurse-submodules git@github.com:hackagora/archimedes-arcadia.git archimedes
+git clone --recurse-submodules git@github.com:a-apin/archimedes-arcadia.git archimedes
 cd archimedes
 ```
 

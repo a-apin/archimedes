@@ -13,10 +13,10 @@
 > `git log --author='t2o2' --author='chuan@gyld.fi' -- backend/archimedes/`.
 > **Status:** **Day-11 revision (2026-05-23).** Refreshes the Day-10 survey
 > against the work that landed since:
->   - **Chuan / t2o2 — `bd6935b` (Strategy DSL + interpreter + fusion evaluator pipeline).** **3 new files** (`services/strategy_dsl.py`, `services/dsl_to_backtrader.py`, `services/fusion_evaluator.py`) + 37 new tests + 7-line additive change to `strategy_fusion.py`. Closes the long-standing fusion-to-backtest gap at the implementation level; the wiring into `_run_fusion_job` is open in [#133](https://github.com/hackagora/archimedes-arcadia/issues/133).
+>   - **Chuan / t2o2 — `bd6935b` (Strategy DSL + interpreter + fusion evaluator pipeline).** **3 new files** (`services/strategy_dsl.py`, `services/dsl_to_backtrader.py`, `services/fusion_evaluator.py`) + 37 new tests + 7-line additive change to `strategy_fusion.py`. Closes the long-standing fusion-to-backtest gap at the implementation level; the wiring into `_run_fusion_job` is open in [#133](https://github.com/a-apin/archimedes-arcadia/issues/133).
 >   - **Daniel R. — UnoCSS pass (PR #124).** Frontend-only; no `backend/archimedes/` impact.
 >   - **Spine-plus-v2 (Dan / Claude, branch `dbrowneup/spine-plus-v2`).** **8 new files** under `backend/archimedes/`: `api/generate_routes.py`, `api/generate_schemas.py`, `api/explore_routes.py`, `api/explore_schemas.py`, `api/corpus_routes.py`, `services/generation_pipeline.py`, `services/asset_market_service.py`, `services/corpus_categories.py`, `services/kb_runner.py`, `models/kg.py`, `scripts/run_kb_pipeline.py` (11 files including models + scripts). Streaming Generate, Explore page, corpus polish, KB pipeline skeleton.
->   - **Phase 7 follow-ups filed as t2o2 issues 2026-05-23:** [#129](https://github.com/hackagora/archimedes-arcadia/issues/129) (rigor consolidation), [#130](https://github.com/hackagora/archimedes-arcadia/issues/130) (LLM backend unification), [#131](https://github.com/hackagora/archimedes-arcadia/issues/131) (portfolio constructor retirement), [#132](https://github.com/hackagora/archimedes-arcadia/issues/132) (routes.py monolith split), [#133](https://github.com/hackagora/archimedes-arcadia/issues/133) (fusion-evaluator wiring). Five of the gap clusters below are now live work.
+>   - **Phase 7 follow-ups filed as t2o2 issues 2026-05-23:** [#129](https://github.com/a-apin/archimedes-arcadia/issues/129) (rigor consolidation), [#130](https://github.com/a-apin/archimedes-arcadia/issues/130) (LLM backend unification), [#131](https://github.com/a-apin/archimedes-arcadia/issues/131) (portfolio constructor retirement), [#132](https://github.com/a-apin/archimedes-arcadia/issues/132) (routes.py monolith split), [#133](https://github.com/a-apin/archimedes-arcadia/issues/133) (fusion-evaluator wiring). Five of the gap clusters below are now live work.
 
 ## Quick stats
 
@@ -180,9 +180,9 @@ These were defined early as the contract surface for the 5-person concurrent bui
 
 ### Domain: fusion-to-backtest pipeline (Day-11)
 
-- **`strategy_dsl.py`** *(NEW Day-11, `t2o2` / Chuan, 250 lines)* — closed-enum JSON schema + validator for fusion-generated strategies. No `eval`/`exec`/`importlib`; static look-ahead audit. **Gap:** spec doc (`docs/specs/strategy-dsl-spec.md`) is the open item on [#133](https://github.com/hackagora/archimedes-arcadia/issues/133).
+- **`strategy_dsl.py`** *(NEW Day-11, `t2o2` / Chuan, 250 lines)* — closed-enum JSON schema + validator for fusion-generated strategies. No `eval`/`exec`/`importlib`; static look-ahead audit. **Gap:** spec doc (`docs/specs/strategy-dsl-spec.md`) is the open item on [#133](https://github.com/a-apin/archimedes-arcadia/issues/133).
 - **`dsl_to_backtrader.py`** *(NEW Day-11, `t2o2`, 197 lines)* — interpreter producing `backtrader.Strategy` subclasses at runtime from a validated `StrategySpec`. **Gap:** none structural.
-- **`fusion_evaluator.py`** *(NEW Day-11, `t2o2`, 339 lines)* — orchestrator: `validate → interpret → backtest → rigor gate`. Uses canonical `services/rigor_evaluator.py` for DSR/OOS-Sharpe (PBO defaulted to 0.0 with a comment, since PBO is a library-level metric). 37 new tests, all passing. **Gap:** **not yet wired into `_run_fusion_job`** — fusion endpoint still emits text-only output in production. Tracked at [#133](https://github.com/hackagora/archimedes-arcadia/issues/133).
+- **`fusion_evaluator.py`** *(NEW Day-11, `t2o2`, 339 lines)* — orchestrator: `validate → interpret → backtest → rigor gate`. Uses canonical `services/rigor_evaluator.py` for DSR/OOS-Sharpe (PBO defaulted to 0.0 with a comment, since PBO is a library-level metric). 37 new tests, all passing. **Gap:** **not yet wired into `_run_fusion_job`** — fusion endpoint still emits text-only output in production. Tracked at [#133](https://github.com/a-apin/archimedes-arcadia/issues/133).
 
 ### Domain: streaming generation (Day-11, spine-plus-v2)
 
@@ -212,21 +212,21 @@ Five of the gap clusters below are now **live work** with t2o2 issues filed. Sta
 
 | # | Cluster | Day-11 status | Tracked at |
 |---|---|---|---|
-| 1 | **Redundancy: rigor implementation** (`selection_bias.py` ↔ `rigor_evaluator.py`) | **filed** | [#129](https://github.com/hackagora/archimedes-arcadia/issues/129) — open, t2o2 |
+| 1 | **Redundancy: rigor implementation** (`selection_bias.py` ↔ `rigor_evaluator.py`) | **filed** | [#129](https://github.com/a-apin/archimedes-arcadia/issues/129) — open, t2o2 |
 | 2 | **Redundancy: regime detection** (`regime_detector.py` ↔ `statistical_regime.py`) | **deferred** — needs Önder's read on which is wired to `RegimePanel` before specing | open question for next standup |
-| 3 | **Redundancy: LLM backends** (3 parallel `LLMBackend` Protocols) | **filed** | [#130](https://github.com/hackagora/archimedes-arcadia/issues/130) — open, t2o2 |
+| 3 | **Redundancy: LLM backends** (3 parallel `LLMBackend` Protocols) | **filed** | [#130](https://github.com/a-apin/archimedes-arcadia/issues/130) — open, t2o2 |
 | 4 | **Redundancy: arxiv intake paths** (`arxiv_corpus.py`, `corpus_service.py`, `bulk_ingest_arxiv.py`) | **deferred** — adjacent to Dan's Linus-side KB iteration | will fold into Phase 3c completion |
-| 5 | **Multiplicity: portfolio constructors** | partially answered: decision-tree spec at [`docs/specs/portfolio-constructor-decision-tree.md`](specs/portfolio-constructor-decision-tree.md) names `portfolio_agent.py` (top-level) + `portfolio_optimizer.py` (math leaf) as canonical. Retirement of `portfolio_constructor.py` + `kelly_portfolio.py` **filed** | [#131](https://github.com/hackagora/archimedes-arcadia/issues/131) — open, t2o2 |
-| 6 | **Monolith: `api/routes.py` (~2315 lines)** | **filed** — 9-file per-resource split spec'd | [#132](https://github.com/hackagora/archimedes-arcadia/issues/132) — open, t2o2 |
+| 5 | **Multiplicity: portfolio constructors** | partially answered: decision-tree spec at [`docs/specs/portfolio-constructor-decision-tree.md`](specs/portfolio-constructor-decision-tree.md) names `portfolio_agent.py` (top-level) + `portfolio_optimizer.py` (math leaf) as canonical. Retirement of `portfolio_constructor.py` + `kelly_portfolio.py` **filed** | [#131](https://github.com/a-apin/archimedes-arcadia/issues/131) — open, t2o2 |
+| 6 | **Monolith: `api/routes.py` (~2315 lines)** | **filed** — 9-file per-resource split spec'd | [#132](https://github.com/a-apin/archimedes-arcadia/issues/132) — open, t2o2 |
 | 7 | **Stale interface ownership comments** (`interfaces/agent.py` / `chain.py` / `math.py`) | **resolved** in Phase 1 deferred resolution (commit `07276d3`) — reframed to Reviewer/Coverage per CLAUDE.md's lane-softening | landed |
-| 8 | **`marketplace_service.py` seed-data weight** | still partial; will file follow-on once [#132](https://github.com/hackagora/archimedes-arcadia/issues/132) settles (the routes split surfaces remaining wiring) | tracked here |
+| 8 | **`marketplace_service.py` seed-data weight** | still partial; will file follow-on once [#132](https://github.com/a-apin/archimedes-arcadia/issues/132) settles (the routes split surfaces remaining wiring) | tracked here |
 | 9 | **Scheduled intake / artifact build** | **deferred** — folds into Phase 3c completion (Dan's lane) | tracked here |
 | 10 | **Operational scripts not Make-able** | **resolved** — Makefile extended with `up`/`down`/`logs`/`pytest`/`lint`/`format`/`ui-dev`/`routes`/`clean` (commit `1e372f5`); README pointer added | landed |
 | 11 | **TODO marker at `routes.py:172`** | **resolved** in Phase 1 cherry-pick (commit `6b5baec`) — replaced with `501 Not Implemented` + a fixed-list `available_sources` body so callers see a real schema | landed |
 | 12 | **`circle_service.py` is judge-oriented** | by design — no action needed | n/a |
 | 13 | **`stress_engine.py` built but not wired to the UI** | **deferred** — Phase 4 candidate; Marten's lane. Design-prompts doc calls for a horizontal "Stress-scenario strip" on the Portfolio page; backend ready, frontend strip not yet wired | tracked here |
 | 14 | **Agentic advisor tool-use semantics** | unchanged — `MAX_AGENT_ITERATIONS=12`, 5-min cache. Failure modes worth understanding before the demo | tracked here |
-| 15 | **NEW Day-11: fusion-to-backtest wiring** | **filed** — building blocks shipped in `bd6935b` (DSL + interpreter + evaluator + 37 tests); LLM prompt extension + `_run_fusion_job` rewire + DSL spec doc remain | [#133](https://github.com/hackagora/archimedes-arcadia/issues/133) — open, t2o2 |
+| 15 | **NEW Day-11: fusion-to-backtest wiring** | **filed** — building blocks shipped in `bd6935b` (DSL + interpreter + evaluator + 37 tests); LLM prompt extension + `_run_fusion_job` rewire + DSL spec doc remain | [#133](https://github.com/a-apin/archimedes-arcadia/issues/133) — open, t2o2 |
 
 ---
 

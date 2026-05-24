@@ -93,7 +93,7 @@ Internal team validation: 5 builders across 5 timezones (US/UK/EU/Brazil/Turkey)
 
 External (the numbers that matter for this question):
 - arc-canteen telemetry: <<RUN `arc-canteen status` AND PASTE THE PRODUCT + TRACTION COUNTS HERE>>
-- GitHub stars: <<RUN `gh repo view hackagora/archimedes-arcadia --json stargazerCount`>>
+- GitHub stars: <<RUN `gh repo view a-apin/archimedes-arcadia --json stargazerCount`>>
 - Discord engagement: <<CONVERSATION COUNT FROM #canteen-archimedes>>
 - Live testnet vault deposits (real outsiders, not team): <<COUNT>>
 - Twitter / X impressions: <<NUMBER FROM LAUNCH TWEET>>
@@ -104,7 +104,7 @@ We are actively driving this number up through submission day.
 ## 12. Project Source Code*
 
 ```
-https://github.com/hackagora/archimedes-arcadia
+https://github.com/a-apin/archimedes-arcadia
 ```
 
 (Public, Unlicense.)

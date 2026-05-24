@@ -1,6 +1,6 @@
 # Issue spec for t2o2 — Fusion-output → Backtestable Strategy DSL
 
-> **Status:** ✓ filed + closed as [#128](https://github.com/hackagora/archimedes-arcadia/issues/128) on 2026-05-23. Foundation shipped in `bd6935b` (DSL + interpreter + evaluator + 37 passing tests, using canonical `services/rigor_evaluator.py`); wiring + DSL spec doc landed via follow-on [#133](https://github.com/hackagora/archimedes-arcadia/issues/133) — closed, shipped on `main` (commit `2f7f871`).
+> **Status:** ✓ filed + closed as [#128](https://github.com/a-apin/archimedes-arcadia/issues/128) on 2026-05-23. Foundation shipped in `bd6935b` (DSL + interpreter + evaluator + 37 passing tests, using canonical `services/rigor_evaluator.py`); wiring + DSL spec doc landed via follow-on [#133](https://github.com/a-apin/archimedes-arcadia/issues/133) — closed, shipped on `main` (commit `2f7f871`).
 >
 > **This is a ready-to-file issue body, written to the standard in CLAUDE.md's
 > "agentic issue pipeline" section.** Copy/paste into a GitHub issue,

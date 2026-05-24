@@ -38,7 +38,7 @@ monitors them in non-custodial vaults on Arc with USDC settlement. The product s
 Built for the [**Agora Agents Hackathon**](https://luma.com/7i50p2r9) — Canteen × Circle × Arc,
 May 11–25, 2026.
 
-- Repository: [`github.com/hackagora/archimedes-arcadia`](https://github.com/hackagora/archimedes-arcadia)
+- Repository: [`github.com/a-apin/archimedes-arcadia`](https://github.com/a-apin/archimedes-arcadia)
 - Discord: **Archimedes Arcadia** server
 - Branch model: **`main` is the single live branch — build-on-deploy.** Every merge to
   `main` triggers a CI build + deploy to the live EC2 stack. No `develop`/integration
