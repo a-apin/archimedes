@@ -6,7 +6,7 @@ import asyncio
 
 from fastapi import APIRouter, Query
 
-from archimedes.api.schemas import SwapQuoteResponse, PoolListResponse, PoolResponse
+from archimedes.api.schemas import PoolListResponse, PoolResponse, SwapQuoteResponse
 
 swap_router = APIRouter(prefix="/api/swap", tags=["swap"])
 
@@ -83,7 +83,8 @@ async def get_swap_quote(
         )
     except Exception as e:
         from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=f"Quote failed: {str(e)}")
+
+        raise HTTPException(status_code=400, detail=f"Quote failed: {e!s}") from e
 
 
 @swap_router.get("/pools", response_model=PoolListResponse)

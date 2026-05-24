@@ -15,24 +15,24 @@ Router files:
   papers_routes      /api/papers/*
 """
 
-from archimedes.api.assets_routes import assets_router
-from archimedes.api.vaults_routes import vaults_router
-from archimedes.api.strategies_routes import strategies_router
-from archimedes.api.traces_routes import traces_router
-from archimedes.api.regime_routes import regime_router
-from archimedes.api.swap_routes import swap_router
-from archimedes.api.config_routes import config_router
 from archimedes.api.agent_routes import agent_router
+from archimedes.api.assets_routes import assets_router
+from archimedes.api.config_routes import config_router
 from archimedes.api.papers_routes import papers_router
+from archimedes.api.regime_routes import regime_router
+from archimedes.api.strategies_routes import strategies_router
+from archimedes.api.swap_routes import swap_router
+from archimedes.api.traces_routes import traces_router
+from archimedes.api.vaults_routes import vaults_router
 
 __all__ = [
-    "assets_router",
-    "vaults_router",
-    "strategies_router",
-    "traces_router",
-    "regime_router",
-    "swap_router",
-    "config_router",
     "agent_router",
+    "assets_router",
+    "config_router",
     "papers_router",
+    "regime_router",
+    "strategies_router",
+    "swap_router",
+    "traces_router",
+    "vaults_router",
 ]

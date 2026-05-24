@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -44,7 +44,7 @@ class JobStore:
     ) -> str:
         """Create a queued job and return its ID."""
         job_id = uuid.uuid4().hex[:16]
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         data = {
             "id": job_id,
             "type": job_type,
@@ -91,7 +91,7 @@ class JobStore:
         """Transition a job to a new status with optional result/error."""
         r = await self._get_redis()
         key = f"{KEY_PREFIX}{job_id}"
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         updates: dict[str, str] = {
             "status": status,
             "updated_at": now,
@@ -166,16 +166,18 @@ class JobStore:
             raw = await r.hgetall(key)
             if not raw:
                 continue
-            jobs.append({
-                "id": raw.get("id", key.removeprefix(KEY_PREFIX)),
-                "type": raw.get("type", ""),
-                "status": raw.get("status", "unknown"),
-                "payload": json.loads(raw["payload"]) if raw.get("payload") else {},
-                "result": json.loads(raw["result"]) if raw.get("result") else None,
-                "error": raw.get("error", ""),
-                "created_at": raw.get("created_at", ""),
-                "updated_at": raw.get("updated_at", ""),
-            })
+            jobs.append(
+                {
+                    "id": raw.get("id", key.removeprefix(KEY_PREFIX)),
+                    "type": raw.get("type", ""),
+                    "status": raw.get("status", "unknown"),
+                    "payload": json.loads(raw["payload"]) if raw.get("payload") else {},
+                    "result": json.loads(raw["result"]) if raw.get("result") else None,
+                    "error": raw.get("error", ""),
+                    "created_at": raw.get("created_at", ""),
+                    "updated_at": raw.get("updated_at", ""),
+                }
+            )
         jobs.sort(key=lambda j: j.get("updated_at", ""), reverse=True)
         return jobs[:limit]
 

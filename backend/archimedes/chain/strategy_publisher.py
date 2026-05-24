@@ -16,9 +16,9 @@ import logging
 
 from web3 import Web3
 
+from archimedes.chain.circle_signer import circle_signer
 from archimedes.chain.client import chain_client
 from archimedes.chain.contracts import ContractLoader, get_contract_loader
-from archimedes.chain.circle_signer import circle_signer
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +90,7 @@ class StrategyPublisher:
                 corpus_hex = "0x" + paper_corpus_bytes.hex()
                 regime_hex = "0x" + regime_tag_bytes.hex()
 
-                logger.info(
-                    f"Anchoring strategy via Circle: id={sid_hex[:18]}..., "
-                    f"methodology={meth_hex[:18]}..."
-                )
+                logger.info(f"Anchoring strategy via Circle: id={sid_hex[:18]}..., methodology={meth_hex[:18]}...")
                 tx_hash = await circle_signer.execute_contract(
                     contract_address=registry_checksum,
                     abi_function="registerStrategy(bytes32,bytes32,bytes32,bytes32,string)",
@@ -131,9 +128,7 @@ class StrategyPublisher:
             )
 
             signed = account.sign_transaction(tx)
-            tx_hash_bytes = await chain_client.w3.eth.send_raw_transaction(
-                signed.raw_transaction
-            )
+            tx_hash_bytes = await chain_client.w3.eth.send_raw_transaction(signed.raw_transaction)
             tx_hash = tx_hash_bytes.hex()
             logger.info(f"Strategy anchored on-chain: {tx_hash[:16]}...")
             return tx_hash

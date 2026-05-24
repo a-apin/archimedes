@@ -1,5 +1,5 @@
 __all__ = [
-    "instruments",
-    "engine",
     "cli",
+    "engine",
+    "instruments",
 ]

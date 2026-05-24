@@ -21,11 +21,11 @@ import logging
 from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
-from archimedes.api.user_schemas import UserProfileCreate, UserProfileResponse
 from archimedes.api.limiter import limiter
+from archimedes.api.user_schemas import UserProfileCreate, UserProfileResponse
 from archimedes.db import get_session
 from archimedes.models.user_profile import UserProfile
-from archimedes.services.email_crypto import encrypt_email, decrypt_email
+from archimedes.services.email_crypto import decrypt_email, encrypt_email
 from archimedes.services.log_scrubber import scrub_profile
 
 logger = logging.getLogger(__name__)
@@ -86,9 +86,7 @@ async def get_profile(wallet: str, request: Request):
     session: Session = get_session()
     try:
         wallet_lower = wallet.lower()
-        profile = session.query(UserProfile).filter(
-            UserProfile.wallet_address == wallet_lower
-        ).first()
+        profile = session.query(UserProfile).filter(UserProfile.wallet_address == wallet_lower).first()
         if not profile:
             raise HTTPException(status_code=404, detail="Profile not found")
 
@@ -97,7 +95,9 @@ async def get_profile(wallet: str, request: Request):
 
         logger.info(
             "get_profile: wallet=%s owner=%s data=%s",
-            wallet_lower, is_owner, scrub_profile(response.model_dump()),
+            wallet_lower,
+            is_owner,
+            scrub_profile(response.model_dump()),
         )
         return response
     finally:
@@ -114,9 +114,7 @@ async def upsert_profile(payload: UserProfileCreate, request: Request, response:
     session: Session = get_session()
     try:
         wallet = payload.wallet_address.lower()
-        profile = session.query(UserProfile).filter(
-            UserProfile.wallet_address == wallet
-        ).first()
+        profile = session.query(UserProfile).filter(UserProfile.wallet_address == wallet).first()
 
         interests_json = json.dumps(payload.interests) if payload.interests else "[]"
         encrypted_email = encrypt_email(payload.email)
@@ -148,12 +146,15 @@ async def upsert_profile(payload: UserProfileCreate, request: Request, response:
 
         logger.info(
             "upsert_profile: wallet=%s data=%s",
-            wallet, scrub_profile({
-                "wallet_address": wallet,
-                "email": payload.email,
-                "display_name": payload.display_name,
-                "marketing_opt_in": payload.marketing_opt_in,
-            }),
+            wallet,
+            scrub_profile(
+                {
+                    "wallet_address": wallet,
+                    "email": payload.email,
+                    "display_name": payload.display_name,
+                    "marketing_opt_in": payload.marketing_opt_in,
+                }
+            ),
         )
 
         return _profile_to_response(profile, owner=True)
@@ -163,6 +164,6 @@ async def upsert_profile(payload: UserProfileCreate, request: Request, response:
         session.rollback()
         # Do NOT include PII in error messages
         logger.error("upsert_profile failed for wallet=%s: %s", wallet, type(e).__name__)
-        raise HTTPException(status_code=500, detail="Profile update failed")
+        raise HTTPException(status_code=500, detail="Profile update failed") from e
     finally:
         session.close()

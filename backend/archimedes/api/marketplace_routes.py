@@ -5,17 +5,17 @@ All endpoints return JSON matching the schemas in marketplace_schemas.py.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, HTTPException
+from datetime import UTC
+
+from fastapi import APIRouter, HTTPException, Query
 
 from archimedes.api.marketplace_schemas import (
-    Category,
-    CategoryInfo,
     CategoriesResponse,
+    Category,
     FeaturedStrategiesResponse,
     MarketplaceStrategyDetail,
     MarketplaceStrategyListResponse,
     RiskLevel,
-    StrategyCard,
     TrendingStrategiesResponse,
 )
 from archimedes.services.marketplace_service import marketplace_service
@@ -107,12 +107,12 @@ async def get_featured_strategies():
     by the platform. These are typically high-quality, well-audited
     strategies with strong performance.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     strategies = _marketplace_svc.get_featured()
     return FeaturedStrategiesResponse(
         strategies=strategies,
-        updated_at=datetime.now(timezone.utc).isoformat(),
+        updated_at=datetime.now(UTC).isoformat(),
     )
 
 
@@ -123,12 +123,12 @@ async def get_trending_strategies():
     Returns strategies that are seeing increased user adoption,
     recent strong performance, or social engagement.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     strategies = _marketplace_svc.get_trending()
     return TrendingStrategiesResponse(
         strategies=strategies,
-        updated_at=datetime.now(timezone.utc).isoformat(),
+        updated_at=datetime.now(UTC).isoformat(),
     )
 
 

@@ -8,7 +8,7 @@ orchestrator.
 # Backwards-compat re-exports — the agentic services have moved to
 # ``archimedes.agents``.  These aliases keep any external consumers
 # (scripts, notebooks, stale imports) working without changes.
-from archimedes.agents import strategy_fusion as strategy_fusion  # noqa: F401
-from archimedes.agents import strategy_architect as strategy_architect  # noqa: F401
-from archimedes.agents import portfolio_agent as portfolio_agent  # noqa: F401
-from archimedes.agents import generation_pipeline as generation_pipeline  # noqa: F401
+from archimedes.agents import generation_pipeline as generation_pipeline
+from archimedes.agents import portfolio_agent as portfolio_agent
+from archimedes.agents import strategy_architect as strategy_architect
+from archimedes.agents import strategy_fusion as strategy_fusion

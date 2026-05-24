@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from archimedes.api.schemas import AssetListResponse, AssetPriceHistoryResponse
 from archimedes.api._route_helpers import asset_svc
+from archimedes.api.schemas import AssetListResponse, AssetPriceHistoryResponse
 
 assets_router = APIRouter(prefix="/api/assets", tags=["assets"])
 

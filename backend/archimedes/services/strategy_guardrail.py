@@ -27,8 +27,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
 from archimedes.agents.strategy_architect import ArchitectProposal
+from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +101,7 @@ def apply_guardrail(
     investable = 1.0 - usyc_floor
     if usyc_floor > 0:
         adjustments.append(
-            f"Reserved {usyc_floor:.0%} USYC floor for the {profile.value} "
-            f"profile; {investable:.0%} is investable."
+            f"Reserved {usyc_floor:.0%} USYC floor for the {profile.value} profile; {investable:.0%} is investable."
         )
 
     # Normalize survivors into the investable budget.
@@ -113,10 +112,7 @@ def apply_guardrail(
     # redistribute spill to uncapped strategies until stable.
     capped: set[str] = set()
     for _ in range(len(weights) + 1):
-        over = {
-            sid: w for sid, w in weights.items()
-            if sid not in capped and w > max_strategy_weight + _EPS
-        }
+        over = {sid: w for sid, w in weights.items() if sid not in capped and w > max_strategy_weight + _EPS}
         if not over:
             break
         spill = 0.0
@@ -125,16 +121,14 @@ def apply_guardrail(
             weights[sid] = max_strategy_weight
             capped.add(sid)
             adjustments.append(
-                f"Capped {sid[:12]} at {max_strategy_weight:.0%} "
-                f"(model proposed more); redistributing the excess."
+                f"Capped {sid[:12]} at {max_strategy_weight:.0%} (model proposed more); redistributing the excess."
             )
         uncapped = [sid for sid in weights if sid not in capped]
         room = sum(max(0.0, max_strategy_weight - weights[s]) for s in uncapped)
         if not uncapped or room <= _EPS:
             # Nowhere to put the spill — it becomes extra cash sleeve.
             adjustments.append(
-                f"All strategies at the {max_strategy_weight:.0%} cap; "
-                f"{spill:.0%} spilled into the USYC sleeve."
+                f"All strategies at the {max_strategy_weight:.0%} cap; {spill:.0%} spilled into the USYC sleeve."
             )
             break
         base = sum(weights[s] for s in uncapped)

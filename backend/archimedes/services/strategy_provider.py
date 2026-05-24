@@ -23,9 +23,9 @@ import hashlib
 import json
 import logging
 import os
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
-from collections.abc import Iterable
 from typing import Any
 
 from archimedes.db import get_session
@@ -37,7 +37,6 @@ from archimedes.models.strategy import (
     Strategy,
     StrategyStatus,
 )
-
 from archimedes.services.backtest_repository import latest_backtests_by_strategy
 
 logger = logging.getLogger(__name__)
@@ -132,23 +131,14 @@ def _methodology_hash(metadata: dict[str, Any]) -> str:
 
 def _strategy_id(metadata: dict[str, Any], code_hash: str) -> str:
     """Deterministic ID: hash of arxiv_id (or DOI, or title) + methodology hash."""
-    paper_key = (
-        metadata.get("PAPER_ARXIV_ID")
-        or metadata.get("PAPER_DOI")
-        or metadata.get("PAPER_TITLE")
-        or code_hash
-    )
-    payload = f"{paper_key}|{_methodology_hash(metadata)}".encode("utf-8")
+    paper_key = metadata.get("PAPER_ARXIV_ID") or metadata.get("PAPER_DOI") or metadata.get("PAPER_TITLE") or code_hash
+    payload = f"{paper_key}|{_methodology_hash(metadata)}".encode()
     return hashlib.sha256(payload).hexdigest()[:32]
 
 
 def _infer_risk_profiles(methodology_summary: str) -> list[str]:
     text = methodology_summary.lower()
-    matched = [
-        profile
-        for profile, keywords in _RISK_PROFILE_KEYWORDS.items()
-        if any(kw in text for kw in keywords)
-    ]
+    matched = [profile for profile, keywords in _RISK_PROFILE_KEYWORDS.items() if any(kw in text for kw in keywords)]
     return matched or ["moderate"]
 
 
@@ -164,7 +154,9 @@ def _load_fixtures(strategies_dir: Path) -> dict[str, Any]:
         return {}
 
 
-def _to_strategy(path: Path, metadata: dict[str, Any], code_hash: str, fixture: dict[str, Any] | None = None) -> Strategy:
+def _to_strategy(
+    path: Path, metadata: dict[str, Any], code_hash: str, fixture: dict[str, Any] | None = None
+) -> Strategy:
     methodology_summary = str(metadata.get("METHODOLOGY_SUMMARY") or metadata.get("METHODOLOGY_TEXT") or "")
     methodology_text = metadata.get("METHODOLOGY_TEXT")
     risk_profiles = metadata.get("RISK_PROFILES") or _infer_risk_profiles(methodology_summary)
@@ -237,15 +229,17 @@ def _to_strategy(path: Path, metadata: dict[str, Any], code_hash: str, fixture: 
     _VALID_REGIME_TAGS = {"bull", "bear", "regime_neutral"}
     if not regime_tag_raw or regime_tag_raw not in _VALID_REGIME_TAGS:
         raise ValueError(
-            f"Invalid or missing REGIME_TAG={regime_tag_raw!r} in {path}. "
-            f"Must be one of {_VALID_REGIME_TAGS}."
+            f"Invalid or missing REGIME_TAG={regime_tag_raw!r} in {path}. Must be one of {_VALID_REGIME_TAGS}."
         )
     regime_tag = regime_tag_raw
 
     # Compute Lo (2002) Sharpe 95% CI when real Sharpe and n_obs are available
     sharpe_ci_lower = sharpe_ci_upper = None
     if real_sharpe is not None and n_obs_daily is not None:
-        from archimedes.services.rigor_evaluator import compute_sharpe_ci  # local import to avoid circulars
+        from archimedes.services.rigor_evaluator import (
+            compute_sharpe_ci,  # local import to avoid circulars
+        )
+
         sharpe_ci_lower, sharpe_ci_upper = compute_sharpe_ci(float(real_sharpe), int(n_obs_daily))
 
     # Use file mtime so timestamps reflect the strategy file's curation
@@ -363,7 +357,7 @@ class LocalStrategyProvider:
                 fixture = self._fixtures.get(path.stem)
                 strategy = _to_strategy(path, metadata, code_hash, fixture)
                 loaded[strategy.id] = strategy
-            except Exception as exc:  # noqa: BLE001 — defensive on startup
+            except Exception as exc:
                 logger.exception("failed to load strategy %s: %s", path, exc)
         self._strategies = loaded
         self._backtests = self._load_backtests(loaded.keys())
@@ -393,11 +387,8 @@ class LocalStrategyProvider:
         try:
             with get_session() as session:
                 rows = latest_backtests_by_strategy(session, ids)
-            return {
-                strategy_id: row.to_backtest_result()
-                for strategy_id, row in rows.items()
-            }
-        except Exception as exc:  # noqa: BLE001
+            return {strategy_id: row.to_backtest_result() for strategy_id, row in rows.items()}
+        except Exception as exc:
             logger.warning("backtest load failed (using None fallback): %s", exc)
             return {}
 

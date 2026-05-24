@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 class UserProfileCreate(BaseModel):
     """Payload from WelcomeProfileModal. All fields optional except wallet."""
+
     wallet_address: str = Field(..., pattern=r"^0x[a-fA-F0-9]{40}$")
     display_name: str | None = Field(None, max_length=128)
     email: str | None = Field(None, max_length=256)
@@ -17,6 +18,7 @@ class UserProfileCreate(BaseModel):
 
 class UserProfileResponse(BaseModel):
     """Profile returned to frontend."""
+
     wallet_address: str
     display_name: str | None = None
     email: str | None = None

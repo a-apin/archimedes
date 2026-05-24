@@ -11,16 +11,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
-
 from archimedes.db import get_session, init_db
-from archimedes.models.backtest_store import BacktestResultRecord
 from archimedes.services.backtest_mapper import (
     AnalyticsArtifactModel,
     canonical_artifact_hash,
     map_artifact_to_backtest_result,
 )
 from archimedes.services.backtest_repository import insert_backtest_if_missing
+from fastapi.testclient import TestClient
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "analytics_artifact_buy_hold.json"
 
@@ -37,8 +35,10 @@ def _use_tmp_db(tmp_path, monkeypatch):
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     """TestClient with mocked chain client (no testnet calls)."""
-    with patch("archimedes.chain.client.chain_client") as mock_chain, \
-         patch("archimedes.chain.executor.chain_executor") as mock_executor:
+    with (
+        patch("archimedes.chain.client.chain_client") as mock_chain,
+        patch("archimedes.chain.executor.chain_executor") as mock_executor,
+    ):
         mock_chain.is_connected = AsyncMock(return_value=False)
         mock_chain.send_transaction = AsyncMock(return_value="0xmock_tx_hash")
         # ConfigService reads contract addresses from chain_client
@@ -56,6 +56,7 @@ def client(tmp_path, monkeypatch):
         mock_executor.get_vault_metrics = AsyncMock(return_value={"total_aum_usdc": 0.0})
 
         from archimedes.main import app
+
         tc = TestClient(app)
         yield tc
 
@@ -67,6 +68,7 @@ def seeded_db():
     artifact = AnalyticsArtifactModel.model_validate(payload)
 
     from archimedes.services.strategy_provider import default_provider
+
     provider = default_provider()
     strategies = provider.list_strategies()
     buy_hold = next(
@@ -403,8 +405,15 @@ class TestAgentRoutes:
         assert data["total_pools"] >= 0
         if data["pools"]:
             pool = data["pools"][0]
-            for key in ("symbol", "status", "liquidity_usdc", "oracle_price",
-                        "reserve_token", "reserve_usdc", "last_update"):
+            for key in (
+                "symbol",
+                "status",
+                "liquidity_usdc",
+                "oracle_price",
+                "reserve_token",
+                "reserve_usdc",
+                "last_update",
+            ):
                 assert key in pool, f"Missing key: {key}"
             assert pool["status"] in ("healthy", "low_liquidity", "empty", "error")
 
@@ -445,8 +454,7 @@ class TestAdvisorRoutes:
         # Weights must sum to ≈ synth_weight (within floating-point rounding)
         total_alloc = sum(a["weight"] for a in data["allocations"])
         assert abs(total_alloc - data["synth_weight"]) < 0.01, (
-            f"Allocation weights ({total_alloc:.4f}) must sum to synth_weight "
-            f"({data['synth_weight']:.4f})"
+            f"Allocation weights ({total_alloc:.4f}) must sum to synth_weight ({data['synth_weight']:.4f})"
         )
 
     def test_advisor_all_risk_profiles(self, client, seeded_db):
@@ -503,6 +511,7 @@ class TestFusionEvaluatorIntegration:
 
             async def enqueue(self, payload):
                 import uuid
+
                 job_id = str(uuid.uuid4())
                 store_state[job_id] = {"status": "queued", "payload": payload}
                 return job_id
@@ -540,7 +549,10 @@ class TestFusionEvaluatorIntegration:
         store_state[job_id] = {"status": "queued", "payload": payload}
 
     async def test_fusion_with_spec_persists_rigor_verdict_to_library(
-        self, client, _no_redis_job_store, _no_redis_agent_state,
+        self,
+        client,
+        _no_redis_job_store,
+        _no_redis_agent_state,
     ):
         """Per issue #133: a fusion job with a strategy_spec must persist the
         backtest metrics + rigor verdict into the StrategyRecord so the Library
@@ -555,11 +567,12 @@ class TestFusionEvaluatorIntegration:
         casualty during an earlier iteration of this fix).
         """
         import json as _json
-        from archimedes.agents.strategy_fusion import FusionProposal, FusionBrief
+
+        from archimedes.agents.strategy_fusion import FusionBrief, FusionProposal
+        from archimedes.api.strategies_routes import _run_fusion_job
         from archimedes.models.portfolio import RiskProfile
         from archimedes.models.strategy_store import StrategyRecord
         from archimedes.services.strategy_dsl import FABER_2007_SPEC
-        from archimedes.api.strategies_routes import _run_fusion_job
 
         mock_proposal = FusionProposal(
             status="ok",
@@ -583,10 +596,14 @@ class TestFusionEvaluatorIntegration:
         mock_fusion.propose.return_value = mock_proposal
 
         job_id = "test-job-with-spec"
-        self._seed_job(_no_redis_job_store, job_id, {
-            "asset_classes": ["SPY"],
-            "risk_appetite": "moderate",
-        })
+        self._seed_job(
+            _no_redis_job_store,
+            job_id,
+            {
+                "asset_classes": ["SPY"],
+                "risk_appetite": "moderate",
+            },
+        )
 
         with patch(
             "archimedes.services.strategy_fusion.default_fusion",
@@ -596,9 +613,13 @@ class TestFusionEvaluatorIntegration:
 
         # ── The contract: rigor_verdict reached the library ──────────────
         with get_session() as session:
-            record = session.query(StrategyRecord).filter(
-                StrategyRecord.strategy_name == "test_fusion_with_spec",
-            ).first()
+            record = (
+                session.query(StrategyRecord)
+                .filter(
+                    StrategyRecord.strategy_name == "test_fusion_with_spec",
+                )
+                .first()
+            )
 
         assert record is not None, "StrategyRecord was not upserted"
         assert record.generation_method == "fusion"
@@ -613,8 +634,13 @@ class TestFusionEvaluatorIntegration:
             assert key in verdict, f"verdict missing required rigor field: {key}"
         # Backtest metrics surfaced alongside for the passport renderer
         for key in (
-            "sharpe_ratio", "sortino_ratio", "max_drawdown",
-            "cagr", "calmar_ratio", "win_rate", "total_trades",
+            "sharpe_ratio",
+            "sortino_ratio",
+            "max_drawdown",
+            "cagr",
+            "calmar_ratio",
+            "win_rate",
+            "total_trades",
         ):
             assert key in verdict, f"verdict missing backtest field: {key}"
 
@@ -629,7 +655,10 @@ class TestFusionEvaluatorIntegration:
             assert record.status == "rejected"
 
     async def test_fusion_without_spec_falls_back_to_candidate(
-        self, client, _no_redis_job_store, _no_redis_agent_state,
+        self,
+        client,
+        _no_redis_job_store,
+        _no_redis_agent_state,
     ):
         """When the LLM doesn't emit a strategy_spec (back-compat or canned fallback),
         the job must still complete: upsert a candidate StrategyRecord with the prose
@@ -638,10 +667,10 @@ class TestFusionEvaluatorIntegration:
         ``async def`` for the same reason as the with-spec test above —
         pytest-asyncio owns the loop.
         """
-        from archimedes.agents.strategy_fusion import FusionProposal, FusionBrief
+        from archimedes.agents.strategy_fusion import FusionBrief, FusionProposal
+        from archimedes.api.strategies_routes import _run_fusion_job
         from archimedes.models.portfolio import RiskProfile
         from archimedes.models.strategy_store import StrategyRecord
-        from archimedes.api.strategies_routes import _run_fusion_job
 
         mock_proposal = FusionProposal(
             status="ok",
@@ -665,10 +694,14 @@ class TestFusionEvaluatorIntegration:
         mock_fusion.propose.return_value = mock_proposal
 
         job_id = "test-job-no-spec"
-        self._seed_job(_no_redis_job_store, job_id, {
-            "asset_classes": ["SPY"],
-            "risk_appetite": "moderate",
-        })
+        self._seed_job(
+            _no_redis_job_store,
+            job_id,
+            {
+                "asset_classes": ["SPY"],
+                "risk_appetite": "moderate",
+            },
+        )
 
         with patch(
             "archimedes.services.strategy_fusion.default_fusion",
@@ -677,15 +710,17 @@ class TestFusionEvaluatorIntegration:
             await _run_fusion_job(job_id)
 
         with get_session() as session:
-            record = session.query(StrategyRecord).filter(
-                StrategyRecord.strategy_name == "test_fusion_no_spec",
-            ).first()
+            record = (
+                session.query(StrategyRecord)
+                .filter(
+                    StrategyRecord.strategy_name == "test_fusion_no_spec",
+                )
+                .first()
+            )
 
         assert record is not None, "StrategyRecord was not upserted on the fallback path"
         assert record.generation_method == "fusion"
-        assert record.rigor_verdict is None, (
-            "no rigor_verdict expected when strategy_spec is missing"
-        )
+        assert record.rigor_verdict is None, "no rigor_verdict expected when strategy_spec is missing"
         assert record.status == "candidate", (
             f"no-spec fallback should leave status at candidate, got: {record.status!r}"
         )

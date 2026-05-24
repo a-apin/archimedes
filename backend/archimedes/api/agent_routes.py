@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from datetime import UTC
 
 from fastapi import APIRouter, Request
 
+from archimedes.api.limiter import limiter
 from archimedes.api.schemas import AgentStatusResponse, AMMHealthResponse
 from archimedes.chain.executor import chain_executor
-from archimedes.api.limiter import limiter
 
 agent_router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -16,7 +18,8 @@ agent_router = APIRouter(prefix="/api/agent", tags=["agent"])
 @agent_router.get("/status", response_model=AgentStatusResponse)
 async def get_agent_status():
     """Get autonomous agent health and state -- reads from Redis."""
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from archimedes.services.redis_state import AgentStateStore
 
     state = AgentStateStore()
@@ -35,7 +38,7 @@ async def get_agent_status():
     if heartbeat:
         try:
             hb_time = datetime.fromisoformat(heartbeat)
-            age = (datetime.now(timezone.utc) - hb_time).total_seconds()
+            age = (datetime.now(UTC) - hb_time).total_seconds()
             alive = age < 600
         except Exception:
             pass
@@ -68,6 +71,7 @@ async def get_agent_status():
 async def get_circle_integration_status():
     """Get Circle SDK integration breadth status."""
     from archimedes.services.circle_service import circle_service
+
     return await circle_service.get_integration_status()
 
 
@@ -79,7 +83,8 @@ async def get_amm_health(request: Request):
     Checks each synthetic token's AMM pool (synth/USDC pair) reserves
     and reports whether liquidity meets minimum thresholds for swaps.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from archimedes.chain.client import chain_client
     from archimedes.chain.contracts import get_contract_loader
 
@@ -89,7 +94,7 @@ async def get_amm_health(request: Request):
     synth_addrs = settings.synth_addresses
     oracle_addrs = settings.oracle_addresses
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     pools: list[dict] = []
 
     for symbol, token_addr in synth_addrs.items():
@@ -135,7 +140,7 @@ async def get_amm_health(request: Request):
 
             # Get oracle price
             oracle_price = None
-            if symbol in oracle_addrs and oracle_addrs[symbol]:
+            if oracle_addrs.get(symbol):
                 try:
                     oracle = loader.oracle_for(symbol)
                     price_raw = await oracle.functions.price().call()
@@ -156,14 +161,16 @@ async def get_amm_health(request: Request):
             else:
                 status = "healthy"
 
-            pool_health.update({
-                "status": status,
-                "liquidity_usdc": round(total_liquidity, 4),
-                "oracle_price": oracle_price,
-                "reserve_token": round(reserve_token, 6),
-                "reserve_usdc": round(reserve_usdc, 6),
-                "last_update": now,
-            })
+            pool_health.update(
+                {
+                    "status": status,
+                    "liquidity_usdc": round(total_liquidity, 4),
+                    "oracle_price": oracle_price,
+                    "reserve_token": round(reserve_token, 6),
+                    "reserve_usdc": round(reserve_usdc, 6),
+                    "last_update": now,
+                }
+            )
 
         except Exception:
             pass  # Keep error status
@@ -184,10 +191,13 @@ async def bootstrap_amm_liquidity():
     from archimedes.services.amm_bootstrap import bootstrap_amm_liquidity as _bootstrap
 
     async def _run():
-        try:
+        with contextlib.suppress(Exception):
             await _bootstrap()
-        except Exception:
-            pass
 
-    asyncio.create_task(_run())
-    return {"status": "started", "message": "Liquidity bootstrap running in background. Check /api/swap/pools in 2-3 minutes."}
+    # Intentional fire-and-forget background bootstrap; the task lifecycle is the
+    # request-response cycle, not the parent coroutine. Acknowledging RUF006 explicitly.
+    asyncio.create_task(_run())  # noqa: RUF006
+    return {
+        "status": "started",
+        "message": "Liquidity bootstrap running in background. Check /api/swap/pools in 2-3 minutes.",
+    }

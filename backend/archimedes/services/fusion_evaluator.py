@@ -10,11 +10,9 @@ Orchestrates the full pipeline for fusion-generated strategies:
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +21,12 @@ from archimedes.services.rigor_evaluator import (
     compute_dsr,
     compute_oos_sharpe,
     compute_pbo,
-    compute_sharpe_ci,
 )
-from archimedes.services.strategy_dsl import DSLError, StrategySpec, validate_strategy_spec
+from archimedes.services.strategy_dsl import (
+    DSLError,
+    StrategySpec,
+    validate_strategy_spec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +106,7 @@ def run_dsl_backtest(
     cerebro.addstrategy(strategy_cls)
 
     if data_feed is None:
-        if data_csv_path is not None:
-            data_feed = _csv_data_feed(Path(data_csv_path))
-        else:
-            data_feed = _synthetic_data()
+        data_feed = _csv_data_feed(Path(data_csv_path)) if data_csv_path is not None else _synthetic_data()
 
     cerebro.adddata(data_feed)
     cerebro.broker.setcash(initial_cash)
@@ -131,7 +129,6 @@ def run_dsl_backtest(
         equity_curve = list(ec.get("values", [])) or [initial_cash]
     else:
         equity_curve = [initial_cash]
-
 
     monthly_returns = _compute_monthly_returns(equity_curve)
 
@@ -166,7 +163,8 @@ def run_dsl_backtest(
         win_rate=round(float(trade_stats.get("win_rate", 0.0)), 4),
         total_trades=int(trade_stats.get("total_trades", 0)),
         avg_holding_period_days=round(
-            float(trade_stats.get("avg_holding_period_days", 0.0)), 2,
+            float(trade_stats.get("avg_holding_period_days", 0.0)),
+            2,
         ),
         equity_curve=[round(e, 2) for e in equity_curve],
         monthly_returns=[round(m, 4) for m in monthly_returns],
@@ -211,11 +209,10 @@ def run_dsl_backtest_variants(
 
     results: dict[str, BacktestMetrics] = {}
     for combo in itertools.product(*variant_value_lists):
-        overrides = {k: int(v) for k, v in zip(variant_keys, combo)}
+        overrides = {k: int(v) for k, v in zip(variant_keys, combo, strict=False)}
         variant_id = "_".join(str(v) for v in combo)
 
         # Build a spec *without* parameter_variants for the variant run.
-        from archimedes.services.dsl_to_backtrader import interpret_variant
         strategy_cls = interpret_variant(spec, overrides)
 
         # Re-run the variant through the same backtest harness.
@@ -248,10 +245,7 @@ def _run_variant_backtest(
     cerebro.addstrategy(strategy_cls)
 
     if data_feed is None:
-        if data_csv_path is not None:
-            data_feed = _csv_data_feed(Path(data_csv_path))
-        else:
-            data_feed = _synthetic_data()
+        data_feed = _csv_data_feed(Path(data_csv_path)) if data_csv_path is not None else _synthetic_data()
 
     cerebro.adddata(data_feed)
     cerebro.broker.setcash(initial_cash)
@@ -304,7 +298,8 @@ def _run_variant_backtest(
         win_rate=round(float(trade_stats.get("win_rate", 0.0)), 4),
         total_trades=int(trade_stats.get("total_trades", 0)),
         avg_holding_period_days=round(
-            float(trade_stats.get("avg_holding_period_days", 0.0)), 2,
+            float(trade_stats.get("avg_holding_period_days", 0.0)),
+            2,
         ),
         equity_curve=[round(e, 2) for e in equity_curve],
         monthly_returns=[round(m, 4) for m in monthly_returns],
@@ -348,9 +343,7 @@ def apply_rigor_gate(
         for vid, vm in variants_metrics.items():
             curve = vm.equity_curve
             variant_returns[vid] = [
-                (curve[i] - curve[i - 1]) / curve[i - 1]
-                for i in range(1, len(curve))
-                if curve[i - 1] > 0
+                (curve[i] - curve[i - 1]) / curve[i - 1] for i in range(1, len(curve)) if curve[i - 1] > 0
             ]
         pbo_map = compute_pbo(variant_returns)
         # All strategies in the matrix get the same PBO score (library-level
@@ -370,12 +363,7 @@ def apply_rigor_gate(
     # after correcting for the trials-correction).
     dsr_pass = dsr is not None and dsr > 0.0
 
-    passing = (
-        metrics.sharpe_ratio > 0.0
-        and dsr_pass
-        and look_ahead_clean
-        and (pbo_score is None or pbo_score < 0.5)
-    )
+    passing = metrics.sharpe_ratio > 0.0 and dsr_pass and look_ahead_clean and (pbo_score is None or pbo_score < 0.5)
 
     return RigorVerdict(
         passing=passing,
@@ -425,12 +413,17 @@ def evaluate_fusion_spec(
             variants_metrics = None
 
     rigor = apply_rigor_gate(
-        metrics, num_trials=num_trials, variants_metrics=variants_metrics,
+        metrics,
+        num_trials=num_trials,
+        variants_metrics=variants_metrics,
     )
 
     logger.info(
         "fusion eval: %s — sharpe=%.3f rigor.passing=%s pbo=%s",
-        spec.name, metrics.sharpe_ratio, rigor.passing, rigor.pbo_score,
+        spec.name,
+        metrics.sharpe_ratio,
+        rigor.passing,
+        rigor.pbo_score,
     )
 
     return FusionEvalResult(spec=spec, backtest=metrics, rigor=rigor)
@@ -441,10 +434,11 @@ def evaluate_fusion_spec(
 
 def _synthetic_data() -> Any:
     """Generate synthetic SPY-like daily data for testing (2004-2026)."""
-    import backtrader as bt
     import random
     import tempfile
     from datetime import timedelta
+
+    import backtrader as bt
 
     random.seed(42)
     rows = []
@@ -454,14 +448,17 @@ def _synthetic_data() -> Any:
 
     while d <= end:
         daily_ret = random.gauss(0.0003, 0.012)
-        price *= (1 + daily_ret)
+        price *= 1 + daily_ret
         rows.append(f"{d.isoformat()},{price:.4f},{price * 1.001:.4f},{price * 0.999:.4f},{price:.4f},1000000")
         d += timedelta(days=1)
         while d.weekday() >= 5:
             d += timedelta(days=1)
 
     csv_text = "\n".join(rows)
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+    # delete=False is required: backtrader reads the file from disk in the
+    # GenericCSVData(dataname=tmp.name) call below. A context manager would
+    # close+delete it before backtrader can open it.
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)  # noqa: SIM115
     tmp.write(csv_text)
     tmp.close()
 
@@ -476,7 +473,6 @@ def _synthetic_data() -> Any:
         volume=5,
         openinterest=-1,
     )
-
 
 
 # ── Analyzers: real per-bar equity capture + trade stats ────────────────
@@ -546,9 +542,7 @@ def _build_analyzers():
             n = len(self._closed_pnls)
             wins = sum(1 for p in self._closed_pnls if p > 0)
             win_rate = wins / n if n > 0 else 0.0
-            avg_hold = (
-                sum(self._holding_periods_bars) / n if n > 0 else 0.0
-            )
+            avg_hold = sum(self._holding_periods_bars) / n if n > 0 else 0.0
             return {
                 "total_trades": n,
                 "win_rate": win_rate,
@@ -626,9 +620,8 @@ def _build_equity_curve(daily_returns: list[float], initial_cash: float) -> list
 def _extract_equity_curve(strat: Any, initial_cash: float) -> list[float]:
     """Extract equity curve from a completed strategy run."""
     # Use the analyzer if available, otherwise synthesize from broker value
-    vals = []
     try:
-        for i in range(len(strat.data)):
+        for _i in range(len(strat.data)):
             # Approximate by replaying — in practice cerebro.run() doesn't keep history
             pass
     except Exception:
@@ -659,11 +652,11 @@ def _annualized_sharpe(daily_returns: list[float], rf_annual: float = 0.05) -> f
         return 0.0
     mean_ret = sum(daily_returns) / len(daily_returns)
     var = sum((r - mean_ret) ** 2 for r in daily_returns) / len(daily_returns)
-    std = var ** 0.5 if var > 0 else 0.0
+    std = var**0.5 if var > 0 else 0.0
     if std == 0:
         return 0.0
     daily_rf = rf_annual / 252
-    return (mean_ret - daily_rf) / std * (252 ** 0.5)
+    return (mean_ret - daily_rf) / std * (252**0.5)
 
 
 def _annualized_sortino(daily_returns: list[float], rf_annual: float = 0.05) -> float:
@@ -675,7 +668,7 @@ def _annualized_sortino(daily_returns: list[float], rf_annual: float = 0.05) -> 
     ds_std = (sum(downside) / len(downside)) ** 0.5 if downside else 0.0
     if ds_std == 0:
         return 0.0
-    return (mean_ret - daily_rf) / ds_std * (252 ** 0.5)
+    return (mean_ret - daily_rf) / ds_std * (252**0.5)
 
 
 def _max_drawdown(equity_curve: list[float]) -> float:

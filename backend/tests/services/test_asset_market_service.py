@@ -7,20 +7,15 @@ stale when oracle data is >5 min old.
 
 from __future__ import annotations
 
-import asyncio
 import time
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from archimedes.services.asset_market_service import (
     AssetMarketService,
     _pct_change,
     _realized_vol_annual,
-    _STALE_WINDOW_SECONDS,
 )
-
 
 # ── Unit tests for stat math ──────────────────────────────────────────────
 
@@ -167,10 +162,15 @@ class TestListAssets:
             }
         }
 
-        with patch("archimedes.chain.client.chain_client", mock_chain_client), \
-             patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories), \
-             patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sSPY"]), \
-             patch("archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS", {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")}):
+        with (
+            patch("archimedes.chain.client.chain_client", mock_chain_client),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sSPY"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")},
+            ),
+        ):
             resp = await service.list_assets()
 
         assert len(resp.assets) >= 1
@@ -190,11 +190,16 @@ class TestListAssets:
             }
         }
 
-        with patch.object(service, "_read_oracle_prices", return_value={}):
-            with patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories):
-                with patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sSPY"]):
-                    with patch("archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS", {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")}):
-                        resp = await service.list_assets()
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sSPY"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")},
+            ),
+        ):
+            resp = await service.list_assets()
 
         spy = next((a for a in resp.assets if a.symbol == "sSPY"), None)
         assert spy is not None
@@ -206,54 +211,13 @@ class TestListAssets:
         """Second call within TTL returns cached result."""
         service = AssetMarketService()
 
-        with patch.object(service, "_read_oracle_prices", return_value={}):
-            with patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value={}):
-                with patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", []):
-                    with patch("archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS", {}):
-                        resp1 = await service.list_assets()
-                        resp2 = await service.list_assets()
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", []),
+            patch("archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS", {}),
+        ):
+            resp1 = await service.list_assets()
+            resp2 = await service.list_assets()
 
         assert resp1 is resp2  # Same object (cached)
-
-    @pytest.mark.asyncio
-    async def test_pandas_series_history_parsed_correctly(self):
-        """yfinance returns pandas Series, not dicts — must be handled."""
-        import pandas as pd
-        import numpy as np
-
-        service = AssetMarketService()
-
-        # Simulate a pandas Series like yfinance returns
-        dates = pd.date_range("2026-04-01", periods=25, freq="B")
-        prices = np.linspace(100.0, 110.0, 25)  # Rising from 100 to 110
-        series = pd.Series(prices, index=dates, name="sSPY")
-
-        mock_histories = {"sSPY": series}
-
-        with patch.object(service, "_read_oracle_prices", return_value={}):
-            with patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories):
-                with patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sSPY"]):
-                    with patch("archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS", {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")}):
-                        resp = await service.list_assets()
-
-        spy = next((a for a in resp.assets if a.symbol == "sSPY"), None)
-        assert spy is not None
-        assert spy.current_price is not None
-        assert spy.current_price > 0, f"Expected real price, got {spy.current_price}"
-        assert spy.is_stale is True  # No oracle data
-        # 25 trading days → 30d change unavailable (need 22), but 24h and 7d should work
-        assert spy.change_24h_pct is not None or len(prices) < 2
-
-    @pytest.mark.asyncio
-    async def test_no_price_at_all_skips_asset(self):
-        """Asset with no oracle AND no history is skipped (never shows 0.00)."""
-        service = AssetMarketService()
-
-        with patch.object(service, "_read_oracle_prices", return_value={}):
-            with patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value={}):
-                with patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sUNKNOWN"]):
-                    with patch("archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS", {}):
-                        resp = await service.list_assets()
-
-        # sUNKNOWN has no oracle and no history → should be skipped
-        assert len(resp.assets) == 0

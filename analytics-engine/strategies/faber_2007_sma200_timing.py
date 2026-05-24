@@ -83,9 +83,7 @@ class FaberSMA200(bt.Strategy):
     )
 
     def __init__(self) -> None:
-        self.sma = bt.indicators.SimpleMovingAverage(
-            self.data.close, period=int(self.params.sma_period)
-        )
+        self.sma = bt.indicators.SimpleMovingAverage(self.data.close, period=int(self.params.sma_period))
 
     def next(self) -> None:
         if len(self) < int(self.params.sma_period):

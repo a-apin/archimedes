@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 from fastapi import APIRouter, Query, Request
 
+from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
     TraceListResponse,
-    TraceResponse,
     TracePublishRequest,
     TracePublishResponse,
+    TraceResponse,
     TraceVerifyResponse,
 )
-from archimedes.api.limiter import limiter
-from archimedes.models.trace import ReasoningTrace, DecisionType
+from archimedes.models.trace import DecisionType, ReasoningTrace
 
 traces_router = APIRouter(prefix="/api/traces", tags=["traces"])
 
@@ -20,9 +22,7 @@ traces_router = APIRouter(prefix="/api/traces", tags=["traces"])
 @traces_router.get("/", response_model=TraceListResponse)
 async def list_traces(
     vault_address: str | None = None,
-    decision_type: str | None = Query(
-        None, pattern="^(construction|rebalance|rotation|regime_change|skip)$"
-    ),
+    decision_type: str | None = Query(None, pattern="^(construction|rebalance|rotation|regime_change|skip)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
@@ -43,28 +43,30 @@ async def list_traces(
             for t in off_chain_traces:
                 if t.get("trigger") == "empty_vault":
                     continue
-                traces.append(TraceResponse(
-                    id=t.get("id", ""),
-                    vault_address=t.get("vault_address", ""),
-                    decision_type=t.get("decision_type", "unknown"),
-                    trigger=t.get("trigger", "unknown"),
-                    timestamp=t.get("timestamp", ""),
-                    reasoning=t.get("reasoning", ""),
-                    confidence=t.get("confidence", 0.0),
-                    trace_hash=t.get("trace_hash", ""),
-                    arc_tx_hash=t.get("arc_tx_hash"),
-                    is_verified=t.get("is_verified", False),
-                    regime_at_decision=t.get("market_context", {}).get("regime"),
-                    trades_executed=t.get("trades_executed", []),
-                    strategies_referenced=t.get("strategies_referenced", []),
-                    commit_tx_hash=t.get("commit_tx_hash"),
-                    commit_block_number=t.get("commit_block_number"),
-                    reveal_tx_hash=t.get("reveal_tx_hash"),
-                    reveal_block_number=t.get("reveal_block_number"),
-                    trade_tx_hash=t.get("trade_tx_hash"),
-                    trade_block_number=t.get("trade_block_number"),
-                    temporal_binding_valid=t.get("temporal_binding_valid"),
-                ))
+                traces.append(
+                    TraceResponse(
+                        id=t.get("id", ""),
+                        vault_address=t.get("vault_address", ""),
+                        decision_type=t.get("decision_type", "unknown"),
+                        trigger=t.get("trigger", "unknown"),
+                        timestamp=t.get("timestamp", ""),
+                        reasoning=t.get("reasoning", ""),
+                        confidence=t.get("confidence", 0.0),
+                        trace_hash=t.get("trace_hash", ""),
+                        arc_tx_hash=t.get("arc_tx_hash"),
+                        is_verified=t.get("is_verified", False),
+                        regime_at_decision=t.get("market_context", {}).get("regime"),
+                        trades_executed=t.get("trades_executed", []),
+                        strategies_referenced=t.get("strategies_referenced", []),
+                        commit_tx_hash=t.get("commit_tx_hash"),
+                        commit_block_number=t.get("commit_block_number"),
+                        reveal_tx_hash=t.get("reveal_tx_hash"),
+                        reveal_block_number=t.get("reveal_block_number"),
+                        trade_tx_hash=t.get("trade_tx_hash"),
+                        trade_block_number=t.get("trade_block_number"),
+                        temporal_binding_valid=t.get("temporal_binding_valid"),
+                    )
+                )
             return TraceListResponse(traces=traces, total=total)
 
         from archimedes.chain.trace_publisher import trace_publisher
@@ -83,7 +85,7 @@ async def list_traces(
                 if vault_address and detail["vault"].lower() != vault_address.lower():
                     continue
 
-                from datetime import datetime, timezone
+                from datetime import datetime
 
                 traces.append(
                     TraceResponse(
@@ -91,9 +93,7 @@ async def list_traces(
                         vault_address=detail["vault"],
                         decision_type="rebalance",
                         trigger="on-chain",
-                        timestamp=datetime.fromtimestamp(
-                            detail["timestamp"], tz=timezone.utc
-                        ).isoformat(),
+                        timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
                         reasoning="On-chain trace (off-chain metadata not available)",
                         confidence=0.0,
                         trace_hash=detail["trace_hash"],
@@ -111,10 +111,12 @@ async def list_traces(
 @traces_router.get("/{trace_id}", response_model=TraceResponse)
 async def get_trace(trace_id: str):
     """Get a single reasoning trace by ID (on-chain or off-chain hash)."""
-    from archimedes.services.redis_state import AgentStateStore
-    from archimedes.chain.trace_publisher import trace_publisher
+    from datetime import datetime
+
     from fastapi import HTTPException
-    from datetime import datetime, timezone
+
+    from archimedes.chain.trace_publisher import trace_publisher
+    from archimedes.services.redis_state import AgentStateStore
 
     state = AgentStateStore()
     try:
@@ -146,7 +148,7 @@ async def get_trace(trace_id: str):
         try:
             int_id = int(trace_id)
         except ValueError:
-            raise HTTPException(status_code=404, detail="Trace not found")
+            raise HTTPException(status_code=404, detail="Trace not found") from None
 
         detail = await trace_publisher.get_trace_by_id(int_id)
         if detail is None:
@@ -157,9 +159,7 @@ async def get_trace(trace_id: str):
             vault_address=detail["vault"],
             decision_type="rebalance",
             trigger="on-chain",
-            timestamp=datetime.fromtimestamp(
-                detail["timestamp"], tz=timezone.utc
-            ).isoformat(),
+            timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
             reasoning="On-chain trace (off-chain metadata not available)",
             confidence=0.0,
             trace_hash=detail["trace_hash"],
@@ -173,11 +173,12 @@ async def get_trace(trace_id: str):
 async def publish_trace(req: TracePublishRequest):
     """Publish a reasoning trace: compute hash, anchor on Arc, persist off-chain."""
     import uuid
-    from datetime import datetime, timezone
+    from datetime import datetime
+
+    from fastapi import HTTPException
 
     from archimedes.chain.trace_publisher import trace_publisher
     from archimedes.services.redis_state import AgentStateStore
-    from fastapi import HTTPException
 
     try:
         dt = DecisionType(req.decision_type)
@@ -185,15 +186,15 @@ async def publish_trace(req: TracePublishRequest):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid decision_type: {req.decision_type}. "
-                   f"Must be one of: construction, rebalance, rotation, regime_change, skip",
-        )
+            f"Must be one of: construction, rebalance, rotation, regime_change, skip",
+        ) from None
 
     trace = ReasoningTrace(
         id=str(uuid.uuid4()),
         vault_address=req.vault_address,
         decision_type=dt,
         trigger=req.trigger,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         market_context=req.market_context,
         portfolio_before=req.portfolio_before,
         portfolio_after=req.portfolio_after,
@@ -231,6 +232,7 @@ async def publish_trace(req: TracePublishRequest):
             off_chain_data["is_verified"] = True
     except Exception as e:
         import logging
+
         logging.getLogger(__name__).error(f"On-chain publish failed: {e}")
 
     state = AgentStateStore()
@@ -254,9 +256,10 @@ async def publish_trace(req: TracePublishRequest):
 @limiter.exempt
 async def verify_trace(trace_id: str, request: Request):
     """Verify a reasoning trace against its on-chain anchor."""
+    from fastapi import HTTPException
+
     from archimedes.chain.trace_publisher import trace_publisher
     from archimedes.services.redis_state import AgentStateStore
-    from fastapi import HTTPException
 
     state = AgentStateStore()
     try:
@@ -265,7 +268,7 @@ async def verify_trace(trace_id: str, request: Request):
             try:
                 int_id = int(trace_id)
             except ValueError:
-                raise HTTPException(status_code=404, detail="Trace not found")
+                raise HTTPException(status_code=404, detail="Trace not found") from None
 
             detail = await trace_publisher.get_trace_by_id(int_id)
             if not detail:
@@ -305,11 +308,7 @@ async def verify_trace(trace_id: str, request: Request):
                         agent = detail["agent"]
                         on_chain_ts = detail["timestamp"]
                         break
-                details = (
-                    "Hash verified on-chain ✓"
-                    if is_verified
-                    else "Hash not found on-chain"
-                )
+                details = "Hash verified on-chain ✓" if is_verified else "Hash not found on-chain"
             except Exception as e:
                 details = f"Verification failed: {e}"
 
@@ -333,9 +332,10 @@ async def verify_trace(trace_id: str, request: Request):
 @traces_router.get("/{trace_id}/canonical")
 async def get_trace_canonical(trace_id: str):
     """Get the canonical JSON used to compute the trace hash."""
-    from archimedes.services.redis_state import AgentStateStore
     from fastapi import HTTPException
     from fastapi.responses import PlainTextResponse
+
+    from archimedes.services.redis_state import AgentStateStore
 
     state = AgentStateStore()
     try:

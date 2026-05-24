@@ -319,7 +319,7 @@ Four workflows run on every PR and every push to `main`:
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `quality-gate.yml` | PR → main | Hard block: `pytest -m "not integration"` (unit suite, no DB/Redis). Informational: `ruff check` + `ruff format --check` and `npm run lint` in `ui/` — both run with `continue-on-error` and their pass/fail counts are posted as a PR comment table (marker `<!-- quality-gate-v1 -->`). Agent PRs (`t2o2`) also get a coverage gate (≥ 60%). |
+| `quality-gate.yml` | PR → main | Hard block: `pytest -m "not integration"` (unit suite, no DB/Redis) **and** `ruff-gate` (`ruff format --check .` + `ruff check --select E9,F63,F7,F40 .`). Informational: full `ruff check` (broader rule set) + `npm run lint` in `ui/` — both run with `continue-on-error` and their pass/fail counts are posted as a PR comment table (marker `<!-- quality-gate-v1 -->`). Agent PRs (`t2o2`) also get a coverage gate (≥ 60%). |
 | `complexity-gate.yml` | PR → main (Python/JS/TS files only) | Aggregate cyclomatic-complexity, nesting depth, recursion, and orphan analysis via lizard + Python AST. Compares the changed-file set against the `main` baseline and posts a table comment on the PR (marker `<!-- complexity-gate-v1 -->`). **Informational only — never blocks merge.** Runs on the GitHub runner with `pip install lizard`; the bundled distroless Dockerfile at `.github/docker/complexity-gate/Dockerfile` is available for local use but not pulled by CI. |
 | `deploy.yml` | push → main | Rebuilds and redeploys the EC2 stack. |
 | `release-tag.yml` | push → main | Creates a semver annotated tag for every merged PR via the GitHub API (no `git push`). Bump rules (read from PR title or body): `!version-release` → major (1.0.0), `!minor` → minor (0.1.0), anything else → patch (0.0.1). Direct pushes with no associated PR are skipped silently. |
@@ -332,6 +332,45 @@ PR title: "Rework strategy fusion engine !minor"     → v0.1.0
 PR title: "Launch-ready rebalancer !version-release" → v1.0.0
 PR title: "Fix corpus manifest path"                 → v0.0.1
 ```
+
+### Python linting + formatting (ruff)
+
+Convention: **`line-length = 120`, ruff defaults plus `I,UP,B,SIM,RUF`.** Config
+lives at the repo root in [`ruff.toml`](ruff.toml). Two things gate every Python
+PR via the `ruff-gate` job:
+
+| Check | Command | Status |
+| --- | --- | --- |
+| Formatting | `ruff format --check .` | Hard block |
+| Critical lint rules | `ruff check --select E9,F63,F7,F40 .` | Hard block |
+| Broader lint | `ruff check .` | Informational (continue-on-error) |
+
+The blocking subset is deliberately narrow today (syntax + undefined-module
+rules) so the gate doesn't trip on pre-existing style debt. It grows as we
+clean things up: next add is `F82` once PR-4 cluster fixes the `agent_runner.py`
+`consulted_hashes` bug (currently the only remaining undefined-name).
+
+**Local feedback loop — install pre-commit once per clone:**
+```bash
+pip install pre-commit
+pre-commit install                 # installs .git/hooks/pre-commit
+pre-commit run --all-files         # one-shot check across the repo
+```
+
+The pre-commit hooks ([.pre-commit-config.yaml](.pre-commit-config.yaml))
+mirror the CI gate exactly, so pre-commit can't pass while CI fails (or vice
+versa). They're **opt-in** — devs who don't install them just get the same
+feedback from CI on push instead of from `git commit` locally.
+
+**To clean up before committing:**
+```bash
+ruff check --select I --fix .      # import organization (safe, mechanical)
+ruff check --fix .                 # all other safe auto-fixes
+ruff format .                      # apply formatting (line-length 120)
+```
+
+The `--unsafe-fixes` flag is intentionally NOT in our workflow — those fixes
+need human review and are tracked as follow-up issues, not auto-applied.
 
 ### Smoke-test before deploy
 

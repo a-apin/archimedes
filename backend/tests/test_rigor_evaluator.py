@@ -24,7 +24,6 @@ import math
 
 import numpy as np
 import pytest
-
 from archimedes.services.rigor_evaluator import (
     RigorGateResult,
     _dsr_from_stats,
@@ -54,9 +53,7 @@ _ANNUALIZATION = 252
         (0.3, 504, 0.0, 3.0, 1000, 0.0023, 0.001),
     ],
 )
-def test_dsr_formula_spec_cases(
-    SR_ann, T, skew, raw_kurt, N, expected_p, p_tol
-):
+def test_dsr_formula_spec_cases(SR_ann, T, skew, raw_kurt, N, expected_p, p_tol):
     """_dsr_from_stats reproduces the spec's reference values within tolerance."""
     SR_hat = SR_ann / math.sqrt(_ANNUALIZATION)
     dsr, p_val = _dsr_from_stats(SR_hat, T, skew, raw_kurt, N)
@@ -157,7 +154,7 @@ def test_pbo_noise_only_strategies_have_high_score():
     matrix = {f"s{i}": rng.normal(0.0, 0.01, T).tolist() for i in range(n_strats)}
 
     result = compute_pbo(matrix, s_partitions=8)
-    pbo = list(result.values())[0]
+    pbo = next(iter(result.values()))
     # All noise: PBO should cluster around 0.5
     assert 0.3 <= pbo <= 0.8, f"Noise strategies should have PBO ≈ 0.5, got {pbo}"
 
@@ -292,9 +289,7 @@ def test_sharpe_ci_wider_with_fewer_obs():
     sr = 0.8
     lo_wide, hi_wide = compute_sharpe_ci(sr, n_obs_daily=252)
     lo_narrow, hi_narrow = compute_sharpe_ci(sr, n_obs_daily=2520)
-    assert (hi_wide - lo_wide) > (hi_narrow - lo_narrow), (
-        "CI with 252 obs must be wider than CI with 2520 obs"
-    )
+    assert (hi_wide - lo_wide) > (hi_narrow - lo_narrow), "CI with 252 obs must be wider than CI with 2520 obs"
 
 
 def test_sharpe_ci_wider_with_higher_confidence():
@@ -314,11 +309,13 @@ def test_sharpe_ci_lo2002_formula_pinned():
     z_0.975 ≈ 1.96 → half-width ≈ 1.96 * 1.001 ≈ 1.962
     """
     import math
+
     sr = 1.0
     n = 252
     sr_daily = sr / math.sqrt(252)
-    se = math.sqrt((1 + 0.5 * sr_daily ** 2) * 252 / n)
+    se = math.sqrt((1 + 0.5 * sr_daily**2) * 252 / n)
     from scipy.stats import norm
+
     z = norm.ppf(0.975)
     expected_lower = sr - z * se
     expected_upper = sr + z * se
@@ -331,6 +328,7 @@ def test_sharpe_ci_lo2002_formula_pinned():
 def test_sharpe_ci_rejects_invalid_n():
     """n_obs_daily ≤ 0 must raise ValueError."""
     import pytest
+
     with pytest.raises(ValueError, match="n_obs_daily"):
         compute_sharpe_ci(1.0, n_obs_daily=0)
     with pytest.raises(ValueError, match="n_obs_daily"):
@@ -340,6 +338,7 @@ def test_sharpe_ci_rejects_invalid_n():
 def test_sharpe_ci_rejects_invalid_confidence():
     """Confidence outside (0, 1) must raise ValueError."""
     import pytest
+
     with pytest.raises(ValueError, match="confidence"):
         compute_sharpe_ci(1.0, n_obs_daily=252, confidence=0.0)
     with pytest.raises(ValueError, match="confidence"):
@@ -353,36 +352,36 @@ def test_sharpe_ci_rejects_invalid_confidence():
 
 class TestLookAheadAudit:
     def test_clean_code(self) -> None:
-        code = '''
+        code = """
 class MyStrategy(bt.Strategy):
     def next(self):
         if self.data.close[0] > self.data.close[-1]:
             self.buy()
-'''
+"""
         passed, warnings = look_ahead_audit(code)
         assert passed
         assert len(warnings) == 0
 
     def test_positive_index(self) -> None:
-        code = '''
+        code = """
 class MyStrategy(bt.Strategy):
     def next(self):
         future_price = self.data.close[1]
         if future_price > self.data.close[0]:
             self.buy()
-'''
+"""
         passed, warnings = look_ahead_audit(code)
         assert not passed
         assert any("positive" in w.lower() for w in warnings)
 
     def test_suspicious_function(self) -> None:
-        code = '''
+        code = """
 class MyStrategy(bt.Strategy):
     def next(self):
         predicted = self.predict(self.data.close[0])
         if predicted > 100:
             self.buy()
-'''
+"""
         passed, warnings = look_ahead_audit(code)
         assert not passed
         assert any("predict" in w.lower() for w in warnings)

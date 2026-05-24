@@ -10,10 +10,8 @@ Covers:
 from __future__ import annotations
 
 import pytest
-
 from archimedes.api.schemas import StrategyResponse
 from archimedes.models.strategy import Strategy, StrategyStatus
-
 
 # ── Provider loading ──────────────────────────────────────────
 

@@ -11,17 +11,16 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
     Column,
-    String,
-    Text,
     DateTime,
     Index,
+    String,
+    Text,
 )
-from sqlalchemy.orm import Session
 
 from archimedes.models.chat import Base
 
@@ -57,10 +56,14 @@ class StrategyProposal(Base):
 
     # Timestamps
     created_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc),
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(UTC),
     )
     updated_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc),
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(UTC),
     )
 
     __table_args__ = (

@@ -18,21 +18,21 @@ Design reference: design.md § 4.3, ecosystem-design-spec.md § 3.3
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 
+from archimedes.chain.client import chain_client
 from archimedes.models.portfolio import (
+    RISK_PROFILE_PARAMS,
     Portfolio,
     RiskProfile,
-    RISK_PROFILE_PARAMS,
     TargetAllocation,
     TradeDirection,
     TradeOrder,
 )
 from archimedes.models.regime import Regime, RegimeClassification
 from archimedes.models.strategy import Strategy
-from archimedes.chain.client import chain_client
 from archimedes.services.portfolio_optimizer import optimize_weights
 
 logger = logging.getLogger(__name__)
@@ -152,10 +152,7 @@ class PortfolioConstructor:
                     symbol=sym,
                     token_address=addr,
                     weight=round(w, 4),
-                    strategy_ids=[
-                        s.id for s in strategies
-                        if sym in self._map_to_synths(s.asset_universe)
-                    ],
+                    strategy_ids=[s.id for s in strategies if sym in self._map_to_synths(s.asset_universe)],
                 )
             )
 
@@ -257,7 +254,7 @@ class PortfolioConstructor:
         if last_rebalance is None:
             return "calendar"
 
-        age = (datetime.now(timezone.utc) - last_rebalance).total_seconds()
+        age = (datetime.now(UTC) - last_rebalance).total_seconds()
         if age > 7 * 24 * 3600:  # 7 days
             return "calendar"
 

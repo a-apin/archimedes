@@ -19,9 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-RiskProfileLiteral = Literal[
-    "fixed_income", "conservative", "moderate", "aggressive", "hyper_risky"
-]
+RiskProfileLiteral = Literal["fixed_income", "conservative", "moderate", "aggressive", "hyper_risky"]
 
 
 class StrategyConstructionRequest(BaseModel):

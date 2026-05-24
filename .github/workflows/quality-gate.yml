@@ -2,9 +2,11 @@
 #
 # Hard block:
 #   backend-tests  — pytest unit suite (no DB/Redis required)
+#   ruff-gate      — ruff format --check + ruff check --select E9,F63,F7,F40
+#                    (formatting + syntax/runtime-error rules; whole repo via root ruff.toml)
 #
 # Informational table (posted as PR comment):
-#   ruff linter    — ruff check + ruff format --check
+#   ruff linter    — full `ruff check` (broader rule set; not blocking yet)
 #   eslint         — npm run lint
 #   coverage       — unit coverage vs 60% floor (agent PRs only)
 
@@ -24,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install
@@ -32,13 +34,32 @@ jobs:
       - name: Test
         run: pytest -m "not integration" --tb=short -q
 
+  ruff-gate:
+    # Blocking gate for formatting + the critical lint rule families that
+    # catch real bugs (syntax errors, undefined modules). Reads root ruff.toml.
+    # The broader `ruff check` set is still informational in lint-report.
+    # Add more rules to --select as the codebase converges (next add: F82
+    # after the agent_runner consulted_hashes bug is fixed in the PR-4 cluster).
+    name: Ruff — format + critical lint rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet ruff
+      - name: ruff format --check
+        run: ruff format --check .
+      - name: ruff check (critical rules only)
+        run: ruff check --select E9,F63,F7,F40 .
+
   lint-report:
     name: Lint — report table
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install --quiet ruff
@@ -54,8 +75,10 @@ jobs:
         id: ruff
         continue-on-error: true
         run: |
-          ruff check backend/archimedes --output-format=json 2>/dev/null > /tmp/ruff.json || true
-          ruff format --check backend/archimedes > /tmp/ruff_fmt.txt 2>&1 || true
+          # Whole-repo informational report (reads root ruff.toml).
+          # The blocking subset (format + critical rules) lives in ruff-gate above.
+          ruff check . --output-format=json 2>/dev/null > /tmp/ruff.json || true
+          ruff format --check . > /tmp/ruff_fmt.txt 2>&1 || true
           python3 - <<'EOF'
           import json, os, re
           try:
@@ -144,7 +167,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install --quiet -r backend/requirements.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0"

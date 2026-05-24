@@ -29,7 +29,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
 from archimedes.models.strategy import Strategy
@@ -61,7 +61,7 @@ class ArchitectCannedBackend:
     def available(self) -> bool:
         return False
 
-    def complete(self, system: str, user: str) -> str:  # noqa: ARG002
+    def complete(self, system: str, user: str) -> str:
         ids = re.findall(r'"strategy_id"\s*:\s*"([0-9a-f]+)"', user)
         if not ids:
             ids = re.findall(r"\bid=([0-9a-f]{8,})", user)
@@ -120,7 +120,7 @@ class ArchitectProposal:
     overall_reasoning: str
     risk_notes: str
     model_id: str
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def strategies_referenced(self) -> list[str]:
@@ -293,9 +293,7 @@ class StrategyArchitect:
         valid_ids = {s.id for s in candidates}
 
         system = _SYSTEM_PROMPT
-        user = _build_user_prompt(
-            intent, risk_profile, capital_usdc, regime, candidates
-        )
+        user = _build_user_prompt(intent, risk_profile, capital_usdc, regime, candidates)
 
         raw = self._resolve_backend().complete(system, user)
         try:
@@ -357,10 +355,7 @@ def default_backend() -> LLMBackend:
     backend = make_llm_backend()
     if backend.available:
         return backend  # type: ignore[return-value]
-    logger.warning(
-        "No LLM credentials (LLM_* or ANTHROPIC_* env vars) "
-        "— strategy architect using canned fallback"
-    )
+    logger.warning("No LLM credentials (LLM_* or ANTHROPIC_* env vars) — strategy architect using canned fallback")
     return ArchitectCannedBackend()
 
 

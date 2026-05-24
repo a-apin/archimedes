@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     Boolean,
@@ -75,7 +75,7 @@ class BacktestResultRecord(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         nullable=False,
     )
 
@@ -127,7 +127,7 @@ class BacktestResultRecord(Base):
         run_id: str | None = None,
         operation: str | None = None,
         artifact_json: str | None = None,
-    ) -> "BacktestResultRecord":
+    ) -> BacktestResultRecord:
         return cls(
             strategy_id=strategy_id,
             content_hash=content_hash,

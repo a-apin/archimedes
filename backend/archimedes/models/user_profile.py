@@ -10,10 +10,9 @@ when reading or writing this field.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import Column, String, Text, Boolean, DateTime
-from sqlalchemy.orm import Session
+from sqlalchemy import Boolean, Column, DateTime, String, Text
 
 from archimedes.models.chat import Base
 
@@ -29,10 +28,10 @@ class UserProfile(Base):
     interests = Column(Text, nullable=True, default="[]")  # JSON list of strings
     attribution = Column(String(256), nullable=True)
     marketing_opt_in = Column(Boolean, nullable=False, default=False)
-    created_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(UTC))
     updated_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )

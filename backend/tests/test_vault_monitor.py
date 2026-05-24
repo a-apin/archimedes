@@ -10,7 +10,6 @@ from __future__ import annotations
 import math
 
 import numpy as np
-
 from archimedes.services.vault_monitor import (
     _MCLEAN_PONTIFF_DECAY,
     _MIN_SNAPSHOTS_FOR_SHARPE,
@@ -41,7 +40,7 @@ def test_insufficient_snapshots_returns_status():
 
 def test_exactly_min_snapshots_computes():
     """Exactly _MIN_SNAPSHOTS_FOR_SHARPE + 2 snapshots with drift should compute."""
-    navs = [100.0 * (1.001 ** i) for i in range(_MIN_SNAPSHOTS_FOR_SHARPE + 2)]
+    navs = [100.0 * (1.001**i) for i in range(_MIN_SNAPSHOTS_FOR_SHARPE + 2)]
     result = compute_sharpe_drift(_snapshots(navs), backtest_sharpe=1.0)
     assert result["status"] != "INSUFFICIENT_DATA"
     assert result["live_sharpe"] is not None
@@ -169,6 +168,6 @@ def test_output_always_has_required_keys():
     required = {"live_sharpe", "backtest_sharpe", "decay_floor", "drift_sigma", "status"}
     r1 = compute_sharpe_drift(_snapshots([100.0] * 3), backtest_sharpe=1.0)
     assert required.issubset(r1.keys())
-    navs = [100.0 * (1.001 ** i) for i in range(30)]
+    navs = [100.0 * (1.001**i) for i in range(30)]
     r2 = compute_sharpe_drift(_snapshots(navs), backtest_sharpe=1.0)
     assert required.issubset(r2.keys())

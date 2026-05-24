@@ -85,6 +85,7 @@ def _get_s3_client():
         return None
     try:
         import boto3
+
         _s3_client = boto3.client("s3", region_name=_AWS_REGION)
         # Quick check: can we reach the bucket?
         _s3_client.head_bucket(Bucket=_S3_BUCKET)
@@ -98,6 +99,7 @@ def _get_s3_client():
 # ---------------------------------------------------------------------------
 # Artifact readers
 # ---------------------------------------------------------------------------
+
 
 def _read_bytes(key: str) -> bytes | None:
     """Read artifact bytes from S3 or local dir. Returns None if not found."""
@@ -137,6 +139,7 @@ def _read_json(key: str) -> dict | list | None:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 class ArtifactNotFound(Exception):
     """Raised when a required KB artifact is not available."""
 
@@ -172,8 +175,10 @@ def load_embeddings() -> tuple[list[str], Any]:
 
     # Try numpy for efficient loading
     try:
-        import numpy as np
         import io
+
+        import numpy as np
+
         embeddings = np.load(io.BytesIO(emb_raw), allow_pickle=False)
     except ImportError:
         # Without numpy, embeddings are opaque — caller must handle
@@ -270,6 +275,7 @@ def compute_and_cache_umap_projection(
     # Try UMAP (best quality, requires umap-learn)
     try:
         from umap import UMAP
+
         reducer = UMAP(n_components=2, n_neighbors=min(15, n - 1), min_dist=0.1, random_state=42)
         coords = reducer.fit_transform(embeddings)
     except ImportError:
@@ -282,6 +288,7 @@ def compute_and_cache_umap_projection(
     # Try PCA (good quality, requires scikit-learn)
     try:
         from sklearn.decomposition import PCA
+
         reducer = PCA(n_components=2, random_state=42)
         coords = reducer.fit_transform(embeddings)
     except ImportError:
@@ -309,13 +316,14 @@ def _finalize_projection(
     clusters: dict[str, str] | None,
 ) -> list[dict]:
     """Convert raw 2D coordinates to list of point dicts."""
-    import numpy as np
     points = []
     for i, arxiv_id in enumerate(ids):
-        points.append({
-            "arxiv_id": arxiv_id,
-            "x": float(coords[i, 0]),
-            "y": float(coords[i, 1]),
-            "cluster_id": clusters.get(arxiv_id) if clusters else None,
-        })
+        points.append(
+            {
+                "arxiv_id": arxiv_id,
+                "x": float(coords[i, 0]),
+                "y": float(coords[i, 1]),
+                "cluster_id": clusters.get(arxiv_id) if clusters else None,
+            }
+        )
     return points

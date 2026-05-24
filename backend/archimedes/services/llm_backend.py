@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass
 from typing import Protocol
 
 logger = logging.getLogger(__name__)
@@ -104,7 +103,8 @@ class AnthropicCompatibleBackend:
         self._base_url = os.getenv("LLM_BASE_URL", "") or os.getenv("ANTHROPIC_BASE_URL", "")
         if self._auth_token and self._base_url:
             self._client: anthropic.Anthropic | None = anthropic.Anthropic(
-                auth_token=self._auth_token, base_url=self._base_url,
+                auth_token=self._auth_token,
+                base_url=self._base_url,
             )
         else:
             self._client = None
@@ -238,11 +238,13 @@ class CannedBackend:
     def available(self) -> bool:
         return False
 
-    def complete(self, system: str, user: str) -> str:  # noqa: ARG002
-        return json.dumps({
-            "fallback": True,
-            "message": "No LLM backend configured. Set LLM_PROVIDER + credentials.",
-        })
+    def complete(self, system: str, user: str) -> str:
+        return json.dumps(
+            {
+                "fallback": True,
+                "message": "No LLM backend configured. Set LLM_PROVIDER + credentials.",
+            }
+        )
 
 
 # ── Factory ──────────────────────────────────────────────────────────
@@ -299,9 +301,7 @@ def _legacy_backend(model: str) -> AnthropicBackend | AnthropicCompatibleBackend
     if not api_key and not (auth_token and base_url):
         return CannedBackend()
 
-    logger.warning(
-        "llm: ANTHROPIC_* env vars are deprecated — migrate to LLM_PROVIDER + LLM_*"
-    )
+    logger.warning("llm: ANTHROPIC_* env vars are deprecated — migrate to LLM_PROVIDER + LLM_*")
     if api_key:
         return AnthropicBackend(model=legacy_model, api_key=api_key)
     return AnthropicCompatibleBackend(model=legacy_model)

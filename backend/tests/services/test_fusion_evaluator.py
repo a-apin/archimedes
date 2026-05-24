@@ -14,18 +14,12 @@ separate piece of work).
 
 from __future__ import annotations
 
-import pytest
-
-from archimedes.services.strategy_dsl import FABER_2007_SPEC, validate_strategy_spec
 from archimedes.services.fusion_evaluator import (
     BacktestMetrics,
-    FusionEvalResult,
-    RigorVerdict,
     apply_rigor_gate,
     evaluate_fusion_spec,
-    run_dsl_backtest,
-    run_dsl_backtest_variants,
 )
+from archimedes.services.strategy_dsl import FABER_2007_SPEC
 
 
 class TestFixtureFusionToLibrary:
@@ -46,6 +40,7 @@ class TestFixtureFusionToLibrary:
 
         # Sharpe / Sortino / Max DD must be real floats (not NaN/inf).
         import math
+
         assert math.isfinite(result.backtest.sharpe_ratio)
         assert math.isfinite(result.backtest.sortino_ratio)
         assert math.isfinite(result.backtest.max_drawdown)
@@ -118,9 +113,7 @@ class TestFaberDslMatchesSeed:
         # minus 200 warmup bars ≈ 5350+ bars. (The synthetic data feed
         # spans 2004-01-02 to 2026-04-30; without an SMA-200 warmup this
         # would be ~5560 daily bars.)
-        assert 4000 < len(bt.equity_curve) < 7000, (
-            f"equity curve length suspicious: {len(bt.equity_curve)}"
-        )
+        assert 4000 < len(bt.equity_curve) < 7000, f"equity curve length suspicious: {len(bt.equity_curve)}"
 
         # Calmar identity check: calmar = cagr / max_dd (when max_dd > 0).
         if bt.max_drawdown > 0.001:
@@ -148,6 +141,7 @@ class TestRigorGateAppliesToDslOutput:
         # could be negative for losing ones — both are valid outcomes that
         # the rigor gate's pass/fail logic responds to).
         import math
+
         assert rigor.dsr is not None, "DSR must be computed for DSL output"
         assert math.isfinite(rigor.dsr)
         assert rigor.dsr_p_value is not None
@@ -209,9 +203,7 @@ class TestFusionWithVariantsComputesRealPbo:
         assert result.rigor is not None
 
         pbo = result.rigor.pbo_score
-        assert pbo is not None, (
-            "PBO must be computed when >= 2 parameter variants are provided"
-        )
+        assert pbo is not None, "PBO must be computed when >= 2 parameter variants are provided"
         assert pbo != 0.0, (
             "PBO of 0.0 is misleading; the CSCV algorithm on 5 SMA variants "
             "over ~5560 bars should produce a non-zero overfitting probability"
@@ -223,9 +215,7 @@ class TestFusionWithVariantsComputesRealPbo:
         result = evaluate_fusion_spec(FABER_2007_SPEC)
         assert result.success
         assert result.rigor is not None
-        assert result.rigor.pbo_score is None, (
-            "PBO must be None when no parameter_variants are provided"
-        )
+        assert result.rigor.pbo_score is None, "PBO must be None when no parameter_variants are provided"
 
     def test_fusion_variants_too_few_pbo_stays_none(self):
         """A single variant entry (< 2) means no meaningful PBO → None."""
@@ -239,9 +229,7 @@ class TestFusionWithVariantsComputesRealPbo:
 
         single_variant = {"base": metrics}
         verdict = apply_rigor_gate(metrics, variants_metrics=single_variant)
-        assert verdict.pbo_score is None, (
-            "PBO must be None when fewer than 2 variant backtests are provided"
-        )
+        assert verdict.pbo_score is None, "PBO must be None when fewer than 2 variant backtests are provided"
 
     def test_fusion_high_pbo_fails_rigor_gate(self):
         """A synthetic overfit grid where PBO > 0.5 must cause passing=False.
@@ -250,7 +238,6 @@ class TestFusionWithVariantsComputesRealPbo:
         that surges early and fades, another that fades early then surges. This
         creates the IS/OOS reversal pattern that CSCV detects as overfitting.
         """
-        import math
 
         n = 5000
 
@@ -304,6 +291,4 @@ class TestFusionWithVariantsComputesRealPbo:
         assert verdict.pbo_score > 0.5, (
             f"Expected high PBO (> 0.5) for IS/OOS reversal pattern, got {verdict.pbo_score}"
         )
-        assert verdict.passing is False, (
-            f"Rigor gate must fail when PBO > 0.5, but passing={verdict.passing}"
-        )
+        assert verdict.passing is False, f"Rigor gate must fail when PBO > 0.5, but passing={verdict.passing}"

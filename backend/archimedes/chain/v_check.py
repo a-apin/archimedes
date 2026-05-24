@@ -22,7 +22,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_CONCENTRATION_BPS = 6000  # 60% max single position
-DEFAULT_MIN_COST_BENEFIT_BPS = 5      # 0.05% min expected improvement
+DEFAULT_MIN_COST_BENEFIT_BPS = 5  # 0.05% min expected improvement
 
 
 @dataclass
@@ -91,10 +91,7 @@ class VCheck:
         conc_ok = max_weight <= self.max_concentration_bps
         checks["max_concentration"] = conc_ok
         if not conc_ok:
-            failures.append(
-                f"max concentration {max_weight} BPS exceeds limit "
-                f"{self.max_concentration_bps} BPS"
-            )
+            failures.append(f"max concentration {max_weight} BPS exceeds limit {self.max_concentration_bps} BPS")
 
         # 3. Min cost-benefit (only if cost_benefit_bps is provided)
         if self.cost_benefit_bps is not None:
@@ -102,8 +99,7 @@ class VCheck:
             checks["min_cost_benefit_bps"] = cb_ok
             if not cb_ok:
                 failures.append(
-                    f"cost-benefit {self.cost_benefit_bps} BPS below minimum "
-                    f"{self.min_cost_benefit_bps} BPS"
+                    f"cost-benefit {self.cost_benefit_bps} BPS below minimum {self.min_cost_benefit_bps} BPS"
                 )
 
         passed = len(failures) == 0
@@ -135,7 +131,5 @@ class VCheck:
         **kwargs
             Forwarded to ``VCheck.__init__``.
         """
-        weights_bps = {
-            k: int(round(v * 10000)) for k, v in weights.items()
-        }
+        weights_bps = {k: int(round(v * 10000)) for k, v in weights.items()}
         return VCheck(weights_bps=weights_bps, **kwargs)

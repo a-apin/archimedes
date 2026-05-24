@@ -17,8 +17,6 @@ Preconditions:
   - User has approved AMMRouter to spend USDC
 """
 
-import pytest
-
 
 # ─────────────────────────────────────────────────────────────
 # 2.1 Pool creation & liquidity (Chuan + Marten)

@@ -31,8 +31,8 @@ replication workflow described in
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Iterator
 
 import numpy as np
 import pandas as pd
@@ -42,13 +42,13 @@ import pandas as pd
 class FoldSpec:
     """One purged-k-fold split."""
 
-    fold_index: int            # 0-indexed
-    train_idx: np.ndarray      # integer positions into the index
+    fold_index: int  # 0-indexed
+    train_idx: np.ndarray  # integer positions into the index
     test_idx: np.ndarray
     test_start: pd.Timestamp
     test_end: pd.Timestamp
-    n_purged: int              # training obs dropped due to label overlap
-    n_embargoed: int           # training obs dropped due to embargo
+    n_purged: int  # training obs dropped due to label overlap
+    n_embargoed: int  # training obs dropped due to embargo
 
 
 def purged_kfold_splits(
@@ -108,7 +108,7 @@ def purged_kfold_splits(
         test_end_ts = t1.index[test_end_pos]
         # The *latest* label-end time within the test window — anything
         # before this in train still has its label observed inside test.
-        test_label_end_ts = t1.iloc[test_positions].max()
+        t1.iloc[test_positions].max()
 
         # Start with all-positions, then remove test + purge + embargo.
         all_positions = np.arange(n)
@@ -135,7 +135,9 @@ def purged_kfold_splits(
             embargo_positions = np.arange(embargo_start, min(embargo_end, n))
             before_embargo = len(candidate_train)
             candidate_train = np.setdiff1d(
-                candidate_train, embargo_positions, assume_unique=True,
+                candidate_train,
+                embargo_positions,
+                assume_unique=True,
             )
             n_embargoed = before_embargo - len(candidate_train)
         else:
@@ -214,4 +216,4 @@ def cross_val_score(
     }
 
 
-__all__ = ["FoldSpec", "purged_kfold_splits", "cross_val_score"]
+__all__ = ["FoldSpec", "cross_val_score", "purged_kfold_splits"]

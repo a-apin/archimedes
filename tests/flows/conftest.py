@@ -9,10 +9,10 @@ the mock fixture here for the real implementation. If the tests
 still pass, the integration works.
 """
 
-import pytest
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from archimedes.models.asset import AssetPrice, MarketSnapshot
 from archimedes.models.backtest import BacktestResult
 from archimedes.models.portfolio import (
@@ -21,13 +21,17 @@ from archimedes.models.portfolio import (
     RebalanceDecision,
     RiskProfile,
     TargetAllocation,
-    TradeOrder,
     TradeDirection,
+    TradeOrder,
 )
 from archimedes.models.regime import Regime, RegimeClassification, RegimeSignals
-from archimedes.models.strategy import Strategy, StrategyStatus, PositionSizing, RebalanceFrequency
-from archimedes.models.trace import ReasoningTrace, DecisionType
-
+from archimedes.models.strategy import (
+    PositionSizing,
+    RebalanceFrequency,
+    Strategy,
+    StrategyStatus,
+)
+from archimedes.models.trace import DecisionType, ReasoningTrace
 
 # ─────────────────────────────────────────────────────────────
 # Marten's stubs
@@ -167,12 +171,9 @@ def portfolio_constructor():
             per_asset = equity_weight / len(equity_assets)
 
             allocations = [
-                TargetAllocation(symbol=sym, token_address=f"0x{sym}", weight=per_asset)
-                for sym in equity_assets
+                TargetAllocation(symbol=sym, token_address=f"0x{sym}", weight=per_asset) for sym in equity_assets
             ]
-            allocations.append(
-                TargetAllocation(symbol="USYC", token_address="0xUSYC", weight=usyc_weight)
-            )
+            allocations.append(TargetAllocation(symbol="USYC", token_address="0xUSYC", weight=usyc_weight))
             return allocations
 
         def score_strategy(self, strategy, result, risk_profile):
@@ -218,7 +219,7 @@ def strategy_provider():
                 Strategy(
                     id=f"strategy-{i}",
                     paper_arxiv_id=f"2509.{11420 + i}",
-                    paper_title=f"Sample Strategy Paper {i+1}",
+                    paper_title=f"Sample Strategy Paper {i + 1}",
                     paper_authors=["Author A", "Author B"],
                     methodology_summary=f"A {['momentum', 'mean-reversion', 'trend-following', 'factor', 'volatility'][i]} strategy.",
                     asset_universe=["sTSLA", "sSPY", "sGLD", "sBTC"],
@@ -268,8 +269,10 @@ def regime():
         regime=Regime.RISK_ON,
         confidence=0.85,
         signals=RegimeSignals(
-            vix_level=15.0, vix_rate_of_change=-0.05,
-            sp500_above_ma50=True, sp500_above_ma200=True,
+            vix_level=15.0,
+            vix_rate_of_change=-0.05,
+            sp500_above_ma50=True,
+            sp500_above_ma200=True,
         ),
         timestamp=datetime.utcnow(),
     )
@@ -282,8 +285,10 @@ def crisis_regime():
         regime=Regime.CRISIS,
         confidence=0.90,
         signals=RegimeSignals(
-            vix_level=42.0, vix_rate_of_change=0.50,
-            sp500_above_ma50=False, sp500_above_ma200=False,
+            vix_level=42.0,
+            vix_rate_of_change=0.50,
+            sp500_above_ma50=False,
+            sp500_above_ma200=False,
         ),
         timestamp=datetime.utcnow(),
     )
@@ -303,8 +308,10 @@ def agent_orchestrator():
         regime=Regime.RISK_ON,
         confidence=0.80,
         signals=RegimeSignals(
-            vix_level=17.0, vix_rate_of_change=-0.02,
-            sp500_above_ma50=True, sp500_above_ma200=True,
+            vix_level=17.0,
+            vix_rate_of_change=-0.02,
+            sp500_above_ma50=True,
+            sp500_above_ma200=True,
         ),
         timestamp=datetime.utcnow(),
     )
@@ -318,8 +325,13 @@ def agent_orchestrator():
             TargetAllocation(symbol="USYC", token_address="0xUSYC", weight=0.35),
         ],
         trades=[
-            TradeOrder(symbol="sTSLA", token_address="0xsTSLA", direction=TradeDirection.SELL,
-                       amount=2.0, estimated_usdc_value=370.0),
+            TradeOrder(
+                symbol="sTSLA",
+                token_address="0xsTSLA",
+                direction=TradeDirection.SELL,
+                amount=2.0,
+                estimated_usdc_value=370.0,
+            ),
         ],
         estimated_cost_usdc=5.0,
         estimated_benefit=50.0,

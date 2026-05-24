@@ -24,12 +24,14 @@ them under "considered N candidates".
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
 
 from archimedes.api.generate_schemas import GenerateBrief
 from archimedes.services.job_queue import JobStore, get_job_store
@@ -50,6 +52,7 @@ def _llm_available() -> bool:
         return False
     try:
         from archimedes.agents.portfolio_agent import get_portfolio_agent
+
         return get_portfolio_agent().available
     except Exception:
         return False
@@ -77,26 +80,22 @@ def _pick_pipeline(
     # ── Fusion check ──
     try:
         from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
+
         if fusion_enabled():
             corpus = load_corpus()
             corpus_count = len(corpus) if corpus else 0
             if corpus_count >= 20 and _llm_available():
-                return "fusion", (
-                    f"fusion engine enabled, corpus={corpus_count} papers, "
-                    "LLM backend alive"
-                )
+                return "fusion", (f"fusion engine enabled, corpus={corpus_count} papers, LLM backend alive")
     except Exception:
         pass  # fall through
 
     # ── Architect check ──
     try:
         from archimedes.services.strategy_provider import default_provider
+
         lib = default_provider.list_strategies()
         if len(lib) >= 3:
-            return "architect", (
-                f"curated library has {len(lib)} strategies; "
-                "fast preview available"
-            )
+            return "architect", (f"curated library has {len(lib)} strategies; fast preview available")
     except Exception:
         pass  # fall through
 
@@ -145,7 +144,7 @@ def _parse_validation_json(raw: str) -> dict[str, Any] | None:
     if start < 0 or end <= start:
         return None
     try:
-        return json.loads(raw[start:end + 1])
+        return json.loads(raw[start : end + 1])
     except json.JSONDecodeError:
         return None
 
@@ -167,14 +166,17 @@ async def _validate_brief(brief: GenerateBrief) -> dict[str, Any]:
     }
     try:
         from archimedes.services.llm_backend import make_llm_backend
+
         backend = make_llm_backend()
         if not getattr(backend, "available", False):
             return permissive
-        user_msg = json.dumps({
-            "intent": brief.intent,
-            "stated_risk_appetite": brief.risk_appetite,
-            "asset_classes_hint": brief.asset_classes or [],
-        })
+        user_msg = json.dumps(
+            {
+                "intent": brief.intent,
+                "stated_risk_appetite": brief.risk_appetite,
+                "asset_classes_hint": brief.asset_classes or [],
+            }
+        )
         raw = await asyncio.wait_for(
             asyncio.to_thread(backend.complete, _BRIEF_VALIDATION_SYSTEM, user_msg),
             timeout=15.0,
@@ -216,9 +218,7 @@ class _CandidateResult:
 # ── Rigor adapter (Önder's rigor_evaluator on agent output) ───────────────
 
 
-def _portfolio_return_series(
-    weights: dict[str, float], price_histories: dict[str, Any]
-) -> list[float]:
+def _portfolio_return_series(weights: dict[str, float], price_histories: dict[str, Any]) -> list[float]:
     """Compute daily returns of a buy-and-hold weighted portfolio.
 
     Sources the per-asset close series from ``price_histories`` (the same dict
@@ -259,9 +259,7 @@ def _portfolio_return_series(
     return out
 
 
-def _rigor_verdict_for(
-    return_series: list[float], num_trials: int
-) -> dict[str, Any]:
+def _rigor_verdict_for(return_series: list[float], num_trials: int) -> dict[str, Any]:
     """Run Önder's rigor primitives on a portfolio return series.
 
     Returns the same shape the fixture path uses so the consumer (event
@@ -269,21 +267,23 @@ def _rigor_verdict_for(
     """
     if not return_series or len(return_series) < 10:
         return {
-            "dsr": None, "pbo": None, "oos_sharpe": None,
-            "lookahead_audit_passed": True, "passing": False,
+            "dsr": None,
+            "pbo": None,
+            "oos_sharpe": None,
+            "lookahead_audit_passed": True,
+            "passing": False,
             "reason": "return series too short for rigor evaluation",
         }
     from archimedes.services.rigor_evaluator import (
-        compute_dsr, compute_oos_sharpe,
+        compute_dsr,
+        compute_oos_sharpe,
     )
+
     dsr, dsr_p = compute_dsr(return_series, num_trials=max(1, num_trials))
     oos = compute_oos_sharpe(return_series)
     # PBO is library-level (needs ≥2 candidate return series); the caller
     # computes it once over all candidates and patches the verdict below.
-    passing = bool(
-        dsr_p is not None and dsr_p >= 0.95
-        and oos is not None and oos > 0.0
-    )
+    passing = bool(dsr_p is not None and dsr_p >= 0.95 and oos is not None and oos > 0.0)
     return {
         "dsr": round(float(dsr), 4) if dsr is not None else None,
         "dsr_p_value": round(float(dsr_p), 4) if dsr_p is not None else None,
@@ -294,17 +294,15 @@ def _rigor_verdict_for(
     }
 
 
-def _patch_pbo(candidates: list["_CandidateResult"]) -> None:
+def _patch_pbo(candidates: list[_CandidateResult]) -> None:
     """Compute library-level PBO across the candidate set; patch each verdict."""
-    series_map: dict[str, list[float]] = {
-        c.candidate_id: c.return_series for c in candidates
-        if c.return_series
-    }
+    series_map: dict[str, list[float]] = {c.candidate_id: c.return_series for c in candidates if c.return_series}
     if len(series_map) < 2:
         for c in candidates:
             c.rigor_verdict["pbo"] = 0.0  # PBO undefined for N<2
         return
     from archimedes.services.rigor_evaluator import compute_pbo
+
     pbo_by_id = compute_pbo(series_map)
     for c in candidates:
         pbo = pbo_by_id.get(c.candidate_id, 0.0)
@@ -312,9 +310,7 @@ def _patch_pbo(candidates: list["_CandidateResult"]) -> None:
         # PBO ≥ 0.5 means the library overfits the in-sample winner; tighten
         # `passing` to require both the per-strategy DSR test AND library-PBO
         # under the 0.5 threshold.
-        c.rigor_verdict["passing"] = bool(
-            c.rigor_verdict.get("passing") and pbo < 0.5
-        )
+        c.rigor_verdict["passing"] = bool(c.rigor_verdict.get("passing") and pbo < 0.5)
 
 
 # ── Event emitter ─────────────────────────────────────────────────────────
@@ -332,7 +328,7 @@ class _Emitter:
         self.store = store
 
     async def emit(self, event: str, **payload: Any) -> int:
-        ts = datetime.now(timezone.utc).isoformat()
+        ts = datetime.now(UTC).isoformat()
         body = {"event": event, "data": {"ts": ts, "job_id": self.job_id, **payload}}
         return await self.store.push_event(self.job_id, body)
 
@@ -340,9 +336,7 @@ class _Emitter:
 # ── Fixture path (deterministic; used in tests + when LLM unavailable) ────
 
 
-async def _run_fixture_candidate(
-    *, candidate_id: str, brief: GenerateBrief, emit: _Emitter
-) -> _CandidateResult:
+async def _run_fixture_candidate(*, candidate_id: str, brief: GenerateBrief, emit: _Emitter) -> _CandidateResult:
     """Synthetic generation that exercises every event the live agent emits.
 
     Useful for: tests, demo on a laptop without an API key, smoke-tests.
@@ -352,17 +346,27 @@ async def _run_fixture_candidate(
     await emit.emit("agent_iteration", candidate_id=candidate_id, iteration_n=1, max_iterations=3)
     await asyncio.sleep(0.1)
 
-    await emit.emit("tool_called", candidate_id=candidate_id, tool_name="get_asset_stats",
-                    args_summary="symbols=sBTC,sSPY,sGLD")
+    await emit.emit(
+        "tool_called", candidate_id=candidate_id, tool_name="get_asset_stats", args_summary="symbols=sBTC,sSPY,sGLD"
+    )
     await asyncio.sleep(0.1)
-    await emit.emit("tool_result", candidate_id=candidate_id, tool_name="get_asset_stats",
-                    result_summary="3-asset stats fetched; sGLD lowest vol")
+    await emit.emit(
+        "tool_result",
+        candidate_id=candidate_id,
+        tool_name="get_asset_stats",
+        result_summary="3-asset stats fetched; sGLD lowest vol",
+    )
 
     await emit.emit("agent_iteration", candidate_id=candidate_id, iteration_n=2, max_iterations=3)
-    await emit.emit("tool_called", candidate_id=candidate_id, tool_name="stress_test_portfolio",
-                    args_summary="scenarios=6")
-    await emit.emit("tool_result", candidate_id=candidate_id, tool_name="stress_test_portfolio",
-                    result_summary="max drawdown −12.4% (2022_inflation)")
+    await emit.emit(
+        "tool_called", candidate_id=candidate_id, tool_name="stress_test_portfolio", args_summary="scenarios=6"
+    )
+    await emit.emit(
+        "tool_result",
+        candidate_id=candidate_id,
+        tool_name="stress_test_portfolio",
+        result_summary="max drawdown −12.4% (2022_inflation)",
+    )
 
     name = f"Synthetic {brief.risk_appetite.title()} Blend"
     weights = {"sSPY": 0.5, "sGLD": 0.3, "sBTC": 0.2}
@@ -375,8 +379,11 @@ async def _run_fixture_candidate(
         weights=weights,
         reasoning="Fixture path — no LLM call. Weights chosen by deterministic stub.",
         rigor_verdict={
-            "dsr": 0.71, "pbo": 0.18, "oos_sharpe": 0.94,
-            "lookahead_audit_passed": True, "passing": True,
+            "dsr": 0.71,
+            "pbo": 0.18,
+            "oos_sharpe": 0.94,
+            "lookahead_audit_passed": True,
+            "passing": True,
         },
         passes_rigor=True,
     )
@@ -385,9 +392,7 @@ async def _run_fixture_candidate(
 # ── Live agent path ───────────────────────────────────────────────────────
 
 
-async def _run_live_candidate(
-    *, candidate_id: str, brief: GenerateBrief, emit: _Emitter
-) -> _CandidateResult:
+async def _run_live_candidate(*, candidate_id: str, brief: GenerateBrief, emit: _Emitter) -> _CandidateResult:
     """Drive the real ``portfolio_agent`` with per-iteration event emission.
 
     The agent's iteration loop is sync and runs in a thread. The thread uses
@@ -397,7 +402,9 @@ async def _run_live_candidate(
     from archimedes.agents.portfolio_agent import get_portfolio_agent
     from archimedes.services.strategy_provider import default_provider
     from archimedes.services.strategy_signal_evaluator import (
-        DEFAULT_SCAN_UNIVERSE, _fetch_price_histories, strategy_evaluator,
+        DEFAULT_SCAN_UNIVERSE,
+        _fetch_price_histories,
+        strategy_evaluator,
     )
 
     loop = asyncio.get_running_loop()
@@ -405,12 +412,12 @@ async def _run_live_candidate(
     def _sync_emit(event: str, **payload: Any) -> None:
         # Bridge from the agent's sync thread into the async event log.
         fut = asyncio.run_coroutine_threadsafe(
-            emit.emit(event, candidate_id=candidate_id, **payload), loop,
+            emit.emit(event, candidate_id=candidate_id, **payload),
+            loop,
         )
-        try:
+        # event emission is best-effort
+        with contextlib.suppress(Exception):
             fut.result(timeout=2.0)
-        except Exception:
-            pass  # event emission is best-effort
 
     price_histories = await asyncio.wait_for(
         asyncio.to_thread(_fetch_price_histories, DEFAULT_SCAN_UNIVERSE, "1y"),
@@ -424,10 +431,10 @@ async def _run_live_candidate(
         asyncio.to_thread(
             agent.propose_portfolio_with_tools,
             "transition",  # regime; pipeline uses neutral default for v1
-            0.65,           # regime_confidence
+            0.65,  # regime_confidence
             brief.risk_appetite,
-            0.30,           # usdc_floor (moderate default)
-            0.70,           # synth_budget
+            0.30,  # usdc_floor (moderate default)
+            0.70,  # synth_budget
             market_ranking,
             strategies,
             set(DEFAULT_SCAN_UNIVERSE),
@@ -445,10 +452,12 @@ async def _run_live_candidate(
     for sid in referenced:
         s = next((s for s in strategies if s.id == sid), None)
         if s and getattr(s, "paper_arxiv_id", None):
-            source_papers.append({
-                "arxiv_id": s.paper_arxiv_id,
-                "title": s.paper_title,
-            })
+            source_papers.append(
+                {
+                    "arxiv_id": s.paper_arxiv_id,
+                    "title": s.paper_title,
+                }
+            )
 
     # Real rigor verdict via Önder's compute_dsr + compute_oos_sharpe on the
     # buy-and-hold return series of the agent's allocation. PBO is patched
@@ -542,14 +551,13 @@ async def run_generation(
 
         # Decide path: live agent vs fixture
         use_live = _llm_available()
-        runner: Callable[..., Awaitable[_CandidateResult]] = (
-            _run_live_candidate if use_live else _run_fixture_candidate
-        )
+        runner: Callable[..., Awaitable[_CandidateResult]] = _run_live_candidate if use_live else _run_fixture_candidate
 
         # Library is the candidate pool the agent reasons over; surface it so
         # the UI can show "agent is considering N papers".
         try:
             from archimedes.services.strategy_provider import default_provider
+
             lib = default_provider.list_strategies()
             arxiv_ids = [s.paper_arxiv_id for s in lib if getattr(s, "paper_arxiv_id", None)]
         except Exception:
@@ -590,7 +598,10 @@ async def run_generation(
 
         if not candidates:
             await emit.emit(
-                "error", message="no candidates passed rigor", recoverable=True, code="RIGOR_FAIL",
+                "error",
+                message="no candidates passed rigor",
+                recoverable=True,
+                code="RIGOR_FAIL",
             )
             await store.update_status(job_id, "error", error="no candidates passed rigor")
             return
@@ -627,6 +638,7 @@ async def run_generation(
         # ── Persist all candidates to episodic memory (T-PE.8) ──
         try:
             from archimedes.services.strategy_memory import persist_proposal
+
             for cand in candidates:
                 persist_proposal(
                     generation_id=job_id,
@@ -684,6 +696,7 @@ async def _persist_candidate(c: _CandidateResult, brief: GenerateBrief) -> tuple
     every generation a deterministic identifier mirrored on-chain in v1.5.
     """
     from web3 import Web3
+
     from archimedes.db import get_session
     from archimedes.models.strategy_store import upsert_strategy
 

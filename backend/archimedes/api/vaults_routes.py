@@ -6,18 +6,22 @@ import asyncio
 
 from fastapi import APIRouter, Query
 
+from archimedes.api._route_helpers import strategy_provider, vault_svc
 from archimedes.api.schemas import (
     VaultDetailResponse,
     VaultListResponse,
 )
 from archimedes.api.vault_schemas import (
-    VaultCreateRequest, VaultCreateResponse,
-    VaultMetadataRequest, VaultMetadataResponse,
-    SetAllocationsRequest, SetAllocationsResponse, AllocationTarget,
+    AllocationTarget,
+    SetAllocationsRequest,
+    SetAllocationsResponse,
+    VaultCreateRequest,
+    VaultCreateResponse,
+    VaultMetadataRequest,
+    VaultMetadataResponse,
 )
-from archimedes.models.chat import VaultMetadata
 from archimedes.chain.executor import chain_executor
-from archimedes.api._route_helpers import vault_svc, strategy_provider
+from archimedes.models.chat import VaultMetadata
 
 vaults_router = APIRouter(prefix="/api/vaults", tags=["vaults"])
 
@@ -31,9 +35,7 @@ async def list_vaults(
     offset: int = Query(0, ge=0),
 ):
     """List vaults for the marketplace leaderboard."""
-    return await vault_svc.list_vaults(
-        tier=tier, sort_by=sort_by, order=order, limit=limit, offset=offset
-    )
+    return await vault_svc.list_vaults(tier=tier, sort_by=sort_by, order=order, limit=limit, offset=offset)
 
 
 @vaults_router.post("/create", response_model=VaultCreateResponse)
@@ -61,6 +63,7 @@ async def create_vault(req: VaultCreateRequest):
 async def get_vault_health(address: str):
     """Get vault health snapshot including live Sharpe drift vs backtest baseline."""
     from archimedes.services.vault_monitor import vault_monitor
+
     return await vault_monitor.get_vault_health(address)
 
 
@@ -82,15 +85,12 @@ async def get_vault_detail(address: str):
 async def store_vault_metadata(req: VaultMetadataRequest):
     """Store off-chain vault metadata (strategy associations, display name)."""
     from fastapi import HTTPException
+
     from archimedes.db import get_session
 
     session = get_session()
     try:
-        meta = (
-            session.query(VaultMetadata)
-            .filter(VaultMetadata.vault_address == req.vault_address)
-            .first()
-        )
+        meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == req.vault_address).first()
         if meta is None:
             meta = VaultMetadata(vault_address=req.vault_address)
             session.add(meta)
@@ -113,15 +113,12 @@ async def store_vault_metadata(req: VaultMetadataRequest):
 async def get_vault_metadata(address: str):
     """Get off-chain vault metadata (strategy associations, display name)."""
     from fastapi import HTTPException
+
     from archimedes.db import get_session
 
     session = get_session()
     try:
-        meta = (
-            session.query(VaultMetadata)
-            .filter(VaultMetadata.vault_address == address)
-            .first()
-        )
+        meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == address).first()
         if meta is None:
             raise HTTPException(status_code=404, detail="No metadata for this vault")
         return VaultMetadataResponse(**meta.to_dict())
@@ -146,14 +143,15 @@ async def derive_vault_allocations(address: str, req: SetAllocationsRequest):
         synth_addrs = {k: v for k, v in chain_client.settings.synth_addresses.items() if v}
         per_synth = synth_budget_bps // max(len(synth_addrs), 1)
         allocations = [
-            AllocationTarget(symbol=sym, token_address=addr, weight_bps=per_synth)
-            for sym, addr in synth_addrs.items()
+            AllocationTarget(symbol=sym, token_address=addr, weight_bps=per_synth) for sym, addr in synth_addrs.items()
         ]
-        allocations.append(AllocationTarget(
-            symbol="USDC",
-            token_address=chain_client.settings.usdc_address,
-            weight_bps=usdc_floor_bps,
-        ))
+        allocations.append(
+            AllocationTarget(
+                symbol="USDC",
+                token_address=chain_client.settings.usdc_address,
+                weight_bps=usdc_floor_bps,
+            )
+        )
         return SetAllocationsResponse(
             allocations=allocations,
             total_bps=sum(a.weight_bps for a in allocations),
@@ -162,7 +160,9 @@ async def derive_vault_allocations(address: str, req: SetAllocationsRequest):
 
     synth_assets = [sym for sym, addr in chain_client.settings.synth_addresses.items() if addr]
     all_signals = await asyncio.to_thread(
-        strategy_evaluator.evaluate_strategies, strategies, synth_assets,
+        strategy_evaluator.evaluate_strategies,
+        strategies,
+        synth_assets,
     )
     usdc_floor = req.usdc_floor_pct / 100.0
     target_weights = strategy_evaluator.aggregate_signals(all_signals, usdc_floor=usdc_floor)
@@ -178,11 +178,13 @@ async def derive_vault_allocations(address: str, req: SetAllocationsRequest):
             continue
         weight_bps = int(round(weight * 10000))
         if weight_bps > 0:
-            allocations.append(AllocationTarget(
-                symbol=symbol,
-                token_address=token_address,
-                weight_bps=weight_bps,
-            ))
+            allocations.append(
+                AllocationTarget(
+                    symbol=symbol,
+                    token_address=token_address,
+                    weight_bps=weight_bps,
+                )
+            )
 
     total = sum(a.weight_bps for a in allocations)
     if total > 0 and total != 10000:
@@ -193,7 +195,7 @@ async def derive_vault_allocations(address: str, req: SetAllocationsRequest):
         total = sum(a.weight_bps for a in allocations)
         if total != 10000 and allocations:
             largest = max(allocations, key=lambda a: a.weight_bps)
-            largest.weight_bps += (10000 - total)
+            largest.weight_bps += 10000 - total
 
     return SetAllocationsResponse(
         allocations=allocations,

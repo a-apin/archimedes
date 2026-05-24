@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -49,12 +49,12 @@ def _count_new_papers_since(iso_ts: str | None) -> int:
         return 0
     try:
         from sqlalchemy import func
+
         from archimedes.db import get_session
         from archimedes.models.corpus_store import PaperRecord
+
         with get_session() as session:
-            return session.query(func.count(PaperRecord.arxiv_id)) \
-                .filter(PaperRecord.created_at > iso_ts) \
-                .scalar() or 0
+            return session.query(func.count(PaperRecord.arxiv_id)).filter(PaperRecord.created_at > iso_ts).scalar() or 0
     except Exception as exc:
         logger.debug("kb_runner: paper count failed: %s", exc)
         return 0
@@ -75,7 +75,7 @@ def needs_rerun() -> bool:
     if last_run:
         try:
             last_dt = datetime.fromisoformat(last_run)
-            days = (datetime.now(timezone.utc) - last_dt).days
+            days = (datetime.now(UTC) - last_dt).days
             if days >= MAX_DAYS_SINCE_LAST:
                 logger.info("kb_runner: %d days since last run ≥ %d threshold", days, MAX_DAYS_SINCE_LAST)
                 return True
@@ -89,7 +89,10 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s kb_runner %(message)s")
     logger.info(
         "kb_runner: starting (interval=%ds, new_paper=%d, max_days=%d, artifact=%s)",
-        INTERVAL_SECONDS, NEW_PAPER_THRESHOLD, MAX_DAYS_SINCE_LAST, ARTIFACT_DIR,
+        INTERVAL_SECONDS,
+        NEW_PAPER_THRESHOLD,
+        MAX_DAYS_SINCE_LAST,
+        ARTIFACT_DIR,
     )
 
     while True:
@@ -97,6 +100,7 @@ def main() -> None:
             if needs_rerun():
                 logger.info("kb_runner: triggering pipeline")
                 from archimedes.scripts.run_kb_pipeline import run_pipeline
+
                 run_pipeline()
             else:
                 logger.info("kb_runner: needs_rerun=False, sleeping")

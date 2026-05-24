@@ -2,16 +2,15 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from archimedes.models.backtest import BacktestResult
-from archimedes.models.chat import Base
 from archimedes.models.backtest_store import BacktestResultRecord
+from archimedes.models.chat import Base
 from archimedes.services.backtest_repository import (
     insert_backtest_if_missing,
     latest_backtests_by_strategy,
 )
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 def _sample_result(strategy_id: str, sharpe: float) -> BacktestResult:

@@ -24,9 +24,9 @@ DEFAULT_LAMBDA = 0.002  # per day — ~1-year half-life
 
 # Regime-aware λ multipliers (higher λ = stronger recency preference)
 _REGIME_LAMBDA_SCALE: dict[str, float] = {
-    "risk_on": 1.0,       # Normal — default decay
-    "transition": 1.5,    # Elevated — prefer recent papers more
-    "risk_off": 2.5,      # Crisis — strong recency bias
+    "risk_on": 1.0,  # Normal — default decay
+    "transition": 1.5,  # Elevated — prefer recent papers more
+    "risk_off": 2.5,  # Crisis — strong recency bias
 }
 
 

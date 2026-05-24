@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import math as _math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from archimedes.chain.executor import chain_executor
 from archimedes.services.redis_state import AgentStateStore
@@ -47,11 +47,7 @@ def compute_sharpe_drift(
 
     # Compute period returns from AUM history (most-recent first in snapshots)
     navs = [s.get("aum_usdc", 0) or s.get("share_price", 0) for s in reversed(aum_snapshots)]
-    returns = [
-        (navs[i] - navs[i - 1]) / navs[i - 1]
-        for i in range(1, len(navs))
-        if navs[i - 1] > 0
-    ]
+    returns = [(navs[i] - navs[i - 1]) / navs[i - 1] for i in range(1, len(navs)) if navs[i - 1] > 0]
 
     if len(returns) < _MIN_SNAPSHOTS_FOR_SHARPE - 1:
         return {
@@ -86,9 +82,7 @@ def compute_sharpe_drift(
     # snapshot-period units consistently with the observed returns series.
     sr_period = backtest_sharpe / _math.sqrt(periods_per_year)
     n_obs_period = len(returns)
-    se_backtest = _math.sqrt(
-        (1 + 0.5 * sr_period**2) * periods_per_year / max(n_obs_period, 1)
-    )
+    se_backtest = _math.sqrt((1 + 0.5 * sr_period**2) * periods_per_year / max(n_obs_period, 1))
     drift_sigma = (live_sharpe - backtest_sharpe) / se_backtest if se_backtest > 0 else 0.0
 
     if live_sharpe >= decay_floor:
@@ -158,16 +152,14 @@ class VaultMonitor:
         # Rebalance staleness
         rebalance_age_seconds = None
         if last_rebalance:
-            rebalance_age_seconds = (
-                datetime.now(timezone.utc) - last_rebalance
-            ).total_seconds()
+            rebalance_age_seconds = (datetime.now(UTC) - last_rebalance).total_seconds()
 
         # Agent alive?
         agent_alive = False
         if heartbeat:
             try:
                 hb_time = datetime.fromisoformat(heartbeat)
-                age = (datetime.now(timezone.utc) - hb_time).total_seconds()
+                age = (datetime.now(UTC) - hb_time).total_seconds()
                 agent_alive = age < 600  # alive if heartbeat < 10min old
             except Exception:
                 pass
@@ -190,7 +182,8 @@ class VaultMonitor:
             "latest_snapshot": snapshots[0] if snapshots else None,
             "sharpe_drift": sharpe_drift,
             "recent_events": [
-                e for e in events
+                e
+                for e in events
                 if e.get("data", {}).get("address", "").lower() == vault_address.lower()
                 or e.get("type") in ("regime_change", "agent_error")
             ][:5],

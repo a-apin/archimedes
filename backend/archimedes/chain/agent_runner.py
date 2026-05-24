@@ -23,7 +23,7 @@ import logging
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from archimedes.chain.client import chain_client
 from archimedes.chain.executor import chain_executor
@@ -31,18 +31,16 @@ from archimedes.chain.trace_publisher import trace_publisher
 from archimedes.chain.v_check import VCheck
 from archimedes.models.portfolio import (
     Portfolio,
-    RiskProfile,
     TargetAllocation,
     TradeDirection,
     TradeOrder,
-    RISK_PROFILE_PARAMS,
 )
 from archimedes.models.trace import DecisionType, ReasoningTrace
 from archimedes.services.redis_state import AgentStateStore
 from archimedes.services.strategy_provider import default_provider
 from archimedes.services.strategy_signal_evaluator import (
-    strategy_evaluator,
     StrategySignals,
+    strategy_evaluator,
 )
 
 logging.basicConfig(
@@ -98,7 +96,8 @@ class StrategyRunner:
 
             logger.info(
                 "[tick %s] Loaded %d strategies: %s",
-                tick_id, len(strategies),
+                tick_id,
+                len(strategies),
                 ", ".join(s.paper_title[:30] for s in strategies),
             )
 
@@ -107,7 +106,9 @@ class StrategyRunner:
 
             # Run signal evaluation in thread pool (yfinance is sync)
             all_signals: list[StrategySignals] = await asyncio.to_thread(
-                strategy_evaluator.evaluate_strategies, strategies, synth_assets,
+                strategy_evaluator.evaluate_strategies,
+                strategies,
+                synth_assets,
             )
 
             if not all_signals:
@@ -118,13 +119,15 @@ class StrategyRunner:
             for ss in all_signals:
                 logger.info(
                     "[tick %s] %s: %s",
-                    tick_id, ss.paper_title[:35],
+                    tick_id,
+                    ss.paper_title[:35],
                     " | ".join(f"{s.asset}={s.signal.value}({s.weight:.0%})" for s in ss.signals),
                 )
 
             # 3. Aggregate signals into target weights
             target_weights = strategy_evaluator.aggregate_signals(
-                all_signals, usdc_floor=USDC_FLOOR,
+                all_signals,
+                usdc_floor=USDC_FLOOR,
             )
             logger.info(
                 "[tick %s] Target weights: %s",
@@ -158,7 +161,8 @@ class StrategyRunner:
             if new_vaults:
                 logger.info(
                     "[tick %s] Discovered %d new vault(s): %s",
-                    tick_id, len(new_vaults),
+                    tick_id,
+                    len(new_vaults),
                     ", ".join(v[:10] for v in new_vaults),
                 )
                 # Merge discovered vaults into the managed set
@@ -174,12 +178,17 @@ class StrategyRunner:
             for vault_addr in vaults:
                 try:
                     await self._process_vault(
-                        vault_addr, targets, all_signals, regime, tick_id,
+                        vault_addr,
+                        targets,
+                        all_signals,
+                        regime,
+                        tick_id,
                     )
                 except Exception:
                     logger.exception(
                         "[tick %s] Error processing vault %s — continuing",
-                        tick_id, vault_addr,
+                        tick_id,
+                        vault_addr,
                     )
 
             # 7. Heartbeat
@@ -205,13 +214,18 @@ class StrategyRunner:
         except Exception as e:
             logger.warning(
                 "[tick %s] Cannot read portfolio for %s: %s — skipping",
-                tick_id, vault_address[:10], e,
+                tick_id,
+                vault_address[:10],
+                e,
             )
             return
 
         logger.info(
             "[tick %s] Vault %s: AUM=$%.2f, %d holdings",
-            tick_id, vault_address[:10], portfolio.total_value_usdc, len(portfolio.holdings),
+            tick_id,
+            vault_address[:10],
+            portfolio.total_value_usdc,
+            len(portfolio.holdings),
         )
 
         # Skip empty vaults (don't spam traces — just log)
@@ -221,8 +235,14 @@ class StrategyRunner:
             last_trace = await self.state.get_last_trace(vault_address)
             if not last_trace or last_trace.get("trigger") != "empty_vault":
                 await self._publish_trace(
-                    vault_address, DecisionType.SKIP, "empty_vault",
-                    portfolio, [], all_signals, regime, tick_id,
+                    vault_address,
+                    DecisionType.SKIP,
+                    "empty_vault",
+                    portfolio,
+                    [],
+                    all_signals,
+                    regime,
+                    tick_id,
                     "Vault is empty — awaiting initial deposit.",
                 )
             return
@@ -243,16 +263,22 @@ class StrategyRunner:
 
             if oracle_tokens:
                 await chain_executor.set_token_oracles(
-                    vault_address, oracle_tokens, oracle_addrs,
+                    vault_address,
+                    oracle_tokens,
+                    oracle_addrs,
                 )
                 logger.info(
                     "[tick %s] Set %d token oracles on vault %s",
-                    tick_id, len(oracle_tokens), vault_address[:10],
+                    tick_id,
+                    len(oracle_tokens),
+                    vault_address[:10],
                 )
         except Exception as e:
             logger.warning(
                 "[tick %s] Failed to set token oracles on %s: %s",
-                tick_id, vault_address[:10], e,
+                tick_id,
+                vault_address[:10],
+                e,
             )
 
         # Set target allocations on the vault first (needed for rebalance)
@@ -276,30 +302,37 @@ class StrategyRunner:
                         alloc_weights[0] += diff
 
                 await chain_executor.set_target_allocations(
-                    vault_address, alloc_tokens, alloc_weights,
+                    vault_address,
+                    alloc_tokens,
+                    alloc_weights,
                 )
                 logger.info(
                     "[tick %s] Set target allocations on vault %s",
-                    tick_id, vault_address[:10],
+                    tick_id,
+                    vault_address[:10],
                 )
         except Exception as e:
             logger.warning(
                 "[tick %s] Failed to set allocations on %s: %s",
-                tick_id, vault_address[:10], e,
+                tick_id,
+                vault_address[:10],
+                e,
             )
             # Continue anyway — try rebalance with existing allocations
-
-        # Compute drift between current and target
-        current_weights = portfolio.weights_dict
-        target_weight_map = {t.symbol: t for t in targets}
 
         trades = self._compute_trades(portfolio, targets)
 
         if not trades:
             logger.info("[tick %s] No drift — portfolio aligned with strategy signals", tick_id)
             await self._publish_trace(
-                vault_address, DecisionType.SKIP, "aligned",
-                portfolio, [], all_signals, regime, tick_id,
+                vault_address,
+                DecisionType.SKIP,
+                "aligned",
+                portfolio,
+                [],
+                all_signals,
+                regime,
+                tick_id,
                 "Portfolio aligned with strategy signals. No rebalance needed.",
             )
             return
@@ -307,12 +340,18 @@ class StrategyRunner:
         # Log the trade plan
         logger.info(
             "[tick %s] REBALANCE vault %s: %d trades (regime=%s)",
-            tick_id, vault_address[:10], len(trades), regime,
+            tick_id,
+            vault_address[:10],
+            len(trades),
+            regime,
         )
         for t in trades:
             logger.info(
                 "[tick %s]   %s %s ~$%.0f",
-                tick_id, t.direction.value, t.symbol, t.estimated_usdc_value,
+                tick_id,
+                t.direction.value,
+                t.symbol,
+                t.estimated_usdc_value,
             )
 
         # ── V_check — Xia et al. 2026 § 5 Reasoning I/O contract ───
@@ -327,11 +366,19 @@ class StrategyRunner:
         if not v_result.passed:
             logger.warning(
                 "[tick %s] V_check FAILED for vault %s: %s — skipping rebalance",
-                tick_id, vault_address[:10], "; ".join(v_result.failures),
+                tick_id,
+                vault_address[:10],
+                "; ".join(v_result.failures),
             )
             await self._publish_trace(
-                vault_address, DecisionType.SKIP, "v_check_failed",
-                portfolio, [], all_signals, regime, tick_id,
+                vault_address,
+                DecisionType.SKIP,
+                "v_check_failed",
+                portfolio,
+                [],
+                all_signals,
+                regime,
+                tick_id,
                 f"V_check rejected: {'; '.join(v_result.failures)}",
             )
             return
@@ -344,7 +391,12 @@ class StrategyRunner:
 
         if not DRY_RUN:
             commit_tx, commit_block = await self._commit_trace(
-                vault_address, trades, all_signals, regime, tick_id, reasoning,
+                vault_address,
+                trades,
+                all_signals,
+                regime,
+                tick_id,
+                reasoning,
                 portfolio,
             )
 
@@ -368,35 +420,56 @@ class StrategyRunner:
                         pass
                 logger.info(
                     "[tick %s] Executed %d trades: %s",
-                    tick_id, len(tx_hashes), [h[:16] for h in tx_hashes],
+                    tick_id,
+                    len(tx_hashes),
+                    [h[:16] for h in tx_hashes],
                 )
                 await self.state.save_last_rebalance(vault_address)
             except Exception as e:
                 logger.error(
                     "[tick %s] Trade execution FAILED for %s: %s",
-                    tick_id, vault_address[:10], e,
+                    tick_id,
+                    vault_address[:10],
+                    e,
                 )
                 await self._publish_trace(
-                    vault_address, DecisionType.SKIP, "execution_failed",
-                    portfolio, [], all_signals, regime, tick_id,
+                    vault_address,
+                    DecisionType.SKIP,
+                    "execution_failed",
+                    portfolio,
+                    [],
+                    all_signals,
+                    regime,
+                    tick_id,
                     f"Execution failed: {e}",
-                    commit_tx=commit_tx, commit_block=commit_block,
+                    commit_tx=commit_tx,
+                    commit_block=commit_block,
                     error=str(e),
                 )
                 return
 
         # Phase 3: REVEAL — publish full trace with all data AFTER trade settles
         await self._reveal_trace(
-            vault_address, DecisionType.REBALANCE, "strategy_signal_drift",
-            portfolio, trades, all_signals, regime, tick_id,
-            reasoning, tx_hashes,
-            commit_tx=commit_tx, commit_block=commit_block,
+            vault_address,
+            DecisionType.REBALANCE,
+            "strategy_signal_drift",
+            portfolio,
+            trades,
+            all_signals,
+            regime,
+            tick_id,
+            reasoning,
+            tx_hashes,
+            commit_tx=commit_tx,
+            commit_block=commit_block,
             trade_block=trade_block,
         )
 
     # ─── Signal → target allocation ───────────────────────────────
 
-    def _weights_to_targets(self, weights: dict[str, float], all_signals: list[StrategySignals] | None = None) -> list[TargetAllocation]:
+    def _weights_to_targets(
+        self, weights: dict[str, float], all_signals: list[StrategySignals] | None = None
+    ) -> list[TargetAllocation]:
         """Convert weight dict → TargetAllocation list."""
         # Build symbol → strategy_ids map from signals
         symbol_strategies: dict[str, list[str]] = {}
@@ -407,17 +480,16 @@ class StrategyRunner:
 
         targets: list[TargetAllocation] = []
         for symbol, weight in weights.items():
-            if symbol == "USDC":
-                token_address = self._usdc_addr
-            else:
-                token_address = self._synth_addrs.get(symbol, "")
+            token_address = self._usdc_addr if symbol == "USDC" else self._synth_addrs.get(symbol, "")
 
-            targets.append(TargetAllocation(
-                symbol=symbol,
-                token_address=token_address,
-                weight=weight,
-                strategy_ids=symbol_strategies.get(symbol, []),
-            ))
+            targets.append(
+                TargetAllocation(
+                    symbol=symbol,
+                    token_address=token_address,
+                    weight=weight,
+                    strategy_ids=symbol_strategies.get(symbol, []),
+                )
+            )
         return targets
 
     # ─── Trade computation ─────────────────────────────────────────
@@ -447,13 +519,15 @@ class StrategyRunner:
             usdc_value = abs(drift) * portfolio.total_value_usdc
             direction = TradeDirection.BUY if drift > 0 else TradeDirection.SELL
 
-            trades.append(TradeOrder(
-                symbol=sym,
-                token_address=token_addr,
-                direction=direction,
-                amount=round(usdc_value, 6),
-                estimated_usdc_value=round(usdc_value, 2),
-            ))
+            trades.append(
+                TradeOrder(
+                    symbol=sym,
+                    token_address=token_addr,
+                    direction=direction,
+                    amount=round(usdc_value, 6),
+                    estimated_usdc_value=round(usdc_value, 2),
+                )
+            )
 
         return trades
 
@@ -478,7 +552,7 @@ class StrategyRunner:
             vault_address=vault_address,
             decision_type=DecisionType.REBALANCE,
             trigger="commit_phase",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             market_context={
                 "regime": regime,
                 "strategy_count": len(all_signals),
@@ -488,16 +562,17 @@ class StrategyRunner:
                 "vault": vault_address[:10],
                 "aum_usdc": portfolio.total_value_usdc,
                 "holdings": {
-                    h.symbol: {"weight": f"{h.weight:.1%}", "value_usdc": h.value_usdc}
-                    for h in portfolio.holdings
+                    h.symbol: {"weight": f"{h.weight:.1%}", "value_usdc": h.value_usdc} for h in portfolio.holdings
                 },
             },
             reasoning=f"[COMMIT] {reasoning}",
-            confidence=1.0 - (sum(1 for ss in all_signals for s in ss.signals if s.signal.value == "flat") /
-                              max(sum(len(ss.signals) for ss in all_signals), 1)),
+            confidence=1.0
+            - (
+                sum(1 for ss in all_signals for s in ss.signals if s.signal.value == "flat")
+                / max(sum(len(ss.signals) for ss in all_signals), 1)
+            ),
             trades_executed=[
-                {"symbol": t.symbol, "direction": t.direction.value, "amount": t.amount,
-                 "phase": "intended"}
+                {"symbol": t.symbol, "direction": t.direction.value, "amount": t.amount, "phase": "intended"}
                 for t in trades
             ],
             strategies_referenced=[ss.strategy_id for ss in all_signals],
@@ -518,7 +593,9 @@ class StrategyRunner:
                     block_num = receipt.blockNumber
                     logger.info(
                         "[tick %s] COMMIT anchored: tx=%s block=%d",
-                        tick_id, arc_tx[:16], block_num,
+                        tick_id,
+                        arc_tx[:16],
+                        block_num,
                     )
                     return arc_tx, block_num
                 except Exception as e:
@@ -554,15 +631,12 @@ class StrategyRunner:
             vault_address=vault_address,
             decision_type=decision_type,
             trigger=trigger,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             market_context={
                 "regime": regime,
                 "strategy_count": len(all_signals),
                 "signal_summary": {
-                    ss.paper_title[:30]: {
-                        s.asset: f"{s.signal.value}({s.weight:.0%})"
-                        for s in ss.signals[:5]
-                    }
+                    ss.paper_title[:30]: {s.asset: f"{s.signal.value}({s.weight:.0%})" for s in ss.signals[:5]}
                     for ss in all_signals
                 },
                 "phase": "reveal",
@@ -571,18 +645,17 @@ class StrategyRunner:
                 "vault": vault_address[:10],
                 "aum_usdc": portfolio.total_value_usdc,
                 "holdings": {
-                    h.symbol: {"weight": f"{h.weight:.1%}", "value_usdc": h.value_usdc}
-                    for h in portfolio.holdings
+                    h.symbol: {"weight": f"{h.weight:.1%}", "value_usdc": h.value_usdc} for h in portfolio.holdings
                 },
             },
             portfolio_after={"tx_hashes": tx_hashes or []},
             reasoning=f"[REVEAL] {reasoning}",
-            confidence=1.0 - (sum(1 for ss in all_signals for s in ss.signals if s.signal.value == "flat") /
-                              max(sum(len(ss.signals) for ss in all_signals), 1)),
-            trades_executed=[
-                {"symbol": t.symbol, "direction": t.direction.value, "amount": t.amount}
-                for t in trades
-            ],
+            confidence=1.0
+            - (
+                sum(1 for ss in all_signals for s in ss.signals if s.signal.value == "flat")
+                / max(sum(len(ss.signals) for ss in all_signals), 1)
+            ),
+            trades_executed=[{"symbol": t.symbol, "direction": t.direction.value, "amount": t.amount} for t in trades],
             strategies_referenced=[ss.strategy_id for ss in all_signals],
             consulted_paper_hashes=[],
             # Commit-reveal temporal binding
@@ -611,7 +684,9 @@ class StrategyRunner:
                         pass
                     logger.info(
                         "[tick %s] REVEAL anchored: tx=%s block=%s",
-                        tick_id, reveal_tx[:16], reveal_block,
+                        tick_id,
+                        reveal_tx[:16],
+                        reveal_block,
                     )
             except Exception as e:
                 logger.error("[tick %s] REVEAL publish FAILED: %s", tick_id, e)
@@ -642,9 +717,7 @@ class StrategyRunner:
                 "trade_tx_hash": tx_hashes[0] if tx_hashes else None,
                 "trade_block_number": trade_block,
                 "temporal_binding_valid": (
-                    commit_block is not None
-                    and trade_block is not None
-                    and commit_block < trade_block
+                    commit_block is not None and trade_block is not None and commit_block < trade_block
                 ),
             }
             await self.state.save_trace(off_chain_data)
@@ -675,15 +748,12 @@ class StrategyRunner:
             vault_address=vault_address,
             decision_type=decision_type,
             trigger=trigger,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             market_context={
                 "regime": regime,
                 "strategy_count": len(all_signals),
                 "signal_summary": {
-                    ss.paper_title[:30]: {
-                        s.asset: f"{s.signal.value}({s.weight:.0%})"
-                        for s in ss.signals[:5]
-                    }
+                    ss.paper_title[:30]: {s.asset: f"{s.signal.value}({s.weight:.0%})" for s in ss.signals[:5]}
                     for ss in all_signals
                 },
             },
@@ -691,20 +761,19 @@ class StrategyRunner:
                 "vault": vault_address[:10],
                 "aum_usdc": portfolio.total_value_usdc,
                 "holdings": {
-                    h.symbol: {"weight": f"{h.weight:.1%}", "value_usdc": h.value_usdc}
-                    for h in portfolio.holdings
+                    h.symbol: {"weight": f"{h.weight:.1%}", "value_usdc": h.value_usdc} for h in portfolio.holdings
                 },
             },
             portfolio_after={"tx_hashes": tx_hashes or []},
             reasoning=reasoning + (f" ERROR: {error}" if error else ""),
-            confidence=1.0 - (sum(1 for ss in all_signals for s in ss.signals if s.signal.value == "flat") /
-                              max(sum(len(ss.signals) for ss in all_signals), 1)),
-            trades_executed=[
-                {"symbol": t.symbol, "direction": t.direction.value, "amount": t.amount}
-                for t in trades
-            ],
+            confidence=1.0
+            - (
+                sum(1 for ss in all_signals for s in ss.signals if s.signal.value == "flat")
+                / max(sum(len(ss.signals) for ss in all_signals), 1)
+            ),
+            trades_executed=[{"symbol": t.symbol, "direction": t.direction.value, "amount": t.amount} for t in trades],
             strategies_referenced=[ss.strategy_id for ss in all_signals],
-            consulted_paper_hashes=consulted_hashes,
+            consulted_paper_hashes=[],
         )
 
         trace.compute_hash()

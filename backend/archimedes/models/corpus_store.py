@@ -7,9 +7,9 @@ Two tables:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Index, Integer, String, Text, Boolean
+from sqlalchemy import DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from archimedes.models.chat import Base
@@ -36,7 +36,9 @@ class PaperRecord(Base):
     topic_label: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc),
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(UTC),
     )
 
     __table_args__ = (

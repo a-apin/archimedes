@@ -11,8 +11,8 @@ import argparse
 import sys
 
 from .adapter import (
-    TRADING_DAYS,
     TOP_20_DJIA,
+    TRADING_DAYS,
     run_multi_seed,
     write_results_json,
     write_results_markdown,
@@ -49,11 +49,11 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.dry_run:
-        print(f"StockBench dry-run:")
+        print("StockBench dry-run:")
         print(f"  Window: {TRADING_DAYS} trading days")
         print(f"  Stocks: {len(TOP_20_DJIA)} (top-20 DJIA)")
         print(f"  Seeds: {args.seeds}")
-        print(f"  Starting capital: $100,000")
+        print("  Starting capital: $100,000")
         print()
         print("Would run the Archimedes Strategy Generation Agent through")
         print("StockBench's 4-step workflow (overview → analysis → decision → execution)")
@@ -73,13 +73,13 @@ def main() -> None:
     json_path = write_results_json(report)
     md_path = write_results_markdown(report)
 
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  Return: {report.return_pct_mean:+.2f}% ± {report.return_pct_stdev:.2f}")
     print(f"  Max DD: {report.max_dd_pct_mean:+.2f}% ± {report.max_dd_pct_stdev:.2f}")
     print(f"  Sortino: {report.sortino_mean:.4f} ± {report.sortino_stdev:.4f}")
     print(f"  Z-score: {report.composite_z_score:+.4f}")
     print(f"  Rank: #{report.rank} vs. 14 published baselines")
-    print(f"\nArtifacts:")
+    print("\nArtifacts:")
     print(f"  JSON: {json_path}")
     print(f"  Markdown: {md_path}")
 

@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 
-from archimedes.models.regime import Regime, RegimeClassification
+from archimedes.models.regime import RegimeClassification
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class AgentStateStore:
             "flat_pct": round(flat_pct, 2),
             "strategy_count": len(all_signals),
             "signals": signal_summary,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "source": "strategy_consensus",
         }
         await r.set(KEY_REGIME, json.dumps(data))
@@ -95,7 +95,7 @@ class AgentStateStore:
 
     async def save_heartbeat(self) -> None:
         r = await self._get_redis()
-        await r.set(KEY_HEARTBEAT, datetime.now(timezone.utc).isoformat())
+        await r.set(KEY_HEARTBEAT, datetime.now(UTC).isoformat())
 
     async def get_heartbeat(self) -> str | None:
         r = await self._get_redis()
@@ -107,7 +107,7 @@ class AgentStateStore:
     async def save_last_rebalance(self, vault_address: str) -> None:
         r = await self._get_redis()
         key = f"{KEY_LAST_REBALANCE_PREFIX}{vault_address.lower()}"
-        await r.set(key, datetime.now(timezone.utc).isoformat())
+        await r.set(key, datetime.now(UTC).isoformat())
 
     async def get_last_rebalance(self, vault_address: str) -> datetime | None:
         r = await self._get_redis()
@@ -122,11 +122,13 @@ class AgentStateStore:
     async def save_event(self, event_type: str, data: dict) -> None:
         """Append an event to the agent event log (capped list)."""
         r = await self._get_redis()
-        entry = json.dumps({
-            "type": event_type,
-            "data": data,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        entry = json.dumps(
+            {
+                "type": event_type,
+                "data": data,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        )
         await r.lpush("archimedes:agent:events", entry)
         await r.ltrim("archimedes:agent:events", 0, 99)  # keep last 100
 
@@ -141,16 +143,16 @@ class AgentStateStore:
         """Save a vault metrics snapshot. Keeps last 288 (= 24h at 5min)."""
         r = await self._get_redis()
         key = f"archimedes:vault:snapshots:{vault_address.lower()}"
-        entry = json.dumps({
-            **metrics,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        entry = json.dumps(
+            {
+                **metrics,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        )
         await r.lpush(key, entry)
         await r.ltrim(key, 0, 287)
 
-    async def get_vault_snapshots(
-        self, vault_address: str, count: int = 50
-    ) -> list[dict]:
+    async def get_vault_snapshots(self, vault_address: str, count: int = 50) -> list[dict]:
         r = await self._get_redis()
         key = f"archimedes:vault:snapshots:{vault_address.lower()}"
         raw = await r.lrange(key, 0, count - 1)
@@ -186,9 +188,9 @@ class AgentStateStore:
                 dt = datetime.fromisoformat(ts)
                 score = dt.timestamp()
             except (ValueError, TypeError):
-                score = datetime.now(timezone.utc).timestamp()
+                score = datetime.now(UTC).timestamp()
         else:
-            score = datetime.now(timezone.utc).timestamp()
+            score = datetime.now(UTC).timestamp()
 
         await r.zadd(KEY_TRACE_INDEX, {trace_hash: score})
         logger.debug("Saved trace %s to Redis", trace_hash[:16])
@@ -223,7 +225,7 @@ class AgentStateStore:
 
         # Get all trace hashes sorted by timestamp (newest first)
         all_hashes = await r.zrevrange(KEY_TRACE_INDEX, 0, -1)
-        total_all = len(all_hashes)
+        len(all_hashes)
 
         # Load and filter
         traces: list[dict] = []

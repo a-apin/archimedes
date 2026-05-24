@@ -36,61 +36,76 @@ _ANN = 252
 
 # ── Pure-numpy normal CDF (Zelen & Severo rational approximation) ─────────────
 
+
 def _norm_cdf(x: float) -> float:
     t = 1.0 / (1.0 + 0.2316419 * abs(x))
-    poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937
-           + t * (-1.821255978 + t * 1.330274429))))
+    poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
     p = 1.0 - (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x * x) * poly
     return p if x >= 0 else 1.0 - p
 
 
 def _norm_ppf(p: float) -> float:
     """Rational approximation (Acklam, max error < 1.2e-7)."""
-    a = [-3.969683028665376e+01, 2.209460984245205e+02,
-         -2.759285104469687e+02, 1.383577518672690e+02,
-         -3.066479806614716e+01, 2.506628277459239e+00]
-    b = [-5.447609879822406e+01, 1.615858368580409e+02,
-         -1.556989798598866e+02, 6.680131188771972e+01,
-         -1.328068155288572e+01]
-    c = [-7.784894002430293e-03, -3.223964580411365e-01,
-         -2.400758277161838e+00, -2.549732539343734e+00,
-          4.374664141464968e+00, 2.938163982698783e+00]
-    d = [7.784695709041462e-03, 3.224671290700398e-01,
-         2.445134137142996e+00, 3.754408661907416e+00]
+    a = [
+        -3.969683028665376e01,
+        2.209460984245205e02,
+        -2.759285104469687e02,
+        1.383577518672690e02,
+        -3.066479806614716e01,
+        2.506628277459239e00,
+    ]
+    b = [
+        -5.447609879822406e01,
+        1.615858368580409e02,
+        -1.556989798598866e02,
+        6.680131188771972e01,
+        -1.328068155288572e01,
+    ]
+    c = [
+        -7.784894002430293e-03,
+        -3.223964580411365e-01,
+        -2.400758277161838e00,
+        -2.549732539343734e00,
+        4.374664141464968e00,
+        2.938163982698783e00,
+    ]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e00, 3.754408661907416e00]
     p_lo, p_hi = 0.02425, 1 - 0.02425
     if p_lo <= p <= p_hi:
         q = p - 0.5
         r = q * q
-        num = (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5]) * q
-        den = (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1)
+        num = (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q
+        den = ((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1
         return num / den
     q = math.sqrt(-2 * math.log(p if p < p_lo else 1 - p))
     sign = 1.0 if p < p_lo else -1.0
-    num = (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])
-    den = ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)
+    num = ((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]
+    den = (((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1
     return sign * num / den
 
 
 # ── Stats helpers (no scipy) ──────────────────────────────────────────────────
 
+
 def _skew(arr: np.ndarray) -> float:
     m = arr - arr.mean()
-    m2 = float(np.mean(m ** 2))
+    m2 = float(np.mean(m**2))
     if m2 == 0:
         return 0.0
-    return float(np.mean(m ** 3)) / m2 ** 1.5
+    return float(np.mean(m**3)) / m2**1.5
 
 
 def _raw_kurtosis(arr: np.ndarray) -> float:
     """Pearson (raw) kurtosis — normal distribution = 3. DSR formula requires this."""
     m = arr - arr.mean()
-    m2 = float(np.mean(m ** 2))
+    m2 = float(np.mean(m**2))
     if m2 == 0:
         return 0.0
-    return float(np.mean(m ** 4)) / m2 ** 2
+    return float(np.mean(m**4)) / m2**2
 
 
 # ── Rigor metrics ─────────────────────────────────────────────────────────────
+
 
 def compute_dsr(
     daily_returns: list[float],
@@ -112,11 +127,10 @@ def compute_dsr(
     if trials == 1:
         e_max = 0.0
     else:
-        e_max = ((1 - _EULER) * _norm_ppf(1 - 1 / trials)
-                 + _EULER * _norm_ppf(1 - 1 / (trials * math.e)))
+        e_max = (1 - _EULER) * _norm_ppf(1 - 1 / trials) + _EULER * _norm_ppf(1 - 1 / (trials * math.e))
 
     sr_zero = math.sqrt(1.0 / (n - 1)) * e_max
-    denom_sq = 1.0 - g3 * sr_hat + ((g4 - 1.0) / 4.0) * sr_hat ** 2
+    denom_sq = 1.0 - g3 * sr_hat + ((g4 - 1.0) / 4.0) * sr_hat**2
     if denom_sq <= 0:
         return None, None
 
@@ -134,7 +148,7 @@ def compute_oos_sharpe(
     arr = np.asarray(daily_returns, dtype=float)
     if len(arr) < 10:
         return None
-    oos = arr[int(len(arr) * train_fraction):]
+    oos = arr[int(len(arr) * train_fraction) :]
     if len(oos) < 5 or float(np.ptp(oos)) == 0.0:
         return None
     sigma = float(oos.std(ddof=1))
@@ -155,7 +169,7 @@ def compute_kelly(
     if sigma_d <= 0:
         return None
     mu_ann = float(arr.mean()) * _ANN
-    sigma_sq_ann = sigma_d ** 2 * _ANN
+    sigma_sq_ann = sigma_d**2 * _ANN
     excess = mu_ann - rf_annual
     if excess <= 0:
         return 0.0
@@ -163,6 +177,7 @@ def compute_kelly(
 
 
 # ── Rigor gate ────────────────────────────────────────────────────────────────
+
 
 def _compute_passes_rigor_gate(
     passes_validation: bool,
@@ -200,12 +215,11 @@ def _compute_passes_rigor_gate(
         return False
     if oos_sharpe is None:
         return False
-    if full_sharpe is not None and full_sharpe > 0 and oos_sharpe / full_sharpe < 0.5:
-        return False
-    return True
+    return not (full_sharpe is not None and full_sharpe > 0 and oos_sharpe / full_sharpe < 0.5)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
 
 def main(write: bool = False) -> None:
     try:
@@ -220,8 +234,7 @@ def main(write: bool = False) -> None:
 
     print(f"Fetching SPY {BACKTEST_START} → {BACKTEST_END}…")
     prices = fetch_ohlcv("SPY", BACKTEST_START, BACKTEST_END)
-    print(f"  {len(prices)} bars  "
-          f"({prices.index[0].date()} → {prices.index[-1].date()})")
+    print(f"  {len(prices)} bars  ({prices.index[0].date()} → {prices.index[-1].date()})")
 
     print("Running buy-and-hold backtest…")
     result = run_backtest(
@@ -231,10 +244,12 @@ def main(write: bool = False) -> None:
         transaction_cost_bps=TX_COST_BPS,
         slippage_bps=0,
     )
-    print(f"  CAGR: {result.cagr:.2%}"
-          f"  Sharpe: {result.sharpe_ratio:.4f}"
-          f"  Max DD: {result.max_drawdown_pct:.2f}%"
-          f"  Final: ${result.final_value:,.0f}")
+    print(
+        f"  CAGR: {result.cagr:.2%}"
+        f"  Sharpe: {result.sharpe_ratio:.4f}"
+        f"  Max DD: {result.max_drawdown_pct:.2f}%"
+        f"  Final: ${result.final_value:,.0f}"
+    )
 
     daily = result.daily_returns
     dsr, dsr_p = compute_dsr(daily, num_trials)
@@ -251,9 +266,7 @@ def main(write: bool = False) -> None:
 
     entry = {
         "sharpe_ratio": round(result.sharpe_ratio, 10) if result.sharpe_ratio is not None else None,
-        "sortino_ratio": (
-            round(result.sortino_ratio, 10) if result.sortino_ratio is not None else None
-        ),
+        "sortino_ratio": (round(result.sortino_ratio, 10) if result.sortino_ratio is not None else None),
         "max_drawdown": round(max_dd_frac, 16),
         "cagr": round(result.cagr, 16) if result.cagr is not None else None,
         "calmar_ratio": calmar,
@@ -279,9 +292,11 @@ def main(write: bool = False) -> None:
         "pbo_score": existing.get("pbo_score"),
         "passes_rigor_gate": _compute_passes_rigor_gate(
             passes_validation=(
-                result.sharpe_ratio is not None and result.sharpe_ratio > 0.5
+                result.sharpe_ratio is not None
+                and result.sharpe_ratio > 0.5
                 and max_dd_frac < 0.5
-                and result.cagr is not None and result.cagr < 10.0
+                and result.cagr is not None
+                and result.cagr < 10.0
                 and (result.total_trades < 2 or result.total_trades >= 10)
             ),
             dsr=dsr,
@@ -300,9 +315,7 @@ def main(write: bool = False) -> None:
 
     if write:
         fixtures["pipeline_buy_hold"] = entry
-        _FIXTURE_PATH.write_text(
-            json.dumps(fixtures, indent=2) + "\n", encoding="utf-8"
-        )
+        _FIXTURE_PATH.write_text(json.dumps(fixtures, indent=2) + "\n", encoding="utf-8")
         print(f"\n✓ Written to {_FIXTURE_PATH}")
 
 

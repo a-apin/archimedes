@@ -6,12 +6,10 @@ Mocks chain_client and circle_signer to avoid requiring live Arc testnet.
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from web3 import Web3
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -24,9 +22,7 @@ def mock_loader():
 
     # Default: isRegistered returns False
     mock_contract.functions.isRegistered.return_value.call = AsyncMock(return_value=False)
-    mock_contract.functions.registerStrategy.return_value.build_transaction = AsyncMock(
-        return_value={"gas": 300_000}
-    )
+    mock_contract.functions.registerStrategy.return_value.build_transaction = AsyncMock(return_value={"gas": 300_000})
     mock_contract.functions.strategyCount.return_value.call = AsyncMock(return_value=0)
 
     loader.strategy_registry = mock_contract
@@ -37,6 +33,7 @@ def mock_loader():
 def publisher(mock_loader):
     """Create a StrategyPublisher with a mocked loader."""
     from archimedes.chain.strategy_publisher import StrategyPublisher
+
     return StrategyPublisher(loader=mock_loader)
 
 
@@ -51,6 +48,7 @@ def _keccak(text: str) -> str:
 def test_hash_regime_tag():
     """Regime tag is hashed via keccak256."""
     from archimedes.chain.strategy_publisher import StrategyPublisher
+
     pub = StrategyPublisher.__new__(StrategyPublisher)
     h = pub._hash_regime_tag("bull")
     assert len(h) == 32
@@ -60,6 +58,7 @@ def test_hash_regime_tag():
 def test_hash_regime_tag_none():
     """None regime tag hashes to 'unclassified'."""
     from archimedes.chain.strategy_publisher import StrategyPublisher
+
     pub = StrategyPublisher.__new__(StrategyPublisher)
     h = pub._hash_regime_tag(None)
     assert h == Web3.keccak(text="unclassified")
@@ -68,6 +67,7 @@ def test_hash_regime_tag_none():
 def test_hash_paper_corpus():
     """Paper corpus hash is keccak256 of sorted concatenated hashes."""
     from archimedes.chain.strategy_publisher import StrategyPublisher
+
     pub = StrategyPublisher.__new__(StrategyPublisher)
     papers = ["0xaaa", "0xbbb"]
     h = pub._hash_paper_corpus(papers)
@@ -78,6 +78,7 @@ def test_hash_paper_corpus():
 def test_hash_paper_corpus_empty():
     """Empty paper list hashes to keccak256 of empty bytes."""
     from archimedes.chain.strategy_publisher import StrategyPublisher
+
     pub = StrategyPublisher.__new__(StrategyPublisher)
     h = pub._hash_paper_corpus([])
     assert h == Web3.keccak(b"")
@@ -86,6 +87,7 @@ def test_hash_paper_corpus_empty():
 def test_hash_paper_corpus_sorted():
     """Paper hashes are sorted before hashing (deterministic regardless of input order)."""
     from archimedes.chain.strategy_publisher import StrategyPublisher
+
     pub = StrategyPublisher.__new__(StrategyPublisher)
     h1 = pub._hash_paper_corpus(["0xbbb", "0xaaa"])
     h2 = pub._hash_paper_corpus(["0xaaa", "0xbbb"])
@@ -136,9 +138,7 @@ async def test_anchor_returns_none_when_no_config(mock_signer, mock_client, publ
 @pytest.mark.asyncio
 @patch("archimedes.chain.strategy_publisher.chain_client")
 @patch("archimedes.chain.strategy_publisher.circle_signer")
-async def test_anchor_skips_when_registry_not_configured(
-    mock_signer, mock_client, publisher
-):
+async def test_anchor_skips_when_registry_not_configured(mock_signer, mock_client, publisher):
     """anchor skips when registry address is empty."""
     mock_client.settings.strategy_registry_address = ""
     mock_signer.is_configured = False
@@ -217,9 +217,7 @@ async def test_strategy_count_returns_count(mock_client, publisher):
     """strategy_count returns on-chain count."""
     mock_client.settings.strategy_registry_address = "0x728C264d0681b71c4Cc1D26a4fb14Ec29D9a90e4"
     mock_client.to_checksum.return_value = "0x728C264d0681b71c4Cc1D26a4fb14Ec29D9a90e4"
-    publisher.loader.strategy_registry.functions.strategyCount.return_value.call = AsyncMock(
-        return_value=3
-    )
+    publisher.loader.strategy_registry.functions.strategyCount.return_value.call = AsyncMock(return_value=3)
     result = await publisher.strategy_count()
     assert result == 3
 
@@ -230,6 +228,7 @@ async def test_strategy_count_returns_count(mock_client, publisher):
 def test_strategy_record_has_on_chain_fields():
     """StrategyRecord has on_chain_registration_tx and on_chain_registration_block columns."""
     from archimedes.models.strategy_store import StrategyRecord
+
     # Check the column is defined on the class (SQLAlchemy mapped)
     assert "on_chain_registration_tx" in StrategyRecord.__table__.columns
     assert "on_chain_registration_block" in StrategyRecord.__table__.columns
@@ -238,6 +237,7 @@ def test_strategy_record_has_on_chain_fields():
 def test_strategy_to_dict_includes_on_chain_fields():
     """to_dict includes the on-chain registration fields."""
     from archimedes.models.strategy_store import StrategyRecord
+
     record = StrategyRecord(
         id="test123",
         content_hash="0xabc",
@@ -259,7 +259,8 @@ def test_strategy_to_dict_includes_on_chain_fields():
 
 def test_paper_corpus_hash_is_deterministic_with_hashseed_variation():
     """Paper corpus hash is deterministic regardless of PYTHONHASHSEED."""
-    import subprocess, sys
+    import subprocess
+    import sys
 
     code = (
         "from web3 import Web3; "
@@ -271,7 +272,8 @@ def test_paper_corpus_hash_is_deterministic_with_hashseed_variation():
     for seed in ["0", "1", "42", "12345", "random"]:
         r = subprocess.run(
             [sys.executable, "-c", code],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
             env={**__import__("os").environ, "PYTHONHASHSEED": seed},
         )
         results.add(r.stdout.strip())

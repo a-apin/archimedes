@@ -15,7 +15,6 @@ pulls only new ones starting from the newest.
 import argparse
 import json
 import logging
-import sys
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -26,8 +25,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 QFIN_CATEGORIES = [
-    "q-fin.CP", "q-fin.EC", "q-fin.GN", "q-fin.MF",
-    "q-fin.PM", "q-fin.PR", "q-fin.RM", "q-fin.ST", "q-fin.TR",
+    "q-fin.CP",
+    "q-fin.EC",
+    "q-fin.GN",
+    "q-fin.MF",
+    "q-fin.PM",
+    "q-fin.PR",
+    "q-fin.RM",
+    "q-fin.ST",
+    "q-fin.TR",
 ]
 
 API_BASE = "https://export.arxiv.org/api/query"
@@ -118,18 +124,20 @@ def fetch_batch(start: int, max_results: int) -> list[dict]:
 
         pdf_url = arxiv_url.replace("/abs/", "/pdf/") + ".pdf"
 
-        papers.append({
-            "arxiv_id": arxiv_id,
-            "title": title,
-            "authors": authors,
-            "abstract": abstract,
-            "primary_category": primary_category,
-            "categories": categories,
-            "published": published,
-            "updated": updated,
-            "pdf_url": pdf_url,
-            "pdf_sha256": None,
-        })
+        papers.append(
+            {
+                "arxiv_id": arxiv_id,
+                "title": title,
+                "authors": authors,
+                "abstract": abstract,
+                "primary_category": primary_category,
+                "categories": categories,
+                "published": published,
+                "updated": updated,
+                "pdf_url": pdf_url,
+                "pdf_sha256": None,
+            }
+        )
 
     return papers, total
 
@@ -198,7 +206,10 @@ def main():
         total_fetched += len(papers)
         logger.info(
             "Batch: %d fetched, %d new, total unique: %d / %d available",
-            len(papers), batch_new, len(all_papers), total_available,
+            len(papers),
+            batch_new,
+            len(all_papers),
+            total_available,
         )
 
         if batch_new == 0 and start > 0:
@@ -225,7 +236,9 @@ def main():
 
     logger.info(
         "Done: %d papers written to %s (%d new)",
-        len(sorted_papers), output_path, new_count,
+        len(sorted_papers),
+        output_path,
+        new_count,
     )
 
 

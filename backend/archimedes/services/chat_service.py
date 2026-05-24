@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from archimedes.db import get_session
 from archimedes.models.chat import ChatMessage
@@ -47,19 +46,13 @@ class ChatService:
         """Get messages for a vault, newest last (chat scroll-up pattern)."""
         session = get_session()
         try:
-            query = session.query(ChatMessage).filter(
-                ChatMessage.vault_address == vault_address.lower()
-            )
+            query = session.query(ChatMessage).filter(ChatMessage.vault_address == vault_address.lower())
 
             if before_id:
                 query = query.filter(ChatMessage.id < before_id)
 
             # Get up to `limit` messages, ordered oldest-first for display
-            messages = (
-                query.order_by(ChatMessage.created_at.desc())
-                .limit(limit)
-                .all()
-            )
+            messages = query.order_by(ChatMessage.created_at.desc()).limit(limit).all()
             # Reverse so newest is at the bottom
             messages.reverse()
             return [m.to_dict() for m in messages]
@@ -80,7 +73,7 @@ class ChatService:
                 wallet_address=wallet_address.lower(),
                 message=message,
                 is_ai=False,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
             session.add(msg)
             session.commit()
@@ -90,9 +83,7 @@ class ChatService:
 
             # Check for @archimedes mention — trigger AI response
             if "@archimedes" in message.lower():
-                ai_response = self._generate_ai_response(
-                    vault_address, message, wallet_address
-                )
+                ai_response = self._generate_ai_response(vault_address, message, wallet_address)
                 if ai_response:
                     result["_ai_response"] = ai_response
 
@@ -117,7 +108,7 @@ class ChatService:
                 wallet_address=AI_WALLET_ADDRESS,
                 message=message,
                 is_ai=True,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
             session.add(msg)
             session.commit()
@@ -145,7 +136,10 @@ class ChatService:
         """
         trade_summary = ""
         if trades:
-            trade_lines = [f"  • {t.get('direction','?').upper()} {t.get('amount','?')} {t.get('symbol','?')}" for t in trades[:5]]
+            trade_lines = [
+                f"  • {t.get('direction', '?').upper()} {t.get('amount', '?')} {t.get('symbol', '?')}"
+                for t in trades[:5]
+            ]
             trade_summary = "\n" + "\n".join(trade_lines)
 
         message = (
@@ -216,7 +210,11 @@ class ChatService:
                 ],
             )
 
-            ai_text = response.content[0].text.strip() if response.content else "I'm analyzing the portfolio. Give me a moment."
+            ai_text = (
+                response.content[0].text.strip()
+                if response.content
+                else "I'm analyzing the portfolio. Give me a moment."
+            )
             return self.post_ai_message(vault_address, ai_text, trigger="mention")
 
         except Exception:
@@ -246,11 +244,7 @@ class ChatService:
         """Get total message count for a vault."""
         session = get_session()
         try:
-            return (
-                session.query(ChatMessage)
-                .filter(ChatMessage.vault_address == vault_address.lower())
-                .count()
-            )
+            return session.query(ChatMessage).filter(ChatMessage.vault_address == vault_address.lower()).count()
         finally:
             session.close()
 

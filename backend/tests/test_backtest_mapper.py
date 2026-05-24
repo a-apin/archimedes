@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from archimedes.services.backtest_mapper import (
     AnalyticsArtifactModel,
     map_artifact_to_backtest_result,

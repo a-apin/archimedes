@@ -15,13 +15,9 @@ Components exercised:
 This is the pitch's marquee feature: verifiable AI decision provenance.
 """
 
-import pytest
-import hashlib
-import json
 from datetime import datetime
 
-from archimedes.models.trace import ReasoningTrace, DecisionType
-
+from archimedes.models.trace import DecisionType, ReasoningTrace
 
 # ─────────────────────────────────────────────────────────────
 # 4.1 Trace generation (Chuan's agent)
@@ -213,9 +209,7 @@ class TestTraceAPI:
 
     async def test_list_traces_filter_by_vault(self, client, vault_address):
         """GET /api/traces/?vault_address=0x... filters by vault."""
-        response = await client.get(
-            "/api/traces/", params={"vault_address": vault_address}
-        )
+        response = await client.get("/api/traces/", params={"vault_address": vault_address})
         assert response.status_code == 200
         for trace in response.json()["traces"]:
             assert trace["vault_address"] == vault_address

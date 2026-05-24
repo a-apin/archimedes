@@ -18,12 +18,9 @@ Preconditions:
   - User has approved SyntheticFactory to spend their USDC
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime
 
-from archimedes.models.asset import AssetPrice, MarketSnapshot
-
+from archimedes.models.asset import AssetPrice
 
 # ─────────────────────────────────────────────────────────────
 # 1.1 Oracle price push (Marten's component)

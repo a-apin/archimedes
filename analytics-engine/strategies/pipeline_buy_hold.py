@@ -1,6 +1,5 @@
 import backtrader as bt
 
-
 PAPER_ARXIV_ID = None
 PAPER_TITLE = "Buy-and-Hold Baseline"
 PAPER_AUTHORS: list[str] = []
@@ -28,7 +27,7 @@ BACKTEST_CAGR = 0.0864
 BACKTEST_MAX_DD = 0.5627
 BACKTEST_WIN_RATE = None  # Single entry, held to end; no closed-trade win rate
 BACKTEST_CALMAR = 0.1535
-BACKTEST_CORR_SPY = 1.0   # IS SPY
+BACKTEST_CORR_SPY = 1.0  # IS SPY
 METHODOLOGY_SUMMARY = (
     "Allocate the full available cash to the asset on the first bar; hold "
     "to the end of the period. Long-only baseline against which "

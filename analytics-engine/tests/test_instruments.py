@@ -1,4 +1,7 @@
-from archimedes_analytics_engine.instruments import OPERATION_TO_SYMBOL, resolve_operations
+from archimedes_analytics_engine.instruments import (
+    OPERATION_TO_SYMBOL,
+    resolve_operations,
+)
 
 
 def test_operations_include_required_assets() -> None:
@@ -14,6 +17,6 @@ def test_operations_include_required_assets() -> None:
 def test_resolve_operations_rejects_unknown() -> None:
     try:
         resolve_operations(["SPY", "BAD"])
-        assert False, "Expected ValueError"
+        raise AssertionError("Expected ValueError")
     except ValueError as exc:
         assert "Unsupported operation" in str(exc)

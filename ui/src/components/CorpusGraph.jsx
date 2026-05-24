@@ -11,14 +11,14 @@ const CLUSTER_PALETTE = [
 ]
 
 /**
- * SPECTER2 similarity scatter plot.
+ * SPECTER2 similarity force-directed graph.
  *
- * Fetches from ``/api/corpus/graph`` (honest KB-pipeline endpoint).
- * Response shape: ``{points: [{arxiv_id, x, y, cluster_id}], topics, cluster_count, point_count}``.
- * Each point is a paper projected into 2D via UMAP. Colored by cluster_id.
- * Topics provide human-readable labels per cluster.
+ * Fetches from ``/api/papers/corpus/graph`` and renders an interactive
+ * force-directed layout. Nodes are colored by ``cluster_id`` (or category
+ * as fallback). Node size is driven by edge count (degree). Hover shows
+ * arxiv_id + title tooltip.
  *
- * Returns 503 when no KB artifact exists yet — renders explicit empty state.
+ * Falls back gracefully when the endpoint returns empty data or 503.
  */
 export default function CorpusGraph() {
   const [data, setData] = useState(null)
@@ -31,7 +31,7 @@ export default function CorpusGraph() {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    fetch(`${API_BASE}/api/corpus/graph`)
+    fetch(`${API_BASE}/api/papers/corpus/graph?sample=1000&lod=1`)
       .then(r => {
         if (r.status === 503) throw new Error('KB pipeline still running — first artifact pending')
         if (!r.ok) throw new Error(r.statusText)
@@ -43,32 +43,46 @@ export default function CorpusGraph() {
     return () => { cancelled = true }
   }, [])
 
-  // Build cluster → color map from the topics dict or cluster_id values
+  // Build a lookup for cluster → color
   const clusterColorMap = useMemo(() => {
-    if (!data?.points) return {}
-    const clusters = [...new Set(data.points.map(p => p.cluster_id ?? 'default'))]
+    if (!data?.nodes) return {}
+    const clusters = [...new Set(data.nodes.map(n => n.cluster || 'default'))]
     const map = {}
     clusters.forEach((c, i) => { map[c] = CLUSTER_PALETTE[i % CLUSTER_PALETTE.length] })
     return map
   }, [data])
 
-  // Transform scatter points into react-force-graph-2d node/link format
+  // Build adjacency for degree calculation
+  const degreeMap = useMemo(() => {
+    const deg = {}
+    if (data?.nodes) data.nodes.forEach(n => { deg[n.id] = 0 })
+    if (data?.edges) data.edges.forEach(e => {
+      deg[e.source] = (deg[e.source] || 0) + 1
+      deg[e.target] = (deg[e.target] || 0) + 1
+    })
+    return deg
+  }, [data])
+
+  // Transform data for react-force-graph-2d
   const graphData = useMemo(() => {
-    if (!data?.points) return { nodes: [], links: [] }
+    if (!data?.nodes) return { nodes: [], links: [] }
+    const maxDeg = Math.max(1, ...Object.values(degreeMap))
     return {
-      nodes: data.points.map(p => ({
-        id: p.arxiv_id,
-        label: p.arxiv_id,
-        cluster: p.cluster_id ?? 'default',
-        x: p.x,
-        y: p.y,
-        val: 2,
-        color: clusterColorMap[p.cluster_id ?? 'default'] || CLUSTER_PALETTE[0],
+      nodes: data.nodes.map(n => ({
+        id: n.id,
+        label: n.title || n.id,
+        cluster: n.cluster || 'default',
+        val: 1 + (degreeMap[n.id] || 0) / maxDeg * 4,  // node size 1–5
+        color: clusterColorMap[n.cluster || 'default'] || CLUSTER_PALETTE[0],
+        categories: n.categories || [],
       })),
-      // No edges in UMAP scatter — similarity is encoded in spatial proximity
-      links: [],
+      links: (data.edges || []).map(e => ({
+        source: e.source,
+        target: e.target,
+        value: e.weight || 1,
+      })),
     }
-  }, [data, clusterColorMap])
+  }, [data, clusterColorMap, degreeMap])
 
   // Custom node painting
   const nodeCanvasObject = useCallback((node, ctx, globalScale) => {
@@ -117,7 +131,7 @@ export default function CorpusGraph() {
     )
   }
 
-  if (!data || !data.points || data.points.length === 0) {
+  if (!data || data.status === 'empty' || !data.nodes || data.nodes.length === 0) {
     return (
       <div className="corpus-graph-empty" style={{ padding: 40, textAlign: 'center' }}>
         <div className="caption">No papers in corpus yet.</div>
@@ -130,9 +144,16 @@ export default function CorpusGraph() {
 
   return (
     <div ref={containerRef} className="corpus-graph-wrapper" style={{ position: 'relative' }}>
+      {data.note && (
+        <div className="corpus-note caption" style={{ padding: '8px 12px', color: 'var(--text-4)', fontSize: '0.8rem' }}>
+          {data.note}
+        </div>
+      )}
+
       <div className="corpus-graph-stats flex gap-2 flex-wrap mb-2" style={{ padding: '0 12px' }}>
-        <span className="tag tag-muted">{data.point_count ?? data.points.length} papers</span>
-        <span className="tag tag-muted">{data.cluster_count ?? Object.keys(data.topics || {}).length} clusters</span>
+        <span className="tag tag-muted">{data.sampled || data.nodes.length} nodes</span>
+        <span className="tag tag-muted">{data.edges?.length || 0} edges</span>
+        <span className="tag tag-muted">{data.total_papers?.toLocaleString()} total papers</span>
       </div>
 
       {/* Force graph */}
@@ -152,7 +173,7 @@ export default function CorpusGraph() {
         height={500}
       />
 
-      {/* Legend — cluster IDs + topic labels when available */}
+      {/* Legend */}
       <div className="corpus-graph-legend" style={{
         position: 'absolute', top: 48, right: 12,
         background: 'rgba(10,10,16,0.85)', borderRadius: 8, padding: '10px 14px',
@@ -163,7 +184,7 @@ export default function CorpusGraph() {
           <div key={cluster} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
             <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
             <span style={{ color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {data.topics?.[cluster] || `Cluster ${cluster}`}
+              {cluster.length > 28 ? `${cluster.slice(0, 28)}…` : cluster}
             </span>
           </div>
         ))}
@@ -177,10 +198,10 @@ export default function CorpusGraph() {
           border: '1px solid var(--glass-border)', maxWidth: 360, pointerEvents: 'none',
         }}>
           <div className="mono caption" style={{ color: 'var(--text-4)', marginBottom: 4 }}>{hoverNode.id}</div>
-          <div className="body" style={{ color: 'var(--text-1)', lineHeight: 1.4 }}>Paper {hoverNode.id}</div>
-          {hoverNode.cluster != null && (
+          <div className="body" style={{ color: 'var(--text-1)', lineHeight: 1.4 }}>{hoverNode.label}</div>
+          {hoverNode.cluster && (
             <div className="caption mt-1" style={{ color: clusterColorMap[hoverNode.cluster] }}>
-              Cluster: {data.topics?.[hoverNode.cluster] || hoverNode.cluster}
+              Cluster: {hoverNode.cluster}
             </div>
           )}
         </div>

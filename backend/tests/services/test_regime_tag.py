@@ -10,16 +10,12 @@ Validates:
 
 from __future__ import annotations
 
-import ast
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
-
 from archimedes.models.paper_ref import PaperRef
-from archimedes.models.strategy import Strategy, StrategyStatus
+from archimedes.models.strategy import Strategy
 from archimedes.services.strategy_provider import _read_module_constants, _to_strategy
-
 
 STRATEGIES_DIR = Path(__file__).resolve().parents[3] / "analytics-engine" / "strategies"
 VALID_TAGS = {"bull", "bear", "regime_neutral"}
@@ -81,7 +77,7 @@ def test_to_strategy_parses_regime_tag_from_metadata(tmp_path):
     fake_strategy = tmp_path / "test_strategy.py"
     fake_strategy.write_text(
         'PAPER_TITLE = "Test"\n'
-        'PAPER_AUTHORS = []\n'
+        "PAPER_AUTHORS = []\n"
         'METHODOLOGY_SUMMARY = "test"\n'
         'METHODOLOGY_TEXT = "test methodology"\n'
         'REGIME_TAG = "bull"\n'
@@ -97,7 +93,7 @@ def test_to_strategy_rejects_invalid_regime_tag(tmp_path):
     fake_strategy = tmp_path / "bad_strategy.py"
     fake_strategy.write_text(
         'PAPER_TITLE = "Bad"\n'
-        'PAPER_AUTHORS = []\n'
+        "PAPER_AUTHORS = []\n"
         'METHODOLOGY_SUMMARY = "bad"\n'
         'METHODOLOGY_TEXT = "bad methodology"\n'
         'REGIME_TAG = "invalid_tag"\n'
@@ -112,7 +108,7 @@ def test_to_strategy_rejects_missing_regime_tag(tmp_path):
     fake_strategy = tmp_path / "no_tag_strategy.py"
     fake_strategy.write_text(
         'PAPER_TITLE = "No Tag"\n'
-        'PAPER_AUTHORS = []\n'
+        "PAPER_AUTHORS = []\n"
         'METHODOLOGY_SUMMARY = "no tag"\n'
         'METHODOLOGY_TEXT = "no tag methodology"\n'
     )

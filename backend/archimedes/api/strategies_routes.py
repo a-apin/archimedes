@@ -7,28 +7,34 @@ construct, generate/fusion.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
+from datetime import UTC
 
 from fastapi import APIRouter, Query
 
-from archimedes.api.schemas import (
-    StrategyListResponse,
-    StrategyResponse,
-    StrategySignalResponse,
-    StrategySignalsResponse,
-    SignalResponse,
+from archimedes.api._route_helpers import (
+    architect,
+    persist_trace_off_chain,
+    strategy_provider,
 )
-from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.api.architect_schemas import (
     ConstructionSelectionResponse,
     ConstructionTraceResponse,
     StrategyConstructionRequest,
     StrategyConstructionResponse,
 )
-from archimedes.services.strategy_guardrail import apply_guardrail
+from archimedes.api.schemas import (
+    SignalResponse,
+    StrategyListResponse,
+    StrategyResponse,
+    StrategySignalResponse,
+    StrategySignalsResponse,
+)
+from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.services.construction_trace import build_construction_trace
-from archimedes.api._route_helpers import strategy_provider, architect, persist_trace_off_chain
+from archimedes.services.strategy_guardrail import apply_guardrail
 
 strategies_router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 
@@ -36,6 +42,7 @@ strategies_router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 def _to_strategy_response(s: Strategy) -> StrategyResponse:
     """Map StrategyPassport + persisted BacktestResult to API schema."""
     from archimedes.api.schemas import PaperRefResponse
+
     bt = strategy_provider.get_backtest_result(s.id)
     has_real = s.real_sharpe is not None
 
@@ -95,11 +102,13 @@ def _to_strategy_response(s: Strategy) -> StrategyResponse:
         sharpe_ci_lower=s.sharpe_ci_lower,
         sharpe_ci_upper=s.sharpe_ci_upper,
         backtest_start=(
-            s.real_backtest_start if has_real and s.real_backtest_start
+            s.real_backtest_start
+            if has_real and s.real_backtest_start
             else (bt.backtest_start.isoformat() if bt and bt.backtest_start else None)
         ),
         backtest_end=(
-            s.real_backtest_end if has_real and s.real_backtest_end
+            s.real_backtest_end
+            if has_real and s.real_backtest_end
             else (bt.backtest_end.isoformat() if bt and bt.backtest_end else None)
         ),
         regime_tag=s.regime_tag,
@@ -129,9 +138,9 @@ async def list_strategies(
 @strategies_router.get("/generated")
 async def list_generated_strategies(limit: int = Query(50, ge=1, le=200)):
     """List fusion/architect-generated strategies from the strategy_store table."""
-    from sqlalchemy.orm import Session as _Session
-    from archimedes.models.strategy_store import StrategyRecord
+
     from archimedes.db import get_session
+    from archimedes.models.strategy_store import StrategyRecord
 
     rows: list[dict] = []
     try:
@@ -146,6 +155,7 @@ async def list_generated_strategies(limit: int = Query(50, ge=1, le=200)):
             rows = [r.to_dict() for r in records]
     except Exception as exc:
         import logging as _logging
+
         _logging.getLogger(__name__).warning("list_generated_strategies failed: %s", exc)
         rows = []
     return {"strategies": rows, "total": len(rows)}
@@ -154,16 +164,19 @@ async def list_generated_strategies(limit: int = Query(50, ge=1, le=200)):
 @strategies_router.get("/signals", response_model=StrategySignalsResponse)
 async def get_strategy_signals():
     """Evaluate all strategies against live market data and return signals."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from archimedes.services.strategy_signal_evaluator import strategy_evaluator
 
     strategies = strategy_provider.list_strategies()
     from archimedes.chain.client import chain_client
+
     synth_assets = [sym for sym, addr in chain_client.settings.synth_addresses.items() if addr]
 
     all_signals = await asyncio.to_thread(
-        strategy_evaluator.evaluate_strategies, strategies, synth_assets,
+        strategy_evaluator.evaluate_strategies,
+        strategies,
+        synth_assets,
     )
 
     target_weights = strategy_evaluator.aggregate_signals(all_signals, usdc_floor=0.20)
@@ -181,20 +194,22 @@ async def get_strategy_signals():
 
     strat_responses = []
     for ss in all_signals:
-        strat_responses.append(StrategySignalResponse(
-            strategy_id=ss.strategy_id,
-            paper_title=ss.paper_title,
-            signals=[
-                SignalResponse(
-                    asset=s.asset,
-                    signal=s.signal.value,
-                    weight=s.weight,
-                    reason=s.reason,
-                    strategy_name=s.strategy_name,
-                )
-                for s in ss.signals
-            ],
-        ))
+        strat_responses.append(
+            StrategySignalResponse(
+                strategy_id=ss.strategy_id,
+                paper_title=ss.paper_title,
+                signals=[
+                    SignalResponse(
+                        asset=s.asset,
+                        signal=s.signal.value,
+                        weight=s.weight,
+                        reason=s.reason,
+                        strategy_name=s.strategy_name,
+                    )
+                    for s in ss.signals
+                ],
+            )
+        )
 
     return StrategySignalsResponse(
         strategy_count=len(all_signals),
@@ -202,15 +217,16 @@ async def get_strategy_signals():
         confidence=round(1.0 - flat_pct, 2),
         target_weights=target_weights,
         strategies=strat_responses,
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
     )
 
 
 @strategies_router.get("/frontier")
 async def get_efficient_frontier():
     """Compute efficient frontier for all Tier-1 validated strategies."""
-    from archimedes.services.portfolio_optimizer import compute_efficient_frontier
     import numpy as np
+
+    from archimedes.services.portfolio_optimizer import compute_efficient_frontier
 
     strategies = strategy_provider.list_strategies()
     active = [s for s in strategies if s.passes_rigor_gate]
@@ -224,18 +240,10 @@ async def get_efficient_frontier():
     labels = []
 
     for s in active[:5]:
-        sr = (
-            s.real_sharpe
-            if s.real_sharpe is not None
-            else s.stub_sharpe if s.stub_sharpe is not None else 0.5
-        )
-        cagr = (
-            s.real_cagr
-            if s.real_cagr is not None
-            else s.stub_cagr if s.stub_cagr is not None else 0.08
-        )
+        sr = s.real_sharpe if s.real_sharpe is not None else s.stub_sharpe if s.stub_sharpe is not None else 0.5
+        cagr = s.real_cagr if s.real_cagr is not None else s.stub_cagr if s.stub_cagr is not None else 0.08
         mu_d = cagr / 252
-        sigma_d = abs(mu_d / (sr / (252 ** 0.5))) if sr != 0 else 0.01
+        sigma_d = abs(mu_d / (sr / (252**0.5))) if sr != 0 else 0.01
         rets = rng.normal(mu_d, sigma_d, N_DAYS).tolist()
         synthetic_returns[s.id] = rets
         labels.append({"id": s.id, "title": s.paper_title})
@@ -265,16 +273,18 @@ async def get_strategy_correlation():
         cagr = s.real_cagr if s.real_cagr is not None else 0.08
         corr = s.real_corr_spy if s.real_corr_spy is not None else 1.0
         mu_d = cagr / 252
-        sigma_d = abs(mu_d / (sr / (252 ** 0.5))) if sr != 0 else 0.01
+        sigma_d = abs(mu_d / (sr / (252**0.5))) if sr != 0 else 0.01
 
         idio = rng.normal(0, sigma_d * float(np.sqrt(max(1 - corr**2, 0))), N_DAYS)
         rets = corr * (spy_daily * sigma_d / 0.01) + idio + mu_d
         return_matrix.append(rets)
-        labels.append({
-            "id": s.id,
-            "title": s.paper_title[:30],
-            "passes_rigor_gate": s.passes_rigor_gate,
-        })
+        labels.append(
+            {
+                "id": s.id,
+                "title": s.paper_title[:30],
+                "passes_rigor_gate": s.passes_rigor_gate,
+            }
+        )
 
     R = np.array(return_matrix)
     corr_matrix = np.corrcoef(R)
@@ -300,7 +310,7 @@ async def get_portfolio_advisor(
     risk_profile: str = Query("moderate", pattern="^(fixed_income|conservative|moderate|aggressive|hyper_risky)$"),
 ):
     """Portfolio allocation recommendation based on Kelly + risk-parity math."""
-    from archimedes.models.portfolio import RiskProfile, RISK_PROFILE_PARAMS
+    from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
     from archimedes.models.regime import Regime
     from archimedes.services.redis_state import AgentStateStore
 
@@ -343,14 +353,16 @@ async def get_portfolio_advisor(
 
     strategies = [s for s in strategy_provider.list_strategies() if s.real_sharpe is not None]
 
+    from archimedes.agents.portfolio_agent import get_portfolio_agent
     from archimedes.services.strategy_signal_evaluator import (
-        strategy_evaluator,
-        Signal as _Signal,
         DEFAULT_SCAN_UNIVERSE,
         GLOBAL_ASSETS,
         _fetch_price_histories,
+        strategy_evaluator,
     )
-    from archimedes.agents.portfolio_agent import get_portfolio_agent
+    from archimedes.services.strategy_signal_evaluator import (
+        Signal as _Signal,
+    )
 
     try:
         price_histories = await asyncio.wait_for(
@@ -362,7 +374,9 @@ async def get_portfolio_advisor(
 
     try:
         market_ranking = strategy_evaluator.rank_market(
-            price_histories, lookback_days=90, top_n=25,
+            price_histories,
+            lookback_days=90,
+            top_n=25,
         )
     except Exception:
         market_ranking = []
@@ -433,10 +447,13 @@ async def get_portfolio_advisor(
         agent_obj,
     ) -> dict:
         import uuid
-        from archimedes.models.trace import ReasoningTrace, DecisionType
+
+        from archimedes.models.trace import DecisionType, ReasoningTrace
+
         registry_address: str | None = None
         try:
             from archimedes.chain.client import chain_client as _cc
+
             registry_address = _cc.settings.reasoning_trace_registry_address or None
         except Exception:
             registry_address = None
@@ -455,8 +472,7 @@ async def get_portfolio_advisor(
                     "universe_size": len(DEFAULT_SCAN_UNIVERSE),
                     "universe_fetched": len(price_histories),
                     "top_opportunities": [
-                        {"symbol": r.get("display"), "score": r.get("score")}
-                        for r in (market_ranking or [])[:10]
+                        {"symbol": r.get("display"), "score": r.get("score")} for r in (market_ranking or [])[:10]
                     ],
                 },
                 portfolio_before={},
@@ -479,15 +495,16 @@ async def get_portfolio_advisor(
                 confidence=float(regime_confidence or 0.0),
                 expected_outcome="Portfolio constructed; pending user vault deployment",
                 trades_executed=[],
-                strategies_referenced=list({
-                    a.get("paper_anchor") for a in allocations_for_trace if a.get("paper_anchor")
-                }),
+                strategies_referenced=list(
+                    {a.get("paper_anchor") for a in allocations_for_trace if a.get("paper_anchor")}
+                ),
             )
             content_hash = trace.compute_hash()
 
             tx_hash: str | None = None
             try:
                 from archimedes.chain.trace_publisher import TracePublisher
+
                 publisher = TracePublisher()
                 tx_hash = await publisher.publish(trace)
             except Exception:
@@ -546,21 +563,17 @@ async def get_portfolio_advisor(
         n = len(active_rows)
         if n == 0:
             return {
-                "total_picks": 0, "passes_rigor_gate": 0, "dsr_significant": 0,
-                "pbo_acceptable": 0, "oos_positive": 0,
+                "total_picks": 0,
+                "passes_rigor_gate": 0,
+                "dsr_significant": 0,
+                "pbo_acceptable": 0,
+                "oos_positive": 0,
             }
         passes = sum(1 for r in active_rows if r.get("passes_rigor_gate"))
-        dsr_sig = sum(
-            1 for r in active_rows
-            if r.get("dsr_p_value") is not None and r["dsr_p_value"] < 0.05
-        )
-        pbo_ok = sum(
-            1 for r in active_rows
-            if r.get("pbo_score") is not None and r["pbo_score"] < 0.5
-        )
+        dsr_sig = sum(1 for r in active_rows if r.get("dsr_p_value") is not None and r["dsr_p_value"] < 0.05)
+        pbo_ok = sum(1 for r in active_rows if r.get("pbo_score") is not None and r["pbo_score"] < 0.5)
         oos_pos = sum(
-            1 for r in active_rows
-            if r.get("out_of_sample_sharpe") is not None and r["out_of_sample_sharpe"] > 0
+            1 for r in active_rows if r.get("out_of_sample_sharpe") is not None and r["out_of_sample_sharpe"] > 0
         )
         avg_dsr = [r["dsr_p_value"] for r in active_rows if r.get("dsr_p_value") is not None]
         avg_pbo = [r["pbo_score"] for r in active_rows if r.get("pbo_score") is not None]
@@ -579,14 +592,17 @@ async def get_portfolio_advisor(
     scored: list[dict] = []
 
     if agent_portfolio and agent_portfolio.picks:
+
         def _find_strategy_for_anchor(anchor: str):
             anchor_l = (anchor or "").lower()
             if not anchor_l:
                 return strategies[0] if strategies else None
             for st in strategies:
-                if (anchor_l in (st.strategy_code_path or "").lower()
-                        or anchor_l in (st.paper_title or "").lower()
-                        or anchor_l in st.id.lower()):
+                if (
+                    anchor_l in (st.strategy_code_path or "").lower()
+                    or anchor_l in (st.paper_title or "").lower()
+                    or anchor_l in st.id.lower()
+                ):
                     return st
             return strategies[0] if strategies else None
 
@@ -598,24 +614,26 @@ async def get_portfolio_advisor(
             mu_d = (anchor_strat.real_cagr if anchor_strat.real_cagr is not None else 0.08) / 252
             sigma_d = abs(mu_d / (sr / math.sqrt(252))) if sr != 0 else 0.01
             vol_ann = sigma_d * math.sqrt(252)
-            scored.append({
-                "id": f"agent_{pick.synth}",
-                "title": f"{anchor_strat.paper_title} → {pick.ticker}",
-                "symbol": pick.ticker,
-                "asset_class": pick.asset_class,
-                "exchange": pick.exchange,
-                "sharpe": round(sr, 4),
-                "cagr": round(anchor_strat.real_cagr if anchor_strat.real_cagr is not None else 0.0, 4),
-                "max_drawdown": round(anchor_strat.real_max_dd if anchor_strat.real_max_dd is not None else 0.0, 4),
-                "vol_ann": round(vol_ann, 4),
-                "kelly_fraction": round(pick.weight, 4),
-                **_rigor_fields(anchor_strat),
-                "signal_reason": pick.reasoning,
-                "agent_weight": pick.weight,
-                "paper_anchor": pick.paper_anchor,
-                "vote_count": 1,
-                "strategies": [{"title": anchor_strat.paper_title, "kelly": pick.weight}],
-            })
+            scored.append(
+                {
+                    "id": f"agent_{pick.synth}",
+                    "title": f"{anchor_strat.paper_title} → {pick.ticker}",
+                    "symbol": pick.ticker,
+                    "asset_class": pick.asset_class,
+                    "exchange": pick.exchange,
+                    "sharpe": round(sr, 4),
+                    "cagr": round(anchor_strat.real_cagr if anchor_strat.real_cagr is not None else 0.0, 4),
+                    "max_drawdown": round(anchor_strat.real_max_dd if anchor_strat.real_max_dd is not None else 0.0, 4),
+                    "vol_ann": round(vol_ann, 4),
+                    "kelly_fraction": round(pick.weight, 4),
+                    **_rigor_fields(anchor_strat),
+                    "signal_reason": pick.reasoning,
+                    "agent_weight": pick.weight,
+                    "paper_anchor": pick.paper_anchor,
+                    "vote_count": 1,
+                    "strategies": [{"title": anchor_strat.paper_title, "kelly": pick.weight}],
+                }
+            )
 
     if not scored and all_signals:
         _MAX_PER_STRATEGY = 4
@@ -628,13 +646,10 @@ async def get_portfolio_advisor(
                 continue
             mu_ann = s.real_cagr if s.real_cagr is not None else 0.08
             vol_ann = abs(mu_ann / sr) if sr != 0 else 0.20
-            full_kelly = mu_ann / max(vol_ann ** 2, 1e-6)
+            full_kelly = mu_ann / max(vol_ann**2, 1e-6)
             base_kelly = min(0.5 * full_kelly, 0.5)
 
-            active = [
-                sig for sig in strat_signals.signals
-                if sig.signal != _Signal.FLAT and sig.weight > 0
-            ]
+            active = [sig for sig in strat_signals.signals if sig.signal != _Signal.FLAT and sig.weight > 0]
             active.sort(key=lambda x: x.weight, reverse=True)
             for asset_signal in active[:_MAX_PER_STRATEGY]:
                 entry = GLOBAL_ASSETS.get(asset_signal.asset)
@@ -642,25 +657,31 @@ async def get_portfolio_advisor(
                 asset_class = entry[2] if entry else "unknown"
                 exchange = entry[3] if entry else "?"
                 effective_kelly = round(base_kelly * asset_signal.weight, 4)
-                scored.append({
-                    "id": f"{s.id}_{asset_signal.asset}",
-                    "title": s.paper_title,
-                    "symbol": display_symbol,
-                    "asset_class": asset_class,
-                    "exchange": exchange,
-                    "sharpe": round(sr, 4),
-                    "cagr": round(s.real_cagr if s.real_cagr is not None else 0.0, 4),
-                    "max_drawdown": round(s.real_max_dd if s.real_max_dd is not None else 0.0, 4),
-                    "vol_ann": round(vol_ann, 4),
-                    "kelly_fraction": effective_kelly,
-                    **_rigor_fields(s),
-                    "signal_reason": asset_signal.reason,
-                })
+                scored.append(
+                    {
+                        "id": f"{s.id}_{asset_signal.asset}",
+                        "title": s.paper_title,
+                        "symbol": display_symbol,
+                        "asset_class": asset_class,
+                        "exchange": exchange,
+                        "sharpe": round(sr, 4),
+                        "cagr": round(s.real_cagr if s.real_cagr is not None else 0.0, 4),
+                        "max_drawdown": round(s.real_max_dd if s.real_max_dd is not None else 0.0, 4),
+                        "vol_ann": round(vol_ann, 4),
+                        "kelly_fraction": effective_kelly,
+                        **_rigor_fields(s),
+                        "signal_reason": asset_signal.reason,
+                    }
+                )
 
     if not scored:
         _TICKER_DISPLAY = {
-            "SPY": "SPY", "NIKKEI": "NIKKEI", "GOLD": "GLD",
-            "TREASURY": "BIL", "OIL": "OIL", "BIL": "BIL",
+            "SPY": "SPY",
+            "NIKKEI": "NIKKEI",
+            "GOLD": "GLD",
+            "TREASURY": "BIL",
+            "OIL": "OIL",
+            "BIL": "BIL",
         }
         for s in strategies:
             sr = s.real_sharpe if s.real_sharpe is not None else 0.5
@@ -668,24 +689,26 @@ async def get_portfolio_advisor(
                 continue
             mu_ann = s.real_cagr if s.real_cagr is not None else 0.08
             vol_ann = abs(mu_ann / sr) if sr != 0 else 0.20
-            kelly = min(0.5 * (mu_ann / max(vol_ann ** 2, 1e-6)), 0.5)
+            kelly = min(0.5 * (mu_ann / max(vol_ann**2, 1e-6)), 0.5)
             universe = s.asset_universe if s.asset_universe else ["SPY"]
             per_asset_kelly = round(kelly / len(universe), 4)
             for ticker in universe:
-                scored.append({
-                    "id": f"{s.id}_{ticker}",
-                    "title": s.paper_title,
-                    "symbol": _TICKER_DISPLAY.get(ticker, ticker),
-                    "asset_class": "unknown",
-                    "exchange": "?",
-                    "sharpe": round(sr, 4),
-                    "cagr": round(s.real_cagr if s.real_cagr is not None else 0.0, 4),
-                    "max_drawdown": round(s.real_max_dd if s.real_max_dd is not None else 0.0, 4),
-                    "vol_ann": round(vol_ann, 4),
-                    "kelly_fraction": per_asset_kelly,
-                    **_rigor_fields(s),
-                    "signal_reason": None,
-                })
+                scored.append(
+                    {
+                        "id": f"{s.id}_{ticker}",
+                        "title": s.paper_title,
+                        "symbol": _TICKER_DISPLAY.get(ticker, ticker),
+                        "asset_class": "unknown",
+                        "exchange": "?",
+                        "sharpe": round(sr, 4),
+                        "cagr": round(s.real_cagr if s.real_cagr is not None else 0.0, 4),
+                        "max_drawdown": round(s.real_max_dd if s.real_max_dd is not None else 0.0, 4),
+                        "vol_ann": round(vol_ann, 4),
+                        "kelly_fraction": per_asset_kelly,
+                        **_rigor_fields(s),
+                        "signal_reason": None,
+                    }
+                )
 
     if not scored:
         return {"error": "No strategies with real backtest data available", "allocations": []}
@@ -693,14 +716,14 @@ async def get_portfolio_advisor(
     # Agent path
     if agent_portfolio and agent_portfolio.picks:
         from archimedes.services.portfolio_optimizer import (
+            correlation_pairs,
             kelly_optimize_from_prices,
             kelly_risk_decomposition,
-            correlation_pairs,
         )
 
         pick_synths = [sc["id"].removeprefix("agent_") for sc in scored]
         mu_override: dict[str, float] = {}
-        for sc, synth in zip(scored, pick_synths):
+        for sc, synth in zip(scored, pick_synths, strict=False):
             mu_override[synth] = float(sc.get("cagr") or 0.08)
 
         opt = None
@@ -724,8 +747,8 @@ async def get_portfolio_advisor(
         if opt is not None:
             risk_decomp = kelly_risk_decomposition(opt)
             corr_pairs = correlation_pairs(opt, top_n=8)
-            weight_by_synth = {sym: float(w) for sym, w in zip(opt.symbols, opt.weights)}
-            for sc, synth in zip(scored, pick_synths):
+            weight_by_synth = {sym: float(w) for sym, w in zip(opt.symbols, opt.weights, strict=False)}
+            for sc, synth in zip(scored, pick_synths, strict=False):
                 w = weight_by_synth.get(synth, 0.0)
                 allocations.append({**sc, "weight": round(w, 4)})
         else:
@@ -777,8 +800,10 @@ async def get_portfolio_advisor(
             "rigor_summary": _build_rigor_summary(allocations),
             "stress_tests": [
                 {
-                    "scenario": r.scenario, "label": r.label,
-                    "description": r.description, "portfolio_pnl": r.portfolio_pnl,
+                    "scenario": r.scenario,
+                    "label": r.label,
+                    "description": r.description,
+                    "portfolio_pnl": r.portfolio_pnl,
                     "portfolio_value_after": r.portfolio_value_after,
                     "per_asset_pnl": r.per_asset_pnl,
                 }
@@ -806,17 +831,28 @@ async def get_portfolio_advisor(
                 ],
             },
             "reasoning_trace": await _build_and_anchor_trace(
-                allocations, agent_portfolio.thesis, agent_portfolio,
+                allocations,
+                agent_portfolio.thesis,
+                agent_portfolio,
             ),
         }
 
     # Rule-based aggregate
     _RIGOR_KEYS = (
-        "deflated_sharpe_ratio", "dsr_p_value", "num_trials_in_selection",
-        "pbo_score", "out_of_sample_sharpe",
-        "paper_claimed_sharpe", "paper_claimed_cagr", "paper_claimed_max_dd",
-        "paper_delta_sharpe", "paper_delta_cagr", "paper_delta_max_dd",
-        "sharpe_ci_lower", "sharpe_ci_upper", "n_obs_daily",
+        "deflated_sharpe_ratio",
+        "dsr_p_value",
+        "num_trials_in_selection",
+        "pbo_score",
+        "out_of_sample_sharpe",
+        "paper_claimed_sharpe",
+        "paper_claimed_cagr",
+        "paper_claimed_max_dd",
+        "paper_delta_sharpe",
+        "paper_delta_cagr",
+        "paper_delta_max_dd",
+        "sharpe_ci_lower",
+        "sharpe_ci_upper",
+        "n_obs_daily",
         "strategy_code_hash",
     )
     agg: dict[str, dict] = {}
@@ -852,10 +888,16 @@ async def get_portfolio_advisor(
                 row[k] = new
             elif k in ("dsr_p_value", "pbo_score"):
                 row[k] = min(existing, new)
-            elif k in ("deflated_sharpe_ratio", "out_of_sample_sharpe",
-                       "sharpe_ci_lower", "sharpe_ci_upper", "n_obs_daily",
-                       "num_trials_in_selection",
-                       "paper_delta_sharpe", "paper_delta_cagr"):
+            elif k in (
+                "deflated_sharpe_ratio",
+                "out_of_sample_sharpe",
+                "sharpe_ci_lower",
+                "sharpe_ci_upper",
+                "n_obs_daily",
+                "num_trials_in_selection",
+                "paper_delta_sharpe",
+                "paper_delta_cagr",
+            ):
                 row[k] = max(existing, new)
             elif k == "paper_delta_max_dd":
                 row[k] = min(existing, new)
@@ -878,17 +920,16 @@ async def get_portfolio_advisor(
     scored = list(agg.values())
 
     from archimedes.services.portfolio_optimizer import (
+        correlation_pairs,
         kelly_optimize_from_prices,
         kelly_risk_decomposition,
-        correlation_pairs,
     )
-    display_to_synth: dict[str, str] = {
-        d: s for s, (_yf, d, _ac, _ex) in GLOBAL_ASSETS.items()
-    }
+
+    display_to_synth: dict[str, str] = {d: s for s, (_yf, d, _ac, _ex) in GLOBAL_ASSETS.items()}
     rule_synths = [display_to_synth.get(sc["symbol"]) for sc in scored]
     rule_synths_valid = [s for s in rule_synths if s and s in price_histories]
     mu_override_rb: dict[str, float] = {}
-    for sc, syn in zip(scored, rule_synths):
+    for sc, syn in zip(scored, rule_synths, strict=False):
         if syn:
             mu_override_rb[syn] = float(sc.get("cagr") or 0.08)
 
@@ -914,8 +955,8 @@ async def get_portfolio_advisor(
     if opt_rb is not None:
         risk_decomp_rb = kelly_risk_decomposition(opt_rb)
         corr_pairs_rb = correlation_pairs(opt_rb, top_n=8)
-        weight_by_synth = {sym: float(w) for sym, w in zip(opt_rb.symbols, opt_rb.weights)}
-        for sc, syn in zip(scored, rule_synths):
+        weight_by_synth = {sym: float(w) for sym, w in zip(opt_rb.symbols, opt_rb.weights, strict=False)}
+        for sc, syn in zip(scored, rule_synths, strict=False):
             w = weight_by_synth.get(syn, 0.0) if syn else 0.0
             allocations.append({**sc, "weight": round(w, 4)})
     else:
@@ -972,8 +1013,10 @@ async def get_portfolio_advisor(
         "rigor_summary": _build_rigor_summary(allocations),
         "stress_tests": [
             {
-                "scenario": r.scenario, "label": r.label,
-                "description": r.description, "portfolio_pnl": r.portfolio_pnl,
+                "scenario": r.scenario,
+                "label": r.label,
+                "description": r.description,
+                "portfolio_pnl": r.portfolio_pnl,
                 "portfolio_value_after": r.portfolio_value_after,
                 "per_asset_pnl": r.per_asset_pnl,
             }
@@ -1006,6 +1049,7 @@ async def get_portfolio_advisor(
 async def list_stress_scenarios():
     """List the available stress scenarios with descriptions."""
     from archimedes.services.stress_engine import list_scenarios
+
     return {"scenarios": list_scenarios()}
 
 
@@ -1013,7 +1057,8 @@ async def list_stress_scenarios():
 async def run_stress_test(payload: dict):
     """Apply a stress scenario to a caller-supplied portfolio."""
     from fastapi import HTTPException
-    from archimedes.services.stress_engine import stress_all, stress_one, SCENARIOS
+
+    from archimedes.services.stress_engine import SCENARIOS, stress_all, stress_one
 
     allocations = payload.get("allocations") or []
     if not isinstance(allocations, list) or not allocations:
@@ -1031,8 +1076,10 @@ async def run_stress_test(payload: dict):
     return {
         "results": [
             {
-                "scenario": r.scenario, "label": r.label,
-                "description": r.description, "portfolio_pnl": r.portfolio_pnl,
+                "scenario": r.scenario,
+                "label": r.label,
+                "description": r.description,
+                "portfolio_pnl": r.portfolio_pnl,
                 "portfolio_value_after": r.portfolio_value_after,
                 "per_asset_pnl": r.per_asset_pnl,
             }
@@ -1065,9 +1112,10 @@ async def generate_strategy(
 ):
     """Queue a strategy generation job. Returns 202 + job_id immediately."""
     from fastapi import HTTPException
+
+    from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
     from archimedes.models.portfolio import RiskProfile
     from archimedes.services.job_queue import JobStore
-    from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
 
     if mode == "fast":
         try:
@@ -1089,7 +1137,7 @@ async def generate_strategy(
                 "model_id": proposal.model_id,
                 "selected": [
                     {"strategy_id": s.strategy_id, "weight": w, "rationale": s.rationale}
-                    for s, w in zip(proposal.selected, guardrail.strategy_weights.values())
+                    for s, w in zip(proposal.selected, guardrail.strategy_weights.values(), strict=False)
                 ],
                 "overall_reasoning": proposal.overall_reasoning,
                 "usyc_weight": guardrail.usyc_weight,
@@ -1117,6 +1165,7 @@ async def generate_strategy(
     market_context: dict = {}
     try:
         from archimedes.services.redis_state import AgentStateStore
+
         state = AgentStateStore()
         try:
             regime_data = await state.load_regime()
@@ -1148,7 +1197,9 @@ async def generate_strategy(
     finally:
         await store.close()
 
-    asyncio.create_task(_run_fusion_job(job_id))
+    # Intentional fire-and-forget: the fusion job runs to completion independently
+    # of the HTTP request that queued it; progress is observed via /jobs/{id}/stream.
+    asyncio.create_task(_run_fusion_job(job_id))  # noqa: RUF006
 
     return {"status": "queued", "job_id": job_id}
 
@@ -1157,6 +1208,7 @@ async def generate_strategy(
 async def get_generation_job(job_id: str):
     """Poll a strategy generation job. Returns status + result when done."""
     from fastapi import HTTPException
+
     from archimedes.services.job_queue import JobStore
 
     store = JobStore()
@@ -1172,11 +1224,14 @@ async def get_generation_job(job_id: str):
 
 async def _run_fusion_job(job_id: str) -> None:
     """Background worker: runs fusion and updates job status."""
-    from archimedes.models.portfolio import RiskProfile
-    from archimedes.services.job_queue import JobStore
-    from archimedes.agents.strategy_fusion import StrategyFusion, FusionBrief, default_fusion
-    from archimedes.models.strategy_store import upsert_strategy
+    from archimedes.agents.strategy_fusion import (
+        FusionBrief,
+        default_fusion,
+    )
     from archimedes.db import get_session
+    from archimedes.models.portfolio import RiskProfile
+    from archimedes.models.strategy_store import upsert_strategy
+    from archimedes.services.job_queue import JobStore
 
     store = JobStore()
     try:
@@ -1202,11 +1257,15 @@ async def _run_fusion_job(job_id: str) -> None:
         result = await asyncio.to_thread(fusion.propose, brief)
 
         if not result.is_actionable:
-            await store.update_status(job_id, "done", result={
-                "mode": "fusion",
-                "status": result.status,
-                "message": result.thesis,
-            })
+            await store.update_status(
+                job_id,
+                "done",
+                result={
+                    "mode": "fusion",
+                    "status": result.status,
+                    "message": result.thesis,
+                },
+            )
             return
 
         # ── Run fusion evaluator pipeline (backtest + rigor) if spec present ──
@@ -1214,9 +1273,11 @@ async def _run_fusion_job(job_id: str) -> None:
         if result.strategy_spec is not None:
             try:
                 from archimedes.services.fusion_evaluator import evaluate_fusion_spec
+
                 eval_result = await asyncio.to_thread(evaluate_fusion_spec, result.strategy_spec)
             except Exception as _eval_exc:
                 import logging as _logging
+
                 _logging.getLogger(__name__).warning("fusion eval pipeline failed (non-fatal): %s", _eval_exc)
 
         # ── Build rigor_verdict dict from eval_result for persistence ──
@@ -1251,10 +1312,7 @@ async def _run_fusion_job(job_id: str) -> None:
         strategy_id = None
         try:
             with get_session() as session:
-                source_papers = [
-                    {"arxiv_id": aid, "sha256": ""}
-                    for aid in result.source_arxiv_ids
-                ]
+                source_papers = [{"arxiv_id": aid, "sha256": ""} for aid in result.source_arxiv_ids]
                 record = upsert_strategy(
                     session,
                     generation_method="fusion",
@@ -1272,55 +1330,65 @@ async def _run_fusion_job(job_id: str) -> None:
             pass
 
         try:
-            import hashlib, uuid
-            from datetime import datetime, timezone
-            canonical = json.dumps({
-                "strategy_name": result.strategy_name,
-                "thesis": result.thesis,
-                "source_arxiv_ids": sorted(result.source_arxiv_ids),
-                "fusion_reasoning": result.fusion_reasoning,
-                "novelty_rationale": result.novelty_rationale,
-                "risk_notes": result.risk_notes,
-                "model": result.model,
-                "brief": {
-                    "asset_classes": sorted(brief.asset_classes or []),
-                    "risk_appetite": rp.value,
-                    "strategic_direction": brief.strategic_direction or "",
-                    "market_context": brief.market_context or {},
+            import hashlib
+            import uuid
+            from datetime import datetime
+
+            canonical = json.dumps(
+                {
+                    "strategy_name": result.strategy_name,
+                    "thesis": result.thesis,
+                    "source_arxiv_ids": sorted(result.source_arxiv_ids),
+                    "fusion_reasoning": result.fusion_reasoning,
+                    "novelty_rationale": result.novelty_rationale,
+                    "risk_notes": result.risk_notes,
+                    "model": result.model,
+                    "brief": {
+                        "asset_classes": sorted(brief.asset_classes or []),
+                        "risk_appetite": rp.value,
+                        "strategic_direction": brief.strategic_direction or "",
+                        "market_context": brief.market_context or {},
+                    },
                 },
-            }, sort_keys=True, separators=(",", ":"))
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             trace_hash = "0x" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
             from archimedes.services.redis_state import AgentStateStore
+
             state = AgentStateStore()
             try:
-                await state.save_trace({
-                    "id": str(uuid.uuid4()),
-                    "vault_address": "",
-                    "decision_type": "construction",
-                    "trigger": "fusion_generation",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "market_context": brief.market_context or {},
-                    "portfolio_before": {},
-                    "portfolio_after": {},
-                    "reasoning": (
-                        f"FUSION HYPOTHESIS -- {result.strategy_name}\n\n"
-                        f"Thesis: {result.thesis}\n\n"
-                        f"How it fuses: {result.fusion_reasoning}\n\n"
-                        f"Why novel: {result.novelty_rationale}\n\n"
-                        f"Risks: {result.risk_notes}\n\n"
-                        f"Pre-backtest hypothesis -- empirical validation (DSR/PBO/OOS) is pending."
-                    ),
-                    "confidence": 0.0,
-                    "trades_executed": [],
-                    "strategies_referenced": result.source_arxiv_ids,
-                    "trace_hash": trace_hash,
-                    "arc_tx_hash": None,
-                    "is_verified": False,
-                })
+                await state.save_trace(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "vault_address": "",
+                        "decision_type": "construction",
+                        "trigger": "fusion_generation",
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "market_context": brief.market_context or {},
+                        "portfolio_before": {},
+                        "portfolio_after": {},
+                        "reasoning": (
+                            f"FUSION HYPOTHESIS -- {result.strategy_name}\n\n"
+                            f"Thesis: {result.thesis}\n\n"
+                            f"How it fuses: {result.fusion_reasoning}\n\n"
+                            f"Why novel: {result.novelty_rationale}\n\n"
+                            f"Risks: {result.risk_notes}\n\n"
+                            f"Pre-backtest hypothesis -- empirical validation (DSR/PBO/OOS) is pending."
+                        ),
+                        "confidence": 0.0,
+                        "trades_executed": [],
+                        "strategies_referenced": result.source_arxiv_ids,
+                        "trace_hash": trace_hash,
+                        "arc_tx_hash": None,
+                        "is_verified": False,
+                    }
+                )
             finally:
                 await state.close()
         except Exception as _exc:
             import logging as _logging
+
             _logging.getLogger(__name__).warning("fusion: trace persistence failed (non-fatal): %s", _exc)
 
         job_result = {
@@ -1366,6 +1434,7 @@ async def _run_fusion_job(job_id: str) -> None:
         # ── Persist fusion proposal to episodic memory (T-PE.8) ──
         try:
             from archimedes.services.strategy_memory import persist_proposal
+
             persist_proposal(
                 generation_id=job_id,
                 agent="fusion",
@@ -1386,10 +1455,8 @@ async def _run_fusion_job(job_id: str) -> None:
         except Exception:
             pass  # Non-blocking per spec
     except Exception as exc:
-        try:
+        with contextlib.suppress(Exception):
             await store.update_status(job_id, "failed", error=str(exc))
-        except Exception:
-            pass
     finally:
         await store.close()
 
@@ -1419,8 +1486,10 @@ async def construct_strategy(req: StrategyConstructionRequest):
 
     # Persist architect proposal to episodic memory (T-PE.8)
     try:
-        from archimedes.services.strategy_memory import persist_proposal
         import uuid as _uuid
+
+        from archimedes.services.strategy_memory import persist_proposal
+
         persist_proposal(
             generation_id=_uuid.uuid4().hex[:16],
             agent="architect",

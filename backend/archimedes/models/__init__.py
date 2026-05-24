@@ -2,63 +2,63 @@
 # These types cross component boundaries. Every team member depends on them.
 # Change policy: announce in Discord before modifying any model here.
 
-from archimedes.models.paper_ref import PaperRef
-from archimedes.models.strategy import (
-    StrategyPassport,
-    Strategy,  # Backwards-compat alias
-    StrategyStatus,
-    SignalDefinition,
-    PositionSizing,
-    RebalanceFrequency,
-)
+from archimedes.models.asset import AssetInfo, AssetPrice, AssetType
 from archimedes.models.backtest import BacktestResult
-from archimedes.models.regime import Regime, RegimeSignals, RegimeClassification
+from archimedes.models.paper_ref import PaperRef
 from archimedes.models.portfolio import (
-    RiskProfile,
     Portfolio,
     PortfolioHolding,
-    TargetAllocation,
     RebalanceDecision,
-    TradeOrder,
+    RiskProfile,
+    TargetAllocation,
     TradeDirection,
+    TradeOrder,
 )
-from archimedes.models.vault import VaultInfo, VaultTier, VaultMetrics
-from archimedes.models.trace import ReasoningTrace, DecisionType
-from archimedes.models.asset import AssetInfo, AssetType, AssetPrice
+from archimedes.models.regime import Regime, RegimeClassification, RegimeSignals
+from archimedes.models.strategy import (
+    PositionSizing,
+    RebalanceFrequency,
+    SignalDefinition,
+    Strategy,  # Backwards-compat alias
+    StrategyPassport,
+    StrategyStatus,
+)
+from archimedes.models.trace import DecisionType, ReasoningTrace
+from archimedes.models.vault import VaultInfo, VaultMetrics, VaultTier
 
 __all__ = [
-    # Paper reference
-    "PaperRef",
-    # Strategy passport
-    "StrategyPassport",
-    "Strategy",  # Backwards-compat alias
-    "StrategyStatus",
-    "SignalDefinition",
-    "PositionSizing",
-    "RebalanceFrequency",
-    # Backtest
-    "BacktestResult",
-    # Regime
-    "Regime",
-    "RegimeSignals",
-    "RegimeClassification",
-    # Portfolio
-    "RiskProfile",
-    "Portfolio",
-    "PortfolioHolding",
-    "TargetAllocation",
-    "RebalanceDecision",
-    "TradeOrder",
-    "TradeDirection",
-    # Vault
-    "VaultInfo",
-    "VaultTier",
-    "VaultMetrics",
-    # Trace
-    "ReasoningTrace",
-    "DecisionType",
     # Asset
     "AssetInfo",
-    "AssetType",
     "AssetPrice",
+    "AssetType",
+    # Backtest
+    "BacktestResult",
+    "DecisionType",
+    # Paper reference
+    "PaperRef",
+    "Portfolio",
+    "PortfolioHolding",
+    "PositionSizing",
+    # Trace
+    "ReasoningTrace",
+    "RebalanceDecision",
+    "RebalanceFrequency",
+    # Regime
+    "Regime",
+    "RegimeClassification",
+    "RegimeSignals",
+    # Portfolio
+    "RiskProfile",
+    "SignalDefinition",
+    "Strategy",  # Backwards-compat alias
+    # Strategy passport
+    "StrategyPassport",
+    "StrategyStatus",
+    "TargetAllocation",
+    "TradeDirection",
+    "TradeOrder",
+    # Vault
+    "VaultInfo",
+    "VaultMetrics",
+    "VaultTier",
 ]

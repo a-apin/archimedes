@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
-from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
+from archimedes.models.portfolio import RiskProfile
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +33,10 @@ _ANNUALIZATION = 252
 _RF_DAILY = 0.05 / _ANNUALIZATION  # 5% annual risk-free rate
 
 # Per-asset caps — prevent degenerate corner solutions
-_CAP_DEFAULT = 0.40   # Conservative / Moderate / Aggressive
-_CAP_HYPER = 0.60     # Hyper-Risky: higher concentration is the intent
+_CAP_DEFAULT = 0.40  # Conservative / Moderate / Aggressive
+_CAP_HYPER = 0.60  # Hyper-Risky: higher concentration is the intent
 
-_MIN_BARS = 20        # Minimum history required before MVO is meaningful
+_MIN_BARS = 20  # Minimum history required before MVO is meaningful
 
 
 # ─── Kelly mean-variance: γ-mapped risk aversion ──────────────────
@@ -45,9 +45,9 @@ _MIN_BARS = 20        # Minimum history required before MVO is meaningful
 RISK_AVERSION: dict[str, float] = {
     "fixed_income": 12.0,
     "conservative": 6.0,
-    "moderate":     3.0,
-    "aggressive":   2.0,
-    "hyper_risky":  1.5,
+    "moderate": 3.0,
+    "aggressive": 2.0,
+    "hyper_risky": 1.5,
 }
 
 
@@ -55,16 +55,16 @@ RISK_AVERSION: dict[str, float] = {
 class KellyOptimizationResult:
     """Output of the constrained Kelly mean-variance optimizer."""
 
-    symbols: list[str]                 # synth codes (e.g. 'sNVDA')
-    weights: np.ndarray                # weights, sum ≤ synth_budget
-    mu_annual: np.ndarray              # per-asset annualized GROSS return
-    sigma_annual: np.ndarray           # per-asset annualized volatility
-    cov_annual: np.ndarray             # annualized covariance matrix
-    corr_matrix: np.ndarray            # correlation matrix
-    expected_return: float             # wᵀμ (gross)
-    expected_vol: float                # √(wᵀΣw)
-    expected_sharpe: float             # (μ_excess) / σ
-    diversification_ratio: float       # weighted_avg_vol / portfolio_vol
+    symbols: list[str]  # synth codes (e.g. 'sNVDA')
+    weights: np.ndarray  # weights, sum ≤ synth_budget
+    mu_annual: np.ndarray  # per-asset annualized GROSS return
+    sigma_annual: np.ndarray  # per-asset annualized volatility
+    cov_annual: np.ndarray  # annualized covariance matrix
+    corr_matrix: np.ndarray  # correlation matrix
+    expected_return: float  # wᵀμ (gross)
+    expected_vol: float  # √(wᵀΣw)
+    expected_sharpe: float  # (μ_excess) / σ
+    diversification_ratio: float  # weighted_avg_vol / portfolio_vol
     converged: bool
     risk_aversion: float
 
@@ -143,7 +143,7 @@ def optimize_weights(
         )
         return _equal_weight(symbols, synth_budget)
 
-    mu = R.mean(axis=0)        # per-bar mean returns, shape (N,)
+    mu = R.mean(axis=0)  # per-bar mean returns, shape (N,)
     Sigma = np.cov(R.T, ddof=1)  # covariance matrix, shape (N, N)
     if Sigma.ndim == 0:
         # Single-asset edge case: np.cov returns a scalar
@@ -164,7 +164,7 @@ def optimize_weights(
         )
         return _equal_weight(symbols, synth_budget)
 
-    scaled = {sym: round(float(w) * synth_budget, 6) for sym, w in zip(symbols, raw)}
+    scaled = {sym: round(float(w) * synth_budget, 6) for sym, w in zip(symbols, raw, strict=False)}
     logger.info(
         "MVO [%s]: %s",
         risk_profile.value,
@@ -196,8 +196,8 @@ def compute_efficient_frontier(
     if R is None:
         return []
 
-    mu = R.mean(axis=0) * _ANNUALIZATION           # annualized expected returns
-    Sigma = np.cov(R.T, ddof=1) * _ANNUALIZATION   # annualized covariance
+    mu = R.mean(axis=0) * _ANNUALIZATION  # annualized expected returns
+    Sigma = np.cov(R.T, ddof=1) * _ANNUALIZATION  # annualized covariance
     if Sigma.ndim == 0:
         Sigma = np.array([[float(Sigma)]])
     Sigma += np.eye(n) * 1e-8
@@ -231,11 +231,13 @@ def compute_efficient_frontier(
             w = result.x
             port_vol = float(np.sqrt(w @ Sigma @ w))
             port_ret = float(w @ mu)
-            frontier.append({
-                "vol": round(port_vol, 6),
-                "return": round(port_ret, 6),
-                "weights": {sym: round(float(wi), 4) for sym, wi in zip(symbols, w)},
-            })
+            frontier.append(
+                {
+                    "vol": round(port_vol, 6),
+                    "return": round(port_ret, 6),
+                    "weights": {sym: round(float(wi), 4) for sym, wi in zip(symbols, w, strict=False)},
+                }
+            )
 
     return frontier
 
@@ -385,11 +387,7 @@ def _build_mu_sigma_from_prices(
     columns, annualizes, applies identity shrinkage.  Returns None if
     fewer than 2 viable assets remain or alignment yields too few bars.
     """
-    series_map = {
-        s: price_histories[s]
-        for s in symbols
-        if s in price_histories and not price_histories[s].empty
-    }
+    series_map = {s: price_histories[s] for s in symbols if s in price_histories and not price_histories[s].empty}
     if len(series_map) < 2:
         return None
 
@@ -454,10 +452,12 @@ def kelly_optimize_from_prices(
         # ``mu_shrinkage`` (0=raw override, 1=fully sample-mean).  The
         # default 0.5 splits the difference; the user-facing μ is then
         # neither pure paper-extrapolation nor pure noise.
-        mu_total = np.array([
-            mu_shrinkage * mu_sample[i] + (1.0 - mu_shrinkage) * mu_override.get(s, mu_sample[i])
-            for i, s in enumerate(kept)
-        ])
+        mu_total = np.array(
+            [
+                mu_shrinkage * mu_sample[i] + (1.0 - mu_shrinkage) * mu_override.get(s, mu_sample[i])
+                for i, s in enumerate(kept)
+            ]
+        )
     else:
         mu_total = mu_sample
     # Convert to excess returns (μ - rf).  _RF_DAILY * 252 = annualized rf.
@@ -480,8 +480,11 @@ def kelly_optimize_from_prices(
 
     try:
         res = minimize(
-            neg_obj, w0, jac=neg_grad,
-            bounds=bounds, constraints=constraints,
+            neg_obj,
+            w0,
+            jac=neg_grad,
+            bounds=bounds,
+            constraints=constraints,
             method="SLSQP",
             options={"maxiter": 200, "ftol": 1e-9},
         )
@@ -520,13 +523,13 @@ def kelly_optimize_from_prices(
     return KellyOptimizationResult(
         symbols=kept,
         weights=w,
-        mu_annual=mu_total,                # display: gross return per asset
+        mu_annual=mu_total,  # display: gross return per asset
         sigma_annual=sigma_annual,
         cov_annual=cov_annual,
         corr_matrix=corr,
         expected_return=portfolio_mu_total,  # display: gross portfolio return
         expected_vol=portfolio_vol,
-        expected_sharpe=sharpe,            # over excess returns
+        expected_sharpe=sharpe,  # over excess returns
         diversification_ratio=div_ratio,
         converged=bool(res.success),
         risk_aversion=gamma,
@@ -541,6 +544,7 @@ def _display_for(synth: str) -> str:
     """
     try:
         from archimedes.services.strategy_signal_evaluator import GLOBAL_ASSETS
+
         entry = GLOBAL_ASSETS.get(synth)
         if entry is not None:
             return entry[1]

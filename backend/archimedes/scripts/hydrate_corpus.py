@@ -18,6 +18,7 @@ Environment variables:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -94,6 +95,7 @@ def hydrate(
                 continue
             try:
                 import requests
+
                 resp = requests.get(
                     pdf_url,
                     timeout=30,
@@ -109,13 +111,12 @@ def hydrate(
         if pdf_path.exists() and pdf_path.stat().st_size > 0:
             try:
                 import pypdf
+
                 reader = pypdf.PdfReader(str(pdf_path))
                 parts: list[str] = []
                 for page in reader.pages:
-                    try:
+                    with contextlib.suppress(Exception):
                         parts.append(page.extract_text() or "")
-                    except Exception:
-                        pass
                 text = "\n".join(parts).strip()
                 if text:
                     text_path.write_text(text, encoding="utf-8")
@@ -126,7 +127,9 @@ def hydrate(
 
     logger.info(
         "hydrate: %d papers in manifest, %d newly hydrated, %d already cached",
-        len(papers), hydrated, skipped,
+        len(papers),
+        hydrated,
+        skipped,
     )
     return {
         "manifest_found": True,

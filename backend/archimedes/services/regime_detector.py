@@ -10,7 +10,7 @@ statistical classifier lands from his lane.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from archimedes.models.asset import MarketSnapshot
 from archimedes.models.regime import (
@@ -22,9 +22,9 @@ from archimedes.models.regime import (
 logger = logging.getLogger(__name__)
 
 # VIX thresholds — empirically reasonable for hackathon demo
-_VIX_RISK_ON = 18.0       # Below this → risk-on
-_VIX_TRANSITION = 25.0    # Between risk-on and this → transition
-_VIX_CRISIS = 35.0        # Above this → crisis
+_VIX_RISK_ON = 18.0  # Below this → risk-on
+_VIX_TRANSITION = 25.0  # Between risk-on and this → transition
+_VIX_CRISIS = 35.0  # Above this → crisis
 
 
 class RegimeDetector:
@@ -95,7 +95,7 @@ class RegimeDetector:
             regime=regime,
             confidence=round(confidence, 2),
             signals=signals,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             previous_regime=self._previous_regime,
             regime_changed=changed,
         )
@@ -103,6 +103,9 @@ class RegimeDetector:
         self._previous_regime = regime
         logger.info(
             "Regime: %s (confidence=%.2f, changed=%s, VIX=%.1f)",
-            regime.value, confidence, changed, vix,
+            regime.value,
+            confidence,
+            changed,
+            vix,
         )
         return classification

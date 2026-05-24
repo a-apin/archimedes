@@ -31,8 +31,7 @@ import asyncio
 import json
 import os
 import sys
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -56,22 +55,25 @@ MAX_POLLS = 30  # 5 minutes max wait for agent rebalance
 
 # ── Evidence writer ───────────────────────────────────────────────
 
+
 class EvidenceRecorder:
     """Accumulates evidence entries and writes them to the evidence file."""
 
     def __init__(self):
         self.entries: list[dict[str, Any]] = []
-        self.started_at = datetime.now(timezone.utc).isoformat()
+        self.started_at = datetime.now(UTC).isoformat()
         self.wallet_address: str = ""
         self.vault_address: str = ""
 
     def record(self, step: str, status: str, **details: Any) -> None:
-        self.entries.append({
-            "step": step,
-            "status": status,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            **details,
-        })
+        self.entries.append(
+            {
+                "step": step,
+                "status": status,
+                "timestamp": datetime.now(UTC).isoformat(),
+                **details,
+            }
+        )
 
     def write(self) -> Path:
         """Write evidence to the markdown file."""
@@ -116,6 +118,7 @@ class EvidenceRecorder:
 
 
 # ── Dry-run checks ────────────────────────────────────────────────
+
 
 def check_prerequisites() -> list[str]:
     """Return a list of issues found. Empty = all good."""
@@ -162,7 +165,9 @@ def print_dry_run_report(issues: list[str]) -> None:
     rpc = os.getenv("RPC") or os.getenv("ARC_ARC_RPC_URL", "(not set)")
     wallet_addr = os.getenv("DEV_WALLET_ADDRESS") or os.getenv("ARC_AGENT_ADDRESS", "(not set)")
     vf = os.getenv("VAULT_FACTORY_ADDRESS") or os.getenv("ARC_VAULT_FACTORY_ADDRESS", "(not set)")
-    rtr = os.getenv("REASONING_TRACE_REGISTRY_ADDRESS") or os.getenv("ARC_REASONING_TRACE_REGISTRY_ADDRESS", "(not set)")
+    rtr = os.getenv("REASONING_TRACE_REGISTRY_ADDRESS") or os.getenv(
+        "ARC_REASONING_TRACE_REGISTRY_ADDRESS", "(not set)"
+    )
     api = API_BASE
 
     print("Configuration:")
@@ -205,6 +210,7 @@ def print_dry_run_report(issues: list[str]) -> None:
 
 
 # ── Execute mode ──────────────────────────────────────────────────
+
 
 async def execute_smoke_test(wallet_key: str | None = None) -> None:
     """Run the full E2E smoke test and record evidence."""
@@ -255,6 +261,7 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
         sys.exit(1)
 
     from eth_account import Account
+
     account = Account.from_key(key)
     wallet_addr = account.address
     evidence.wallet_address = wallet_addr
@@ -271,7 +278,9 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
     usdc_address = os.getenv("ARC_USDC_ADDRESS", "0x3600000000000000000000000000000000000000")
 
     # Load ERC20 ABI (just balanceOf + approve + transfer)
-    erc20_abi = json.loads('[{"inputs":[{"name":"account","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"name":"owner","type":"address"},{"name":"spender","type":"address"}],"name":"allowance","outputs":[{"name":"","type":"uint256"}],"stateMutability":"view","type":"function"}]')
+    erc20_abi = json.loads(
+        '[{"inputs":[{"name":"account","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"name":"owner","type":"address"},{"name":"spender","type":"address"}],"name":"allowance","outputs":[{"name":"","type":"uint256"}],"stateMutability":"view","type":"function"}]'
+    )
 
     usdc = w3.eth.contract(
         address=w3.to_checksum_address(usdc_address),
@@ -309,23 +318,25 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
 
     # Build createVault tx
     nonce = await w3.eth.get_transaction_count(wallet_addr)
-    vault_name = f"E2E Test Vault {datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    vault_name = f"E2E Test Vault {datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
     vault_symbol = "e2eV"
 
     try:
         tx = await vault_factory.functions.createVault(
             vault_name,
             vault_symbol,
-            0,   # management_fee_bps
-            0,   # performance_fee_bps
-            True, # agent_assisted
-        ).build_transaction({
-            "from": wallet_addr,
-            "nonce": nonce,
-            "chainId": ARC_CHAIN_ID,
-            "gas": 2_000_000,
-            "gasPrice": await w3.eth.gas_price,
-        })
+            0,  # management_fee_bps
+            0,  # performance_fee_bps
+            True,  # agent_assisted
+        ).build_transaction(
+            {
+                "from": wallet_addr,
+                "nonce": nonce,
+                "chainId": ARC_CHAIN_ID,
+                "gas": 2_000_000,
+                "gasPrice": await w3.eth.gas_price,
+            }
+        )
         signed = account.sign_transaction(tx)
         tx_hash = signed.raw_transaction.hex()
         if not tx_hash.startswith("0x"):
@@ -350,7 +361,13 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
             vault_address = new_vaults[-1]  # fallback: last vault
 
         evidence.vault_address = vault_address or ""
-        evidence.record("Create vault", "pass", tx_hash=tx_hash, vault_address=vault_address or "unknown", block_number=receipt["blockNumber"])
+        evidence.record(
+            "Create vault",
+            "pass",
+            tx_hash=tx_hash,
+            vault_address=vault_address or "unknown",
+            block_number=receipt["blockNumber"],
+        )
         print(f"  ✅ Vault created: {vault_address}")
         print(f"     Arcscan: {ARCSCAN_BASE}/tx/{tx_hash}")
     except Exception as e:
@@ -375,13 +392,15 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
         tx = await usdc.functions.approve(
             w3.to_checksum_address(vault_address),
             deposit_amount_raw,
-        ).build_transaction({
-            "from": wallet_addr,
-            "nonce": nonce,
-            "chainId": ARC_CHAIN_ID,
-            "gas": 100_000,
-            "gasPrice": await w3.eth.gas_price,
-        })
+        ).build_transaction(
+            {
+                "from": wallet_addr,
+                "nonce": nonce,
+                "chainId": ARC_CHAIN_ID,
+                "gas": 100_000,
+                "gasPrice": await w3.eth.gas_price,
+            }
+        )
         signed = account.sign_transaction(tx)
         approve_hash = signed.raw_transaction.hex()
         if not approve_hash.startswith("0x"):
@@ -409,19 +428,26 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
         tx = await vault_contract.functions.deposit(
             deposit_amount_raw,
             w3.to_checksum_address(wallet_addr),
-        ).build_transaction({
-            "from": wallet_addr,
-            "nonce": nonce,
-            "chainId": ARC_CHAIN_ID,
-            "gas": 300_000,
-            "gasPrice": await w3.eth.gas_price,
-        })
+        ).build_transaction(
+            {
+                "from": wallet_addr,
+                "nonce": nonce,
+                "chainId": ARC_CHAIN_ID,
+                "gas": 300_000,
+                "gasPrice": await w3.eth.gas_price,
+            }
+        )
         signed = account.sign_transaction(tx)
         deposit_hash = signed.raw_transaction.hex()
         if not deposit_hash.startswith("0x"):
             deposit_hash = "0x" + deposit_hash
         receipt = await w3.eth.wait_for_transaction_receipt(deposit_hash, timeout=120)
-        evidence.record("Deposit USDC", "pass" if receipt["status"] == 1 else "fail", tx_hash=deposit_hash, amount=f"{deposit_amount} USDC")
+        evidence.record(
+            "Deposit USDC",
+            "pass" if receipt["status"] == 1 else "fail",
+            tx_hash=deposit_hash,
+            amount=f"{deposit_amount} USDC",
+        )
         print(f"  ✅ Deposited {deposit_amount} USDC. TX: {deposit_hash[:18]}…")
     except Exception as e:
         evidence.record("Deposit USDC", "fail", error=str(e))
@@ -439,19 +465,26 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
         tx = await vault_contract.functions.setTargetAllocations(
             [w3.to_checksum_address(sspy_address), w3.to_checksum_address(usdc_address)],
             [6000, 4000],  # 60% sSPY, 40% USDC (in basis points)
-        ).build_transaction({
-            "from": wallet_addr,
-            "nonce": nonce,
-            "chainId": ARC_CHAIN_ID,
-            "gas": 200_000,
-            "gasPrice": await w3.eth.gas_price,
-        })
+        ).build_transaction(
+            {
+                "from": wallet_addr,
+                "nonce": nonce,
+                "chainId": ARC_CHAIN_ID,
+                "gas": 200_000,
+                "gasPrice": await w3.eth.gas_price,
+            }
+        )
         signed = account.sign_transaction(tx)
         alloc_hash = signed.raw_transaction.hex()
         if not alloc_hash.startswith("0x"):
             alloc_hash = "0x" + alloc_hash
         receipt = await w3.eth.wait_for_transaction_receipt(alloc_hash, timeout=60)
-        evidence.record("Set target allocations", "pass" if receipt["status"] == 1 else "fail", tx_hash=alloc_hash, allocation="60% sSPY / 40% USDC")
+        evidence.record(
+            "Set target allocations",
+            "pass" if receipt["status"] == 1 else "fail",
+            tx_hash=alloc_hash,
+            allocation="60% sSPY / 40% USDC",
+        )
         print(f"  ✅ Allocations set. TX: {alloc_hash[:18]}…")
     except Exception as e:
         evidence.record("Set target allocations", "fail", error=str(e))
@@ -473,6 +506,7 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
     print("📋 Step 9: Checking if agent picks up vault...")
     try:
         import urllib.request
+
         req = urllib.request.Request(f"{API_BASE}/api/agent/status")
         with urllib.request.urlopen(req, timeout=10) as resp:
             agent_data = json.loads(resp.read())
@@ -486,11 +520,11 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
     # ── Step 10: Wait for rebalance trace ──────────────────────────
     print("📋 Step 10: Waiting for rebalance trace (max 5 minutes)...")
     trace_id = None
-    trace_verify = None
 
     for poll in range(MAX_POLLS):
         try:
             import urllib.request
+
             req = urllib.request.Request(f"{API_BASE}/api/traces/?limit=5&vault={vault_address}")
             with urllib.request.urlopen(req, timeout=10) as resp:
                 traces_data = json.loads(resp.read())
@@ -510,7 +544,9 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
         evidence.record("Rebalance trace found", "pass", trace_id=str(trace_id))
         print(f"  ✅ Trace found: {trace_id}")
     else:
-        evidence.record("Rebalance trace found", "fail", note="No trace found within timeout. Agent may not have ticked yet.")
+        evidence.record(
+            "Rebalance trace found", "fail", note="No trace found within timeout. Agent may not have ticked yet."
+        )
         print("  ⚠️  No trace found within timeout.")
 
     # ── Step 11: Verify trace on-chain ─────────────────────────────
@@ -518,6 +554,7 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
         print("📋 Step 11: Verifying trace on-chain...")
         try:
             import urllib.request
+
             req = urllib.request.Request(f"{API_BASE}/api/traces/{trace_id}/verify")
             with urllib.request.urlopen(req, timeout=15) as resp:
                 verify_data = json.loads(resp.read())
@@ -557,6 +594,7 @@ async def execute_smoke_test(wallet_key: str | None = None) -> None:
 
 
 # ── CLI ───────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(

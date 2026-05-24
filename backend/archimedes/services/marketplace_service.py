@@ -12,7 +12,7 @@ Category mapping:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from archimedes.api.marketplace_schemas import (
     AllocationBreakdown,
@@ -23,7 +23,10 @@ from archimedes.api.marketplace_schemas import (
     RiskLevel,
     StrategyCard,
 )
-from archimedes.services.strategy_provider import default_provider, LocalStrategyProvider
+from archimedes.services.strategy_provider import (
+    LocalStrategyProvider,
+    default_provider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +115,6 @@ def _strategy_to_detail(
     sharpe = strategy.real_sharpe if strategy.real_sharpe is not None else strategy.stub_sharpe
     cagr = strategy.real_cagr if strategy.real_cagr is not None else strategy.stub_cagr
     max_dd = strategy.real_max_dd if strategy.real_max_dd is not None else strategy.stub_max_dd
-    calmar = strategy.real_calmar if strategy.real_calmar is not None else strategy.stub_calmar
 
     # APY approximation: CAGR * 100
     apy_pct = (cagr * 100) if cagr is not None else 0.0
@@ -122,9 +124,15 @@ def _strategy_to_detail(
 
     # Asset allocation from strategy's universe
     synth_map = {
-        "SPY": "sSPY", "TSLA": "sTSLA", "NVDA": "sNVDA",
-        "BTC": "sBTC", "GOLD": "sGOLD", "OIL": "sOIL",
-        "NIKKEI": "sNKY", "TREASURY": "USDC", "BIL": "USDC",
+        "SPY": "sSPY",
+        "TSLA": "sTSLA",
+        "NVDA": "sNVDA",
+        "BTC": "sBTC",
+        "GOLD": "sGOLD",
+        "OIL": "sOIL",
+        "NIKKEI": "sNKY",
+        "TREASURY": "USDC",
+        "BIL": "USDC",
     }
 
     allocations = []
@@ -134,11 +142,13 @@ def _strategy_to_detail(
         for ticker in universe:
             sym = synth_map.get(ticker, ticker)
             atype = "stablecoin" if sym == "USDC" else "synthetic"
-            allocations.append(AllocationBreakdown(
-                asset=sym,
-                weight_pct=round(weight_each, 1),
-                type=atype,
-            ))
+            allocations.append(
+                AllocationBreakdown(
+                    asset=sym,
+                    weight_pct=round(weight_each, 1),
+                    type=atype,
+                )
+            )
     else:
         allocations = [AllocationBreakdown(asset="USDC", weight_pct=100.0, type="stablecoin")]
 
@@ -153,7 +163,11 @@ def _strategy_to_detail(
     )
 
     # Tags from methodology
-    tags = [strategy.rebalance_frequency.value if hasattr(strategy.rebalance_frequency, 'value') else str(strategy.rebalance_frequency)]
+    tags = [
+        strategy.rebalance_frequency.value
+        if hasattr(strategy.rebalance_frequency, "value")
+        else str(strategy.rebalance_frequency)
+    ]
     if strategy.passes_rigor_gate:
         tags.append("Rigor-Gated")
     if strategy.is_paper_grounded:
@@ -173,11 +187,9 @@ def _strategy_to_detail(
         }
 
     # Backtest period
-    backtest_start = strategy.real_backtest_start or "2020-01-01"
-    backtest_end = strategy.real_backtest_end or "2025-01-01"
 
-    created = strategy.created_at or datetime.now(timezone.utc)
-    updated = strategy.updated_at or datetime.now(timezone.utc)
+    created = strategy.created_at or datetime.now(UTC)
+    updated = strategy.updated_at or datetime.now(UTC)
 
     return MarketplaceStrategyDetail(
         id=strategy.id,
@@ -213,7 +225,9 @@ def _strategy_to_detail(
         performance_fee_pct=15.0,
         min_deposit_usdc=100.0,
         auto_compound=False,
-        rebalance_frequency=strategy.rebalance_frequency.value if hasattr(strategy.rebalance_frequency, 'value') else str(strategy.rebalance_frequency),
+        rebalance_frequency=strategy.rebalance_frequency.value
+        if hasattr(strategy.rebalance_frequency, "value")
+        else str(strategy.rebalance_frequency),
         featured=bool(strategy.passes_rigor_gate),
         trending=bool(strategy.status == "live" and sharpe and sharpe > 0.5),
         verified=bool(strategy.passes_rigor_gate),
@@ -221,8 +235,8 @@ def _strategy_to_detail(
         contract_address=None,
         audit_link=f"https://arxiv.org/abs/{strategy.paper_arxiv_id}" if strategy.paper_arxiv_id else None,
         docs_link=None,
-        created_at=created.isoformat() if hasattr(created, 'isoformat') else str(created),
-        updated_at=updated.isoformat() if hasattr(updated, 'isoformat') else str(updated),
+        created_at=created.isoformat() if hasattr(created, "isoformat") else str(created),
+        updated_at=updated.isoformat() if hasattr(updated, "isoformat") else str(updated),
     )
 
 
@@ -238,8 +252,9 @@ class MarketplaceService:
         self._provider: LocalStrategyProvider | None = None
         self._details: list[MarketplaceStrategyDetail] = []
         self._by_id: dict[str, MarketplaceStrategyDetail] = {}
-        # Eagerly load on construction
-        self.provider  # triggers lazy init + _rebuild()
+        # Eagerly load on construction: reading the property triggers lazy
+        # init + _rebuild() side effect.
+        _ = self.provider
 
     @property
     def provider(self) -> LocalStrategyProvider:
@@ -303,7 +318,8 @@ class MarketplaceService:
         if search:
             s_lower = search.lower()
             filtered = [
-                s for s in filtered
+                s
+                for s in filtered
                 if s_lower in s.name.lower()
                 or s_lower in s.description_short.lower()
                 or any(s_lower in tag.lower() for tag in s.tags)
@@ -323,7 +339,7 @@ class MarketplaceService:
 
         total = len(filtered)
         offset = (page - 1) * limit
-        paginated = filtered[offset: offset + limit]
+        paginated = filtered[offset : offset + limit]
 
         return [self._to_card(s) for s in paginated], total
 
@@ -374,15 +390,17 @@ class MarketplaceService:
         categories = []
         for cat in sorted(cat_counts.keys(), key=lambda c: c.value):
             apys = cat_apy.get(cat, [])
-            categories.append(CategoryInfo(
-                id=cat,
-                name=cat.value.replace("_", " ").title(),
-                description=descriptions.get(cat, ""),
-                icon=icons.get(cat),
-                strategies_count=cat_counts[cat],
-                avg_apy_pct=round(sum(apys) / len(apys), 1) if apys else 0.0,
-                total_tvl_usdc=0.0,
-            ))
+            categories.append(
+                CategoryInfo(
+                    id=cat,
+                    name=cat.value.replace("_", " ").title(),
+                    description=descriptions.get(cat, ""),
+                    icon=icons.get(cat),
+                    strategies_count=cat_counts[cat],
+                    avg_apy_pct=round(sum(apys) / len(apys), 1) if apys else 0.0,
+                    total_tvl_usdc=0.0,
+                )
+            )
 
         return categories
 

@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 import pandas as pd
-
 from archimedes_analytics_engine.cli import run_command
 
 

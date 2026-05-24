@@ -11,22 +11,17 @@ Covers:
 
 from __future__ import annotations
 
-import os
-
-import pytest
-
 from archimedes.services.paper_rag import (
     PaperRAGHealth,
-    _cosine_sim,
     _compute_idf,
+    _cosine_sim,
     _semantic_enabled,
-    _tokenize,
     _tfidf_vector,
+    _tokenize,
     augment_candidate_scores,
     paper_rag_health,
     semantic_rerank,
 )
-
 
 # ── Fixtures ─────────────────────────────────────────────────────
 
@@ -182,10 +177,7 @@ class TestSemanticRerank:
         assert a2_score > a1_score
 
     def test_tfidf_rerank_returns_all_papers(self):
-        papers = [
-            {"arxiv_id": f"p{i}", "title": f"Paper {i}", "abstract": f"Abstract {i}"}
-            for i in range(5)
-        ]
+        papers = [{"arxiv_id": f"p{i}", "title": f"Paper {i}", "abstract": f"Abstract {i}"} for i in range(5)]
         results = semantic_rerank("test query", papers)
         assert len(results) == 5
 
@@ -239,12 +231,10 @@ class TestAugmentCandidateScores:
         """A 'momentum' query should rank the momentum paper highest."""
         monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
         papers = PAPERS[:5]
-        result = augment_candidate_scores(
-            "momentum strategies in equity markets", papers
-        )
+        result = augment_candidate_scores("momentum strategies in equity markets", papers)
         # The momentum paper (2004.00001) should rank highest
         top_paper = result[0][0]
-        assert "momentum" in top_paper.title.lower() or "2004.00001" == top_paper.arxiv_id
+        assert "momentum" in top_paper.title.lower() or top_paper.arxiv_id == "2004.00001"
 
 
 class TestSelectCandidatesIntegration:
@@ -357,7 +347,6 @@ class TestGracefulFallback:
 
         # Patch semantic_rerank to raise
         import archimedes.services.paper_rag as prg
-        original = prg.semantic_rerank
 
         def boom(*args, **kwargs):
             raise RuntimeError("simulated failure")
@@ -376,8 +365,8 @@ class TestGracefulFallback:
         monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
         monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "true")
         from archimedes.agents.strategy_fusion import (
-            MIN_PAPERS,
             FUSION_MAX_PAPERS,
+            MIN_PAPERS,
             FusionBrief,
             select_candidates,
         )

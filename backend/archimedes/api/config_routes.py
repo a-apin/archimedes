@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from archimedes.api.schemas import ContractAddressesResponse
 from archimedes.api._route_helpers import config_svc
+from archimedes.api.schemas import ContractAddressesResponse
 
 config_router = APIRouter(prefix="/api/config", tags=["config"])
 

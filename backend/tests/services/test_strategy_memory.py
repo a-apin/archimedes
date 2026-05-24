@@ -5,12 +5,11 @@ Covers: ORM model, strategy_memory write path, proposals API endpoint.
 
 from __future__ import annotations
 
-import json
+from datetime import UTC
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-
 from fastapi.testclient import TestClient
-
 
 # ── ORM model tests ──────────────────────────────────────────────────────
 
@@ -20,11 +19,13 @@ class TestStrategyProposalModel:
 
     def test_model_imports(self):
         from archimedes.models.strategy_proposal import StrategyProposal
+
         assert StrategyProposal.__tablename__ == "strategy_proposals"
 
     def test_to_dict_roundtrip(self):
+        from datetime import datetime
+
         from archimedes.models.strategy_proposal import StrategyProposal
-        from datetime import datetime, timezone
 
         row = StrategyProposal(
             id="abc123",
@@ -37,8 +38,8 @@ class TestStrategyProposalModel:
             agent="fusion",
             regime_tag="bull",
             payload='{"intent": "test"}',
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         d = row.to_dict()
         assert d["id"] == "abc123"
@@ -59,6 +60,7 @@ class TestStrategyMemory:
     def _setup_db(self, tmp_path):
         """Use a temp SQLite DB for isolation."""
         import os
+
         self._db_path = str(tmp_path / "test_proposals.db")
         self._env = {
             "DATABASE_URL": f"sqlite:///{self._db_path}",
@@ -71,6 +73,7 @@ class TestStrategyMemory:
         from archimedes import db as db_mod
         from archimedes.models.chat import Base
         from archimedes.models.strategy_proposal import StrategyProposal  # noqa
+
         db_mod.DATABASE_URL = self._env["DATABASE_URL"]
         db_mod.engine = db_mod.create_engine(db_mod.DATABASE_URL, connect_args={"check_same_thread": False})
         db_mod.SessionLocal = db_mod.sessionmaker(bind=db_mod.engine, autocommit=False, autoflush=False)
@@ -131,7 +134,10 @@ class TestStrategyMemory:
         assert pid1 == pid2
 
     def test_query_proposals_returns_rows(self):
-        from archimedes.services.strategy_memory import persist_proposal, query_proposals
+        from archimedes.services.strategy_memory import (
+            persist_proposal,
+            query_proposals,
+        )
 
         persist_proposal(
             generation_id="gen_query1",
@@ -143,11 +149,14 @@ class TestStrategyMemory:
             agent="architect",
             intent="test query 2",
         )
-        proposals, total = query_proposals()
+        _proposals, total = query_proposals()
         assert total >= 2
 
     def test_query_proposals_filter_verdict(self):
-        from archimedes.services.strategy_memory import persist_proposal, query_proposals
+        from archimedes.services.strategy_memory import (
+            persist_proposal,
+            query_proposals,
+        )
 
         persist_proposal(
             generation_id="gen_pass_filter",
@@ -165,7 +174,10 @@ class TestStrategyMemory:
         assert all(p["verdict"] == "rigor_pass" for p in proposals)
 
     def test_query_proposals_filter_agent(self):
-        from archimedes.services.strategy_memory import persist_proposal, query_proposals
+        from archimedes.services.strategy_memory import (
+            persist_proposal,
+            query_proposals,
+        )
 
         persist_proposal(
             generation_id="gen_agent_f",
@@ -177,7 +189,10 @@ class TestStrategyMemory:
         assert all(p["agent"] == "fusion" for p in proposals)
 
     def test_query_proposals_pagination(self):
-        from archimedes.services.strategy_memory import persist_proposal, query_proposals
+        from archimedes.services.strategy_memory import (
+            persist_proposal,
+            query_proposals,
+        )
 
         for i in range(5):
             persist_proposal(
@@ -185,11 +200,11 @@ class TestStrategyMemory:
                 agent="fusion",
                 intent=f"pagination test {i}",
             )
-        proposals, total = query_proposals(limit=2, offset=0)
+        proposals, _total = query_proposals(limit=2, offset=0)
         assert len(proposals) <= 2
 
     def test_get_siblings(self):
-        from archimedes.services.strategy_memory import persist_proposal, get_siblings
+        from archimedes.services.strategy_memory import get_siblings, persist_proposal
 
         gid = "gen_siblings_test"
         persist_proposal(generation_id=gid, agent="agent", intent="sib 1")
@@ -220,6 +235,7 @@ class TestProposalsAPI:
     @pytest.fixture(autouse=True)
     def _setup(self, tmp_path):
         import os
+
         self._db_path = str(tmp_path / "test_api_proposals.db")
         self._env_key = "DATABASE_URL"
         self._orig = os.environ.get(self._env_key)
@@ -228,6 +244,7 @@ class TestProposalsAPI:
         from archimedes import db as db_mod
         from archimedes.models.chat import Base
         from archimedes.models.strategy_proposal import StrategyProposal  # noqa
+
         db_mod.DATABASE_URL = os.environ[self._env_key]
         db_mod.engine = db_mod.create_engine(db_mod.DATABASE_URL, connect_args={"check_same_thread": False})
         db_mod.SessionLocal = db_mod.sessionmaker(bind=db_mod.engine, autocommit=False, autoflush=False)
@@ -243,6 +260,7 @@ class TestProposalsAPI:
     @pytest.fixture
     def client(self):
         from archimedes.main import app
+
         return TestClient(app)
 
     def test_list_proposals_empty(self, client):

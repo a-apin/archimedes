@@ -6,42 +6,41 @@ chain services that read/write Arc smart contracts.
 
 import os
 
+# Load .env into os.environ at import time for modules that use os.getenv()
+# (circle_signer, oracle_updater) — pydantic ChainSettings handles ARC_ vars itself.
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-# Load .env into os.environ at import time for modules that use os.getenv()
-# (circle_signer, oracle_updater) — pydantic ChainSettings handles ARC_ vars itself.
-from dotenv import load_dotenv
 load_dotenv("../.env", override=True)  # Project root .env first (has real secrets)
 load_dotenv(".env", override=False)  # Backend-local .env fills in any missing (no override)
 
 # Shared rate limiter (Redis-backed, falls back to in-memory).
 # Defined in a separate module to avoid circular imports with route modules.
-from archimedes.api.limiter import limiter
-
-from archimedes.api.routes import (
-    agent_router,
-    assets_router,
-    vaults_router,
-    strategies_router,
-    traces_router,
-    regime_router,
-    swap_router,
-    config_router,
-    papers_router,
-)
 from archimedes.api.chat_routes import chat_router
 from archimedes.api.corpus_routes import corpus_router
 from archimedes.api.explore_routes import explore_router
 from archimedes.api.generate_routes import generate_router
+from archimedes.api.limiter import limiter
 from archimedes.api.marketplace_routes import marketplace_router
+from archimedes.api.proposals_routes import proposals_router
 from archimedes.api.risk_routes import risk_router
+from archimedes.api.routes import (
+    agent_router,
+    assets_router,
+    config_router,
+    papers_router,
+    regime_router,
+    strategies_router,
+    swap_router,
+    traces_router,
+    vaults_router,
+)
 from archimedes.api.selection_bias_routes import selection_bias_router
 from archimedes.api.user_routes import user_router
-from archimedes.api.proposals_routes import proposals_router
 from archimedes.db import init_db
 
 app = FastAPI(
@@ -53,6 +52,7 @@ app = FastAPI(
 # Wire rate limiter into the app state
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 
 # Custom handler returns JSON 429 with rate-limit headers
 @app.exception_handler(RateLimitExceeded)
@@ -67,6 +67,7 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     if hasattr(exc, "detail"):
         response.headers["X-RateLimit-Limit"] = str(getattr(exc, "limit", ""))
     return response
+
 
 # Allow the Next.js frontend to call the API during development
 # Production: restricted to PUBLIC_DOMAIN env var (Issue #178).
@@ -102,11 +103,12 @@ async def _startup_populate_rigor_gate():
     Skips entirely if the backtest_results table is empty.
     """
     import logging
+
     _logger = logging.getLogger("archimedes.startup")
     try:
-        from archimedes.services.strategy_provider import default_provider
         from archimedes.db import get_session
         from archimedes.models.backtest_store import BacktestResultRecord
+        from archimedes.services.strategy_provider import default_provider
 
         provider = default_provider()
         strategies = provider.list_strategies()
@@ -115,9 +117,7 @@ async def _startup_populate_rigor_gate():
 
         strategy_ids = [s.id for s in strategies]
         with get_session() as session:
-            rows = session.query(BacktestResultRecord).filter(
-                BacktestResultRecord.strategy_id.in_(strategy_ids)
-            ).all()
+            rows = session.query(BacktestResultRecord).filter(BacktestResultRecord.strategy_id.in_(strategy_ids)).all()
 
             # Check if any need rigor gate computation
             needs_rigor = [r for r in rows if r.deflated_sharpe_ratio is None]
@@ -128,12 +128,14 @@ async def _startup_populate_rigor_gate():
         _logger.info("startup: computing rigor gate for %d strategies...", len(needs_rigor))
 
         # Call the rigor gate endpoint logic (triggers full computation + persist)
+
         from archimedes.api.selection_bias_routes import evaluate_rigor_gate
-        import asyncio
+
         result = await evaluate_rigor_gate()
         _logger.info(
             "startup: rigor gate computed — %d/%d passing",
-            result.passing, result.total,
+            result.passing,
+            result.total,
         )
 
         # Refresh provider's backtest cache so /api/strategies serves the new DSR/PBO values
@@ -146,9 +148,11 @@ async def _startup_populate_rigor_gate():
 async def _startup_seed_corpus():
     """Seed papers table from manifest.jsonl (idempotent — adds new papers only)."""
     import logging
+
     _logger = logging.getLogger("archimedes.startup")
     try:
         from archimedes.services.corpus_service import seed_from_manifest
+
         inserted = seed_from_manifest()
         if inserted > 0:
             _logger.info("startup: seeded %d new papers from manifest", inserted)
@@ -156,6 +160,7 @@ async def _startup_seed_corpus():
             _logger.info("startup: corpus seed — no new papers to add")
     except Exception as exc:
         _logger.warning("startup: corpus seed failed (non-fatal): %s", exc)
+
 
 # Wire all routers
 app.include_router(assets_router)
@@ -185,11 +190,11 @@ async def health():
 
     Reports corpus state so silent degradation is visible.
     """
-    from archimedes.chain.client import chain_client
+
     from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
+    from archimedes.chain.client import chain_client
+    from archimedes.services.corpus_service import get_corpus_meta, get_paper_count
     from archimedes.services.llm_backend import make_llm_backend
-    from archimedes.services.corpus_service import get_paper_count, get_corpus_meta
-    import os
 
     connected = await chain_client.is_connected()
     corpus = load_corpus()
@@ -197,11 +202,7 @@ async def health():
     backend = make_llm_backend()
     llm_provider = os.getenv("LLM_PROVIDER", "auto")
     is_available = getattr(backend, "available", False)
-    llm_backend = (
-        "live" if is_available
-        else backend.model_id if hasattr(backend, "model_id")
-        else "unavailable"
-    )
+    llm_backend = "live" if is_available else backend.model_id if hasattr(backend, "model_id") else "unavailable"
 
     # DB-backed corpus diagnostics
     db_count = 0
@@ -223,6 +224,7 @@ async def health():
     paper_rag_reason = ""
     try:
         from archimedes.services.paper_rag import paper_rag_health as _prag_health
+
         _diag = _prag_health()
         paper_rag_status = _diag.status
         paper_rag_reason = _diag.reason
@@ -255,6 +257,7 @@ async def health():
 async def health_paper_rag():
     """Dedicated paper-rag health endpoint."""
     from archimedes.services.paper_rag import paper_rag_health
+
     diag = paper_rag_health()
     return {
         "paper_rag": diag.status,

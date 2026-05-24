@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import pytest
-
-from archimedes.services.strategy_dsl import DSLError, FABER_2007_SPEC, validate_strategy_spec
-from archimedes.services.dsl_to_backtrader import interpret_spec, interpret_variant, _eval_condition
+from archimedes.services.dsl_to_backtrader import (
+    _eval_condition,
+    interpret_spec,
+    interpret_variant,
+)
+from archimedes.services.strategy_dsl import (
+    FABER_2007_SPEC,
+    DSLError,
+    validate_strategy_spec,
+)
 
 
 class TestInterpretsReferenceExamples:
@@ -60,18 +67,22 @@ class TestConditionEvaluation:
         assert _eval_condition({"lte": ["close", 100]}, {"close": 100}) is True
 
     def test_and(self):
-        cond = {"and": [
-            {"gt": ["close", 100]},
-            {"lt": ["close", 200]},
-        ]}
+        cond = {
+            "and": [
+                {"gt": ["close", 100]},
+                {"lt": ["close", 200]},
+            ]
+        }
         assert _eval_condition(cond, {"close": 150}) is True
         assert _eval_condition(cond, {"close": 50}) is False
 
     def test_or(self):
-        cond = {"or": [
-            {"gt": ["close", 200]},
-            {"lt": ["close", 50]},
-        ]}
+        cond = {
+            "or": [
+                {"gt": ["close", 200]},
+                {"lt": ["close", 50]},
+            ]
+        }
         assert _eval_condition(cond, {"close": 30}) is True
         assert _eval_condition(cond, {"close": 100}) is False
 
@@ -84,6 +95,7 @@ class TestConditionEvaluation:
 def _get_bt_strategy_class():
     """Import backtrader and return the Strategy base class."""
     import backtrader as bt
+
     return bt.Strategy
 
 

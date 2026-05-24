@@ -13,11 +13,7 @@ Convention:
 
 from __future__ import annotations
 
-from datetime import datetime
-from enum import Enum
-
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel
 
 # ═══════════════════════════════════════════════════════════════
 # Assets
@@ -332,7 +328,7 @@ class RegimeResponse(BaseModel):
     regime_changed: bool = False
     signals: RegimeSignalsResponse
     transition_probabilities: dict | None = None  # From get_transition_probabilities()
-    regime_history: dict | None = None            # From get_regime_history_summary()
+    regime_history: dict | None = None  # From get_regime_history_summary()
     recommended_strategies: list[str] | None = None  # Strategy IDs best for this regime
 
 
@@ -340,10 +336,10 @@ class RegimeSignalsResponse(BaseModel):
     vix_level: float
     sp500_above_ma50: bool
     sp500_above_ma200: bool
-    vix_rate_of_change: float | None = None     # VIX momentum
-    vix_score: float | None = None              # 0-1 danger score from VIX level
-    ma_score: float | None = None               # 0-1 from MA positioning
-    composite_score: float | None = None        # Final 0-1 composite
+    vix_rate_of_change: float | None = None  # VIX momentum
+    vix_score: float | None = None  # 0-1 danger score from VIX level
+    ma_score: float | None = None  # 0-1 from MA positioning
+    composite_score: float | None = None  # Final 0-1 composite
     credit_spread_ig: float | None = None
     credit_spread_hy: float | None = None
     btc_dominance: float | None = None
@@ -513,6 +509,7 @@ class AgentStatusResponse(BaseModel):
 
 class AMMPoolHealth(BaseModel):
     """Health status of a single AMM pool (synth/USDC pair)."""
+
     symbol: str
     status: str  # "healthy" | "low_liquidity" | "empty" | "error"
     liquidity_usdc: float = 0.0
@@ -524,6 +521,7 @@ class AMMPoolHealth(BaseModel):
 
 class AMMHealthResponse(BaseModel):
     """Health status of all AMM pools."""
+
     pools: list[AMMPoolHealth]
     healthy_count: int = 0
     total_pools: int = 0

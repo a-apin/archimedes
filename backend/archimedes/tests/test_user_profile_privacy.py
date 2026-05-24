@@ -9,13 +9,11 @@ Verifies:
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import patch, MagicMock
-
-from archimedes.services.email_crypto import encrypt_email, decrypt_email
+from archimedes.services.email_crypto import decrypt_email, encrypt_email
 from archimedes.services.log_scrubber import scrub_profile
-
 
 # ── Email encryption round-trip ─────────────────────────────────────────────
 
@@ -43,8 +41,13 @@ class TestEmailEncryption:
         assert decrypt_email(t2) == plain
 
     def test_decrypt_invalid_token_returns_garbage_or_raises(self):
-        """Decrypting a non-token string should fail."""
-        with pytest.raises(Exception):
+        """Decrypting a non-token string should fail.
+
+        Catching bare Exception is intentional: cryptography lib raises a
+        mix of InvalidToken, ValueError, and TypeError depending on input
+        shape; the test only cares that SOMETHING fails.
+        """
+        with pytest.raises(Exception):  # noqa: B017
             decrypt_email("not-a-valid-fernet-token")
 
 
@@ -168,12 +171,14 @@ class TestUpsertEncryption:
 
             mock_session.add = capture_add
             import asyncio
+            from unittest.mock import MagicMock as _MagicMock
+
             from starlette.requests import Request as StarletteRequest
             from starlette.responses import Response as StarletteResponse
-            from unittest.mock import MagicMock as _MagicMock
+
             mock_req = _MagicMock(spec=StarletteRequest)
             mock_resp = _MagicMock(spec=StarletteResponse)
-            result = asyncio.get_event_loop().run_until_complete(upsert_profile(payload, request=mock_req, response=mock_resp))
+            asyncio.get_event_loop().run_until_complete(upsert_profile(payload, request=mock_req, response=mock_resp))
 
         # The stored email must be encrypted (not plaintext)
         assert added_obj is not None

@@ -19,13 +19,10 @@ Preconditions:
   - At least 1 Tier 1 vault with deposited USDC and initial allocation
 """
 
-import pytest
 from datetime import datetime
 
-from archimedes.models.regime import Regime, RegimeClassification, RegimeSignals
 from archimedes.models.asset import MarketSnapshot
-from archimedes.models.portfolio import RiskProfile
-
+from archimedes.models.regime import Regime
 
 # ─────────────────────────────────────────────────────────────
 # 5.1 Regime detection (Önder's component)
@@ -89,7 +86,10 @@ class TestRegimeDetection:
         # First: RISK_ON
         snapshot1 = MarketSnapshot(
             timestamp=datetime.utcnow(),
-            prices={}, vix=15.0, sp500_ma50=510.0, sp500_ma200=490.0,
+            prices={},
+            vix=15.0,
+            sp500_ma50=510.0,
+            sp500_ma200=490.0,
         )
         result1 = regime_detector.classify(snapshot1)
         assert result1.regime == Regime.RISK_ON
@@ -97,7 +97,10 @@ class TestRegimeDetection:
         # Then: RISK_OFF
         snapshot2 = MarketSnapshot(
             timestamp=datetime.utcnow(),
-            prices={}, vix=30.0, sp500_ma50=480.0, sp500_ma200=500.0,
+            prices={},
+            vix=30.0,
+            sp500_ma50=480.0,
+            sp500_ma200=500.0,
         )
         result2 = regime_detector.classify(snapshot2)
         assert result2.regime_changed
@@ -110,8 +113,10 @@ class TestRegimeDetection:
         # RISK_ON with one contradicting signal (VIX elevated but momentum positive)
         snapshot = MarketSnapshot(
             timestamp=datetime.utcnow(),
-            prices={}, vix=23.0,  # Slightly elevated
-            sp500_ma50=520.0, sp500_ma200=490.0,  # Still positive
+            prices={},
+            vix=23.0,  # Slightly elevated
+            sp500_ma50=520.0,
+            sp500_ma200=490.0,  # Still positive
         )
         result = regime_detector.classify(snapshot)
         # Should NOT flip to RISK_OFF on one signal
@@ -149,6 +154,7 @@ class TestStrategyProvider:
     def test_filter_by_status(self, strategy_provider):
         """list_strategies(status=VALIDATED) returns only validated strategies."""
         from archimedes.models.strategy import StrategyStatus
+
         validated = strategy_provider.list_strategies(status=StrategyStatus.VALIDATED)
         for s in validated:
             assert s.status == StrategyStatus.VALIDATED
@@ -206,7 +212,6 @@ class TestAgentOrchestration:
 
     async def test_generates_reasoning_trace(self, agent_orchestrator):
         """After a rebalance decision, a ReasoningTrace is generated."""
-        from archimedes.models.regime import Regime, RegimeClassification, RegimeSignals
 
         decision = await agent_orchestrator.evaluate_vault("0xVault")
         regime = await agent_orchestrator.get_current_regime()
@@ -252,7 +257,7 @@ class TestAgentEndToEnd:
         regime = regime_detector.classify(snapshot)
 
         # Step 3: New targets
-        strategies = strategy_provider.list_strategies()
+        strategy_provider.list_strategies()
         # (backtest results would come from Önder's evaluator)
 
         # Step 4: Agent decision
@@ -260,9 +265,7 @@ class TestAgentEndToEnd:
 
         if decision.should_rebalance:
             # Step 5: Execute
-            tx_hashes = await chain_executor.execute_trades(
-                decision.vault_address, decision.trades
-            )
+            tx_hashes = await chain_executor.execute_trades(decision.vault_address, decision.trades)
             assert len(tx_hashes) > 0
 
             # Step 6: Publish trace

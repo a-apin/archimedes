@@ -22,13 +22,13 @@ from archimedes.models.paper_ref import PaperRef
 
 __all__ = [
     "PaperRef",
-    "StrategyStatus",
-    "SignalDefinition",
     "PositionSizing",
     "RebalanceFrequency",
-    "StrategyPassport",
+    "SignalDefinition",
     # Backwards-compat alias
     "Strategy",
+    "StrategyPassport",
+    "StrategyStatus",
 ]
 
 
@@ -95,9 +95,7 @@ class StrategyPassport:
     signals: list[SignalDefinition] = field(default_factory=list)
     position_sizing: PositionSizing = PositionSizing.EQUAL_WEIGHT
     rebalance_frequency: RebalanceFrequency = RebalanceFrequency.WEEKLY
-    risk_constraints: dict[str, float] = field(
-        default_factory=dict
-    )  # e.g. {"max_drawdown": 0.20, "max_leverage": 1.0}
+    risk_constraints: dict[str, float] = field(default_factory=dict)  # e.g. {"max_drawdown": 0.20, "max_leverage": 1.0}
     risk_profiles: list[str] = field(
         default_factory=list
     )  # Risk-tier tags: "conservative" | "moderate" | "aggressive" | "hyper_risky"

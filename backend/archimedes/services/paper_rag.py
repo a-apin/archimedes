@@ -94,6 +94,7 @@ def _embedding_available() -> bool:
     """True if sentence-transformers is importable and a model is loadable."""
     try:
         from sentence_transformers import SentenceTransformer  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -106,6 +107,7 @@ def _get_embedding_model():
         return _embedding_model
     try:
         from sentence_transformers import SentenceTransformer
+
         _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
         return _embedding_model
     except ImportError:
@@ -123,6 +125,7 @@ def _paperqa_available() -> bool:
     """True if paper-qa is importable."""
     try:
         from paperqa import Docs  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -136,6 +139,7 @@ async def _paperqa_relevance(query: str, paper_text: str) -> float:
     """
     try:
         from paperqa import Docs
+
         docs = Docs()
         docs.add(paper_text, docname="candidate")
         result = await docs.aquery(query)
@@ -174,8 +178,8 @@ def _cosine_sim(v1: dict[str, float], v2: dict[str, float]) -> float:
     if not common:
         return 0.0
     dot = sum(v1[t] * v2[t] for t in common)
-    mag1 = math.sqrt(sum(v ** 2 for v in v1.values()))
-    mag2 = math.sqrt(sum(v ** 2 for v in v2.values()))
+    mag1 = math.sqrt(sum(v**2 for v in v1.values()))
+    mag2 = math.sqrt(sum(v**2 for v in v2.values()))
     if mag1 == 0 or mag2 == 0:
         return 0.0
     return dot / (mag1 * mag2)
@@ -260,18 +264,15 @@ def _rerank_tfidf(
 ) -> list[tuple[dict[str, Any], float]]:
     """Rerank using TF-IDF cosine similarity (fallback, no external deps)."""
     query_tokens = _tokenize(query)
-    doc_tokens = [
-        _tokenize(f"{p.get('title', '')} {p.get('abstract', '')}")
-        for p in papers
-    ]
+    doc_tokens = [_tokenize(f"{p.get('title', '')} {p.get('abstract', '')}") for p in papers]
 
     # Build IDF from the paper corpus + query
-    all_docs = doc_tokens + [query_tokens]
+    all_docs = [*doc_tokens, query_tokens]
     idf = _compute_idf(all_docs)
 
     query_vec = _tfidf_vector(query_tokens, idf)
     results: list[tuple[dict[str, Any], float]] = []
-    for paper, tokens in zip(papers, doc_tokens):
+    for paper, tokens in zip(papers, doc_tokens, strict=False):
         doc_vec = _tfidf_vector(tokens, idf)
         sim = _cosine_sim(query_vec, doc_vec)
         # Normalize to [0, 1] range
@@ -304,11 +305,13 @@ def augment_candidate_scores(
     # Convert CorpusPaper-like objects to dicts for the reranker
     paper_dicts = []
     for c in candidates:
-        paper_dicts.append({
-            "arxiv_id": getattr(c, "arxiv_id", ""),
-            "title": getattr(c, "title", ""),
-            "abstract": getattr(c, "abstract", ""),
-        })
+        paper_dicts.append(
+            {
+                "arxiv_id": getattr(c, "arxiv_id", ""),
+                "title": getattr(c, "title", ""),
+                "abstract": getattr(c, "abstract", ""),
+            }
+        )
 
     try:
         scored = semantic_rerank(brief_direction, paper_dicts)

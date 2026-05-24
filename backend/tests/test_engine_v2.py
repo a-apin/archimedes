@@ -7,17 +7,14 @@ SQLite for StrategyStore.
 from __future__ import annotations
 
 import json
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
+import pytest
 from archimedes.models.chat import Base
 from archimedes.models.strategy_store import (
-    StrategyRecord,
     upsert_strategy,
-    _compute_content_hash,
 )
-
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 # ── Fixtures ──────────────────────────────────────────────────────
 
@@ -143,8 +140,8 @@ class TestFusionBriefMarketContext:
 
     def test_market_context_in_user_prompt(self):
         from archimedes.agents.strategy_fusion import (
-            FusionBrief,
             CorpusPaper,
+            FusionBrief,
             _build_user_prompt,
         )
 
@@ -165,8 +162,8 @@ class TestFusionBriefMarketContext:
 
     def test_no_market_context_omitted_from_prompt(self):
         from archimedes.agents.strategy_fusion import (
-            FusionBrief,
             CorpusPaper,
+            FusionBrief,
             _build_user_prompt,
         )
 
@@ -213,6 +210,7 @@ class TestJobStore:
     @pytest.fixture
     def job_store(self, monkeypatch):
         from archimedes.services import job_queue
+
         fake = _FakeRedis()
         store = job_queue.JobStore.__new__(job_queue.JobStore)
         store._url = "fake://"
@@ -309,6 +307,7 @@ class TestCorpusOverview:
             CorpusPaper("2303.003", "Paper C", "Abstract", "q-fin.CP", ("q-fin.CP",), "2023-03-10"),
         ]
         from collections import Counter
+
         cat_counts: Counter = Counter()
         year_counts: Counter = Counter()
         for p in papers:

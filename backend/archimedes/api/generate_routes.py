@@ -17,23 +17,23 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from archimedes.agents.generation_pipeline import run_generation
 from archimedes.api.generate_schemas import (
-    CandidateSummary,
     CandidatesListResponse,
+    CandidateSummary,
     GenerateBrief,
     GenerateStartRequest,
     GenerateStartResponse,
     JobsListResponse,
     JobSummary,
 )
-from archimedes.agents.generation_pipeline import run_generation
-from archimedes.services.job_queue import EVENT_LOG_TTL, get_job_store
 from archimedes.api.limiter import limiter
+from archimedes.services.job_queue import EVENT_LOG_TTL, get_job_store
 
 logger = logging.getLogger(__name__)
 
@@ -144,11 +144,7 @@ def _format_sse(ev: dict) -> str:
     event_id = ev["id"]
     event_name = ev.get("event", "message")
     data = ev.get("data", {})
-    return (
-        f"id: {event_id}\n"
-        f"event: {event_name}\n"
-        f"data: {json.dumps(data, default=str)}\n\n"
-    )
+    return f"id: {event_id}\nevent: {event_name}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
 @generate_router.post("/jobs/{job_id}/cancel")
@@ -175,11 +171,13 @@ async def cancel_job(job_id: str) -> dict[str, str]:
     # Flip status first so observers see "cancelled" even if the cancel
     # callback hasn't fully propagated yet.
     await store.update_status(job_id, "cancelled", error="cancelled by user")
-    await store.push_event(job_id, {
-        "event": "error",
-        "data": {"job_id": job_id, "message": "cancelled by user",
-                 "recoverable": False, "code": "CANCELLED"},
-    })
+    await store.push_event(
+        job_id,
+        {
+            "event": "error",
+            "data": {"job_id": job_id, "message": "cancelled by user", "recoverable": False, "code": "CANCELLED"},
+        },
+    )
 
     # Hard-cancel the task itself if we're still holding a reference.
     task = _RUNNING_TASKS.get(job_id)
@@ -204,15 +202,17 @@ async def list_jobs(limit: int = 20) -> JobsListResponse:
         payload = j.get("payload") or {}
         brief = payload.get("brief") or {}
         result = j.get("result") or {}
-        summaries.append(JobSummary(
-            job_id=j["id"],
-            state=_normalize_state(j.get("status") or "queued"),
-            brief_intent=brief.get("intent", ""),
-            created_at=j.get("created_at", ""),
-            updated_at=j.get("updated_at", ""),
-            n_candidates=int(payload.get("n_candidates") or 1),
-            best_strategy_id=result.get("best_strategy_id"),
-        ))
+        summaries.append(
+            JobSummary(
+                job_id=j["id"],
+                state=_normalize_state(j.get("status") or "queued"),
+                brief_intent=brief.get("intent", ""),
+                created_at=j.get("created_at", ""),
+                updated_at=j.get("updated_at", ""),
+                n_candidates=int(payload.get("n_candidates") or 1),
+                best_strategy_id=result.get("best_strategy_id"),
+            )
+        )
     return JobsListResponse(jobs=summaries)
 
 

@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-
 from archimedes.db import get_session, init_db
 from archimedes.models.backtest_store import BacktestResultRecord
 from archimedes.services.backtest_mapper import (
@@ -21,7 +19,6 @@ from archimedes.services.backtest_mapper import (
 )
 from archimedes.services.backtest_repository import insert_backtest_if_missing
 from archimedes.services.strategy_provider import default_provider
-from archimedes.services.rigor_evaluator import run_rigor_gate, compute_pbo
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "analytics_artifact_buy_hold.json"
 
@@ -57,7 +54,7 @@ def _seed_buy_hold_from_fixture():
     content_hash = canonical_artifact_hash(payload)
 
     with get_session() as session:
-        _, inserted = insert_backtest_if_missing(
+        _, _inserted = insert_backtest_if_missing(
             session,
             strategy_id=buy_hold.id,
             content_hash=content_hash,
@@ -108,7 +105,7 @@ class TestBacktestPipelineHermetic:
 
     def test_rigor_gate_computes_on_real_data(self):
         """Selection-bias DSR/PBO/OOS can be computed from fixture equity curve."""
-        strategy_id = _seed_buy_hold_from_fixture()
+        _seed_buy_hold_from_fixture()
 
         # Extract daily returns from artifact
         payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))

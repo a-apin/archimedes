@@ -33,15 +33,15 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
-from archimedes.services.llm_backend import LLMBackend
 from archimedes.agents.strategy_architect import (
     default_backend,
     extract_json,
 )
+from archimedes.services.llm_backend import LLMBackend
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ def extract_text(pdf_bytes: bytes, *, cache_dir: Path) -> str:
     for i, page in enumerate(reader.pages):
         try:
             parts.append(page.extract_text() or "")
-        except Exception as exc:  # noqa: BLE001 — one bad page must not abort
+        except Exception as exc:
             logger.debug("page %d extract failed: %s", i, exc)
     text = "\n".join(parts).strip()
     cache_file.write_text(json.dumps({"sha256": sha, "text": text}))
@@ -156,9 +156,7 @@ Output STRICT JSON ONLY, exactly this schema:
 }"""
 
 
-def synthesize_passport(
-    meta: PaperMeta, body_text: str, backend: LLMBackend
-) -> dict:
+def synthesize_passport(meta: PaperMeta, body_text: str, backend: LLMBackend) -> dict:
     """Claude-extracted passport fields. Robust JSON parse; honest defaults."""
     user = json.dumps(
         {
@@ -192,9 +190,7 @@ _ALLOWED_FREQ = {"daily", "weekly", "monthly"}
 _ALLOWED_PROFILES = {"conservative", "moderate", "aggressive", "hyper_risky"}
 
 
-def render_strategy_module(
-    meta: PaperMeta, synth: dict, *, extraction_llm: str
-) -> str:
+def render_strategy_module(meta: PaperMeta, synth: dict, *, extraction_llm: str) -> str:
     """Emit Python the LocalStrategyProvider AST reader can parse.
 
     Constants only use literals (lists/strings/numbers) so the provider's
@@ -208,9 +204,7 @@ def render_strategy_module(
     freq = str(synth.get("rebalance_frequency", "weekly")).lower()
     if freq not in _ALLOWED_FREQ:
         freq = "weekly"
-    profiles = [
-        p for p in synth.get("risk_profiles", []) if p in _ALLOWED_PROFILES
-    ] or ["moderate"]
+    profiles = [p for p in synth.get("risk_profiles", []) if p in _ALLOWED_PROFILES] or ["moderate"]
 
     def lit(v: object) -> str:
         return repr(v)
@@ -296,7 +290,7 @@ def extract_strategy(
 
     try:
         meta = fetcher(arxiv_id)
-    except Exception as exc:  # noqa: BLE001 — network/parse failure → honest None
+    except Exception as exc:
         logger.warning("arxiv fetch failed for %s: %s", arxiv_id, exc)
         return None
 
@@ -304,10 +298,8 @@ def extract_strategy(
     if meta.pdf_url:
         try:
             pdf_bytes = pdf_downloader(meta.pdf_url)
-            body = extract_text(
-                pdf_bytes, cache_dir=strategies_dir.parent / ".paper_cache"
-            )
-        except Exception as exc:  # noqa: BLE001 — fall back to abstract-only
+            body = extract_text(pdf_bytes, cache_dir=strategies_dir.parent / ".paper_cache")
+        except Exception as exc:
             logger.warning("pdf extract failed for %s: %s", arxiv_id, exc)
 
     synth = synthesize_passport(meta, body, backend)
@@ -315,9 +307,7 @@ def extract_strategy(
         logger.warning("arxiv synth empty for %s; no strategy written", arxiv_id)
         return None
 
-    source = render_strategy_module(
-        meta, synth, extraction_llm=backend.model_id
-    )
+    source = render_strategy_module(meta, synth, extraction_llm=backend.model_id)
     slug = _slug(meta.arxiv_id, meta.title)
     path = write_strategy_file(source, strategies_dir, slug)
     logger.info("wrote LLM-extracted strategy %s", path)

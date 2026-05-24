@@ -6,12 +6,11 @@ This is needed because the initial bootstrap didn't add AMM pool liquidity.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
+from archimedes.chain.circle_signer import circle_signer
 from archimedes.chain.client import chain_client
 from archimedes.chain.contracts import get_contract_loader
-from archimedes.chain.circle_signer import circle_signer
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +27,6 @@ async def bootstrap_amm_liquidity(usdc_per_pool: float = 3.0) -> dict:
     router = loader.amm_router
     usdc_address = chain_client.settings.usdc_address
     synth_addresses = chain_client.settings.synth_addresses
-    oracle_addresses = chain_client.settings.oracle_addresses
 
     results = {}
 

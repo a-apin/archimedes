@@ -65,11 +65,7 @@ def _load_run_command(repo_root: Path):
 
 
 def _read_config() -> RunConfig:
-    operations = [
-        op.strip().upper()
-        for op in os.getenv("BACKTEST_OPERATIONS", "SPY").split(",")
-        if op.strip()
-    ]
+    operations = [op.strip().upper() for op in os.getenv("BACKTEST_OPERATIONS", "SPY").split(",") if op.strip()]
     start = os.getenv("BACKTEST_START", "2018-01-01")
     end = os.getenv("BACKTEST_END", datetime.now(UTC).date().isoformat())
     initial_cash = float(os.getenv("BACKTEST_INITIAL_CASH", "100000"))
@@ -95,9 +91,7 @@ def run_backtests() -> dict[str, int]:
 
     provider = default_provider(repo_root=repo_root)
     strategy_by_path = {
-        Path(s.strategy_code_path).resolve(): s
-        for s in provider.list_strategies()
-        if s.strategy_code_path
+        Path(s.strategy_code_path).resolve(): s for s in provider.list_strategies() if s.strategy_code_path
     }
 
     init_db()
@@ -157,7 +151,7 @@ def run_backtests() -> dict[str, int]:
                 skipped += 1
                 logger.info("skip duplicate content hash: %s (%s)", strategy.paper_title, strategy.id)
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failed += 1
             logger.exception("backtest failed for %s: %s", strategy_file, exc)
 

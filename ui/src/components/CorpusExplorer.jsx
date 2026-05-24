@@ -26,7 +26,7 @@ export default function CorpusExplorer() {
 
   // Fetch overview
   useEffect(() => {
-    apiGet('/api/corpus/overview')
+    apiGet('/api/papers/corpus/overview')
       .then(setOverview)
       .catch(() => setOverview(null))
   }, [])

@@ -3,7 +3,6 @@ from __future__ import annotations
 import pandas as pd
 import yfinance as yf
 
-
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 
 

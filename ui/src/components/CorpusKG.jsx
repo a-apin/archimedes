@@ -22,9 +22,9 @@ const TYPE_ICONS = {
 /**
  * Knowledge Graph viewer.
  *
- * Fetches from ``/api/corpus/kg/entities?q=<term>`` and renders entities
- * as an SVG graph. Entity search filters the KG. Returns 503 when KB
- * pipeline has not yet produced an artifact.
+ * Fetches from ``/api/papers/corpus/kg?entity=<q>`` and renders entities
+ * + relations as an SVG graph. Entity search filters the KG. Falls back
+ * gracefully on 503 or empty data.
  */
 export default function CorpusKG({ onOpenPaper }) {
   const [data, setData] = useState(null)
@@ -39,27 +39,11 @@ export default function CorpusKG({ onOpenPaper }) {
     setLoading(true)
     setError('')
     try {
-      if (!q || q.length < 2) {
-        // No query — show empty state; user must search
-        setData(null)
-        setLoading(false)
-        return
-      }
-      const res = await fetch(`${API_BASE}/api/corpus/kg/entities?q=${encodeURIComponent(q)}`)
+      const params = q ? `?entity=${encodeURIComponent(q)}` : ''
+      const res = await fetch(`${API_BASE}/api/papers/corpus/kg${params}`)
       if (res.status === 503) throw new Error('KB pipeline still running — first artifact pending')
       if (!res.ok) throw new Error(res.statusText)
-      const json = await res.json()
-      // Adapt honest response shape: {query, entities: [{id, canonical_name, entity_type, paper_count}]}
-      setData({
-        query: json.query,
-        entities: (json.entities || []).map(e => ({
-          id: String(e.id),
-          label: e.canonical_name,
-          type: e.entity_type,
-          paper_count: e.paper_count,
-        })),
-        relations: [],  // Entity detail relations loaded separately per entity
-      })
+      setData(await res.json())
     } catch (e) {
       setError(e.message || 'Failed to load knowledge graph')
     } finally {
@@ -168,15 +152,14 @@ export default function CorpusKG({ onOpenPaper }) {
 
       <div className="flex gap-2 flex-wrap mb-3" style={{ padding: '0 12px' }}>
         <span className="tag tag-muted">{entities.length} entities</span>
-        {data?.query && <span className="tag tag-muted">Search: "{data.query}"</span>}
+        <span className="tag tag-muted">{relations.length} relations</span>
+        {data?.filtered != null && <span className="tag tag-muted">{data.filtered} papers matched</span>}
       </div>
 
       {loading ? (
         <div style={{ padding: 40, textAlign: 'center' }} className="caption">Loading knowledge graph…</div>
-      ) : !data ? (
-        <div style={{ padding: 40, textAlign: 'center' }} className="caption">Enter a search term (min 2 characters) to explore the knowledge graph.</div>
       ) : entities.length === 0 ? (
-        <div style={{ padding: 40, textAlign: 'center' }} className="caption">No entities found for "{data?.query}".</div>
+        <div style={{ padding: 40, textAlign: 'center' }} className="caption">No entities found.</div>
       ) : (
         <div style={{ overflow: 'auto', padding: '0 12px 12px' }}>
           <svg

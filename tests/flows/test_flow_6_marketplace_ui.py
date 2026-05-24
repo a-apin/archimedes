@@ -14,8 +14,6 @@ This flow tests the API contract that Daniel's frontend depends on.
 All tests hit the REST API; frontend rendering is Daniel's responsibility.
 """
 
-import pytest
-
 
 # ─────────────────────────────────────────────────────────────
 # 6.1 Marketplace landing page (leaderboard)
@@ -50,10 +48,19 @@ class TestMarketplaceLanding:
         response = await client.get("/api/vaults/")
         vault = response.json()["vaults"][0]
         required_fields = [
-            "address", "name", "symbol", "tier", "creator",
-            "aum_usdc", "share_price", "return_24h", "return_7d",
-            "management_fee_pct", "performance_fee_pct",
-            "is_agent_assisted", "depositors",
+            "address",
+            "name",
+            "symbol",
+            "tier",
+            "creator",
+            "aum_usdc",
+            "share_price",
+            "return_24h",
+            "return_7d",
+            "management_fee_pct",
+            "performance_fee_pct",
+            "is_agent_assisted",
+            "depositors",
         ]
         for field in required_fields:
             assert field in vault, f"Missing field: {field}"

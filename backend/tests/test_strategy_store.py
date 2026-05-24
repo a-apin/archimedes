@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import json
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
+import pytest
 from archimedes.models.chat import Base
 from archimedes.models.strategy_store import (
     StrategyRecord,
     _compute_content_hash,
-    upsert_strategy,
     resolve_source_papers,
     strategies_by_paper,
+    upsert_strategy,
 )
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture
@@ -69,32 +69,52 @@ class TestUpsertStrategy:
 
     def test_idempotent_same_content(self, session):
         r1 = upsert_strategy(
-            session, generation_method="fusion", strategy_name="T",
-            thesis="X", source_papers=PAPERS_A, asset_universe=["SPY"],
+            session,
+            generation_method="fusion",
+            strategy_name="T",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
         )
         r2 = upsert_strategy(
-            session, generation_method="fusion", strategy_name="T",
-            thesis="X", source_papers=PAPERS_A, asset_universe=["SPY"],
+            session,
+            generation_method="fusion",
+            strategy_name="T",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
         )
         assert r1.id == r2.id
         assert session.query(StrategyRecord).count() == 1
 
     def test_different_content_creates_new(self, session):
         r1 = upsert_strategy(
-            session, generation_method="fusion", strategy_name="T1",
-            thesis="X", source_papers=PAPERS_A, asset_universe=["SPY"],
+            session,
+            generation_method="fusion",
+            strategy_name="T1",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
         )
         r2 = upsert_strategy(
-            session, generation_method="architect", strategy_name="T2",
-            thesis="Y", source_papers=PAPERS_B, asset_universe=["TSLA"],
+            session,
+            generation_method="architect",
+            strategy_name="T2",
+            thesis="Y",
+            source_papers=PAPERS_B,
+            asset_universe=["TSLA"],
         )
         assert r1.id != r2.id
         assert session.query(StrategyRecord).count() == 2
 
     def test_rigor_verdict_transitions_to_live(self, session):
         r = upsert_strategy(
-            session, generation_method="fusion", strategy_name="T",
-            thesis="X", source_papers=PAPERS_A, asset_universe=["SPY"],
+            session,
+            generation_method="fusion",
+            strategy_name="T",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
             rigor_verdict={"passing": True, "dsr": 1.5, "pbo": 0.1},
         )
         assert r.status == "live"
@@ -105,21 +125,33 @@ class TestUpsertStrategy:
         wedge depends on failed strategies being visible failures rather than
         looking indistinguishable from un-evaluated candidates."""
         r = upsert_strategy(
-            session, generation_method="fusion", strategy_name="T",
-            thesis="X", source_papers=PAPERS_A, asset_universe=["SPY"],
+            session,
+            generation_method="fusion",
+            strategy_name="T",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
             rigor_verdict={"passing": False, "dsr": 0.3, "pbo": 0.9},
         )
         assert r.status == "rejected"
 
     def test_late_rigor_verdict_updates_existing(self, session):
         r1 = upsert_strategy(
-            session, generation_method="fusion", strategy_name="T",
-            thesis="X", source_papers=PAPERS_A, asset_universe=["SPY"],
+            session,
+            generation_method="fusion",
+            strategy_name="T",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
         )
         assert r1.status == "candidate"
         r2 = upsert_strategy(
-            session, generation_method="fusion", strategy_name="T",
-            thesis="X", source_papers=PAPERS_A, asset_universe=["SPY"],
+            session,
+            generation_method="fusion",
+            strategy_name="T",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
             rigor_verdict={"passing": True, "dsr": 2.0},
         )
         assert r2.status == "live"
@@ -129,8 +161,12 @@ class TestUpsertStrategy:
 class TestResolveSourcePapers:
     def test_returns_source_papers(self, session):
         upsert_strategy(
-            session, generation_method="fusion", strategy_name="T",
-            thesis="X", source_papers=PAPERS_B, asset_universe=["SPY"],
+            session,
+            generation_method="fusion",
+            strategy_name="T",
+            thesis="X",
+            source_papers=PAPERS_B,
+            asset_universe=["SPY"],
         )
         record = session.query(StrategyRecord).first()
         papers = resolve_source_papers(session, record.id)
@@ -144,12 +180,20 @@ class TestResolveSourcePapers:
 class TestStrategiesByPaper:
     def test_finds_citing_strategies(self, session):
         upsert_strategy(
-            session, generation_method="fusion", strategy_name="T1",
-            thesis="X", source_papers=PAPERS_B, asset_universe=["SPY"],
+            session,
+            generation_method="fusion",
+            strategy_name="T1",
+            thesis="X",
+            source_papers=PAPERS_B,
+            asset_universe=["SPY"],
         )
         upsert_strategy(
-            session, generation_method="architect", strategy_name="T2",
-            thesis="Y", source_papers=PAPERS_A, asset_universe=["TSLA"],
+            session,
+            generation_method="architect",
+            strategy_name="T2",
+            thesis="Y",
+            source_papers=PAPERS_A,
+            asset_universe=["TSLA"],
         )
         results = strategies_by_paper(session, "2401.12345")
         assert len(results) == 2
@@ -161,7 +205,9 @@ class TestStrategiesByPaper:
 class TestToDict:
     def test_roundtrip(self, session):
         r = upsert_strategy(
-            session, generation_method="fusion", strategy_name="Test Strat",
+            session,
+            generation_method="fusion",
+            strategy_name="Test Strat",
             thesis="A thesis about things",
             source_papers=PAPERS_A,
             asset_universe=["SPY", "TSLA"],

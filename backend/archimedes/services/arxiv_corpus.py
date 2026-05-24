@@ -35,10 +35,10 @@ import hashlib
 import json
 import logging
 import sys
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Iterable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -158,13 +158,11 @@ def _is_qfin_relevant(primary: str, categories: Iterable[str]) -> bool:
     otherwise a generic ML paper with no finance content leaks in.
     """
     cats = set(categories) | {primary}
-    if any(c.startswith("q-fin.") for c in cats):
-        return True
-    return False
+    return any(c.startswith("q-fin.") for c in cats)
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ── 1. Search (injectable seam) ─────────────────────────────────
@@ -200,7 +198,7 @@ def _default_search(categories: Iterable[str], limit: int) -> Iterator[CorpusPap
                 paper = _result_to_paper(result)
                 if paper is not None:
                     yield paper
-        except Exception as exc:  # noqa: BLE001 — one bad category != abort
+        except Exception as exc:
             logger.warning("arxiv: category %s failed: %s", category, exc)
 
 
@@ -226,7 +224,7 @@ def _result_to_paper(result: object) -> CorpusPaper | None:
             pdf_url=str(getattr(result, "pdf_url", "") or ""),
             published_dt=published,
         )
-    except Exception as exc:  # noqa: BLE001 — skip a malformed entry, keep going
+    except Exception as exc:
         logger.debug("arxiv: skipping unparseable result: %s", exc)
         return None
 
@@ -234,9 +232,7 @@ def _result_to_paper(result: object) -> CorpusPaper | None:
 # ── 2. Dedupe + recency trim ────────────────────────────────────
 
 
-def _dedupe_and_trim(
-    papers: Iterable[CorpusPaper], max_papers: int
-) -> list[CorpusPaper]:
+def _dedupe_and_trim(papers: Iterable[CorpusPaper], max_papers: int) -> list[CorpusPaper]:
     """Dedupe by bare arxiv_id, then keep the ``max_papers`` most recent.
 
     Recency bias is the whole point: sort by submission date descending and
@@ -250,10 +246,7 @@ def _dedupe_and_trim(
 
     ordered = sorted(
         seen.values(),
-        key=lambda p: (
-            p.published_dt
-            or datetime(1970, 1, 1, tzinfo=timezone.utc)
-        ),
+        key=lambda p: p.published_dt or datetime(1970, 1, 1, tzinfo=UTC),
         reverse=True,
     )
     return ordered[:max_papers]
@@ -291,7 +284,7 @@ def _cache_pdf(
     if pdf_path.exists() and pdf_path.stat().st_size > 0:
         try:
             return hashlib.sha256(pdf_path.read_bytes()).hexdigest()
-        except Exception as exc:  # noqa: BLE001 — fall through to re-download
+        except Exception as exc:
             logger.debug("re-reading cached pdf %s failed: %s", pdf_path, exc)
 
     if not paper.pdf_url:
@@ -299,7 +292,7 @@ def _cache_pdf(
         return None
     try:
         data = downloader(paper.pdf_url)
-    except Exception as exc:  # noqa: BLE001 — failed download must NOT abort
+    except Exception as exc:
         logger.warning("pdf download failed for %s: %s", paper.arxiv_id, exc)
         return None
     if not data:
@@ -332,13 +325,13 @@ def _extract_text(paper: CorpusPaper, pdf_dir: Path, text_dir: Path) -> bool:
     parts: list[str] = []
     try:
         reader = pypdf.PdfReader(str(pdf_path))
-    except Exception as exc:  # noqa: BLE001 — unreadable pdf → no text, keep going
+    except Exception as exc:
         logger.warning("pypdf open failed for %s: %s", paper.arxiv_id, exc)
         return False
     for i, page in enumerate(reader.pages):
         try:
             parts.append(page.extract_text() or "")
-        except Exception as exc:  # noqa: BLE001 — one bad page must not abort
+        except Exception as exc:
             logger.debug("%s page %d extract failed: %s", paper.arxiv_id, i, exc)
     text = "\n".join(parts).strip()
     if not text:
@@ -477,11 +470,7 @@ def main(argv: list[str] | None = None) -> int:
         fetch_pdfs=not args.no_pdfs,
     )
     cached = sum(1 for r in rows if r["pdf_sha256"] is not None)
-    print(
-        f"corpus: {len(rows)} papers in {args.out} "
-        f"({cached} PDFs cached, "
-        f"{len(rows) - cached} metadata-only)"
-    )
+    print(f"corpus: {len(rows)} papers in {args.out} ({cached} PDFs cached, {len(rows) - cached} metadata-only)")
     return 0
 
 

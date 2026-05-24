@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import logging
 
+from archimedes.chain.circle_signer import circle_signer
 from archimedes.chain.client import chain_client
 from archimedes.chain.contracts import ContractLoader, get_contract_loader
-from archimedes.chain.circle_signer import circle_signer
 from archimedes.models.trace import ReasoningTrace
 
 logger = logging.getLogger(__name__)
@@ -36,17 +36,13 @@ class TracePublisher:
             return None
 
         # keccak256 output is exactly 32 bytes
-        trace_hash_bytes = bytes.fromhex(
-            trace_hash.removeprefix("0x")
-        )  # 32 bytes
+        trace_hash_bytes = bytes.fromhex(trace_hash.removeprefix("0x"))  # 32 bytes
 
         # Encode metadata
         metadata = self._encode_metadata(trace)
 
         vault_addr = chain_client.to_checksum(trace.vault_address)
-        registry_addr = chain_client.to_checksum(
-            chain_client.settings.reasoning_trace_registry_address
-        )
+        registry_addr = chain_client.to_checksum(chain_client.settings.reasoning_trace_registry_address)
 
         # ── Path 1: Circle Developer-Controlled Wallet ──
         if circle_signer.is_configured:
@@ -80,9 +76,7 @@ class TracePublisher:
         nonce = await chain_client.w3.eth.get_transaction_count(account.address)
 
         try:
-            tx = await registry.functions.publishTrace(
-                vault_addr, trace_hash_bytes, metadata
-            ).build_transaction(
+            tx = await registry.functions.publishTrace(vault_addr, trace_hash_bytes, metadata).build_transaction(
                 {
                     "from": account.address,
                     "nonce": nonce,
@@ -125,9 +119,7 @@ class TracePublisher:
                 stored_hash = stored[2]  # bytes32 at index 2
 
                 # Compare
-                expected = bytes.fromhex(
-                    trace.trace_hash.removeprefix("0x")
-                )  # 32 bytes from keccak256
+                expected = bytes.fromhex(trace.trace_hash.removeprefix("0x"))  # 32 bytes from keccak256
                 if stored_hash == expected:
                     return True
 
@@ -184,6 +176,7 @@ class TracePublisher:
     def _encode_metadata(self, trace: ReasoningTrace) -> bytes:
         """Encode trace metadata as ABI-encoded bytes for on-chain storage."""
         import json
+
         metadata_dict = {
             "decision_type": trace.decision_type.value,
             "trigger": trace.trigger,

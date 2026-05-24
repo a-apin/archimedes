@@ -1,0 +1,67 @@
+# Root ruff configuration for the Archimedes repo.
+# Docs: https://docs.astral.sh/ruff/configuration/
+#
+# Why ruff.toml (not pyproject.toml) at the repo root:
+#   analytics-engine/ has its own pyproject.toml as a real Python project.
+#   The repo root is not a single Python project — it carries the FastAPI
+#   backend, the analytics-engine sub-project, scripts/, tests/, and the
+#   ui/ frontend. Using ruff.toml gives ruff a config without claiming the
+#   root is a package.
+#
+# Convention: line-length 120 (team alignment 2026-05-24).
+
+line-length = 120
+target-version = "py312"
+
+extend-exclude = [
+    "submodules",
+    "node_modules",
+    "ui/build",
+    "ui/dist",
+    "dist",
+    "build",
+    "*.egg-info",
+    ".venv",
+    "venv",
+]
+
+[lint]
+# Ruff defaults plus a focused additions list. We deliberately skip D
+# (docstrings) and ANN (type annotations) — too noisy for a hackathon-pace
+# codebase. Re-enable later if we want stricter hygiene.
+extend-select = [
+    "I",     # isort (import organization)
+    "UP",    # pyupgrade (modern Python idioms)
+    "B",     # flake8-bugbear (likely bugs)
+    "SIM",   # flake8-simplify (cleaner code)
+    "RUF",   # ruff-specific rules
+]
+
+ignore = [
+    "E501",  # line-too-long — ruff format handles wrapping; long URLs/strings are intentional
+    "B008",  # function call in default argument — FastAPI Depends() uses this idiom
+    # Ambiguous-unicode warnings flag em-dashes, en-dashes, and Greek letters that we
+    # use deliberately throughout prose comments + docstrings. They're a style choice,
+    # not a bug; ruff just can't tell from context.
+    "RUF001", # ambiguous-unicode-character-string
+    "RUF002", # ambiguous-unicode-character-docstring
+    "RUF003", # ambiguous-unicode-character-comment
+    # `class X(str, Enum)` → `class X(StrEnum)` is the Py 3.11+ idiom, but the two
+    # serialize differently (str(X.A) returns "A" with StrEnum, "X.A" with str+Enum).
+    # Several of our enums are JSON-serialized through pydantic; the migration is
+    # safe-but-needs-testing, so it's out of scope for the bulk lint pass.
+    "UP042",  # replace-str-enum — deferred to dedicated PR with serialization tests
+    # `int(x)` can be unnecessary OR intentional truncation; behavior-preserving
+    # auto-removal is risky. Manual case-by-case is the right play.
+    "RUF046", # unnecessary-cast-to-int
+]
+
+[lint.per-file-ignores]
+# Entry-point scripts + FastAPI app bootstrap MUST call load_dotenv() before
+# importing any service that reads env vars at import time. That forces the
+# downstream imports below the load_dotenv() call, which trips E402. The pattern
+# is intentional; the alternative (import-time-deferred env reads) is uglier.
+"backend/archimedes/main.py" = ["E402"]
+"backend/archimedes/scripts/*.py" = ["E402"]
+"analytics-engine/scripts/*.py" = ["E402"]
+"backend/archimedes/api/selection_bias_routes.py" = ["E402"]
