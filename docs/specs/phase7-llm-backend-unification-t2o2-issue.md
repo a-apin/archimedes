@@ -1,6 +1,6 @@
 # Issue spec for t2o2 — Unify LLM backends on `llm_backend.py`
 
-> **Status:** ✓ filed + closed as [#130](https://github.com/hackagora/archimedes-arcadia/issues/130) on 2026-05-23 — shipped on `main` (commit `dc91b43`). This file is the spec source-of-truth; PR archive lives on the issue.
+> **Status:** ✓ filed + closed as [#130](https://github.com/a-apin/archimedes-arcadia/issues/130) on 2026-05-23 — shipped on `main` (commit `dc91b43`). This file is the spec source-of-truth; PR archive lives on the issue.
 >
 > **Ready-to-file issue body.** Per CLAUDE.md's agentic issue pipeline.
 >

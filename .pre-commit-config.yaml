@@ -14,13 +14,18 @@ repos:
         args: ['--baseline', '.secrets.baseline']
         exclude: package-lock\.json$
 
-  # Python linting + formatting (mirrors ruff — same tool CI uses)
+  # Python linting + formatting — MIRRORS the CI ruff-gate blocking subset
+  # (.github/workflows/quality-gate.yml :: ruff-gate). Deliberately scoped to
+  # the same rules so pre-commit can't pass while CI fails (or vice versa).
+  # Add F82 here once PR-4 cluster fixes the remaining undefined-name bugs.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.10
+    rev: v0.15.13
     hooks:
       - id: ruff
-        args: ['--check']
+        name: ruff check (critical rules only — matches CI ruff-gate)
+        args: ['--select', 'E9,F63,F7,F40']
       - id: ruff-format
+        name: ruff format (check only; no auto-fix on commit)
         args: ['--check']
 
   # Trailing whitespace + YAML/JSON hygiene

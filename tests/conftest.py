@@ -2,6 +2,7 @@
 
 pytest_plugins = []
 
+
 # Tell pytest-asyncio to automatically mark async test functions
 # without needing @pytest.mark.asyncio on every one.
 def pytest_configure(config):

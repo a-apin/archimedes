@@ -20,17 +20,16 @@ from __future__ import annotations
 import json
 
 import pytest
-
-from archimedes.models.portfolio import RiskProfile
 from archimedes.agents.strategy_fusion import (
     MIN_PAPERS,
-    FusionCannedBackend,
     FusionBrief,
+    FusionCannedBackend,
     StrategyFusion,
     fusion_enabled,
     load_corpus,
     select_candidates,
 )
+from archimedes.models.portfolio import RiskProfile
 
 # ── Self-contained fixture corpus (frozen manifest schema) ──────
 
@@ -43,8 +42,7 @@ _FIXTURE_ROWS = [
         "categories": ["q-fin.PM"],
         "published": "2024-01-05",
         "updated": "2024-01-06",
-        "abstract": "We study a regime-switching overlay on cross-sectional "
-        "equity momentum across the stock universe.",
+        "abstract": "We study a regime-switching overlay on cross-sectional equity momentum across the stock universe.",
         "pdf_url": "http://x/1",
         "pdf_sha256": "a" * 64,
         "pdf_path": "data/corpus/pdfs/2401.00001.pdf",
@@ -59,8 +57,7 @@ _FIXTURE_ROWS = [
         "categories": ["q-fin.PM", "econ.EM"],
         "published": "2024-02-10",
         "updated": "2024-02-11",
-        "abstract": "A carry strategy on the treasury yield curve conditioned "
-        "on macro regime states.",
+        "abstract": "A carry strategy on the treasury yield curve conditioned on macro regime states.",
         "pdf_url": "http://x/2",
         "pdf_sha256": "b" * 64,
         "pdf_path": "data/corpus/pdfs/2402.00002.pdf",
@@ -75,8 +72,7 @@ _FIXTURE_ROWS = [
         "categories": ["q-fin.PR"],
         "published": "2024-03-15",
         "updated": "2024-03-16",
-        "abstract": "Modelling implied volatility surface dynamics and variance "
-        "risk premia for index options.",
+        "abstract": "Modelling implied volatility surface dynamics and variance risk premia for index options.",
         "pdf_url": "http://x/3",
         "pdf_sha256": "c" * 64,
         "pdf_path": "data/corpus/pdfs/2403.00003.pdf",
@@ -91,8 +87,7 @@ _FIXTURE_ROWS = [
         "categories": ["q-bio.BM"],
         "published": "2024-04-20",
         "updated": "2024-04-21",
-        "abstract": "An unrelated biology paper that must never match a "
-        "finance asset-class steer.",
+        "abstract": "An unrelated biology paper that must never match a finance asset-class steer.",
         "pdf_url": "http://x/4",
         "pdf_sha256": "d" * 64,
         "pdf_path": "data/corpus/pdfs/2404.00004.pdf",
@@ -152,8 +147,7 @@ class _MockBackend:
             {
                 "strategy_name": "Regime-conditioned carry/momentum fusion",
                 "thesis": "Fuse the two mechanisms. Pre-backtest hypothesis.",
-                "source_arxiv_ids": ids
-                + ["9999.99999"],  # hallucinated id — must be dropped
+                "source_arxiv_ids": [*ids, "9999.99999"],  # hallucinated id — must be dropped
                 "fusion_reasoning": "Paper A gives momentum; paper B gives carry.",
                 "novelty_rationale": "The joint regime conditioning is unpublished.",
                 "risk_notes": "Pre-backtest; selection-bias gate still applies.",
@@ -187,7 +181,7 @@ def test_flag_off_is_inert_no_backend_no_corpus():
         model_id = "x"
         served_model = "x"
 
-        def complete(self, system, user):  # noqa: ARG002
+        def complete(self, system, user):
             raise AssertionError("backend must not be called when flag is OFF")
 
     def _boom_corpus():
@@ -239,9 +233,7 @@ def test_asset_class_filter_excludes_unrelated(corpus):
 
 def test_direction_biases_ranking(corpus):
     """A 'volatility' steer should surface the IV-surface paper first."""
-    brief = FusionBrief(
-        asset_classes=[], strategic_direction="implied volatility variance"
-    )
+    brief = FusionBrief(asset_classes=[], strategic_direction="implied volatility variance")
     picked = select_candidates(brief, corpus)
     assert picked[0].arxiv_id == "2403.00003"
 
@@ -287,9 +279,7 @@ def test_propose_fuses_and_records_provenance(monkeypatch, corpus):
     assert len(proposal.source_arxiv_ids) >= MIN_PAPERS
     # ... and the hallucinated id was dropped (anti-hallucination).
     assert "9999.99999" not in proposal.source_arxiv_ids
-    assert all(
-        sid in {p.arxiv_id for p in corpus} for sid in proposal.source_arxiv_ids
-    )
+    assert all(sid in {p.arxiv_id for p in corpus} for sid in proposal.source_arxiv_ids)
 
     # True-model honesty: recorded model == response.model (served), and the
     # configured/requested model is kept separately.
@@ -335,13 +325,13 @@ def test_model_fusing_under_two_valid_papers_declines(monkeypatch, corpus):
         model_id = "claude-sonnet-4-20250514"
         served_model = "glm-4.7"
 
-        def complete(self, system, user):  # noqa: ARG002
+        def complete(self, system, user):
             ids = [json.loads(user)["candidate_papers"][0]["arxiv_id"]]
             return json.dumps(
                 {
                     "strategy_name": "x",
                     "thesis": "x",
-                    "source_arxiv_ids": ids + ["hallucinated"],
+                    "source_arxiv_ids": [*ids, "hallucinated"],
                     "fusion_reasoning": "x",
                     "novelty_rationale": "x",
                     "risk_notes": "x",
@@ -360,9 +350,7 @@ def test_model_fusing_under_two_valid_papers_declines(monkeypatch, corpus):
 def test_canned_fallback_is_labelled_not_model_reasoning(monkeypatch, corpus):
     monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
     svc = StrategyFusion(backend=FusionCannedBackend(), corpus=corpus)
-    proposal = svc.propose(
-        FusionBrief(asset_classes=["equities", "rates"], max_papers=3)
-    )
+    proposal = svc.propose(FusionBrief(asset_classes=["equities", "rates"], max_papers=3))
     assert proposal.status == "ok"
     # The model field must out itself as the fallback, never a real model.
     assert proposal.model == "canned-fusion-fallback"
@@ -378,7 +366,7 @@ def test_unparseable_model_output_declines(monkeypatch, corpus):
         model_id = "claude-sonnet-4-20250514"
         served_model = "glm-4.7"
 
-        def complete(self, system, user):  # noqa: ARG002
+        def complete(self, system, user):
             return "this is not json at all"
 
     svc = StrategyFusion(backend=_Garbage(), corpus=corpus)

@@ -155,7 +155,10 @@ async function ensureArcChain(ethereum) {
         }],
       })
     } else if (isAlreadyPendingError(switchError)) {
-      throw new Error('A wallet request is already open — check your MetaMask extension popup, then try again.')
+      throw new Error(
+        'A wallet request is already open — check your MetaMask extension popup, then try again.',
+        { cause: switchError },
+      )
     } else {
       throw switchError
     }
@@ -174,10 +177,16 @@ export async function connectWallet(providerId) {
     accounts = await ethereum.request({ method: 'eth_requestAccounts' })
   } catch (err) {
     if (isAlreadyPendingError(err)) {
-      throw new Error('A wallet request is already open — check your MetaMask extension popup, then try again.')
+      throw new Error(
+        'A wallet request is already open — check your MetaMask extension popup, then try again.',
+        { cause: err },
+      )
     }
     if (err?.code === 4001) {
-      throw new Error('Connection rejected — approve the request in MetaMask to continue.')
+      throw new Error(
+        'Connection rejected — approve the request in MetaMask to continue.',
+        { cause: err },
+      )
     }
     throw err
   }

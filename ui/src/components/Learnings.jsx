@@ -3,6 +3,8 @@
 // the system's) have performed well, which haven't, and the agent's reasoning
 // for each. Honest empty state until strategies accumulate runtime data.
 
+import RegimePanel from './RegimePanel'
+
 export default function Learnings({ onNavigate }) {
   const goGenerate = (e) => {
     e.preventDefault()
@@ -21,6 +23,22 @@ export default function Learnings({ onNavigate }) {
           Losing trades are not hidden. Silently rotating away from losses is the failure
           mode of every "AI fund" — we explicitly don't.
         </p>
+      </div>
+
+      {/* Market regime — full breakdown. The agent's lens on current
+          conditions: VIX + MA cross signals, transition probabilities,
+          and which library strategies it leans into. /portfolio shows
+          only the compact pill so users can stay focused on their funds;
+          the educational view lives here. */}
+      <div className="max-w-[860px] mb-7">
+        <h3 className="serif text-[1.4rem] mb-2.5">Current market regime</h3>
+        <p className="body mb-4 text-[var(--text-3)]">
+          The regime is the agent's read of market conditions, derived from VIX +
+          SPX moving-average cross signals. It biases strategy selection —
+          <em>risk_on</em> leans into momentum + TSMOM,
+          <em> crisis</em> leans into t-bill alternatives + capital preservation.
+        </p>
+        <RegimePanel />
       </div>
 
       <div className="card p-6">

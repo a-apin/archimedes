@@ -18,9 +18,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
-
 _BACKEND_DIR = Path(__file__).resolve().parents[2] / "archimedes" / "services"
 _AGENTS_DIR = Path(__file__).resolve().parents[2] / "archimedes" / "agents"
 _LLM_BACKEND_FILE = _BACKEND_DIR / "llm_backend.py"
@@ -70,12 +67,9 @@ def test_llm_backend_protocol_declared_exactly_once():
         if hits:
             hits_per_file[str(path.relative_to(_BACKEND_DIR.parent.parent))] = hits
 
-    assert hits_per_file == {
-        "archimedes/services/llm_backend.py": ["class LLMBackend"]
-    }, (
+    assert hits_per_file == {"archimedes/services/llm_backend.py": ["class LLMBackend"]}, (
         "LLMBackend Protocol must be declared exactly once, in "
-        "services/llm_backend.py. Found:\n"
-        + "\n".join(f"  {p}: {hits}" for p, hits in sorted(hits_per_file.items()))
+        "services/llm_backend.py. Found:\n" + "\n".join(f"  {p}: {hits}" for p, hits in sorted(hits_per_file.items()))
     )
 
 
@@ -92,12 +86,9 @@ def test_canned_backend_declared_exactly_once():
         if hits:
             hits_per_file[str(path.relative_to(_BACKEND_DIR.parent.parent))] = hits
 
-    assert hits_per_file == {
-        "archimedes/services/llm_backend.py": ["class CannedBackend"]
-    }, (
+    assert hits_per_file == {"archimedes/services/llm_backend.py": ["class CannedBackend"]}, (
         "CannedBackend must be declared exactly once, in "
-        "services/llm_backend.py. Found:\n"
-        + "\n".join(f"  {p}: {hits}" for p, hits in sorted(hits_per_file.items()))
+        "services/llm_backend.py. Found:\n" + "\n".join(f"  {p}: {hits}" for p, hits in sorted(hits_per_file.items()))
     )
 
 
@@ -156,9 +147,7 @@ def test_canonical_canned_backend_is_constructible_with_default_kwargs():
     # Every backend must implement ``model_id`` (the property the fusion
     # module's old inline backend required; #130 confirmed the canonical one
     # has it). Asserting on its presence keeps the Protocol stable.
-    assert hasattr(backend, "model_id"), (
-        "CannedBackend must expose model_id (required by the unified Protocol)"
-    )
+    assert hasattr(backend, "model_id"), "CannedBackend must expose model_id (required by the unified Protocol)"
 
 
 def test_make_llm_backend_returns_a_canonical_subclass():
@@ -191,9 +180,7 @@ def test_make_llm_backend_returns_a_canonical_subclass():
                 OllamaBackend,
                 CannedBackend,
             ),
-        ), (
-            f"make_llm_backend returned a non-canonical type: {type(backend).__name__}"
-        )
+        ), f"make_llm_backend returned a non-canonical type: {type(backend).__name__}"
     finally:
         if original_provider is not None:
             os.environ["LLM_PROVIDER"] = original_provider

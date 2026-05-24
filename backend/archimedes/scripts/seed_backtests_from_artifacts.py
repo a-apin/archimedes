@@ -20,7 +20,6 @@ from archimedes.db import get_session, init_db
 from archimedes.services.backtest_mapper import (
     AnalyticsArtifactModel,
     canonical_artifact_hash,
-    load_artifact,
     map_artifact_to_backtest_result,
 )
 from archimedes.services.backtest_repository import insert_backtest_if_missing

@@ -15,9 +15,8 @@ approach described in Issue #50.
 from __future__ import annotations
 
 import logging
-import math
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 from scipy.stats import norm
@@ -35,8 +34,8 @@ logger = logging.getLogger(__name__)
 # These define the "normal" range for each signal. Values outside
 # these ranges are clamped, then mapped to [0, 1] z-scores.
 
-_VIX_LOW = 12.0      # Very calm market
-_VIX_HIGH = 40.0     # Crisis territory
+_VIX_LOW = 12.0  # Very calm market
+_VIX_HIGH = 40.0  # Crisis territory
 _VIX_NEUTRAL = 18.0  # Boundary between risk-on and transition
 
 _MA_DRIFT_THRESHOLD = 0.03  # 3% deviation from MA before it matters
@@ -112,12 +111,7 @@ class StatisticalRegimeDetector:
         #   MA positioning: 30% (trend confirmation)
         #   VIX rate-of-change: 20% (momentum of fear)
         #   Historical prior: 10% (regime persistence)
-        composite = (
-            0.40 * vix_score +
-            0.30 * ma_score +
-            0.20 * roc_score +
-            0.10 * self._prior_score()
-        )
+        composite = 0.40 * vix_score + 0.30 * ma_score + 0.20 * roc_score + 0.10 * self._prior_score()
 
         # ─── 4. Map composite to regime ─────────────────────
         # Use Gaussian Mixture posterior to determine regime
@@ -146,7 +140,7 @@ class StatisticalRegimeDetector:
             regime=regime,
             confidence=round(confidence, 4),
             signals=signals,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             previous_regime=self._previous_regime,
             regime_changed=changed,
         )
@@ -160,7 +154,8 @@ class StatisticalRegimeDetector:
         # Update transition matrix
         if len(self._regime_history) >= 2:
             self._update_transition_matrix(
-                self._regime_history[-2], self._regime_history[-1],
+                self._regime_history[-2],
+                self._regime_history[-1],
             )
 
         # Update GMM parameters periodically
@@ -169,7 +164,12 @@ class StatisticalRegimeDetector:
 
         logger.info(
             "Regime: %s (confidence=%.2f, composite=%.3f, vix=%.1f, ma_score=%.2f, roc=%.3f)",
-            regime.value, confidence, composite, vix, ma_score, vix_roc,
+            regime.value,
+            confidence,
+            composite,
+            vix,
+            ma_score,
+            vix_roc,
         )
         return classification
 
@@ -212,8 +212,7 @@ class StatisticalRegimeDetector:
             "crisis_pct": round(counts.get("crisis", 0) / total * 100, 1),
             "avg_vix": round(float(np.mean(self._vix_history)), 2) if self._vix_history else 0,
             "transitions": sum(
-                1 for i in range(1, len(self._regime_history))
-                if self._regime_history[i] != self._regime_history[i - 1]
+                1 for i in range(1, len(self._regime_history)) if self._regime_history[i] != self._regime_history[i - 1]
             ),
         }
 
@@ -299,7 +298,7 @@ class StatisticalRegimeDetector:
         """
         # Adaptive thresholds based on GMM component means
         # The midpoint between the two GMM components is the natural boundary
-        midpoint = (self._gmm_calmed_mu + self._gmm_stressed_mu) / 2.0
+        (self._gmm_calmed_mu + self._gmm_stressed_mu) / 2.0
 
         # Convert VIX to a normalized score using the midpoint
         vix_normalized = (vix - self._gmm_calmed_mu) / (self._gmm_stressed_mu - self._gmm_calmed_mu)
@@ -437,8 +436,12 @@ class StatisticalRegimeDetector:
 
         logger.debug(
             "GMM updated: calm(μ=%.1f, σ=%.1f, w=%.2f) stressed(μ=%.1f, σ=%.1f, w=%.2f)",
-            self._gmm_calmed_mu, self._gmm_calmed_sigma, self._gmm_calmed_weight,
-            self._gmm_stressed_mu, self._gmm_stressed_sigma, 1 - self._gmm_calmed_weight,
+            self._gmm_calmed_mu,
+            self._gmm_calmed_sigma,
+            self._gmm_calmed_weight,
+            self._gmm_stressed_mu,
+            self._gmm_stressed_sigma,
+            1 - self._gmm_calmed_weight,
         )
 
 

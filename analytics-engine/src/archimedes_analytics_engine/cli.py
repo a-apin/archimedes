@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pandas as pd
 
@@ -85,9 +86,7 @@ def run_command(
     )
 
     methodology_text_val = metadata.get("methodology_text")
-    methodology_hash = (
-        _hash_text(methodology_text_val) if methodology_text_val else None
-    )
+    methodology_hash = _hash_text(methodology_text_val) if methodology_text_val else None
 
     results: list[dict] = []
     data_hashes: list[str] = []
@@ -113,11 +112,7 @@ def run_command(
             }
         )
 
-    lookahead_passed = (
-        all(r["metrics"]["look_ahead_audit_passed"] for r in results)
-        if results
-        else False
-    )
+    lookahead_passed = all(r["metrics"]["look_ahead_audit_passed"] for r in results) if results else False
     paper_claim_applied = metadata.get("paper_claimed_sharpe") is not None
 
     artifact = {

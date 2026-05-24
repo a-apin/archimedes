@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -86,12 +86,9 @@ def seed_from_manifest(manifest_path: Path | None = None) -> int:
         return 0
 
     inserted = 0
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with get_session() as session:
-        existing = {
-            r[0]
-            for r in session.query(PaperRecord.arxiv_id).all()
-        }
+        existing = {r[0] for r in session.query(PaperRecord.arxiv_id).all()}
         for obj in rows:
             arxiv_id = str(obj.get("arxiv_id", "")).strip()
             if arxiv_id in existing:
@@ -129,13 +126,13 @@ def _update_meta(session, *, source: str = "unknown") -> None:
     count = session.query(func.count(PaperRecord.arxiv_id)).scalar() or 0
     if meta is None:
         meta = CorpusMetaRecord(
-            last_intake_at=datetime.now(timezone.utc),
+            last_intake_at=datetime.now(UTC),
             paper_count=count,
             source=source,
         )
         session.add(meta)
     else:
-        meta.last_intake_at = datetime.now(timezone.utc)
+        meta.last_intake_at = datetime.now(UTC)
         meta.paper_count = count
         meta.source = source
     session.flush()
@@ -182,13 +179,10 @@ def intake_from_arxiv(max_results: int | None = None) -> int:
     if not entries:
         return 0
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     inserted = 0
     with get_session() as session:
-        existing = {
-            r[0]
-            for r in session.query(PaperRecord.arxiv_id).all()
-        }
+        existing = {r[0] for r in session.query(PaperRecord.arxiv_id).all()}
         for entry in entries:
             id_elem = entry.find("atom:id", ns)
             if id_elem is None or not id_elem.text:
@@ -222,7 +216,7 @@ def intake_from_arxiv(max_results: int | None = None) -> int:
                 term = cat_elem.get("term", "")
                 if term:
                     categories.append(term)
-            for pc_elem in entry.findall("atom:primary_category", ns):
+            for _pc_elem in entry.findall("atom:primary_category", ns):
                 # arXiv uses a non-namespaced primary_category attribute in some feeds
                 pass
             primary_category = categories[0] if categories else ""

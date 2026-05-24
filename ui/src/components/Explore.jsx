@@ -68,7 +68,9 @@ export default function Explore({ onNavigate }) {
   const classes = ['all', ...Array.from(new Set(assets.map(a => a.asset_class).filter(Boolean)))]
   const filtered = filterClass === 'all' ? assets : assets.filter(a => a.asset_class === filterClass)
 
-  const useInGenerate = (symbol) => {
+  // Renamed from `useInGenerate` so it doesn't trip the rules-of-hooks
+  // detector that flags any `use*`-prefixed call inside a callback.
+  const handleUseInGenerate = (_symbol) => {
     if (onNavigate) onNavigate('generate')
     // The Generate page reads `?seed_asset=` later — for now, just navigate.
     // Wiring the seed prop through requires extending the navigate API; we
@@ -201,7 +203,7 @@ export default function Explore({ onNavigate }) {
                   <td style={{ padding: '10px 14px', textAlign: 'right' }}>
                     <button
                       className="btn btn-outline btn-sm"
-                      onClick={() => useInGenerate(a.symbol)}
+                      onClick={() => handleUseInGenerate(a.symbol)}
                       title={`Seed a Generate brief around ${a.symbol}`}
                     >
                       Use in Generate →

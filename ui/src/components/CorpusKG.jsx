@@ -31,7 +31,6 @@ export default function CorpusKG({ onOpenPaper }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
-  const [appliedQuery, setAppliedQuery] = useState('')
   const [hoverEntity, setHoverEntity] = useState(null)
   const svgRef = useRef(null)
 
@@ -55,7 +54,6 @@ export default function CorpusKG({ onOpenPaper }) {
 
   const handleSearch = (e) => {
     e.preventDefault()
-    setAppliedQuery(query)
     fetchKG(query)
   }
 

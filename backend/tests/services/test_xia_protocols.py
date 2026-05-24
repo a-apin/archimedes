@@ -10,11 +10,7 @@ Tests for:
 
 from __future__ import annotations
 
-import math
-from datetime import date, timedelta
-
-import pytest
-
+from datetime import date
 
 # ── 1. Outcome Embargo ───────────────────────────────────────────────────
 
@@ -348,7 +344,7 @@ class TestTraceIntegration:
 
     def test_trace_has_consulted_paper_hashes_field(self):
         """ReasoningTrace has consulted_paper_hashes field."""
-        from archimedes.models.trace import ReasoningTrace, DecisionType
+        from archimedes.models.trace import DecisionType, ReasoningTrace
 
         trace = ReasoningTrace(
             id="test",
@@ -367,7 +363,7 @@ class TestTraceIntegration:
 
     def test_hash_includes_consulted_hashes(self):
         """Trace hash changes when consulted_paper_hashes changes."""
-        from archimedes.models.trace import ReasoningTrace, DecisionType
+        from archimedes.models.trace import DecisionType, ReasoningTrace
 
         trace1 = ReasoningTrace(
             id="test1",
@@ -389,7 +385,7 @@ class TestTraceIntegration:
 
     def test_canonical_json_includes_hashes(self):
         """canonical_json includes consulted_paper_hashes."""
-        from archimedes.models.trace import ReasoningTrace, DecisionType
+        from archimedes.models.trace import DecisionType, ReasoningTrace
 
         trace = ReasoningTrace(
             id="test",

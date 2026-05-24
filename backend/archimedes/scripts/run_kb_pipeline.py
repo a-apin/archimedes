@@ -30,7 +30,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -58,8 +58,8 @@ def run_pipeline(*, corpus_dir: Path | None = None, artifact_dir: Path | None = 
     artifact_dir = artifact_dir or DEFAULT_ARTIFACT_DIR
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    started = time.time()
-    started_iso = datetime.now(timezone.utc).isoformat()
+    time.time()
+    started_iso = datetime.now(UTC).isoformat()
     logger.info("kb_pipeline: starting (corpus=%s, artifact=%s)", corpus_dir, artifact_dir)
 
     if not os.getenv("KB_PIPELINE_ENABLED"):

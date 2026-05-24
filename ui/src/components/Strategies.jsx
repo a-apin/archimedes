@@ -76,9 +76,6 @@ function fmt(v, decimals = 2) {
 function fmtPct(v) {
   return v != null ? `${(v * 100).toFixed(1)}%` : '—'
 }
-function truncHash(h) {
-  return h ? `${h.slice(0, 8)}…${h.slice(-6)}` : '—'
-}
 
 // "2002-01-01" -> Date; null on bad input
 function isoToDate(iso) {

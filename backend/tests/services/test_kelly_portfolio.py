@@ -6,22 +6,19 @@ deleveraging, USDC floor enforcement, and single-asset caps.
 
 from __future__ import annotations
 
-import math
-from datetime import datetime, timezone
-
-import pytest
+from datetime import UTC, datetime
 
 from archimedes.models.backtest import BacktestResult
+from archimedes.models.paper_ref import PaperRef
 from archimedes.models.portfolio import (
+    RISK_PROFILE_PARAMS,
     Portfolio,
     PortfolioHolding,
     RiskProfile,
-    RISK_PROFILE_PARAMS,
     TargetAllocation,
     TradeDirection,
 )
 from archimedes.models.regime import Regime, RegimeClassification, RegimeSignals
-from archimedes.models.paper_ref import PaperRef
 from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.services._deprecated.kelly_portfolio import KellyRiskParityConstructor
 
@@ -60,7 +57,7 @@ def _make_regime(regime: Regime = Regime.RISK_ON) -> RegimeClassification:
             sp500_above_ma50=True,
             sp500_above_ma200=True,
         ),
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
     )
 
 
@@ -70,8 +67,12 @@ def _make_portfolio(total_usdc: float = 10000.0) -> Portfolio:
         vault_address="0x1234",
         holdings=[
             PortfolioHolding(symbol="USDC", token_address=_USDC_ADDR, amount=5000, value_usdc=5000, weight=0.5),
-            PortfolioHolding(symbol="sSPY", token_address=_SYNTH_ADDRS["sSPY"], amount=2500, value_usdc=2500, weight=0.25),
-            PortfolioHolding(symbol="sTSLA", token_address=_SYNTH_ADDRS["sTSLA"], amount=2500, value_usdc=2500, weight=0.25),
+            PortfolioHolding(
+                symbol="sSPY", token_address=_SYNTH_ADDRS["sSPY"], amount=2500, value_usdc=2500, weight=0.25
+            ),
+            PortfolioHolding(
+                symbol="sTSLA", token_address=_SYNTH_ADDRS["sTSLA"], amount=2500, value_usdc=2500, weight=0.25
+            ),
         ],
         total_value_usdc=total_usdc,
         risk_profile=RiskProfile.MODERATE,

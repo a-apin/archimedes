@@ -13,16 +13,13 @@ Verifies:
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from archimedes.db import init_db
 from fastapi.testclient import TestClient
-
-from archimedes.db import get_session, init_db
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -41,8 +38,10 @@ def _use_tmp_db(tmp_path, monkeypatch):
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     """TestClient with mocked chain client (no testnet calls)."""
-    with patch("archimedes.chain.client.chain_client") as mock_chain, \
-         patch("archimedes.chain.executor.chain_executor") as mock_executor:
+    with (
+        patch("archimedes.chain.client.chain_client") as mock_chain,
+        patch("archimedes.chain.executor.chain_executor") as mock_executor,
+    ):
         mock_chain.is_connected = AsyncMock(return_value=False)
         mock_chain.send_transaction = AsyncMock(return_value="0xmock_tx_hash")
         mock_chain.usdc_address = "0x3600000000000000000000000000000000000000"
@@ -57,6 +56,7 @@ def client(tmp_path, monkeypatch):
         mock_executor.get_portfolio = AsyncMock(return_value={})
 
         from archimedes.main import app
+
         tc = TestClient(app)
         yield tc
 
@@ -65,25 +65,38 @@ def client(tmp_path, monkeypatch):
 # kb_artifacts service tests
 # ---------------------------------------------------------------------------
 
+
 class TestKbArtifactsCache:
     """In-memory cache tests."""
 
     def test_cache_miss_returns_none(self):
-        from archimedes.services.kb_artifacts import invalidate_cache, _cache_get
+        from archimedes.services.kb_artifacts import _cache_get, invalidate_cache
+
         invalidate_cache()
         assert _cache_get("nonexistent") is None
 
     def test_cache_set_then_get(self):
-        from archimedes.services.kb_artifacts import invalidate_cache, _cache_get, _cache_set
+        from archimedes.services.kb_artifacts import (
+            _cache_get,
+            _cache_set,
+            invalidate_cache,
+        )
+
         invalidate_cache()
         _cache_set("test_key", {"hello": "world"})
         assert _cache_get("test_key") == {"hello": "world"}
 
     def test_cache_expires_after_ttl(self):
-        from archimedes.services.kb_artifacts import invalidate_cache, _cache_get, _cache_set
+        from archimedes.services.kb_artifacts import (
+            _cache_get,
+            _cache_set,
+            invalidate_cache,
+        )
+
         invalidate_cache()
         # Monkey-patch TTL to 0 for instant expiry
         import archimedes.services.kb_artifacts as mod
+
         original_ttl = mod._CACHE_TTL
         mod._CACHE_TTL = 0
         try:
@@ -95,7 +108,12 @@ class TestKbArtifactsCache:
             mod._CACHE_TTL = original_ttl
 
     def test_invalidate_clears_all(self):
-        from archimedes.services.kb_artifacts import invalidate_cache, _cache_get, _cache_set
+        from archimedes.services.kb_artifacts import (
+            _cache_get,
+            _cache_set,
+            invalidate_cache,
+        )
+
         _cache_set("a", 1)
         _cache_set("b", 2)
         cleared = invalidate_cache()
@@ -108,8 +126,8 @@ class TestKbArtifactsLoading:
     """Artifact loading with mocked S3 + local."""
 
     def test_load_manifest_local_file(self, tmp_path):
-        from archimedes.services.kb_artifacts import invalidate_cache
         from archimedes.services import kb_artifacts as mod
+        from archimedes.services.kb_artifacts import invalidate_cache
 
         invalidate_cache()
         # Write a local manifest
@@ -117,27 +135,28 @@ class TestKbArtifactsLoading:
         (tmp_path / "manifest.json").write_text(json.dumps(manifest))
 
         # Patch artifact dir to tmp_path and disable S3
-        with patch.object(mod, "_ARTIFACT_DIR", tmp_path), \
-             patch.object(mod, "_S3_BUCKET", ""):
+        with patch.object(mod, "_ARTIFACT_DIR", tmp_path), patch.object(mod, "_S3_BUCKET", ""):
             result = mod.load_manifest()
             assert result["paper_count"] == 100
 
     def test_load_manifest_not_found_raises(self, tmp_path):
-        from archimedes.services.kb_artifacts import invalidate_cache, ArtifactNotFound
         from archimedes.services import kb_artifacts as mod
+        from archimedes.services.kb_artifacts import ArtifactNotFound, invalidate_cache
 
         invalidate_cache()
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
 
-        with patch.object(mod, "_ARTIFACT_DIR", empty_dir), \
-             patch.object(mod, "_S3_BUCKET", ""):
-            with pytest.raises(ArtifactNotFound, match="manifest.json"):
-                mod.load_manifest()
+        with (
+            patch.object(mod, "_ARTIFACT_DIR", empty_dir),
+            patch.object(mod, "_S3_BUCKET", ""),
+            pytest.raises(ArtifactNotFound, match=r"manifest\.json"),
+        ):
+            mod.load_manifest()
 
     def test_load_kg_graph_local_file(self, tmp_path):
-        from archimedes.services.kb_artifacts import invalidate_cache
         from archimedes.services import kb_artifacts as mod
+        from archimedes.services.kb_artifacts import invalidate_cache
 
         invalidate_cache()
         kg_data = {
@@ -151,55 +170,55 @@ class TestKbArtifactsLoading:
         }
         (tmp_path / "kg_graph.json").write_text(json.dumps(kg_data))
 
-        with patch.object(mod, "_ARTIFACT_DIR", tmp_path), \
-             patch.object(mod, "_S3_BUCKET", ""):
+        with patch.object(mod, "_ARTIFACT_DIR", tmp_path), patch.object(mod, "_S3_BUCKET", ""):
             result = mod.load_kg_graph()
             assert len(result["nodes"]) == 2
             assert len(result["edges"]) == 1
 
     def test_load_embeddings_local_file(self, tmp_path):
-        from archimedes.services.kb_artifacts import invalidate_cache
         from archimedes.services import kb_artifacts as mod
+        from archimedes.services.kb_artifacts import invalidate_cache
 
         invalidate_cache()
         ids = ["2605.12345", "2605.12346", "2605.12347"]
         (tmp_path / "ids.json").write_text(json.dumps(ids))
 
         # Write a small numpy array
-        import numpy as np
         import io
+
+        import numpy as np
+
         emb = np.random.randn(3, 768).astype(np.float32)
         buf = io.BytesIO()
         np.save(buf, emb)
         (tmp_path / "embeddings.npy").write_bytes(buf.getvalue())
 
-        with patch.object(mod, "_ARTIFACT_DIR", tmp_path), \
-             patch.object(mod, "_S3_BUCKET", ""):
+        with patch.object(mod, "_ARTIFACT_DIR", tmp_path), patch.object(mod, "_S3_BUCKET", ""):
             loaded_ids, loaded_emb = mod.load_embeddings()
             assert loaded_ids == ids
             assert loaded_emb.shape == (3, 768)
 
     def test_load_clusters_local_file(self, tmp_path):
-        from archimedes.services.kb_artifacts import invalidate_cache
         from archimedes.services import kb_artifacts as mod
+        from archimedes.services.kb_artifacts import invalidate_cache
 
         invalidate_cache()
         clusters = {"2605.12345": "cluster_0", "2605.12346": "cluster_1"}
         (tmp_path / "clusters.json").write_text(json.dumps(clusters))
 
-        with patch.object(mod, "_ARTIFACT_DIR", tmp_path), \
-             patch.object(mod, "_S3_BUCKET", ""):
+        with patch.object(mod, "_ARTIFACT_DIR", tmp_path), patch.object(mod, "_S3_BUCKET", ""):
             result = mod.load_clusters()
             assert result["2605.12345"] == "cluster_0"
 
     def test_compute_and_cache_umap_projection(self, tmp_path):
         from archimedes.services.kb_artifacts import (
-            invalidate_cache,
             compute_and_cache_umap_projection,
+            invalidate_cache,
         )
 
         invalidate_cache()
         import numpy as np
+
         ids = [f"paper_{i}" for i in range(20)]
         embeddings = np.random.randn(20, 768).astype(np.float32)
         clusters = {f"paper_{i}": f"cluster_{i % 3}" for i in range(20)}
@@ -215,17 +234,19 @@ class TestKbArtifactsLoading:
 
     def test_s3_fallback_to_local(self, tmp_path):
         """When S3 is configured but unavailable, falls back to local."""
-        from archimedes.services.kb_artifacts import invalidate_cache
         from archimedes.services import kb_artifacts as mod
+        from archimedes.services.kb_artifacts import invalidate_cache
 
         invalidate_cache()
         manifest = {"run_ts": "2026-05-24", "status": "ok"}
         (tmp_path / "manifest.json").write_text(json.dumps(manifest))
 
         # S3 bucket set but no credentials — _get_s3_client returns None
-        with patch.object(mod, "_ARTIFACT_DIR", tmp_path), \
-             patch.object(mod, "_S3_BUCKET", "nonexistent-bucket"), \
-             patch.object(mod, "_get_s3_client", return_value=None):
+        with (
+            patch.object(mod, "_ARTIFACT_DIR", tmp_path),
+            patch.object(mod, "_S3_BUCKET", "nonexistent-bucket"),
+            patch.object(mod, "_get_s3_client", return_value=None),
+        ):
             result = mod.load_manifest()
             assert result["status"] == "ok"
 
@@ -234,18 +255,20 @@ class TestKbArtifactsLoading:
 # API endpoint tests
 # ---------------------------------------------------------------------------
 
+
 class TestCorpusGraphEndpoint:
     """Tests for /api/corpus/graph."""
 
     @pytest.fixture(autouse=True)
     def _setup(self):
         from archimedes.services.kb_artifacts import invalidate_cache
+
         invalidate_cache()
 
     def test_graph_returns_503_when_no_artifacts(self, client):
         from archimedes.services import kb_artifacts as mod
-        with patch.object(mod, "_S3_BUCKET", ""), \
-             patch.object(mod, "_ARTIFACT_DIR", Path("/nonexistent")):
+
+        with patch.object(mod, "_S3_BUCKET", ""), patch.object(mod, "_ARTIFACT_DIR", Path("/nonexistent")):
             resp = client.get("/api/corpus/graph")
             assert resp.status_code == 503
             body = resp.json()
@@ -254,11 +277,12 @@ class TestCorpusGraphEndpoint:
             assert detail.get("error") == "kb_artifact_not_found" or "KB" in str(detail)
 
     def test_graph_returns_scatter_when_artifacts_exist(self, client, tmp_path):
-        from archimedes.services import kb_artifacts as mod
+        import io
 
         # Write minimal artifacts
         import numpy as np
-        import io
+        from archimedes.services import kb_artifacts as mod
+
         ids = [f"paper_{i}" for i in range(10)]
         (tmp_path / "ids.json").write_text(json.dumps(ids))
         emb = np.random.randn(10, 768).astype(np.float32)
@@ -268,8 +292,7 @@ class TestCorpusGraphEndpoint:
         (tmp_path / "clusters.json").write_text(json.dumps({f"paper_{i}": f"c{i % 2}" for i in range(10)}))
         (tmp_path / "topics.json").write_text(json.dumps({"c0": {"label": "momentum"}, "c1": {"label": "volatility"}}))
 
-        with patch.object(mod, "_S3_BUCKET", ""), \
-             patch.object(mod, "_ARTIFACT_DIR", tmp_path):
+        with patch.object(mod, "_S3_BUCKET", ""), patch.object(mod, "_ARTIFACT_DIR", tmp_path):
             resp = client.get("/api/corpus/graph")
             assert resp.status_code == 200
             body = resp.json()
@@ -289,6 +312,7 @@ class TestCorpusKgEndpoint:
     @pytest.fixture(autouse=True)
     def _setup(self):
         from archimedes.services.kb_artifacts import invalidate_cache
+
         invalidate_cache()
 
     def test_kg_reads_artifact_when_available(self, client, tmp_path):
@@ -314,8 +338,7 @@ class TestCorpusKgEndpoint:
         }
         (tmp_path / "kg_graph.json").write_text(json.dumps(kg_data))
 
-        with patch.object(mod, "_S3_BUCKET", ""), \
-             patch.object(mod, "_ARTIFACT_DIR", tmp_path):
+        with patch.object(mod, "_S3_BUCKET", ""), patch.object(mod, "_ARTIFACT_DIR", tmp_path):
             resp = client.get("/api/papers/corpus/kg?entity=momentum")
             assert resp.status_code == 200
             body = resp.json()
@@ -345,8 +368,7 @@ class TestCorpusKgEndpoint:
         }
         (tmp_path / "kg_graph.json").write_text(json.dumps(kg_data))
 
-        with patch.object(mod, "_S3_BUCKET", ""), \
-             patch.object(mod, "_ARTIFACT_DIR", tmp_path):
+        with patch.object(mod, "_S3_BUCKET", ""), patch.object(mod, "_ARTIFACT_DIR", tmp_path):
             resp = client.get("/api/papers/corpus/kg?entity=momentum&depth=1")
             assert resp.status_code == 200
             body = resp.json()
@@ -362,8 +384,7 @@ class TestCorpusKgEndpoint:
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
 
-        with patch.object(mod, "_S3_BUCKET", ""), \
-             patch.object(mod, "_ARTIFACT_DIR", empty_dir):
+        with patch.object(mod, "_S3_BUCKET", ""), patch.object(mod, "_ARTIFACT_DIR", empty_dir):
             resp = client.get("/api/papers/corpus/kg")
             # Should return metadata-derived fallback or empty
             assert resp.status_code == 200
@@ -377,13 +398,15 @@ class TestPapersGraphEndpoint:
     @pytest.fixture(autouse=True)
     def _setup(self):
         from archimedes.services.kb_artifacts import invalidate_cache
+
         invalidate_cache()
 
     def test_papers_graph_uses_specter2_when_available(self, client, tmp_path):
-        from archimedes.services import kb_artifacts as mod
+        import io
 
         import numpy as np
-        import io
+        from archimedes.services import kb_artifacts as mod
+
         ids = [f"paper_{i}" for i in range(15)]
         (tmp_path / "ids.json").write_text(json.dumps(ids))
         emb = np.random.randn(15, 768).astype(np.float32)
@@ -393,8 +416,7 @@ class TestPapersGraphEndpoint:
         (tmp_path / "clusters.json").write_text(json.dumps({}))
         (tmp_path / "topics.json").write_text(json.dumps({}))
 
-        with patch.object(mod, "_S3_BUCKET", ""), \
-             patch.object(mod, "_ARTIFACT_DIR", tmp_path):
+        with patch.object(mod, "_S3_BUCKET", ""), patch.object(mod, "_ARTIFACT_DIR", tmp_path):
             resp = client.get("/api/papers/corpus/graph?sample=10")
             assert resp.status_code == 200
             body = resp.json()
@@ -408,8 +430,7 @@ class TestPapersGraphEndpoint:
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
 
-        with patch.object(mod, "_S3_BUCKET", ""), \
-             patch.object(mod, "_ARTIFACT_DIR", empty_dir):
+        with patch.object(mod, "_S3_BUCKET", ""), patch.object(mod, "_ARTIFACT_DIR", empty_dir):
             resp = client.get("/api/papers/corpus/graph")
             assert resp.status_code == 200
             body = resp.json()

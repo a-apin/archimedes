@@ -67,6 +67,7 @@ def get_daily_returns(session: Session, strategy_id: str) -> list[float]:
 
     # Try artifact_json first (has raw daily_returns from analytics-engine)
     import json as _json
+
     if row.artifact_json:
         try:
             artifact = _json.loads(row.artifact_json)
@@ -81,6 +82,7 @@ def get_daily_returns(session: Session, strategy_id: str) -> list[float]:
     result = row.to_backtest_result()
     if result.equity_curve and len(result.equity_curve) > 1:
         import numpy as np
+
         ec = np.array(result.equity_curve)
         returns = ((ec[1:] - ec[:-1]) / ec[:-1]).tolist()
         return returns

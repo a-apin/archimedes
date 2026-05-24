@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from archimedes.api.schemas import RegimeResponse, RegimeSignalsResponse
 from archimedes.api._route_helpers import strategy_provider
+from archimedes.api.schemas import RegimeResponse, RegimeSignalsResponse
 
 regime_router = APIRouter(prefix="/api/regime", tags=["regime"])
 
@@ -37,10 +37,10 @@ async def get_current_regime():
         history = data.get("regime_history_summary") or {"total": 0}
 
         regime_to_keywords = {
-            "risk_on":    ["momentum", "tsmom", "52w_high", "52-week"],
+            "risk_on": ["momentum", "tsmom", "52w_high", "52-week"],
             "transition": ["volatility", "managed", "tsmom"],
-            "risk_off":   ["volatility", "managed", "t-bill"],
-            "crisis":     ["t-bill", "preservation", "capital"],
+            "risk_off": ["volatility", "managed", "t-bill"],
+            "crisis": ["t-bill", "preservation", "capital"],
         }
         all_strats = strategy_provider.list_strategies()
         regime_keywords = regime_to_keywords.get(regime_value, [])
@@ -48,10 +48,11 @@ async def get_current_regime():
         for keyword in regime_keywords:
             for s in all_strats:
                 title_lower = s.paper_title.lower().replace("_", " ")
-                if keyword in title_lower or keyword.replace("-", "") in title_lower.replace("-", ""):
-                    if s.id not in recommended_ids:
-                        recommended_ids.append(s.id)
-                        break
+                if (
+                    keyword in title_lower or keyword.replace("-", "") in title_lower.replace("-", "")
+                ) and s.id not in recommended_ids:
+                    recommended_ids.append(s.id)
+                    break
 
         return RegimeResponse(
             regime=regime_value,

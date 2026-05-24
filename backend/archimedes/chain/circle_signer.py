@@ -109,10 +109,7 @@ class CircleSigner:
             RuntimeError: If Circle credentials are missing or the tx fails.
         """
         if not self.is_configured:
-            raise RuntimeError(
-                "Circle credentials not configured "
-                "(CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET / WALLET_ID)"
-            )
+            raise RuntimeError("Circle credentials not configured (CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET / WALLET_ID)")
 
         async with aiohttp.ClientSession() as session:
             public_key = await self._get_public_key(session)
@@ -143,9 +140,7 @@ class CircleSigner:
             ) as resp:
                 body = await resp.json()
                 if resp.status != 201:
-                    raise RuntimeError(
-                        f"Circle contract execution failed ({resp.status}): {body}"
-                    )
+                    raise RuntimeError(f"Circle contract execution failed ({resp.status}): {body}")
                 circle_tx_id = body["data"]["id"]
                 logger.info("Circle tx submitted: %s", circle_tx_id)
 
@@ -198,16 +193,13 @@ class CircleSigner:
             # Broadcast via Arc RPC
             if signed_tx:
                 from archimedes.chain.client import chain_client
-                tx_hash = await chain_client.w3.eth.send_raw_transaction(
-                    bytes.fromhex(signed_tx.removeprefix("0x"))
-                )
+
+                tx_hash = await chain_client.w3.eth.send_raw_transaction(bytes.fromhex(signed_tx.removeprefix("0x")))
                 return tx_hash.hex()
 
             return tx_hash
 
-    async def _poll_transaction(
-        self, session: aiohttp.ClientSession, circle_tx_id: str
-    ) -> str:
+    async def _poll_transaction(self, session: aiohttp.ClientSession, circle_tx_id: str) -> str:
         """Poll Circle transaction until terminal state."""
         for _ in range(_MAX_POLLS):
             # Use the list endpoint — Circle's GET /transactions returns
@@ -228,13 +220,12 @@ class CircleSigner:
                                 if state == "COMPLETE":
                                     logger.info(
                                         "Circle tx %s complete: %s",
-                                        circle_tx_id, tx_hash,
+                                        circle_tx_id,
+                                        tx_hash,
                                     )
                                     return tx_hash
                                 else:
-                                    raise RuntimeError(
-                                        f"Circle tx {circle_tx_id} ended in {state}: {tx}"
-                                    )
+                                    raise RuntimeError(f"Circle tx {circle_tx_id} ended in {state}: {tx}")
                             # Still processing
                             break
                 await asyncio.sleep(_POLL_INTERVAL)

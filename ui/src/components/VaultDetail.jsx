@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   publicClient, getWalletClient, getAddress,
   USDC, TOKEN_ABI, VAULT_ABI,
-  ASSETS, NEW_CONTRACTS,
+  ASSETS,
 } from '../config'
 import VaultChat from './VaultChat'
 
@@ -157,13 +157,17 @@ export default function VaultDetail({ address, onBack }) {
           weightBps: Number(weights[i]),
           symbol: _knownTokenSymbol(t),
         }))
-      } catch {}
+      } catch {
+        // getTargetAllocations not supported on older vault deployments — leave targetAllocs empty.
+      }
 
       // Read vault name from on-chain
       let onChainName = ''
       try {
         onChainName = await publicClient.readContract({ address, abi: VAULT_ABI, functionName: 'name' })
-      } catch {}
+      } catch {
+        // name() not available on legacy vaults — fall back to the detail.name or shortAddr below.
+      }
 
       setOnChainData({
         totalAssets: Number(totalAssets) / 1e6,
@@ -173,7 +177,9 @@ export default function VaultDetail({ address, onBack }) {
         creator, tier: Number(tier), paused, asset,
         targetAllocations: targetAllocs,
       })
-    } catch {}
+    } catch {
+      // Top-level vault read failed (RPC down or bad address) — leave onChainData null; UI renders the detail-prop fallback.
+    }
   }, [address])
 
   useEffect(() => { loadOnChain() }, [loadOnChain])
@@ -196,7 +202,6 @@ export default function VaultDetail({ address, onBack }) {
   }
 
   const name = detail?.name || onChainData?.name || `Vault ${shortAddr(address)}`
-  const symbol = detail?.symbol || 'vAULT'
   const tier = onChainData?.tier ?? detail?.tier ?? 1
   const aum = onChainData?.totalAssets ?? detail?.aum_usdc ?? 0
   const sharePrice = onChainData?.sharePrice ?? detail?.share_price ?? 1

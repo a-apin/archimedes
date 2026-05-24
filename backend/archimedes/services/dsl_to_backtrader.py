@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # ── Condition evaluation ──────────────────────────────────────────────
 
+
 def _eval_condition(
     cond: dict[str, Any],
     bar_values: dict[str, float],
@@ -55,6 +56,7 @@ def _eval_condition(
 
 # ── Indicator wiring ──────────────────────────────────────────────────
 
+
 def _make_indicator(
     data_line: bt.LineSeries,
     name: str,
@@ -77,6 +79,7 @@ def _make_indicator(
 
 
 # ── Strategy factory ──────────────────────────────────────────────────
+
 
 def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
     """Translate a validated StrategySpec into a backtrader.Strategy subclass.
@@ -170,9 +173,8 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
             elif ps_type == "volatility_target" and self._vol_target:
                 # Scale position by target vol / realized vol
                 if len(self) > 20:
-                    recent = [float(self.data.close[-i]) / float(self.data.close[-i - 1]) - 1
-                              for i in range(20)]
-                    realized_vol = (sum(r ** 2 for r in recent) / len(recent)) ** 0.5 * (252 ** 0.5)
+                    recent = [float(self.data.close[-i]) / float(self.data.close[-i - 1]) - 1 for i in range(20)]
+                    realized_vol = (sum(r**2 for r in recent) / len(recent)) ** 0.5 * (252**0.5)
                     if realized_vol > 0:
                         scale = min(self._vol_target / realized_vol, 2.0)
                         cash = float(self.broker.getcash())

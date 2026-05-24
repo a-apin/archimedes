@@ -18,7 +18,4 @@ def scrub_profile(profile_dict: dict[str, Any]) -> dict[str, Any]:
     Redacted fields are replaced with ``"<REDACTED>"`` so log consumers
     can see that a value *was* present without seeing the value itself.
     """
-    return {
-        k: ("<REDACTED>" if k in _PII_FIELDS else v)
-        for k, v in profile_dict.items()
-    }
+    return {k: ("<REDACTED>" if k in _PII_FIELDS else v) for k, v in profile_dict.items()}

@@ -18,9 +18,7 @@ Preconditions:
   - VaultFactory deployed
 """
 
-import pytest
-from archimedes.models.portfolio import RiskProfile, TargetAllocation
-
+from archimedes.models.portfolio import RiskProfile
 
 # ─────────────────────────────────────────────────────────────
 # 3.1 Vault creation (Chuan's contract)
@@ -160,7 +158,9 @@ class TestPortfolioConstructionIntegration:
         assert usyc_alloc is not None
         assert 0.20 <= usyc_alloc.weight <= 0.40  # Moderate USYC floor
 
-    async def test_construct_crisis_increases_usyc(self, portfolio_constructor, strategies, backtest_results, crisis_regime):
+    async def test_construct_crisis_increases_usyc(
+        self, portfolio_constructor, strategies, backtest_results, crisis_regime
+    ):
         """In CRISIS regime, USYC allocation should increase toward ceiling."""
         allocations = portfolio_constructor.construct(
             risk_profile=RiskProfile.MODERATE,

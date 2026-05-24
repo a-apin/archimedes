@@ -1,6 +1,6 @@
 # Issue spec for t2o2 — Split `routes.py` monolith by resource
 
-> **Status:** ✓ filed + closed as [#132](https://github.com/hackagora/archimedes-arcadia/issues/132) on 2026-05-23 — shipped on `main` (commit `be9260b`); `routes.py` is now a thin re-export shim with 9 per-resource routers. This file is the spec source-of-truth; PR archive lives on the issue.
+> **Status:** ✓ filed + closed as [#132](https://github.com/a-apin/archimedes-arcadia/issues/132) on 2026-05-23 — shipped on `main` (commit `be9260b`); `routes.py` is now a thin re-export shim with 9 per-resource routers. This file is the spec source-of-truth; PR archive lives on the issue.
 >
 > **Ready-to-file issue body.** Per CLAUDE.md's agentic issue pipeline.
 >

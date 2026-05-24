@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-from archimedes.chain.contracts import get_contract_loader
+from archimedes.api.schemas import AssetListResponse, AssetResponse
 from archimedes.chain.oracle_updater import OracleUpdater
-from archimedes.api.schemas import AssetResponse, AssetListResponse
 
 
 class AssetService:

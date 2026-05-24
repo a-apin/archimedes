@@ -13,7 +13,7 @@ import base64
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiohttp
 
@@ -27,10 +27,10 @@ YFINANCE_MAP = {
     "sNVDA": "NVDA",
     "sSPY": "SPY",
     "sGOLD": "GC=F",  # Gold futures
-    "sOIL": "CL=F",   # WTI crude oil futures
+    "sOIL": "CL=F",  # WTI crude oil futures
     "sNKY": "^N225",  # Nikkei 225
     "^GSPC": "^GSPC",  # S&P 500 index
-    "^VIX": "^VIX",    # VIX index
+    "^VIX": "^VIX",  # VIX index
 }
 
 # Symbol → CoinGecko ID
@@ -80,7 +80,7 @@ class OracleUpdater:
     async def fetch_prices(self) -> list[AssetPrice]:
         """Fetch current prices for all synthetic assets via yfinance + CoinGecko."""
         prices: list[AssetPrice] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Fetch equity/ETF/futures prices via yfinance (in thread pool — yfinance is sync)
         equity_symbols = {k: v for k, v in YFINANCE_MAP.items() if k.startswith("s")}
@@ -151,15 +151,9 @@ class OracleUpdater:
                         if resp.status == 201:
                             tx_id = body["data"]["id"]
                             tx_ids.append(tx_id)
-                            logger.info(
-                                f"Pushed {price.symbol} "
-                                f"price {price.price_usd:.2f} → Circle tx {tx_id}"
-                            )
+                            logger.info(f"Pushed {price.symbol} price {price.price_usd:.2f} → Circle tx {tx_id}")
                         else:
-                            logger.error(
-                                f"Circle API error for {price.symbol} "
-                                f"({resp.status}): {body}"
-                            )
+                            logger.error(f"Circle API error for {price.symbol} ({resp.status}): {body}")
                 except Exception:
                     logger.exception(f"Failed to push price for {price.symbol}")
 
@@ -169,7 +163,7 @@ class OracleUpdater:
         """Fetch a full market snapshot with prices + regime signals."""
         prices = await self.fetch_prices()
         price_map = {p.symbol: p.price_usd for p in prices}
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         vix = await self._fetch_yfinance_single("^VIX")
         sp500_data = await asyncio.to_thread(self._fetch_sp500_moving_averages)
@@ -205,9 +199,7 @@ class OracleUpdater:
             logger.exception("Error fetching Circle public key")
         return None
 
-    def _fetch_yfinance(
-        self, symbols: dict[str, str], timestamp: datetime
-    ) -> list[AssetPrice]:
+    def _fetch_yfinance(self, symbols: dict[str, str], timestamp: datetime) -> list[AssetPrice]:
         """Fetch prices from yfinance (sync — call via to_thread)."""
         try:
             import yfinance as yf
@@ -275,9 +267,8 @@ class OracleUpdater:
         """Fetch a single yfinance price (e.g. VIX)."""
         try:
             import yfinance as yf
-            data = await asyncio.to_thread(
-                yf.download, symbol, period="1d", interval="1m", progress=False
-            )
+
+            data = await asyncio.to_thread(yf.download, symbol, period="1d", interval="1m", progress=False)
             if not data.empty:
                 return float(data["Close"].iloc[-1])
         except Exception as e:

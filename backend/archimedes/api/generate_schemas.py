@@ -8,11 +8,10 @@ one definition of what an event looks like on the wire.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-
 
 # ── Request side ──────────────────────────────────────────────────────────
 
@@ -61,7 +60,7 @@ EventName = Literal[
 
 
 def _ts() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class GenerateEvent(BaseModel):
@@ -76,7 +75,7 @@ class GenerateEvent(BaseModel):
     data: dict[str, Any]
 
     @classmethod
-    def make(cls, *, event_id: int, event: EventName, **payload: Any) -> "GenerateEvent":
+    def make(cls, *, event_id: int, event: EventName, **payload: Any) -> GenerateEvent:
         payload.setdefault("ts", _ts())
         return cls(id=event_id, event=event, data=payload)
 

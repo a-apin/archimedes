@@ -14,7 +14,7 @@ import asyncio
 import logging
 import math
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from archimedes.api.explore_schemas import (
@@ -82,7 +82,7 @@ def _realized_vol_annual(prices: list[float], window: int = 30) -> float | None:
     """Annualized realized vol over the most recent ``window`` trading days."""
     if not prices or len(prices) < window + 1:
         return None
-    tail = prices[-(window + 1):]
+    tail = prices[-(window + 1) :]
     rets = []
     for i in range(1, len(tail)):
         prev = tail[i - 1]
@@ -110,7 +110,8 @@ class AssetMarketService:
     # ── On-chain oracle reads ────────────────────────────────────────────
 
     async def _read_oracle_prices(
-        self, synth_symbols: list[str],
+        self,
+        synth_symbols: list[str],
     ) -> dict[str, dict[str, Any]]:
         """Read current prices from on-chain PriceOracle for each synth.
 
@@ -118,9 +119,10 @@ class AssetMarketService:
         Symbols missing from oracle config or failing chain reads are omitted.
         """
         try:
-            from archimedes.chain.client import chain_client
             import json
             from pathlib import Path
+
+            from archimedes.chain.client import chain_client
 
             oracle_addrs = chain_client.settings.oracle_addresses or {}
             synth_addrs = chain_client.settings.synth_addresses or {}
@@ -158,9 +160,7 @@ class AssetMarketService:
                     abi=oracle_abi,
                 )
                 price_raw, updated_at = await asyncio.wait_for(
-                    contract.functions.getPrice(
-                        chain_client.to_checksum(synth_addr)
-                    ).call(),
+                    contract.functions.getPrice(chain_client.to_checksum(synth_addr)).call(),
                     timeout=_ORACLE_READ_TIMEOUT,
                 )
                 price_usd = float(price_raw) / 1e6  # 6 decimals per PriceOracle.sol
@@ -171,7 +171,7 @@ class AssetMarketService:
                     "stale": stale,
                     "oracle_address": oracle_addr,
                 }
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.debug("explore: oracle read timeout for %s", symbol)
             except Exception as exc:
                 logger.debug("explore: oracle read failed for %s: %s", symbol, exc)
@@ -187,7 +187,9 @@ class AssetMarketService:
 
         try:
             from archimedes.services.strategy_signal_evaluator import (
-                DEFAULT_SCAN_UNIVERSE, GLOBAL_ASSETS, _fetch_price_histories,
+                DEFAULT_SCAN_UNIVERSE,
+                GLOBAL_ASSETS,
+                _fetch_price_histories,
             )
         except Exception as exc:
             logger.warning("explore: import failed: %s", exc)
@@ -209,12 +211,10 @@ class AssetMarketService:
 
         # Build items: merge oracle price + yfinance change/vol
         items: list[AssetExploreItem] = []
-        nowstamp = datetime.now(timezone.utc).isoformat()
+        nowstamp = datetime.now(UTC).isoformat()
 
         # Use the union of oracle symbols and history symbols so nothing is lost
-        all_symbols = list(dict.fromkeys(
-            list(oracle_data.keys()) + list(histories.keys())
-        ))
+        all_symbols = list(dict.fromkeys(list(oracle_data.keys()) + list(histories.keys())))
 
         for synth in all_symbols:
             oracle = oracle_data.get(synth, {})
@@ -230,7 +230,7 @@ class AssetMarketService:
             oracle_stale = oracle.get("stale", True)
             oracle_updated_at = oracle.get("updated_at")
             if oracle_updated_at:
-                last_updated = datetime.fromtimestamp(oracle_updated_at, tz=timezone.utc).isoformat()
+                last_updated = datetime.fromtimestamp(oracle_updated_at, tz=UTC).isoformat()
             elif hist.get("last_ts"):
                 last_updated = str(hist["last_ts"])
             else:
@@ -252,25 +252,31 @@ class AssetMarketService:
             asset_class = entry[2] if entry else "unknown"
             real_ticker = entry[0] if entry else synth.lstrip("s")
 
-            items.append(AssetExploreItem(
-                symbol=synth,
-                name=f"Synthetic {real_ticker}",
-                asset_class=asset_class,
-                oracle_address=oracle.get("oracle_address"),
-                last_updated=last_updated,
-                is_stale=is_stale,
-                explanations=_explanations_for(stat_dict),
-                **stat_dict,
-            ))
+            items.append(
+                AssetExploreItem(
+                    symbol=synth,
+                    name=f"Synthetic {real_ticker}",
+                    asset_class=asset_class,
+                    oracle_address=oracle.get("oracle_address"),
+                    last_updated=last_updated,
+                    is_stale=is_stale,
+                    explanations=_explanations_for(stat_dict),
+                    **stat_dict,
+                )
+            )
 
         # Stable ordering — equities first, then crypto, then everything else.
-        items.sort(key=lambda a: (
-            0 if "equity" in a.asset_class else 1 if "crypto" in a.asset_class else 2,
-            a.symbol,
-        ))
+        items.sort(
+            key=lambda a: (
+                0 if "equity" in a.asset_class else 1 if "crypto" in a.asset_class else 2,
+                a.symbol,
+            )
+        )
 
         self._cache = ExploreAssetsResponse(
-            assets=items, cache_ttl_seconds=_CACHE_TTL_SECONDS, generated_at=nowstamp,
+            assets=items,
+            cache_ttl_seconds=_CACHE_TTL_SECONDS,
+            generated_at=nowstamp,
         )
         self._cache_ts = now
         return self._cache
@@ -280,7 +286,10 @@ class AssetMarketService:
             return self._cache_history[symbol]
         histories: dict[str, Any] = {}
         try:
-            from archimedes.services.strategy_signal_evaluator import _fetch_price_histories
+            from archimedes.services.strategy_signal_evaluator import (
+                _fetch_price_histories,
+            )
+
             histories = await asyncio.to_thread(_fetch_price_histories, [symbol], _HISTORY_LOOKBACK)
         except Exception as exc:
             logger.warning("explore: history for %s failed: %s", symbol, exc)
@@ -288,8 +297,7 @@ class AssetMarketService:
         prices = hist.get("close") or []
         dates = hist.get("dates") or []
         points = [
-            ExploreHistoryPoint(ts=str(dates[i]) if i < len(dates) else "", price=prices[i])
-            for i in range(len(prices))
+            ExploreHistoryPoint(ts=str(dates[i]) if i < len(dates) else "", price=prices[i]) for i in range(len(prices))
         ]
         resp = ExploreHistoryResponse(symbol=symbol, points=points)
         self._cache_history[symbol] = resp

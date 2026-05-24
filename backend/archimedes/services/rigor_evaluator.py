@@ -25,7 +25,8 @@ from itertools import combinations
 
 import numpy as np
 from scipy.stats import kurtosis as sp_kurtosis
-from scipy.stats import norm, skew as sp_skew
+from scipy.stats import norm
+from scipy.stats import skew as sp_skew
 
 logger = logging.getLogger(__name__)
 
@@ -175,9 +176,7 @@ def compute_pbo(
     T = min(len(v) for v in returns_matrix.values())
 
     # Build (T, N) matrix, columns in sorted_ids order
-    R = np.array(
-        [returns_matrix[sid][:T] for sid in sorted_ids], dtype=float
-    ).T  # shape (T, N)
+    R = np.array([returns_matrix[sid][:T] for sid in sorted_ids], dtype=float).T  # shape (T, N)
 
     S = s_partitions if (s_partitions % 2 == 0 and s_partitions >= 2) else 16
     rows_per_block = T // S
@@ -328,7 +327,7 @@ def compute_sharpe_ci(
     if not 0.0 < confidence < 1.0:
         raise ValueError(f"confidence must be in (0, 1), got {confidence}")
     sr_daily = sharpe_annual / math.sqrt(_ANNUALIZATION)
-    se = math.sqrt((1.0 + 0.5 * sr_daily ** 2) * _ANNUALIZATION / n_obs_daily)
+    se = math.sqrt((1.0 + 0.5 * sr_daily**2) * _ANNUALIZATION / n_obs_daily)
     z = norm.ppf((1.0 + confidence) / 2.0)
     return (sharpe_annual - z * se, sharpe_annual + z * se)
 
@@ -389,20 +388,16 @@ def look_ahead_audit(strategy_code: str) -> tuple[bool, list[str]]:
         if isinstance(node, ast.Call):
             func_name = _get_func_name(node.func)
             if func_name and func_name.lower() in _LOOK_AHEAD_FUNCTIONS:
-                warnings.append(
-                    f"Line {node.lineno}: call to '{func_name}' may indicate look-ahead bias"
-                )
+                warnings.append(f"Line {node.lineno}: call to '{func_name}' may indicate look-ahead bias")
 
         if isinstance(node, ast.Subscript):
             slice_val = node.slice
             if isinstance(slice_val, ast.UnaryOp) and isinstance(slice_val.op, ast.USub):
                 pass
-            elif isinstance(slice_val, ast.Constant) and isinstance(slice_val.value, int):
-                if slice_val.value > 0:
-                    warnings.append(
-                        f"Line {node.lineno}: positive data index [{slice_val.value}] may "
-                        f"reference future bars"
-                    )
+            elif isinstance(slice_val, ast.Constant) and isinstance(slice_val.value, int) and slice_val.value > 0:
+                warnings.append(
+                    f"Line {node.lineno}: positive data index [{slice_val.value}] may reference future bars"
+                )
 
     return len(warnings) == 0, warnings
 
@@ -455,12 +450,9 @@ class RigorGateResult:
             return False
         if self.oos_sharpe is None:
             return False
-        if self.in_sample_sharpe and self.in_sample_sharpe > 0:
-            if self.oos_sharpe / self.in_sample_sharpe < 0.5:
-                return False
-        if not self.look_ahead_passed:
+        if self.in_sample_sharpe and self.in_sample_sharpe > 0 and self.oos_sharpe / self.in_sample_sharpe < 0.5:
             return False
-        return True
+        return self.look_ahead_passed
 
     @property
     def gate_details(self) -> dict[str, str]:

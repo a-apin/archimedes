@@ -11,22 +11,22 @@
 #   Chuan  → IAgentOrchestrator (orchestrates all the above)
 #   Daniel → consumes REST API (see api/ module), not these protocols
 
+from archimedes.interfaces.agent import IAgentOrchestrator
+from archimedes.interfaces.chain import IChainExecutor, IOracleUpdater, ITracePublisher
 from archimedes.interfaces.math import (
-    IRegimeDetector,
-    IPortfolioConstructor,
     IBacktestEvaluator,
+    IPortfolioConstructor,
+    IRegimeDetector,
 )
 from archimedes.interfaces.strategy import IStrategyProvider
-from archimedes.interfaces.chain import IChainExecutor, IOracleUpdater, ITracePublisher
-from archimedes.interfaces.agent import IAgentOrchestrator
 
 __all__ = [
-    "IRegimeDetector",
-    "IPortfolioConstructor",
+    "IAgentOrchestrator",
     "IBacktestEvaluator",
-    "IStrategyProvider",
     "IChainExecutor",
     "IOracleUpdater",
+    "IPortfolioConstructor",
+    "IRegimeDetector",
+    "IStrategyProvider",
     "ITracePublisher",
-    "IAgentOrchestrator",
 ]

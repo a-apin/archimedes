@@ -64,6 +64,8 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
         // Profile fetch failed — show modal if not seen
         if (!seen) setShowWelcomeModal(true)
       })
+    // API_BASE is a module-level constant; excluded intentionally.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletAddr])
 
   const handleWelcomeDone = (profile) => {

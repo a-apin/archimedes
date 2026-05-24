@@ -13,8 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +21,7 @@ logger = logging.getLogger(__name__)
 def _compute_keccak256(canonical: str) -> str:
     """Keccak256 of a string, 0x-prefixed."""
     from web3 import Web3
+
     return Web3.keccak(text=canonical).hex()
 
 
@@ -94,15 +94,19 @@ def persist_proposal(
 
         with get_session() as session:
             # Dedup by content_hash
-            existing = session.query(StrategyProposal).filter_by(
-                content_hash=content_hash,
-            ).first()
+            existing = (
+                session.query(StrategyProposal)
+                .filter_by(
+                    content_hash=content_hash,
+                )
+                .first()
+            )
             if existing:
                 # Update verdict if changed
                 if verdict != existing.verdict:
                     existing.verdict = verdict
                     existing.trust_level = trust_level
-                    existing.updated_at = datetime.now(timezone.utc)
+                    existing.updated_at = datetime.now(UTC)
                     session.commit()
                 return existing.proposal_id
 
@@ -123,7 +127,9 @@ def persist_proposal(
 
         logger.info(
             "memory: persisted proposal %s (%s, verdict=%s)",
-            proposal_id, agent, verdict,
+            proposal_id,
+            agent,
+            verdict,
         )
         return proposal_id
 
@@ -163,12 +169,7 @@ def query_proposals(
                     pass
 
             total = q.count()
-            rows = (
-                q.order_by(StrategyProposal.created_at.desc())
-                .offset(offset)
-                .limit(limit)
-                .all()
-            )
+            rows = q.order_by(StrategyProposal.created_at.desc()).offset(offset).limit(limit).all()
             return [r.to_dict() for r in rows], total
 
     except Exception as exc:

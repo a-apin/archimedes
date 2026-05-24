@@ -16,7 +16,7 @@ Describe what you want; Archimedes fuses your intent with live market data and a
 ### Run it locally in three commands
 
 ```bash
-git clone --recurse-submodules git@github.com:hackagora/archimedes-arcadia.git archimedes && cd archimedes
+git clone --recurse-submodules git@github.com:a-apin/archimedes-arcadia.git archimedes && cd archimedes
 cp .env.example .env       # fill in ANTHROPIC_AUTH_TOKEN (GLM via Canteen, or BYO Anthropic key)
 docker compose up -d --build
 ```

@@ -33,19 +33,19 @@ export default function Generate({ onNavigate }) {
 
   // ── Agent / SSE path ──
   const [jobId, setJobId] = useState(() => localStorage.getItem(STORAGE_JOB_KEY) || null)
-  const [selectedPipeline, setSelectedPipeline] = useState(null) // set from pipeline_selected event
 
   // ── Architect path (pre-fetched library) ──
   const [strategies, setStrategies] = useState([])
   const [libLoading, setLibLoading] = useState(true)
   const [libError, setLibError] = useState('')
 
-  // ── Fusion path (GET-poll, no SSE) ──
+  // ── Fusion path (GET-poll, no SSE) — fusionJobId is set by the agent
+  //    pipeline when it routes to fusion internally; no direct user entry
+  //    point anymore (T2.2 consolidated the mode picker). ──
   const [fusionJobId, setFusionJobId] = useState(() => localStorage.getItem(STORAGE_FUSION_JOB_KEY) || null)
   const [fusionStatus, setFusionStatus] = useState(null)
   const [fusionResult, setFusionResult] = useState(null)
   const [fusionError, setFusionError] = useState('')
-  const [fusionStarting, setFusionStarting] = useState(false)
   const fusionPollRef = useRef(null)
 
   // ── Pipeline resolved from SSE event (listened via GenerationStream) ──
@@ -95,37 +95,6 @@ export default function Generate({ onNavigate }) {
     }
   }
 
-  // ── Start a fusion-specific job (separate endpoint for multi-paper) ──
-  const startFusionJob = async () => {
-    setFusionError('')
-    if (selectedAssets.length === 0) {
-      setFusionError('Pick at least one asset class to fuse.')
-      return
-    }
-    setFusionStarting(true)
-    setFusionResult(null)
-    setFusionStatus(null)
-    try {
-      const params = new URLSearchParams({
-        asset_classes: selectedAssets.join(','),
-        risk_appetite: riskAppetite,
-        strategic_direction: intent,
-        max_papers: String(depth),
-        mode: 'fusion',
-      })
-      const res = await fetch(`${API_BASE}/api/strategies/generate?${params}`, { method: 'POST' })
-      if (!res.ok) throw new Error(await res.text())
-      const data = await res.json()
-      if (!data.job_id) throw new Error('Backend did not return a job_id')
-      localStorage.setItem(STORAGE_FUSION_JOB_KEY, data.job_id)
-      setFusionJobId(data.job_id)
-      setFusionStatus(data.status || 'queued')
-    } catch (e) {
-      setFusionError(e.message || 'Failed to start fusion job')
-    } finally {
-      setFusionStarting(false)
-    }
-  }
 
   const onJobDone = (result) => {
     localStorage.removeItem(STORAGE_JOB_KEY)
@@ -210,11 +179,10 @@ export default function Generate({ onNavigate }) {
     }
   }
 
-  // ── Determine which result to render ──
-  // If the agent SSE stream is active → show GenerationStream
-  // If pipeline_selected says fusion and we have a fusion result → FusionResult
-  // If pipeline_selected says architect → show StrategyArchitect inline
-  const isSSEStreamActive = jobId && !pipelineFromEvent?.startsWith('fusion_direct')
+  // ── Which result to render — handled inline below by jobId / fusionJobId /
+  //    pipelineFromEvent gating. Earlier scaffolding kept an
+  //    `isSSEStreamActive` boolean here that no JSX read; deleted with the
+  //    rest of the fusion-job orphans T2.2 left behind.
 
   return (
     <div>

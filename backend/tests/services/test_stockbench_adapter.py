@@ -7,20 +7,16 @@ and result persistence — all without requiring real LLM or market data.
 from __future__ import annotations
 
 import json
-import math
-import statistics
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
-import pytest
-
 from archimedes.evaluation.stockbench.adapter import (
-    BENCHMARK_START,
     BENCHMARK_END,
+    BENCHMARK_START,
     PUBLISHED_BASELINES,
     STARTING_CASH,
-    TRADING_DAYS,
     TOP_20_DJIA,
+    TRADING_DAYS,
     ArchimedesStockBenchAdapter,
     BenchmarkResult,
     DailyDecision,
@@ -33,15 +29,14 @@ from archimedes.evaluation.stockbench.adapter import (
     write_results_markdown,
 )
 
-
 # ── Constants ────────────────────────────────────────────────────
 
 
 class TestConstants:
     def test_benchmark_window(self):
         assert TRADING_DAYS == 82
-        assert BENCHMARK_START == date(2025, 3, 3)
-        assert BENCHMARK_END == date(2025, 6, 30)
+        assert date(2025, 3, 3) == BENCHMARK_START
+        assert date(2025, 6, 30) == BENCHMARK_END
 
     def test_djia_universe(self):
         assert len(TOP_20_DJIA) == 20
@@ -67,8 +62,6 @@ class TestConstants:
 class TestProtocolImports:
     def test_rigor_evaluator_importable(self):
         """Adapter references rigor_evaluator — DSR/PBO gate active."""
-        from archimedes.evaluation.stockbench import adapter as mod
-
         # The module-level imports must exist
         import archimedes.services.rigor_evaluator  # noqa: F401
 
@@ -305,14 +298,23 @@ class TestPersistence:
 class TestCLI:
     def test_dry_run_exits_zero(self):
         """python -m archimedes.evaluation.stockbench --dry-run"""
+        import os
         import subprocess
         import sys
+
+        # CI installs requirements.txt but doesn't `pip install -e backend/`, so
+        # `archimedes` isn't on sys.path inside a fresh subprocess. Inject the
+        # backend directory explicitly so the -m flag resolves the module.
+        backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        env = os.environ.copy()
+        env["PYTHONPATH"] = backend_dir + os.pathsep + env.get("PYTHONPATH", "")
 
         result = subprocess.run(
             [sys.executable, "-m", "archimedes.evaluation.stockbench", "--dry-run"],
             capture_output=True,
             text=True,
             timeout=30,
+            env=env,
         )
         assert result.returncode == 0
         assert "82" in result.stdout

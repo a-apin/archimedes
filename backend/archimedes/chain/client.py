@@ -6,7 +6,6 @@ All contract calls route through this client.
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -23,7 +22,7 @@ class ChainSettings(BaseSettings):
 
     # RPC
     arc_rpc_url: str = "https://rpc.testnet.arc.network"
-    chain_id: int =  5042002  # Arc testnet chain ID (0x4cef52)
+    chain_id: int = 5042002  # Arc testnet chain ID (0x4cef52)
 
     # Agent account (the address that calls rebalance, publishes traces, etc.)
     agent_private_key: str = ""
@@ -60,9 +59,7 @@ class ChainSettings(BaseSettings):
     snky_oracle_address: str = "0xcd34a4103ad64a3cf729b1b1a58295ccc957fcee"
 
     # Paths
-    abi_dir: str = str(
-        Path(__file__).resolve().parents[3] / "contracts" / "abis"
-    )
+    abi_dir: str = str(Path(__file__).resolve().parents[3] / "contracts" / "abis")
 
     model_config = {"env_prefix": "ARC_", "env_file": ".env", "extra": "ignore"}
 

@@ -35,13 +35,13 @@ logger = logging.getLogger(__name__)
 class AgentPick:
     """A single agent-chosen position."""
 
-    ticker: str           # display symbol (e.g. "NVDA", "USD/TRY", "BIST100")
-    synth: str            # internal synth code (e.g. "sNVDA")
-    asset_class: str      # us_stock, us_bond_long, fx, crypto, ...
+    ticker: str  # display symbol (e.g. "NVDA", "USD/TRY", "BIST100")
+    synth: str  # internal synth code (e.g. "sNVDA")
+    asset_class: str  # us_stock, us_bond_long, fx, crypto, ...
     exchange: str
-    weight: float         # 0 - 1, fraction of the *synth budget* (not total)
-    paper_anchor: str     # which paper-strategy supports this pick
-    reasoning: str        # one-sentence justification
+    weight: float  # 0 - 1, fraction of the *synth budget* (not total)
+    paper_anchor: str  # which paper-strategy supports this pick
+    reasoning: str  # one-sentence justification
 
 
 @dataclass
@@ -121,10 +121,7 @@ def _format_universe(scan_universe_synths: set[str]) -> str:
     parts: list[str] = []
     for asset_class in sorted(by_class):
         rows = by_class[asset_class]
-        names = ", ".join(
-            f"{d}" + ("*" if s in scan_universe_synths else "")
-            for s, d, _e in sorted(rows)
-        )
+        names = ", ".join(f"{d}" + ("*" if s in scan_universe_synths else "") for s, d, _e in sorted(rows))
         parts.append(f"  - {asset_class:20s}: {names}")
     return "\n".join(parts)
 
@@ -137,8 +134,8 @@ def _format_market_scan(market_ranking: list[dict]) -> str:
     for r in market_ranking:
         lines.append(
             f"  {r['display']:12s} {r['asset_class']:18s} "
-            f"score={r['score']:+6.2f}  90d_mom={r['momentum_90d']*100:+6.1f}%  "
-            f"vol={r['vol_ann']*100:5.1f}%  [{r['exchange']}]"
+            f"score={r['score']:+6.2f}  90d_mom={r['momentum_90d'] * 100:+6.1f}%  "
+            f"vol={r['vol_ann'] * 100:5.1f}%  [{r['exchange']}]"
         )
     return "\n".join(lines)
 
@@ -236,7 +233,7 @@ def _resolve_ticker(ticker: str) -> tuple[str, tuple[str, str, str, str]] | None
         return ticker, GLOBAL_ASSETS[ticker]
     for synth, entry in GLOBAL_ASSETS.items():
         yf_t, display, _ac, _ex = entry
-        if ticker == display or ticker == yf_t:
+        if ticker in (display, yf_t):
             return synth, entry
     norm = ticker.upper().replace(" ", "")
     for synth, entry in GLOBAL_ASSETS.items():
@@ -317,9 +314,14 @@ class PortfolioAgent:
             "before finalizing via propose_portfolio."
         )
         user = _build_tool_user_prompt(
-            regime, regime_confidence, risk_profile,
-            usdc_floor, synth_budget, market_ranking,
-            strategies, scan_universe_synths,
+            regime,
+            regime_confidence,
+            risk_profile,
+            usdc_floor,
+            synth_budget,
+            market_ranking,
+            strategies,
+            scan_universe_synths,
         )
 
         messages: list[dict] = [{"role": "user", "content": user}]
@@ -363,15 +365,20 @@ class PortfolioAgent:
                     final_pick_input = tool_input
                     break
                 output = _execute_tool(tool_name, tool_input, price_histories)
-                tool_trace.append(AgentToolCall(
-                    tool=tool_name, inputs=tool_input,
-                    output_summary=_summarize_tool_output(tool_name, output),
-                ))
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu.id,
-                    "content": json.dumps(output),
-                })
+                tool_trace.append(
+                    AgentToolCall(
+                        tool=tool_name,
+                        inputs=tool_input,
+                        output_summary=_summarize_tool_output(tool_name, output),
+                    )
+                )
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tu.id,
+                        "content": json.dumps(output),
+                    }
+                )
 
             if final_pick_input is not None:
                 break
@@ -403,13 +410,17 @@ class PortfolioAgent:
             if weight <= 0:
                 continue
             weight = min(weight, 0.20)
-            picks.append(AgentPick(
-                ticker=display, synth=synth,
-                asset_class=asset_class, exchange=exchange,
-                weight=weight,
-                paper_anchor=str(entry.get("paper_anchor", "")).strip(),
-                reasoning=str(entry.get("reasoning", "")).strip(),
-            ))
+            picks.append(
+                AgentPick(
+                    ticker=display,
+                    synth=synth,
+                    asset_class=asset_class,
+                    exchange=exchange,
+                    weight=weight,
+                    paper_anchor=str(entry.get("paper_anchor", "")).strip(),
+                    reasoning=str(entry.get("reasoning", "")).strip(),
+                )
+            )
         if not picks:
             return None
 
@@ -453,9 +464,14 @@ class PortfolioAgent:
 
         system = _build_system_prompt()
         user = _build_user_prompt(
-            regime, regime_confidence, risk_profile,
-            usdc_floor, synth_budget, market_ranking,
-            strategies, scan_universe_synths,
+            regime,
+            regime_confidence,
+            risk_profile,
+            usdc_floor,
+            synth_budget,
+            market_ranking,
+            strategies,
+            scan_universe_synths,
         )
 
         try:
@@ -494,15 +510,17 @@ class PortfolioAgent:
             if weight <= 0:
                 continue
             weight = min(weight, 0.20)  # enforce per-asset cap
-            picks.append(AgentPick(
-                ticker=display,
-                synth=synth,
-                asset_class=asset_class,
-                exchange=exchange,
-                weight=weight,
-                paper_anchor=str(entry.get("paper_anchor", "")).strip(),
-                reasoning=str(entry.get("reasoning", "")).strip(),
-            ))
+            picks.append(
+                AgentPick(
+                    ticker=display,
+                    synth=synth,
+                    asset_class=asset_class,
+                    exchange=exchange,
+                    weight=weight,
+                    paper_anchor=str(entry.get("paper_anchor", "")).strip(),
+                    reasoning=str(entry.get("reasoning", "")).strip(),
+                )
+            )
 
         if not picks:
             logger.warning("PortfolioAgent: parsed zero valid picks from LLM response")
@@ -656,6 +674,7 @@ def _tool_get_asset_stats(
     if series is None or series.empty or len(series) < 30:
         return {"error": f"no usable price history for {display}"}
     import numpy as np
+
     returns = series.pct_change().dropna().tail(252)
     if len(returns) < 30:
         return {"error": f"insufficient returns for {display}"}
@@ -693,6 +712,7 @@ def _tool_get_correlation(
     sa, (_y1, da, _ac1, _ex1) = ra
     sb, (_y2, db, _ac2, _ex2) = rb
     import pandas as pd
+
     pa, pb = price_histories.get(sa), price_histories.get(sb)
     if pa is None or pb is None or pa.empty or pb.empty:
         return {"error": "missing price history"}
@@ -707,9 +727,12 @@ def _tool_get_correlation(
         "correlation_1y": round(rho, 3),
         "n_obs": len(r),
         "interpretation": (
-            "highly correlated (redundant)" if rho > 0.7
-            else "moderately correlated" if rho > 0.4
-            else "weakly correlated (diversifying)" if rho > 0
+            "highly correlated (redundant)"
+            if rho > 0.7
+            else "moderately correlated"
+            if rho > 0.4
+            else "weakly correlated (diversifying)"
+            if rho > 0
             else "negatively correlated (strong diversifier)"
         ),
     }
@@ -727,12 +750,14 @@ def _tool_stress_test(
         resolved = _resolve_ticker(ticker)
         if not resolved:
             continue
-        _synth, (_yf, display, asset_class, exchange) = resolved
-        enriched.append({
-            "symbol": display,
-            "asset_class": asset_class,
-            "weight": float(a.get("weight", 0.0)),
-        })
+        _synth, (_yf, display, asset_class, _exchange) = resolved
+        enriched.append(
+            {
+                "symbol": display,
+                "asset_class": asset_class,
+                "weight": float(a.get("weight", 0.0)),
+            }
+        )
     if not enriched:
         return {"error": "no valid allocations"}
     try:
@@ -778,19 +803,16 @@ def _summarize_tool_output(name: str, output: dict) -> str:
         return f"{name} → error: {output['error']}"
     if name == "get_asset_stats":
         return (
-            f"{name}({output.get('ticker')}) → μ={output.get('annualized_return',0)*100:+.1f}%, "
-            f"σ={output.get('annualized_vol',0)*100:.1f}%, sharpe={output.get('sharpe')}"
+            f"{name}({output.get('ticker')}) → μ={output.get('annualized_return', 0) * 100:+.1f}%, "
+            f"σ={output.get('annualized_vol', 0) * 100:.1f}%, sharpe={output.get('sharpe')}"
         )
     if name == "get_correlation":
         return (
             f"{name}({output.get('ticker_a')},{output.get('ticker_b')}) → "
-            f"ρ={output.get('correlation_1y')} ({output.get('interpretation','')})"
+            f"ρ={output.get('correlation_1y')} ({output.get('interpretation', '')})"
         )
     if name == "stress_test_portfolio":
-        return (
-            f"{name}({output.get('scenario')}) → "
-            f"portfolio P&L {output.get('portfolio_pnl_pct',0):+.1f}%"
-        )
+        return f"{name}({output.get('scenario')}) → portfolio P&L {output.get('portfolio_pnl_pct', 0):+.1f}%"
     return f"{name} → {json.dumps(output)[:120]}"
 
 

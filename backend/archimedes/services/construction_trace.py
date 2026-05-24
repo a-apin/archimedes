@@ -23,9 +23,9 @@ from __future__ import annotations
 
 import uuid
 
+from archimedes.agents.strategy_architect import ArchitectProposal
 from archimedes.models.trace import DecisionType, ReasoningTrace
 from archimedes.services.strategy_guardrail import GuardrailResult
-from archimedes.agents.strategy_architect import ArchitectProposal
 
 # No vault exists yet when a user is *designing* a portfolio pre-deposit.
 # A sentinel keeps the trace well-formed and self-describing; the real vault
@@ -46,19 +46,12 @@ def build_construction_trace(
     the strategies referenced — so the on-chain anchor binds the *what* and
     the *why*, not just a timestamp.
     """
-    citations = {
-        s.strategy_id: s.paper_citation
-        for s in proposal.selected
-        if s.paper_citation
-    }
+    citations = {s.strategy_id: s.paper_citation for s in proposal.selected if s.paper_citation}
     rationales = {s.strategy_id: s.rationale for s in proposal.selected}
 
     # Self-contained, deterministically serializable view of the decision.
     portfolio_after = {
-        "strategy_weights": {
-            sid: round(w, 6)
-            for sid, w in sorted(guardrail.strategy_weights.items())
-        },
+        "strategy_weights": {sid: round(w, 6) for sid, w in sorted(guardrail.strategy_weights.items())},
         "usyc_weight": round(guardrail.usyc_weight, 6),
         "rationales": rationales,
         "paper_citations": citations,
@@ -75,9 +68,7 @@ def build_construction_trace(
     if proposal.risk_notes.strip():
         reasoning += f"\n\nRisk notes: {proposal.risk_notes.strip()}"
     if guardrail.adjustments:
-        reasoning += "\n\nGuardrail adjustments:\n" + "\n".join(
-            f"- {n}" for n in guardrail.adjustments
-        )
+        reasoning += "\n\nGuardrail adjustments:\n" + "\n".join(f"- {n}" for n in guardrail.adjustments)
 
     trace = ReasoningTrace(
         id=str(uuid.uuid4()),
@@ -92,7 +83,7 @@ def build_construction_trace(
         confidence=0.0,  # no calibrated source yet — see module docstring
         expected_outcome=(
             f"Constructed by {proposal.model_id} from the user intent: "
-            f"\"{proposal.intent}\". Empirical validation (backtest / DSR / "
+            f'"{proposal.intent}". Empirical validation (backtest / DSR / '
             f"PBO) is not yet wired, so no confidence score is asserted."
         ),
         trades_executed=[],  # construction proposal — no trades executed yet

@@ -79,7 +79,10 @@ def apply_outcome_embargo(
         else:
             logger.debug(
                 "embargo: paper %s published %s (< %d days from %s) — filtered",
-                p.get("arxiv_id", "?"), pub, embargo_days, at,
+                p.get("arxiv_id", "?"),
+                pub,
+                embargo_days,
+                at,
             )
 
     return result

@@ -6,7 +6,7 @@ transition smoothing, and confidence computation.
 
 from __future__ import annotations
 
-import pytest
+from datetime import UTC
 
 from archimedes.models.asset import MarketSnapshot
 from archimedes.models.regime import Regime
@@ -20,9 +20,10 @@ def _make_snapshot(
     ma200: float = 4800.0,
 ) -> MarketSnapshot:
     """Create a MarketSnapshot with specified regime signals."""
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     return MarketSnapshot(
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         prices={"sSPY": spy_price},
         vix=vix,
         sp500_ma50=ma50,

@@ -80,7 +80,6 @@ export default function DepositFlow({ vaultAddress, depositAmount = '100', strat
   })
   const [errors, setErrors] = useState([null, null, null])
   const [amount, setAmount] = useState(depositAmount)
-  const [amountEdited, setAmountEdited] = useState(false)
 
   // Persist progress on every state change
   useEffect(() => {
@@ -238,7 +237,7 @@ export default function DepositFlow({ vaultAddress, depositAmount = '100', strat
                 min="0.01"
                 step="0.01"
                 value={amount}
-                onChange={e => { setAmount(e.target.value); setAmountEdited(true) }}
+                onChange={e => setAmount(e.target.value)}
                 className="chat-input w-full p-2.5 mono"
                 disabled={statuses[0] === DONE} // lock after approve
               />

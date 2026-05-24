@@ -21,20 +21,28 @@ logger = logging.getLogger(__name__)
 
 REBALANCE_FREQUENCIES = frozenset({"daily", "weekly", "monthly"})
 
-INDICATOR_NAMES = frozenset({
-    "sma", "ema", "rsi", "realized_vol", "momentum",
-})
+INDICATOR_NAMES = frozenset(
+    {
+        "sma",
+        "ema",
+        "rsi",
+        "realized_vol",
+        "momentum",
+    }
+)
 
 COMPARISON_OPS = frozenset({"gt", "lt", "gte", "lte"})
 
 LOGIC_OPS = frozenset({"and", "or", "not"})
 
-POSITION_SIZING_TYPES = frozenset({
-    "full_invested_when_in_market",
-    "equal_weight",
-    "inverse_vol",
-    "volatility_target",
-})
+POSITION_SIZING_TYPES = frozenset(
+    {
+        "full_invested_when_in_market",
+        "equal_weight",
+        "inverse_vol",
+        "volatility_target",
+    }
+)
 
 # ── Errors ────────────────────────────────────────────────────────────
 
@@ -115,11 +123,18 @@ def _validate_condition(cond: Any, path: str = "root") -> set[str]:
 
 # ── Spec validation ───────────────────────────────────────────────────
 
-REQUIRED_FIELDS = frozenset({
-    "name", "asset_universe", "rebalance_frequency",
-    "entry", "exit", "position_sizing",
-    "source_arxiv_ids", "look_ahead_safe",
-})
+REQUIRED_FIELDS = frozenset(
+    {
+        "name",
+        "asset_universe",
+        "rebalance_frequency",
+        "entry",
+        "exit",
+        "position_sizing",
+        "source_arxiv_ids",
+        "look_ahead_safe",
+    }
+)
 
 
 def validate_strategy_spec(spec: dict[str, Any]) -> StrategySpec:
@@ -191,18 +206,12 @@ def validate_strategy_spec(spec: dict[str, Any]) -> StrategySpec:
             if not isinstance(values, list):
                 raise DSLError(f"parameter_variants['{key}'] must be a list")
             if len(values) < 2:
-                raise DSLError(
-                    f"parameter_variants['{key}'] must have at least 2 entries, got {len(values)}"
-                )
+                raise DSLError(f"parameter_variants['{key}'] must have at least 2 entries, got {len(values)}")
             if len(values) > 8:
-                raise DSLError(
-                    f"parameter_variants['{key}'] must have at most 8 entries, got {len(values)}"
-                )
+                raise DSLError(f"parameter_variants['{key}'] must have at most 8 entries, got {len(values)}")
             for v in values:
                 if not isinstance(v, (int, float)):
-                    raise DSLError(
-                        f"parameter_variants['{key}'] entries must be numeric, got {v!r}"
-                    )
+                    raise DSLError(f"parameter_variants['{key}'] entries must be numeric, got {v!r}")
 
     return StrategySpec(
         name=spec["name"],

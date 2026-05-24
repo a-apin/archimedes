@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import backtrader as bt
-
 from archimedes_analytics_engine.strategy_loader import load_strategy
 
 

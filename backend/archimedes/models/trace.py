@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from web3 import Web3
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+
+from web3 import Web3
 
 
 class DecisionType(str, Enum):
@@ -70,9 +71,18 @@ class ReasoningTrace:
 
     # Canonical field order for hash computation — must match contract's verifyTrace
     _HASH_FIELDS = (
-        "id", "vault_address", "decision_type", "trigger", "timestamp",
-        "market_context", "portfolio_before", "portfolio_after",
-        "reasoning", "confidence", "trades_executed", "strategies_referenced",
+        "id",
+        "vault_address",
+        "decision_type",
+        "trigger",
+        "timestamp",
+        "market_context",
+        "portfolio_before",
+        "portfolio_after",
+        "reasoning",
+        "confidence",
+        "trades_executed",
+        "strategies_referenced",
         "consulted_paper_hashes",
     )
 

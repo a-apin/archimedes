@@ -7,19 +7,25 @@ dependencies:
   - pip
   - uv          # Modern, fast Python package + tool installer (used for arc-canteen and dev tooling)
   - git
+  - nodejs>=22  # Frontend toolchain (npm, npx). Required for `npm run lint`,
+                # `npm run dev`, `npm run build` in ui/. Without this, devs
+                # have to install Node separately and CI-vs-local parity
+                # breaks (the ESLint gate runs in CI only).
 
   # Python deps installed via pip — pinned loosely; tighten in pyproject.toml as the project firms up.
   - pip:
       # --- Web backend ---
       - fastapi>=0.115
+      - "starlette>=1.0.1"            # Pinned directly to close PYSEC-2026-161 (Host-header validation bypass); FastAPI's range can resolve to vulnerable 1.0.0 without this floor.
       - "uvicorn[standard]>=0.32"
       - sqlalchemy>=2.0
       - psycopg2-binary>=2.9          # PostgreSQL driver (binary wheel; no system pq needed)
       - alembic>=1.13                 # DB migrations
-      - redis>=5.0                    # Redis client for live regime/state cache
+      - redis>=7.4.0                  # Redis client for live regime/state cache (aligned with backend/requirements.txt)
       - pydantic>=2.9
       - pydantic-settings>=2.5
       - python-dotenv>=1.0
+      - "slowapi>=0.1.9"              # FastAPI rate-limiter — required by api/limiter.py + user_routes.py. CI installs from backend/requirements.txt; this keeps local dev parity.
 
       # --- Data + numerics ---
       - numpy>=1.26,<2.0              # Pin <2 until backtrader compatibility is verified
@@ -58,6 +64,7 @@ dependencies:
       - pytest-asyncio>=0.24
       - pytest-cov>=5.0
       - mypy>=1.11
+      - "pip-audit>=2.7"              # Supply-chain CVE scanner — run `pip-audit` to check installed deps against the PyPI vulnerability DB. Not yet a CI gate; advisory only.
 
       # --- Dev convenience ---
       - ipython>=8.27

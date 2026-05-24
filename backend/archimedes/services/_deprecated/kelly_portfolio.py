@@ -16,22 +16,19 @@ Owner: Önder (math), Dan (backup)
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass
-
-import numpy as np
 
 from archimedes.models.backtest import BacktestResult
 from archimedes.models.portfolio import (
+    RISK_PROFILE_PARAMS,
     Portfolio,
     RiskProfile,
-    RISK_PROFILE_PARAMS,
     TargetAllocation,
     TradeDirection,
     TradeOrder,
 )
 from archimedes.models.regime import Regime, RegimeClassification
-from archimedes.models.strategy import Strategy, PositionSizing
+from archimedes.models.strategy import Strategy
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +37,10 @@ logger = logging.getLogger(__name__)
 # depending on the regime. Crisis regime dramatically increases cash allocation.
 
 _REGIME_DELEVERAGE_FACTORS: dict[Regime, float] = {
-    Regime.RISK_ON: 0.5,       # Use only 50% of profile's base floor in risk_on
-    Regime.TRANSITION: 1.0,    # Use full profile floor
-    Regime.RISK_OFF: 2.5,      # 2.5x the profile floor
-    Regime.CRISIS: 5.0,        # 5x the profile floor (flight to safety)
+    Regime.RISK_ON: 0.5,  # Use only 50% of profile's base floor in risk_on
+    Regime.TRANSITION: 1.0,  # Use full profile floor
+    Regime.RISK_OFF: 2.5,  # 2.5x the profile floor
+    Regime.CRISIS: 5.0,  # 5x the profile floor (flight to safety)
 }
 
 # Maximum single-asset weight cap
@@ -62,6 +59,7 @@ _MIN_SHARPE_FOR_KELLY = 0.3
 @dataclass(frozen=True)
 class StrategyScore:
     """Scored strategy for portfolio construction."""
+
     strategy_id: str
     symbol: str  # Primary synth token
     sharpe: float
@@ -116,7 +114,9 @@ class KellyRiskParityConstructor:
 
         if not scores:
             logger.warning("No strategy scores — falling back to equal weight")
-            return self._equal_weight_fallback(current, strategies, regime, risk_profile, usdc_address or "", synth_addresses)
+            return self._equal_weight_fallback(
+                current, strategies, regime, risk_profile, usdc_address or "", synth_addresses
+            )
 
         # ── Step 2: Compute USDC floor with regime deleveraging ──
         usdc_floor = self._compute_usdc_floor(regime, params)
@@ -124,7 +124,9 @@ class KellyRiskParityConstructor:
 
         logger.info(
             "Kelly/RP: USDC floor=%.1f%% (regime=%s, profile=%s, base=%.1f%%)",
-            usdc_floor * 100, regime.regime.value, risk_profile.value,
+            usdc_floor * 100,
+            regime.regime.value,
+            risk_profile.value,
             params["usyc_floor"] * 100,
         )
 
@@ -153,6 +155,7 @@ class KellyRiskParityConstructor:
         # Resolve addresses
         if usdc_address is None or synth_addresses is None:
             from archimedes.chain.client import chain_client
+
             usdc_address = usdc_address or chain_client.settings.usdc_address
             synth_addresses = synth_addresses or chain_client.settings.synth_addresses
 
@@ -160,12 +163,14 @@ class KellyRiskParityConstructor:
         allocations: list[TargetAllocation] = []
 
         # USDC
-        allocations.append(TargetAllocation(
-            symbol="USDC",
-            token_address=usdc_address,
-            weight=round(usdc_floor, 4),
-            strategy_ids=[s.strategy_id for s in scores],
-        ))
+        allocations.append(
+            TargetAllocation(
+                symbol="USDC",
+                token_address=usdc_address,
+                weight=round(usdc_floor, 4),
+                strategy_ids=[s.strategy_id for s in scores],
+            )
+        )
 
         # Synth tokens
         score_by_sym = {s.symbol: s for s in scores}
@@ -175,12 +180,14 @@ class KellyRiskParityConstructor:
                 continue
             addr = synth_addresses.get(sym, "")
             score = score_by_sym.get(sym)
-            allocations.append(TargetAllocation(
-                symbol=sym,
-                token_address=addr,
-                weight=round(weight, 4),
-                strategy_ids=[score.strategy_id] if score else [],
-            ))
+            allocations.append(
+                TargetAllocation(
+                    symbol=sym,
+                    token_address=addr,
+                    weight=round(weight, 4),
+                    strategy_ids=[score.strategy_id] if score else [],
+                )
+            )
 
         logger.info(
             "Kelly/RP allocations: %s",
@@ -262,22 +269,24 @@ class KellyRiskParityConstructor:
             # Kelly fraction: f = (mu / sigma^2) * fraction_cap
             # Using Sharpe ≈ mu/sigma, so f ≈ Sharpe / sigma * fraction_cap
             kelly_f = min(
-                (sharpe * vol) / (vol ** 2 + 1e-10) * _KELLY_FRACTION_CAP,
+                (sharpe * vol) / (vol**2 + 1e-10) * _KELLY_FRACTION_CAP,
                 1.0,
             )
 
             # Risk-parity weight: proportional to 1/vol
             rp_w = 1.0 / (vol + 1e-6)
 
-            scores.append(StrategyScore(
-                strategy_id=s.id,
-                symbol=symbol,
-                sharpe=sharpe,
-                volatility=vol,
-                kelly_fraction=kelly_f,
-                risk_parity_weight=rp_w,
-                composite_score=0.0,  # Set after all scores computed
-            ))
+            scores.append(
+                StrategyScore(
+                    strategy_id=s.id,
+                    symbol=symbol,
+                    sharpe=sharpe,
+                    volatility=vol,
+                    kelly_fraction=kelly_f,
+                    risk_parity_weight=rp_w,
+                    composite_score=0.0,  # Set after all scores computed
+                )
+            )
 
         # Normalize risk-parity weights to sum to 1.0
         if scores:
@@ -394,9 +403,14 @@ class KellyRiskParityConstructor:
     def _primary_synth(self, strategy: Strategy) -> str | None:
         """Map strategy's primary asset to a synth symbol."""
         mapping = {
-            "SPY": "sSPY", "TSLA": "sTSLA", "NVDA": "sNVDA",
-            "BTC": "sBTC", "GOLD": "sGOLD", "OIL": "sOIL",
-            "NIKKEI": "sNKY", "TREASURY": "sGOLD",
+            "SPY": "sSPY",
+            "TSLA": "sTSLA",
+            "NVDA": "sNVDA",
+            "BTC": "sBTC",
+            "GOLD": "sGOLD",
+            "OIL": "sOIL",
+            "NIKKEI": "sNKY",
+            "TREASURY": "sGOLD",
         }
         if strategy.asset_universe:
             for a in strategy.asset_universe:
@@ -435,11 +449,13 @@ class KellyRiskParityConstructor:
         if synth_addresses is None:
             synth_addresses = {}
         for sym in synths:
-            allocations.append(TargetAllocation(
-                symbol=sym,
-                token_address=synth_addresses.get(sym, ""),
-                weight=round(per_asset, 4),
-            ))
+            allocations.append(
+                TargetAllocation(
+                    symbol=sym,
+                    token_address=synth_addresses.get(sym, ""),
+                    weight=round(per_asset, 4),
+                )
+            )
 
         return allocations
 
@@ -470,13 +486,15 @@ class KellyRiskParityConstructor:
             usdc_value = abs(drift) * current.total_value_usdc
             direction = TradeDirection.BUY if drift > 0 else TradeDirection.SELL
 
-            trades.append(TradeOrder(
-                symbol=sym,
-                token_address=token_addr,
-                direction=direction,
-                amount=round(usdc_value, 6),
-                estimated_usdc_value=round(usdc_value, 2),
-            ))
+            trades.append(
+                TradeOrder(
+                    symbol=sym,
+                    token_address=token_addr,
+                    direction=direction,
+                    amount=round(usdc_value, 6),
+                    estimated_usdc_value=round(usdc_value, 2),
+                )
+            )
 
         return trades
 

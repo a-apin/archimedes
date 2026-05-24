@@ -9,14 +9,15 @@ Design decisions (hackathon MVP per ecosystem-design-spec.md § 16–17):
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import String, Text, Boolean, Integer, DateTime, Index
+from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     """SQLAlchemy declarative base for all Archimedes models."""
+
     pass
 
 
@@ -38,12 +39,13 @@ class VaultMetadata(Base):
     strategy_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")  # JSON array
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         nullable=False,
     )
 
     def get_strategy_ids(self) -> list[str]:
         import json
+
         try:
             return json.loads(self.strategy_ids)
         except (json.JSONDecodeError, TypeError):
@@ -51,6 +53,7 @@ class VaultMetadata(Base):
 
     def set_strategy_ids(self, ids: list[str]) -> None:
         import json
+
         self.strategy_ids = json.dumps(ids)
 
     def to_dict(self) -> dict:
@@ -76,14 +79,12 @@ class ChatMessage(Base):
     is_ai: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         nullable=False,
     )
 
     # Composite index for efficient vault + time-ordered queries
-    __table_args__ = (
-        Index("ix_chat_vault_created", "vault_address", "created_at"),
-    )
+    __table_args__ = (Index("ix_chat_vault_created", "vault_address", "created_at"),)
 
     def to_dict(self) -> dict:
         return {

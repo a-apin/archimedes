@@ -7,12 +7,12 @@ directory so tests exercise the actual strategy files rather than mocks.
 # IMPORTANT: set TESTING env var BEFORE any archimedes imports so that
 # the rate limiter (api/limiter.py) reads it at module init time.
 import os
+
 os.environ["TESTING"] = "1"
 
 from pathlib import Path
 
 import pytest
-
 from archimedes.services.strategy_provider import LocalStrategyProvider
 
 

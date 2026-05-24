@@ -38,7 +38,7 @@ monitors them in non-custodial vaults on Arc with USDC settlement. The product s
 Built for the [**Agora Agents Hackathon**](https://luma.com/7i50p2r9) — Canteen × Circle × Arc,
 May 11–25, 2026.
 
-- Repository: [`github.com/hackagora/archimedes-arcadia`](https://github.com/hackagora/archimedes-arcadia)
+- Repository: [`github.com/a-apin/archimedes-arcadia`](https://github.com/a-apin/archimedes-arcadia)
 - Discord: **Archimedes Arcadia** server
 - Branch model: **`main` is the single live branch — build-on-deploy.** Every merge to
   `main` triggers a CI build + deploy to the live EC2 stack. No `develop`/integration
@@ -186,6 +186,19 @@ The repo carries three git submodules at [`submodules/`](submodules/):
     - `samples/arc-p2p-payments/` — Paymaster + USDC patterns
   Refresh upstream with `git submodule update --remote submodules/context-arc` or
   `arc-canteen context sync` (drops into `~/.arc-canteen/context/`).
+
+  **Sticky submodule config — one-time, per clone:** after `git clone`, run this
+  to make git auto-recurse into submodules on every checkout/pull/rebase. Without
+  this, working trees drift out of sync with main's recorded pins (we hit this
+  several times during the hackathon — every session had to manually re-sync):
+  ```bash
+  git config submodule.recurse true   # auto-recurse on git ops
+  git config diff.submodule log       # nicer diff display
+  git submodule update --init --recursive  # one-shot sync to recorded pins
+  ```
+  Linus has its OWN nested submodule (`submodules/Linus/modules/KnowledgeBase`)
+  which is the most common source of "modified content" noise in `git status`.
+  The `--recursive` flag handles it.
 - **[`submodules/KnowledgeBase/`](submodules/KnowledgeBase/)** — Dan's scientific-
   paper analysis pipeline (PyMuPDF extract + SPECTER2 embeddings + HDBSCAN/BERTopic
   clustering + REBEL/SciSpacy knowledge graph). For Archimedes, **don't port wholesale**
@@ -194,6 +207,18 @@ The repo carries three git submodules at [`submodules/`](submodules/):
     - `papers_analysis/extract.py` — PyMuPDF caching pattern (~71 files/s)
     - `papers_analysis/metadata.py` — paper-corpus schema (maps to our `paper_corpus` table)
     - `papers_analysis/summarize.py` — Ollama-driven methodology synthesis (we'd use Claude)
+
+  **KB pipeline integration — provenance discipline:** The Corpus page (`/corpus`)
+  uses [`corpus_routes.py`](backend/archimedes/api/corpus_routes.py) at the
+  `/api/corpus/*` prefix, which reads real KB pipeline output (SPECTER2
+  embeddings, HDBSCAN clusters, REBEL/SciSpacy triples) and returns 503 when no
+  artifact exists yet. The legacy metadata-derived `/api/papers/corpus/*`
+  endpoints were deleted in issue #201 — do NOT reintroduce them. Any "graph"
+  or "knowledge graph" surface MUST come from real KB pipeline output, not
+  arxiv-metadata synthesis. When the KB pipeline (issue #151, gated on AWS
+  infra #147) actually produces an artifact, the honest endpoints start
+  returning data; until then the page renders an explicit "KB pipeline still
+  running — first artifact pending" empty state from the 503 response.
 - **[`submodules/Linus/`](submodules/Linus/)** — Dan's personal AI orchestration
   project. Reference only; nothing to port to Archimedes. The
   [`experiments/archimedes/`](submodules/Linus/experiments/archimedes/) and
@@ -319,10 +344,10 @@ Four workflows run on every PR and every push to `main`:
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `quality-gate.yml` | PR → main | Hard block: `pytest -m "not integration"` (unit suite, no DB/Redis). Informational: `ruff check` + `ruff format --check` and `npm run lint` in `ui/` — both run with `continue-on-error` and their pass/fail counts are posted as a PR comment table (marker `<!-- quality-gate-v1 -->`). Agent PRs (`t2o2`) also get a coverage gate (≥ 60%). |
+| `quality-gate.yml` | PR → main | Hard block: `pytest -m "not integration"` (unit suite, no DB/Redis) **and** `ruff-gate` (`ruff format --check .` + `ruff check --select E9,F63,F7,F40 .`). Informational: full `ruff check` (broader rule set) + `npm run lint` in `ui/` — both run with `continue-on-error` and their pass/fail counts are posted as a PR comment table (marker `<!-- quality-gate-v1 -->`). Agent PRs (`t2o2`) also get a coverage gate (≥ 60%). |
 | `complexity-gate.yml` | PR → main (Python/JS/TS files only) | Aggregate cyclomatic-complexity, nesting depth, recursion, and orphan analysis via lizard + Python AST. Compares the changed-file set against the `main` baseline and posts a table comment on the PR (marker `<!-- complexity-gate-v1 -->`). **Informational only — never blocks merge.** Runs on the GitHub runner with `pip install lizard`; the bundled distroless Dockerfile at `.github/docker/complexity-gate/Dockerfile` is available for local use but not pulled by CI. |
 | `deploy.yml` | push → main | Rebuilds and redeploys the EC2 stack. |
-| `release-tag.yml` | push → main | Creates a semver annotated tag for every merged PR via the GitHub API (no `git push`). Bump rules (read from PR title or body): `!version-release` → major (1.0.0), `!minor` → minor (0.1.0), anything else → patch (0.0.1). Direct pushes with no associated PR are skipped silently. |
+| `release-tag.yml` | push → main | Creates a semver annotated tag for every merged PR via the GitHub API (no `git push`). Bump rules (read from PR title only, **end-of-title anchor**): `!version-release` → major (1.0.0), `!minor` → minor (0.1.0), anything else → patch (0.0.1). Title-end matching prevents false positives where the marker text appears in body prose. Direct pushes with no associated PR are skipped silently. |
 
 **Complexity gate visual thresholds (informational only — none block merge):** ✅ CC 1–5 simple · ⚠️ 6–10 moderate · 🟠 11–15 complex · 🔴 16+. Δ CC > +1.0 vs main is flagged ⚠️. Nesting depth ≥ 3 and recursive functions are flagged in the table.
 
@@ -332,6 +357,86 @@ PR title: "Rework strategy fusion engine !minor"     → v0.1.0
 PR title: "Launch-ready rebalancer !version-release" → v1.0.0
 PR title: "Fix corpus manifest path"                 → v0.0.1
 ```
+
+**Release tagging — conventions for direct-to-main commits (applies especially to
+bot-driven work):** `release-tag.yml` only fires on PR merges. **Direct pushes to
+`main` without an associated PR are silently skipped — no tag is created.** Two
+implications:
+
+1. **Prefer PRs over direct push** for any change that warrants a version tag (i.e.
+   anything except trivial doc fixes you'd be comfortable losing in `git log`).
+   This includes work done by Chuan's agentic system (`t2o2`): if a change is
+   meaningful enough to read later, it's meaningful enough to PR.
+2. **Choose the right marker for the PR title.** Most changes are patches and
+   need no marker. But:
+   - **`!minor`** — new user-facing capability (new endpoint, new UI surface,
+     new strategy in the library, new contract method, new pipeline stage).
+   - **`!version-release`** — major milestones (live demo cutover, multi-chain
+     mainnet, custodial-vault → non-custodial-vault migration, etc.). Use
+     sparingly — most weeks see zero of these.
+   - **(no marker)** — bug fixes, refactors, doc updates, dep bumps, telemetry.
+
+When in doubt, default to **no marker** (patch). Over-bumping minor/major dilutes
+the signal; under-bumping is recoverable later.
+
+### Python linting + formatting (ruff)
+
+Convention: **`line-length = 120`, ruff defaults plus `I,UP,B,SIM,RUF`.** Config
+lives at the repo root in [`ruff.toml`](ruff.toml). Two things gate every Python
+PR via the `ruff-gate` job:
+
+| Check | Command | Status |
+| --- | --- | --- |
+| Formatting | `ruff format --check .` | Hard block |
+| Critical lint rules | `ruff check --select E9,F63,F7,F40 .` | Hard block |
+| Broader lint | `ruff check .` | Informational (continue-on-error) |
+
+The blocking subset is deliberately narrow today (syntax + undefined-module
+rules) so the gate doesn't trip on pre-existing style debt. It can grow as we
+clean things up — next candidate is `F82` (undefined-name).
+
+**Local feedback loop — install pre-commit once per clone:**
+```bash
+pip install pre-commit
+pre-commit install                 # installs .git/hooks/pre-commit
+pre-commit run --all-files         # one-shot check across the repo
+```
+
+The pre-commit hooks ([.pre-commit-config.yaml](.pre-commit-config.yaml))
+mirror the CI gate exactly, so pre-commit can't pass while CI fails (or vice
+versa). They're **opt-in** — devs who don't install them just get the same
+feedback from CI on push instead of from `git commit` locally.
+
+**To clean up before committing:**
+```bash
+ruff check --select I --fix .      # import organization (safe, mechanical)
+ruff check --fix .                 # all other safe auto-fixes
+ruff format .                      # apply formatting (line-length 120)
+```
+
+The `--unsafe-fixes` flag should be reviewed line-by-line — those fixes need
+human judgment and are not auto-applied in CI or pre-commit.
+
+### Supply-chain scrutiny — dependency hygiene
+
+We don't bring on new dependencies casually, and we re-check the ones we have. Three
+practices:
+
+| Tool | Command | When to run |
+| --- | --- | --- |
+| `pip-audit` | `pip-audit` (whole env) or `pip-audit -r backend/requirements.txt` (declared only) | Before every PR that bumps or adds a Python dep. Once a week as background hygiene. |
+| `npm audit` | `cd ui && npm audit --omit=dev` (prod only) or `npm audit` (full) | Before every PR that bumps a Node dep. Dependabot also alerts asynchronously. |
+| Dependabot | Auto — see open dependabot PRs in the repo | Always-on. Triage promptly; don't let CVE PRs sit. |
+
+Three rules:
+
+- **Pin transitively-vulnerable deps directly when CVEs warrant it.** Example: `starlette>=1.0.1` is in `environment.yml` + `backend/requirements.txt` to close PYSEC-2026-161 (Host-header bypass) even though it would otherwise come transitively from FastAPI. When `pip-audit` flags a CVE in a transitive dep, add a direct pin to the closest `Fix Versions` so a fresh resolution can't regress.
+- **Keep `environment.yml` (local dev) and `backend/requirements.txt` (Docker / CI) aligned.** Drift is the most common source of "works on my machine" + "breaks in CI" — see the `slowapi` and `redis` misalignment that caused 62 user_routes test errors locally on 2026-05-24. Any new pip dep goes in BOTH files in the same PR.
+- **No new dep without a sentence on what it does + why we picked it.** Comments in the requirements / env files are how future readers (us in a week) understand the trust surface. "added by tooling" is not a sentence.
+
+**Frontend**: `npm ci` (used by both `quality-gate.yml` lint-report and local `ui/` setup) verifies `package-lock.json` integrity — that's the lockfile hash check we rely on for transitive integrity. Don't `npm install` (which can mutate the lockfile); always `npm ci`.
+
+**Pre-commit + detect-secrets** are tracked as separate hardening (issue TS.7 / #176-adjacent) — not implemented today.
 
 ### Smoke-test before deploy
 

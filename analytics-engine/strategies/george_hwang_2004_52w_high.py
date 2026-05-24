@@ -51,7 +51,7 @@ METHODOLOGY_TEXT = (
     "single-asset adaptations in this library."
 )
 
-PAPER_CLAIMED_SHARPE = 0.90   # Long-short cross-sectional portfolio, 1963-2001.
+PAPER_CLAIMED_SHARPE = 0.90  # Long-short cross-sectional portfolio, 1963-2001.
 PAPER_CLAIMED_CAGR = 0.135
 PAPER_CLAIMED_MAX_DD = 0.18
 
@@ -87,7 +87,7 @@ class FiftyTwoWeekHighMomentum(bt.Strategy):
 
     params = (
         ("lookback_bars", 252),
-        ("proximity_pct", 0.10),   # invest when within 10% of 52w high
+        ("proximity_pct", 0.10),  # invest when within 10% of 52w high
         ("exposure_fraction", 0.99),
     )
 

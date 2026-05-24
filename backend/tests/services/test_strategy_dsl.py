@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import pytest
-
 from archimedes.services.strategy_dsl import (
-    DSLError,
     FABER_2007_SPEC,
     REFERENCE_EXAMPLES,
     VOL_MANAGED_SPEC,
+    DSLError,
     validate_strategy_spec,
 )
 
@@ -72,7 +71,7 @@ class TestValidationRejectsInvalidSpecs:
 
     def test_invalid_position_sizing_type(self):
         spec = {**FABER_2007_SPEC, "position_sizing": {"type": "kelly"}}
-        with pytest.raises(DSLError, match="position_sizing.type"):
+        with pytest.raises(DSLError, match=r"position_sizing\.type"):
             validate_strategy_spec(spec)
 
     def test_volatility_target_missing_pct(self):
@@ -104,10 +103,12 @@ class TestConditionTree:
             "entry": {
                 "and": [
                     {"gt": ["close", "sma_200"]},
-                    {"or": [
-                        {"gt": ["rsi_14", 30]},
-                        {"lt": ["realized_vol_20", 0.25]},
-                    ]},
+                    {
+                        "or": [
+                            {"gt": ["rsi_14", 30]},
+                            {"lt": ["realized_vol_20", 0.25]},
+                        ]
+                    },
                 ],
             },
         }
@@ -137,6 +138,7 @@ class TestSpecRoundTrip:
 
     def test_to_json_round_trip(self):
         import json
+
         result = validate_strategy_spec(FABER_2007_SPEC)
         j = result.to_json()
         d = json.loads(j)
@@ -194,6 +196,7 @@ class TestParameterVariants:
 
     def test_variants_round_trip(self):
         import json
+
         spec = {**FABER_2007_SPEC, "parameter_variants": {"sma_200": [150, 200, 250]}}
         result = validate_strategy_spec(spec)
         d = result.to_dict()

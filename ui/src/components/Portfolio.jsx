@@ -3,9 +3,7 @@ import {
   publicClient,
   VAULT_ABI, VAULT_FACTORY_ABI, NEW_CONTRACTS,
 } from '../config'
-import PortfolioAdvisor from './PortfolioAdvisor'
 import RegimePanel from './RegimePanel'
-import StressScenarioPanel from './StressScenarioPanel'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -30,7 +28,6 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace }) 
   const [recentTraces, setRecentTraces] = useState([])
   const [tracesLoading, setTracesLoading] = useState(false)
   const [vaultsLoading, setVaultsLoading] = useState(false)
-  const [advisorOpen, setAdvisorOpen] = useState(false)
 
   // Load user's own vaults (wallet-gated, from on-chain)
   const loadVaults = useCallback(async () => {
@@ -67,14 +64,18 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace }) 
         const data = await r.json()
         setAllVaults(data.vaults || [])
       }
-    } catch {}
+    } catch {
+      // Network blip — leave prior allVaults intact; next 30s poll retries.
+    }
   }, [])
 
   const loadAgentAndRegime = useCallback(async () => {
     try {
       const r = await fetch(`${API_BASE}/api/agent/status`)
       if (r.ok) setAgentStatus(await r.json())
-    } catch {}
+    } catch {
+      // Network blip — leave prior agentStatus intact; next poll retries.
+    }
     // Regime is loaded + rendered by <RegimePanel /> above, not duplicated here.
   }, [])
 
@@ -86,7 +87,9 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace }) 
         const data = await r.json()
         setRecentTraces(data.traces || [])
       }
-    } catch {}
+    } catch {
+      // Network blip — leave prior recentTraces intact; next poll retries.
+    }
     setTracesLoading(false)
   }, [])
 
@@ -97,38 +100,41 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace }) 
     return () => clearInterval(t)
   }, [loadAllVaults, loadAgentAndRegime, loadTraces])
 
-  const totalAum = userVaults.reduce((s, v) => s + v.aum, 0)
-  const allAum = allVaults.reduce((s, v) => s + (v.aum_usdc || 0), 0)
+  // YOUR AUM — sum across vaults the connected wallet created.
+  // Wallet-disconnected users see 0; wallet-connected users see real $ at risk.
+  const yourAum = userVaults.reduce((s, v) => s + v.aum, 0)
 
   return (
     <div>
-      <div className="max-w-[720px] mb-6">
-        <h2 className="serif text-[2rem] mb-2.5">Portfolio</h2>
-        <p className="body">
-          Browse vaults, monitor the agent, and inspect every rebalance decision.
-          Every action has a reasoning trace anchored on Arc — click to inspect.
-        </p>
+      <div className="max-w-[720px] mb-6 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="serif text-[2rem] mb-2.5">Portfolio</h2>
+          <p className="body">
+            Browse vaults, monitor the agent, and inspect every rebalance decision.
+            Every action has a reasoning trace anchored on Arc — click to inspect.
+          </p>
+        </div>
+        {/* Regime context — small pill; full breakdown lives on /learnings. */}
+        <RegimePanel compact />
       </div>
 
-      {/* Regime sidebar */}
-      <RegimePanel />
-
-      {/* Status strip — agent state is Redis-backed (regardless of wallet); regime
-          lives in the RegimePanel block above to avoid duplication. */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      {/* Status strip — Your AUM (wallet-scoped) + marketplace vault count + agent. */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
         <div className="card-flat p-4">
-          <div className="label mb-2">Vaults</div>
+          <div className="label mb-2">Your AUM</div>
+          <div className="text-[1.8rem] font-bold">
+            ${yourAum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div className="caption mt-1.5">
+            Across {userVaults.length} {userVaults.length === 1 ? 'vault' : 'vaults'} you created
+          </div>
+        </div>
+        <div className="card-flat p-4">
+          <div className="label mb-2">Marketplace</div>
           <div className="text-[1.8rem] font-bold">{allVaults.length}</div>
           <div className="caption mt-1.5">
             {allVaults.filter(v => v.tier === 1).length} Tier 1 · {allVaults.filter(v => v.tier === 2).length} Tier 2
           </div>
-        </div>
-        <div className="card-flat p-4">
-          <div className="label mb-2">Total AUM</div>
-          <div className="text-[1.8rem] font-bold">
-            ${allAum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </div>
-          <div className="caption positive mt-1.5">Arc Testnet</div>
         </div>
         <div className="card-flat p-4">
           <div className="label mb-2">Agent</div>
@@ -142,9 +148,9 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace }) 
         </div>
       </div>
 
-      {/* Browse all vaults */}
+      {/* Vault marketplace — every deployed vault (yours and others). */}
       <div className="mb-7">
-        <div className="label mb-3">Your Vaults</div>
+        <div className="label mb-3">Vault Marketplace</div>
         {allVaults.length === 0 && (
           <div className="card" style={{ padding: 18 }}>
             <p className="body">No vaults deployed yet.</p>
@@ -203,26 +209,6 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace }) 
           </div>
         </div>
       )}
-
-      {/* Allocation Advisor — collapsible section */}
-      <div className="mb-7">
-        <button
-          type="button"
-          className="flex items-center gap-2 w-full text-left mb-3"
-          onClick={() => setAdvisorOpen(v => !v)}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-        >
-          <span className={`i-lucide-chevron-${advisorOpen ? 'down' : 'right'} w-4 h-4 text-[var(--text-4)]`} />
-          <span className="label" style={{ margin: 0 }}>Allocation Advisor</span>
-        </button>
-        {advisorOpen && <PortfolioAdvisor />}
-      </div>
-
-      {/* Stress scenarios — six historical shocks per stress_engine.py.
-          Closes Day-10 survey gap #13. */}
-      <div className="mb-7">
-        <StressScenarioPanel />
-      </div>
 
       {/* Agent activity feed — real traces from /api/traces */}
       <div>

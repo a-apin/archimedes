@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { getAddress, disconnectWallet, reconnectWallet } from './config'
+import { disconnectWallet, reconnectWallet } from './config'
 import Layout from './components/Layout'
 import Landing from './components/Landing'
 import Explore from './components/Explore'

@@ -3,21 +3,24 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from archimedes.models.chat import Base
+from archimedes.scripts import run_backtests as run_backtests_mod
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from archimedes.models.chat import Base
-from archimedes.scripts import run_backtests as run_backtests_mod
-
 
 def _write_strategy(path: Path) -> None:
+    # REGIME_TAG is required per strategy_provider.py:228 (issue #162 enforcement).
+    # Without it, load_strategy raises ValueError → list_strategies skips the file →
+    # strategy_by_path is empty → no inserts happen → assertions fail with 0 == 1.
     path.write_text(
         "import backtrader as bt\n\n"
         "PAPER_TITLE = 'Test Strategy'\n"
         "PAPER_AUTHORS = ['Test']\n"
         "METHODOLOGY_SUMMARY = 'Test summary'\n"
         "ASSET_UNIVERSE = ['SPY']\n"
-        "STATUS = 'candidate'\n\n"
+        "STATUS = 'candidate'\n"
+        "REGIME_TAG = 'bull'\n\n"
         "class TestStrategy(bt.Strategy):\n"
         "    def next(self):\n"
         "        if not self.position:\n"

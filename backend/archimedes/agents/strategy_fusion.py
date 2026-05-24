@@ -38,13 +38,13 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from archimedes.agents.strategy_architect import extract_json
 from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
 from archimedes.services.llm_backend import LLMBackend, make_llm_backend
-from archimedes.agents.strategy_architect import extract_json
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ class FusionCannedBackend:
     def available(self) -> bool:
         return False
 
-    def complete(self, system: str, user: str) -> str:  # noqa: ARG002
+    def complete(self, system: str, user: str) -> str:
         ids = re.findall(r'"arxiv_id"\s*:\s*"([^"]+)"', user)
         ids = ids[:FUSION_MAX_PAPERS] or ["__none__"]
         return json.dumps(
@@ -121,9 +121,7 @@ class FusionCannedBackend:
                     "Not model reasoning. Papers are echoed back unfused; this "
                     "is a labelled placeholder, not a novel combination."
                 ),
-                "novelty_rationale": (
-                    "None claimed — a fallback is by definition not novel."
-                ),
+                "novelty_rationale": ("None claimed — a fallback is by definition not novel."),
                 "risk_notes": (
                     "Fallback output. Pre-backtest hypothesis only; the "
                     "selection-bias gate (DSR/PBO/OOS/look-ahead) still applies."
@@ -218,6 +216,7 @@ def load_corpus(path: Path | None = None) -> list[CorpusPaper]:
     # DB path first
     try:
         from archimedes.services.corpus_service import load_papers_from_db
+
         db_rows = load_papers_from_db()
         if db_rows:
             papers = [
@@ -310,14 +309,9 @@ def select_candidates(brief: FusionBrief, corpus: list[CorpusPaper]) -> list[Cor
     4. Take top `paper_budget`.
     """
     terms = _asset_terms(brief.asset_classes)
-    if terms:
-        filtered = [p for p in corpus if any(t in p.haystack for t in terms)]
-    else:
-        filtered = list(corpus)
+    filtered = [p for p in corpus if any(t in p.haystack for t in terms)] if terms else list(corpus)
 
-    direction_kws = [
-        w for w in re.findall(r"[a-z]{3,}", brief.strategic_direction.lower())
-    ]
+    direction_kws = [w for w in re.findall(r"[a-z]{3,}", brief.strategic_direction.lower())]
 
     def score(p: CorpusPaper) -> tuple[int, str, str]:
         hits = sum(1 for kw in direction_kws if kw in p.haystack)
@@ -332,6 +326,7 @@ def select_candidates(brief: FusionBrief, corpus: list[CorpusPaper]) -> list[Cor
     # preserved unchanged.
     try:
         from archimedes.services.paper_rag import augment_candidate_scores
+
         scored = augment_candidate_scores(brief.strategic_direction, ranked)
         ranked = [c for c, _s in scored]
     except Exception as exc:
@@ -376,7 +371,7 @@ class FusionProposal:
     model: str
     requested_model: str
     strategy_spec: dict[str, Any] | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def is_actionable(self) -> bool:
@@ -572,9 +567,7 @@ class StrategyFusion:
         # Anti-hallucination: drop any arxiv_id not in the deterministically
         # selected candidate set (architect parity — it drops unknown ids).
         raw_ids = parsed.get("source_arxiv_ids", [])
-        source_ids = [
-            str(i) for i in raw_ids if isinstance(i, str) and i in valid_ids
-        ]
+        source_ids = [str(i) for i in raw_ids if isinstance(i, str) and i in valid_ids]
         # De-dupe, preserve order.
         seen: set[str] = set()
         source_ids = [i for i in source_ids if not (i in seen or seen.add(i))]
@@ -621,10 +614,7 @@ def default_backend() -> LLMBackend:
     backend = make_llm_backend()
     if backend.available:
         return backend  # type: ignore[return-value]
-    logger.warning(
-        "No LLM credentials (LLM_* or ANTHROPIC_* env vars) "
-        "— strategy fusion using canned fallback"
-    )
+    logger.warning("No LLM credentials (LLM_* or ANTHROPIC_* env vars) — strategy fusion using canned fallback")
     return FusionCannedBackend()
 
 

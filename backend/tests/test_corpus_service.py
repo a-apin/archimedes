@@ -6,12 +6,12 @@ Hermetic — no network, no Redis, no external DB. Uses in-memory SQLite.
 from __future__ import annotations
 
 import json
+
 import pytest
+from archimedes.models.chat import Base
+from archimedes.models.corpus_store import CorpusMetaRecord, PaperRecord
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
-from archimedes.models.chat import Base
-from archimedes.models.corpus_store import PaperRecord, CorpusMetaRecord
 
 
 @pytest.fixture
@@ -33,12 +33,24 @@ class TestSeedIdempotency:
 
         manifest = tmp_path / "manifest.jsonl"
         papers = [
-            {"arxiv_id": "2601.00001", "title": "Paper A", "abstract": "Abs A",
-             "primary_category": "q-fin.PM", "categories": ["q-fin.PM"],
-             "published": "2026-01-01", "updated": "2026-01-01"},
-            {"arxiv_id": "2601.00002", "title": "Paper B", "abstract": "Abs B",
-             "primary_category": "q-fin.TR", "categories": ["q-fin.TR"],
-             "published": "2026-01-02", "updated": "2026-01-02"},
+            {
+                "arxiv_id": "2601.00001",
+                "title": "Paper A",
+                "abstract": "Abs A",
+                "primary_category": "q-fin.PM",
+                "categories": ["q-fin.PM"],
+                "published": "2026-01-01",
+                "updated": "2026-01-01",
+            },
+            {
+                "arxiv_id": "2601.00002",
+                "title": "Paper B",
+                "abstract": "Abs B",
+                "primary_category": "q-fin.TR",
+                "categories": ["q-fin.TR"],
+                "published": "2026-01-02",
+                "updated": "2026-01-02",
+            },
         ]
         manifest.write_text("\n".join(json.dumps(p) for p in papers))
 
@@ -55,9 +67,15 @@ class TestSeedIdempotency:
 
         manifest = tmp_path / "manifest.jsonl"
         papers = [
-            {"arxiv_id": "2601.00001", "title": "Paper A", "abstract": "Abs A",
-             "primary_category": "q-fin.PM", "categories": ["q-fin.PM"],
-             "published": "2026-01-01", "updated": "2026-01-01"},
+            {
+                "arxiv_id": "2601.00001",
+                "title": "Paper A",
+                "abstract": "Abs A",
+                "primary_category": "q-fin.PM",
+                "categories": ["q-fin.PM"],
+                "published": "2026-01-01",
+                "updated": "2026-01-01",
+            },
         ]
         manifest.write_text(json.dumps(papers[0]))
 
@@ -92,11 +110,19 @@ class TestSeedIdempotency:
         from archimedes.services import corpus_service
 
         manifest = tmp_path / "manifest.jsonl"
-        manifest.write_text(json.dumps({
-            "arxiv_id": "2601.00001", "title": "T", "abstract": "A",
-            "primary_category": "q-fin.PM", "categories": ["q-fin.PM"],
-            "published": "2026-01-01", "updated": "2026-01-01",
-        }))
+        manifest.write_text(
+            json.dumps(
+                {
+                    "arxiv_id": "2601.00001",
+                    "title": "T",
+                    "abstract": "A",
+                    "primary_category": "q-fin.PM",
+                    "categories": ["q-fin.PM"],
+                    "published": "2026-01-01",
+                    "updated": "2026-01-01",
+                }
+            )
+        )
 
         monkeypatch.setattr(corpus_service, "get_session", lambda: _ctx_session(session))
 
@@ -116,11 +142,18 @@ class TestIntakeDedup:
         from archimedes.services import corpus_service
 
         # Pre-seed one paper
-        session.add(PaperRecord(
-            arxiv_id="2601.00001", title="Existing", abstract="A",
-            primary_category="q-fin.PM", categories='["q-fin.PM"]',
-            published="2026-01-01", updated="2026-01-01", source="seed",
-        ))
+        session.add(
+            PaperRecord(
+                arxiv_id="2601.00001",
+                title="Existing",
+                abstract="A",
+                primary_category="q-fin.PM",
+                categories='["q-fin.PM"]',
+                published="2026-01-01",
+                updated="2026-01-01",
+                source="seed",
+            )
+        )
         session.commit()
 
         monkeypatch.setattr(corpus_service, "get_session", lambda: _ctx_session(session))
@@ -130,11 +163,12 @@ class TestIntakeDedup:
         assert count_before == 1
 
     def test_corpus_max_env(self, monkeypatch):
-        import os
         monkeypatch.setenv("CORPUS_MAX", "500")
         # Reimport to pick up env
         import importlib
+
         from archimedes.services import corpus_service
+
         importlib.reload(corpus_service)
         assert corpus_service.CORPUS_MAX == 500
 
@@ -146,16 +180,30 @@ class TestDBReadPath:
     def test_load_papers_from_db(self, session, monkeypatch):
         from archimedes.services import corpus_service
 
-        session.add(PaperRecord(
-            arxiv_id="2601.00001", title="Paper One", abstract="Abstract",
-            primary_category="q-fin.PM", categories='["q-fin.PM"]',
-            published="2026-01-01", updated="2026-01-01", source="seed",
-        ))
-        session.add(PaperRecord(
-            arxiv_id="2601.00002", title="Paper Two", abstract="Abstract 2",
-            primary_category="q-fin.TR", categories='["q-fin.TR"]',
-            published="2026-01-02", updated="2026-01-02", source="seed",
-        ))
+        session.add(
+            PaperRecord(
+                arxiv_id="2601.00001",
+                title="Paper One",
+                abstract="Abstract",
+                primary_category="q-fin.PM",
+                categories='["q-fin.PM"]',
+                published="2026-01-01",
+                updated="2026-01-01",
+                source="seed",
+            )
+        )
+        session.add(
+            PaperRecord(
+                arxiv_id="2601.00002",
+                title="Paper Two",
+                abstract="Abstract 2",
+                primary_category="q-fin.TR",
+                categories='["q-fin.TR"]',
+                published="2026-01-02",
+                updated="2026-01-02",
+                source="seed",
+            )
+        )
         session.commit()
 
         monkeypatch.setattr(corpus_service, "get_session", lambda: _ctx_session(session))
@@ -176,10 +224,15 @@ class TestDBReadPath:
 
     def test_to_dict_roundtrip(self, session):
         record = PaperRecord(
-            arxiv_id="2601.00001", title="Test Paper", abstract="Abstract",
-            authors='["Author One"]', primary_category="q-fin.PM",
+            arxiv_id="2601.00001",
+            title="Test Paper",
+            abstract="Abstract",
+            authors='["Author One"]',
+            primary_category="q-fin.PM",
             categories='["q-fin.PM", "q-fin.RM"]',
-            published="2026-01-01", updated="2026-01-01", source="seed",
+            published="2026-01-01",
+            updated="2026-01-01",
+            source="seed",
         )
         session.add(record)
         session.commit()
@@ -197,6 +250,7 @@ class TestDBReadPath:
 class TestCorpusMeta:
     def test_get_meta_empty_db(self, session, monkeypatch):
         from archimedes.services import corpus_service
+
         monkeypatch.setattr(corpus_service, "get_session", lambda: _ctx_session(session))
 
         meta = corpus_service.get_corpus_meta()
@@ -206,11 +260,19 @@ class TestCorpusMeta:
         from archimedes.services import corpus_service
 
         manifest = tmp_path / "manifest.jsonl"
-        manifest.write_text(json.dumps({
-            "arxiv_id": "2601.00001", "title": "T", "abstract": "A",
-            "primary_category": "q-fin.PM", "categories": ["q-fin.PM"],
-            "published": "2026-01-01", "updated": "2026-01-01",
-        }))
+        manifest.write_text(
+            json.dumps(
+                {
+                    "arxiv_id": "2601.00001",
+                    "title": "T",
+                    "abstract": "A",
+                    "primary_category": "q-fin.PM",
+                    "categories": ["q-fin.PM"],
+                    "published": "2026-01-01",
+                    "updated": "2026-01-01",
+                }
+            )
+        )
 
         monkeypatch.setattr(corpus_service, "get_session", lambda: _ctx_session(session))
 
@@ -224,11 +286,18 @@ class TestCorpusMeta:
     def test_paper_count(self, session, monkeypatch):
         from archimedes.services import corpus_service
 
-        session.add(PaperRecord(
-            arxiv_id="2601.00001", title="T", abstract="A",
-            primary_category="q-fin.PM", categories='["q-fin.PM"]',
-            published="2026-01-01", updated="2026-01-01", source="seed",
-        ))
+        session.add(
+            PaperRecord(
+                arxiv_id="2601.00001",
+                title="T",
+                abstract="A",
+                primary_category="q-fin.PM",
+                categories='["q-fin.PM"]',
+                published="2026-01-01",
+                updated="2026-01-01",
+                source="seed",
+            )
+        )
         session.commit()
 
         monkeypatch.setattr(corpus_service, "get_session", lambda: _ctx_session(session))
@@ -245,11 +314,18 @@ class TestLoadCorpusDBFallback:
         from archimedes.services import corpus_service
 
         # Seed DB
-        session.add(PaperRecord(
-            arxiv_id="2601.00001", title="DB Paper", abstract="From DB",
-            primary_category="q-fin.PM", categories='["q-fin.PM"]',
-            published="2026-01-01", updated="2026-01-01", source="seed",
-        ))
+        session.add(
+            PaperRecord(
+                arxiv_id="2601.00001",
+                title="DB Paper",
+                abstract="From DB",
+                primary_category="q-fin.PM",
+                categories='["q-fin.PM"]',
+                published="2026-01-01",
+                updated="2026-01-01",
+                source="seed",
+            )
+        )
         session.commit()
 
         monkeypatch.setattr(corpus_service, "get_session", lambda: _ctx_session(session))
@@ -265,17 +341,21 @@ class TestLoadCorpusDBFallback:
 
         # Create a file manifest
         manifest = tmp_path / "manifest.jsonl"
-        manifest.write_text(json.dumps({
-            "arxiv_id": "2601.00001", "title": "File Paper", "abstract": "From file",
-            "primary_category": "q-fin.PM", "categories": ["q-fin.PM"],
-            "published": "2026-01-01",
-        }))
+        manifest.write_text(
+            json.dumps(
+                {
+                    "arxiv_id": "2601.00001",
+                    "title": "File Paper",
+                    "abstract": "From file",
+                    "primary_category": "q-fin.PM",
+                    "categories": ["q-fin.PM"],
+                    "published": "2026-01-01",
+                }
+            )
+        )
 
         # Make DB return empty (by having load_papers_from_db raise)
-        monkeypatch.setattr(
-            corpus_service, "load_papers_from_db",
-            lambda: []
-        )
+        monkeypatch.setattr(corpus_service, "load_papers_from_db", lambda: [])
 
         corpus = load_corpus(path=manifest)
         assert len(corpus) == 1
@@ -287,10 +367,13 @@ class TestLoadCorpusDBFallback:
 
 class _CtxSession:
     """Context-manager wrapper so `with get_session() as s:` works."""
+
     def __init__(self, session):
         self._session = session
+
     def __enter__(self):
         return self._session
+
     def __exit__(self, *args):
         pass
 

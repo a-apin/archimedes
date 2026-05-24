@@ -13,8 +13,6 @@ Flow 10: LP dashboard (add/remove liquidity UI)
 Flow 11: Strategy explorer with paper citations
 """
 
-import pytest
-
 
 # ═══════════════════════════════════════════════════════════════
 # FLOW 7: Community Vault Creation [ASPIRATIONAL]
@@ -190,5 +188,5 @@ class TestStrategyExplorer:
         """Strategy detail includes a clickable arxiv link."""
         response = await client.get("/api/strategies/")
         s = response.json()["strategies"][0]
-        arxiv_url = f"https://arxiv.org/abs/{s['paper_arxiv_id']}"
+        f"https://arxiv.org/abs/{s['paper_arxiv_id']}"
         assert s["paper_arxiv_id"]  # Daniel constructs the URL in frontend

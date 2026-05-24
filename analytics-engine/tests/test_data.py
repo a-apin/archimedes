@@ -1,5 +1,4 @@
 import pandas as pd
-
 from archimedes_analytics_engine.data import normalize_ohlcv
 
 

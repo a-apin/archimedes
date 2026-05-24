@@ -39,15 +39,15 @@
 >   - **SLIDE 4 inventory** should now name *fusion-to-backtest pipeline (DSL +
 >     interpreter + rigor gate, `services/fusion_evaluator.py`)* alongside the
 >     agentic advisor + stress engine. The wiring into `_run_fusion_job` is
->     in-flight as [#133](https://github.com/hackagora/archimedes-arcadia/issues/133)
+>     in-flight as [#133](https://github.com/a-apin/archimedes-arcadia/issues/133)
 >     so word it carefully if the demo doesn't cover that surface.
 >   - **Page map / Prompt 3** should reflect: Explore is a top-level nav page;
 >     Reasoning lost its Strategies tab (details moved to Library); Generate is
 >     streaming with a mode toggle (Streaming agent vs Architect fast preview);
 >     onboarding tour appears on first visit + via the "?" icon in the topbar.
 >   - **Test counts**: 302 → 343 backend tests; 5 t2o2 issues open in the
->     queue ([#129](https://github.com/hackagora/archimedes-arcadia/issues/129)–
->     [#133](https://github.com/hackagora/archimedes-arcadia/issues/133)).
+>     queue ([#129](https://github.com/a-apin/archimedes-arcadia/issues/129)–
+>     [#133](https://github.com/a-apin/archimedes-arcadia/issues/133)).
 
 ## Quick notes on using Claude Design
 
@@ -89,7 +89,7 @@ all downstream prompt outputs without re-explaining the project each time.
 
 **Tips on the upload fields:**
 
-- **Link code on GitHub:** `hackagora/archimedes-arcadia` is sufficient. The repo carries
+- **Link code on GitHub:** `a-apin/archimedes-arcadia` is sufficient. The repo carries
   the live `ui/` (React 19 + Vite 8 + viem 2.48), `docs/architecture-diagram.html`, and
   all the curated design context. No need to configure additional repos.
 - **Link code from your computer:** skip. Requires Chrome/Edge and the GitHub link

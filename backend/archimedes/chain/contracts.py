@@ -13,7 +13,7 @@ from typing import Any
 
 from web3.contract import AsyncContract
 
-from archimedes.chain.client import ChainClient, ChainSettings, chain_client
+from archimedes.chain.client import ChainClient, chain_client
 
 
 class ContractLoader:

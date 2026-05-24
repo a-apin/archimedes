@@ -39,7 +39,7 @@ Durable implementation contracts. Spec-only items are tracked under their respec
 | [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md) | shipped | DSR + PBO + walk-forward OOS + look-ahead audit math + thresholds. 2 Tier-1 strategies pass today. |
 | [`specs/strategy-fusion-spec.md`](specs/strategy-fusion-spec.md) | shipped | Multi-paper fusion engine. SPECTER2 + RAG upgrade is the unblocked `#96` follow-on. |
 | [`specs/strategy-lifecycle-spec.md`](specs/strategy-lifecycle-spec.md) | shipped (Phase 0) | Generated → Validated → Deployed → Active → Completed/Expired/Rejected. The state machine fusion-evaluator output enters. |
-| [`specs/portfolio-constructor-decision-tree.md`](specs/portfolio-constructor-decision-tree.md) | shipped (Phase 0) | Names `portfolio_agent.py` (top-level) + `portfolio_optimizer.py` (math leaf) as canonical; retirement of the other two filed as [#131](https://github.com/hackagora/archimedes-arcadia/issues/131). |
+| [`specs/portfolio-constructor-decision-tree.md`](specs/portfolio-constructor-decision-tree.md) | shipped (Phase 0) | Names `portfolio_agent.py` (top-level) + `portfolio_optimizer.py` (math leaf) as canonical; retirement of the other two filed as [#131](https://github.com/a-apin/archimedes-arcadia/issues/131). |
 | [`specs/page-roles-spec.md`](specs/page-roles-spec.md) | shipped (Phase 0) | Per-page ownership in the spine — what each page is for + isn't for. Backs the Reasoning restructure + Library deep-link work. |
 | [`specs/vault-semantics-spec.md`](specs/vault-semantics-spec.md) | spec-only — Phase 4 | Vault lifecycle + trade-window semantics. Waits on Marten/Chuan alignment. |
 | [`specs/generation-streaming-spec.md`](specs/generation-streaming-spec.md) | shipped (Phase 2) | SSE streaming protocol for `/api/generate/*`. Backs the streaming Generate UI. |
@@ -62,12 +62,12 @@ All six issues below shipped on `main` between 2026-05-23 01:48 UTC and 2026-05-
 
 | Spec file | Status | Issue |
 |---|---|---|
-| [`specs/fusion-to-backtest-t2o2-issue.md`](specs/fusion-to-backtest-t2o2-issue.md) | ✓ closed — foundation `bd6935b` + wiring `2f7f871` | [#128](https://github.com/hackagora/archimedes-arcadia/issues/128) |
-| [`specs/phase7-rigor-consolidation-t2o2-issue.md`](specs/phase7-rigor-consolidation-t2o2-issue.md) | ✓ closed — shipped `e030ee4` | [#129](https://github.com/hackagora/archimedes-arcadia/issues/129) |
-| [`specs/phase7-llm-backend-unification-t2o2-issue.md`](specs/phase7-llm-backend-unification-t2o2-issue.md) | ✓ closed — shipped `dc91b43` | [#130](https://github.com/hackagora/archimedes-arcadia/issues/130) |
-| [`specs/phase7-portfolio-constructor-retirement-t2o2-issue.md`](specs/phase7-portfolio-constructor-retirement-t2o2-issue.md) | ✓ closed — shipped `a4a09fb` | [#131](https://github.com/hackagora/archimedes-arcadia/issues/131) |
-| [`specs/phase7-routes-py-split-t2o2-issue.md`](specs/phase7-routes-py-split-t2o2-issue.md) | ✓ closed — shipped `be9260b` | [#132](https://github.com/hackagora/archimedes-arcadia/issues/132) |
-| (no file — drafted inline as fast-follow to #128) | ✓ closed — shipped `2f7f871` | [#133](https://github.com/hackagora/archimedes-arcadia/issues/133) |
+| [`specs/fusion-to-backtest-t2o2-issue.md`](specs/fusion-to-backtest-t2o2-issue.md) | ✓ closed — foundation `bd6935b` + wiring `2f7f871` | [#128](https://github.com/a-apin/archimedes-arcadia/issues/128) |
+| [`specs/phase7-rigor-consolidation-t2o2-issue.md`](specs/phase7-rigor-consolidation-t2o2-issue.md) | ✓ closed — shipped `e030ee4` | [#129](https://github.com/a-apin/archimedes-arcadia/issues/129) |
+| [`specs/phase7-llm-backend-unification-t2o2-issue.md`](specs/phase7-llm-backend-unification-t2o2-issue.md) | ✓ closed — shipped `dc91b43` | [#130](https://github.com/a-apin/archimedes-arcadia/issues/130) |
+| [`specs/phase7-portfolio-constructor-retirement-t2o2-issue.md`](specs/phase7-portfolio-constructor-retirement-t2o2-issue.md) | ✓ closed — shipped `a4a09fb` | [#131](https://github.com/a-apin/archimedes-arcadia/issues/131) |
+| [`specs/phase7-routes-py-split-t2o2-issue.md`](specs/phase7-routes-py-split-t2o2-issue.md) | ✓ closed — shipped `be9260b` | [#132](https://github.com/a-apin/archimedes-arcadia/issues/132) |
+| (no file — drafted inline as fast-follow to #128) | ✓ closed — shipped `2f7f871` | [#133](https://github.com/a-apin/archimedes-arcadia/issues/133) |
 
 ## Strategy + launch + marketing
 

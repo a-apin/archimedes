@@ -112,10 +112,7 @@ def _trade_stats(
 
     win_rate = won / total_closed
     profit_factor: float | None
-    if lost_pnl:
-        profit_factor = float(won_pnl) / abs(float(lost_pnl))
-    else:
-        profit_factor = None
+    profit_factor = float(won_pnl) / abs(float(lost_pnl)) if lost_pnl else None
     avg_len_f = float(avg_len) if avg_len is not None else None
     return int(total_closed), float(win_rate), profit_factor, avg_len_f
 
@@ -170,9 +167,7 @@ def run_backtest(
     equity_curve = _build_equity_curve(initial_cash, daily_pairs)
 
     monthly_raw = strategy.analyzers.monthly.get_analysis()
-    monthly_returns = [
-        float(v) for _, v in sorted(monthly_raw.items(), key=lambda x: x[0])
-    ]
+    monthly_returns = [float(v) for _, v in sorted(monthly_raw.items(), key=lambda x: x[0])]
 
     sharpe_raw = strategy.analyzers.sharpe.get_analysis().get("sharperatio")
     sharpe = float(sharpe_raw) if sharpe_raw is not None else None
@@ -183,7 +178,7 @@ def run_backtest(
     max_dd_pct = float(max_dd_pct_raw) if max_dd_pct_raw is not None else None
     max_dd_len = int(max_dd_len_raw) if max_dd_len_raw is not None else None
 
-    bars = int(len(prices))
+    bars = len(prices)
     cagr = _compute_cagr(initial_cash, final_value, bars)
 
     calmar: float | None = None

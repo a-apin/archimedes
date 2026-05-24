@@ -76,10 +76,14 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
               address: regAddr, abi: TRACE_REGISTRY_ABI, functionName: 'getTraceById', args: [BigInt(i)]
             })
             loaded.push({ id: i, agent, vault, trace_hash: traceHash, timestamp: Number(timestamp), decision_type: 'on-chain' })
-          } catch {}
+          } catch {
+            // Individual trace read failure — skip; the loop keeps going so a single bad row doesn't break the list.
+          }
         }
         setTraces(loaded)
-      } catch {}
+      } catch {
+        // Initial registry-count read failure — leave traces empty; the user sees the "no traces" empty state.
+      }
     }
     setLoading(false)
   }, [])

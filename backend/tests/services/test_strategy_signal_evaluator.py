@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-
 from archimedes.models.paper_ref import PaperRef
 from archimedes.models.strategy import Strategy
 from archimedes.services.strategy_signal_evaluator import (
@@ -50,7 +49,7 @@ class TestFaberSMA200:
         result = _faber_sma200_signal("strat1", "sSPY", prices)
         assert result.signal == Signal.LONG
         assert result.weight == 1.0
-        assert "sSPY" == result.asset
+        assert result.asset == "sSPY"
 
     def test_flat_when_price_below_sma(self):
         # Build prices where last price < SMA200 (declining)

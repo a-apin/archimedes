@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from archimedes.chain.client import chain_client
 from archimedes.api.schemas import ContractAddressesResponse
+from archimedes.chain.client import chain_client
 
 
 class ConfigService:

@@ -2,7 +2,7 @@
 
 > **Status:** Day-10 (2026-05-22). Submission target: [Arc OSS Showcase](https://arc-oss.thecanteenapp.com/) — Canteen's parallel competition for open-source codebases that other Arc builders can fork.
 > **License:** [Unlicense](LICENSE) — full public-domain dedication. Use, modify, distribute freely, no warranty, no attribution required.
-> **Repo:** <https://github.com/hackagora/archimedes-arcadia>
+> **Repo:** <https://github.com/a-apin/archimedes-arcadia>
 > **Live testnet deploy:** <http://13.40.112.220>
 
 ## Why Archimedes belongs in the Arc OSS Showcase

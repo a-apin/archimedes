@@ -1,5 +1,4 @@
 import pandas as pd
-
 from archimedes_analytics_engine.engine import BacktestResult, run_buy_and_hold
 
 

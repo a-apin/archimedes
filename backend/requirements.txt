@@ -3,6 +3,10 @@
 
 # Web backend
 fastapi>=0.115
+# Pinned directly to close PYSEC-2026-161 (Host-header validation bypass);
+# FastAPI's transitive range can resolve to vulnerable starlette 1.0.0
+# without this floor.
+starlette>=1.0.1
 uvicorn[standard]>=0.32
 sqlalchemy>=2.0
 psycopg2-binary>=2.9

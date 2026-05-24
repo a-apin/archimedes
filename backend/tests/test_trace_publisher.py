@@ -5,11 +5,10 @@ Hermetic: no testnet, no Circle SDK, no real chain calls. All mocked.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from archimedes.models.trace import DecisionType, ReasoningTrace
 
 
@@ -20,7 +19,7 @@ def _make_trace(**overrides) -> ReasoningTrace:
         vault_address="0x1234567890abcdef1234567890abcdef12345678",
         decision_type=DecisionType.REBALANCE,
         trigger="strategy_signal_drift",
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         reasoning="Test trace for unit testing",
         confidence=0.85,
     )
@@ -64,8 +63,10 @@ class TestTracePublishMocked:
 
     def test_publish_circle_path(self, mock_loader):
         """Circle signer path: publish returns tx hash."""
-        with patch("archimedes.chain.trace_publisher.circle_signer") as mock_signer, \
-             patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+        with (
+            patch("archimedes.chain.trace_publisher.circle_signer") as mock_signer,
+            patch("archimedes.chain.trace_publisher.chain_client") as mock_client,
+        ):
             mock_signer.is_configured = True
             mock_signer.execute_contract = AsyncMock(return_value="0xabc123")
             mock_client.to_checksum = lambda x: x
@@ -74,6 +75,7 @@ class TestTracePublishMocked:
             )
 
             from archimedes.chain.trace_publisher import TracePublisher
+
             publisher = TracePublisher(loader=mock_loader)
 
             trace = _make_trace()
@@ -81,6 +83,7 @@ class TestTracePublishMocked:
 
             # Run the async publish
             import asyncio
+
             tx_hash = asyncio.get_event_loop().run_until_complete(publisher.publish(trace))
 
             assert tx_hash == "0xabc123"
@@ -88,18 +91,22 @@ class TestTracePublishMocked:
 
     def test_publish_no_signer_no_account(self, mock_loader):
         """No signer, no account — returns None."""
-        with patch("archimedes.chain.trace_publisher.circle_signer") as mock_signer, \
-             patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+        with (
+            patch("archimedes.chain.trace_publisher.circle_signer") as mock_signer,
+            patch("archimedes.chain.trace_publisher.chain_client") as mock_client,
+        ):
             mock_signer.is_configured = False
             mock_client.settings = MagicMock(agent_account=None)
 
             from archimedes.chain.trace_publisher import TracePublisher
+
             publisher = TracePublisher(loader=mock_loader)
 
             trace = _make_trace()
             trace.compute_hash()
 
             import asyncio
+
             tx_hash = asyncio.get_event_loop().run_until_complete(publisher.publish(trace))
             assert tx_hash is None
 
@@ -109,17 +116,21 @@ class TestTraceVerify:
 
     def test_verify_no_hash(self):
         """Trace without hash returns False."""
-        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client, \
-             patch("archimedes.chain.trace_publisher.get_contract_loader") as mock_get_loader:
+        with (
+            patch("archimedes.chain.trace_publisher.chain_client") as mock_client,
+            patch("archimedes.chain.trace_publisher.get_contract_loader") as mock_get_loader,
+        ):
             mock_client.to_checksum = lambda x: x
 
             from archimedes.chain.trace_publisher import TracePublisher
+
             publisher = TracePublisher(loader=mock_get_loader.return_value)
 
             trace = _make_trace()
             trace.trace_hash = None
 
             import asyncio
+
             result = asyncio.get_event_loop().run_until_complete(publisher.verify(trace))
             assert result is False
 
@@ -144,8 +155,10 @@ class TestTraceVerify:
             mock_client.to_checksum = lambda x: x
 
             from archimedes.chain.trace_publisher import TracePublisher
+
             publisher = TracePublisher(loader=mock_loader)
 
             import asyncio
+
             result = asyncio.get_event_loop().run_until_complete(publisher.verify(trace))
             assert result is True

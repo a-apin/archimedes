@@ -79,7 +79,7 @@ async def post_chat_message(
     )
 
     ai_response = None
-    if "_ai_response" in result and result["_ai_response"]:
+    if result.get("_ai_response"):
         ai_data = result["_ai_response"]
         ai_response = ChatMessageResponse(
             id=ai_data["id"],
@@ -124,6 +124,7 @@ async def post_rebalance_event(address: str, body: dict, _: None = Depends(requi
     result = chat_service.post_rebalance_event(address, reasoning, trades)
     if result is None:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=500, detail="Failed to post rebalance event")
     return result
 
@@ -142,5 +143,6 @@ async def post_regime_change(address: str, body: dict, _: None = Depends(require
     )
     if result is None:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=500, detail="Failed to post regime change")
     return result

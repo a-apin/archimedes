@@ -27,9 +27,9 @@ from dotenv import load_dotenv
 load_dotenv("../.env", override=True)
 load_dotenv(".env", override=False)
 
+from archimedes.chain.circle_signer import circle_signer
 from archimedes.chain.client import chain_client
 from archimedes.chain.contracts import get_contract_loader
-from archimedes.chain.circle_signer import circle_signer
 
 # ─── Configuration ──────────────────────────────────────────────
 
@@ -184,9 +184,7 @@ async def mint_synthetic_tokens() -> dict[str, float]:
         # Check existing balance first
         try:
             token = get_contract_loader().token(token_addr)
-            existing = await token.functions.balanceOf(
-                chain_client.to_checksum(wallet)
-            ).call()
+            existing = await token.functions.balanceOf(chain_client.to_checksum(wallet)).call()
             existing_float = existing / 1e18
             if existing_float > 0.001:
                 print(f"  ⏭️  {symbol}: already have {existing_float:.4f} — skipping mint")
@@ -214,9 +212,7 @@ async def mint_synthetic_tokens() -> dict[str, float]:
 
             # Read balance after mint
             token = get_contract_loader().token(token_addr)
-            balance = await token.functions.balanceOf(
-                chain_client.to_checksum(wallet)
-            ).call()
+            balance = await token.functions.balanceOf(chain_client.to_checksum(wallet)).call()
             minted[symbol] = balance / 1e18
             print(f"  ✅ {symbol}: minted {minted[symbol]:.4f} tokens (tx {tx_hash[:16]}...)")
         except Exception as e:
@@ -269,12 +265,14 @@ async def create_vaults(minted: dict[str, float]) -> list[dict]:
 
             print(f"  ✅ {profile['name']} ({profile['symbol']}): {vault_address}")
 
-            vaults.append({
-                "address": vault_address,
-                "name": profile["name"],
-                "symbol": profile["symbol"],
-                "allocations": profile["allocations"],
-            })
+            vaults.append(
+                {
+                    "address": vault_address,
+                    "name": profile["name"],
+                    "symbol": profile["symbol"],
+                    "allocations": profile["allocations"],
+                }
+            )
         except Exception as e:
             print(f"  ❌ {profile['name']}: creation failed — {e}")
 
@@ -284,7 +282,7 @@ async def create_vaults(minted: dict[str, float]) -> list[dict]:
 async def fund_and_allocate_vaults(vaults: list[dict], minted: dict[str, float]) -> None:
     """Transfer synth tokens into vaults and set target allocations."""
     print("\n💰 Step 4: Funding vaults and setting allocations...")
-    loader = get_contract_loader()
+    get_contract_loader()
     synth_addresses = chain_client.settings.synth_addresses
     usdc_address = chain_client.settings.usdc_address
     wallet = os.getenv("WALLET_ADDRESS")
@@ -520,11 +518,9 @@ async def verify_ecosystem(vaults: list[dict]) -> None:
             total_aum += aum
 
             # Read target allocations
-            t_tokens, t_weights = await vault.functions.getTargetAllocations().call()
+            _t_tokens, t_weights = await vault.functions.getTargetAllocations().call()
 
-            alloc_str = ", ".join(
-                f"{w / 100}%" for w in t_weights
-            )
+            alloc_str = ", ".join(f"{w / 100}%" for w in t_weights)
 
             print(
                 f"  {vault_info['name']} ({vault_info['symbol']}): "

@@ -22,27 +22,19 @@ function fmtUsd(v) {
   return `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
 }
 
-// Default demo allocation — diversified placeholder so the panel renders
-// something useful when no user portfolio is plugged in. The caller can pass
-// `allocations` + `usdcWeight` to override.
-const DEFAULT_ALLOCATIONS = [
-  { symbol: 'sSPY', token_address: '', weight_bps: 4000 },
-  { symbol: 'sQQQ', token_address: '', weight_bps: 2000 },
-  { symbol: 'sBTC', token_address: '', weight_bps: 1500 },
-  { symbol: 'sGOLD', token_address: '', weight_bps: 500 },
-]
-const DEFAULT_USDC_WEIGHT = 0.20
-
 export default function StressScenarioPanel({ allocations, usdcWeight, portfolioValue = 10000 }) {
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const allocs = (allocations && allocations.length > 0) ? allocations : DEFAULT_ALLOCATIONS
-  const usdc = usdcWeight != null ? usdcWeight : DEFAULT_USDC_WEIGHT
-  const isPlaceholder = !allocations || allocations.length === 0
+  const hasAllocations = allocations && allocations.length > 0
+  const usdc = usdcWeight != null ? usdcWeight : 0
+  // Stringified for stable dep comparison — arrays from the parent are a
+  // new identity on every render even when the contents are unchanged.
+  const allocationsKey = JSON.stringify(allocations)
 
   useEffect(() => {
+    if (!hasAllocations) return undefined
     let cancelled = false
     async function run() {
       setLoading(true)
@@ -52,7 +44,7 @@ export default function StressScenarioPanel({ allocations, usdcWeight, portfolio
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            allocations: allocs,
+            allocations,
             scenario: 'all',
             usdc_weight: usdc,
           }),
@@ -68,7 +60,9 @@ export default function StressScenarioPanel({ allocations, usdcWeight, portfolio
     }
     run()
     return () => { cancelled = true }
-  }, [JSON.stringify(allocs), usdc])
+    // allocations intentionally excluded — covered by `allocationsKey` (stable identity).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allocationsKey, usdc, hasAllocations])
 
   return (
     <div className="card p-5">
@@ -84,17 +78,16 @@ export default function StressScenarioPanel({ allocations, usdcWeight, portfolio
         </div>
       </div>
 
-      {isPlaceholder && (
-        <div className="info-box mb-3" style={{ fontSize: '0.8rem' }}>
-          Showing default demo allocation (40% SPY / 20% QQQ / 15% BTC / 5% GOLD / 20% USDC).
-          Pass real <code>allocations</code> from a vault to see your own portfolio's shock surface.
+      {!hasAllocations && (
+        <div className="info-box" style={{ fontSize: '0.85rem' }}>
+          Deploy a vault to see how its allocation survives historical shocks.
         </div>
       )}
 
       {loading && <div className="caption">Computing scenarios…</div>}
       {error && <div className="info-box warning">{error}</div>}
 
-      {results && results.length > 0 && (
+      {hasAllocations && results && results.length > 0 && (
         <div className="overflow-x-auto rounded-lg border border-[var(--glass-border)]">
           <table className="lib-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
             <thead>

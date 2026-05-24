@@ -85,8 +85,6 @@ class CapitalPreservationTBill(bt.Strategy):
         if not self.position:
             price = float(self.data.close[0])
             account_value = float(self.broker.getvalue())
-            target_size = int(
-                account_value * float(self.params.exposure_fraction) // price
-            )
+            target_size = int(account_value * float(self.params.exposure_fraction) // price)
             if target_size > 0:
                 self.buy(size=target_size)

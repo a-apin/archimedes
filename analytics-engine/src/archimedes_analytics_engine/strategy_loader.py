@@ -10,7 +10,6 @@ from typing import Any
 
 import backtrader as bt
 
-
 METADATA_KEYS: tuple[str, ...] = (
     "PAPER_ARXIV_ID",
     "PAPER_TITLE",
@@ -53,9 +52,7 @@ def _strategy_candidates(module: ModuleType) -> list[type[bt.Strategy]]:
     return [
         value
         for _, value in vars(module).items()
-        if isinstance(value, type)
-        and issubclass(value, bt.Strategy)
-        and value is not bt.Strategy
+        if isinstance(value, type) and issubclass(value, bt.Strategy) and value is not bt.Strategy
     ]
 
 
@@ -74,9 +71,7 @@ def _pick_strategy(
         return candidates[0]
     if not candidates:
         raise ValueError(f"No backtrader strategy class found in {path}")
-    raise ValueError(
-        f"Multiple strategy classes found in {path}. Provide --strategy-class explicitly"
-    )
+    raise ValueError(f"Multiple strategy classes found in {path}. Provide --strategy-class explicitly")
 
 
 def _extract_metadata(module: ModuleType, cls: type[bt.Strategy]) -> dict[str, Any]:

@@ -25,7 +25,7 @@ load_dotenv("../.env", override=True)
 load_dotenv(".env", override=False)
 
 from eth_utils import to_checksum_address
-from web3 import AsyncWeb3, AsyncHTTPProvider
+from web3 import AsyncHTTPProvider, AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 
 from archimedes.chain.circle_signer import circle_signer
@@ -36,13 +36,13 @@ WALLET = os.getenv("WALLET_ADDRESS", "")
 USDC_ARC = "0x3600000000000000000000000000000000000000"
 
 SYNTHETICS = [
-    ("Synthetic TSLA",  "sTSLA", 285_500_000),      # $285.50
-    ("Synthetic NVDA",  "sNVDA", 135_200_000),      # $135.20
-    ("Synthetic SPY",   "sSPY",  592_400_000),      # $592.40
-    ("Synthetic BTC",   "sBTC",  104_500_000_000),  # $104,500
-    ("Synthetic GOLD",  "sGOLD", 3_250_000_000),    # $3,250.00
-    ("Synthetic OIL",   "sOIL",  62_800_000),       # $62.80
-    ("Synthetic NKY",   "sNKY",  38_500_000_000),   # $38,500.00
+    ("Synthetic TSLA", "sTSLA", 285_500_000),  # $285.50
+    ("Synthetic NVDA", "sNVDA", 135_200_000),  # $135.20
+    ("Synthetic SPY", "sSPY", 592_400_000),  # $592.40
+    ("Synthetic BTC", "sBTC", 104_500_000_000),  # $104,500
+    ("Synthetic GOLD", "sGOLD", 3_250_000_000),  # $3,250.00
+    ("Synthetic OIL", "sOIL", 62_800_000),  # $62.80
+    ("Synthetic NKY", "sNKY", 38_500_000_000),  # $38,500.00
 ]
 
 ABI_DIR = Path(__file__).resolve().parents[3] / "contracts" / "abis"
@@ -110,9 +110,7 @@ async def deploy_contract(bytecode_hex: str, gas: int = 5_000_000) -> str:
     print(f"  ✅ Tx submitted: {tx_hash}")
 
     # Wait for receipt
-    receipt = await w3.eth.wait_for_transaction_receipt(
-        w3.to_bytes(hexstr=tx_hash.removeprefix("0x"))
-    )
+    receipt = await w3.eth.wait_for_transaction_receipt(w3.to_bytes(hexstr=tx_hash.removeprefix("0x")))
 
     if receipt.status != 1:
         raise RuntimeError(f"Deploy tx failed: {receipt}")
@@ -142,11 +140,7 @@ async def call_contract(contract_address: str, abi: list, function: str, args: l
     # Convert args for Circle API
     circle_params = []
     for arg in args:
-        if isinstance(arg, list):
-            circle_params.append(arg)
-        elif isinstance(arg, bool):
-            circle_params.append(arg)
-        elif isinstance(arg, int):
+        if isinstance(arg, (list, bool, int)):
             circle_params.append(arg)
         else:
             circle_params.append(arg)
@@ -172,7 +166,7 @@ async def main():
         sys.exit(1)
 
     print(f"Wallet: {WALLET}")
-    print(f"Chain:  Arc testnet (5042002)")
+    print("Chain:  Arc testnet (5042002)")
     print()
 
     deployed = {}
@@ -187,6 +181,7 @@ async def main():
     # Constructor: (address _owner)
     # AMMRouter(address)
     from eth_abi import encode
+
     ctor_args = encode(["address"], [to_checksum_address(WALLET)])
     full_bc = bc + ctor_args.hex()
     deployed["ammRouter"] = await deploy_contract(full_bc)
@@ -273,7 +268,7 @@ async def main():
     # ═══════════════════════════════════════════════════════════════
     print("\n═══ Phase 3: AMM Pools ═══")
 
-    for i, (name, symbol, price) in enumerate(SYNTHETICS):
+    for i, (_name, symbol, _price) in enumerate(SYNTHETICS):
         print(f"  🏊 {symbol}/USDC pool...")
         await call_contract(
             deployed["ammRouter"],
@@ -319,7 +314,7 @@ async def main():
 
     # Set target allocations
     print("  🎯 Setting target allocations...")
-    alloc_tokens = [USDC_ARC] + synth_tokens[:2]  # USDC + sTSLA + sBTC
+    alloc_tokens = [USDC_ARC, *synth_tokens[:2]]  # USDC + sTSLA + sBTC
     alloc_weights = [4000, 3500, 2500]  # 40% USDC, 35% sTSLA, 25% sBTC
     await call_contract(
         vault_addr,
@@ -341,8 +336,8 @@ async def main():
     print(f"AssetRegistry:          {deployed.get('assetRegistry', 'N/A')}")
     print(f"VaultFactory:           {deployed.get('vaultFactory', 'N/A')}")
     print(f"Tier 1 Vault:           {deployed.get('tier1Vault', 'N/A')}")
-    print(f"\nSynthetics:")
-    for i, (name, symbol, price) in enumerate(SYNTHETICS):
+    print("\nSynthetics:")
+    for i, (_name, symbol, _price) in enumerate(SYNTHETICS):
         print(f"  {symbol:6s} token: {synth_tokens[i]}")
         print(f"  {symbol:6s} oracle: {synth_oracles[i]}")
 

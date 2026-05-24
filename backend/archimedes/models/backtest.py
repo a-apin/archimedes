@@ -171,11 +171,7 @@ class BacktestResult:
             return False
         if self.out_of_sample_sharpe is None:
             return False
-        if self.sharpe_ratio > 0 and (
-            self.out_of_sample_sharpe / self.sharpe_ratio < 0.5
-        ):
+        if self.sharpe_ratio > 0 and (self.out_of_sample_sharpe / self.sharpe_ratio < 0.5):
             return False
         vs_paper = self.sharpe_vs_paper
-        if vs_paper is not None and vs_paper < 0.5:
-            return False
-        return True
+        return not (vs_paper is not None and vs_paper < 0.5)

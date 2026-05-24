@@ -24,8 +24,6 @@ const EVENT_LABELS = {
   error: 'Error',
 }
 
-const TERMINAL = new Set(['done', 'error'])
-
 function summarizeEvent(name, data) {
   switch (name) {
     case 'job_queued':

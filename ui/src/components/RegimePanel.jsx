@@ -44,6 +44,45 @@ function MiniBar({ value, max, color }) {
   )
 }
 
+// Compact pill — page-header context, not a full panel. Used on /portfolio
+// where the user cares about their funds; the full educational view lives
+// on /learnings.
+function CompactRegimePill({ regime }) {
+  const r = regime.regime
+  const rColor = regimeColor(r)
+  const rLabel = r.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  const conf = regime.confidence ?? 0
+  return (
+    <span
+      title={
+        `The agent's current read of market conditions. Drives which library ` +
+        `strategies it leans into for new generates + rebalances. ` +
+        `risk_on → momentum/TSMOM. transition → vol-managed. ` +
+        `risk_off → t-bill alternatives. crisis → capital preservation.`
+      }
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '4px 10px',
+        borderRadius: 999,
+        background: regimeBg(r),
+        border: `1px solid ${regimeBorder(r)}`,
+        fontSize: '0.78rem',
+        cursor: 'help',
+      }}
+    >
+      <span style={{ width: 8, height: 8, borderRadius: '50%', background: rColor, display: 'inline-block' }} />
+      <span style={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: rColor }}>
+        {rLabel}
+      </span>
+      <span className="caption" style={{ color: 'var(--text-3)' }}>
+        {fmtPct(conf)} conf
+      </span>
+    </span>
+  )
+}
+
 function TransitionRow({ from, to, prob }) {
   const arrow = from === to ? 'stay' : `→ ${to.replace(/_/g, ' ')}`
   return (
@@ -59,7 +98,7 @@ function TransitionRow({ from, to, prob }) {
   )
 }
 
-export default function RegimePanel({ regime: regimeProp = null }) {
+export default function RegimePanel({ regime: regimeProp = null, compact = false }) {
   const [fetchedRegime, setFetchedRegime] = useState(null)
   const [loading, setLoading] = useState(regimeProp == null)
 
@@ -74,6 +113,7 @@ export default function RegimePanel({ regime: regimeProp = null }) {
   const regime = regimeProp ?? fetchedRegime
 
   if (loading) {
+    if (compact) return <span className="caption" style={{ color: 'var(--text-4)' }}>Loading regime…</span>
     return (
       <div className="card-flat" style={{ padding: 20, marginBottom: 24 }}>
         <div className="caption">Loading regime data…</div>
@@ -82,6 +122,17 @@ export default function RegimePanel({ regime: regimeProp = null }) {
   }
 
   if (!regime || regime.regime === 'unknown') {
+    if (compact) {
+      return (
+        <span
+          className="caption"
+          title="Agent not running or Redis not connected — the regime classifier writes state to Redis on each agent tick."
+          style={{ color: 'var(--text-4)' }}
+        >
+          Regime: unavailable
+        </span>
+      )
+    }
     return (
       <div className="card-flat" style={{ padding: 20, marginBottom: 24 }}>
         <div className="label mb-2">Current Market Regime</div>
@@ -90,6 +141,10 @@ export default function RegimePanel({ regime: regimeProp = null }) {
         </div>
       </div>
     )
+  }
+
+  if (compact) {
+    return <CompactRegimePill regime={regime} />
   }
 
   const r = regime.regime

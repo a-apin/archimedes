@@ -29,17 +29,10 @@ async def list_papers(
             query = query.filter(PaperRecord.categories.contains(category))
         if search:
             pattern = f"%{search}%"
-            query = query.filter(
-                (PaperRecord.title.ilike(pattern)) | (PaperRecord.abstract.ilike(pattern))
-            )
+            query = query.filter((PaperRecord.title.ilike(pattern)) | (PaperRecord.abstract.ilike(pattern)))
 
         total = query.count()
-        rows = (
-            query.order_by(PaperRecord.published.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-            .all()
-        )
+        rows = query.order_by(PaperRecord.published.desc()).offset((page - 1) * page_size).limit(page_size).all()
 
         papers = [
             {
@@ -57,6 +50,7 @@ async def list_papers(
 
     if total == 0 and not category and not search:
         from archimedes.agents.strategy_fusion import load_corpus
+
         corpus = load_corpus()
         all_papers = [
             {
@@ -73,7 +67,7 @@ async def list_papers(
         ]
         total = len(all_papers)
         start = (page - 1) * page_size
-        papers = all_papers[start:start + page_size]
+        papers = all_papers[start : start + page_size]
 
     return {"total": total, "page": page, "page_size": page_size, "papers": papers}
 
@@ -81,9 +75,10 @@ async def list_papers(
 @papers_router.get("/{arxiv_id}")
 async def get_paper(arxiv_id: str):
     """Single paper detail + citing strategies (bidirectional provenance)."""
+    from fastapi import HTTPException
+
     from archimedes.models.corpus_store import PaperRecord
     from archimedes.models.strategy_store import strategies_by_paper
-    from fastapi import HTTPException
 
     with get_session() as session:
         record = session.query(PaperRecord).filter(PaperRecord.arxiv_id == arxiv_id).first()
@@ -115,6 +110,7 @@ async def get_paper(arxiv_id: str):
         }
 
     from archimedes.agents.strategy_fusion import load_corpus
+
     corpus = load_corpus()
     paper = next((p for p in corpus if p.arxiv_id == arxiv_id), None)
     if paper is None:
@@ -150,8 +146,10 @@ async def get_paper(arxiv_id: str):
 async def get_corpus_overview():
     """High-level library breakdown: category mix, year distribution, totals."""
     from collections import Counter
-    from archimedes.models.corpus_store import PaperRecord
+
     from sqlalchemy import func
+
+    from archimedes.models.corpus_store import PaperRecord
 
     with get_session() as session:
         total = session.query(func.count(PaperRecord.arxiv_id)).scalar() or 0
@@ -209,10 +207,7 @@ async def get_corpus_overview():
     return {
         "total_papers": len(corpus),
         "source": "file",
-        "categories": [
-            {"name": cat, "label": _category_label(cat), "count": cnt}
-            for cat, cnt in top_categories
-        ],
+        "categories": [{"name": cat, "label": _category_label(cat), "count": cnt} for cat, cnt in top_categories],
         "year_distribution": [{"year": yr, "count": cnt} for yr, cnt in year_dist],
     }
 
@@ -230,11 +225,11 @@ async def get_corpus_graph(
     """
     from archimedes.services.kb_artifacts import (
         ArtifactNotFound,
+        compute_and_cache_umap_projection,
         load_clusters,
         load_embeddings,
         load_topics,
         load_umap_projection,
-        compute_and_cache_umap_projection,
     )
 
     # Try real SPECTER2-backed projection first
@@ -257,6 +252,7 @@ async def get_corpus_graph(
         # Sample if requested
         if sample and len(points) > sample:
             import random
+
             points = random.sample(points, sample)
 
         cluster_ids = list({p.get("cluster_id") for p in points if p.get("cluster_id")})
@@ -276,8 +272,10 @@ async def get_corpus_graph(
 
     # --- Metadata-derived fallback ---
     from collections import defaultdict
-    from archimedes.models.corpus_store import PaperRecord
+
     from sqlalchemy import func
+
+    from archimedes.models.corpus_store import PaperRecord
 
     with get_session() as session:
         total = session.query(func.count(PaperRecord.arxiv_id)).scalar() or 0
@@ -285,7 +283,13 @@ async def get_corpus_graph(
             return {"status": "empty", "nodes": [], "edges": [], "total_papers": 0}
 
         papers = (
-            session.query(PaperRecord.arxiv_id, PaperRecord.title, PaperRecord.categories, PaperRecord.cluster_id, PaperRecord.topic_label)
+            session.query(
+                PaperRecord.arxiv_id,
+                PaperRecord.title,
+                PaperRecord.categories,
+                PaperRecord.cluster_id,
+                PaperRecord.topic_label,
+            )
             .limit(sample)
             .all()
         )
@@ -295,7 +299,7 @@ async def get_corpus_graph(
         cat_papers = defaultdict(list)
 
         for p in papers:
-            label = p.topic_label or p.primary_category if hasattr(p, 'primary_category') else None
+            label = p.topic_label or p.primary_category if hasattr(p, "primary_category") else None
             try:
                 cats = json.loads(p.categories) if p.categories else []
             except (json.JSONDecodeError, TypeError):
@@ -303,25 +307,29 @@ async def get_corpus_graph(
             if not cats:
                 cats = ["uncategorized"]
 
-            nodes.append({
-                "id": p.arxiv_id,
-                "title": p.title[:80] if p.title else p.arxiv_id,
-                "cluster": p.cluster_id or cats[0],
-                "label": label,
-                "categories": cats[:3],
-            })
+            nodes.append(
+                {
+                    "id": p.arxiv_id,
+                    "title": p.title[:80] if p.title else p.arxiv_id,
+                    "cluster": p.cluster_id or cats[0],
+                    "label": label,
+                    "categories": cats[:3],
+                }
+            )
 
             for c in cats[:3]:
                 cat_papers[c].append(p.arxiv_id)
 
         edge_set = set()
-        for cat, pids in cat_papers.items():
+        for _cat, pids in cat_papers.items():
             for i in range(min(len(pids), 20)):
                 for j in range(i + 1, min(len(pids), 20)):
                     pair = tuple(sorted([pids[i], pids[j]]))
                     if pair not in edge_set:
                         edge_set.add(pair)
-                        edges.append({"source": pair[0], "target": pair[1], "weight": 1, "type": "category_cooccurrence"})
+                        edges.append(
+                            {"source": pair[0], "target": pair[1], "weight": 1, "type": "category_cooccurrence"}
+                        )
 
         return {
             "status": "metadata_derived",
@@ -409,9 +417,10 @@ async def get_corpus_kg(
         pass
 
     # --- Metadata-derived fallback ---
-    from collections import defaultdict
-    from archimedes.models.corpus_store import PaperRecord
+
     from sqlalchemy import func, or_
+
+    from archimedes.models.corpus_store import PaperRecord
 
     with get_session() as session:
         total = session.query(func.count(PaperRecord.arxiv_id)).scalar() or 0

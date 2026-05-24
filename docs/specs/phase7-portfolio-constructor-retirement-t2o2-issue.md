@@ -1,6 +1,6 @@
 # Issue spec for t2o2 — Retire `portfolio_constructor.py` + `kelly_portfolio.py`
 
-> **Status:** ✓ filed + closed as [#131](https://github.com/hackagora/archimedes-arcadia/issues/131) on 2026-05-23 — shipped on `main` (commit `a4a09fb`); deprecated constructors moved to `services/_deprecated/`. This file is the spec source-of-truth; PR archive lives on the issue.
+> **Status:** ✓ filed + closed as [#131](https://github.com/a-apin/archimedes-arcadia/issues/131) on 2026-05-23 — shipped on `main` (commit `a4a09fb`); deprecated constructors moved to `services/_deprecated/`. This file is the spec source-of-truth; PR archive lives on the issue.
 >
 > **Ready-to-file issue body.** Per CLAUDE.md's agentic issue pipeline.
 >

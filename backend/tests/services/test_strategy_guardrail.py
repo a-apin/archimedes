@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from archimedes.agents.strategy_architect import ArchitectProposal, StrategySelection
 from archimedes.services.strategy_guardrail import (
     DEFAULT_MAX_STRATEGY_WEIGHT,
@@ -16,10 +15,7 @@ def _proposal(
     raw_weights: dict[str, float],
     risk_profile: str = "moderate",
 ) -> ArchitectProposal:
-    selected = [
-        StrategySelection(strategy_id=sid, weight=w, rationale="test")
-        for sid, w in raw_weights.items()
-    ]
+    selected = [StrategySelection(strategy_id=sid, weight=w, rationale="test") for sid, w in raw_weights.items()]
     return ArchitectProposal(
         intent="test",
         risk_profile=risk_profile,

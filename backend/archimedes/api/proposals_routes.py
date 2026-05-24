@@ -14,7 +14,9 @@ proposals_router = APIRouter(prefix="/api/proposals", tags=["proposals"])
 
 @proposals_router.get("/")
 async def list_proposals(
-    verdict: str | None = Query(None, description="Filter by verdict: rigor_pass | rigor_fail | user_rejected | pending"),
+    verdict: str | None = Query(
+        None, description="Filter by verdict: rigor_pass | rigor_fail | user_rejected | pending"
+    ),
     agent: str | None = Query(None, description="Filter by agent: fusion | architect | agent"),
     since: str | None = Query(None, description="ISO datetime lower bound"),
     limit: int = Query(50, ge=1, le=200, description="Page size"),

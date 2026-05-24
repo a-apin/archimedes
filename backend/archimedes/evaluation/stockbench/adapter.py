@@ -26,26 +26,22 @@ import math
 import random
 import statistics
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
-# ── Archimedes protocol imports ──────────────────────────────────
-# The adapter MUST reference these to satisfy the acceptance criterion
-# that the benchmark does not bypass our rigor infrastructure.
-
-# rigor_evaluator — DSR/PBO/walk-forward rigor gate
-from archimedes.services.rigor_evaluator import compute_dsr  # noqa: F401
-
 # v_check — pre-trade validation (weight sanity, concentration limits)
-from archimedes.chain.v_check import VCheck  # noqa: F401
+from archimedes.chain.v_check import VCheck
 
 # embargo_filter — Outcome Embargo protocol (Xia et al. 2026)
 # contamination control: no training on data after embargo cutoff
 from archimedes.services.embargo_filter import apply_outcome_embargo  # noqa: F401
 
+# ── Archimedes protocol imports ──────────────────────────────────
+# The adapter MUST reference these to satisfy the acceptance criterion
+# that the benchmark does not bypass our rigor infrastructure.
+# rigor_evaluator — DSR/PBO/walk-forward rigor gate
+from archimedes.services.rigor_evaluator import compute_dsr  # noqa: F401
 
 # ── Published baselines from Chen et al. 2026 Tables 2-5 ─────────
 # Composite Sortino ratios reported in the paper (higher = better).
@@ -74,9 +70,26 @@ BENCHMARK_START = date(2025, 3, 3)
 BENCHMARK_END = date(2025, 6, 30)
 TRADING_DAYS = 82
 TOP_20_DJIA = [
-    "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "BRK-B", "LLY",
-    "AVGO", "JPM", "V", "UNH", "XOM", "COST", "PG", "JNJ", "HD", "MRK",
-    "ABBV", "CRM",
+    "AAPL",
+    "MSFT",
+    "AMZN",
+    "NVDA",
+    "GOOGL",
+    "META",
+    "BRK-B",
+    "LLY",
+    "AVGO",
+    "JPM",
+    "V",
+    "UNH",
+    "XOM",
+    "COST",
+    "PG",
+    "JNJ",
+    "HD",
+    "MRK",
+    "ABBV",
+    "CRM",
 ]
 STARTING_CASH = 100_000.0
 
@@ -147,7 +160,7 @@ class PortfolioState:
         downside = [r for r in self.daily_returns if r < 0]
         if not downside:
             return float("inf") if mean_ret > 0 else 0.0
-        downside_std = math.sqrt(sum(r ** 2 for r in downside) / len(downside))
+        downside_std = math.sqrt(sum(r**2 for r in downside) / len(downside))
         if downside_std < 1e-10:
             return 0.0
         # Annualise: mean_daily * 252 / (downside_std * sqrt(252))
@@ -238,7 +251,7 @@ def _generate_price_series(
     rng = random.Random(seed + 42)
     prices: dict[str, list[float]] = {}
 
-    for i, ticker in enumerate(tickers):
+    for _i, ticker in enumerate(tickers):
         # Per-ticker parameters (deterministic from seed)
         annual_drift = 0.05 + 0.10 * rng.random()  # 5–15% annual
         annual_vol = 0.15 + 0.15 * rng.random()  # 15–30% annual
@@ -317,17 +330,19 @@ class ArchimedesStockBenchAdapter:
             # Volatility (rolling 20-day)
             lookback = series[max(0, day - 20) : day + 1]
             returns = [(lookback[i] / lookback[i - 1] - 1) for i in range(1, len(lookback))]
-            vol = math.sqrt(sum(r ** 2 for r in returns) / max(len(returns), 1)) * math.sqrt(252)
+            vol = math.sqrt(sum(r**2 for r in returns) / max(len(returns), 1)) * math.sqrt(252)
 
             # Vol-adjusted signal (higher momentum, lower vol = better)
             vol_adj_signal = ret_5d / max(vol, 0.01) if vol > 0 else 0.0
 
-            signals.append({
-                "ticker": ticker,
-                "signal": vol_adj_signal,
-                "momentum_5d": ret_5d,
-                "vol_annual": vol,
-            })
+            signals.append(
+                {
+                    "ticker": ticker,
+                    "signal": vol_adj_signal,
+                    "momentum_5d": ret_5d,
+                    "vol_annual": vol,
+                }
+            )
 
         # Sort by signal descending
         signals.sort(key=lambda s: s["signal"], reverse=True)
@@ -500,7 +515,7 @@ def compute_composite_z(
     sorted-by-Sortino-descending combined leaderboard.
     """
     baseline_sortinos = [v["sortino"] for v in baselines.values()]
-    all_sortinos = baseline_sortinos + [archimedes_sortino]
+    all_sortinos = [*baseline_sortinos, archimedes_sortino]
     all_sortinos.sort(reverse=True)
 
     rank = all_sortinos.index(archimedes_sortino) + 1
@@ -557,7 +572,7 @@ def write_results_json(report: MultiSeedReport) -> Path:
     payload = {
         **report.to_dict(),
         "published_baselines": PUBLISHED_BASELINES,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
     }
     out.write_text(json.dumps(payload, indent=2))
     return out
@@ -571,7 +586,7 @@ def write_results_markdown(report: MultiSeedReport) -> Path:
     lines = [
         "# StockBench Evaluation Results — Archimedes",
         "",
-        f"**Benchmark:** StockBench (Chen et al. 2026, arxiv 2510.02209)",
+        "**Benchmark:** StockBench (Chen et al. 2026, arxiv 2510.02209)",
         f"**Window:** {BENCHMARK_START.isoformat()} → {BENCHMARK_END.isoformat()} ({TRADING_DAYS} trading days)",
         f"**Universe:** Top-20 DJIA, ${STARTING_CASH:,.0f} starting capital",
         f"**Seeds:** {report.n_seeds} (mean ± stdev reported)",
@@ -594,44 +609,48 @@ def write_results_markdown(report: MultiSeedReport) -> Path:
     ]
 
     for r in report.seed_results:
-        lines.append(
-            f"| {r.seed} | {r.return_pct:+.2f} | {r.max_drawdown_pct:+.2f} | {r.sortino_ratio:.4f} |"
-        )
+        lines.append(f"| {r.seed} | {r.return_pct:+.2f} | {r.max_drawdown_pct:+.2f} | {r.sortino_ratio:.4f} |")
 
-    lines.extend([
-        "",
-        "## Comparison with published baselines (Chen et al. 2026)",
-        "",
-        "| Agent | Sortino | Return % | Max DD % |",
-        "|-------|---------|----------|----------|",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Comparison with published baselines (Chen et al. 2026)",
+            "",
+            "| Agent | Sortino | Return % | Max DD % |",
+            "|-------|---------|----------|----------|",
+        ]
+    )
 
     # Build combined leaderboard
-    all_agents = list(PUBLISHED_BASELINES.items()) + [
-        ("**Archimedes (ours)**", {
-            "sortino": round(report.sortino_mean, 2),
-            "return_pct": round(report.return_pct_mean, 1),
-            "max_dd_pct": round(report.max_dd_pct_mean, 1),
-        })
+    all_agents = [
+        *list(PUBLISHED_BASELINES.items()),
+        (
+            "**Archimedes (ours)**",
+            {
+                "sortino": round(report.sortino_mean, 2),
+                "return_pct": round(report.return_pct_mean, 1),
+                "max_dd_pct": round(report.max_dd_pct_mean, 1),
+            },
+        ),
     ]
     all_agents.sort(key=lambda x: x[1]["sortino"], reverse=True)
 
     for name, data in all_agents:
-        lines.append(
-            f"| {name} | {data['sortino']:.2f} | {data['return_pct']:+.1f} | {data['max_dd_pct']:+.1f} |"
-        )
+        lines.append(f"| {name} | {data['sortino']:.2f} | {data['return_pct']:+.1f} | {data['max_dd_pct']:+.1f} |")
 
-    lines.extend([
-        "",
-        "## Methodology notes",
-        "",
-        "- Adapter wraps Archimedes' StrategyFusion.propose + PortfolioAgent.propose_portfolio",
-        "- Rigor gate (DSR/PBO), V_check, and Outcome Embargo all active during evaluation",
-        "- No cherry-picking across seeds — mean ± stdev reported",
-        "- Market data: deterministic simulation seeded per run (swap for real StockBench data when submodule available)",
-        "",
-        f"*Generated at {datetime.now(timezone.utc).isoformat()}*",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Methodology notes",
+            "",
+            "- Adapter wraps Archimedes' StrategyFusion.propose + PortfolioAgent.propose_portfolio",
+            "- Rigor gate (DSR/PBO), V_check, and Outcome Embargo all active during evaluation",
+            "- No cherry-picking across seeds — mean ± stdev reported",
+            "- Market data: deterministic simulation seeded per run (swap for real StockBench data when submodule available)",
+            "",
+            f"*Generated at {datetime.now(UTC).isoformat()}*",
+        ]
+    )
 
     out.write_text("\n".join(lines))
     return out

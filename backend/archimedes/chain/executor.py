@@ -10,14 +10,14 @@ import logging
 
 from web3.contract import AsyncContract
 
+from archimedes.chain.circle_signer import circle_signer
 from archimedes.chain.client import chain_client
 from archimedes.chain.contracts import ContractLoader, get_contract_loader
-from archimedes.chain.circle_signer import circle_signer
 from archimedes.models.portfolio import (
     Portfolio,
     PortfolioHolding,
-    TradeOrder,
     TradeDirection,
+    TradeOrder,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,6 @@ class ChainExecutor:
         (e.g. stale oracle prices on testnet).
         """
         vault = self.loader.vault(vault_address)
-        settings = chain_client.settings
 
         # Read holdings from vault contract
         holdings_data = await vault.functions.getHoldings().call()
@@ -45,8 +44,8 @@ class ChainExecutor:
 
         # Read target allocations
         target_data = await vault.functions.getTargetAllocations().call()
-        target_tokens = target_data[0]
-        target_weights = target_data[1]
+        target_data[0]
+        target_data[1]
 
         # Read total assets — fall back to off-chain NAV if stale price
         total_assets = await self._safe_total_assets(vault, token_addresses, amounts)
@@ -98,7 +97,6 @@ class ChainExecutor:
           - BUY (USDC → synth): amount in USDC raw (6 decimals)
           - SELL (synth → USDC): amount in synth raw (18 decimals)
         """
-        usdc_address = chain_client.settings.usdc_address
 
         # Split trades into buys and sells with proper decimal conversion
         tokens_in: list[str] = []
@@ -115,7 +113,8 @@ class ChainExecutor:
             else:
                 # SELL: amount is USDC value → convert to token raw amount via oracle price
                 token_raw = await self._usdc_value_to_token_raw(
-                    token_addr, trade.estimated_usdc_value,
+                    token_addr,
+                    trade.estimated_usdc_value,
                 )
                 tokens_out.append(token_addr)
                 amounts_out.append(token_raw)
@@ -141,9 +140,7 @@ class ChainExecutor:
         vault = self.loader.vault(vault_address)
         nonce = await chain_client.w3.eth.get_transaction_count(account.address)
 
-        tx = await vault.functions.rebalance(
-            tokens_in, amounts_in, tokens_out, amounts_out
-        ).build_transaction(
+        tx = await vault.functions.rebalance(tokens_in, amounts_in, tokens_out, amounts_out).build_transaction(
             {
                 "from": account.address,
                 "nonce": nonce,
@@ -185,8 +182,7 @@ class ChainExecutor:
             # Wait for confirmation, then find the new vault address
             # Circle's tx_hash is the on-chain hash — parse receipt for VaultCreated event
             receipt = await chain_client.w3.eth.wait_for_transaction_receipt(
-                chain_client.w3.to_bytes(hexstr=tx_hash.removeprefix("0x"))
-                if isinstance(tx_hash, str) else tx_hash
+                chain_client.w3.to_bytes(hexstr=tx_hash.removeprefix("0x")) if isinstance(tx_hash, str) else tx_hash
             )
             vault_address = self._parse_vault_created(factory, receipt)
             if not vault_address:
@@ -401,7 +397,9 @@ class ChainExecutor:
         return tx_hash.hex()
 
     async def _usdc_value_to_token_raw(
-        self, token_address: str, usdc_value: float,
+        self,
+        token_address: str,
+        usdc_value: float,
     ) -> int:
         """Convert a USDC value to raw token amount using oracle price.
 
@@ -432,9 +430,7 @@ class ChainExecutor:
                     break
 
         # Fallback: treat as 18-decimal token, estimate at $1
-        logger.warning(
-            f"No oracle for {token_address[:10]}, estimating 1:1 USDC for SELL amount"
-        )
+        logger.warning(f"No oracle for {token_address[:10]}, estimating 1:1 USDC for SELL amount")
         return int(usdc_value * 1e18)
 
     # ─── Helpers ───────────────────────────────────────────────────
@@ -481,7 +477,7 @@ class ChainExecutor:
 
     async def _token_to_usdc(self, token_address: str, amount: int, decimals: int, use_raw_price: bool = False) -> int:
         """Estimate USDC value of a token holding.
-        
+
         If use_raw_price is True (stale oracle fallback), uses the raw price()
         getter which doesn't check staleness.
         """
@@ -507,10 +503,13 @@ class ChainExecutor:
         return amount
 
     async def _safe_total_assets(
-        self, vault: AsyncContract, token_addresses: list, amounts: list,
+        self,
+        vault: AsyncContract,
+        token_addresses: list,
+        amounts: list,
     ) -> int:
         """Read totalAssets() with stale-price fallback.
-        
+
         If totalAssets() reverts (e.g. StalePrice), compute NAV off-chain
         using the raw price() getter that doesn't check staleness.
         """
@@ -519,9 +518,8 @@ class ChainExecutor:
         except Exception:
             # Fallback: compute off-chain using raw prices
             import logging
-            logging.getLogger(__name__).warning(
-                "totalAssets() reverted — computing NAV off-chain with raw prices"
-            )
+
+            logging.getLogger(__name__).warning("totalAssets() reverted — computing NAV off-chain with raw prices")
             usdc_address = chain_client.settings.usdc_address
             nav = 0
             for i in range(len(token_addresses)):

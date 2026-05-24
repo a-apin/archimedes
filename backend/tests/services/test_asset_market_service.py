@@ -7,20 +7,15 @@ stale when oracle data is >5 min old.
 
 from __future__ import annotations
 
-import asyncio
 import time
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from archimedes.services.asset_market_service import (
     AssetMarketService,
     _pct_change,
     _realized_vol_annual,
-    _STALE_WINDOW_SECONDS,
 )
-
 
 # ── Unit tests for stat math ──────────────────────────────────────────────
 
@@ -167,10 +162,15 @@ class TestListAssets:
             }
         }
 
-        with patch("archimedes.chain.client.chain_client", mock_chain_client), \
-             patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories), \
-             patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sSPY"]), \
-             patch("archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS", {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")}):
+        with (
+            patch("archimedes.chain.client.chain_client", mock_chain_client),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sSPY"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")},
+            ),
+        ):
             resp = await service.list_assets()
 
         assert len(resp.assets) >= 1
@@ -190,11 +190,16 @@ class TestListAssets:
             }
         }
 
-        with patch.object(service, "_read_oracle_prices", return_value={}):
-            with patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories):
-                with patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sSPY"]):
-                    with patch("archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS", {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")}):
-                        resp = await service.list_assets()
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sSPY"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")},
+            ),
+        ):
+            resp = await service.list_assets()
 
         spy = next((a for a in resp.assets if a.symbol == "sSPY"), None)
         assert spy is not None
@@ -206,11 +211,13 @@ class TestListAssets:
         """Second call within TTL returns cached result."""
         service = AssetMarketService()
 
-        with patch.object(service, "_read_oracle_prices", return_value={}):
-            with patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value={}):
-                with patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", []):
-                    with patch("archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS", {}):
-                        resp1 = await service.list_assets()
-                        resp2 = await service.list_assets()
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", []),
+            patch("archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS", {}),
+        ):
+            resp1 = await service.list_assets()
+            resp2 = await service.list_assets()
 
         assert resp1 is resp2  # Same object (cached)

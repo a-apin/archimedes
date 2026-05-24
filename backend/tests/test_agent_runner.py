@@ -10,9 +10,11 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from archimedes.models.portfolio import (
-    PortfolioHolding, Portfolio, TargetAllocation, TradeDirection, TradeOrder,
+    Portfolio,
+    PortfolioHolding,
+    TargetAllocation,
+    TradeDirection,
 )
 
 
@@ -36,16 +38,22 @@ def _make_targets(**weights) -> list[TargetAllocation]:
     """Create target allocations from keyword args: symbol=weight."""
     targets = []
     synth_addrs = {
-        "USDC": "0xusdc", "sSPY": "0xsspy", "sGOLD": "0xsgold",
-        "sOIL": "0xsoil", "sNKY": "0xsnky", "sTSLA": "0xstsla",
+        "USDC": "0xusdc",
+        "sSPY": "0xsspy",
+        "sGOLD": "0xsgold",
+        "sOIL": "0xsoil",
+        "sNKY": "0xsnky",
+        "sTSLA": "0xstsla",
     }
     for sym, weight in weights.items():
-        targets.append(TargetAllocation(
-            symbol=sym,
-            token_address=synth_addrs.get(sym, ""),
-            weight=weight,
-            strategy_ids=[],
-        ))
+        targets.append(
+            TargetAllocation(
+                symbol=sym,
+                token_address=synth_addrs.get(sym, ""),
+                weight=weight,
+                strategy_ids=[],
+            )
+        )
     return targets
 
 
@@ -55,16 +63,19 @@ class TestComputeTrades:
     @pytest.fixture()
     def runner(self):
         """Create a StrategyRunner with mocked chain dependencies."""
-        with patch("archimedes.chain.agent_runner.chain_client") as mock_client, \
-             patch("archimedes.chain.agent_runner.chain_executor"), \
-             patch("archimedes.chain.agent_runner.trace_publisher"), \
-             patch("archimedes.chain.agent_runner.default_provider"), \
-             patch("archimedes.chain.agent_runner.AgentStateStore"):
+        with (
+            patch("archimedes.chain.agent_runner.chain_client") as mock_client,
+            patch("archimedes.chain.agent_runner.chain_executor"),
+            patch("archimedes.chain.agent_runner.trace_publisher"),
+            patch("archimedes.chain.agent_runner.default_provider"),
+            patch("archimedes.chain.agent_runner.AgentStateStore"),
+        ):
             mock_client.settings = MagicMock(
                 synth_addresses={"sSPY": "0xsspy", "sGOLD": "0xsgold"},
                 usdc_address="0xusdc",
             )
             from archimedes.chain.agent_runner import StrategyRunner
+
             return StrategyRunner()
 
     def test_no_drift_no_trades(self, runner):
@@ -117,16 +128,19 @@ class TestWeightsToTargets:
 
     @pytest.fixture()
     def runner(self):
-        with patch("archimedes.chain.agent_runner.chain_client") as mock_client, \
-             patch("archimedes.chain.agent_runner.chain_executor"), \
-             patch("archimedes.chain.agent_runner.trace_publisher"), \
-             patch("archimedes.chain.agent_runner.default_provider"), \
-             patch("archimedes.chain.agent_runner.AgentStateStore"):
+        with (
+            patch("archimedes.chain.agent_runner.chain_client") as mock_client,
+            patch("archimedes.chain.agent_runner.chain_executor"),
+            patch("archimedes.chain.agent_runner.trace_publisher"),
+            patch("archimedes.chain.agent_runner.default_provider"),
+            patch("archimedes.chain.agent_runner.AgentStateStore"),
+        ):
             mock_client.settings = MagicMock(
                 synth_addresses={"sSPY": "0xsspy", "sGOLD": "0xsgold", "sOIL": "0xsoil"},
                 usdc_address="0xusdc",
             )
             from archimedes.chain.agent_runner import StrategyRunner
+
             return StrategyRunner()
 
     def test_converts_dict_to_targets(self, runner):

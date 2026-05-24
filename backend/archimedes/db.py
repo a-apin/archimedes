@@ -6,18 +6,18 @@ Falls back to local SQLite for development.
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import Session, sessionmaker
 
-from archimedes.models.chat import Base
 from archimedes.models.backtest_store import BacktestResultRecord  # noqa: F401
-from archimedes.models.strategy_store import StrategyRecord  # noqa: F401
-from archimedes.models.corpus_store import PaperRecord, CorpusMetaRecord  # noqa: F401
-from archimedes.models.user_profile import UserProfile  # noqa: F401
+from archimedes.models.chat import Base
+from archimedes.models.corpus_store import CorpusMetaRecord, PaperRecord  # noqa: F401
 from archimedes.models.strategy_proposal import StrategyProposal  # noqa: F401
+from archimedes.models.strategy_store import StrategyRecord  # noqa: F401
+from archimedes.models.user_profile import UserProfile  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ def init_db() -> None:
 
     if DATABASE_URL.startswith("postgresql"):
         from sqlalchemy import text
+
         added_columns_sql = [
             "ALTER TABLE papers ADD COLUMN IF NOT EXISTS cluster_id TEXT",
             "ALTER TABLE papers ADD COLUMN IF NOT EXISTS topic_label TEXT",

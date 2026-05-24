@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
-
 from archimedes.services.arxiv_corpus import (
     CorpusPaper,
     _bare_id,
@@ -36,7 +35,7 @@ def _mk_paper(
     categories: list[str] | None = None,
     pdf_url: str | None = None,
 ) -> CorpusPaper:
-    dt = datetime(year, month, day, tzinfo=timezone.utc)
+    dt = datetime(year, month, day, tzinfo=UTC)
     return CorpusPaper(
         arxiv_id=arxiv_id,
         title=f"Paper {arxiv_id}",
@@ -46,9 +45,7 @@ def _mk_paper(
         published=dt.date().isoformat(),
         updated=dt.date().isoformat(),
         abstract=f"Abstract for {arxiv_id}.",
-        pdf_url=pdf_url
-        if pdf_url is not None
-        else f"https://arxiv.org/pdf/{arxiv_id}",
+        pdf_url=pdf_url if pdf_url is not None else f"https://arxiv.org/pdf/{arxiv_id}",
         published_dt=dt,
     )
 
@@ -152,7 +149,7 @@ _FROZEN_KEYS = [
 
 
 def _search_factory(papers: list[CorpusPaper]):
-    def _search(categories, limit):  # noqa: ANN001 - test seam
+    def _search(categories, limit):
         return list(papers)
 
     return _search

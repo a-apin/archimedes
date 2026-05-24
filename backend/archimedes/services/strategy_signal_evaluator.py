@@ -35,137 +35,137 @@ logger = logging.getLogger(__name__)
 # and the LLM portfolio agent can pick from any of them.
 GLOBAL_ASSETS: dict[str, tuple[str, str, str, str]] = {
     # ── US equity ETFs ──
-    "sSPY":  ("SPY",     "SPY",       "us_equity_etf",  "NYSE"),
-    "sQQQ":  ("QQQ",     "QQQ",       "us_equity_etf",  "NASDAQ"),
-    "sIWM":  ("IWM",     "IWM",       "us_equity_etf",  "NYSE"),
-    "sDIA":  ("DIA",     "DIA",       "us_equity_etf",  "NYSE"),
-    "sXLE":  ("XLE",     "XLE",       "us_sector_etf",  "NYSE"),
-    "sXLF":  ("XLF",     "XLF",       "us_sector_etf",  "NYSE"),
-    "sXLK":  ("XLK",     "XLK",       "us_sector_etf",  "NYSE"),
-    "sXLV":  ("XLV",     "XLV",       "us_sector_etf",  "NYSE"),
-    "sXLI":  ("XLI",     "XLI",       "us_sector_etf",  "NYSE"),
-    "sXLU":  ("XLU",     "XLU",       "us_sector_etf",  "NYSE"),
+    "sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE"),
+    "sQQQ": ("QQQ", "QQQ", "us_equity_etf", "NASDAQ"),
+    "sIWM": ("IWM", "IWM", "us_equity_etf", "NYSE"),
+    "sDIA": ("DIA", "DIA", "us_equity_etf", "NYSE"),
+    "sXLE": ("XLE", "XLE", "us_sector_etf", "NYSE"),
+    "sXLF": ("XLF", "XLF", "us_sector_etf", "NYSE"),
+    "sXLK": ("XLK", "XLK", "us_sector_etf", "NYSE"),
+    "sXLV": ("XLV", "XLV", "us_sector_etf", "NYSE"),
+    "sXLI": ("XLI", "XLI", "us_sector_etf", "NYSE"),
+    "sXLU": ("XLU", "XLU", "us_sector_etf", "NYSE"),
     # ── US individual stocks (mega/large cap) ──
-    "sAAPL":  ("AAPL",   "AAPL",     "us_stock", "NASDAQ"),
-    "sMSFT":  ("MSFT",   "MSFT",     "us_stock", "NASDAQ"),
-    "sGOOGL": ("GOOGL",  "GOOGL",    "us_stock", "NASDAQ"),
-    "sAMZN":  ("AMZN",   "AMZN",     "us_stock", "NASDAQ"),
-    "sNVDA":  ("NVDA",   "NVDA",     "us_stock", "NASDAQ"),
-    "sMETA":  ("META",   "META",     "us_stock", "NASDAQ"),
-    "sTSLA":  ("TSLA",   "TSLA",     "us_stock", "NASDAQ"),
-    "sAMD":   ("AMD",    "AMD",      "us_stock", "NASDAQ"),
-    "sAVGO":  ("AVGO",   "AVGO",     "us_stock", "NASDAQ"),
-    "sORCL":  ("ORCL",   "ORCL",     "us_stock", "NYSE"),
-    "sCRM":   ("CRM",    "CRM",      "us_stock", "NYSE"),
-    "sNFLX":  ("NFLX",   "NFLX",     "us_stock", "NASDAQ"),
-    "sJPM":   ("JPM",    "JPM",      "us_stock", "NYSE"),
-    "sBAC":   ("BAC",    "BAC",      "us_stock", "NYSE"),
-    "sGS":    ("GS",     "GS",       "us_stock", "NYSE"),
-    "sV":     ("V",      "V",        "us_stock", "NYSE"),
-    "sMA":    ("MA",     "MA",       "us_stock", "NYSE"),
-    "sBRK-B": ("BRK-B",  "BRK.B",    "us_stock", "NYSE"),
-    "sLLY":   ("LLY",    "LLY",      "us_stock", "NYSE"),
-    "sUNH":   ("UNH",    "UNH",      "us_stock", "NYSE"),
-    "sJNJ":   ("JNJ",    "JNJ",      "us_stock", "NYSE"),
-    "sMRK":   ("MRK",    "MRK",      "us_stock", "NYSE"),
-    "sPFE":   ("PFE",    "PFE",      "us_stock", "NYSE"),
-    "sXOM":   ("XOM",    "XOM",      "us_stock", "NYSE"),
-    "sCVX":   ("CVX",    "CVX",      "us_stock", "NYSE"),
-    "sCOP":   ("COP",    "COP",      "us_stock", "NYSE"),
-    "sWMT":   ("WMT",    "WMT",      "us_stock", "NYSE"),
-    "sCOST":  ("COST",   "COST",     "us_stock", "NASDAQ"),
-    "sHD":    ("HD",     "HD",       "us_stock", "NYSE"),
-    "sPG":    ("PG",     "PG",       "us_stock", "NYSE"),
-    "sCOIN":  ("COIN",   "COIN",     "us_stock", "NASDAQ"),
-    "sMSTR":  ("MSTR",   "MSTR",     "us_stock", "NASDAQ"),
-    "sPLTR":  ("PLTR",   "PLTR",     "us_stock", "NASDAQ"),
+    "sAAPL": ("AAPL", "AAPL", "us_stock", "NASDAQ"),
+    "sMSFT": ("MSFT", "MSFT", "us_stock", "NASDAQ"),
+    "sGOOGL": ("GOOGL", "GOOGL", "us_stock", "NASDAQ"),
+    "sAMZN": ("AMZN", "AMZN", "us_stock", "NASDAQ"),
+    "sNVDA": ("NVDA", "NVDA", "us_stock", "NASDAQ"),
+    "sMETA": ("META", "META", "us_stock", "NASDAQ"),
+    "sTSLA": ("TSLA", "TSLA", "us_stock", "NASDAQ"),
+    "sAMD": ("AMD", "AMD", "us_stock", "NASDAQ"),
+    "sAVGO": ("AVGO", "AVGO", "us_stock", "NASDAQ"),
+    "sORCL": ("ORCL", "ORCL", "us_stock", "NYSE"),
+    "sCRM": ("CRM", "CRM", "us_stock", "NYSE"),
+    "sNFLX": ("NFLX", "NFLX", "us_stock", "NASDAQ"),
+    "sJPM": ("JPM", "JPM", "us_stock", "NYSE"),
+    "sBAC": ("BAC", "BAC", "us_stock", "NYSE"),
+    "sGS": ("GS", "GS", "us_stock", "NYSE"),
+    "sV": ("V", "V", "us_stock", "NYSE"),
+    "sMA": ("MA", "MA", "us_stock", "NYSE"),
+    "sBRK-B": ("BRK-B", "BRK.B", "us_stock", "NYSE"),
+    "sLLY": ("LLY", "LLY", "us_stock", "NYSE"),
+    "sUNH": ("UNH", "UNH", "us_stock", "NYSE"),
+    "sJNJ": ("JNJ", "JNJ", "us_stock", "NYSE"),
+    "sMRK": ("MRK", "MRK", "us_stock", "NYSE"),
+    "sPFE": ("PFE", "PFE", "us_stock", "NYSE"),
+    "sXOM": ("XOM", "XOM", "us_stock", "NYSE"),
+    "sCVX": ("CVX", "CVX", "us_stock", "NYSE"),
+    "sCOP": ("COP", "COP", "us_stock", "NYSE"),
+    "sWMT": ("WMT", "WMT", "us_stock", "NYSE"),
+    "sCOST": ("COST", "COST", "us_stock", "NASDAQ"),
+    "sHD": ("HD", "HD", "us_stock", "NYSE"),
+    "sPG": ("PG", "PG", "us_stock", "NYSE"),
+    "sCOIN": ("COIN", "COIN", "us_stock", "NASDAQ"),
+    "sMSTR": ("MSTR", "MSTR", "us_stock", "NASDAQ"),
+    "sPLTR": ("PLTR", "PLTR", "us_stock", "NASDAQ"),
     # ── European individual stocks ──
-    "sASML":  ("ASML",     "ASML",   "eu_stock", "AMS/NASDAQ"),
-    "sSAP":   ("SAP",      "SAP",    "eu_stock", "XETRA/NYSE"),
-    "sNESN":  ("NESN.SW",  "NESN",   "eu_stock", "SIX"),
-    "sNOVO":  ("NVO",      "NVO",    "eu_stock", "NYSE/Copenhagen"),
-    "sAZN":   ("AZN",      "AZN",    "eu_stock", "LSE/NASDAQ"),
-    "sSHEL":  ("SHEL",     "SHEL",   "eu_stock", "LSE/NYSE"),
-    "sBP":    ("BP",       "BP",     "eu_stock", "LSE/NYSE"),
-    "sHSBC":  ("HSBC",     "HSBC",   "eu_stock", "LSE/NYSE"),
-    "sTTE":   ("TTE",      "TTE",    "eu_stock", "Euronext/NYSE"),
-    "sRHM":   ("RHM.DE",   "RHM",    "eu_stock", "XETRA"),
-    "sLVMH":  ("MC.PA",    "LVMH",   "eu_stock", "Euronext"),
-    "sSIE":   ("SIE.DE",   "SIE",    "eu_stock", "XETRA"),
+    "sASML": ("ASML", "ASML", "eu_stock", "AMS/NASDAQ"),
+    "sSAP": ("SAP", "SAP", "eu_stock", "XETRA/NYSE"),
+    "sNESN": ("NESN.SW", "NESN", "eu_stock", "SIX"),
+    "sNOVO": ("NVO", "NVO", "eu_stock", "NYSE/Copenhagen"),
+    "sAZN": ("AZN", "AZN", "eu_stock", "LSE/NASDAQ"),
+    "sSHEL": ("SHEL", "SHEL", "eu_stock", "LSE/NYSE"),
+    "sBP": ("BP", "BP", "eu_stock", "LSE/NYSE"),
+    "sHSBC": ("HSBC", "HSBC", "eu_stock", "LSE/NYSE"),
+    "sTTE": ("TTE", "TTE", "eu_stock", "Euronext/NYSE"),
+    "sRHM": ("RHM.DE", "RHM", "eu_stock", "XETRA"),
+    "sLVMH": ("MC.PA", "LVMH", "eu_stock", "Euronext"),
+    "sSIE": ("SIE.DE", "SIE", "eu_stock", "XETRA"),
     # ── European indices / equity ETFs ──
-    "sEZU":  ("EZU",     "EZU",       "eu_equity_etf",  "NYSE"),
-    "sEWG":  ("EWG",     "DAX_ETF",   "eu_equity_etf",  "NYSE"),
-    "sEWU":  ("EWU",     "FTSE_ETF",  "eu_equity_etf",  "NYSE"),
-    "sEWQ":  ("EWQ",     "CAC_ETF",   "eu_equity_etf",  "NYSE"),
-    "sFTSE": ("^FTSE",   "FTSE100",   "eu_index",   "LSE"),
-    "sDAX":  ("^GDAXI",  "DAX40",     "eu_index",   "XETRA"),
-    "sCAC":  ("^FCHI",   "CAC40",     "eu_index",   "Euronext"),
+    "sEZU": ("EZU", "EZU", "eu_equity_etf", "NYSE"),
+    "sEWG": ("EWG", "DAX_ETF", "eu_equity_etf", "NYSE"),
+    "sEWU": ("EWU", "FTSE_ETF", "eu_equity_etf", "NYSE"),
+    "sEWQ": ("EWQ", "CAC_ETF", "eu_equity_etf", "NYSE"),
+    "sFTSE": ("^FTSE", "FTSE100", "eu_index", "LSE"),
+    "sDAX": ("^GDAXI", "DAX40", "eu_index", "XETRA"),
+    "sCAC": ("^FCHI", "CAC40", "eu_index", "Euronext"),
     # ── Asian individual stocks ──
-    "sTSM":   ("TSM",      "TSM",    "asia_stock", "TWSE/NYSE"),
-    "sBABA":  ("BABA",     "BABA",   "asia_stock", "NYSE"),
-    "sTM":    ("TM",       "TM",     "asia_stock", "TSE/NYSE"),
-    "sSONY":  ("SONY",     "SONY",   "asia_stock", "TSE/NYSE"),
-    "sSE":    ("SE",       "SE",     "asia_stock", "NYSE"),
-    "sTCEHY": ("TCEHY",    "TCEHY",  "asia_stock", "OTC"),
+    "sTSM": ("TSM", "TSM", "asia_stock", "TWSE/NYSE"),
+    "sBABA": ("BABA", "BABA", "asia_stock", "NYSE"),
+    "sTM": ("TM", "TM", "asia_stock", "TSE/NYSE"),
+    "sSONY": ("SONY", "SONY", "asia_stock", "TSE/NYSE"),
+    "sSE": ("SE", "SE", "asia_stock", "NYSE"),
+    "sTCEHY": ("TCEHY", "TCEHY", "asia_stock", "OTC"),
     # ── Asian equity ETFs / indices ──
-    "sEWJ":  ("EWJ",     "EWJ",       "asia_equity_etf", "NYSE"),
-    "sNKY":  ("^N225",   "NIKKEI",    "asia_index",      "TSE"),
-    "sMCHI": ("MCHI",    "MCHI",      "asia_equity_etf", "NYSE"),
-    "sINDA": ("INDA",    "INDA",      "asia_equity_etf", "NYSE"),
-    "sEWY":  ("EWY",     "EWY",       "asia_equity_etf", "NYSE"),
-    "sEEM":  ("EEM",     "EEM",       "em_equity_etf",   "NYSE"),
+    "sEWJ": ("EWJ", "EWJ", "asia_equity_etf", "NYSE"),
+    "sNKY": ("^N225", "NIKKEI", "asia_index", "TSE"),
+    "sMCHI": ("MCHI", "MCHI", "asia_equity_etf", "NYSE"),
+    "sINDA": ("INDA", "INDA", "asia_equity_etf", "NYSE"),
+    "sEWY": ("EWY", "EWY", "asia_equity_etf", "NYSE"),
+    "sEEM": ("EEM", "EEM", "em_equity_etf", "NYSE"),
     # ── Turkish individual stocks (BIST) ──
-    "sTHYAO":  ("THYAO.IS", "THYAO",  "tr_stock", "BIST"),
-    "sKCHOL":  ("KCHOL.IS", "KCHOL",  "tr_stock", "BIST"),
-    "sGARAN":  ("GARAN.IS", "GARAN",  "tr_stock", "BIST"),
-    "sASELS":  ("ASELS.IS", "ASELS",  "tr_stock", "BIST"),
-    "sAKBNK":  ("AKBNK.IS", "AKBNK",  "tr_stock", "BIST"),
-    "sSAHOL":  ("SAHOL.IS", "SAHOL",  "tr_stock", "BIST"),
-    "sBIMAS":  ("BIMAS.IS", "BIMAS",  "tr_stock", "BIST"),
-    "sEREGL":  ("EREGL.IS", "EREGL",  "tr_stock", "BIST"),
+    "sTHYAO": ("THYAO.IS", "THYAO", "tr_stock", "BIST"),
+    "sKCHOL": ("KCHOL.IS", "KCHOL", "tr_stock", "BIST"),
+    "sGARAN": ("GARAN.IS", "GARAN", "tr_stock", "BIST"),
+    "sASELS": ("ASELS.IS", "ASELS", "tr_stock", "BIST"),
+    "sAKBNK": ("AKBNK.IS", "AKBNK", "tr_stock", "BIST"),
+    "sSAHOL": ("SAHOL.IS", "SAHOL", "tr_stock", "BIST"),
+    "sBIMAS": ("BIMAS.IS", "BIMAS", "tr_stock", "BIST"),
+    "sEREGL": ("EREGL.IS", "EREGL", "tr_stock", "BIST"),
     # ── Turkish indices / ETFs ──
-    "sTUR":  ("TUR",     "TUR_ETF",   "tr_equity_etf",  "NYSE"),
-    "sBIST": ("XU100.IS", "BIST100",  "tr_index",   "BIST"),
+    "sTUR": ("TUR", "TUR_ETF", "tr_equity_etf", "NYSE"),
+    "sBIST": ("XU100.IS", "BIST100", "tr_index", "BIST"),
     # ── Precious & base metals (London Metal Exchange aligned) ──
-    "sGLD":  ("GLD",     "GLD",       "metal_etf",  "NYSE"),
-    "sGOLD": ("GC=F",    "GOLD_FUT",  "metal_fut",  "COMEX"),
-    "sSLV":  ("SLV",     "SLV",       "metal_etf",  "NYSE"),
-    "sSI":   ("SI=F",    "SILVER_FUT", "metal_fut", "COMEX"),
-    "sPPLT": ("PPLT",    "PLATINUM",  "metal_etf", "NYSE"),
-    "sPALL": ("PALL",    "PALLADIUM", "metal_etf", "NYSE"),
-    "sHG":   ("HG=F",    "COPPER_FUT", "metal_fut", "COMEX/LME"),
-    "sGDX":  ("GDX",     "GDX",       "metal_eq_etf", "NYSE"),
-    "sGDXJ": ("GDXJ",    "GDXJ",      "metal_eq_etf", "NYSE"),
+    "sGLD": ("GLD", "GLD", "metal_etf", "NYSE"),
+    "sGOLD": ("GC=F", "GOLD_FUT", "metal_fut", "COMEX"),
+    "sSLV": ("SLV", "SLV", "metal_etf", "NYSE"),
+    "sSI": ("SI=F", "SILVER_FUT", "metal_fut", "COMEX"),
+    "sPPLT": ("PPLT", "PLATINUM", "metal_etf", "NYSE"),
+    "sPALL": ("PALL", "PALLADIUM", "metal_etf", "NYSE"),
+    "sHG": ("HG=F", "COPPER_FUT", "metal_fut", "COMEX/LME"),
+    "sGDX": ("GDX", "GDX", "metal_eq_etf", "NYSE"),
+    "sGDXJ": ("GDXJ", "GDXJ", "metal_eq_etf", "NYSE"),
     # ── Energy ──
-    "sUSO":  ("USO",     "USO",       "energy_etf",  "NYSE"),
-    "sOIL":  ("CL=F",    "WTI_FUT",   "energy_fut", "NYMEX"),
-    "sBRENT": ("BZ=F",   "BRENT_FUT", "energy_fut", "ICE"),
-    "sUNG":  ("UNG",     "UNG",       "energy_etf", "NYSE"),
-    "sNG":   ("NG=F",    "NATGAS_FUT", "energy_fut", "NYMEX"),
+    "sUSO": ("USO", "USO", "energy_etf", "NYSE"),
+    "sOIL": ("CL=F", "WTI_FUT", "energy_fut", "NYMEX"),
+    "sBRENT": ("BZ=F", "BRENT_FUT", "energy_fut", "ICE"),
+    "sUNG": ("UNG", "UNG", "energy_etf", "NYSE"),
+    "sNG": ("NG=F", "NATGAS_FUT", "energy_fut", "NYMEX"),
     # ── Agricultural futures ──
-    "sCORN": ("ZC=F",    "CORN_FUT",  "agri_fut",   "CBOT"),
-    "sWHEAT": ("ZW=F",   "WHEAT_FUT", "agri_fut",   "CBOT"),
-    "sSOY":  ("ZS=F",    "SOY_FUT",   "agri_fut",   "CBOT"),
+    "sCORN": ("ZC=F", "CORN_FUT", "agri_fut", "CBOT"),
+    "sWHEAT": ("ZW=F", "WHEAT_FUT", "agri_fut", "CBOT"),
+    "sSOY": ("ZS=F", "SOY_FUT", "agri_fut", "CBOT"),
     # ── Fixed income (ETFs proxying individual maturities) ──
-    "sTLT":  ("TLT",     "TLT",       "us_bond_long",   "NYSE"),  # 20+yr
-    "sIEF":  ("IEF",     "IEF",       "us_bond_mid",    "NYSE"),  # 7-10yr
-    "sSHY":  ("SHY",     "SHY",       "us_bond_short",  "NYSE"),  # 1-3yr
-    "sBIL":  ("BIL",     "BIL",       "us_bond_tbill",  "NYSE"),  # 1-3mo T-Bills
-    "sTIP":  ("TIP",     "TIP",       "us_bond_tips",   "NYSE"),  # TIPS
-    "sAGG":  ("AGG",     "AGG",       "us_bond_agg",    "NYSE"),  # Aggregate
-    "sHYG":  ("HYG",     "HYG",       "credit_hy",      "NYSE"),
-    "sLQD":  ("LQD",     "LQD",       "credit_ig",      "NYSE"),
-    "sEMB":  ("EMB",     "EMB",       "em_bond",        "NYSE"),
-    "sMUB":  ("MUB",     "MUB",       "us_muni",        "NYSE"),
+    "sTLT": ("TLT", "TLT", "us_bond_long", "NYSE"),  # 20+yr
+    "sIEF": ("IEF", "IEF", "us_bond_mid", "NYSE"),  # 7-10yr
+    "sSHY": ("SHY", "SHY", "us_bond_short", "NYSE"),  # 1-3yr
+    "sBIL": ("BIL", "BIL", "us_bond_tbill", "NYSE"),  # 1-3mo T-Bills
+    "sTIP": ("TIP", "TIP", "us_bond_tips", "NYSE"),  # TIPS
+    "sAGG": ("AGG", "AGG", "us_bond_agg", "NYSE"),  # Aggregate
+    "sHYG": ("HYG", "HYG", "credit_hy", "NYSE"),
+    "sLQD": ("LQD", "LQD", "credit_ig", "NYSE"),
+    "sEMB": ("EMB", "EMB", "em_bond", "NYSE"),
+    "sMUB": ("MUB", "MUB", "us_muni", "NYSE"),
     # ── FX ──
-    "sEURUSD": ("EURUSD=X", "EUR/USD", "fx",       "OTC"),
-    "sUSDTRY": ("USDTRY=X", "USD/TRY", "fx",       "OTC"),
-    "sGBPUSD": ("GBPUSD=X", "GBP/USD", "fx",       "OTC"),
-    "sUSDJPY": ("USDJPY=X", "USD/JPY", "fx",       "OTC"),
+    "sEURUSD": ("EURUSD=X", "EUR/USD", "fx", "OTC"),
+    "sUSDTRY": ("USDTRY=X", "USD/TRY", "fx", "OTC"),
+    "sGBPUSD": ("GBPUSD=X", "GBP/USD", "fx", "OTC"),
+    "sUSDJPY": ("USDJPY=X", "USD/JPY", "fx", "OTC"),
     # ── Crypto ──
-    "sBTC":  ("BTC-USD", "BTC",       "crypto",     "Coinbase"),
-    "sETH":  ("ETH-USD", "ETH",       "crypto",     "Coinbase"),
-    "sSOL":  ("SOL-USD", "SOL",       "crypto",     "Coinbase"),
+    "sBTC": ("BTC-USD", "BTC", "crypto", "Coinbase"),
+    "sETH": ("ETH-USD", "ETH", "crypto", "Coinbase"),
+    "sSOL": ("SOL-USD", "SOL", "crypto", "Coinbase"),
 }
 
 
@@ -186,30 +186,100 @@ def synth_asset_class(synth: str) -> str:
 # only what's in this scan list.
 DEFAULT_SCAN_UNIVERSE: list[str] = [
     # US equity ETFs + sectors
-    "sSPY", "sQQQ", "sIWM", "sXLE", "sXLF", "sXLK", "sXLV", "sXLI",
+    "sSPY",
+    "sQQQ",
+    "sIWM",
+    "sXLE",
+    "sXLF",
+    "sXLK",
+    "sXLV",
+    "sXLI",
     # US individual mega/large caps (subset)
-    "sAAPL", "sMSFT", "sGOOGL", "sAMZN", "sNVDA", "sMETA", "sTSLA",
-    "sAMD", "sAVGO", "sJPM", "sV", "sLLY", "sUNH", "sXOM", "sCVX",
-    "sWMT", "sCOST", "sCOIN", "sPLTR",
+    "sAAPL",
+    "sMSFT",
+    "sGOOGL",
+    "sAMZN",
+    "sNVDA",
+    "sMETA",
+    "sTSLA",
+    "sAMD",
+    "sAVGO",
+    "sJPM",
+    "sV",
+    "sLLY",
+    "sUNH",
+    "sXOM",
+    "sCVX",
+    "sWMT",
+    "sCOST",
+    "sCOIN",
+    "sPLTR",
     # European stocks + indices
-    "sASML", "sSAP", "sNOVO", "sAZN", "sSHEL", "sRHM", "sLVMH", "sSIE",
-    "sFTSE", "sDAX", "sCAC", "sEZU",
+    "sASML",
+    "sSAP",
+    "sNOVO",
+    "sAZN",
+    "sSHEL",
+    "sRHM",
+    "sLVMH",
+    "sSIE",
+    "sFTSE",
+    "sDAX",
+    "sCAC",
+    "sEZU",
     # Asian stocks + indices
-    "sTSM", "sBABA", "sTM", "sSE", "sNKY", "sMCHI", "sINDA", "sEWY", "sEEM",
+    "sTSM",
+    "sBABA",
+    "sTM",
+    "sSE",
+    "sNKY",
+    "sMCHI",
+    "sINDA",
+    "sEWY",
+    "sEEM",
     # Turkish (BIST individual + index + FX)
-    "sTHYAO", "sKCHOL", "sGARAN", "sASELS", "sBIST", "sTUR", "sUSDTRY",
+    "sTHYAO",
+    "sKCHOL",
+    "sGARAN",
+    "sASELS",
+    "sBIST",
+    "sTUR",
+    "sUSDTRY",
     # Metals
-    "sGLD", "sGOLD", "sSLV", "sSI", "sPPLT", "sPALL", "sHG", "sGDX",
+    "sGLD",
+    "sGOLD",
+    "sSLV",
+    "sSI",
+    "sPPLT",
+    "sPALL",
+    "sHG",
+    "sGDX",
     # Energy
-    "sUSO", "sOIL", "sBRENT", "sNG",
+    "sUSO",
+    "sOIL",
+    "sBRENT",
+    "sNG",
     # Agri futures
-    "sCORN", "sWHEAT",
+    "sCORN",
+    "sWHEAT",
     # Fixed income (maturity ladder)
-    "sTLT", "sIEF", "sSHY", "sBIL", "sTIP", "sAGG", "sHYG", "sLQD", "sEMB",
+    "sTLT",
+    "sIEF",
+    "sSHY",
+    "sBIL",
+    "sTIP",
+    "sAGG",
+    "sHYG",
+    "sLQD",
+    "sEMB",
     # FX
-    "sEURUSD", "sGBPUSD", "sUSDJPY",
+    "sEURUSD",
+    "sGBPUSD",
+    "sUSDJPY",
     # Crypto
-    "sBTC", "sETH", "sSOL",
+    "sBTC",
+    "sETH",
+    "sSOL",
 ]
 
 
@@ -237,25 +307,28 @@ def _cache_put(synth: str, series: pd.Series) -> None:
 
 class Signal(Enum):
     """Strategy signal for a single asset."""
-    LONG = "long"       # Full exposure
-    FLAT = "flat"        # No exposure (in cash/USDC)
-    SCALED = "scaled"    # Partial exposure (vol-targeting)
+
+    LONG = "long"  # Full exposure
+    FLAT = "flat"  # No exposure (in cash/USDC)
+    SCALED = "scaled"  # Partial exposure (vol-targeting)
 
 
 @dataclass
 class AssetSignal:
     """A single strategy's signal for one asset."""
+
     strategy_id: str
     strategy_name: str
-    asset: str               # e.g. "sSPY"
+    asset: str  # e.g. "sSPY"
     signal: Signal
-    weight: float            # 0.0 to 1.0 — target portfolio fraction for this asset
-    reason: str              # Human-readable explanation
+    weight: float  # 0.0 to 1.0 — target portfolio fraction for this asset
+    reason: str  # Human-readable explanation
 
 
 @dataclass
 class StrategySignals:
     """All signals from one strategy across all assets."""
+
     strategy_id: str
     strategy_name: str
     paper_title: str
@@ -267,6 +340,7 @@ class StrategySignals:
 
 
 # ─── Price data helper ────────────────────────────────────────────
+
 
 def _fetch_price_history(symbol: str, period: str = "2y", interval: str = "1d") -> pd.Series:
     """Fetch daily closing prices for a single synth symbol (with cache).
@@ -285,9 +359,14 @@ def _fetch_price_history(symbol: str, period: str = "2y", interval: str = "1d") 
 
     try:
         import yfinance as yf
+
         data = yf.download(
-            yf_ticker, period=period, interval=interval,
-            progress=False, auto_adjust=True, threads=False,
+            yf_ticker,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=True,
+            threads=False,
         )
         if data.empty:
             return pd.Series(dtype=float)
@@ -338,6 +417,7 @@ def _fetch_price_histories(
     yf_tickers = list(ticker_for_synth.values())
     try:
         import yfinance as yf
+
         data = yf.download(
             tickers=" ".join(yf_tickers),
             period=period,
@@ -405,6 +485,7 @@ def _fetch_price_histories(
 #
 # The logic mirrors the backtrader Strategy class in the corresponding
 # analytics-engine/strategies/ file.
+
 
 def _faber_sma200_signal(
     strategy_id: str,
@@ -657,6 +738,7 @@ def _get_evaluator(strategy_name: str, strategy_code_path: str | None = None) ->
 
 # ─── Public API ────────────────────────────────────────────────────
 
+
 class StrategySignalEvaluator:
     """Evaluates paper-grounded strategies against live market data.
 
@@ -695,13 +777,27 @@ class StrategySignalEvaluator:
 
         # Map a strategy's declared asset_universe → synth symbols.
         synth_map = {
-            "SPY": "sSPY", "QQQ": "sQQQ", "IWM": "sIWM", "TSLA": "sTSLA", "NVDA": "sNVDA",
-            "BTC": "sBTC", "ETH": "sETH",
-            "GOLD": "sGOLD", "SILVER": "sSI", "COPPER": "sHG",
-            "OIL": "sOIL", "BRENT": "sBRENT", "NATGAS": "sNG",
-            "NIKKEI": "sNKY", "TREASURY": "sBIL", "BIL": "sBIL",
-            "DAX": "sDAX", "FTSE": "sFTSE", "CAC": "sCAC",
-            "BIST": "sBIST", "TUR": "sTUR",
+            "SPY": "sSPY",
+            "QQQ": "sQQQ",
+            "IWM": "sIWM",
+            "TSLA": "sTSLA",
+            "NVDA": "sNVDA",
+            "BTC": "sBTC",
+            "ETH": "sETH",
+            "GOLD": "sGOLD",
+            "SILVER": "sSI",
+            "COPPER": "sHG",
+            "OIL": "sOIL",
+            "BRENT": "sBRENT",
+            "NATGAS": "sNG",
+            "NIKKEI": "sNKY",
+            "TREASURY": "sBIL",
+            "BIL": "sBIL",
+            "DAX": "sDAX",
+            "FTSE": "sFTSE",
+            "CAC": "sCAC",
+            "BIST": "sBIST",
+            "TUR": "sTUR",
         }
 
         results: list[StrategySignals] = []
@@ -733,12 +829,14 @@ class StrategySignalEvaluator:
                 signals.append(signal)
 
             if signals:
-                results.append(StrategySignals(
-                    strategy_id=strategy.id,
-                    strategy_name=strategy.paper_title,
-                    paper_title=strategy.paper_title,
-                    signals=signals,
-                ))
+                results.append(
+                    StrategySignals(
+                        strategy_id=strategy.id,
+                        strategy_name=strategy.paper_title,
+                        paper_title=strategy.paper_title,
+                        signals=signals,
+                    )
+                )
 
                 logger.info(
                     "Strategy '%s' scanned %d assets (long on %d)",
@@ -778,15 +876,17 @@ class StrategySignalEvaluator:
             sharpe_like = (mean_d / std_d) * float(np.sqrt(252))
             vol_ann = std_d * float(np.sqrt(252))
             entry = GLOBAL_ASSETS.get(synth)
-            ranked.append({
-                "synth": synth,
-                "display": entry[1] if entry else synth,
-                "asset_class": entry[2] if entry else "unknown",
-                "exchange": entry[3] if entry else "?",
-                "score": round(sharpe_like, 4),
-                "momentum_90d": round(momentum, 4),
-                "vol_ann": round(vol_ann, 4),
-            })
+            ranked.append(
+                {
+                    "synth": synth,
+                    "display": entry[1] if entry else synth,
+                    "asset_class": entry[2] if entry else "unknown",
+                    "exchange": entry[3] if entry else "?",
+                    "score": round(sharpe_like, 4),
+                    "momentum_90d": round(momentum, 4),
+                    "vol_ann": round(vol_ann, 4),
+                }
+            )
         ranked.sort(key=lambda r: r["score"], reverse=True)
         return ranked[:top_n]
 
@@ -825,10 +925,7 @@ class StrategySignalEvaluator:
         synth_budget = 1.0 - usdc_floor
         total_raw = sum(raw_weights.values())
 
-        if total_raw > 0:
-            normalized = {k: v / total_raw * synth_budget for k, v in raw_weights.items()}
-        else:
-            normalized = {}
+        normalized = {k: v / total_raw * synth_budget for k, v in raw_weights.items()} if total_raw > 0 else {}
 
         # Add USDC floor
         normalized["USDC"] = usdc_floor

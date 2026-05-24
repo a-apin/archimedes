@@ -10,16 +10,16 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
     Boolean,
     Column,
-    String,
-    Text,
     DateTime,
     Index,
+    String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Session
@@ -62,10 +62,14 @@ class StrategyRecord(Base):
 
     # Timestamps
     created_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc),
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(UTC),
     )
     updated_at = Column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc),
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(UTC),
     )
 
     __table_args__ = (
@@ -136,7 +140,11 @@ def upsert_strategy(
 ) -> StrategyRecord:
     """Idempotent upsert: same content → same row, no duplicates."""
     content_hash = _compute_content_hash(
-        generation_method, strategy_name, thesis, source_papers, asset_universe,
+        generation_method,
+        strategy_name,
+        thesis,
+        source_papers,
+        asset_universe,
     )
 
     existing = session.query(StrategyRecord).filter_by(content_hash=content_hash).first()
@@ -144,7 +152,7 @@ def upsert_strategy(
         # Update status/verdict if provided, but don't duplicate
         if rigor_verdict is not None:
             existing.rigor_verdict = json.dumps(rigor_verdict)
-            existing.updated_at = datetime.now(timezone.utc)
+            existing.updated_at = datetime.now(UTC)
             # Status transition per docs/specs strategy-lifecycle:
             #   passing=True  → "live"     (in-portfolio-eligible, preserves
             #                                marketplace_service.trending logic)
@@ -179,7 +187,9 @@ def upsert_strategy(
     session.flush()
     logger.info(
         "store: persisted strategy %s (%s, %d papers)",
-        record.id, generation_method, len(source_papers),
+        record.id,
+        generation_method,
+        len(source_papers),
     )
     return record
 
@@ -196,7 +206,4 @@ def strategies_by_paper(session: Session, arxiv_id: str) -> list[StrategyRecord]
     """Find all strategies citing a given arXiv paper (bidirectional link)."""
     # JSON array contains query — works for SQLite and Postgres
     records = session.query(StrategyRecord).all()
-    return [
-        r for r in records
-        if arxiv_id in {p.get("arxiv_id", "") for p in json.loads(r.source_papers)}
-    ]
+    return [r for r in records if arxiv_id in {p.get("arxiv_id", "") for p in json.loads(r.source_papers)}]

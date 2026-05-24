@@ -32,9 +32,7 @@ class VaultInfo:
     management_fee_bps: int  # e.g. 150 = 1.5%
     performance_fee_bps: int  # e.g. 2000 = 20%
     is_agent_assisted: bool  # True if agent manages this vault
-    target_allocations: dict[str, float] = field(
-        default_factory=dict
-    )  # symbol → weight (bps)
+    target_allocations: dict[str, float] = field(default_factory=dict)  # symbol → weight (bps)
     created_at: datetime | None = None
 
 

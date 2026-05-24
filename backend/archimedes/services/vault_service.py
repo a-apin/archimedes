@@ -2,35 +2,37 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
-from datetime import datetime, timezone
+import json
+from datetime import UTC, datetime
+from typing import ClassVar
 
-from archimedes.chain.executor import chain_executor
-from archimedes.chain.trace_publisher import trace_publisher
 from archimedes.api.schemas import (
-    VaultSummaryResponse,
+    TraceResponse,
     VaultDetailResponse,
     VaultHolding,
     VaultListResponse,
-    TraceResponse,
+    VaultSummaryResponse,
 )
+from archimedes.chain.executor import chain_executor
+from archimedes.chain.trace_publisher import trace_publisher
 
 
 class VaultService:
     """Serves vault data to the API layer."""
 
-    # Expected monthly returns by asset class (annualized, used for sim)
-    # These are reasonable assumptions: equities ~10%, BTC volatile, gold stable
-    ASSET_EXPECTED_RETURN = {
-        "sTSLA": 0.15,   # 15% annual
-        "sNVDA": 0.20,   # 20% annual
-        "sSPY":  0.10,   # 10% annual
-        "sBTC":  0.30,   # 30% annual (high vol)
-        "sGOLD": 0.05,   #  5% annual
-        "sOIL":  0.03,   #  3% annual
-        "sNKY":  0.08,   #  8% annual
-        "USDC":  0.04,   #  4% annual (yield)
+    # Expected monthly returns by asset class (annualized, used for sim).
+    # ClassVar marks this as a shared lookup table (one per class), not a
+    # mutable per-instance default — the values are constants, never mutated.
+    ASSET_EXPECTED_RETURN: ClassVar[dict[str, float]] = {
+        "sTSLA": 0.15,  # 15% annual
+        "sNVDA": 0.20,  # 20% annual
+        "sSPY": 0.10,  # 10% annual
+        "sBTC": 0.30,  # 30% annual (high vol)
+        "sGOLD": 0.05,  #  5% annual
+        "sOIL": 0.03,  #  3% annual
+        "sNKY": 0.08,  #  8% annual
+        "USDC": 0.04,  #  4% annual (yield)
     }
 
     async def list_vaults(
@@ -46,6 +48,7 @@ class VaultService:
             vault_addresses = await chain_executor.get_all_vaults()
         except Exception as e:
             import logging
+
             logging.getLogger(__name__).error(f"Failed to get vault addresses: {e}")
             return VaultListResponse(vaults=[], total=0)
 
@@ -60,6 +63,7 @@ class VaultService:
                 summaries.append(summary)
             except Exception as e:
                 import logging
+
                 logging.getLogger(__name__).warning(f"Skipping vault {addr}: {e}")
                 continue
 
@@ -95,7 +99,7 @@ class VaultService:
             ]
 
             # Get recent traces
-            trace_count = await trace_publisher.get_trace_count(address)
+            await trace_publisher.get_trace_count(address)
             recent_traces = await self._get_recent_traces(address, limit=5)
 
             # Resolve name/symbol from on-chain, fallback to off-chain metadata
@@ -115,6 +119,7 @@ class VaultService:
             current_regime = None
             try:
                 from archimedes.services.redis_state import AgentStateStore
+
                 state = AgentStateStore()
                 last_trace = await state.get_last_trace(address)
                 if last_trace:
@@ -147,7 +152,9 @@ class VaultService:
                 current_regime=current_regime,
             )
         except Exception:
-            import logging; logging.getLogger(__name__).exception(f"Failed to get vault detail for {address}")
+            import logging
+
+            logging.getLogger(__name__).exception(f"Failed to get vault detail for {address}")
             return None
 
     def _metrics_to_summary(self, metrics: dict) -> VaultSummaryResponse:
@@ -168,12 +175,10 @@ class VaultService:
             performance_fee_pct=metrics["performance_fee_bps"] / 100,
             is_agent_assisted=metrics["is_agent_assisted"],
             depositors=0,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=datetime.now(UTC).isoformat(),
         )
 
-    async def _compute_returns(
-        self, vault_address: str, allocations: list[VaultHolding]
-    ) -> dict:
+    async def _compute_returns(self, vault_address: str, allocations: list[VaultHolding]) -> dict:
         """Compute vault returns from oracle price snapshots in Redis.
 
         Uses the vault's target allocations and the ASSET_EXPECTED_RETURN table
@@ -181,8 +186,9 @@ class VaultService:
         the oracle updater), uses real price changes instead.
         """
         import logging
-        import redis as _redis
         import os
+
+        import redis as _redis
 
         logger = logging.getLogger(__name__)
 
@@ -202,8 +208,8 @@ class VaultService:
             if snapshot:
                 prices_at_creation = json.loads(snapshot)
                 # Get current oracle prices
-                from archimedes.chain.client import chain_client
                 from archimedes.chain.contracts import get_contract_loader
+
                 loader = get_contract_loader()
 
                 weighted_return = 0.0
@@ -250,8 +256,8 @@ class VaultService:
         if not allocations:
             return {"return_24h": 0.0, "return_7d": 0.0, "return_30d": 0.0, "return_inception": 0.0}
 
-        from archimedes.chain.client import chain_client
         from archimedes.chain.contracts import get_contract_loader
+
         loader = get_contract_loader()
 
         weighted_annual = 0.0
@@ -297,6 +303,7 @@ class VaultService:
         # Unknown — try reading symbol from contract
         if loader is None:
             from archimedes.chain.contracts import get_contract_loader
+
             loader = get_contract_loader()
         try:
             token = loader.token(token_address)
@@ -307,8 +314,8 @@ class VaultService:
     async def _get_on_chain_names(self, address: str) -> tuple[str | None, str | None]:
         """Read name/symbol directly from the vault contract."""
         try:
-            from archimedes.chain.client import chain_client
             from archimedes.chain.contracts import get_contract_loader
+
             loader = get_contract_loader()
             vault = loader.vault(address)
             name = await vault.functions.name().call()
@@ -320,22 +327,24 @@ class VaultService:
     async def _get_target_allocations(self, address: str) -> list[VaultHolding]:
         """Read target allocations from the vault contract."""
         try:
-            from archimedes.chain.client import chain_client
             from archimedes.chain.contracts import get_contract_loader
+
             loader = get_contract_loader()
             vault = loader.vault(address)
             tokens, weights = await vault.functions.getTargetAllocations().call()
             allocations: list[VaultHolding] = []
-            for token, weight in zip(tokens, weights):
+            for token, weight in zip(tokens, weights, strict=False):
                 if weight > 0:
                     symbol = await self._token_to_symbol(token, loader)
-                    allocations.append(VaultHolding(
-                        symbol=symbol,
-                        token_address=token,
-                        amount=0.0,  # target allocation, not actual holding
-                        value_usdc=0.0,
-                        weight_pct=weight / 100,
-                    ))
+                    allocations.append(
+                        VaultHolding(
+                            symbol=symbol,
+                            token_address=token,
+                            amount=0.0,  # target allocation, not actual holding
+                            value_usdc=0.0,
+                            weight_pct=weight / 100,
+                        )
+                    )
             return allocations
         except Exception:
             return []
@@ -348,11 +357,7 @@ class VaultService:
 
             session = get_session()
             try:
-                meta = (
-                    session.query(VaultMetadata)
-                    .filter(VaultMetadata.vault_address == address)
-                    .first()
-                )
+                meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == address).first()
                 if meta:
                     return meta.name, meta.symbol
             finally:
@@ -365,9 +370,7 @@ class VaultService:
         """Get recent reasoning traces for a vault (from on-chain)."""
         traces: list[TraceResponse] = []
         try:
-            trace_ids = await trace_publisher.loader.trace_registry.functions.getTracesByVault(
-                vault_address
-            ).call()
+            trace_ids = await trace_publisher.loader.trace_registry.functions.getTracesByVault(vault_address).call()
 
             for trace_id in reversed(trace_ids[-limit:]):
                 detail = await trace_publisher.get_trace_by_id(trace_id)
@@ -378,9 +381,7 @@ class VaultService:
                             vault_address=vault_address,
                             decision_type="rebalance",  # Default
                             trigger="unknown",
-                            timestamp=datetime.fromtimestamp(
-                                detail["timestamp"], tz=timezone.utc
-                            ).isoformat(),
+                            timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
                             reasoning="On-chain trace",
                             confidence=0.0,
                             trace_hash=detail["trace_hash"],

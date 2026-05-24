@@ -90,13 +90,20 @@ async def corpus_overview() -> dict[str, Any]:
     manifest = _load_manifest()
     try:
         from sqlalchemy import func
+
         from archimedes.db import get_session
         from archimedes.models.corpus_store import PaperRecord
+
         with get_session() as session:
             paper_count = session.query(func.count(PaperRecord.arxiv_id)).scalar() or 0
-            cluster_rows = session.query(
-                PaperRecord.cluster_id, func.count(PaperRecord.arxiv_id),
-            ).group_by(PaperRecord.cluster_id).all()
+            cluster_rows = (
+                session.query(
+                    PaperRecord.cluster_id,
+                    func.count(PaperRecord.arxiv_id),
+                )
+                .group_by(PaperRecord.cluster_id)
+                .all()
+            )
     except Exception as exc:
         logger.warning("corpus_routes: overview DB read failed: %s", exc)
         paper_count = 0
@@ -120,11 +127,11 @@ async def corpus_graph() -> dict[str, Any]:
     """
     from archimedes.services.kb_artifacts import (
         ArtifactNotFound,
+        compute_and_cache_umap_projection,
         load_clusters,
         load_embeddings,
         load_topics,
         load_umap_projection,
-        compute_and_cache_umap_projection,
     )
 
     # 1. Try pre-computed UMAP projection first (fast path)
@@ -178,19 +185,22 @@ async def kg_search_entities(q: str = Query(..., min_length=2, max_length=120)) 
     try:
         from archimedes.db import get_session
         from archimedes.models.kg import KGEntity
+
         with get_session() as session:
-            rows = session.query(KGEntity) \
-                .filter(KGEntity.canonical_name.ilike(f"%{q}%")) \
-                .order_by(KGEntity.paper_count.desc()) \
-                .limit(50).all()
+            rows = (
+                session.query(KGEntity)
+                .filter(KGEntity.canonical_name.ilike(f"%{q}%"))
+                .order_by(KGEntity.paper_count.desc())
+                .limit(50)
+                .all()
+            )
     except Exception as exc:
         logger.warning("kg search failed: %s", exc)
         rows = []
     return {
         "query": q,
         "entities": [
-            {"id": r.id, "canonical_name": r.canonical_name, "entity_type": r.entity_type,
-             "paper_count": r.paper_count}
+            {"id": r.id, "canonical_name": r.canonical_name, "entity_type": r.entity_type, "paper_count": r.paper_count}
             for r in rows
         ],
     }
@@ -202,15 +212,14 @@ async def kg_entity_detail(entity_id: int) -> dict[str, Any]:
     try:
         from archimedes.db import get_session
         from archimedes.models.kg import KGEntity, KGRelation
+
         with get_session() as session:
             entity = session.query(KGEntity).filter(KGEntity.id == entity_id).first()
             if not entity:
                 raise HTTPException(status_code=404, detail=f"Entity {entity_id} not found")
             relations = session.query(KGRelation).filter(KGRelation.subject_id == entity_id).limit(200).all()
             obj_ids = {r.object_id for r in relations if r.object_id}
-            objects = {
-                e.id: e for e in session.query(KGEntity).filter(KGEntity.id.in_(obj_ids)).all()
-            }
+            objects = {e.id: e for e in session.query(KGEntity).filter(KGEntity.id.in_(obj_ids)).all()}
             return {
                 "id": entity.id,
                 "canonical_name": entity.canonical_name,
@@ -239,14 +248,14 @@ async def kg_paper_triples(arxiv_id: str) -> dict[str, Any]:
     try:
         from archimedes.db import get_session
         from archimedes.models.kg import KGEntity, KGRelation
+
         with get_session() as session:
             rows = session.query(KGRelation).filter(KGRelation.paper_arxiv_id == arxiv_id).all()
             if not rows:
                 return {"arxiv_id": arxiv_id, "triples": []}
             entity_ids = {r.subject_id for r in rows} | {r.object_id for r in rows if r.object_id}
             entities = {
-                e.id: e.canonical_name
-                for e in session.query(KGEntity).filter(KGEntity.id.in_(entity_ids)).all()
+                e.id: e.canonical_name for e in session.query(KGEntity).filter(KGEntity.id.in_(entity_ids)).all()
             }
             return {
                 "arxiv_id": arxiv_id,

@@ -2,9 +2,17 @@
 #
 # If the push came from a merged PR, creates a semver annotated tag:
 #
-#   !version-release in PR title or body → major bump  (x.0.0)
-#   !minor          in PR title or body → minor bump  (0.x.0)
-#   anything else                       → patch bump  (0.0.x)
+#   !version-release at END of PR title → major bump  (x.0.0)
+#   !minor          at END of PR title → minor bump  (0.x.0)
+#   anything else                      → patch bump  (0.0.x)
+#
+# **Title-only matching with end-of-string anchor.** Earlier versions of this
+# workflow scanned `title + body` for the literal substring, which mis-fired
+# when a PR DOCUMENTED the marker convention — e.g. PR #198 ("[docs] CLAUDE.md:
+# KB pipeline provenance + bot release-tag conventions") incidentally contained
+# the text "!version-release" in its body and was tagged v1.0.0 by mistake.
+# Title-end matching prevents that: the marker has to be the EXPLICIT trailing
+# token of the PR title, matching the documented convention in CLAUDE.md.
 #
 # Tags are created via the GitHub API (no git push, no checkout needed).
 # First tag ever starts from v0.0.0 and bumps from there.
@@ -79,12 +87,17 @@ jobs:
               return;
             }
 
-            // 2. Determine bump type from PR title + body
-            const text = `${merged.title}\n${merged.body ?? ''}`;
+            // 2. Determine bump type from PR title (title-only; end-anchored).
+            //    Matching only the END of the title prevents false positives
+            //    where the marker text appears in body prose (e.g. docs PRs
+            //    that document the convention). The marker must be the final
+            //    non-whitespace token of the title — exactly the documented
+            //    convention in CLAUDE.md.
+            const title = merged.title ?? '';
             let bump = 'patch';
-            if (text.includes('!version-release')) bump = 'major';
-            else if (text.includes('!minor'))       bump = 'minor';
-            core.info(`PR #${merged.number}: "${merged.title}" → ${bump} bump`);
+            if (/!version-release\s*$/.test(title))      bump = 'major';
+            else if (/!minor\s*$/.test(title))            bump = 'minor';
+            core.info(`PR #${merged.number}: "${title}" → ${bump} bump`);
 
             // 3. Find the latest semver tag (v0.0.0 format)
             const { data: tags } = await github.rest.repos.listTags({
