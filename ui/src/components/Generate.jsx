@@ -254,18 +254,27 @@ export default function Generate({ onNavigate }) {
             <div style={{ padding: '6px 18px 18px', borderTop: '1px solid var(--glass-border)' }}>
               <div className="label mb-2 mt-3">Architecture</div>
               <p className="body mb-3">
-                <strong>Strategy Generation Agent</strong> retrieves relevant papers from a 1,014-paper
-                q-fin corpus (SPECTER2 embeddings + clusters), reads current market context, and synthesizes
-                a candidate strategy. <strong>Portfolio Construction Agent</strong> picks assets, sizes them
-                with Kelly + risk parity, and stress-tests across six scenarios. After you sign to deploy,
-                the <strong>Live Execution Agent</strong> runs the rebalance loop on-chain — every decision
-                anchored on Arc via <code>ReasoningTraceRegistry</code>.
+                <strong>Strategy Generation Agent</strong> retrieves relevant papers from a
+                9,873-paper q-fin corpus (SPECTER2 embeddings + clusters), reads current market
+                context, and synthesizes a candidate strategy. <strong>Portfolio Construction
+                Agent</strong> picks assets, sizes them with Kelly + risk parity, and stress-tests
+                across six scenarios. After you sign to deploy, the <strong>Live Execution
+                Agent</strong> runs the rebalance loop on-chain — every decision anchored on Arc
+                via <code>ReasoningTraceRegistry</code>.
               </p>
               <p className="caption mb-3" style={{ color: 'var(--text-3)' }}>
                 We don't make you pick a mode. The backend routes between <strong>Fusion</strong> (novel
                 paper synthesis), <strong>Architect</strong> (curated library), or <strong>Agent</strong>
                 (LLM portfolio) based on corpus state and your brief — and tells you which it picked in
                 the live stream.
+              </p>
+              <p className="caption mb-3">
+                <a
+                  onClick={() => onNavigate?.('architecture')}
+                  style={{ color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline' }}
+                >
+                  Read the full architecture →
+                </a>
               </p>
 
               <div className="label mb-2">Tips for writing your brief</div>
