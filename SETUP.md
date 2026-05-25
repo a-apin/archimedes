@@ -171,7 +171,7 @@ The backend suite runs with a single command from the repo root — no flags, no
 ```bash
 docker compose up -d --build            # required prereq
 conda activate archimedes               # one-time per shell
-pytest                                  # 302 backend tests, verbose, green
+pytest                                  # 806 backend tests, verbose, green
 ```
 
 `pytest` is configured `-v --tb=short --durations=10` — you see each test name, a short traceback on any failure, and the slowest tests. Filter as usual:

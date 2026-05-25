@@ -1,19 +1,19 @@
 # Arc OSS Showcase — Archimedes Submission
 
-> **Status:** Day-10 (2026-05-22). Submission target: [Arc OSS Showcase](https://arc-oss.thecanteenapp.com/) — Canteen's parallel competition for open-source codebases that other Arc builders can fork.
+> **Status:** Day-14 refresh (2026-05-25, submission day). Submission target: [Arc OSS Showcase](https://arc-oss.thecanteenapp.com/) — Canteen's parallel competition for open-source codebases that other Arc builders can fork.
 > **License:** [Unlicense](LICENSE) — full public-domain dedication. Use, modify, distribute freely, no warranty, no attribution required.
 > **Repo:** <https://github.com/a-apin/archimedes-arcadia>
-> **Live testnet deploy:** <http://13.40.112.220>
+> **Live testnet deploy:** <https://archimedes-arc.app/>
 
 ## Why Archimedes belongs in the Arc OSS Showcase
 
-The showcase rewards codebases that **expose useful primitives other Arc builders can adopt** with **clear documentation explaining functionality and usage**. Archimedes ships **seven distinct primitives**, each with a dedicated spec or walkthrough doc, each forkable as a unit. Together they form the substrate any Arc app that wants research-grounded + selection-bias-corrected + provenance-anchored AI-decision-making would need.
+The showcase rewards codebases that **expose useful primitives other Arc builders can adopt** with **clear documentation explaining functionality and usage**. Archimedes ships **twelve distinct primitives**, each with a dedicated spec or walkthrough doc, each forkable as a unit. Together they form the substrate any Arc app that wants research-grounded + selection-bias-corrected + provenance-anchored AI-decision-making would need.
 
 We hit the showcase criteria explicitly:
 
 - ✅ **Fully open** under the Unlicense (more permissive than MIT — no attribution required)
 - ✅ **Stays open during and after the event** — this is the only license we've ever shipped
-- ✅ **Exposes useful primitives** — seven distinct ones, listed below
+- ✅ **Exposes useful primitives** — twelve distinct ones, listed below
 - ✅ **Documentation explains functionality and usage** — every primitive has a per-primitive spec doc; project-level docs in [`README.md`](README.md), [`SETUP.md`](SETUP.md), [`OPERATIONS.md`](OPERATIONS.md), [`ARC.md`](ARC.md), and [`docs/`](docs/README.md)
 - ✅ **Standalone, fork-friendly modules** — each primitive lives in its own file(s) with clearly named imports and no hidden coupling
 
@@ -71,15 +71,17 @@ This is the technical claim behind "non-custodial in the strong sense" — the w
 
 ### 1. Strategy Passport schema + validation
 
-A passport-aware data model + provenance binding for AI-generated strategies. Every strategy carries its source paper (arXiv ID), methodology hash, curator signature, paper-claim deltas, and on-chain registration tx. The opposite of "trust me bro" AI claims.
+A passport-aware data model + provenance binding for AI-generated strategies. Every strategy carries its source paper(s) (arXiv ID), methodology hash, curator signature, paper-claim deltas, and on-chain registration tx. The opposite of "trust me bro" AI claims.
 
 | Where it lives | What it is |
 |---|---|
-| [`backend/archimedes/models/strategy.py`](backend/archimedes/models/strategy.py) | `Strategy` dataclass (173 lines) — passport fields, status enum, signal definition |
-| [`backend/archimedes/services/strategy_provider.py`](backend/archimedes/services/strategy_provider.py) | `LocalStrategyProvider` (494 lines) — AST-parses `analytics-engine/strategies/*.py` to extract passport metadata, computes methodology hash + strategy id |
+| [`backend/archimedes/models/strategy.py`](backend/archimedes/models/strategy.py) | `Strategy` dataclass — passport fields, status enum, signal definition |
+| [`backend/archimedes/models/strategy_passport_record.py`](backend/archimedes/models/strategy_passport_record.py) | `StrategyPassportRecord` SQLAlchemy ORM + `passport_paper_refs` FK table — the Postgres-canonical passport store |
+| [`backend/archimedes/services/passport_loader.py`](backend/archimedes/services/passport_loader.py) | `ingest_passport()` + `list_passports()` + `get_passport()` — write/read path used by curated seed + generation pipeline |
+| [`backend/archimedes/services/strategy_provider.py`](backend/archimedes/services/strategy_provider.py) | `LocalStrategyProvider` — AST-parses `analytics-engine/strategies/*.py` to extract passport metadata, computes methodology hash + strategy id; syncs to the unified table at startup |
 | [`docs/specs/strategy-passport-spec.md`](docs/specs/strategy-passport-spec.md) | The full spec: required fields, semantics, integration with on-chain anchoring |
 
-**How to fork:** copy the `Strategy` dataclass + the AST-parse pattern + the methodology hash convention; point at your own strategies directory. The Protocol contract is in [`backend/archimedes/interfaces/strategy.py`](backend/archimedes/interfaces/strategy.py).
+**How to fork:** copy the `Strategy` dataclass + `StrategyPassportRecord` ORM + the AST-parse pattern + the methodology hash convention; point the loader at your own strategies directory. The Protocol contract is in [`backend/archimedes/interfaces/strategy.py`](backend/archimedes/interfaces/strategy.py).
 
 **Who benefits:** any Arc app publishing AI-generated strategies, decisions, or recommendations — the passport pattern works for vault strategies, trading agents, prediction-market positions, anything where "where did this come from?" matters.
 
@@ -101,17 +103,18 @@ Four-control admission gate that prevents in-sample-overfit strategies from bein
 
 ### 3. On-chain reasoning trace anchoring
 
-`keccak256` hashing of agent reasoning traces + on-chain anchor via a dedicated registry contract. Anyone can recompute the hash from the off-chain trace and prove the trace existed at the recorded block time.
+`keccak256` hashing of agent reasoning traces + on-chain anchor via a dedicated registry contract. Anyone can recompute the hash from the off-chain trace and prove the trace existed at the recorded block time. **Live proof:** the autonomous agent has been writing rebalance traces against the deployed contract right now — `curl https://archimedes-arc.app/api/traces/?limit=10` returns real `arc_tx_hash` values verifiable on `testnet.arcscan.app`.
 
 | Where it lives | What it is |
 |---|---|
-| [`backend/archimedes/chain/trace_publisher.py`](backend/archimedes/chain/trace_publisher.py) | `TracePublisher` — Implements `ITracePublisher`. Publishes keccak256 hashes to `ReasoningTraceRegistry` on Arc. 196 lines. |
+| [`backend/archimedes/chain/trace_publisher.py`](backend/archimedes/chain/trace_publisher.py) | `TracePublisher` — implements `ITracePublisher`. Publishes `keccak256` hashes to `ReasoningTraceRegistry` on Arc. Includes `get_trace_by_tx_hash` for O(1) verify (single `eth_getTransactionReceipt` + `TracePublished` log decode). |
 | [`contracts/src/ReasoningTraceRegistry.sol`](contracts/src/ReasoningTraceRegistry.sol) | The on-chain anchor contract (deployed on Arc testnet) |
 | [`backend/archimedes/models/trace.py`](backend/archimedes/models/trace.py) | `ReasoningTrace` dataclass + canonical-JSON hashing convention |
+| [`backend/archimedes/api/traces_routes.py`](backend/archimedes/api/traces_routes.py) | `GET /api/traces/{trace_id}/verify` — server-side recomputes the keccak256 + compares to the on-chain `TracePublished` event from the cached tx receipt |
 | [`docs/specs/ipfs-reasoning-traces-design-note.md`](docs/specs/ipfs-reasoning-traces-design-note.md) | The IPFS pinning extension (Hash → Pinata CID → on-chain anchor; Rosetta-Alpha pattern) |
 | [`docs/specs/commit-reveal-trace-spec.md`](docs/specs/commit-reveal-trace-spec.md) | v1.5 upgrade: commit-before-trade / reveal-after-trade for proven causal ordering |
 
-**How to fork:** the `TracePublisher` + `ReasoningTraceRegistry.sol` combo is the minimal viable on-chain provenance primitive. Drop in the contract, instantiate the publisher with your own trace shape, and you're publishing.
+**How to fork:** the `TracePublisher` + `ReasoningTraceRegistry.sol` combo is the minimal viable on-chain provenance primitive. Drop in the contract, instantiate the publisher with your own trace shape, and you're publishing. The O(1) verify path in `traces_routes.py` is the user-facing trust affordance — copy the receipt-decode pattern for any anchor-then-verify flow.
 
 **Who benefits:** any Arc agent product where users need to audit *why* the agent did what it did — trading agents, governance bots, predictive-maintenance agents, on-chain RPA.
 
@@ -186,13 +189,13 @@ Implements the five protocols Xia et al. 2026 formalize as the prerequisites for
 
 ### 9. StockBench harness adapter
 
-A clean adapter that wraps Archimedes' `StrategyFusion.propose` + `PortfolioAgent.propose_portfolio` against the [StockBench](https://arxiv.org/abs/2510.02209) (Chen et al. 2026) closed-loop benchmark protocol. Runs the full multi-month evaluation with 3 seeds and emits Sortino, return, and max-drawdown metrics comparable to the 14 published baselines.
+A clean adapter that wraps Archimedes' real `PortfolioAgent.propose_portfolio` against the [StockBench](https://arxiv.org/abs/2510.02209) (Chen et al. 2026) closed-loop benchmark protocol. Calls the live LLM agent on a weekly cadence (every 5 trading days × 3 seeds ≈ 36 LLM calls per full eval) — defensible per-tick cost vs. the unbounded 246-call-per-seed alternative. V_check enforced on every decision; momentum fallback if the agent is unavailable. Emits Sortino, return, and max-drawdown metrics comparable to the 14 published baselines.
 
 | Where it lives | What it is |
 |---|---|
-| [`backend/archimedes/evaluation/stockbench/adapter.py`](backend/archimedes/evaluation/stockbench/adapter.py) | The adapter (244 lines, 97% test-covered) — wires Archimedes to the StockBench protocol surface. |
+| [`backend/archimedes/evaluation/stockbench/adapter.py`](backend/archimedes/evaluation/stockbench/adapter.py) | The adapter — wires Archimedes to the StockBench protocol surface. Real agent calls (not simulated momentum) since PR #311. |
 | [`backend/archimedes/evaluation/stockbench/__main__.py`](backend/archimedes/evaluation/stockbench/__main__.py) | `python -m archimedes.evaluation.stockbench` — one-command harness run. |
-| [`docs/benchmarks/stockbench-results.md`](docs/benchmarks/stockbench-results.md) | Our actual result: #15/15 (Sortino -0.91). Documents the methodology so a forker can re-derive. |
+| [`docs/benchmarks/stockbench-results.md`](docs/benchmarks/stockbench-results.md) | Our published result + methodology so a forker can re-derive. |
 
 **How to fork:** point the adapter at your agent's `propose` interface. Replaces 200 lines of brittle "wrap my agent in their loop" plumbing with a tested seam. **Reproducibility-grade evidence:** when you ship a number, it's comparable to Chen et al. 2026's published baseline table — not a vibes claim.
 
@@ -235,7 +238,7 @@ Treats security as an architectural pillar the same way the statistical pipeline
 | [`backend/archimedes/services/log_scrubber.py`](backend/archimedes/services/log_scrubber.py) | PII redaction wrapper — all profile-touching loggers must route through it. |
 | [`backend/archimedes/api/limiter.py`](backend/archimedes/api/limiter.py) + `slowapi` decorators across `/api/generate/start`, `/api/user/profile`, public GETs | Rate limiting (5/min, 1/min, 60/min respectively) — Redis-backed. |
 | [`backend/archimedes/main.py`](backend/archimedes/main.py) CORS middleware | Locked to `PUBLIC_DOMAIN` only (no wildcard); preflight cache 600s. |
-| [`infra/nginx/nginx.conf`](infra/nginx/nginx.conf) | HSTS + CSP + X-Frame-Options + X-Content-Type-Options + Referrer-Policy + Permissions-Policy. |
+| [`nginx/nginx.conf`](nginx/nginx.conf) | HSTS + CSP + X-Frame-Options + X-Content-Type-Options + Referrer-Policy + Permissions-Policy. Plus `proxy_read_timeout 30s` on `/api/*` so a hung backend fails fast with 504 instead of stalling the connection. |
 | [`infra/iam/archimedes-backend-policy.json`](infra/iam/archimedes-backend-policy.json) | IAM least-privilege for backend → S3 / DynamoDB / SSM. |
 | [`.pre-commit-config.yaml`](.pre-commit-config.yaml) + `.secrets.baseline` | Pre-commit detect-secrets baseline — secret-leak detection at commit time. |
 
@@ -247,12 +250,12 @@ Treats security as an architectural pillar the same way the statistical pipeline
 
 Beyond just *having* primitives:
 
-1. **All seven primitives are documented, not just shipped.** Each links to a spec or walkthrough doc. A forker can implement against the spec without reading the full source.
+1. **All twelve primitives are documented, not just shipped.** Each links to a spec or walkthrough doc. A forker can implement against the spec without reading the full source.
 2. **The docs are kept current.** This isn't a post-hoc add — the docs were maintained through every shipped commit. See [`docs/README.md`](docs/README.md) for the documentation map.
 3. **The primitives compose.** Strategy Passport + Rigor Gate + Trace Anchor form a complete provenance chain for any AI-decision product. You can fork them individually OR as a stack.
 4. **The codebase is fully reviewed at the architecture level.** [`docs/chuan-architecture-survey.md`](docs/chuan-architecture-survey.md) walks every file in `backend/archimedes/` with author signal + gap notes — a forker can see exactly what's load-bearing vs scaffolded.
 5. **License is the most permissive possible.** Unlicense is more permissive than MIT, BSD, or Apache — no attribution, no notice file required, no warranty disclaimer to copy. Forkers don't need to think about it.
-6. **The substrate is real, not aspirational.** 302 backend tests + 16 analytics-engine tests pass. Live testnet deploy. 10 contracts on Arc. 22 years of real SPY backtest data. 2 Tier-1 strategies that actually pass the rigor gate.
+6. **The substrate is real, not aspirational.** 806+ backend tests + 16 analytics-engine tests pass. Live HTTPS testnet deploy at <https://archimedes-arc.app/>. 10 contracts on Arc testnet. 22 years of real SPY backtest data. 2 Tier-1 strategies that actually pass the rigor gate. **The autonomous agent is writing real on-chain rebalance traces against `ReasoningTraceRegistry` right now** — `curl https://archimedes-arc.app/api/traces/?limit=10` and you'll see real `arc_tx_hash` values verifiable on `testnet.arcscan.app`. Nothing on this list is mocked.
 
 ## What we add beyond the existing Arc reference implementations
 
@@ -274,4 +277,4 @@ Two channels per the showcase landing page:
 - [`README.md`](README.md) — project overview
 - [`docs/README.md`](docs/README.md) — documentation map
 - [`ARC-OSS-FORM-DRAFT.md`](ARC-OSS-FORM-DRAFT.md) — team-review draft of the Google Form answers
-- [`docs/judging-rubric-assessment.md`](docs/judging-rubric-assessment.md) — Day-10 rubric self-assessment (includes Arc OSS Showcase as a dimension)
+- [`docs/judging-rubric-assessment.md`](docs/judging-rubric-assessment.md) — Day-13 rubric self-assessment (submission day; includes Arc OSS Showcase as a dimension)

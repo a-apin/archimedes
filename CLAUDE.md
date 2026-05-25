@@ -45,7 +45,7 @@ May 11–25, 2026.
   branch (retired 2026-05-18, unused). Short-lived per-owner branches
   (`dbrowneup/<name>`, `marten`, …) → PR → merge to `main`; `main` moves continuously
   (Chuan's agentic system lands + self-iterates on it), so rebase late and merge fast
-- Live testnet deploy: [`http://13.40.112.220/`](http://13.40.112.220/) (EC2,
+- Live testnet deploy: [`https://archimedes-arc.app/`](https://archimedes-arc.app/) (EC2 `13.40.112.220`,
   Chain ID `5042002` / `0x4cef52`, Arc testnet)
 - License: [Unlicense](https://unlicense.org) — full public-domain dedication
 
@@ -284,7 +284,7 @@ they actually shipped (Day 4):
 - **Deployment:** Docker compose stack (5 services: postgres / redis / nginx / oracle /
   backend) running on an EC2 instance behind nginx. CI/CD wired via GitHub Actions per
   [`docs/infra-setup.md`](docs/infra-setup.md). Live at
-  [`http://13.40.112.220/`](http://13.40.112.220/)
+  [`https://archimedes-arc.app/`](https://archimedes-arc.app/) (EC2 `13.40.112.220`)
 
 ## Scope — the headline commitments
 

@@ -9,7 +9,7 @@
 > against spine-plus-v2 (8 commits ahead of `origin/main`: Phases 0–3 + follow-ups
 > + Makefile + the Day-11 docs cleanup) and Chuan's `bd6935b` (Strategy DSL +
 > interpreter + fusion evaluator pipeline). Current snapshot the prompts reflect:
-> live React/Vite UI at [`http://13.40.112.220/`](http://13.40.112.220/) on
+> live React/Vite UI at [`https://archimedes-arc.app/`](https://archimedes-arc.app/) on
 > t3.medium EC2; 10 Arc-testnet contracts (Vault.sol multi-asset NAV via oracle
 > in `totalAssets()`); **streaming Generate** (`POST /api/generate/start` →
 > SSE stream from the LLM agent loop, with hard-cancellation + Redis-backed
@@ -137,7 +137,7 @@ Pro), modern sans body (Inter or Geist Sans), monospace for hashes and addresses
 
 In the linked repo: the live frontend is `ui/` (React 19 + Vite 8 + viem 2.48).
 Ignore `ui-mockups/` — that's a retired set of static-HTML prototypes from Day 1–2,
-kept only for archival reference. Live testnet deploy: http://13.40.112.220/.
+kept only for archival reference. Live testnet deploy: https://archimedes-arc.app/.
 Architecture diagram: `docs/architecture-diagram.html`. Curated per-asset design
 prompts: `docs/claude-design-prompts.md`. Pitch + demo context:
 `docs/demo-script-pitch-deck-outline.md`.
@@ -335,7 +335,7 @@ RIGHT — Rigor + on-chain
 
 SLIDE 5 — DEMO
 Full-bleed slide: the word "DEMO" in large serif type, brand accent, with the live
-URL below in monospace: "http://13.40.112.220" (or the locked domain once announced).
+URL below in monospace: "https://archimedes-arc.app" (or the locked domain once announced).
 This slide is the demo timer — minimum 90 seconds of live click-through, ending on
 a strategy passport showing the DSR p-value + PBO + OOS Sharpe + the source-paper
 citations.
@@ -428,8 +428,8 @@ preserve the layout — those visual structures are load-bearing for the pitch.
 
 **Setup notes:** Use Claude Design's **Prototype** mode with **High fidelity** selected.
 This is a refinement prompt against the live UI at
-[`http://13.40.112.220/`](http://13.40.112.220/), targeting the proposed
-simplification in [`docs/ui-simplification-proposal.md`](ui-simplification-proposal.md).
+[`https://archimedes-arc.app/`](https://archimedes-arc.app/), targeting the proposed
+simplification in [`docs/archive/ui-simplification-proposal-2026-05-20.md`](archive/ui-simplification-proposal-2026-05-20.md) (now shipped via spine-plus-v2 Phases 0–7; see [`docs/specs/page-roles-spec.md`](specs/page-roles-spec.md) for the current page model).
 **The Day-4 risk-tier-cards onboarding flow is retired** — the product is now
 generator-first: users describe what they want, fusion produces a candidate strategy,
 the rigor gate admits or rejects, and the user inspects + deposits. Risk tolerance is
@@ -438,7 +438,7 @@ the rigor gate admits or rejects, and the user inspects + deposits. Risk toleran
 ```
 Project: Archimedes — frontend visual refinement toward a simplified page tree.
 
-Live reference URL (please fetch + study before generating): http://13.40.112.220/
+Live reference URL (please fetch + study before generating): https://archimedes-arc.app/
 This is the shipped UI — React 19 + Vite 8 + viem 2.48 + plain CSS (no Tailwind,
 no Next.js). Wallet connect (MetaMask / Coinbase / generic), Marketplace, Trade,
 Vaults, Intelligence (Corpus Explorer + Risk Analysis) all live.
@@ -1088,7 +1088,7 @@ showing "we know our own UX, here's how we'd polish it post-hackathon."
    [`docs/chuan-architecture-survey.md`](chuan-architecture-survey.md) describes
    as shipped before exporting.
 4. **Run Prompts 3, 4, 5** (UI screens) — give Claude Design the live URL
-   (`http://13.40.112.220/`) as starting reference. These prompts are
+   (`https://archimedes-arc.app/`) as starting reference. These prompts are
    **refinement** prompts against the shipped React UI, not greenfield. Screen 3
    (My Portfolio) now includes a stress-scenario strip and agentic-advisor signals
    — both Day-10 additions where the backend exists but the UI surface is still

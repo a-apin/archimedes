@@ -54,7 +54,7 @@ Every step records:
 - Transaction hashes (with Arcscan links)
 - Vault address, trace ID, verification result
 
-Output goes to `docs/runbooks/arc-testnet-e2e-evidence.md`.
+Output goes to `docs/runbooks/arc-testnet-e2e-evidence.md` — the script creates that file on `--execute`. It is intentionally absent from `main` until the first successful execution (the prior empty template was misleading; deleted 2026-05-25 by the docs audit). To see what the run produced, check the latest PR that touched this path or run the script yourself.
 
 ## Troubleshooting
 

@@ -1,6 +1,6 @@
 # Agora Agents Submission Form — Team Review Draft
 
-> **Status:** Day-10 (2026-05-22) draft for team review. The actual submission is via the Google Form at <https://forms.gle/ok3Gr9zhmHnApvK48> — this doc holds the team-agreed answer text so we can review, edit, and copy-paste cleanly. Some fields are placeholders pending team input (marked with `<<…>>`).
+> **Status:** Day-14 refresh (2026-05-25, submission day) — content updated for 12 forkable primitives, 806 backend tests, `https://archimedes-arc.app/` URL. v1 submitted earlier in the window per the `archive/sunday-night-handoff-2026-05-24.md` note ("video recorded, deck near-final, form submitted once"). This doc holds the team-agreed answer text for the resubmit pass. Some fields remain placeholders pending team input (marked with `<<…>>`).
 > **Important:** the team should review the substantive long-form answers (#9, #10, #11, #14, #16, #17, #18) before submission. The factual short answers (#1–#7, #12–#13, #15) are mechanical.
 > **Submission cadence:** the form note says *"You can submit many times! We recommend you submit early and often!"* — so a v1 submission with placeholder team handles + a follow-up final v2 is fine.
 
@@ -77,7 +77,7 @@ The compelling part: the textbook tools to prevent this — Deflated Sharpe Rati
 ```
 Archimedes is "Linus for quantitative finance" — a research-grounded strategy-generation instrument for capable non-experts who want their idle USDC to compound thoughtfully. The user describes what they want; Archimedes fuses that intent with live market regime data and a 10,000-paper quantitative-finance research library into a candidate strategy. The strategy passes through a four-control selection-bias rigor gate (Deflated Sharpe Ratio, Probability of Backtest Overfitting, walk-forward out-of-sample testing, look-ahead static audit) before admission to the Tier-1 library. 2 strategies currently pass the full gate against 22 years of real SPY data. Execution is into non-custodial ERC-4626 vaults on Arc testnet with USDC settlement; every reasoning trace is keccak256-hashed and anchored on a deployed ReasoningTraceRegistry contract.
 
-The stack: Python 3.12 / FastAPI / SQLAlchemy backend in a 6-container docker-compose stack (backend + postgres + redis + nginx + oracle feeder + autonomous agent runner); React 19 + Vite 8 + viem frontend; 10 Solidity contracts deployed via Foundry on Arc testnet; Circle Developer-Controlled Wallets for autonomous on-chain execution (no raw private keys in production); LLM-provider-agnostic backend supporting GLM / Anthropic / OpenAI / Ollama. The newest addition is an LLM-driven agentic portfolio advisor running a 12-iteration tool-use loop that picks individual instruments (not just ETF baskets) and anchors each pick to a paper-grounded strategy passport. Live at http://13.40.112.220.
+The stack: Python 3.12 / FastAPI / SQLAlchemy backend in a 6-container docker-compose stack (backend + postgres + redis + nginx + oracle feeder + autonomous agent runner); React 19 + Vite 8 + viem frontend; 10 Solidity contracts deployed via Foundry on Arc testnet; Circle Developer-Controlled Wallets for autonomous on-chain execution (no raw private keys in production); LLM-provider-agnostic backend supporting GLM / Anthropic / OpenAI / Ollama. The newest addition is an LLM-driven agentic portfolio advisor running a 12-iteration tool-use loop that picks individual instruments (not just ETF baskets) and anchors each pick to a paper-grounded strategy passport. Live at https://archimedes-arc.app/.
 ```
 
 ## 11. Traction*
@@ -87,7 +87,7 @@ The stack: Python 3.12 / FastAPI / SQLAlchemy backend in a 6-container docker-co
 **Draft answer — TEAM TO FILL ACTUAL NUMBERS:**
 
 ```
-Live testnet deploy at http://13.40.112.220 has been up since the Day-3+ EC2 deploy and accepting traffic throughout the build. We're in active outreach phase as of Day-10 — coordinated launch via Discord (Canteen + Arc Builder), Twitter, and r/algotrading is happening in the final 3-day window before submission.
+Live testnet deploy at https://archimedes-arc.app/ has been up since the Day-3+ EC2 deploy and accepting traffic throughout the build. We're in active outreach phase as of Day-10 — coordinated launch via Discord (Canteen + Arc Builder), Twitter, and r/algotrading is happening in the final 3-day window before submission.
 
 Internal team validation: 5 builders across 5 timezones (US/UK/EU/Brazil/Turkey) actively using the platform daily for our own scope-validation; 2 of those are working portfolio professionals (one with CTO experience at a quant trading platform, one ASA-credentialed actuarial trainee) treating the rigor surface as a serious work tool.
 
@@ -112,7 +112,7 @@ https://github.com/a-apin/archimedes-arcadia
 ## 13. Project Live (optional)
 
 ```
-http://13.40.112.220
+https://archimedes-arc.app/
 ```
 
 ## 14. Project Video Demo*
@@ -149,7 +149,7 @@ Already true — repo is under the [Unlicense](LICENSE), the most permissive lic
 **Suggested answer (~250 words). Full positioning lives in [`ARC-OSS-SHOWCASE.md`](ARC-OSS-SHOWCASE.md).**
 
 ```
-Archimedes exposes seven forkable primitives that other Arc builders can adopt as a stack or individually:
+Archimedes exposes twelve forkable primitives that other Arc builders can adopt as a stack or individually:
 
 1. Strategy Passport schema — provenance binding for AI-generated strategies (source paper, methodology hash, paper-claim deltas)
 2. Selection-bias rigor gate — DSR + PBO + walk-forward OOS + look-ahead audit, all in pure numpy with no Archimedes coupling
@@ -158,10 +158,15 @@ Archimedes exposes seven forkable primitives that other Arc builders can adopt a
 5. LLM provider-agnostic backend factory — one env var (LLM_PROVIDER) switches between Anthropic, Anthropic-compatible (z.ai/GLM), OpenAI, Ollama; canned fallback on missing credentials
 6. 3-input fusion engine — user intent × live context × knowledge base → AI proposal; the pattern generalizes beyond strategy synthesis
 7. Circle-signer pattern — Circle Developer-Controlled Wallets for autonomous on-chain writes, no raw private keys in production
+8. Xia 2026 named-protocol implementation — Outcome Embargo + Time-Aware Retrieval + Hierarchy of Truth + Source Tracking + V_check; all five protocols enforced as mechanisms, not advisory guidelines
+9. StockBench harness adapter — wraps `StrategyFusion.propose` + `PortfolioAgent.propose_portfolio` against Chen et al. 2026's contamination-free benchmark; we ran it honestly (#15/15, Sortino -0.91)
+10. paper-qa semantic-retrieval wrap — defense-in-depth ranker behind keyword-filtered fusion candidate selection; falls back gracefully when deps missing
+11. Strategy episodic memory (`strategy_proposals` table) — every fusion proposal + rigor verdict + user-reject is content-hashed and persisted; "the library compounds" is demonstrable, not aspirational
+12. Security pillar — Fernet PII encryption, log scrubbing, rate limits, CORS lockdown, IAM least-privilege, HSTS/CSP/X-Frame-Options, pre-commit detect-secrets
 
 Each primitive has a dedicated spec or walkthrough doc — a forker can implement against the spec without reading the full source. We're under the Unlicense (no attribution required, more permissive than MIT). The existing Arc reference repos (arc-commerce, arc-p2p-payments, etc.) cover transaction-flow plumbing; Archimedes adds the AI-decision-provenance layer on top. They compose; they don't overlap.
 
-302 backend tests + 16 analytics-engine tests green; 10 contracts deployed on Arc testnet; live at http://13.40.112.220. Full positioning + per-primitive how-to-fork docs in ARC-OSS-SHOWCASE.md in the repo root.
+806 backend tests + 16 analytics-engine tests green; 10 contracts deployed on Arc testnet; live at https://archimedes-arc.app/. Full positioning + per-primitive how-to-fork docs in ARC-OSS-SHOWCASE.md in the repo root.
 ```
 
 ## 17. Circle / Arc Feedback*
@@ -225,5 +230,5 @@ Could be improved:
 
 - [`ARC-OSS-SHOWCASE.md`](ARC-OSS-SHOWCASE.md) — full per-primitive positioning
 - [`docs/judging-rubric-assessment.md`](docs/judging-rubric-assessment.md) — Day-10 rubric self-assessment
-- [`docs/launch-plan.md`](docs/launch-plan.md) — coordinated launch plan (drives #11 traction numbers)
+- [`docs/archive/launch-plan-2026-05-19.md`](docs/archive/launch-plan-2026-05-19.md) — historical coordinated launch plan (drives #11 traction numbers); current submission-day execution plan lives in [`docs/dead-code-audit-2026-05-24-v2.md`](docs/dead-code-audit-2026-05-24-v2.md) § Submission-day execution plan
 - [`docs/demo-script-pitch-deck-outline.md`](docs/demo-script-pitch-deck-outline.md) — demo structure source for #14

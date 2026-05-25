@@ -56,19 +56,18 @@ Foundry, Circle wallet, and oracle targets (`compile`, `test`, `wallet`, `feed`,
 
 **Live on the Arc public testnet** (chain ID `5042002`): grab faucet USDC at <https://faucet.circle.com/> (20 USDC / 2h — on Arc, USDC *is* gas) and try the full flow with test funds. **No real money at risk, by design.** Arc has no mainnet yet (Circle's docs list mainnet as "upcoming"); mainnet launch, real-funds custody, and the regulatory architecture (off-chain redemptions, preset-strategy / RIA posture) are the **business-plan roadmap**, not hackathon scope — see [`docs/competitor-landscape.md`](docs/competitor-landscape.md).
 
-**Built today:**
+**Built today — visible on the live site right now:**
 
-- Live testnet deploy: <http://13.40.112.220> · 10 Solidity contracts on Arc
-- 3-input fusion engine: user brief × live market regime × 10,000-paper q-fin corpus → grounded strategy spec
-- LLM-driven agentic portfolio advisor (`portfolio_agent.py`, 850 lines) — picks individual instruments and anchors each to a strategy passport
-- Four-control selection-bias rigor gate (DSR + PBO + walk-forward OOS + look-ahead audit) — **2 Tier-1 strategies pass today** against 22.3 years of real SPY data
-- Regime-conditional risk aversion in the Kelly optimizer (Ang & Bekaert 2002, *Review of Financial Studies*) — effective γ scales with the live regime
-- Multi-asset NAV vaults — `Vault.totalAssets()` prices all synthetic holdings via oracles
-- On-chain reasoning trace anchoring via the deployed `ReasoningTraceRegistry`
-- 6-container docker stack: backend (FastAPI) + postgres + redis + nginx + oracle + agent
-- Multi-wallet UX (MetaMask + Coinbase + Circle passkey via EIP-6963 wallet discovery) with profile dropdown
-- 806 backend tests + 16 analytics-engine tests collected
-- Server-side ruff format guard (`main-format-guard.yml`) — main self-heals if a direct-to-main commit lands unformatted; CI run stays red so the violation is visible
+- **Live HTTPS testnet deploy** at <https://archimedes-arc.app/> behind nginx + Route 53 + ACM. 10 Solidity contracts deployed on Arc testnet (chain ID `5042002`).
+- **Real on-chain rebalance traces in production** — the autonomous agent has been writing rebalance txs against the deployed `Vault` + `ReasoningTraceRegistry` contracts; `curl https://archimedes-arc.app/api/traces/?limit=10` returns `arc_tx_hash` values verifiable on `testnet.arcscan.app`.
+- **End-to-end deposit flow** — `CreateVaultModal` → `DepositFlow` stepper signs 3 wallet txs (USDC.approve → vault.deposit → vault.setTargetAllocations). `StrategyPublisher` anchors the passport's `methodology_hash` on the `StrategyRegistry` contract per vault created.
+- **Verify-on-chain (O(1))** — the Reasoning page's "Verify on-chain" button runs a single `eth_getTransactionReceipt` + log decode and surfaces a `testnet.arcscan.app/tx/...` link on success.
+- **Multi-wallet UX** with EIP-6963 wallet discovery — MetaMask, Coinbase, and Circle Modular Wallets passkey paths all working. Wallet-gated routes (Library / Portfolio / Learnings) render an explicit "Connect Wallet" CTA when logged-out so we never imply personalization the user doesn't have.
+- **Three-mode Generate page** — agentic streaming (LLM portfolio agent with 12-iteration tool-use), fusion (novel multi-paper synthesis), and architect (curated-library selection). All three feed the same selection-bias rigor gate (DSR + PBO + walk-forward OOS + look-ahead audit) before a strategy is admitted as Tier-1.
+- **Regime-conditional Kelly sizing** in the optimizer — effective γ scales with the live regime per Ang & Bekaert 2002, so the same strategy generates regime-appropriate sizing without parallel agents.
+- **Honest Explore page** — `is_stale` reflects the *displayed* price's freshness window per source (on-chain oracle 5min / yfinance fallback 4 days / no source = stale). The page no longer flags every asset STALE; the `price_source` field discloses where each price came from.
+- **Unified `strategy_passports` store on Postgres** — both curated and generated strategies live in one typed table; the Considered-Alternatives panel reads from `strategy_proposals` so judges see what was rejected and why.
+- **806+ backend tests** + 16 analytics-engine tests green; server-side ruff format guard (`main-format-guard.yml`) auto-heals direct-to-main commits if any land unformatted.
 
 ## Why Archimedes
 
@@ -106,8 +105,7 @@ flowchart LR
   %% Alternate paths (allowed; not canonical)
   L -. 'Browse Example Library' .-> LIB[/library?tab=examples/]
   LIB -. click row .-> ST
-  L -. sidebar Explore .-> E[/explore/]
-  E -. 'Use in Generate' .-> G
+  L -. sidebar Explore .-> E[/explore — read-only viewer/]
   L -. sidebar Corpus .-> C[/corpus/]
   C -. paper detail → 'Generate from this' .-> G
 ```
@@ -187,7 +185,7 @@ Fork, branch (`<your-handle>/<short-name>`), PR to `main`. One logical change pe
 ## Cited literature
 
 The deck, the rigor gate, and the pitch all rest on a specific reading of the academic
-record. The four papers below are load-bearing and worth reading first if you want to
+record. The five papers below are load-bearing and worth reading first if you want to
 audit our claims.
 
 | Citation | What it gives us |

@@ -167,7 +167,7 @@ The local docker-compose stack runs the same code as the EC2 deployment. To veri
 ```bash
 # One-command parity check
 ./scripts/check-parity.sh                              # defaults to http://localhost:8000
-./scripts/check-parity.sh http://13.40.112.220:8000   # or against prod
+./scripts/check-parity.sh https://archimedes-arc.app   # or against prod
 ```
 
 This checks `/health` and asserts: live LLM backend, non-empty corpus (≥10,000 papers), fusion enabled.

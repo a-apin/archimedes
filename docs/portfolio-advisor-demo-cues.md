@@ -11,7 +11,7 @@
 
 ## Pre-demo checklist (90 seconds)
 
-- [ ] Open `http://13.40.112.220/intelligence/advisor` in a fresh tab
+- [ ] Open `https://archimedes-arc.app/generate` in a fresh tab (Portfolio Advisor preview now renders on /generate post-PR #216; the legacy `/intelligence/advisor` route was retired in the spine-plus-v2 consolidation)
 - [ ] Already-warmed cache: hit the page once 5 min before so yfinance is in cache
 - [ ] Risk profile selector starts on **Moderate**
 - [ ] Devtools closed; screen at 1.25× zoom for stage readability
