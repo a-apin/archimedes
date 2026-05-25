@@ -120,6 +120,11 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
           className="btn btn-primary"
           onClick={() => setDeployOpen(true)}
           disabled={!walletAddr || s.passes_rigor_gate === false}
+          style={
+            !walletAddr || s.passes_rigor_gate === false
+              ? { opacity: 0.45, cursor: 'not-allowed', filter: 'grayscale(0.6)' }
+              : undefined
+          }
           title={
             !walletAddr ? 'Connect wallet to deploy' :
             s.passes_rigor_gate === false ? 'Rigor gate failed — deployment disabled' :
@@ -233,7 +238,19 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
             value={fmt(s.deflated_sharpe_ratio)}
             hint={s.dsr_p_value != null ? `p = ${fmt(s.dsr_p_value, 3)}` : null}
           />
-          <Metric label="PBO" value={fmtPct(s.pbo_score)} hint="lower = less overfit" />
+          {/* PBO of exactly 0 paired with missing DSR/OOS is almost always a
+              placeholder, not a real measurement. Render "—" in that case so
+              we don't show a fake 0.0% next to honest unknowns elsewhere. */}
+          <Metric
+            label="PBO"
+            value={
+              s.pbo_score == null ||
+              (s.pbo_score === 0 && s.deflated_sharpe_ratio == null && s.out_of_sample_sharpe == null)
+                ? '—'
+                : fmtPct(s.pbo_score)
+            }
+            hint="lower = less overfit"
+          />
           <Metric label="OOS Sharpe" value={fmt(s.out_of_sample_sharpe)} />
           <Metric label="Trials" value={s.total_trades != null ? s.total_trades : '—'} hint="multiple-testing adj" />
         </div>
