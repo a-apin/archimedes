@@ -10,9 +10,10 @@ import StressScenarioPanel from './StressScenarioPanel'
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
 // /portfolio — Personal dashboard. YOUR AUM, YOUR vaults, YOUR traces.
-// The vault marketplace (every vault ever deployed) used to live here too, which
-// dragged the surface down with anonymous deploy-seed vaults. That moved to
-// /marketplace on 2026-05-25; this page is now strictly personal.
+// The vault marketplace (every vault ever deployed) briefly lived at
+// /marketplace but was cut on 2026-05-25: bot-seeded deploys dragged the
+// surface down and there was no time to fix it before submission. Discovery
+// happens via /library (curated examples) instead.
 
 function timeAgo(iso) {
   const d = typeof iso === 'string' ? new Date(iso) : new Date(iso * 1000)
@@ -209,7 +210,7 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
           <h3 className="serif text-[1.4rem] mb-2">You haven't deployed a vault yet</h3>
           <p className="body mb-4" style={{ color: 'var(--text-3)' }}>
             A vault is the non-custodial container that holds your USDC and runs your strategy.
-            Generate one in minutes — or browse what others have built.
+            Describe what you want and the agent will generate one paper-grounded.
           </p>
           <div className="flex justify-center gap-3 flex-wrap">
             <button
@@ -219,10 +220,10 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
               Generate a Strategy
             </button>
             <a
-              onClick={() => onNavigate?.('marketplace')}
+              onClick={() => onNavigate?.('library')}
               style={{ color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline', alignSelf: 'center' }}
             >
-              Browse Marketplace
+              Browse the Example Library
             </a>
           </div>
         </div>
