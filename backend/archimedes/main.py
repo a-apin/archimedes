@@ -273,6 +273,95 @@ async def health_paper_rag():
     }
 
 
+@app.get("/health/amm")
+@limiter.exempt
+async def health_amm():
+    """AMM pool liquidity health probe (Issue #309)."""
+    from fastapi.responses import JSONResponse
+    from archimedes.chain.client import chain_client
+
+    try:
+        connected = await chain_client.is_connected()
+    except Exception:
+        connected = False
+
+    if not connected:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "amm_pools_not_initialized",
+                "reason": "Chain not connected",
+                "pools": [],
+                "pool_count": 0,
+            },
+        )
+
+    pools = []
+    try:
+        from archimedes.chain.contracts import get_contract_loader
+
+        loader = get_contract_loader()
+        router = loader.amm_router
+        usdc = chain_client.to_checksum(chain_client.settings.usdc_address)
+
+        for symbol, token_addr in chain_client.settings.synth_addresses.items():
+            if not token_addr:
+                continue
+            try:
+                pool_addr = await router.functions.getPool(
+                    usdc,
+                    chain_client.to_checksum(token_addr),
+                ).call()
+                is_active = pool_addr != "0x0000000000000000000000000000000000000000"
+                pools.append(
+                    {
+                        "symbol": symbol,
+                        "token_address": token_addr,
+                        "pool_address": pool_addr if is_active else None,
+                        "active": is_active,
+                    }
+                )
+            except Exception as exc:
+                pools.append(
+                    {
+                        "symbol": symbol,
+                        "token_address": token_addr,
+                        "pool_address": None,
+                        "active": False,
+                        "error": str(exc)[:100],
+                    }
+                )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "amm_pools_not_initialized",
+                "reason": f"AMM router not accessible: {str(exc)[:200]}",
+                "pools": [],
+                "pool_count": 0,
+            },
+        )
+
+    active_count = sum(1 for p in pools if p.get("active"))
+    if active_count == 0:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "amm_pools_not_initialized",
+                "reason": "No active AMM pools found",
+                "pools": pools,
+                "pool_count": 0,
+            },
+        )
+
+    return {
+        "status": "ok",
+        "pools": pools,
+        "pool_count": active_count,
+        "total_configured": len(pools),
+    }
+
+
 @app.get("/")
 @limiter.exempt
 async def root():

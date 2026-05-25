@@ -851,6 +851,29 @@ class StrategyRunner:
         parts.append(f"Trades: {len(trades)}")
         return ". ".join(parts)
 
+    # ─── Per-vault strategy scoping (Issue #307) ─────────────────────
+
+    def _get_vault_strategy_ids(self, vault_address: str) -> list[str] | None:
+        """Load strategy_ids from VaultMetadata for a vault.
+
+        Returns:
+            list[str] — the user's selected strategies for this vault.
+            None — if no metadata exists (vault deployed outside UI).
+        """
+        try:
+            from archimedes.db import get_session
+            from archimedes.models.chat import VaultMetadata
+
+            with get_session() as session:
+                meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == vault_address).first()
+                if meta is None:
+                    return None
+                ids = meta.get_strategy_ids()
+                return ids if ids else None
+        except Exception as exc:
+            logger.debug("_get_vault_strategy_ids(%s) failed: %s", vault_address[:10], exc)
+            return None
+
     # ─── Vault discovery ───────────────────────────────────────────
 
     async def _get_managed_vaults(self) -> list[str]:
