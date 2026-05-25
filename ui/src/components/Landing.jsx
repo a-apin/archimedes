@@ -21,16 +21,17 @@ export default function Landing({ onNavigate }) {
             Agora Agents Hackathon 2026
           </span>
           <p className="font-serif italic text-[1rem] text-[var(--text-3)] mb-3 md:text-[1.1rem]">
-            Linus for quantitative finance.
+            Agentic trading, grounded in research.
           </p>
           <h1 className="font-serif text-[2.1rem] font-normal leading-[1.15] mb-5 text-[var(--text-1)] sm:text-[2.6rem] lg:text-[3.1rem]">
-            <span className="text-[var(--accent)]">Paper-Grounded.</span>{' '}
-            <span className="text-[var(--text-3)]">Autonomously Managed.</span>
+            <span className="text-[var(--accent)]">Your Intent.</span>{' '}
+            <span className="text-[var(--text-3)]">Our Rigor.</span>
           </h1>
           <p className="text-[0.98rem] leading-[1.65] text-[var(--text-2)] max-w-[620px] mx-auto mb-8 md:text-[1.08rem]">
-            Archimedes turns bleeding-edge academic research into rigor-gated,
-            investable strategies — generated for your brief, executed in
-            non-custodial vaults on Arc, with every decision hashed and
+            Tell Archimedes what you want in plain English. It fuses your intent
+            with the quant-finance literature, live market data, and statistical
+            rigor — into an autonomous trading strategy that runs in a
+            non-custodial vault on Arc, with every decision hashed and
             verifiable on-chain.
           </p>
           <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:justify-center sm:items-center">

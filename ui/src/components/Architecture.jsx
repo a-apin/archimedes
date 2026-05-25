@@ -93,7 +93,7 @@ const MEMORY_LAYERS = [
 const PROTOCOLS = [
   { name: 'Outcome Embargo', what: 'Papers retrieved at decision time are filtered to those published before the decision; on-chain anchor proves the filter held.' },
   { name: 'Time-Aware Retrieval', what: 'SPECTER2 similarity decays by paper age; higher decay in volatile regimes.' },
-  { name: 'Hierarchy of Truth', what: 'Chain state outranks LLM narrative; peer-reviewed papers outrank uncurated sources.' },
+  { name: 'Hierarchy of Truth', what: 'Chain state outranks LLM narrative; curated academic literature outranks uncurated sources.' },
   { name: 'Source Tracking', what: 'Every cited paper carries (arxiv_id, version, content_hash). Anchored on Arc; anyone can recompute.' },
 ]
 
@@ -258,10 +258,11 @@ function CorpusPanel() {
     <div className="card p-5 mb-7">
       <div className="label mb-3">The q-fin corpus — Layer E in detail</div>
       <p className="body mb-4">
-        9,873 peer-reviewed papers ingested via PyMuPDF, embedded with SPECTER2, clustered
-        with HDBSCAN, and linked with REBEL + SciSpacy into a knowledge graph. The
-        Strategy Generation Agent's <strong>Paper Retrieval</strong> sub-agent uses this
-        substrate every time you submit a brief.
+        9,873 academic papers (arXiv preprints across q-fin, ML, math, and agentic AI)
+        ingested via PyMuPDF, embedded with SPECTER2, clustered with HDBSCAN, and linked
+        with REBEL + SciSpacy into a knowledge graph. The Strategy Generation Agent's
+        <strong>Paper Retrieval</strong> sub-agent uses this substrate every time you submit
+        a brief.
       </p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[

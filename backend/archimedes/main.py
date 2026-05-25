@@ -64,7 +64,7 @@ else:
 
 app = FastAPI(
     title="Archimedes",
-    description="Peer-reviewed AI portfolios, settled on Arc.",
+    description="Agentic trading, grounded in research — settled on Arc.",
     version="0.1.0",
     docs_url=_docs_url,
     openapi_url=_openapi_url,
@@ -399,6 +399,6 @@ async def health_amm():
 async def root():
     return {
         "name": "Archimedes",
-        "tagline": "Peer-reviewed AI portfolios, settled on Arc.",
+        "tagline": "Agentic trading, grounded in research — settled on Arc.",
         "docs": _docs_url or "disabled (production)",
     }

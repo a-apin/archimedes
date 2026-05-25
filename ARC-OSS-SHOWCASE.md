@@ -180,7 +180,7 @@ Implements the five protocols Xia et al. 2026 formalize as the prerequisites for
 | [`backend/archimedes/services/source_tracker.py`](backend/archimedes/services/source_tracker.py) | Source Tracking — every trace records `consulted_paper_hashes` (sorted `arxiv_id:content_hash` list), which is part of the canonical trace hash anchored on-chain. |
 | [`docs/specs/xia-2026-protocols.md`](docs/specs/xia-2026-protocols.md) | Full reference — maps each protocol to the section of the Xia paper it implements. |
 
-**How to fork:** drop the four modules into any retrieval-augmented agent that consumes time-stamped sources. The Hierarchy of Truth is enforced structurally (peer-reviewed > narrative > social), so adopt the curation rule too.
+**How to fork:** drop the four modules into any retrieval-augmented agent that consumes time-stamped sources. The Hierarchy of Truth is enforced structurally (curated academic literature > narrative > social), so adopt the curation rule too.
 
 **Who benefits:** any LLM-agent product that retrieves from a corpus and emits actions audited against a benchmark. The protocols close the "Oracle Fallacy" and "Provenance Loss" failure modes Xia identifies in 15/19 surveyed studies.
 

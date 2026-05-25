@@ -1,6 +1,8 @@
 # Archimedes
 
-> **Linus for quantitative finance — research-grounded AI portfolios, settled on Arc.**
+> # Agentic trading, grounded in research.
+>
+> Tell Archimedes what you want from a portfolio in plain English. It fuses your intent with the quant-finance literature, live market data, and statistical rigor — into an autonomous on-chain strategy that runs in a non-custodial vault on Arc, with every decision hashed and verifiable on-chain.
 >
 > *The lever is academic research. The fulcrum is autonomous AI. The world is your portfolio.*
 
