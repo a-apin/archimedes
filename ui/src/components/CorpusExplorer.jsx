@@ -38,7 +38,10 @@ export default function CorpusExplorer() {
       const params = new URLSearchParams({ page: String(page), limit: '20' })
       if (search) params.set('search', search)
       if (categoryFilter) params.set('category', categoryFilter)
-      const data = await apiGet(`/api/papers?${params}`)
+      // Trailing slash matters: FastAPI 307-redirects /api/papers → /api/papers/,
+      // and the browser silently drops the query string on the redirect, so the
+      // catalog rendered "0 papers found" despite the backend having 10000.
+      const data = await apiGet(`/api/papers/?${params}`)
       setPapers(data.papers || [])
       setTotalPapers(data.total || 0)
     } catch { setPapers([]) }
