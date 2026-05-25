@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request, Response
 
+from archimedes.api.limiter import limiter
 from archimedes.api.schemas import PoolListResponse, PoolResponse, SwapQuoteResponse
 
 swap_router = APIRouter(prefix="/api/swap", tags=["swap"])
@@ -38,7 +39,10 @@ async def _token_decimals(address: str) -> int:
 
 
 @swap_router.get("/quote", response_model=SwapQuoteResponse)
+@limiter.limit("30/minute")
 async def get_swap_quote(
+    request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
+    response: Response,  # noqa: ARG001
     token_in: str = Query(..., description="Input token address"),
     token_out: str = Query(..., description="Output token address"),
     amount_in: float = Query(..., gt=0, description="Amount of input token"),

@@ -50,10 +50,24 @@ from archimedes.api.selection_bias_routes import selection_bias_router
 from archimedes.api.user_routes import user_router
 from archimedes.db import init_db
 
+# ── Docs gate: disable /docs and /openapi.json in production ──────────
+# Default OFF when PUBLIC_DOMAIN is set (production). Override with
+# ENABLE_API_DOCS=1 to re-enable in any environment.
+_enable_docs = os.getenv("ENABLE_API_DOCS", "").lower() in ("1", "true", "yes")
+_is_production = bool(os.getenv("PUBLIC_DOMAIN"))
+if _is_production and not _enable_docs:
+    _docs_url = None
+    _openapi_url = None
+else:
+    _docs_url = "/docs"
+    _openapi_url = "/openapi.json"
+
 app = FastAPI(
     title="Archimedes",
     description="Peer-reviewed AI portfolios, settled on Arc.",
     version="0.1.0",
+    docs_url=_docs_url,
+    openapi_url=_openapi_url,
 )
 
 # Wire rate limiter into the app state
@@ -93,10 +107,39 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Wallet-Address",
+        "X-Internal-Agent-Key",
+        "X-Requested-With",
+    ],
     max_age=600,
 )
+
+# ── Fail-closed: require EMAIL_ENCRYPTION_KEY in production ──────────
+# Without this, services/email_crypto.py falls back to a hardcoded secret
+# that anyone with repo access can use to decrypt stored emails.
+if _is_production and not os.getenv("EMAIL_ENCRYPTION_KEY"):
+    raise RuntimeError(
+        "FATAL: EMAIL_ENCRYPTION_KEY must be set when PUBLIC_DOMAIN is configured. "
+        'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
+    )
+
+
+# ── Request body size limit middleware ────────────────────────────────
+_MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MB
+
+
+@app.middleware("http")
+async def _limit_request_body(request: Request, call_next):
+    """Reject request bodies larger than _MAX_BODY_BYTES (1 MB)."""
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > _MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={"detail": "Request body too large (max 1 MB)"})
+    return await call_next(request)
+
 
 # Initialize database (creates chat tables if needed)
 init_db()
@@ -357,5 +400,5 @@ async def root():
     return {
         "name": "Archimedes",
         "tagline": "Peer-reviewed AI portfolios, settled on Arc.",
-        "docs": "/docs",
+        "docs": _docs_url or "disabled (production)",
     }

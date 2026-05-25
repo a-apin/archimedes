@@ -7,7 +7,9 @@ page (shows full gate breakdown).
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, Response
+
+from archimedes.api.limiter import limiter
 
 from archimedes.services.rigor_evaluator import (
     compute_pbo,
@@ -229,7 +231,8 @@ async def evaluate_strategy_rigor(strategy_id: str):
 
 
 @selection_bias_router.post("/pbo", response_model=PBOResponse)
-async def compute_pbo_endpoint(req: PBORequest):
+@limiter.limit("20/minute")
+async def compute_pbo_endpoint(req: PBORequest, request: Request, response: Response):  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     """Compute PBO across a set of strategy return series.
 
     This is the library-level metric — all strategies get the same score.
@@ -275,11 +278,19 @@ def _synthetic_returns_from_stub(
 
 
 def _load_strategy_code(code_path: str) -> str | None:
-    """Load strategy source code for look-ahead audit."""
+    """Load strategy source code for look-ahead audit.
+
+    Security: resolved path must stay within the project tree to prevent
+    path-traversal reads of arbitrary files (e.g. ``../../etc/passwd``).
+    """
     import os
+    from pathlib import Path
 
     if not code_path:
         return None
+
+    project_root = Path(os.getcwd()).resolve()
+    strategies_dir = (project_root / "analytics-engine" / "strategies").resolve()
 
     # Resolve relative to project root
     candidates = [
@@ -288,11 +299,14 @@ def _load_strategy_code(code_path: str) -> str | None:
         os.path.join(os.getcwd(), "analytics-engine", code_path),
     ]
 
-    for path in candidates:
-        if os.path.isfile(path):
+    for raw_path in candidates:
+        resolved = Path(raw_path).resolve()
+        # Guard: must be within the project tree
+        if not (resolved.is_relative_to(project_root) or resolved.is_relative_to(strategies_dir)):
+            continue
+        if resolved.is_file():
             try:
-                with open(path) as f:
-                    return f.read()
+                return resolved.read_text()
             except Exception:
                 pass
 

@@ -8,7 +8,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-archimedes}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-archimedes-hackathon-2026}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env — no default for security}
       POSTGRES_DB: ${POSTGRES_DB:-archimedes}
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -62,7 +62,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "archimedes.chain.oracle_runner"]
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://archimedes:archimedes-hackathon-2026@postgres:5432/archimedes}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       ORACLE_INTERVAL_SECONDS: ${ORACLE_INTERVAL_SECONDS:-60}
       ARC_VAULT_FACTORY_ADDRESS: ${ARC_VAULT_FACTORY_ADDRESS:-0xca873414070844aeb98b0bf1051f81969c79cc32}
@@ -85,7 +85,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "archimedes.chain.agent_runner"]
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://archimedes:archimedes-hackathon-2026@postgres:5432/archimedes}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       AGENT_INTERVAL_SECONDS: ${AGENT_INTERVAL_SECONDS:-300}
       AGENT_DRY_RUN: ${AGENT_DRY_RUN:-false}
@@ -114,7 +114,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://archimedes:archimedes-hackathon-2026@postgres:5432/archimedes}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # Deployed Arc testnet contracts (override via .env if needed)
       ARC_AMM_ROUTER_ADDRESS: ${ARC_AMM_ROUTER_ADDRESS:-0xd5b829f9d364a8bbe1caf6c8b19cb05371b178f4}
@@ -155,7 +155,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "archimedes.services.kb_runner"]
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://archimedes:archimedes-hackathon-2026@postgres:5432/archimedes}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       KB_ARTIFACT_DIR: /srv/corpus-artifact
       KB_CORPUS_DIR: /srv/corpus-text
       KB_RUNNER_INTERVAL_SECONDS: ${KB_RUNNER_INTERVAL_SECONDS:-21600}

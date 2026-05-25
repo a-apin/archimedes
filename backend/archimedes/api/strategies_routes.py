@@ -12,13 +12,14 @@ import json
 import math
 from datetime import UTC
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request, Response
 
 from archimedes.api._route_helpers import (
     architect,
     persist_trace_off_chain,
     strategy_provider,
 )
+from archimedes.api.limiter import limiter
 from archimedes.api.architect_schemas import (
     ConstructionSelectionResponse,
     ConstructionTraceResponse,
@@ -1068,7 +1069,8 @@ async def list_stress_scenarios():
 
 
 @strategies_router.post("/stress/run")
-async def run_stress_test(payload: dict):
+@limiter.limit("20/minute")
+async def run_stress_test(payload: dict, request: Request, response: Response):  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     """Apply a stress scenario to a caller-supplied portfolio."""
     from fastapi import HTTPException
 
@@ -1234,7 +1236,10 @@ async def get_strategy(strategy_id: str):
 
 
 @strategies_router.post("/generate", status_code=202)
+@limiter.limit("20/minute")
 async def generate_strategy(
+    request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
+    response: Response,  # noqa: ARG001
     asset_classes: str = "",
     risk_appetite: str = "moderate",
     strategic_direction: str = "",
@@ -1596,7 +1601,8 @@ async def _run_fusion_job(job_id: str) -> None:
 
 
 @strategies_router.post("/construct", response_model=StrategyConstructionResponse)
-async def construct_strategy(req: StrategyConstructionRequest):
+@limiter.limit("20/minute")
+async def construct_strategy(req: StrategyConstructionRequest, request: Request, response: Response):  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     """Interactive strategy architect -- the 'design me a portfolio' path."""
     from fastapi import HTTPException
 

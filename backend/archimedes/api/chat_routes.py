@@ -13,9 +13,12 @@ Design (per ecosystem-design-spec.md § 16–17):
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import re
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from archimedes.api.auth_guard import require_internal_agent_key
+from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
     ChatMessageListResponse,
     ChatMessageResponse,
@@ -23,6 +26,8 @@ from archimedes.api.schemas import (
     ChatPostResponse,
 )
 from archimedes.services.chat_service import chat_service
+
+_WALLET_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 chat_router = APIRouter(prefix="/api/vaults", tags=["chat"])
 
@@ -60,15 +65,18 @@ async def get_chat_messages(
 
 
 @chat_router.post("/{address}/chat", response_model=ChatPostResponse)
+@limiter.limit("20/minute")
 async def post_chat_message(
     address: str,
     body: ChatPostRequest,
+    request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
+    response: Response,  # noqa: ARG001
 ):
     """Post a message to a vault's chat. Triggers AI response if @archimedes is mentioned."""
     if not body.message or not body.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
-    if not body.wallet_address or len(body.wallet_address) < 10:
-        raise HTTPException(status_code=400, detail="Valid wallet address required")
+    if not body.wallet_address or not _WALLET_RE.match(body.wallet_address):
+        raise HTTPException(status_code=422, detail="wallet_address must match ^0x[a-fA-F0-9]{40}$")
     if len(body.message) > 2000:
         raise HTTPException(status_code=400, detail="Message too long (max 2000 chars)")
 
