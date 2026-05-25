@@ -162,8 +162,9 @@ Then <http://localhost> for the UI mockups and <http://localhost:8000/docs> for 
 backend API. See README § "Run Archimedes locally" for the full walkthrough.
 
 **Tests:** from the repo root in the `archimedes` conda env, just `pytest` —
-`pytest.ini` sets `pythonpath`/`testpaths` and a verbose default (119 tests,
-green). Coverage: `pytest --cov=archimedes --cov-report=term-missing`. The
+`pytest.ini` sets `pythonpath`/`testpaths` and a verbose default (~860 tests
+on `main` as of 2026-05-26; suite is still growing). Coverage:
+`pytest --cov=archimedes --cov-report=term-missing`. The
 analytics-engine runs its own suite: `cd analytics-engine && uv run pytest`. See
 README § "Running the test suite" for the honest coverage picture and the
 build-on-deploy integration-test caveat.
@@ -269,11 +270,15 @@ they actually shipped (Day 4):
   Supersedes `docs/design.md` § 6 ("vectorbt / custom numpy engine") on this one
   line; design.md remains the architecture spec for everything else. Migration to
   vectorbt is a v2 problem if parameter-sweep speed becomes a constraint.
-- **Smart contracts:** Solidity + Foundry, targeting Arc (EVM-compatible). **10 contracts
-  deployed on Arc testnet as of Day 4**: `AMMPool`, `AMMRouter`, `AssetRegistry`,
-  `PriceOracle`, `ReasoningTraceRegistry`, `SyntheticFactory`, `SyntheticToken`,
-  `SyntheticVault`, `Vault`, `VaultFactory`. ABIs cached in
-  [`contracts/abis/`](contracts/abis/) for backend + UI consumption
+- **Smart contracts:** Solidity + Foundry, targeting Arc (EVM-compatible). **11 contracts
+  deployed on Arc testnet** (Day 4 baseline + `StrategyRegistry` added later):
+  `AMMPool`, `AMMRouter`, `AssetRegistry`, `PriceOracle`, `ReasoningTraceRegistry`,
+  `StrategyRegistry`, `SyntheticFactory`, `SyntheticToken`, `SyntheticVault`,
+  `Vault`, `VaultFactory`. ABIs cached in
+  [`contracts/abis/`](contracts/abis/) for backend + UI consumption. (Note:
+  `ecosystem-design-spec.md` described `StrategyRegistry → AssetRegistry` as a
+  replacement, but in practice both coexist today — the spec-vs-state delta
+  is intentional and the registries serve different lookups.)
 - **On-chain integration:** Circle SDK — Wallets (Circle-managed wallet for the oracle
   signer), USYC, Gateway, CCTP, Paymaster; viem on the UI side
 - **Deployment:** Docker compose stack (5 services: postgres / redis / nginx / oracle /
