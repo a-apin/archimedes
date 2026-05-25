@@ -192,13 +192,22 @@ class StrategyRunner:
                     vault_strategy_ids = self._get_vault_strategy_ids(vault_addr)
 
                     if vault_strategy_ids is None:
-                        # No metadata — skip. Never apply global consensus to
-                        # a vault the user hasn't configured.
-                        logger.warning(
-                            "[tick %s] Vault %s has no metadata (strategy_ids=None) — "
-                            "skipping rebalance. Deploy via UI to set strategies.",
+                        # Legacy vault (deployed before strategy-selection flow
+                        # shipped, or via tooling that doesn't write VaultMetadata)
+                        # — fall back to global consensus so existing vaults keep
+                        # rebalancing. Vaults created via the UI's strategy-selection
+                        # flow set strategy_ids and follow the scoped path below.
+                        logger.info(
+                            "[tick %s] Vault %s: no VaultMetadata (legacy) — using global consensus",
                             tick_id,
                             vault_addr[:10],
+                        )
+                        await self._process_vault(
+                            vault_addr,
+                            targets,
+                            all_signals,
+                            regime,
+                            tick_id,
                         )
                         continue
 
