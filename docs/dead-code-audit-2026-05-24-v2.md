@@ -1636,3 +1636,77 @@ Two clean, well-scoped specs. Both are < 30 min of pi work each. Both close visi
 ### One-line North Star
 
 **Working flow on live HTTPS: judge → Generate → DepositFlow → real rebalance → on-chain verify, with arcscan tx evidence captured in `docs/runbooks/arc-testnet-e2e-evidence.md`.** That's the entire submission story. Everything in this plan serves it.
+
+---
+
+## Final wave (2026-05-25 23:00–23:50 UTC) — seven PRs merged + AMM Path B exploration
+
+Seven PRs landed in ~50 minutes covering passkey enablement, brand polish, and AMM bootstrap attempt:
+
+| # | Title | Owner | Commit | Status |
+|---|---|---|---|---|
+| #348 | Inject VITE_CIRCLE_CLIENT_KEY from GitHub Secrets on deploy | pi | `2cb7005` | Closed — verified live: `kH="TEST_CLIENT_KEY:..."` baked into JS bundle, `circlePasskeyEnabled()` returns true |
+| #366 | Corpus Catalog: 1 line per entry | dbrowneup | `1bfd4ca` | Closed — merged + deployed |
+| #368 (closes #367) | Per-device passkey username — unblock teammates + judges | Önder | `7d979aa` | Closed — verified `archimedes_circle_username` storage key in live bundle |
+| #364 | Fix 14 raw-HTML error render sites — shared `apiGet` helper | pi | `c7d185b` | Closed — merged + deployed |
+| #362 | AMM bootstrap: auto-calculate from wallet balance | pi | `74381f1` | **Partial — pre-close gate skipped (8th occurrence today)**; see Path B section below |
+| #370 | Strategy Passport: brief-specific title (no more 'Capital Preservation' for every generation) | dbrowneup | `b03b8c7` | Closed — merged + deployed |
+| #369 | Style spruce-up: Geist font + bigger modals + polished type scale | dbrowneup | `8d72063` | Closed — merged + deployed |
+
+### #348 — passkey enablement (full pattern documented for future hardening)
+
+Pi's choice of GitHub Secrets + deploy.yml injection (rather than the manual EC2 .env edit Maestro originally suggested as Option A) is the durable pattern. The key is now baked into every nginx rebuild automatically. Verified on-chain: `circlePasskeyEnabled()` returns true on live, the Connect Wallet modal will surface the passkey option for all users.
+
+### #367/#368 — passkey username collision unblocks teammates + judges
+
+Önder discovered at ~01:58 TR time that the hardcoded `username = 'archimedes'` locked out everyone but Dan (the original registrant). PR #368 introduced `getOrCreateUsername()` with per-device localStorage namespacing (`archimedes-<8 hex>`). Defensive fallbacks for missing `crypto.randomUUID` and Safari private-mode (no localStorage). One small risk noted in PR comment but not blocking: if Circle's Login API cross-checks username against original registration, Dan's existing session might require a `clearCircleSession()` + re-register — 30-second recovery. Posted as a follow-up consideration; merge proceeded.
+
+### #362 — partial ship pattern repeats (eighth occurrence today)
+
+Pi's `bootstrap_amm_liquidity()` code shipped clean: auto-calculates USDC per pool from wallet balance, lowers `MIN_HEALTHY_LIQUIDITY_USDC` from $1000 → $5 to match testnet reality, idempotent. **But the on-chain outcome was four reverts** at 23:20 UTC:
+
+```
+sTSLA: skipped — already has $3.97 reserve
+sNVDA: FAILED — ESTIMATION_ERROR: execution reverted
+sSPY:  FAILED — ESTIMATION_ERROR: execution reverted
+sBTC:  FAILED — ESTIMATION_ERROR: execution reverted
+sGOLD: FAILED — ESTIMATION_ERROR: execution reverted
+```
+
+Pi declared "✅ Honest approach with available funds" without verifying. Live `/api/health/amm` still shows four of five pools at zero reserves. **Eighth pre-close verification gate skip today** (after #297, #298, #318, #324, #338, #342, #358). Pi acknowledged the pattern in DM and committed to adopting "verify live before closing" going forward.
+
+### Path B exploration — confirmed structurally blocked
+
+Diagnostic probing identified the real constraint via on-chain `balanceOf` + `owner()` calls against each synthetic-token contract:
+
+| Wallet | Role | USDC | Synth-token balances | Mint authority |
+|---|---|---|---|---|
+| `0xc221dcd6fe7d81ff741f94c08e61f52bea1f9ac9` | Circle operator (in pi's Circle account) | $29.90 | **0 of every synth** | no |
+| `0x0546a5a3ddc3c34a2e4f245b384c317551db5b62` | Foundry deployer (Chuan's local keystore) | — | — | **owner() of every synth contract** |
+
+`addLiquidity(USDC, sNVDA, …)` reverts because the operator wallet has nothing to pair USDC with. Pi confirmed `0x0546...` is NOT in their Circle Developer Wallets account — it's Chuan's local Foundry keystore. Dan's separate Circle Console also can't help; any new wallet Dan creates there wouldn't own the synthetic tokens.
+
+**Only two real paths:**
+- **A — Ship as-is**: sTSLA pool has $4 reserves; agent's rigor guard ("Swap skipped — thin pool") fires honestly for non-sTSLA allocations. Defensible demo story: rigor IS the product working as designed.
+- **B — Chuan-side intervention**: Chuan runs `cast send <synthToken> "mint(address,uint256)" 0xc221... <qty> --private-key $DEPLOYER_KEY` for 4 tokens. ~5 min of Chuan time, zero cost (testnet). After mint, pi's bootstrap script succeeds unchanged.
+
+Dan DM'ing Chuan in parallel; if response in time, Path B is automatic. If not, Path A ships with a README liquidity-floor note. Either way: no further work needed from pi or Maestro on the AMM side.
+
+### Branch state after rebase
+
+`dbrowneup/docs-final-day` (PR #287) rebased onto `origin/main` HEAD `8d72063` — clean, no conflicts. Will be force-pushed with `--force-with-lease` after this append.
+
+### What's left for submission
+
+1. **AMM Path A/B resolution** — Chuan-dependent (DM in flight). README note ships either way.
+2. **SPEC-1 e2e walkthrough** — Dan-executes from `docs/runbooks/spec-1-walkthrough.md`, this branch commits the evidence to `docs/runbooks/arc-testnet-e2e-evidence.md`.
+3. **#287 merge** — after SPEC-1 evidence committed.
+4. **arc-canteen telemetry backfill** — Dan, 10–15 min.
+5. **ARC-OSS Google Form** — Dan, final answers from `ARC-OSS-FORM-DRAFT.md`.
+6. **Optional — #359 dynamic confidence** — pi's queue, low priority cosmetic.
+
+---
+
+### Recurring pattern this hackathon — pre-close verification gate
+
+Eight issues today (#297, #298, #318, #324, #338, #342, #358, #362) closed before live verification, requiring follow-up work. Most expensive instance: #324 caused a 21-minute rebalance outage on live. Pi has acknowledged the pattern in DM; going-forward expectation: every issue closure includes `curl https://archimedes-arc.app/<endpoint>` output pasted in the closing comment, not just "the deploy ran." The recurring cost is real but each individual diagnosis was fast — root cause is the velocity vs verification trade-off when shipping eight issues in three hours. Worth documenting for future hackathons or any team adopting an agentic-bot workflow.
