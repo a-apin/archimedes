@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import CustomSelect from './CustomSelect'
 import CorpusGraph from './CorpusGraph'
-import CorpusKG from './CorpusKG'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -11,21 +10,20 @@ async function apiGet(path) {
   return res.json()
 }
 
-const TABS = ['catalog', 'overview', 'graph', 'knowledge-graph']
+const TABS = ['catalog', 'overview', 'graph']
 
-// Friendly tab labels. The "knowledge-graph" slug stays for routing /
-// state stability, but the displayed label is "Topic Clusters" because
-// — until REBEL + SciSpacy actually run on the corpus (Issue #293) —
-// the only triples in the KG tables are BERTopic cluster memberships
-// (one predicate, `belongs_to_cluster`). Calling that a Knowledge
-// Graph would be misleading. BERTopic clusters across 1014 papers are
-// real and valuable; this is the honest framing of what they are.
-// When #293 lands with multi-predicate REBEL output, revert this map.
+// Friendly tab labels. The "knowledge-graph" tab (rendered by CorpusKG) was
+// cut on 2026-05-25: REBEL #293 produced real multi-predicate triples in the
+// kg_relations table, but the /api/corpus/kg/entities endpoint returns only
+// entities (no relations), and the CorpusKG component reads `e.type` /
+// `r.predicate` while the backend persists `entity_type` / `relation` — so
+// the surface displayed "N entities, 0 relations" even when REBEL had run.
+// CorpusKG.jsx is kept in the tree for whoever wires up a proper KG viewer
+// once the endpoint round-trip is fixed. See follow-up issue.
 const TAB_LABELS = {
   catalog: 'Catalog',
   overview: 'Overview',
   graph: 'Graph',
-  'knowledge-graph': 'Topic Clusters',
 }
 
 export default function CorpusExplorer() {
@@ -111,11 +109,6 @@ export default function CorpusExplorer() {
       {tab === 'graph' && (
         <div className="corpus-graph-container" style={{ padding: '8px 0' }}>
           <CorpusGraph />
-        </div>
-      )}
-      {tab === 'knowledge-graph' && (
-        <div className="corpus-kg-container" style={{ padding: '8px 0' }}>
-          <CorpusKG onOpenPaper={openPaper} />
         </div>
       )}
     </div>
