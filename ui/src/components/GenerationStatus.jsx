@@ -35,11 +35,17 @@ export default function GenerationStatus({ activeJobId, onSelect }) {
     const load = async () => {
       try {
         const res = await fetch(`${API_BASE}/api/generate/jobs?limit=10`)
-        if (!res.ok) throw new Error(await res.text())
+        if (!res.ok) throw new Error(`Backend returned ${res.status}`)
         const data = await res.json()
-        if (!cancelled) setJobs(data.jobs || [])
+        if (!cancelled) {
+          setJobs(data.jobs || [])
+          setError('')
+        }
       } catch (e) {
-        if (!cancelled) setError(e.message || 'Failed to load jobs')
+        // Network failures bubble up as TypeError with no useful message; nginx
+        // upstream errors return HTML bodies we never want to render raw.
+        const msg = e?.message && e.message.length < 120 ? e.message : 'Failed to load jobs'
+        if (!cancelled) setError(msg)
       } finally {
         if (!cancelled) setLoading(false)
       }
