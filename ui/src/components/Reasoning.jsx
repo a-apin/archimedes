@@ -225,17 +225,56 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                   </div>
                 )}
 
+                {/* On-chain link — shown upfront whenever the trace has an
+                    arc_tx_hash, regardless of whether the user has clicked
+                    Verify yet. The trace already knows its tx + blocks from
+                    the API response; we don't need a verify roundtrip to
+                    expose the arcscan link. The Verify button below still
+                    re-fetches the on-chain receipt and confirms hash match,
+                    but the link doesn't gate on it. */}
+                {t.arc_tx_hash && (
+                  <div className="flex items-center gap-3 flex-wrap text-xs text-[var(--text-3)] mb-2">
+                    <span className="flex items-center gap-1">
+                      <span className="i-lucide-file-text w-3 h-3" />
+                      Tx: <a
+                        href={`https://testnet.arcscan.app/tx/${t.arc_tx_hash}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mono underline decoration-dotted underline-offset-2 hover:text-[var(--accent)] transition-colors"
+                      >
+                        {shortHash(t.arc_tx_hash)}
+                      </a>
+                      <span className="i-lucide-external-link w-2.5 h-2.5" />
+                    </span>
+                    {t.commit_block_number != null && (
+                      <span className="flex items-center gap-1">
+                        <span className="i-lucide-box w-3 h-3" />
+                        Block #{t.commit_block_number.toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {!t.arc_tx_hash && (
+                  <div className="caption text-[var(--text-4)] flex items-center gap-1 mb-2">
+                    <span className="i-lucide-clock w-3 h-3" />
+                    Not yet anchored on-chain
+                  </div>
+                )}
+
                 {/* Verify button + strategy back-link */}
                 <div className="flex gap-2 items-center flex-wrap">
                   <button
                     className="btn btn-outline btn-sm flex items-center gap-1.5"
                     onClick={() => verifyTrace(t.id)}
                     disabled={verifying[t.id]}
+                    title="Re-fetch the on-chain receipt and confirm the trace hash matches"
                   >
                     {verifying[t.id] ? (
                       'Verifying…'
+                    ) : vResult?.is_verified ? (
+                      <><span className="i-lucide-check w-3.5 h-3.5 positive" /> Hash verified ✓</>
                     ) : (
-                      <><span className="i-lucide-search w-3.5 h-3.5" /> Verify on-chain</>
+                      <><span className="i-lucide-search w-3.5 h-3.5" /> Verify hash on-chain</>
                     )}
                   </button>
                   {t.strategy_id && onNavigate && (
@@ -247,56 +286,23 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                       → Strategy in Library
                     </button>
                   )}
-                  {vResult && (
-                    <div className="flex flex-col gap-1.5 mt-1">
-                      <span className={`caption flex items-center gap-1 ${vResult.is_verified ? 'positive' : 'negative'}`}>
-                        <span className={vResult.is_verified ? 'i-lucide-check w-3 h-3' : 'i-lucide-x w-3 h-3'} />
-                        {vResult.details}
-                      </span>
+                  {vResult && !vResult.is_verified && (
+                    <span className="caption flex items-center gap-1 negative">
+                      <span className="i-lucide-x w-3 h-3" />
+                      {vResult.details}
+                    </span>
+                  )}
 
-                      {/* On-chain receipt details */}
-                      {vResult.is_verified && t.arc_tx_hash && (
-                        <div className="flex items-center gap-3 flex-wrap text-xs text-[var(--text-3)]">
-                          <span className="flex items-center gap-1">
-                            <span className="i-lucide-file-text w-3 h-3" />
-                            Tx: <a
-                              href={`https://testnet.arcscan.app/tx/${t.arc_tx_hash}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="mono underline decoration-dotted underline-offset-2 hover:text-[var(--accent)] transition-colors"
-                            >
-                              {shortHash(t.arc_tx_hash)}
-                            </a>
-                            <span className="i-lucide-external-link w-2.5 h-2.5" />
-                          </span>
-                          {vResult.commit_block_number != null && (
-                            <span className="flex items-center gap-1">
-                              <span className="i-lucide-box w-3 h-3" />
-                              Block #{vResult.commit_block_number.toLocaleString()}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {!t.arc_tx_hash && vResult.is_verified && (
-                        <span className="caption text-[var(--text-4)] flex items-center gap-1">
-                          <span className="i-lucide-clock w-3 h-3" />
-                          Not yet anchored on-chain
-                        </span>
-                      )}
+                  {/* Why does this matter? disclosure — always available,
+                      not gated behind clicking Verify. */}
+                  <details className="mt-1.5 w-full">
+                    <summary className="caption text-[var(--text-4)] cursor-pointer hover:text-[var(--text-2)] transition-colors select-none">
+                      Why does this matter?
+                    </summary>
+                    <div className="caption text-[var(--text-3)] mt-1.5 max-w-[480px] leading-relaxed">
+                      The hash is computed deterministically from the agent's reasoning, allocations, and regime context. By anchoring it on Arc's <code>ReasoningTraceRegistry</code>, anyone can independently recompute the hash and confirm the agent's decision existed at the recorded block — proving the reasoning preceded the trade, not the other way around.
                     </div>
-                  )}
-
-                  {/* Why does this matter? disclosure */}
-                  {vResult && !verifying[t.id] && (
-                    <details className="mt-1.5">
-                      <summary className="caption text-[var(--text-4)] cursor-pointer hover:text-[var(--text-2)] transition-colors select-none">
-                        Why does this matter?
-                      </summary>
-                      <div className="caption text-[var(--text-3)] mt-1.5 max-w-[480px] leading-relaxed">
-                        The hash is computed deterministically from the agent's reasoning, allocations, and regime context. By anchoring it on Arc's <code>ReasoningTraceRegistry</code>, anyone can independently recompute the hash and confirm the agent's decision existed at the recorded block — proving the reasoning preceded the trade, not the other way around.
-                      </div>
-                    </details>
-                  )}
+                  </details>
                 </div>
 
                 {/* Temporal binding verification */}
