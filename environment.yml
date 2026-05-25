@@ -38,6 +38,7 @@ dependencies:
       - yfinance>=0.2.40              # Historical + live equity/ETF/crypto data; for backtesting
       - requests>=2.32
       - aiohttp>=3.13.5               # Floor aligned with backend/requirements.txt via dependabot PR #250.
+      - httpx>=0.27                   # Directly imported by services/corpus_service.py (arXiv intake) and services/llm_backend.py (OpenAI-compatible + Ollama). Pinned so we don't rely on transitive resolution.
 
       # --- Backtesting (per backtrader-vs-vectorbt decision memo) ---
       - backtrader>=1.9.78.123        # Decision: v1 default. See docs/specs/backtrader-vs-vectorbt-decision-memo.md. Floor aligned with backend/requirements.txt via dependabot PR #249.

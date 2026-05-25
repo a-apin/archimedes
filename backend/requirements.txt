@@ -25,6 +25,10 @@ scipy>=1.13
 yfinance>=0.2.40
 requests>=2.32
 aiohttp>=3.13.5
+# httpx is directly imported by services/corpus_service.py (arXiv intake) and
+# services/llm_backend.py (OpenAI-compatible + Ollama backends). Pinned directly
+# so we don't rely on it arriving transitively via anthropic/fastapi.
+httpx>=0.27
 
 # Backtesting
 backtrader>=1.9.78.123
