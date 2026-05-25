@@ -42,6 +42,10 @@ const arcTestnet = {
 // Demo-grade persistence. Per Circle docs, production should use httpOnly
 // cookies to mitigate XSS credential theft — out of scope for hackathon demo.
 const CREDENTIAL_STORAGE_KEY = 'archimedes_circle_credential'
+// Per-device username so Circle's server-side uniqueness check doesn't lock
+// out everyone after the first registrant (see issue #367). Generated on
+// first use; same key reused across sessions so MSCA address stays stable.
+const USERNAME_STORAGE_KEY = 'archimedes_circle_username'
 
 // True if a CLIENT_KEY was supplied at build time. The modal hides the
 // passkey option when this is false so we never show a broken button.
@@ -62,8 +66,30 @@ function saveCredential(credential) {
   } catch { /* storage unavailable */ }
 }
 
+// Returns the per-device username, generating + persisting one on first use.
+// Format: `archimedes-<8 hex chars>` — within Circle's 5-50 char and
+// [a-zA-Z0-9_@.:+-] constraints; 8 hex = 4 billion namespaces, collision-free
+// in practice across a hackathon team and any number of judges.
+function getOrCreateUsername() {
+  try {
+    const existing = localStorage.getItem(USERNAME_STORAGE_KEY)
+    if (existing) return existing
+    const suffix = (crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`)
+      .replace(/-/g, '')
+      .slice(0, 8)
+    const fresh = `archimedes-${suffix}`
+    localStorage.setItem(USERNAME_STORAGE_KEY, fresh)
+    return fresh
+  } catch {
+    return `archimedes-${Date.now()}`
+  }
+}
+
 export function clearCircleSession() {
-  try { localStorage.removeItem(CREDENTIAL_STORAGE_KEY) } catch { /* */ }
+  try {
+    localStorage.removeItem(CREDENTIAL_STORAGE_KEY)
+    localStorage.removeItem(USERNAME_STORAGE_KEY)
+  } catch { /* */ }
 }
 
 // Returns true if a previously-registered passkey is on file for this
@@ -105,11 +131,14 @@ function friendlyPasskeyError(err) {
 // Username constraint per Circle API: 5-50 chars, [a-zA-Z0-9_@.:+-]+ only.
 // Spaces are rejected; 'Archimedes user' (the old default) failed every
 // first-time signup with "The username is invalid."
-export async function connectCirclePasskey({ mode = 'auto', username = 'archimedes' } = {}) {
+// Username is per-device (see getOrCreateUsername) so Circle's server-side
+// uniqueness check doesn't collide across teammates / judges — issue #367.
+export async function connectCirclePasskey({ mode = 'auto', username } = {}) {
   if (!circlePasskeyEnabled()) {
     throw new Error('Circle passkey wallet is not configured (missing VITE_CIRCLE_CLIENT_KEY).')
   }
 
+  const resolvedUsername = username ?? getOrCreateUsername()
   const stored = loadStoredCredential()
   let resolvedMode = mode === 'auto'
     ? (stored ? WebAuthnMode.Login : WebAuthnMode.Register)
@@ -125,7 +154,7 @@ export async function connectCirclePasskey({ mode = 'auto', username = 'archimed
     credential = await toWebAuthnCredential({
       transport: passkeyTransport,
       mode: resolvedMode,
-      username,
+      username: resolvedUsername,
       credentialId: resolvedMode === WebAuthnMode.Login ? stored?.id : undefined,
     })
   } catch (err) {
@@ -143,7 +172,7 @@ export async function connectCirclePasskey({ mode = 'auto', username = 'archimed
         credential = await toWebAuthnCredential({
           transport: passkeyTransport,
           mode: WebAuthnMode.Login,
-          username,
+          username: resolvedUsername,
         })
       } catch (retryErr) {
         throw new Error(friendlyPasskeyError(retryErr), { cause: retryErr })
