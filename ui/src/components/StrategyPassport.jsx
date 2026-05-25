@@ -27,6 +27,24 @@ function statusTag(status) {
   return 'tag-accent'
 }
 
+// Derive a brief-specific display title. The unified passport table doesn't
+// persist `strategy_name`, but Pi's #336 fix ensures methodology_summary
+// always starts with "For brief 'XXX': YYY" — extract XXX as the title so
+// each generated strategy reads differently. Falls back to paper title for
+// legacy strategies and curated ones (whose methodology_summary doesn't
+// follow that template).
+function deriveDisplayTitle(s) {
+  const m = (s.methodology_summary || '').match(/^For brief ['"](.+?)['"]\s*:/i)
+  if (m && m[1]) return m[1].trim()
+  return s.paper_title || s.id
+}
+
+function regimeChip(tag) {
+  if (tag === 'bull') return { label: '🟢 Bull regime', cls: 'tag-positive' }
+  if (tag === 'bear') return { label: '🔴 Bear regime', cls: 'tag-negative' }
+  return null
+}
+
 export default function StrategyPassport({ strategyId, onNavigate, walletAddr }) {
   const [strategy, setStrategy] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -69,6 +87,14 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
     s.paper_authors?.[0]?.split(' ').pop(),
     s.paper_year && `(${s.paper_year})`,
   ].filter(Boolean).join(' ')
+  const displayTitle = deriveDisplayTitle(s)
+  const regime = regimeChip(s.regime_tag)
+  // Show the anchor-paper title as a sub-line only when the derived title is
+  // brief-specific (i.e. we did extract it from methodology_summary) AND a
+  // paper title exists. Otherwise the sub-line would duplicate the heading.
+  const paperAnchorLine = (displayTitle !== s.paper_title && s.paper_title)
+    ? `Anchored on: ${s.paper_title}`
+    : null
 
   return (
     <div className="max-w-[920px]">
@@ -79,12 +105,16 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
       {/* Header */}
       <div className="fade-up fade-up-1 mb-6">
         <div className="caption mb-1 uppercase tracking-wider text-[var(--text-4)]">Strategy Passport</div>
-        <h2 className="font-serif text-[2rem] mb-2 leading-tight">{s.paper_title || s.id}</h2>
+        <h2 className="font-serif text-[2rem] mb-2 leading-tight">{displayTitle}</h2>
+        {paperAnchorLine && (
+          <div className="caption mb-1" style={{ color: 'var(--text-3)' }}>{paperAnchorLine}</div>
+        )}
         <div className="caption mb-3">
           {paperCite || (s.paper_year ? `(${s.paper_year})` : '')}
           {s.paper_venue && <> · {s.paper_venue}</>}
         </div>
         <div className="flex gap-2 items-center flex-wrap">
+          {regime && <span className={`tag ${regime.cls}`}>{regime.label}</span>}
           <span className={`tag ${statusTag(s.status)}`} style={{ textTransform: 'capitalize' }}>{s.status || 'candidate'}</span>
           {s.passes_rigor_gate === true && (
             <span className="tag tag-positive">✓ rigor gate passed</span>
