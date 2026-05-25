@@ -194,7 +194,16 @@ export default function App() {
     switch (page) {
       case 'landing':     return <Landing onNavigate={navigateToPage} />
       case 'explore':      return <Explore />
-      case 'generate':     return <Generate onNavigate={navigateToPage} />
+      case 'generate':     return (
+        <WalletGate
+          walletAddr={walletAddr}
+          pageName="Generate"
+          description="Generate uses an LLM-powered multi-agent pipeline against a 9,873-paper q-fin corpus. Connect a wallet — sign in with a passkey, no extension needed — to run the agent and persist your generated strategies in your library."
+          onConnect={openConnectModal}
+        >
+          <Generate onNavigate={navigateToPage} />
+        </WalletGate>
+      )
       case 'architecture': return <Architecture onNavigate={navigateToPage} />
       case 'library':      return (
         <WalletGate
@@ -218,7 +227,16 @@ export default function App() {
           <Portfolio walletAddr={walletAddr} onSelectVault={selectVault} onSelectTrace={selectTrace} onNavigate={navigateToPage} />
         </WalletGate>
       )
-      case 'reasoning':    return <Reasoning onNavigate={navigateToPage} />
+      case 'reasoning':    return (
+        <WalletGate
+          walletAddr={walletAddr}
+          pageName="Reasoning"
+          description="Reasoning is the audit trail for every autonomous agent decision — hashed off-chain and anchored on Arc via the ReasoningTraceRegistry contract. Connect a wallet to inspect traces and verify hashes against the on-chain registry."
+          onConnect={openConnectModal}
+        >
+          <Reasoning onNavigate={navigateToPage} />
+        </WalletGate>
+      )
       case 'learnings':    return (
         <WalletGate
           walletAddr={walletAddr}

@@ -209,9 +209,6 @@ export default function Generate({ onNavigate }) {
           relevant q-fin papers, fuses them with live market context, sizes positions
           with Kelly + risk parity, and anchors every decision on Arc.
         </p>
-        <p className="body text-[var(--text-3)]">
-          No wallet required to generate. Wallet is only needed to deposit into a vault.
-        </p>
       </div>
 
       {/* ── COLLAPSIBLE: How this works + Tips + Example briefs ──

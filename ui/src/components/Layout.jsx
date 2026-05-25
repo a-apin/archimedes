@@ -4,17 +4,23 @@ import Breadcrumbs from './Breadcrumbs'
 import WelcomeProfileModal from './WelcomeProfileModal'
 import { NEW_CONTRACTS } from '../config'
 
-// Spine per docs/user-stories.md. Reasoning is in nav until the per-page modal
-// affordances are fully wired (user-stories.md ideal); for now traces need a
-// browse surface so users can actually inspect them.
+// Sidebar groups split the 9 surfaces along the gating boundary:
+//   DISCOVER — open to anonymous visitors (no wallet needed)
+//   STRATEGY — wallet-gated: generate + your saved strategies
+//   POSITION — wallet-gated: deployed vaults, on-chain audit, post-hoc review
+// The group label renders as a small-caps section header in the sidebar.
 const NAV = [
-  { group: '', items: [
-    { id: 'landing',   label: 'Home',      icon: 'i-lucide-home' },
-    { id: 'explore',   label: 'Explore',   icon: 'i-lucide-compass' },
-    { id: 'generate',  label: 'Generate',  icon: 'i-lucide-sparkles' },
+  { group: 'Discover', items: [
+    { id: 'landing',      label: 'Home',         icon: 'i-lucide-home' },
+    { id: 'explore',      label: 'Explore',      icon: 'i-lucide-compass' },
     { id: 'architecture', label: 'Architecture', icon: 'i-lucide-network' },
-    { id: 'library',   label: 'Library',   icon: 'i-lucide-line-chart' },
-    { id: 'corpus',    label: 'Corpus',    icon: 'i-lucide-library' },
+    { id: 'corpus',       label: 'Corpus',       icon: 'i-lucide-library' },
+  ]},
+  { group: 'Strategy', items: [
+    { id: 'generate', label: 'Generate', icon: 'i-lucide-sparkles' },
+    { id: 'library',  label: 'Library',  icon: 'i-lucide-line-chart' },
+  ]},
+  { group: 'Position', items: [
     { id: 'portfolio', label: 'Portfolio', icon: 'i-lucide-layout-dashboard' },
     { id: 'reasoning', label: 'Reasoning', icon: 'i-lucide-brain' },
     { id: 'learnings', label: 'Learnings', icon: 'i-lucide-graduation-cap' },
