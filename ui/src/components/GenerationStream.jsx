@@ -72,7 +72,7 @@ function summarizeEvent(name, data) {
   }
 }
 
-export default function GenerationStream({ jobId, onDone, onReset, onPipelineSelected }) {
+export default function GenerationStream({ jobId, onDone, onReset, onPipelineSelected, onNavigate }) {
   const [events, setEvents] = useState([])
   const [terminal, setTerminal] = useState(null)  // 'done' | 'error' | null
   const [strategyId, setStrategyId] = useState(null)
@@ -268,7 +268,14 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
                     style={{ width: '100%', marginTop: 4 }}
                     onClick={() => {
                       localStorage.removeItem('archimedes:currentJobId')
-                      window.location.hash = `#/library?highlight=${c.strategy_id}`
+                      // SPA navigation through the parent router. Falls back to a
+                      // full-page nav if onNavigate isn't wired through, so the
+                      // button never silently does nothing.
+                      if (onNavigate) {
+                        onNavigate('library', { highlight: c.strategy_id })
+                      } else {
+                        window.location.href = `/library?highlight=${encodeURIComponent(c.strategy_id)}`
+                      }
                     }}
                   >
                     View in Library →

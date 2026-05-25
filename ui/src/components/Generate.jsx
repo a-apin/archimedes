@@ -378,6 +378,7 @@ export default function Generate({ onNavigate }) {
           onDone={onJobDone}
           onReset={resetJob}
           onPipelineSelected={handlePipelineEvent}
+          onNavigate={onNavigate}
         />
       )}
 
