@@ -7,7 +7,7 @@ const AGENTS = [
   {
     name: 'Strategy Generation Agent',
     role: 'What should be done?',
-    desc: 'Retrieves relevant papers from a 1,014-paper q-fin corpus, reads current market context, and synthesizes a candidate strategy that passes the rigor gate.',
+    desc: 'Retrieves relevant papers from a 9,873-paper q-fin corpus, reads current market context, and synthesizes a candidate strategy that passes the rigor gate.',
     subagents: [
       { name: 'Paper Retrieval', detail: 'SPECTER2 nearest-neighbour + KG entity walk' },
       { name: 'Market Context', detail: 'Regime classifier + on-chain oracle + price history' },
@@ -84,7 +84,7 @@ const MEMORY_LAYERS = [
   {
     tag: 'E',
     name: 'Semantic knowledge',
-    substrate: 'q-fin corpus (1,014 papers, SPECTER2 + clusters + KG)',
+    substrate: 'q-fin corpus (9,873 papers, SPECTER2 + clusters + KG)',
     lifetime: 'Persistent',
     why: 'The substrate the Strategy Generation Agent retrieves from.',
   },
@@ -106,7 +106,7 @@ function PageHeader() {
         paper-anchored, rigor-gated, and auditable end to end.
       </p>
       <p className="body" style={{ color: 'var(--text-3)' }}>
-        Three top-level agents, six memory layers, a 1,014-paper q-fin corpus, and the{' '}
+        Three top-level agents, six memory layers, a 9,873-paper q-fin corpus, and the{' '}
         <code>ReasoningTraceRegistry</code> on Arc anchoring every decision.
       </p>
     </div>
@@ -117,7 +117,7 @@ function HeroStrip() {
   const stats = [
     { n: '3', l: 'Top-level agents', s: 'Generation · Construction · Execution' },
     { n: '6', l: 'Memory layers', s: 'KV cache → on-chain ground truth' },
-    { n: '1,014', l: 'q-fin papers', s: 'SPECTER2 + clusters + KG' },
+    { n: '9,873', l: 'q-fin papers', s: 'SPECTER2 + clusters + KG' },
     { n: '10', l: 'Smart contracts', s: 'Deployed on Arc testnet' },
   ]
   return (
@@ -258,7 +258,7 @@ function CorpusPanel() {
     <div className="card p-5 mb-7">
       <div className="label mb-3">The q-fin corpus — Layer E in detail</div>
       <p className="body mb-4">
-        1,014 peer-reviewed papers ingested via PyMuPDF, embedded with SPECTER2, clustered
+        9,873 peer-reviewed papers ingested via PyMuPDF, embedded with SPECTER2, clustered
         with HDBSCAN, and linked with REBEL + SciSpacy into a knowledge graph. The
         Strategy Generation Agent's <strong>Paper Retrieval</strong> sub-agent uses this
         substrate every time you submit a brief.
@@ -278,7 +278,7 @@ function CorpusPanel() {
         ))}
       </div>
       <p className="caption mt-3" style={{ color: 'var(--text-3)' }}>
-        Seed target: ~10,000 papers. Currently ingested: 1,014 — REBEL knowledge-graph extraction
+        Seed target: ~10,000 papers. Currently ingested: 9,873 — REBEL knowledge-graph extraction
         on the full set runs as we expand the corpus.
       </p>
     </div>
