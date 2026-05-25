@@ -3,7 +3,7 @@ export default function Landing({ onNavigate }) {
     <div className="min-h-screen bg-[var(--canvas)] overflow-x-hidden font-[var(--sans)]">
 
       {/* ── Hero ─────────────────────────────────────────────────── */}
-      <section className="pt-8 pb-16 px-4 text-center border-b border-[var(--glass-border)] bg-[var(--canvas)] sm:px-6 sm:pb-20 lg:px-12 lg:pb-28">
+      <section className="pt-6 pb-10 px-4 text-center border-b border-[var(--glass-border)] bg-[var(--canvas)] sm:px-6 sm:pb-12 lg:px-12 lg:pb-16">
         <div className="max-w-[760px] mx-auto">
           <span style={{
             display: 'inline-block',
@@ -15,23 +15,23 @@ export default function Landing({ onNavigate }) {
             border: '1px solid var(--accent)',
             borderRadius: '9999px',
             padding: '4px 16px',
-            marginBottom: '28px',
+            marginBottom: '20px',
             opacity: 0.85,
           }}>
             Agora Agents Hackathon 2026
           </span>
-          <p className="font-serif italic text-[1rem] text-[var(--text-3)] mb-4 md:text-[1.1rem]">
+          <p className="font-serif italic text-[1rem] text-[var(--text-3)] mb-3 md:text-[1.1rem]">
             Linus for quantitative finance.
           </p>
-          <h1 className="font-serif text-[2.1rem] font-normal leading-[1.1] mb-6 text-[var(--text-1)] sm:text-[2.8rem] lg:text-[3.4rem]">
-            <span className="text-[var(--accent)]">Paper-Grounded.</span><br />
-            On-Chain Verifiable.<br />
+          <h1 className="font-serif text-[2.1rem] font-normal leading-[1.15] mb-5 text-[var(--text-1)] sm:text-[2.6rem] lg:text-[3.1rem]">
+            <span className="text-[var(--accent)]">Paper-Grounded.</span>{' '}
             <span className="text-[var(--text-3)]">Autonomously Managed.</span>
           </h1>
-          <p className="text-[0.98rem] leading-[1.75] text-[var(--text-2)] max-w-[620px] mx-auto mb-10 md:text-[1.08rem]">
-            Archimedes turns peer-reviewed quant research into rigor-gated, investable
-            strategies — generated for your brief, executed in non-custodial vaults
-            on Arc, with every decision hashed and verifiable on-chain.
+          <p className="text-[0.98rem] leading-[1.65] text-[var(--text-2)] max-w-[620px] mx-auto mb-8 md:text-[1.08rem]">
+            Archimedes turns bleeding-edge academic research into rigor-gated,
+            investable strategies — generated for your brief, executed in
+            non-custodial vaults on Arc, with every decision hashed and
+            verifiable on-chain.
           </p>
           <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:justify-center sm:items-center">
             <button className="btn-primary" onClick={() => onNavigate('generate')}>
@@ -41,7 +41,7 @@ export default function Landing({ onNavigate }) {
               Browse Example Library
             </button>
           </div>
-          <p className="caption mt-5 text-[var(--text-4)]">
+          <p className="caption mt-4 text-[var(--text-4)]">
             No wallet needed to generate. Wallet only required to deposit into a vault.
           </p>
         </div>
@@ -52,8 +52,9 @@ export default function Landing({ onNavigate }) {
         <SectionTitle>Why Archimedes?</SectionTitle>
         <div className="lg-grid-4">
           <FeatureCard icon="file-text" title="Paper-Grounded Strategies" tag="SMA200 · TSMOM · Vol-Managed">
-            Every strategy is extracted from published, peer-reviewed quant finance
-            research. No vibes, no hype — academic rigor meets autonomous execution.
+            Every strategy is extracted from bleeding-edge academic research in
+            quantitative finance, machine learning, agentic systems, and pure
+            mathematics. No vibes, no hype — academic rigor meets autonomous execution.
           </FeatureCard>
           <FeatureCard icon="link" title="On-Chain Provenance" tag="Commit-Reveal · Verifiable">
             Every rebalance decision gets a keccak256 hash anchored on Arc.
@@ -112,7 +113,7 @@ export default function Landing({ onNavigate }) {
         </div>
       </LSection>
 
-      {/* ── Circle Ecosystem ─────────────────────────────────────── */}
+      {/* ── Circle Ecosystem (live integrations only) ───────────── */}
       <LSection>
         <SectionTitle>Circle Ecosystem Integration</SectionTitle>
         <div className="lg-grid-3">
@@ -128,43 +129,15 @@ export default function Landing({ onNavigate }) {
             10 Solidity contracts deployed: Vault, VaultFactory, AMMPool,
             AMMRouter, SyntheticFactory, PriceOracle, ReasoningTraceRegistry.
           </FeatureCard>
-          <FeatureCard icon="arrow-left-right"  title="CCTP Cross-Chain"             tag="Bridge · Arbitrum · ETH">
-            Bridge USDC across chains via Circle's CCTP protocol.
-            Arc testnet supports CCTP for seamless cross-chain liquidity.
-          </FeatureCard>
-          <FeatureCard icon="zap"               title="Paymaster (Gasless)"           tag="Sponsor · ERC-4337">
-            Arc Paymaster enables gasless transactions for users.
-            Users can interact with vaults without holding native gas tokens.
-          </FeatureCard>
-          <FeatureCard icon="layers"            title="Gateway + USYC"               tag="Nanopayments · Balance API">
-            Unified balance queries across chains. USYC yield token integration
-            for vault floor enforcement per risk profile.
-          </FeatureCard>
         </div>
       </LSection>
 
-      {/* ── CTA ──────────────────────────────────────────────────── */}
-      <section className="py-16 px-4 text-center border-b border-[var(--glass-border)] sm:px-6 lg:py-20 lg:px-12">
-        <h2 className="font-serif text-[1.8rem] font-normal text-[var(--text-1)] mb-3 md:text-[2.2rem]">
-          Give me a lever long enough<br />and I shall move the world.
-        </h2>
-        <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--text-3)] mb-6">
-          — Archimedes (paraphrased)
+      {/* ── Footer band (closing tagline only) ──────────────────── */}
+      <section className="py-6 px-4 text-center border-b border-[var(--glass-border)] sm:px-6 lg:py-8 lg:px-12">
+        <p className="font-serif italic text-[1rem] text-[var(--text-3)] md:text-[1.05rem]">
+          The lever is academic research. The fulcrum is autonomous AI. The world is your portfolio.
         </p>
-        <p className="text-sm text-[var(--text-2)] leading-relaxed mb-8">
-          The lever is academic research.<br />
-          The fulcrum is autonomous AI.<br />
-          The world is your portfolio.
-        </p>
-        <div className="hero-actions flex justify-center items-center gap-3">
-          <button className="btn-primary" onClick={() => onNavigate('generate')}>
-            Generate a Strategy →
-          </button>
-          <button className="btn-secondary" onClick={() => onNavigate('portfolio')}>
-            Open Portfolio
-          </button>
-        </div>
-        <p className="mt-8 text-xs text-[var(--text-4)]">
+        <p className="mt-3 text-xs text-[var(--text-4)]">
           Powered by{' '}
           <strong className="text-[var(--text-2)]">Arc</strong>
           {' × '}
@@ -190,7 +163,7 @@ function LSection({ children }) {
 
 function SectionTitle({ children }) {
   return (
-    <h2 style={{fontFamily:'var(--serif)',fontSize:'1.6rem',fontWeight:400,textAlign:'center',marginBottom:'2rem',color:'var(--text-1)',width:'100%'}}>
+    <h2 style={{fontFamily:'var(--serif)',fontSize:'1.6rem',fontWeight:400,textAlign:'center',marginBottom:'1.5rem',color:'var(--text-1)',width:'100%'}}>
       {children}
     </h2>
   )
@@ -208,4 +181,3 @@ function FeatureCard({ icon, title, tag, children }) {
     </div>
   )
 }
-

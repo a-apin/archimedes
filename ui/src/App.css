@@ -2398,11 +2398,11 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 48px 24px;
+  padding: 32px 24px;
   border-bottom: 1px solid var(--glass-border);
 }
-@media (min-width: 768px)  { .l-section { padding: 56px 32px; } }
-@media (min-width: 1024px) { .l-section { padding: 64px 48px; } }
+@media (min-width: 768px)  { .l-section { padding: 36px 32px; } }
+@media (min-width: 1024px) { .l-section { padding: 40px 48px; } }
 
 .lg-grid-4 {
   display: grid;
