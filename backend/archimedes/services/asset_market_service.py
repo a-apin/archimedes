@@ -44,12 +44,17 @@ _YF_STALE_WINDOW_SECONDS = 4 * 24 * 60 * 60  # yfinance daily-close → stale if
 _ORACLE_READ_TIMEOUT = 5  # seconds per individual chain read
 
 # Range param → (yfinance period, yfinance interval). Daily intervals work
-# for week / month / year ranges; the 1D button uses 5-minute intraday data.
+# for week / month / year ranges; 1D uses 5-minute intraday data; the longer
+# ranges (5Y / 10Y / MAX) downsample to weekly / monthly bars to keep the
+# point count and the chart legible. "max" pulls the asset's full history.
 _HISTORY_RANGE_MAP: dict[str, tuple[str, str]] = {
     "1D": ("2d", "5m"),
     "1W": ("1mo", "1d"),
     "1M": ("3mo", "1d"),
     "1Y": ("1y", "1d"),
+    "5Y": ("5y", "1wk"),
+    "10Y": ("10y", "1wk"),
+    "MAX": ("max", "1mo"),
 }
 
 

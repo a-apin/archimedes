@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
-const RANGES = ['1D', '1W', '1M', '1Y']
+const RANGES = ['1D', '1W', '1M', '1Y', '5Y', '10Y', 'MAX']
 
 function fmtPrice(v) {
   if (v == null || Number.isNaN(v)) return '—'

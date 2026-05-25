@@ -54,11 +54,11 @@ class ExploreHistoryPoint(BaseModel):
     price: float
 
 
-HistoryRange = Literal["1D", "1W", "1M", "1Y"]
+HistoryRange = Literal["1D", "1W", "1M", "1Y", "5Y", "10Y", "MAX"]
 
 
 class ExploreHistoryResponse(BaseModel):
     symbol: str
     range: HistoryRange = "1M"
-    interval: Literal["1m", "5m", "1h", "1d"] = "1d"
+    interval: Literal["1m", "5m", "1h", "1d", "1wk", "1mo"] = "1d"
     points: list[ExploreHistoryPoint]
