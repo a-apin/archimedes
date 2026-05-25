@@ -776,7 +776,7 @@ worse without orientation.
 - 6-card modal, MetaMask-style with pagination dots, illustrations, Continue/Skip
 - Card content:
   1. **What is Archimedes?** — Research-grounded strategy generation; not a robo-advisor
-  2. **Browse the corpus** — 10k peer-reviewed q-fin papers feed every strategy
+  2. **Browse the corpus** — 10k bleeding-edge academic q-fin papers feed every strategy
   3. **Generate a strategy** — Describe what you want; the agent fuses papers into a hypothesis
   4. **Inspect the reasoning** — Every decision is hashed and verifiable on Arc
   5. **Deploy as a vault** — Time-bound execution; you control the window

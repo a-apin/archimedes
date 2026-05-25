@@ -75,7 +75,7 @@ Foundry, Circle wallet, and oracle targets (`compile`, `test`, `wallet`, `feed`,
 | DeFi yield aggregators    | Yearn, Morpho-curated vaults              | Chase live yield, curation without proof of methodology   |
 | AI-flavored crypto agents | Virtuals, SingularityDAO, Theoriq         | Token-mediated speculation; reasoning opaque              |
 
-**Nobody is grounding portfolio decisions in peer-reviewed quant research with verifiable on-chain reasoning, settled in pure USDC.** That's the gap. Full thesis: [`docs/competitor-landscape.md`](docs/competitor-landscape.md).
+**Nobody is grounding portfolio decisions in bleeding-edge academic quant research with verifiable on-chain reasoning, settled in pure USDC.** That's the gap. Full thesis: [`docs/competitor-landscape.md`](docs/competitor-landscape.md).
 
 ## User journey
 

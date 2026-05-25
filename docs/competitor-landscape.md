@@ -17,7 +17,7 @@ product.** The on-chain asset-management stack now has billion-dollar rails
 (Morpho) and billion-dollar curators (Gauntlet) — and the **November 2025 curator
 crisis proved the rails held while the curation layer above them broke precisely
 on rigor.** Every funded incumbent runs **trust-based** curation. Archimedes is
-the **proof-based** answer: strategies grounded in peer-reviewed research and
+the **proof-based** answer: strategies grounded in bleeding-edge academic research and
 admitted only through a selection-bias rigor gate (DSR / PBO / walk-forward /
 look-ahead), with the reasoning trace anchored on-chain.
 
@@ -129,8 +129,8 @@ in `/tmp/research/rivals.md`. Threat-ranked:
 | Field (regimeshift-fx, trading-r1, rosetta-alpha, vrp-agent, signal-to-settlement, ArcLayer, storescope, arc-agent-pay) | Various Arc trading/agent angles | Low–Med | None claim research-grounded rigor |
 
 **The uncontested wedge:** Pantheon *deliberates*, ReasoningReceipt *attests* —
-**none anchor to peer-reviewed methodology with a DSR/PBO selection-bias gate.**
-If we visibly ship live peer-reviewed signals + on-chain rigor proof + verifiable
+**none anchor to academic methodology with a DSR/PBO selection-bias gate.**
+If we visibly ship live academically-grounded signals + on-chain rigor proof + verifiable
 traces, we own "AI agents with research credibility" outright. Defend the trace
 narrative against ReasoningReceipt by leading with *rigor*, not just *receipts*.
 
@@ -139,7 +139,7 @@ narrative against ReasoningReceipt by leading with *rigor*, not just *receipts*.
 ## Where Archimedes wedges (the honest claims)
 
 1. **Research-grounded + rigor-gated provenance.** No Tier-0 or Tier-1 player
-   sources strategies from peer-reviewed research and gates them through
+   sources strategies from bleeding-edge academic research and gates them through
    DSR/PBO/walk-forward/look-ahead. This is the answer to the Nov-2025 curation
    failure and the single cleanest differentiator.
 2. **Verifiable per-decision reasoning trace anchored on Arc.** ReasoningReceipt
@@ -195,7 +195,7 @@ revision) if needed for a deep pitch Q&A.
 ```
 THE CURATION LAYER IS BROKEN                  ARCHIMEDES CLOSES IT
 ──────────────────────────────                ──────────────────────
-Morpho — $7.5B rails held; curation broke     Strategies from peer-reviewed research
+Morpho — $7.5B rails held; curation broke     Strategies from bleeding-edge academic research
 Gauntlet — largest curator, "cosplaying risk" Admitted only via DSR/PBO rigor gate
 Upshift — trusts curators, doesn't prove them  Every decision hashed + on-chain
 Accountable — proves capital is real          We prove the *method* is real

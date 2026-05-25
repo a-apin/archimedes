@@ -36,7 +36,7 @@ Xia et al. audited 19 trading-agent papers and found **15/19 are R0** (no code/d
 
 - On-chain vault state (Layer A.2) always overrides LLM narrative.
 - The `V_check` contract rejects actions that violate deterministic constraints regardless of agent confidence.
-- Peer-reviewed KB signals outrank uncurated sources (we ingest only peer-reviewed papers; Reddit/social are out of scope).
+- Curated academic KB signals outrank uncurated sources (we ingest curated academic research (arxiv-sourced); Reddit/social are out of scope).
 
 ## 4. Source Tracking (§ 4.3)
 

@@ -167,7 +167,7 @@ template exists, use that. Generate 3–4 variants and pick the strongest.
 
 ```
 Project: Archimedes — an AI portfolio agent that grounds investment strategies in
-peer-reviewed quant finance research, settled on Arc (Circle's stablecoin-native L1)
+bleeding-edge academic quant finance research, settled on Arc (Circle's stablecoin-native L1)
 with USDC.
 
 I need a logo for the project. Generate 4 distinct logo concepts as separate options.

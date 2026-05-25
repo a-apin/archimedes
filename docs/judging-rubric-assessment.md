@@ -142,7 +142,7 @@ arc-canteen status
 
 **What we have that no other AI-portfolio submission will have:**
 
-- ✅ **Strategy passport** ([`specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md)) — every strategy carries paper arxiv-id + methodology hash + curator signature + on-chain registration tx. Other AI portfolios make "trust me" claims; ours is bound to peer-reviewed research with a verifiable hash chain. **Shipped + visible in the live UI.**
+- ✅ **Strategy passport** ([`specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md)) — every strategy carries paper arxiv-id + methodology hash + curator signature + on-chain registration tx. Other AI portfolios make "trust me" claims; ours is bound to bleeding-edge academic research with a verifiable hash chain. **Shipped + visible in the live UI.**
 - ✅ **Selection-bias corrections — live, not aspirational** ([`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md)). DSR (Bailey & López de Prado 2014) + PBO (Bailey/Borwein/López de Prado/Zhu 2014) + walk-forward OOS + look-ahead static audit. **2 Tier-1 strategies pass the gate today; the failures are visible** (we don't hide them). Real 22-year SPY backtest data — every `is_backtest_placeholder=true` flag is gone.
 - ✅ **Paper-claim deltas surfaced honestly** — `sharpe_vs_paper`, `cagr_vs_paper`, McLean-Pontiff (2016) post-publication-decay estimate. We show where the strategy was expected to live (paper) vs. where it actually lives (our re-run). Hidden by every competitor; surfaced by us as a feature.
 - ✅ **On-chain reasoning trace anchoring** — `ReasoningTraceRegistry` deployed; `chain/trace_publisher.py` anchors keccak256 hashes for every construct + fusion trace. Verifiable on Arc.

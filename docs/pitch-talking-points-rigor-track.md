@@ -10,7 +10,7 @@
 
 ## The 3-line elevator
 
-1. **What it is:** A non-custodial portfolio agent that turns peer-reviewed quantitative finance research into investable strategies on Arc.
+1. **What it is:** A non-custodial portfolio agent that turns bleeding-edge academic research in quantitative finance, machine learning, agentic systems, and pure mathematics into investable strategies on Arc.
 2. **Why it's defensible:** Every position is paper-anchored, rigor-gated (DSR + PBO + walk-forward OOS), covariance-optimized, stress-tested, and on-chain anchored. Not "trust me" — *verify it*.
 3. **Why now:** November 2025 showed that the curation layer above the on-chain asset-management stack breaks on rigor. We're the rigor.
 
@@ -89,7 +89,7 @@ If a judge asks "how is this different from [other Arc HackMoney AI-portfolio]?"
 | "Our model picked these stocks" | LLM agent with `get_correlation` / `stress_test_portfolio` tools, full trace |
 | Equal-weight or naive optimization | Constrained Markowitz/Kelly with identity-shrinkage covariance, Magdon-Ismail max-DD |
 | "Verifiable on-chain" (1 NFT) | Deterministic keccak hash you can recompute offline, anchored on `ReasoningTraceRegistry` |
-| "AI-powered" | Paper-anchored — every position traces to a peer-reviewed publication |
+| "AI-powered" | Paper-anchored — every position traces to an academic publication |
 
 ## The closer
 

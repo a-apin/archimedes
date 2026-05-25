@@ -31,7 +31,7 @@
 > **"The on-chain asset-management stack now has billion-dollar rails and billion-dollar
 > curators — and November 2025 proved the curation layer above them breaks on rigor.
 > Archimedes is the proof-based answer: a research-grounded strategy-generation instrument,
-> rigor-gated, with every decision traceable to a peer-reviewed paper and anchored on Arc."**
+> rigor-gated, with every decision traceable to a bleeding-edge academic paper and anchored on Arc."**
 
 One line beneath it, the product in a sentence:
 
@@ -62,7 +62,7 @@ shall move the world."
 > The agora is where citizens reasoned out loud. Archimedes reasoned with rigor —
 > empirically, from first principles, with proofs. **Archimedes the product is an AI
 > citizen who participates in the modern agora with that same rigor: every strategy is
-> fused from peer-reviewed research, every reasoning step is auditable down to its source
+> fused from bleeding-edge academic research, every reasoning step is auditable down to its source
 > document, every trade settles on Arc. The lever is academic research; the fulcrum is
 > autonomous AI; the world is your portfolio.**
 
@@ -225,7 +225,7 @@ roadmap, and we present it as roadmap, not as shipped.
 **Q: Does it actually generate *profitable* strategies?**
 A: Honestly — that's TBD; the proof is in the pudding and we won't claim otherwise. What
 we *prove today* is the things that are checkable: research provenance (every strategy
-traces to peer-reviewed papers), rigor (DSR/PBO/OOS/look-ahead), and on-chain
+traces to bleeding-edge academic papers), rigor (DSR/PBO/OOS/look-ahead), and on-chain
 verifiability. The goal is to win more than you lose, not to never lose — and to make
 every decision auditable so performance accrues as *verifiable history*.
 
