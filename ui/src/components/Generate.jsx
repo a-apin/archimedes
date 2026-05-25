@@ -23,16 +23,20 @@ const RISK_PROFILES = [
 ]
 const ASSET_CLASSES = ['equities', 'bonds', 'commodities', 'crypto', 'fx']
 
-const MODES = [
-  { id: 'agent', label: '🤖 Agent', desc: 'LLM portfolio agent with real-time market signals' },
-  { id: 'fusion', label: '🧪 Fusion (novel)', desc: 'Synthesize new strategies from multiple papers' },
-  { id: 'architect', label: '🏗️ Architect', desc: 'Select + weight from curated library' },
+// Hand-picked briefs that route cleanly through the auto-router and produce
+// a strategy a user can deploy without further coaching. Click fills the
+// textarea so the user can edit before submitting.
+const EXAMPLE_BRIEFS = [
+  'A 13-week treasury alternative with low volatility and crypto upside on Fridays',
+  'Trend-following momentum on liquid US equity ETFs, rebalanced monthly, regime-aware',
+  'Defensive equity strategy that rotates into bonds when realized volatility spikes',
+  'Long-only large-cap value with a quality screen and a max-drawdown circuit breaker',
 ]
 
 export default function Generate({ onNavigate }) {
   // ── Unified form state ──
-  const [mode, setMode] = useState('agent')
   const [intent, setIntent] = useState('')
+  const [helpOpen, setHelpOpen] = useState(false)
   const [riskAppetite, setRiskAppetite] = useState('moderate')
   const [selectedAssets, setSelectedAssets] = useState([])
   const [depth, setDepth] = useState(5)       // replaces max_papers UI
@@ -90,7 +94,11 @@ export default function Generate({ onNavigate }) {
             asset_classes: selectedAssets.length > 0 ? selectedAssets : undefined,
             max_papers: depth,
           },
-          mode: mode !== 'agent' ? mode : undefined,
+          // Mode is intentionally omitted — the backend's _pick_pipeline()
+          // auto-routes between Fusion / Architect / Agent based on corpus
+          // state and LLM availability. The selected route is surfaced in
+          // the SSE stream's "Pipeline selected" event so the user can see
+          // it transparently without us forcing a tab choice.
         }),
       })
       if (!res.ok) throw new Error(await res.text())
@@ -194,39 +202,111 @@ export default function Generate({ onNavigate }) {
 
   return (
     <div>
-      <div className="max-w-[720px] mb-7">
+      <div className="max-w-[720px] mb-5">
         <h2 className="serif text-[2rem] mb-2.5">Generate a Strategy</h2>
         <p className="body mb-2">
-          Describe what you want in plain English. The agent picks and weights
-          paper-grounded strategies under hard risk constraints, computes a blended
-          expected profile from real backtests, and anchors a verifiable reasoning trace.
+          Describe what you want in plain English. A multi-agent pipeline retrieves
+          relevant q-fin papers, fuses them with live market context, sizes positions
+          with Kelly + risk parity, and anchors every decision on Arc.
         </p>
         <p className="body text-[var(--text-3)]">
           No wallet required to generate. Wallet is only needed to deposit into a vault.
         </p>
       </div>
 
+      {/* ── COLLAPSIBLE: How this works + Tips + Example briefs ──
+          Closed by default so the Generate box keeps the focus. Open it to
+          read the architecture, get prompt-writing tips, and click an example
+          to auto-fill the textarea. */}
+      {!jobId && !fusionJobId && !fusionResult && (
+        <div className="card mb-4" style={{ padding: 0, overflow: 'hidden' }}>
+          <button
+            type="button"
+            onClick={() => setHelpOpen(o => !o)}
+            aria-expanded={helpOpen}
+            style={{
+              display: 'flex',
+              width: '100%',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              padding: '12px 18px',
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              textAlign: 'left',
+              color: 'inherit',
+            }}
+          >
+            <div>
+              <div className="label" style={{ marginBottom: 2 }}>How this works · tips · examples</div>
+              <div className="caption" style={{ color: 'var(--text-3)' }}>
+                Three agents + a 5-layer memory turn your brief into a deployable vault.
+                Click for the architecture and example briefs.
+              </div>
+            </div>
+            <span style={{ fontSize: '1rem', color: 'var(--text-3)', flexShrink: 0 }}>
+              {helpOpen ? '▾' : '▸'}
+            </span>
+          </button>
+
+          {helpOpen && (
+            <div style={{ padding: '6px 18px 18px', borderTop: '1px solid var(--glass-border)' }}>
+              <div className="label mb-2 mt-3">Architecture</div>
+              <p className="body mb-3">
+                <strong>Strategy Generation Agent</strong> retrieves relevant papers from a 1,014-paper
+                q-fin corpus (SPECTER2 embeddings + clusters), reads current market context, and synthesizes
+                a candidate strategy. <strong>Portfolio Construction Agent</strong> picks assets, sizes them
+                with Kelly + risk parity, and stress-tests across six scenarios. After you sign to deploy,
+                the <strong>Live Execution Agent</strong> runs the rebalance loop on-chain — every decision
+                anchored on Arc via <code>ReasoningTraceRegistry</code>.
+              </p>
+              <p className="caption mb-3" style={{ color: 'var(--text-3)' }}>
+                We don't make you pick a mode. The backend routes between <strong>Fusion</strong> (novel
+                paper synthesis), <strong>Architect</strong> (curated library), or <strong>Agent</strong>
+                (LLM portfolio) based on corpus state and your brief — and tells you which it picked in
+                the live stream.
+              </p>
+
+              <div className="label mb-2">Tips for writing your brief</div>
+              <ul className="body mb-4" style={{ paddingLeft: '1.2rem', margin: 0 }}>
+                <li>Be concrete about asset class, time horizon, and risk tolerance.</li>
+                <li>Describe the behavior you want — "low drawdown", "trend-following", "defensive in vol spikes".</li>
+                <li>Reference recognizable patterns if it helps — "Kelly-sized momentum", "60/40 with regime overlay".</li>
+              </ul>
+
+              <div className="label mb-2">Try an example (click to fill the box)</div>
+              <div className="flex flex-col gap-2">
+                {EXAMPLE_BRIEFS.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => { setIntent(p); setHelpOpen(false) }}
+                    className="text-left"
+                    style={{
+                      padding: '8px 12px',
+                      background: 'var(--bg-2)',
+                      border: '1px solid var(--glass-border)',
+                      borderRadius: 6,
+                      cursor: 'pointer',
+                      fontSize: '0.88rem',
+                      color: 'var(--text-1)',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    <span style={{ color: 'var(--accent)', marginRight: 8 }}>→</span>
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── SINGLE UNIFIED FORM ── */}
       {!jobId && !fusionJobId && !fusionResult && (
         <div className="card p-5 mb-4">
-          {/* Mode toggle strip */}
-          <div className="flex gap-2 flex-wrap mb-4">
-            {MODES.map(m => (
-              <button
-                key={m.id}
-                className={`tag cursor-pointer ${mode === m.id ? 'tag-accent' : 'tag-muted'}`}
-                onClick={() => setMode(m.id)}
-                title={m.desc}
-                style={{ border: 'none', padding: '6px 14px', fontSize: '0.85rem' }}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-          <p className="caption mb-3 text-[var(--text-3)]">
-            {MODES.find(m => m.id === mode)?.desc}
-          </p>
-
           <div className="label mb-2">What would you like?</div>
           <textarea
             value={intent}
