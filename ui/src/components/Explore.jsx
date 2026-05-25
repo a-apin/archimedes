@@ -38,11 +38,18 @@ export default function Explore() {
     const load = async () => {
       try {
         const res = await fetch(`${API_BASE}/api/explore/assets`)
-        if (!res.ok) throw new Error(await res.text())
+        if (!res.ok) throw new Error(`Backend returned ${res.status}`)
         const data = await res.json()
-        if (!cancelled) setAssets(data.assets || [])
+        if (!cancelled) {
+          setAssets(data.assets || [])
+          setError('')
+        }
       } catch (e) {
-        if (!cancelled) setError(e.message || 'Failed to load assets')
+        // Never render the response body as the error message — nginx 502s
+        // come back as multi-line HTML and would splat across the page.
+        // Same anti-pattern fixed in GenerationStatus.jsx (#323).
+        const msg = e?.message && e.message.length < 120 ? e.message : 'Failed to load assets'
+        if (!cancelled) setError(msg)
       } finally {
         if (!cancelled) setLoading(false)
       }
