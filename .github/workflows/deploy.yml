@@ -53,6 +53,10 @@ jobs:
             echo "LLM_AUTH_TOKEN=${{ secrets.LLM_AUTH_TOKEN }}" >> .env
             echo "LLM_BASE_URL=${{ secrets.LLM_BASE_URL }}" >> .env
 
+            # Inject EMAIL_ENCRYPTION_KEY (required by security hardening PR #330)
+            sed -i '/^EMAIL_ENCRYPTION_KEY=/d' .env
+            echo "EMAIL_ENCRYPTION_KEY=${{ secrets.EMAIL_ENCRYPTION_KEY }}" >> .env
+
             # Rebuild and restart services (detached)
             docker compose build --no-cache
             docker compose up -d --force-recreate --remove-orphans
