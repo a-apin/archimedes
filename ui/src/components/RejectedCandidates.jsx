@@ -25,7 +25,11 @@ export default function RejectedCandidates({ jobId, onClose }) {
     <div
       onClick={onClose}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+        // Bumped backdrop opacity 0.6 → 0.85 so the modal body pops; the
+        // inner card also gets a solid background + border + drop-shadow so
+        // the page's glass-blur 'card' class doesn't render translucent
+        // over the dimmed backdrop (which had been leaving text semi-readable).
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         zIndex: 1000, padding: 20,
       }}
@@ -33,7 +37,12 @@ export default function RejectedCandidates({ jobId, onClose }) {
       <div
         onClick={e => e.stopPropagation()}
         className="card"
-        style={{ maxWidth: 720, width: '100%', maxHeight: '80vh', overflowY: 'auto', padding: 24 }}
+        style={{
+          maxWidth: 720, width: '100%', maxHeight: '80vh', overflowY: 'auto', padding: 24,
+          background: 'var(--bg-1)',
+          border: '1px solid var(--glass-border)',
+          boxShadow: '0 24px 48px rgba(0,0,0,0.5)',
+        }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
           <div>

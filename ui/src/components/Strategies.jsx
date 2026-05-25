@@ -704,30 +704,90 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
         </div>
       )}
 
-      {activeTab === 'generated' && (
-        <>
-          <StrategyTable
-            strategies={generated}
-            highlightStrategyId={highlightStrategyId}
-            onOpenRigorExplainer={openRigorExplainer}
-            onOpenPassport={openPassport}
-            emptyState={
-              <div className="card" style={{ padding: 22 }}>
-                <div className="label mb-2">No generated strategies yet</div>
-                <p className="body" style={{ marginBottom: 10 }}>
-                  Multi-paper fusion strategies you create from the{' '}
-                  <a href="/generate" style={{ color: 'var(--accent)' }}>Generate</a> page will
-                  appear here once they've been backtested + cleared the rigor gate.
-                </p>
-                <p className="caption" style={{ color: 'var(--text-3)' }}>
-                  Generations in flight show in the agent activity feed on Portfolio and
-                  Reasoning. They land in this table once the rigor gate clears.
-                </p>
-              </div>
-            }
-          />
-        </>
-      )}
+      {activeTab === 'generated' && (() => {
+        // Split generated strategies by rigor verdict so the main table only
+        // shows what passed (the wedge: "the Library is a quality filter, not
+        // a junk drawer"). Rejected candidates stay accessible in a collapsed
+        // section below so the user can inspect *why* they failed — honest
+        // rather than hidden, but visually de-prioritised.
+        const passing = generated.filter(s => s.passes_rigor_gate === true)
+        const rejected = generated.filter(s => s.passes_rigor_gate === false)
+        const pending = generated.filter(s => s.passes_rigor_gate == null)
+        const mainTableStrategies = [...passing, ...pending]
+        return (
+          <>
+            <StrategyTable
+              strategies={mainTableStrategies}
+              highlightStrategyId={highlightStrategyId}
+              onOpenRigorExplainer={openRigorExplainer}
+              onOpenPassport={openPassport}
+              emptyState={
+                rejected.length > 0 ? (
+                  <div className="card" style={{ padding: 22 }}>
+                    <div className="label mb-2">No strategies have passed the rigor gate yet</div>
+                    <p className="body" style={{ marginBottom: 10 }}>
+                      You've generated {rejected.length} {rejected.length === 1 ? 'candidate' : 'candidates'}, but
+                      none have cleared the rigor gate yet. Expand the <strong>Rejected</strong> section below
+                      to see the rigor verdicts (most are <code>"return series too short"</code> — a longer
+                      backtest window is needed for DSR / PBO to score them).
+                    </p>
+                    <p className="caption" style={{ color: 'var(--text-3)' }}>
+                      The Library is a quality filter — only strategies that pass DSR + PBO + walk-forward OOS
+                      + look-ahead audit are surfaced here. That's the wedge.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="card" style={{ padding: 22 }}>
+                    <div className="label mb-2">No generated strategies yet</div>
+                    <p className="body" style={{ marginBottom: 10 }}>
+                      Multi-paper fusion strategies you create from the{' '}
+                      <a href="/generate" style={{ color: 'var(--accent)' }}>Generate</a> page will
+                      appear here once they've been backtested + cleared the rigor gate.
+                    </p>
+                    <p className="caption" style={{ color: 'var(--text-3)' }}>
+                      Generations in flight show in the agent activity feed on Portfolio and
+                      Reasoning. They land in this table once the rigor gate clears.
+                    </p>
+                  </div>
+                )
+              }
+            />
+            {rejected.length > 0 && (
+              <details className="mt-5">
+                <summary
+                  className="caption cursor-pointer select-none"
+                  style={{
+                    color: 'var(--text-3)',
+                    padding: '10px 14px',
+                    background: 'var(--bg-2)',
+                    border: '1px solid var(--glass-border)',
+                    borderRadius: 6,
+                    listStyle: 'none',
+                  }}
+                >
+                  Rejected ({rejected.length}) — did not pass the rigor gate. Click to inspect.
+                </summary>
+                <div style={{ marginTop: 12 }}>
+                  <p className="caption mb-3" style={{ color: 'var(--text-3)', fontSize: '0.82rem' }}>
+                    These candidates were generated but failed at least one rigor check (DSR, PBO,
+                    walk-forward OOS, or look-ahead audit). Most rejections at this stage are
+                    "return series too short" — the agent generated a strategy but there isn't
+                    enough backtest history yet to compute DSR / PBO with statistical confidence.
+                    A longer backtest window typically unlocks them.
+                  </p>
+                  <StrategyTable
+                    strategies={rejected}
+                    highlightStrategyId={highlightStrategyId}
+                    onOpenRigorExplainer={openRigorExplainer}
+                    onOpenPassport={openPassport}
+                    emptyState={<p className="caption">No rejected strategies.</p>}
+                  />
+                </div>
+              </details>
+            )}
+          </>
+        )
+      })()}
 
       {activeTab === 'examples' && (
         <>

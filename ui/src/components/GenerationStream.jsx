@@ -72,7 +72,7 @@ function summarizeEvent(name, data) {
   }
 }
 
-export default function GenerationStream({ jobId, onDone, onReset, onPipelineSelected }) {
+export default function GenerationStream({ jobId, onDone, onReset, onPipelineSelected, onNavigate }) {
   const [events, setEvents] = useState([])
   const [terminal, setTerminal] = useState(null)  // 'done' | 'error' | null
   const [strategyId, setStrategyId] = useState(null)
@@ -268,7 +268,17 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
                     style={{ width: '100%', marginTop: 4 }}
                     onClick={() => {
                       localStorage.removeItem('archimedes:currentJobId')
-                      window.location.hash = `#/library?highlight=${c.strategy_id}`
+                      // Use the React-router-aware navigation passed in from
+                      // the parent Generate page so App.jsx's state machine
+                      // (page + highlightStrategyId + activeTab) updates
+                      // properly. The previous window.location.hash assignment
+                      // bypassed React state and left the Library page rendering
+                      // its initial state without the highlight scroll.
+                      if (onNavigate) {
+                        onNavigate('library', { highlight: c.strategy_id, tab: 'generated' })
+                      } else {
+                        window.location.hash = `#/library?highlight=${c.strategy_id}`
+                      }
                     }}
                   >
                     View in Library →
