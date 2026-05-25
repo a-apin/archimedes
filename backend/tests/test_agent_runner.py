@@ -158,3 +158,75 @@ class TestWeightsToTargets:
         targets = runner._weights_to_targets(weights)
         unknown = next(t for t in targets if t.symbol == "UNKNOWN")
         assert unknown.token_address == ""
+
+
+class TestPerVaultScopingLegacyFallback:
+    """Regression test for PR #324 / hotfix.
+
+    PR #324 introduced per-vault strategy scoping via VaultMetadata.strategy_ids.
+    The first version of #324 made vaults with no VaultMetadata row (legacy
+    vaults — including all 6 vaults live on archimedes-arc.app at the time of
+    the merge) hit an `is None → continue` branch that silently skipped every
+    rebalance. This regression test enforces the recovered behavior: vaults
+    with no metadata MUST be processed via the global-consensus fallback so
+    existing deployments keep rebalancing.
+
+    See: dead-code-audit-2026-05-24-v2.md § "Critical review of #324 / hotfix"
+    """
+
+    @pytest.fixture()
+    def runner(self):
+        """Create a StrategyRunner with mocked chain dependencies."""
+        with (
+            patch("archimedes.chain.agent_runner.chain_client") as mock_client,
+            patch("archimedes.chain.agent_runner.chain_executor"),
+            patch("archimedes.chain.agent_runner.trace_publisher"),
+            patch("archimedes.chain.agent_runner.default_provider"),
+            patch("archimedes.chain.agent_runner.AgentStateStore"),
+        ):
+            mock_client.settings = MagicMock(
+                synth_addresses={"sSPY": "0xsspy", "sGOLD": "0xsgold"},
+                usdc_address="0xusdc",
+            )
+            from archimedes.chain.agent_runner import StrategyRunner
+
+            return StrategyRunner()
+
+    def test_get_vault_strategy_ids_returns_none_when_no_metadata(self, runner):
+        """When no VaultMetadata row exists, the helper returns None — that's
+        the signal the tick loop reads to take the legacy-fallback branch."""
+        with patch("archimedes.db.get_session") as mock_session_cm:
+            mock_session = MagicMock()
+            mock_session.query.return_value.filter.return_value.first.return_value = None
+            mock_session_cm.return_value.__enter__.return_value = mock_session
+
+            result = runner._get_vault_strategy_ids("0xLegacyVault0000000000000000000000000000")
+            assert result is None, "Missing VaultMetadata must return None (legacy-fallback signal), not []"
+
+    def test_get_vault_strategy_ids_returns_none_when_metadata_empty(self, runner):
+        """When VaultMetadata exists but strategy_ids is empty, also returns
+        None so the legacy fallback fires (an empty-list selection is treated
+        the same as no selection for this branch — the explicit-zero case is
+        the next test)."""
+        with patch("archimedes.db.get_session") as mock_session_cm:
+            mock_meta = MagicMock()
+            mock_meta.get_strategy_ids.return_value = []
+            mock_session = MagicMock()
+            mock_session.query.return_value.filter.return_value.first.return_value = mock_meta
+            mock_session_cm.return_value.__enter__.return_value = mock_session
+
+            result = runner._get_vault_strategy_ids("0xVaultWithEmptyMetadata")
+            assert result is None, "Empty strategy_ids must return None so legacy fallback fires"
+
+    def test_get_vault_strategy_ids_returns_list_when_populated(self, runner):
+        """When metadata has populated strategy_ids, the helper returns the
+        list and the tick loop takes the scoped path."""
+        with patch("archimedes.db.get_session") as mock_session_cm:
+            mock_meta = MagicMock()
+            mock_meta.get_strategy_ids.return_value = ["faber_001", "tsmom_001"]
+            mock_session = MagicMock()
+            mock_session.query.return_value.filter.return_value.first.return_value = mock_meta
+            mock_session_cm.return_value.__enter__.return_value = mock_session
+
+            result = runner._get_vault_strategy_ids("0xVaultWithStrategies")
+            assert result == ["faber_001", "tsmom_001"]
