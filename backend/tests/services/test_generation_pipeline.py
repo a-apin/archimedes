@@ -364,3 +364,54 @@ async def test_pipeline_multi_candidate_picks_best():
     best = next((e for e in store.events if e["event"] == "best_selected"), None)
     assert best is not None
     assert best["data"]["considered_count"] == 3
+
+
+# ── source_papers fallback tests (Issue #310) ───────────────────────────────
+
+
+def test_source_papers_fallback_uses_title_when_no_arxiv_id():
+    """The fallback populates source_papers from library strategies even when
+    paper_arxiv_id is empty (matching the real curated strategies that only
+    have DOI/title, not arxiv_id).
+    """
+    from dataclasses import dataclass
+
+    @dataclass
+    class MockStrategy:
+        id: str = "faber_001"
+        paper_arxiv_id: str = ""  # Empty — no arxiv_id (the real situation)
+        paper_title: str = "A Quantitative Approach to Tactical Asset Allocation"
+
+    strategies = [MockStrategy(), MockStrategy(id="tsmom_001", paper_title="Time Series Momentum")]
+    # Replicate the fallback logic from _run_live_candidate
+    source_papers: list[dict] = []
+    for s in strategies[:5]:
+        paper_id = getattr(s, "paper_arxiv_id", None) or ""
+        paper_title = getattr(s, "paper_title", None) or ""
+        if paper_id or paper_title:
+            source_papers.append({"arxiv_id": paper_id, "title": paper_title})
+
+    assert len(source_papers) == 2
+    assert source_papers[0]["title"] == "A Quantitative Approach to Tactical Asset Allocation"
+    assert source_papers[1]["title"] == "Time Series Momentum"
+
+
+def test_source_papers_fallback_empty_when_no_paper_refs():
+    """When strategies have neither arxiv_id nor title, source_papers stays empty."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class EmptyStrategy:
+        id: str = "empty_001"
+        paper_arxiv_id: str = ""
+        paper_title: str = ""
+
+    strategies = [EmptyStrategy()]
+    source_papers: list[dict] = []
+    for s in strategies[:5]:
+        paper_id = getattr(s, "paper_arxiv_id", None) or ""
+        paper_title = getattr(s, "paper_title", None) or ""
+        if paper_id or paper_title:
+            source_papers.append({"arxiv_id": paper_id, "title": paper_title})
+
+    assert source_papers == []

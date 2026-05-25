@@ -509,15 +509,27 @@ async def _run_live_candidate(
         if not s:
             # Try substring match
             s = next((st for st in strategies if anchor.lower() in st.paper_title.lower()), None)
-        if s and getattr(s, "paper_arxiv_id", None):
-            source_papers.append({"arxiv_id": s.paper_arxiv_id, "title": s.paper_title})
+        if s and (getattr(s, "paper_arxiv_id", "") or getattr(s, "paper_title", "")):
+            source_papers.append(
+                {"arxiv_id": getattr(s, "paper_arxiv_id", "") or "", "title": getattr(s, "paper_title", "") or ""}
+            )
     # Defensive fallback: if agent returned no anchors, include ALL strategies
     # that are in the curated library as potential sources (honest: they were
     # available to the agent even if it didn't cite them explicitly)
     if not source_papers and strategies:
         for s in strategies[:5]:  # cap at 5 to avoid noise
-            if getattr(s, "paper_arxiv_id", None):
-                source_papers.append({"arxiv_id": s.paper_arxiv_id, "title": s.paper_title})
+            # paper_arxiv_id may be "" for curated strategies that only have
+            # DOI/title — still include them with title as the anchor (#310)
+            paper_id = getattr(s, "paper_arxiv_id", None) or ""
+            paper_title = getattr(s, "paper_title", None) or ""
+            if paper_id or paper_title:
+                source_papers.append({"arxiv_id": paper_id, "title": paper_title})
+        if not source_papers:
+            logger.warning(
+                "agent returned no paper anchors AND fallback couldn't find library "
+                "strategies with paper refs — source_papers will be empty (strategies=%d)",
+                len(strategies),
+            )
 
     # Real rigor verdict via Önder's compute_dsr + compute_oos_sharpe on the
     # buy-and-hold return series of the agent's allocation. PBO is patched
