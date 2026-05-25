@@ -9,11 +9,13 @@ in routes.py).
 
 from __future__ import annotations
 
-from typing import Literal
-
 from fastapi import APIRouter, HTTPException, Query
 
-from archimedes.api.explore_schemas import ExploreAssetsResponse, ExploreHistoryResponse
+from archimedes.api.explore_schemas import (
+    ExploreAssetsResponse,
+    ExploreHistoryResponse,
+    HistoryRange,
+)
 from archimedes.services.asset_market_service import asset_market_service
 
 explore_router = APIRouter(prefix="/api/explore", tags=["explore"])
@@ -28,7 +30,7 @@ async def list_explore_assets() -> ExploreAssetsResponse:
 @explore_router.get("/assets/{symbol}/history", response_model=ExploreHistoryResponse)
 async def get_explore_history(
     symbol: str,
-    range: Literal["1D", "1W", "1M", "1Y"] = Query("1M", description="History lookback range"),
+    range: HistoryRange = Query("1M", description="History lookback range"),
 ) -> ExploreHistoryResponse:
     """Price history for one asset, used by detail-chart range toggles.
 
