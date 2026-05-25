@@ -11,6 +11,7 @@ import Strategies from './components/Strategies'   // serves /library route ("Ex
 import StrategyPassport from './components/StrategyPassport'
 import CorpusExplorer from './components/CorpusExplorer'
 import Reasoning from './components/Reasoning'
+import Architecture from './components/Architecture'
 import VaultDetail from './components/VaultDetail'
 import OnboardingTour, { hasCompletedOnboarding } from './components/OnboardingTour'
 import WalletGate from './components/WalletGate'
@@ -25,6 +26,7 @@ const PAGE_TO_PATH = {
   landing:   '/',
   explore:   '/explore',
   generate:  '/generate',
+  architecture: '/architecture',
   library:   '/library',
   corpus:    '/corpus',
   portfolio: '/portfolio',
@@ -161,6 +163,7 @@ export default function App() {
       landing:        'Archimedes',
       explore:        'Explore · Archimedes',
       generate:       'Generate · Archimedes',
+      architecture:   'Architecture · Archimedes',
       library:        'Library · Archimedes',
       corpus:         'Corpus · Archimedes',
       portfolio:      'Portfolio · Archimedes',
@@ -194,6 +197,7 @@ export default function App() {
       case 'landing':     return <Landing onNavigate={navigateToPage} />
       case 'explore':      return <Explore />
       case 'generate':     return <Generate onNavigate={navigateToPage} />
+      case 'architecture': return <Architecture onNavigate={navigateToPage} />
       case 'library':      return (
         <WalletGate
           walletAddr={walletAddr}
