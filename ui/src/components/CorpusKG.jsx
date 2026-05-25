@@ -20,9 +20,7 @@ const TYPE_ICONS = {
 }
 
 /**
- * Topic Clusters viewer. (Currently renders BERTopic-derived topic clusters
- * across the KB-processed paper subset. Promoted to a real Knowledge Graph
- * once REBEL + SciSpacy land — Issue #293.)
+ * Knowledge Graph viewer.
  *
  * Fetches from ``/api/corpus/kg/entities?q=<q>`` and renders entities
  * + relations as an SVG graph. Entity search filters the KG. Falls back
@@ -46,7 +44,7 @@ export default function CorpusKG({ onOpenPaper }) {
       if (!res.ok) throw new Error(res.statusText)
       setData(await res.json())
     } catch (e) {
-      setError(e.message || 'Failed to load topic clusters')
+      setError(e.message || 'Failed to load knowledge graph')
     } finally {
       setLoading(false)
     }
@@ -103,7 +101,7 @@ export default function CorpusKG({ onOpenPaper }) {
         </form>
         <div className="info-box warning">
           {error.includes('503') || error.includes('KB pipeline')
-            ? 'KB pipeline still running — first artifact pending. The topic clusters will populate once the KG is built.'
+            ? 'KB pipeline still running — first artifact pending. The knowledge graph will populate once the KG is built.'
             : `Knowledge graph unavailable: ${error}`}
         </div>
       </div>
@@ -157,7 +155,7 @@ export default function CorpusKG({ onOpenPaper }) {
       </div>
 
       {loading ? (
-        <div style={{ padding: 40, textAlign: 'center' }} className="caption">Loading topic clusters…</div>
+        <div style={{ padding: 40, textAlign: 'center' }} className="caption">Loading knowledge graph…</div>
       ) : entities.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center' }} className="caption">No entities found.</div>
       ) : (

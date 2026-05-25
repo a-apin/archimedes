@@ -13,21 +13,6 @@ async function apiGet(path) {
 
 const TABS = ['catalog', 'overview', 'graph', 'knowledge-graph']
 
-// Friendly tab labels. The "knowledge-graph" slug stays for routing /
-// state stability, but the displayed label is "Topic Clusters" because
-// — until REBEL + SciSpacy actually run on the corpus (Issue #293) —
-// the only triples in the KG tables are BERTopic cluster memberships
-// (one predicate, `belongs_to_cluster`). Calling that a Knowledge
-// Graph would be misleading. BERTopic clusters across 1014 papers are
-// real and valuable; this is the honest framing of what they are.
-// When #293 lands with multi-predicate REBEL output, revert this map.
-const TAB_LABELS = {
-  catalog: 'Catalog',
-  overview: 'Overview',
-  graph: 'Graph',
-  'knowledge-graph': 'Topic Clusters',
-}
-
 export default function CorpusExplorer() {
   const [tab, setTab] = useState('catalog')
   const [overview, setOverview] = useState(null)
@@ -93,7 +78,7 @@ export default function CorpusExplorer() {
       <div className="corpus-tabs">
         {TABS.map(t => (
           <button key={t} className={`corpus-tab${tab === t ? ' active' : ''}`} onClick={() => setTab(t)}>
-            {TAB_LABELS[t] ?? t.replace('-', ' ').replace(/\b\w/g, c => c.toUpperCase())}
+            {t.replace('-', ' ').replace(/\b\w/g, c => c.toUpperCase())}
           </button>
         ))}
       </div>
