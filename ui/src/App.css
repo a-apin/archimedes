@@ -8,7 +8,7 @@
    everything else is grayscale. Green/red only for PnL.
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Inter:wght@300;400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -43,9 +43,9 @@
   --info:         #60A5FA;
 
   /* — Type — */
-  --sans:         'Inter', -apple-system, system-ui, sans-serif;
+  --sans:         'Geist', 'Inter', -apple-system, system-ui, sans-serif;
   --serif:        'Instrument Serif', Georgia, serif;
-  --mono:         'JetBrains Mono', 'Fira Code', monospace;
+  --mono:         'Geist Mono', 'JetBrains Mono', 'Fira Code', monospace;
 
   /* — Spacing — */
   --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
@@ -64,7 +64,7 @@
 }
 
 /* --- Base --- */
-html { font-size: 15px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; scroll-behavior: smooth; overflow-x: hidden; }
+html { font-size: 16px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; scroll-behavior: smooth; overflow-x: hidden; }
 body {
   font-family: var(--sans);
   background: var(--canvas);
@@ -88,8 +88,8 @@ h4, .h4 { font-family: var(--sans); font-size: 0.8rem; font-weight: 600; text-tr
 .serif { font-family: var(--serif); }
 .mono  { font-family: var(--mono); font-size: 0.88em; }
 .label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); }
-.body  { font-size: 0.93rem; color: var(--text-2); line-height: 1.7; }
-.caption { font-size: 0.8rem; color: var(--text-3); }
+.body  { font-size: 0.97rem; color: var(--text-2); line-height: 1.7; }
+.caption { font-size: 0.82rem; color: var(--text-3); }
 .accent  { color: var(--accent); }
 .positive { color: var(--positive); }
 .negative { color: var(--negative); }
@@ -661,41 +661,56 @@ h4, .h4 { font-family: var(--sans); font-size: 0.8rem; font-weight: 600; text-tr
 .mt-4 { margin-top: var(--space-4); }
 
 /* --- Modal --- */
+@keyframes modal-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-pop-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  animation: modal-overlay-in 0.18s ease-out;
 }
+.modal-overlay > .modal { animation: modal-pop-in 0.22s ease-out; }
 .modal {
   background: var(--surface-1);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
-  padding: 28px;
-  min-width: 340px;
-  max-width: 400px;
+  padding: 36px;
+  min-width: 380px;
+  max-width: 480px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
 }
-.modal h3 { font-size: 1.2rem; margin-bottom: 8px; }
+.modal h3 {
+  font-family: var(--serif);
+  font-size: 1.6rem;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin-bottom: 10px;
+}
+.modal .caption { font-size: 0.92rem; line-height: 1.55; color: var(--text-2); }
 
 .wallet-options {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 10px;
+  margin-top: 16px;
 }
 .wallet-option {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: 14px;
+  padding: 16px 18px;
   background: var(--canvas);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 0.95rem;
+  font-size: 1.02rem;
   color: var(--text-1);
   transition: border-color 0.15s, background 0.15s;
 }

@@ -90,50 +90,59 @@ export default function WelcomeProfileModal({ walletAddr, onDone, mode = 'welcom
       aria-labelledby="welcome-modal-title"
     >
       <div
-        className="card-elevated p-6 max-w-[520px] w-[92vw]"
-        style={{ background: 'var(--surface-1)', maxHeight: '90vh', overflowY: 'auto' }}
+        className="card-elevated p-8 max-w-[560px] w-[92vw]"
+        style={{
+          background: 'var(--surface-1)',
+          maxHeight: '90vh',
+          overflowY: 'auto',
+          boxShadow: '0 24px 60px rgba(0,0,0,0.55)',
+        }}
       >
-        <div className="caption mb-2 uppercase tracking-wider text-[var(--text-4)]">
+        <div className="caption mb-3 uppercase tracking-wider text-[var(--text-4)]" style={{ fontSize: '0.78rem' }}>
           {isEdit ? 'Your Profile' : 'Welcome to Archimedes'}
         </div>
-        <h3 id="welcome-modal-title" className="font-serif text-[1.5rem] mb-1">
+        <h3 id="welcome-modal-title" className="font-serif mb-2" style={{ fontSize: '1.85rem', lineHeight: 1.2, letterSpacing: '-0.02em' }}>
           {isEdit ? 'Edit your profile' : 'Personalize your experience'}
         </h3>
-        <p className="caption mb-4 leading-relaxed">
+        <p className="mb-5 leading-relaxed" style={{ fontSize: '0.98rem', color: 'var(--text-2)' }}>
           {isEdit
             ? 'Update what we show alongside your wallet. All fields remain optional; leave any blank to clear it.'
             : 'All fields are optional. Your wallet is your identity — this just helps us show a friendly name and tailor the experience. You can skip this entirely.'}
         </p>
 
-        <div className="grid grid-cols-1 gap-3">
+        <div className="grid grid-cols-1 gap-4">
           <label className="block">
-            <span className="caption block mb-1">Display name</span>
+            <span className="block mb-1.5" style={{ fontSize: '0.9rem', color: 'var(--text-2)', fontWeight: 500 }}>Display name</span>
             <input
               type="text"
               value={displayName}
               onChange={e => setDisplayName(e.target.value)}
               placeholder="Alice"
               maxLength={128}
-              className="chat-input w-full p-2.5"
+              className="chat-input w-full"
+              style={{ padding: '12px 14px', fontSize: '1rem' }}
               disabled={submitting}
             />
           </label>
 
           <label className="block">
-            <span className="caption block mb-1">Email <span className="text-[var(--text-4)]">(optional)</span></span>
+            <span className="block mb-1.5" style={{ fontSize: '0.9rem', color: 'var(--text-2)', fontWeight: 500 }}>
+              Email <span style={{ color: 'var(--text-4)', fontWeight: 400 }}>(optional)</span>
+            </span>
             <input
               type="email"
               value={email}
               onChange={e => setEmail(e.target.value)}
               placeholder="you@example.com"
               maxLength={256}
-              className="chat-input w-full p-2.5"
+              className="chat-input w-full"
+              style={{ padding: '12px 14px', fontSize: '1rem' }}
               disabled={submitting}
             />
           </label>
 
           <div>
-            <span className="caption block mb-2">Interests</span>
+            <span className="block mb-2" style={{ fontSize: '0.9rem', color: 'var(--text-2)', fontWeight: 500 }}>Interests</span>
             <div className="flex flex-wrap gap-2">
               {INTEREST_OPTIONS.map(interest => (
                 <button
@@ -142,7 +151,7 @@ export default function WelcomeProfileModal({ walletAddr, onDone, mode = 'welcom
                   className={`tag ${selectedInterests.includes(interest) ? 'tag-positive' : 'tag-muted'}`}
                   onClick={() => toggleInterest(interest)}
                   disabled={submitting}
-                  style={{ cursor: 'pointer' }}
+                  style={{ cursor: 'pointer', fontSize: '0.88rem', padding: '6px 12px' }}
                 >
                   {interest}
                 </button>
@@ -151,26 +160,30 @@ export default function WelcomeProfileModal({ walletAddr, onDone, mode = 'welcom
           </div>
 
           <label className="block">
-            <span className="caption block mb-1">Attribution <span className="text-[var(--text-4)]">(optional)</span></span>
+            <span className="block mb-1.5" style={{ fontSize: '0.9rem', color: 'var(--text-2)', fontWeight: 500 }}>
+              Attribution <span style={{ color: 'var(--text-4)', fontWeight: 400 }}>(optional)</span>
+            </span>
             <input
               type="text"
               value={attribution}
               onChange={e => setAttribution(e.target.value)}
               placeholder="How did you hear about us?"
               maxLength={256}
-              className="chat-input w-full p-2.5"
+              className="chat-input w-full"
+              style={{ padding: '12px 14px', fontSize: '1rem' }}
               disabled={submitting}
             />
           </label>
 
-          <label className="flex items-center gap-2 cursor-pointer">
+          <label className="flex items-center gap-2.5 cursor-pointer">
             <input
               type="checkbox"
               checked={marketingOptIn}
               onChange={e => setMarketingOptIn(e.target.checked)}
               disabled={submitting}
+              style={{ width: 18, height: 18, cursor: 'pointer' }}
             />
-            <span className="body text-sm">Keep me updated on new strategies and features</span>
+            <span style={{ fontSize: '0.95rem', color: 'var(--text-2)' }}>Keep me updated on new strategies and features</span>
           </label>
         </div>
 

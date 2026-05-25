@@ -249,18 +249,21 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h3>Connect Wallet</h3>
-            <p className="caption">Select a wallet to interact with Arc Testnet contracts.</p>
+            <p style={{ fontSize: '0.98rem', color: 'var(--text-2)', lineHeight: 1.55, marginBottom: 14 }}>
+              Sign in with a passkey (Face ID / Touch ID), or connect a browser wallet to interact with Arc Testnet contracts.
+            </p>
 
             <div
-              className="caption"
               style={{
                 marginTop: 8,
-                marginBottom: 12,
-                padding: '10px 12px',
-                background: 'var(--surface-1)',
+                marginBottom: 16,
+                padding: '14px 16px',
+                background: 'var(--surface-2)',
                 border: '1px solid var(--glass-border)',
-                borderRadius: 8,
-                lineHeight: 1.5,
+                borderRadius: 10,
+                lineHeight: 1.6,
+                fontSize: '0.88rem',
+                color: 'var(--text-2)',
               }}
             >
               Archimedes only reads your wallet address — it never custodies your USDC.
@@ -326,10 +329,9 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
 
                             </span>
                             <span
-                              className="caption"
-                              style={{ fontSize: '0.68rem', color: 'var(--text-4)', lineHeight: 1.35, textAlign: 'left' }}
+                              style={{ fontSize: '0.8rem', color: 'var(--text-3)', lineHeight: 1.45, textAlign: 'left' }}
                             >
-                              Powered by <strong style={{ color: 'var(--text-3)' }}>Circle Modular Wallets</strong> · Face ID / Touch ID · Smart-contract account on Arc · No extension, no seed phrase
+                              Powered by <strong style={{ color: 'var(--text-2)' }}>Circle Modular Wallets</strong> · Face ID / Touch ID · Smart-contract account on Arc · No extension, no seed phrase
                             </span>
                           </span>
                         ) : (
