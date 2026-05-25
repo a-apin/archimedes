@@ -5,7 +5,7 @@ const STORAGE_KEY = 'archimedes.onboarding.v1'
 
 // Card content — kept here, not in a separate JSON, so contributors can
 // edit the copy alongside the visuals. Order matches the user journey:
-// understand → browse → generate → inspect → deploy → monitor.
+// intro → generate → review the library → deploy → audit.
 //
 // `anchor` is a nav id (see Layout.jsx `data-tour`). When set, the step
 // spotlights that real nav button; when null the step is a centered card.
@@ -16,82 +16,63 @@ const CARDS = [
     body: (
       <>
         <strong>Research-grounded strategy generation</strong> — not a robo-advisor.
-        You describe what you want; Archimedes fuses your intent with live market
-        data and ~10k peer-reviewed q-fin papers into novel strategies, then gates
-        them through selection-bias rigor before any execution.
+        Describe what you want; we fuse your intent with bleeding-edge academic
+        research in quantitative finance, machine learning, agentic systems, and
+        pure mathematics, then gate the result through selection-bias rigor.
       </>
     ),
     anchor: null,
     illustration: 'archimedes',
   },
   {
-    id: 'corpus',
-    title: 'Browse the corpus',
-    body: (
-      <>
-        Every strategy is anchored in <strong>peer-reviewed research</strong>. The
-        Corpus page shows the papers in our library — methodology, year, authors,
-        and which strategies cite them. Strategy generation pulls from this corpus,
-        so the provenance is visible end-to-end.
-      </>
-    ),
-    anchor: 'corpus',
-    illustration: 'corpus',
-  },
-  {
     id: 'generate',
     title: 'Generate a strategy',
     body: (
       <>
-        Describe what you want in plain English — the agent picks and weights
-        paper-grounded strategies under hard risk constraints, surfaces multiple
-        candidates, and computes a blended expected profile from real backtests.
-        Each iteration streams live so you can see the deliberation.
+        Describe your goal in plain English; the agent weights arxiv-grounded
+        strategies under hard risk constraints and streams its deliberation live.
       </>
     ),
     anchor: 'generate',
     illustration: 'generate',
   },
   {
-    id: 'reasoning',
-    title: 'Inspect the reasoning',
+    id: 'library',
+    title: 'Review the library',
     body: (
       <>
-        Every autonomous decision — strategy registration, rebalance, regime shift
-        — is <strong>hashed and anchored on Arc</strong> via the ReasoningTraceRegistry
-        contract. You can verify any trace against its on-chain anchor and follow
-        the trace back to the strategy and the source paper.
+        Your generated strategies accumulate here — each carries a passport linking
+        back to the source papers, the backtest, and the rigor verdict.
       </>
     ),
-    anchor: 'reasoning',
-    illustration: 'reasoning',
+    anchor: 'library',
+    illustration: 'corpus',
   },
   {
     id: 'deploy',
     title: 'Deploy as a vault',
     body: (
       <>
-        Generated strategies are <strong>time-bound</strong> — they're keyed to the
-        market context at generation time, so they go stale. Deploy a strategy into
-        an ERC-4626 vault before the window expires. Funds stay non-custodial;
-        the agent has rebalance authority only.
+        Strategies are <strong>time-bound</strong> — deploy into an ERC-4626 vault
+        before the window expires. Funds stay non-custodial; the agent has
+        rebalance authority only.
       </>
     ),
     anchor: 'portfolio',
     illustration: 'vault',
   },
   {
-    id: 'watch',
-    title: 'Watch the agent work',
+    id: 'reasoning',
+    title: 'Audit the reasoning',
     body: (
       <>
-        The <strong>Learnings</strong> page accumulates lessons across your strategies
-        as they age, while Portfolio shows live performance, the agent's decisions
-        over time, and on-chain reasoning traces for every action.
+        Every autonomous decision is <strong>hashed and anchored on Arc</strong> via
+        the ReasoningTraceRegistry. Trace any action back to the strategy and the
+        academic research that grounds it.
       </>
     ),
-    anchor: 'learnings',
-    illustration: 'watch',
+    anchor: 'reasoning',
+    illustration: 'reasoning',
   },
 ]
 
