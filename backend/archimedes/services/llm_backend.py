@@ -178,7 +178,12 @@ class OpenAIBackend:
         resp.raise_for_status()
         data = resp.json()
         self._served = data.get("model", self._model)
-        return data["choices"][0]["message"]["content"].strip()
+        # Defensive: OpenAI-style APIs can legitimately return empty `choices`
+        # (content filtering, tool-only responses, etc.). Mirror OllamaBackend's
+        # `.get()`-chain pattern so we never IndexError mid-request.
+        choices = data.get("choices") or []
+        first = choices[0] if choices else {}
+        return (first.get("message") or {}).get("content", "").strip()
 
 
 # ── Ollama (local, no key) ───────────────────────────────────────────
