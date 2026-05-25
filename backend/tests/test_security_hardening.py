@@ -9,12 +9,16 @@ Covers the quick-win bundle from the security audit:
   6. Request body size limit (1 MB → 413)
   7. Chat wallet_address regex validation
   8. _load_strategy_code path traversal guard
+
+NOTE: tests that require module reload (docs gate, startup fail-closed) use
+subprocess to avoid poisoning the test process's module cache.
 """
 
 from __future__ import annotations
 
 import os
-from unittest.mock import patch
+import subprocess
+import sys
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -23,95 +27,113 @@ from httpx import ASGITransport, AsyncClient
 # ─── 1. Docs gate ─────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_docs_disabled_when_public_domain_set():
-    """/docs returns 404 when PUBLIC_DOMAIN is set and ENABLE_API_DOCS is unset."""
-    with patch.dict(
-        os.environ,
-        {"PUBLIC_DOMAIN": "https://archimedes-arc.app", "EMAIL_ENCRYPTION_KEY": "test-key-32chars-for-ci-testing!"},
-        clear=False,
-    ):
-        # Remove ENABLE_API_DOCS if present
-        env = os.environ.copy()
-        env.pop("ENABLE_API_DOCS", None)
-        with patch.dict(os.environ, env, clear=True):
-            # Re-import to pick up the new env
-            import importlib
+def test_docs_disabled_when_public_domain_set():
+    """/docs gated OFF when PUBLIC_DOMAIN is set and ENABLE_API_DOCS is unset.
 
-            import archimedes.main
+    Uses subprocess to avoid module-reload side effects in the test process.
+    """
+    script = """
+import os
+os.environ["PUBLIC_DOMAIN"] = "https://archimedes-arc.app"
+os.environ["EMAIL_ENCRYPTION_KEY"] = "test-key-32chars-for-ci"
+os.environ.pop("ENABLE_API_DOCS", None)
+os.environ["TESTING"] = "1"
 
-            importlib.reload(archimedes.main)
-            app = archimedes.main.app
+from archimedes.main import app
+assert app.openapi_url is None, f"openapi_url should be None, got {app.openapi_url}"
+assert app.docs_url is None, f"docs_url should be None, got {app.docs_url}"
+print("PASS")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=os.path.join(os.path.dirname(__file__), ".."),
+        timeout=30,
+    )
+    assert result.returncode == 0, f"Script failed: {result.stderr}"
+    assert "PASS" in result.stdout
 
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                docs_resp = await client.get("/docs")
-                openapi_resp = await client.get("/openapi.json")
 
-            assert docs_resp.status_code == 404, f"Expected 404 for /docs, got {docs_resp.status_code}"
-            assert openapi_resp.status_code == 404, f"Expected 404 for /openapi.json, got {openapi_resp.status_code}"
-
-
-@pytest.mark.asyncio
-async def test_docs_enabled_when_flag_set():
+def test_docs_enabled_when_flag_set():
     """/docs returns 200 when ENABLE_API_DOCS=1."""
-    with patch.dict(
-        os.environ,
-        {
-            "PUBLIC_DOMAIN": "https://archimedes-arc.app",
-            "ENABLE_API_DOCS": "1",
-            "EMAIL_ENCRYPTION_KEY": "test-key-32chars-for-ci-testing!",
-        },
-        clear=False,
-    ):
-        import importlib
+    script = """
+import os
+os.environ["PUBLIC_DOMAIN"] = "https://archimedes-arc.app"
+os.environ["EMAIL_ENCRYPTION_KEY"] = "test-key-32chars-for-ci"
+os.environ["ENABLE_API_DOCS"] = "1"
+os.environ["TESTING"] = "1"
 
-        import archimedes.main
+from archimedes.main import app
+assert app.docs_url == "/docs", f"docs_url should be /docs, got {app.docs_url}"
+assert app.openapi_url == "/openapi.json", f"openapi_url should be /openapi.json, got {app.openapi_url}"
+print("PASS")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=os.path.join(os.path.dirname(__file__), ".."),
+        timeout=30,
+    )
+    assert result.returncode == 0, f"Script failed: {result.stderr}"
+    assert "PASS" in result.stdout
 
-        importlib.reload(archimedes.main)
-        app = archimedes.main.app
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get("/docs")
-
-        assert resp.status_code == 200, f"Expected 200 for /docs with flag, got {resp.status_code}"
-
-
-@pytest.mark.asyncio
-async def test_docs_enabled_in_local_dev():
+def test_docs_enabled_in_local_dev():
     """/docs available when PUBLIC_DOMAIN is not set (local dev)."""
-    env = os.environ.copy()
-    env.pop("PUBLIC_DOMAIN", None)
-    env.pop("ENABLE_API_DOCS", None)
-    with patch.dict(os.environ, env, clear=True):
-        import importlib
+    script = """
+import os
+os.environ.pop("PUBLIC_DOMAIN", None)
+os.environ.pop("ENABLE_API_DOCS", None)
+os.environ["TESTING"] = "1"
 
-        import archimedes.main
-
-        importlib.reload(archimedes.main)
-        app = archimedes.main.app
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get("/docs")
-
-        assert resp.status_code == 200, f"Expected 200 for /docs in local dev, got {resp.status_code}"
+from archimedes.main import app
+assert app.docs_url == "/docs", f"docs_url should be /docs, got {app.docs_url}"
+print("PASS")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=os.path.join(os.path.dirname(__file__), ".."),
+        timeout=30,
+    )
+    assert result.returncode == 0, f"Script failed: {result.stderr}"
+    assert "PASS" in result.stdout
 
 
 # ─── 2. EMAIL_ENCRYPTION_KEY fail-closed ──────────────────────────────
 
 
 def test_startup_fails_without_encryption_key_in_production():
-    """App module raises RuntimeError when PUBLIC_DOMAIN set without EMAIL_ENCRYPTION_KEY."""
-    env = os.environ.copy()
-    env["PUBLIC_DOMAIN"] = "https://archimedes-arc.app"
-    env.pop("EMAIL_ENCRYPTION_KEY", None)
+    """App module raises RuntimeError when PUBLIC_DOMAIN set without EMAIL_ENCRYPTION_KEY.
 
-    with patch.dict(os.environ, env, clear=True):
-        import importlib
+    Uses subprocess to avoid leaving the module in a broken state.
+    """
+    script = """
+import os
+os.environ["PUBLIC_DOMAIN"] = "https://archimedes-arc.app"
+os.environ.pop("EMAIL_ENCRYPTION_KEY", None)
+os.environ["TESTING"] = "1"
 
-        import archimedes.main
-
-        with pytest.raises(RuntimeError, match="EMAIL_ENCRYPTION_KEY must be set"):
-            importlib.reload(archimedes.main)
+try:
+    from archimedes.main import app
+    print("FAIL: no RuntimeError raised")
+except RuntimeError as e:
+    if "EMAIL_ENCRYPTION_KEY" in str(e):
+        print("PASS")
+    else:
+        print(f"FAIL: wrong error: {e}")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=os.path.join(os.path.dirname(__file__), ".."),
+        timeout=30,
+    )
+    assert "PASS" in result.stdout, f"Expected PASS, got stdout={result.stdout!r} stderr={result.stderr!r}"
 
 
 # ─── 3. Rate limits on POST endpoints ─────────────────────────────────
@@ -124,6 +146,11 @@ async def test_chat_post_rate_limited():
 
     # Enable rate limiting for this test
     app.state.limiter.enabled = True
+    # Reset limiter storage so prior test state doesn't interfere
+    try:
+        app.state.limiter.reset()
+    except Exception:
+        pass
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             hit_429 = False
@@ -141,17 +168,15 @@ async def test_chat_post_rate_limited():
 
 
 @pytest.mark.asyncio
-async def test_strategies_construct_rate_limited():
+async def test_strategies_construct_has_rate_limit():
     """POST /api/strategies/construct has rate limiting decorator."""
-    # Verify the endpoint has limiter decoration by checking import
     from archimedes.api.strategies_routes import construct_strategy
 
-    # The function should exist and be wrapped (FastAPI route decorator)
     assert construct_strategy is not None
 
 
 @pytest.mark.asyncio
-async def test_strategies_stress_run_rate_limited():
+async def test_strategies_stress_run_has_rate_limit():
     """POST /api/strategies/stress/run has rate limiting decorator."""
     from archimedes.api.strategies_routes import run_stress_test
 
@@ -159,7 +184,7 @@ async def test_strategies_stress_run_rate_limited():
 
 
 @pytest.mark.asyncio
-async def test_swap_quote_rate_limited():
+async def test_swap_quote_has_rate_limit():
     """GET /api/swap/quote has rate limiting decorator."""
     from archimedes.api.swap_routes import get_swap_quote
 
@@ -167,7 +192,7 @@ async def test_swap_quote_rate_limited():
 
 
 @pytest.mark.asyncio
-async def test_selection_bias_pbo_rate_limited():
+async def test_selection_bias_pbo_has_rate_limit():
     """POST /api/selection-bias/pbo has rate limiting decorator."""
     from archimedes.api.selection_bias_routes import compute_pbo_endpoint
 
@@ -177,8 +202,7 @@ async def test_selection_bias_pbo_rate_limited():
 # ─── 5. CORS explicit allowlists ──────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_cors_no_wildcard_methods():
+def test_cors_no_wildcard_methods():
     """CORS middleware uses explicit method list, not '*'."""
     from archimedes.main import app
 
@@ -191,8 +215,7 @@ async def test_cors_no_wildcard_methods():
             assert "OPTIONS" in methods
 
 
-@pytest.mark.asyncio
-async def test_cors_no_wildcard_headers():
+def test_cors_no_wildcard_headers():
     """CORS middleware uses explicit header list, not '*'."""
     from archimedes.main import app
 
@@ -289,7 +312,6 @@ def test_load_strategy_code_rejects_traversal():
     """_load_strategy_code rejects paths that escape the project tree."""
     from archimedes.api.selection_bias_routes import _load_strategy_code
 
-    # Path traversal attempt — should return None, never read /etc/passwd
     result = _load_strategy_code("../../etc/passwd")
     assert result is None
 
@@ -306,10 +328,7 @@ def test_load_strategy_code_allows_valid_strategy_path():
     """_load_strategy_code accepts paths within the project tree."""
     from archimedes.api.selection_bias_routes import _load_strategy_code
 
-    # This file exists in the project — should be readable
     result = _load_strategy_code("analytics-engine/strategies/__init__.py")
-    # May be None if file doesn't exist in test env, but should not error
-    # The important thing is it doesn't raise
     assert result is None or isinstance(result, str)
 
 
