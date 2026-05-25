@@ -181,11 +181,6 @@ function formatAuthors(authors) {
   return `${authors[0]}, ${authors[1]} et al.`
 }
 
-function truncate(s, n) {
-  if (!s) return ''
-  return s.length > n ? `${s.slice(0, n)}…` : s
-}
-
 function CatalogTab({ papers, total, page, loading, search, setSearch, categoryFilter, setCategoryFilter, setPage, openPaper, categories }) {
   const totalPages = Math.ceil(total / 20)
   return (
@@ -208,14 +203,26 @@ function CatalogTab({ papers, total, page, loading, search, setSearch, categoryF
         <>
           <div className="catalog-results-info">{total.toLocaleString()} papers found</div>
           <div className="overflow-x-auto rounded-lg border border-[var(--glass-border)]">
-            <table className="lib-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+            {/* Tight one-line-per-entry table. arxiv ID dropped from the
+                listing (it shows on the paper detail page after click);
+                titles get the freed horizontal space and truncate with
+                ellipsis instead of wrapping. */}
+            <table
+              className="lib-table"
+              style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', tableLayout: 'fixed' }}
+            >
+              <colgroup>
+                <col style={{ width: '20%' }} />
+                <col style={{ width: '6%' }} />
+                <col />
+                <col style={{ width: '15%' }} />
+              </colgroup>
               <thead>
                 <tr style={{ background: 'rgba(255,255,255,0.03)', textAlign: 'left', borderBottom: '1px solid var(--glass-border)' }}>
-                  <th style={{ padding: '10px 14px', whiteSpace: 'nowrap' }}>arxiv ID</th>
-                  <th style={{ padding: '10px 14px' }}>Authors</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', whiteSpace: 'nowrap' }}>Year</th>
-                  <th style={{ padding: '10px 14px' }}>Title</th>
-                  <th style={{ padding: '10px 14px', whiteSpace: 'nowrap' }}>Category</th>
+                  <th style={{ padding: '7px 12px', whiteSpace: 'nowrap' }}>Authors</th>
+                  <th style={{ padding: '7px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>Year</th>
+                  <th style={{ padding: '7px 12px' }}>Title</th>
+                  <th style={{ padding: '7px 12px', whiteSpace: 'nowrap' }}>Category</th>
                 </tr>
               </thead>
               <tbody>
@@ -226,23 +233,27 @@ function CatalogTab({ papers, total, page, loading, search, setSearch, categoryF
                     style={{ borderBottom: '1px solid var(--glass-border)', cursor: 'pointer' }}
                     className="hover:bg-[rgba(255,255,255,0.03)]"
                   >
-                    <td style={{ padding: '8px 14px', fontFamily: 'var(--mono, monospace)', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
-                      {p.arxiv_id}
-                    </td>
-                    <td style={{ padding: '8px 14px', color: 'var(--text-2)' }} title={Array.isArray(p.authors) ? p.authors.join(', ') : ''}>
+                    <td
+                      style={{ padding: '5px 12px', color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                      title={Array.isArray(p.authors) ? p.authors.join(', ') : ''}
+                    >
                       {formatAuthors(p.authors)}
                     </td>
-                    <td style={{ padding: '8px 14px', textAlign: 'right', fontFamily: 'var(--mono, monospace)', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '5px 12px', textAlign: 'right', fontFamily: 'var(--mono, monospace)', color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
                       {p.published ? p.published.slice(0, 4) : '—'}
                     </td>
-                    <td style={{ padding: '8px 14px', color: 'var(--text-1)' }} title={cleanLatex(p.title) || p.arxiv_id}>
-                      {truncate(cleanLatex(p.title) || p.arxiv_id, 80)}
+                    <td
+                      style={{ padding: '5px 12px', color: 'var(--text-1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                      title={cleanLatex(p.title) || p.arxiv_id}
+                    >
+                      {cleanLatex(p.title) || p.arxiv_id}
                     </td>
-                    <td style={{ padding: '8px 14px', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '5px 12px', whiteSpace: 'nowrap' }}>
                       {p.primary_category && (
                         <span
                           className="tag tag-muted"
                           title={p.category_label ? `${p.primary_category} — ${p.category_label}` : p.primary_category}
+                          style={{ fontSize: '0.72rem' }}
                         >
                           {p.category_label || p.primary_category}
                         </span>
