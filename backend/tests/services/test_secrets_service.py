@@ -35,7 +35,10 @@ class TestExtractEnvName:
     def test_hyphen_to_underscore(self):
         from archimedes.services.secrets_service import _extract_env_name
 
-        assert _extract_env_name("/archimedes/prod/dev-wallet-private-key", "/archimedes/prod/") == "DEV_WALLET_PRIVATE_KEY"
+        assert (
+            _extract_env_name("/archimedes/prod/dev-wallet-private-key", "/archimedes/prod/")
+            == "DEV_WALLET_PRIVATE_KEY"
+        )
 
     def test_already_uppercase(self):
         from archimedes.services.secrets_service import _extract_env_name
@@ -60,10 +63,12 @@ class TestLoadSsmSecrets:
         monkeypatch.setenv("AWS_SSM_PATH_PREFIX", "/archimedes/prod/")
         monkeypatch.setenv("AWS_REGION", "eu-west-2")
 
-        mock_client = self._mock_ssm_response([
-            {"Name": "/archimedes/prod/TEST_SECRET_1", "Value": "secret-value-1"},
-            {"Name": "/archimedes/prod/TEST_SECRET_2", "Value": "secret-value-2"},
-        ])
+        mock_client = self._mock_ssm_response(
+            [
+                {"Name": "/archimedes/prod/TEST_SECRET_1", "Value": "secret-value-1"},
+                {"Name": "/archimedes/prod/TEST_SECRET_2", "Value": "secret-value-2"},
+            ]
+        )
         mock_boto3.return_value = mock_client
 
         from archimedes.services.secrets_service import load_ssm_secrets
@@ -81,9 +86,11 @@ class TestLoadSsmSecrets:
         monkeypatch.setenv("AWS_REGION", "eu-west-2")
         monkeypatch.setenv("TEST_SECRET_1", "original-value")
 
-        mock_client = self._mock_ssm_response([
-            {"Name": "/archimedes/prod/TEST_SECRET_1", "Value": "ssm-value"},
-        ])
+        mock_client = self._mock_ssm_response(
+            [
+                {"Name": "/archimedes/prod/TEST_SECRET_1", "Value": "ssm-value"},
+            ]
+        )
         mock_boto3.return_value = mock_client
 
         from archimedes.services.secrets_service import load_ssm_secrets
@@ -100,9 +107,11 @@ class TestLoadSsmSecrets:
         monkeypatch.setenv("AWS_REGION", "eu-west-2")
         monkeypatch.setenv("TEST_SECRET_1", "original-value")
 
-        mock_client = self._mock_ssm_response([
-            {"Name": "/archimedes/prod/TEST_SECRET_1", "Value": "ssm-override"},
-        ])
+        mock_client = self._mock_ssm_response(
+            [
+                {"Name": "/archimedes/prod/TEST_SECRET_1", "Value": "ssm-override"},
+            ]
+        )
         mock_boto3.return_value = mock_client
 
         from archimedes.services.secrets_service import load_ssm_secrets
@@ -185,9 +194,11 @@ class TestLoadSsmSecrets:
     def test_explicit_prefix_and_region(self, mock_boto3, monkeypatch):
         """Explicit prefix/region args override env vars."""
         # Don't set env vars — use explicit args
-        mock_client = self._mock_ssm_response([
-            {"Name": "/custom/path/MY_KEY", "Value": "my-val"},
-        ])
+        mock_client = self._mock_ssm_response(
+            [
+                {"Name": "/custom/path/MY_KEY", "Value": "my-val"},
+            ]
+        )
         mock_boto3.return_value = mock_client
 
         from archimedes.services.secrets_service import load_ssm_secrets

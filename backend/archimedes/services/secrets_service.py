@@ -95,9 +95,7 @@ def load_ssm_secrets(
         client = boto3.client("ssm", region_name=region)
         parameters = _fetch_all_parameters(client, prefix)
     except NoCredentialsError:
-        logger.info(
-            "secrets_service: no AWS credentials available — skipping SSM (expected in local dev)"
-        )
+        logger.info("secrets_service: no AWS credentials available — skipping SSM (expected in local dev)")
         return 0
     except (BotoCoreError, ClientError) as exc:
         logger.warning("secrets_service: SSM fetch failed: %s — falling back to .env", exc)

@@ -22,6 +22,7 @@ load_dotenv(".env", override=False)  # Backend-local .env fills in any missing (
 # No-op when AWS_SSM_PATH_PREFIX is unset (local dev). Must run BEFORE
 # any service imports that read os.environ for API keys / secrets.
 from archimedes.services.secrets_service import load_ssm_secrets  # noqa: E402
+
 load_ssm_secrets()
 
 # Shared rate limiter (Redis-backed, falls back to in-memory).

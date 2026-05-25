@@ -5,6 +5,7 @@ Produces docs/benchmarks/stockbench-vs-baselines.png
 """
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -57,7 +58,15 @@ ax.set_title(
 for i, (v, agent) in enumerate(zip(sortino, agents)):
     offset = 0.08 if v >= 0 else -0.08
     ha = "left" if v >= 0 else "right"
-    ax.text(v + offset, i, f"{v:+.2f}", va="center", ha=ha, fontsize=9, fontweight="bold" if agent.startswith("Archimedes") else "normal")
+    ax.text(
+        v + offset,
+        i,
+        f"{v:+.2f}",
+        va="center",
+        ha=ha,
+        fontsize=9,
+        fontweight="bold" if agent.startswith("Archimedes") else "normal",
+    )
 
 # Zero line
 ax.axvline(x=0, color="#555", linewidth=0.8, linestyle="--", alpha=0.5)
