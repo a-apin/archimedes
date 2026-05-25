@@ -19,11 +19,11 @@ dependencies:
       - "starlette>=1.0.1"            # Pinned directly to close PYSEC-2026-161 (Host-header validation bypass); FastAPI's range can resolve to vulnerable 1.0.0 without this floor.
       - "uvicorn[standard]>=0.32"
       - sqlalchemy>=2.0
-      - psycopg2-binary>=2.9          # PostgreSQL driver (binary wheel; no system pq needed)
+      - psycopg2-binary>=2.9.12       # PostgreSQL driver (binary wheel; no system pq needed). Floor aligned with backend/requirements.txt via dependabot PR #247.
       - alembic>=1.13                 # DB migrations
       - redis>=7.4.0                  # Redis client for live regime/state cache (aligned with backend/requirements.txt)
       - pydantic>=2.9
-      - pydantic-settings>=2.5
+      - pydantic-settings>=2.14.1     # Floor aligned with backend/requirements.txt via dependabot PR #248.
       - python-dotenv>=1.0
       - "slowapi>=0.1.9"              # FastAPI rate-limiter — required by api/limiter.py + user_routes.py. CI installs from backend/requirements.txt; this keeps local dev parity.
 
@@ -37,13 +37,13 @@ dependencies:
       # --- Market data ---
       - yfinance>=0.2.40              # Historical + live equity/ETF/crypto data; for backtesting
       - requests>=2.32
-      - aiohttp>=3.10
+      - aiohttp>=3.13.5               # Floor aligned with backend/requirements.txt via dependabot PR #250.
 
       # --- Backtesting (per backtrader-vs-vectorbt decision memo) ---
-      - backtrader>=1.9.78            # Decision: v1 default. See docs/specs/backtrader-vs-vectorbt-decision-memo.md
+      - backtrader>=1.9.78.123        # Decision: v1 default. See docs/specs/backtrader-vs-vectorbt-decision-memo.md. Floor aligned with backend/requirements.txt via dependabot PR #249.
 
       # --- LLM ---
-      - anthropic>=0.40               # Claude API for strategy extraction + reasoning trace generation
+      - anthropic>=0.104.1            # Claude / GLM-compatible client for strategy extraction + reasoning trace generation + chat. Floor aligned with backend/requirements.txt via dependabot PR #251; locally smoke-tested at 0.104.1 against llm_backend.py + chat_service.py (full 784-test backend suite green).
 
       # --- On-chain / Web3 ---
       - web3>=7.0                     # Python EVM client; works with Arc (EVM-compatible)
