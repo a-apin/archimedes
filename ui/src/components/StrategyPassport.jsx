@@ -293,7 +293,7 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
             hint="lower = less overfit"
           />
           <Metric label="OOS Sharpe" value={fmt(s.out_of_sample_sharpe)} />
-          <Metric label="Trials" value={s.total_trades != null ? s.total_trades : '—'} hint="multiple-testing adj" />
+          <Metric label="Trades" value={s.total_trades != null ? s.total_trades : '—'} hint="executed in backtest" />
         </div>
         <p className="caption mt-3 leading-relaxed text-[var(--text-3)]">
           The Deflated Sharpe Ratio corrects the realized Sharpe for multiple-testing

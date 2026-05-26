@@ -267,9 +267,9 @@ function AgentCards() {
 function MemoryPillar() {
   return (
     <div className="mb-7">
-      <div className="label mb-3">The 5-layer shared memory pillar</div>
+      <div className="label mb-3">The 6-layer shared memory pillar</div>
       <p className="caption mb-3" style={{ color: 'var(--text-3)' }}>
-        Adapted from a 5-layer cognitive memory model, with the on-chain audit-truth layer
+        Adapted from a 5-layer cognitive memory model, extended with the on-chain audit-truth layer
         split out so the LLM can never hallucinate over real vault state.
       </p>
       <div className="flex flex-col gap-2">

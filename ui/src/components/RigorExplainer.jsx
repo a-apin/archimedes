@@ -226,9 +226,12 @@ export default function RigorExplainer() {
         </div>
       </div>
 
-      {/* Summary table */}
+      {/* Summary table — verdict snapshot from the canonical seed-strategy
+          backtest run. The verdicts (Tier 1 vs Candidate) reflect what the
+          rigor gate computes; the per-cell numbers are the snapshot values
+          from the last seed run, not a live re-compute on every page load. */}
       <div className="card-flat" style={{ padding: 20, marginBottom: 8 }}>
-        <div className="label mb-3">Gate Summary — Current Library</div>
+        <div className="label mb-3">Gate Snapshot — Seed Strategy Library</div>
         <div className="table-container">
           <table>
             <thead>
@@ -293,8 +296,10 @@ export default function RigorExplainer() {
             </tbody>
           </table>
         </div>
-        <div className="caption" style={{ marginTop: 10, color: 'var(--text-4)', fontSize: '0.7rem' }}>
-          DSR threshold: p &gt; 0.95 · PBO threshold: &lt; 50% · OOS threshold: ≥ 50% of in-sample Sharpe
+        <div className="caption" style={{ marginTop: 10, color: 'var(--text-4)', fontSize: '0.72rem' }}>
+          DSR threshold: p &gt; 0.95 · PBO threshold: &lt; 50% · OOS threshold: ≥ 50% of in-sample Sharpe ·
+          Numbers above are a snapshot from the most recent seed backtest run; the verdict (Tier 1 vs Candidate)
+          is recomputed by the gate every time a strategy is admitted to the Library.
         </div>
       </div>
 

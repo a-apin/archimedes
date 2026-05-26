@@ -100,7 +100,7 @@ function Illustration({ name }) {
           {[0, 1, 2, 3].map(i => (
             <rect key={i} x={20 + i * 30} y={20 + (i % 2) * 6} width="22" height="40" rx="2" fill={i === 2 ? accent : muted} opacity={i === 2 ? 1 : 0.5} />
           ))}
-          <text x="80" y="73" textAnchor="middle" fontFamily="monospace" fontSize="8" fill={muted}>10,000 papers</text>
+          <text x="80" y="73" textAnchor="middle" fontFamily="monospace" fontSize="8" fill={muted}>1,014 papers</text>
         </svg>
       )
     case 'generate':

@@ -62,8 +62,8 @@ export default function Landing({ onNavigate }) {
             Every rebalance decision gets a keccak256 hash anchored on Arc.
             Verify the agent's reasoning trail — before and after each trade.
           </FeatureCard>
-          <FeatureCard icon="bot" title="Autonomous Agent" tag="Live · 5-min ticks">
-            The agent evaluates 4 paper-grounded strategies against live market data,
+          <FeatureCard icon="bot" title="Autonomous Agent" tag="Live · minute-level ticks">
+            The agent evaluates paper-grounded strategies against live market data,
             detects regime shifts, and rebalances autonomously — USDC on Arc.
           </FeatureCard>
           <FeatureCard icon="lock" title="Non-Custodial Vaults" tag="ERC-4626 · Your Keys">
@@ -80,7 +80,7 @@ export default function Landing({ onNavigate }) {
           {[
             { name: 'Arc',         desc: 'EVM · Sub-second finality' },
             { name: 'Circle',      desc: 'USDC · Wallets · CCTP' },
-            { name: 'Foundry',     desc: '10 deployed contracts' },
+            { name: 'Foundry',     desc: '11 deployed contracts' },
             { name: 'Claude',      desc: 'Strategy extraction · Reasoning' },
             { name: 'React + viem',desc: 'Frontend · Wallet UX' },
             { name: 'FastAPI',     desc: 'Backend · Agent runner' },
@@ -127,9 +127,10 @@ export default function Landing({ onNavigate }) {
             All vault deposits, trades, and redemptions settle in USDC on Arc.
             Native USDC at 0x3600…0000 on Arc testnet.
           </FeatureCard>
-          <FeatureCard icon="scroll-text"       title="Smart Contracts on Arc"       tag="10 Contracts · Foundry">
-            10 Solidity contracts deployed: Vault, VaultFactory, AMMPool,
-            AMMRouter, SyntheticFactory, PriceOracle, ReasoningTraceRegistry.
+          <FeatureCard icon="scroll-text"       title="Smart Contracts on Arc"       tag="11 Contracts · Foundry">
+            11 Solidity contracts deployed: Vault, VaultFactory, SyntheticVault,
+            SyntheticFactory, SyntheticToken, AMMPool, AMMRouter, AssetRegistry,
+            PriceOracle, StrategyRegistry, ReasoningTraceRegistry.
           </FeatureCard>
         </div>
       </LSection>

@@ -69,7 +69,13 @@ export default function Explore() {
   // the feed pipeline is genuinely broken, not just "the oracle slot is
   // unused for this asset". See asset_market_service.py docstring.
   const allStale = assets.length > 0 && assets.every(a => a.is_stale)
-  const someStale = !allStale && assets.some(a => a.is_stale)
+  const staleCount = assets.filter(a => a.is_stale).length
+  // Distinguish "majority stale" (markets closed + yfinance daily-close —
+  // expected) from "minority stale" (a few feeds drifting — unusual). The
+  // page used to say "Most assets are current" any time someStale was true,
+  // which read as a lie on weekends when 60+ of 84 cards show STALE.
+  const majorityStale = !allStale && staleCount > assets.length / 2
+  const minorityStale = !allStale && !majorityStale && staleCount > 0
 
   return (
     <div>
@@ -127,10 +133,17 @@ export default function Explore() {
           The upstream market-data pipeline appears to be paused; values shown may be outdated.
         </div>
       )}
-      {someStale && (
-        <div className="info-box" style={{ marginBottom: 16, fontSize: '0.82rem' }}>
-          Some assets have stale price feeds (marked with a STALE badge on the card).
-          Most assets are current.
+      {majorityStale && (
+        <div className="info-box" style={{ marginBottom: 16, fontSize: '0.84rem' }}>
+          <strong>{staleCount}/{assets.length}</strong> assets show STALE — most equity / ETF feeds
+          run on yfinance daily-close prices and read as stale outside the US trading window.
+          24/7 markets (crypto, FX, futures) stay current.
+        </div>
+      )}
+      {minorityStale && (
+        <div className="info-box" style={{ marginBottom: 16, fontSize: '0.84rem' }}>
+          A few assets ({staleCount} of {assets.length}) have stale price feeds (STALE badge on the card).
+          Most feeds are current.
         </div>
       )}
 
