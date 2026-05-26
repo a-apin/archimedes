@@ -178,12 +178,16 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
           .filter(t => filter === 'all' || t.decision_type === filter)
           .map((t, i) => {
             const vResult = verifyResults[t.id]
+            // Skip-type traces are honest noise — when AMM pools are dry,
+            // the agent legitimately emits one per cycle. Render them
+            // compactly so a real rebalance isn't buried.
+            const isSkip = t.decision_type === 'skip'
             return (
-              <div key={i} id={`trace-${t.id}`} className="card" style={{ padding: 14 }}>
+              <div key={i} id={`trace-${t.id}`} className="card" style={{ padding: isSkip ? 10 : 14 }}>
                 <div className="flex justify-between items-start mb-2">
                   <div className="flex gap-2 items-center flex-wrap">
                     <span style={{ fontWeight: 700, color: 'var(--accent)' }}>#{typeof t.id === 'string' ? t.id.slice(0, 8) : t.id}</span>
-                    <span className={`tag ${t.decision_type === 'rebalance' ? 'tag-accent' : t.decision_type === 'construction' ? 'tag-positive' : 'tag-muted'}`}>
+                    <span className={`tag ${t.decision_type === 'rebalance' ? 'tag-positive' : t.decision_type === 'construction' ? 'tag-accent' : t.decision_type === 'skip' ? 'tag-warning' : 'tag-muted'}`}>
                       {t.decision_type}
                     </span>
                     {t.is_verified && <span className="flex items-center gap-1 text-xs text-[var(--positive)]"><span className="i-lucide-check w-3 h-3" /> verified</span>}
@@ -192,40 +196,67 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                   <div className="caption">{timeAgo(t.timestamp)}</div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 mb-2">
-                  <div>
-                    <div className="caption">Vault</div>
-                    <code style={{ fontSize: '0.75rem' }}>{shortAddr(t.vault_address || t.vault)}</code>
-                  </div>
-                  <div>
-                    <div className="caption">Trace Hash</div>
-                    <code style={{ fontSize: '0.75rem' }}>{shortHash(t.trace_hash || t.traceHash)}</code>
-                  </div>
-                </div>
-
-                {t.reasoning && (
-                  <div className="mb-2">
-                    <div className="caption">Reasoning</div>
-                    <p className="body" style={{ fontSize: '0.85rem', lineHeight: 1.4 }}>{t.reasoning.slice(0, 200)}{t.reasoning.length > 200 ? '…' : ''}</p>
-                  </div>
-                )}
-
-                {t.regime_at_decision && (
-                  <div style={{ marginBottom: 8 }}>
-                    <span className="caption">Regime: </span>
-                    <span className={`tag ${t.regime_at_decision === 'risk_on' ? 'tag-positive' : t.regime_at_decision === 'risk_off' ? 'tag-muted' : 'tag-accent'}`}>
-                      {t.regime_at_decision}
-                    </span>
-                  </div>
-                )}
-
-                {t.confidence > 0 && (
-                  <div className="mb-2">
-                    <div className="caption">Confidence: {(t.confidence * 100).toFixed(0)}%</div>
-                    <div className="rounded h-1 w-full" style={{ background: 'var(--bg-2)' }}>
-                      <div className="rounded h-1 bg-[var(--accent)]" style={{ width: `${t.confidence * 100}%` }} />
+                {/* Skip traces: render only a one-line summary; everything
+                    else lives in an inline "Details" disclosure so the
+                    page doesn't become a wall of identical skip cards. */}
+                {isSkip ? (
+                  <details>
+                    <summary className="caption cursor-pointer select-none" style={{ color: 'var(--text-3)', lineHeight: 1.5 }}>
+                      {(t.trigger || 'skip')} — {(t.reasoning || '').slice(0, 100)}{(t.reasoning || '').length > 100 ? '…' : ''}
+                      <span style={{ color: 'var(--text-4)', marginLeft: 6 }}>(click for details)</span>
+                    </summary>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <div>
+                        <div className="caption">Vault</div>
+                        <code style={{ fontSize: '0.75rem' }}>{shortAddr(t.vault_address || t.vault)}</code>
+                      </div>
+                      <div>
+                        <div className="caption">Trace Hash</div>
+                        <code style={{ fontSize: '0.75rem' }}>{shortHash(t.trace_hash || t.traceHash)}</code>
+                      </div>
                     </div>
-                  </div>
+                    {t.reasoning && (
+                      <p className="body mt-2" style={{ fontSize: '0.85rem', lineHeight: 1.4 }}>{t.reasoning}</p>
+                    )}
+                  </details>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <div>
+                        <div className="caption">Vault</div>
+                        <code style={{ fontSize: '0.75rem' }}>{shortAddr(t.vault_address || t.vault)}</code>
+                      </div>
+                      <div>
+                        <div className="caption">Trace Hash</div>
+                        <code style={{ fontSize: '0.75rem' }}>{shortHash(t.trace_hash || t.traceHash)}</code>
+                      </div>
+                    </div>
+
+                    {t.reasoning && (
+                      <div className="mb-2">
+                        <div className="caption">Reasoning</div>
+                        <p className="body" style={{ fontSize: '0.85rem', lineHeight: 1.4 }}>{t.reasoning.slice(0, 200)}{t.reasoning.length > 200 ? '…' : ''}</p>
+                      </div>
+                    )}
+
+                    {t.regime_at_decision && (
+                      <div style={{ marginBottom: 8 }}>
+                        <span className="caption">Regime: </span>
+                        <span className={`tag ${t.regime_at_decision === 'risk_on' ? 'tag-positive' : t.regime_at_decision === 'risk_off' ? 'tag-muted' : 'tag-accent'}`}>
+                          {t.regime_at_decision}
+                        </span>
+                      </div>
+                    )}
+
+                    {t.confidence > 0 && (
+                      <div className="mb-2">
+                        <div className="caption">Confidence: {(t.confidence * 100).toFixed(0)}%</div>
+                        <div className="rounded h-1 w-full" style={{ background: 'var(--bg-2)' }}>
+                          <div className="rounded h-1 bg-[var(--accent)]" style={{ width: `${t.confidence * 100}%` }} />
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {/* On-chain link — shown upfront whenever the trace has an
@@ -234,8 +265,11 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                     the API response; we don't need a verify roundtrip to
                     expose the arcscan link. The Verify button below still
                     re-fetches the on-chain receipt and confirms hash match,
-                    but the link doesn't gate on it. */}
-                {t.arc_tx_hash && (
+                    but the link doesn't gate on it.
+                    Skip-type traces hide all of this in their <details>
+                    disclosure above — these blocks render only for
+                    rebalance/construction. */}
+                {!isSkip && t.arc_tx_hash && (
                   <div className="flex items-center gap-3 flex-wrap text-xs text-[var(--text-3)] mb-2">
                     <span className="flex items-center gap-1">
                       <span className="i-lucide-file-text w-3 h-3" />
@@ -257,14 +291,16 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                     )}
                   </div>
                 )}
-                {!t.arc_tx_hash && (
+                {!isSkip && !t.arc_tx_hash && (
                   <div className="caption text-[var(--text-4)] flex items-center gap-1 mb-2">
                     <span className="i-lucide-clock w-3 h-3" />
                     Not yet anchored on-chain
                   </div>
                 )}
 
-                {/* Verify button + strategy back-link */}
+                {/* Verify button + strategy back-link — only for non-skip
+                    traces. Skip rows already collapsed their detail above. */}
+                {!isSkip && (
                 <div className="flex gap-2 items-center flex-wrap">
                   <button
                     className="btn btn-outline btn-sm flex items-center gap-1.5"
@@ -307,9 +343,10 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                     </div>
                   </details>
                 </div>
+                )}
 
                 {/* Temporal binding verification */}
-                {t.temporal_binding_valid != null && (
+                {!isSkip && t.temporal_binding_valid != null && (
                   <div className="mt-2 rounded-md px-3 py-2" style={{ background: t.temporal_binding_valid ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)' }}>
                     <div className="flex items-center gap-1.5 mb-1">
                       <span className={`w-4 h-4 flex-shrink-0 ${t.temporal_binding_valid ? 'i-lucide-check-circle text-[var(--positive)]' : 'i-lucide-x-circle text-[var(--negative)]'}`} />

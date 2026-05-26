@@ -29,6 +29,32 @@ function shortAddr(a) {
   return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '—'
 }
 
+// Collapse runs of identical "skip" traces (same decision_type + trigger)
+// into a single summary row. Recent reality: the AMM pools are dry while the
+// liquidity-bootstrap fix is still in flight, so the agent ticks emit
+// repeated "Swap skipped — thin pool" traces every cycle. Honest signal,
+// noisy display — group them so one real rebalance isn't buried.
+function groupRepeatedSkips(traces) {
+  const out = []
+  for (const t of traces) {
+    const last = out[out.length - 1]
+    const isSkip = t.decision_type === 'skip'
+    const sameAsLast = last
+      && last._isGroup
+      && last.decision_type === t.decision_type
+      && last.trigger === t.trigger
+    if (isSkip && sameAsLast) {
+      last._count += 1
+      last._oldest_ts = t.timestamp
+    } else if (isSkip) {
+      out.push({ ...t, _isGroup: true, _count: 1, _newest_ts: t.timestamp, _oldest_ts: t.timestamp })
+    } else {
+      out.push(t)
+    }
+  }
+  return out
+}
+
 export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, onNavigate }) {
   const [userVaults, setUserVaults] = useState([])
   const [walletUsdc, setWalletUsdc] = useState(null)  // null = not loaded yet; show "—"
@@ -204,27 +230,25 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
         </div>
       </div>
 
-      {/* Your Vaults — the hero. */}
+      {/* Your Vaults — the hero. Empty state stays tight: one line + two
+          buttons. We used to center-align with 24px padding and lots of
+          vertical air; the wallet-connected user lands here, sees the empty
+          state, and just wants to know what to do next. */}
       {!vaultsLoading && !hasVaults && (
-        <div className="card mb-7" style={{ padding: 24, textAlign: 'center' }}>
-          <h3 className="serif text-[1.4rem] mb-2">You haven't deployed a vault yet</h3>
-          <p className="body mb-4" style={{ color: 'var(--text-3)' }}>
-            A vault is the non-custodial container that holds your USDC and runs your strategy.
-            Describe what you want and the agent will generate one paper-grounded.
-          </p>
-          <div className="flex justify-center gap-3 flex-wrap">
-            <button
-              className="btn btn-primary"
-              onClick={() => onNavigate?.('generate')}
-            >
-              Generate a Strategy
+        <div className="card mb-7 flex flex-wrap items-center justify-between gap-3" style={{ padding: '16px 18px' }}>
+          <div style={{ flex: '1 1 280px' }}>
+            <div className="label mb-1">Your Vault Positions</div>
+            <p className="body" style={{ margin: 0, color: 'var(--text-3)' }}>
+              No vaults yet. Generate a paper-grounded strategy or browse the example library to deploy your first non-custodial vault.
+            </p>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <button className="btn btn-primary btn-sm" onClick={() => onNavigate?.('generate')}>
+              Generate →
             </button>
-            <a
-              onClick={() => onNavigate?.('library')}
-              style={{ color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline', alignSelf: 'center' }}
-            >
-              Browse the Example Library
-            </a>
+            <button className="btn btn-outline btn-sm" onClick={() => onNavigate?.('library')}>
+              Browse Library
+            </button>
           </div>
         </div>
       )}
@@ -320,50 +344,83 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
         )}
         {recentTraces.length > 0 && (
           <div className="flex flex-col gap-2">
-            {recentTraces.map(t => (
-              <div
-                key={t.id}
-                className="trace-card vault-card-clickable"
-                onClick={() => onSelectTrace?.(t.id)}
-                style={{ cursor: 'pointer' }}
-                title={`Click to view trace ${t.id}`}
-              >
-                <div className="flex justify-between items-center gap-3 flex-wrap">
-                  <div>
-                    <span className="tag tag-muted mr-2 capitalize">{t.decision_type}</span>
-                    <strong style={{ fontSize: '0.9rem' }}>{t.trigger}</strong>
-                  </div>
-                  <span className="caption">{t.timestamp ? timeAgo(t.timestamp) : ''}</span>
-                </div>
-                {t.reasoning && (
-                  <div className="caption mt-1.5 leading-relaxed">
-                    {t.reasoning.slice(0, 180)}{t.reasoning.length > 180 ? '…' : ''}
-                  </div>
-                )}
-                <div className="caption mt-1.5 flex gap-3 text-[var(--text-3)]">
-                  {t.vault_address && <span>vault {shortAddr(t.vault_address)}</span>}
-                  {t.arc_tx_hash ? (
-                    <a
-                      href={`https://testnet.arcscan.app/tx/${t.arc_tx_hash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mono underline decoration-dotted underline-offset-2 hover:text-[var(--accent)] transition-colors"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {t.arc_tx_hash.slice(0, 10)}… ↗
-                    </a>
-                  ) : t.trace_hash ? (
-                    <span className="mono">{t.trace_hash.slice(0, 10)}…</span>
-                  ) : null}
-                  {t.is_verified
-                    ? <span className="flex items-center gap-1 text-[var(--positive)]"><span className="i-lucide-check-circle w-3.5 h-3.5" /> anchored on Arc</span>
-                    : <span className="flex items-center gap-1 text-[var(--text-3)]" title="Trace hashed + persisted off-chain; on-chain anchor pending (registry write didn't complete yet — usually transient).">
-                        <span className="i-lucide-clock w-3.5 h-3.5" /> anchor pending
+            {groupRepeatedSkips(recentTraces).map(t => {
+              // Group rows render compactly — "N skipped" + window — to keep
+              // a real rebalance from being buried under repeated thin-pool
+              // notices. Click jumps to Reasoning for the full audit.
+              if (t._isGroup && t._count > 1) {
+                return (
+                  <div
+                    key={`group-${t.id}`}
+                    className="trace-card vault-card-clickable"
+                    onClick={() => onNavigate?.('reasoning')}
+                    style={{ cursor: 'pointer' }}
+                    title="Open the full trace audit on Reasoning"
+                  >
+                    <div className="flex justify-between items-center gap-3 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="tag tag-warning capitalize">{t._count}× skip</span>
+                        <strong style={{ fontSize: '0.9rem' }}>{t.trigger}</strong>
+                      </div>
+                      <span className="caption">
+                        {t._oldest_ts && t._newest_ts
+                          ? `${timeAgo(t._oldest_ts)} → ${timeAgo(t._newest_ts)}`
+                          : t._newest_ts ? timeAgo(t._newest_ts) : ''}
                       </span>
-                  }
+                    </div>
+                    <div className="caption mt-1.5 leading-relaxed" style={{ color: 'var(--text-3)' }}>
+                      Agent declined to swap on {t._count} consecutive ticks — pool reserves below threshold. The skip itself is recorded honestly rather than faking a trade. <span style={{ color: 'var(--accent)' }}>Open Reasoning →</span>
+                    </div>
+                  </div>
+                )
+              }
+              return (
+                <div
+                  key={t.id}
+                  className="trace-card vault-card-clickable"
+                  onClick={() => onSelectTrace?.(t.id)}
+                  style={{ cursor: 'pointer' }}
+                  title={`Click to view trace ${t.id}`}
+                >
+                  <div className="flex justify-between items-center gap-3 flex-wrap">
+                    <div>
+                      <span className={`tag mr-2 capitalize ${t.decision_type === 'skip' ? 'tag-warning' : t.decision_type === 'rebalance' ? 'tag-positive' : 'tag-muted'}`}>
+                        {t.decision_type}
+                      </span>
+                      <strong style={{ fontSize: '0.9rem' }}>{t.trigger}</strong>
+                    </div>
+                    <span className="caption">{t.timestamp ? timeAgo(t.timestamp) : ''}</span>
+                  </div>
+                  {t.reasoning && (
+                    <div className="caption mt-1.5 leading-relaxed">
+                      {t.reasoning.slice(0, 180)}{t.reasoning.length > 180 ? '…' : ''}
+                    </div>
+                  )}
+                  <div className="caption mt-1.5 flex gap-3 text-[var(--text-3)]">
+                    {t.vault_address && <span>vault {shortAddr(t.vault_address)}</span>}
+                    {t.arc_tx_hash ? (
+                      <a
+                        href={`https://testnet.arcscan.app/tx/${t.arc_tx_hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mono underline decoration-dotted underline-offset-2 hover:text-[var(--accent)] transition-colors"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {t.arc_tx_hash.slice(0, 10)}… ↗
+                      </a>
+                    ) : t.trace_hash ? (
+                      <span className="mono">{t.trace_hash.slice(0, 10)}…</span>
+                    ) : null}
+                    {t.is_verified
+                      ? <span className="flex items-center gap-1 text-[var(--positive)]"><span className="i-lucide-check-circle w-3.5 h-3.5" /> anchored on Arc</span>
+                      : <span className="flex items-center gap-1 text-[var(--text-3)]" title="Trace hashed + persisted off-chain; on-chain anchor pending (registry write didn't complete yet — usually transient).">
+                          <span className="i-lucide-clock w-3.5 h-3.5" /> anchor pending
+                        </span>
+                    }
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>

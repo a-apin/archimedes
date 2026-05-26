@@ -37,10 +37,22 @@
   --text-3:       #71717A;
   --text-4:       #3F3F46;
 
-  /* — Semantic — */
-  --positive:     #22C55E;
+  /* — Semantic —
+     Tuned per docs/claude-design-prompts.md (Tailwind 500-series).
+     positive: emerald (was bright lime) — slightly more institutional
+     warning: amber (new) — gentler than negative red; for "pending" states
+     info:    sky blue — kept light for dark-mode legibility
+     negative: kept */
+  --positive:     #10B981;
+  --positive-bg:  rgba(16, 185, 129, 0.10);
+  --warning:      #F59E0B;
+  --warning-bg:   rgba(245, 158, 11, 0.10);
+  --warning-bd:   rgba(245, 158, 11, 0.18);
   --negative:     #EF4444;
+  --negative-bg:  rgba(239, 68, 68, 0.10);
+  --negative-bd:  rgba(239, 68, 68, 0.18);
   --info:         #60A5FA;
+  --info-bg:      rgba(96, 165, 250, 0.10);
 
   /* — Type — */
   --sans:         'Geist', 'Inter', -apple-system, system-ui, sans-serif;
@@ -64,7 +76,7 @@
 }
 
 /* --- Base --- */
-html { font-size: 16px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; scroll-behavior: smooth; overflow-x: hidden; }
+html { font-size: 17px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; scroll-behavior: smooth; overflow-x: hidden; }
 body {
   font-family: var(--sans);
   background: var(--canvas);
@@ -88,8 +100,8 @@ h4, .h4 { font-family: var(--sans); font-size: 0.8rem; font-weight: 600; text-tr
 .serif { font-family: var(--serif); }
 .mono  { font-family: var(--mono); font-size: 0.88em; }
 .label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); }
-.body  { font-size: 0.97rem; color: var(--text-2); line-height: 1.7; }
-.caption { font-size: 0.82rem; color: var(--text-3); }
+.body  { font-size: 1rem; color: var(--text-2); line-height: 1.7; }
+.caption { font-size: 0.84rem; color: var(--text-3); }
 .accent  { color: var(--accent); }
 .positive { color: var(--positive); }
 .negative { color: var(--negative); }
@@ -781,8 +793,8 @@ h4, .h4 { font-family: var(--sans); font-size: 0.8rem; font-weight: 600; text-tr
   padding: 3px 7px;
   border-radius: 4px;
 }
-.badge.fresh { background: rgba(34, 197, 94, 0.15); color: var(--positive); }
-.badge.stale { background: rgba(245, 158, 11, 0.15); color: var(--accent); }
+.badge.fresh { background: var(--positive-bg); color: var(--positive); }
+.badge.stale { background: var(--warning-bg); color: var(--warning); }
 
 .price-row { display: flex; align-items: baseline; gap: 10px; }
 .price {
@@ -794,8 +806,8 @@ h4, .h4 { font-family: var(--sans); font-size: 0.8rem; font-weight: 600; text-tr
 .price.skeleton { color: var(--surface-4); }
 
 .change { font-size: 0.8rem; font-weight: 600; padding: 2px 6px; border-radius: 4px; }
-.change.up   { color: var(--positive); background: rgba(34, 197, 94, 0.1); }
-.change.down { color: var(--negative); background: rgba(239, 68, 68, 0.1); }
+.change.up   { color: var(--positive); background: var(--positive-bg); }
+.change.down { color: var(--negative); background: var(--negative-bg); }
 
 .meta {
   display: flex;
@@ -1622,10 +1634,10 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .tag-accent   { background: var(--accent-muted); color: var(--accent); }
 .tag-muted    { background: var(--glass); border: 1px solid var(--glass-border); color: var(--text-3); }
-.tag-positive { background: rgba(34, 197, 94, 0.10); color: var(--positive); }
-.tag-info     { background: rgba(96, 165, 250, 0.10); color: var(--info); }
-.tag-warning  { background: rgba(245, 158, 11, 0.10); color: #F59E0B; border: 1px solid rgba(245, 158, 11, 0.18); }
-.tag-negative { background: rgba(239, 68, 68, 0.10); color: var(--negative); border: 1px solid rgba(239, 68, 68, 0.18); }
+.tag-positive { background: var(--positive-bg); color: var(--positive); }
+.tag-info     { background: var(--info-bg); color: var(--info); }
+.tag-warning  { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-bd); }
+.tag-negative { background: var(--negative-bg); color: var(--negative); border: 1px solid var(--negative-bd); }
 
 .card-elevated {
   background: var(--glass);
@@ -1702,8 +1714,8 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .table-container tbody tr:hover td { background: var(--glass); }
 
 .verify-panel {
-  background: rgba(34, 197, 94, 0.05);
-  border: 1px solid rgba(34, 197, 94, 0.18);
+  background: var(--positive-bg);
+  border: 1px solid rgba(16, 185, 129, 0.22);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
 }
