@@ -201,6 +201,26 @@ class TestStrategiesByPaper:
     def test_no_match(self, session):
         assert strategies_by_paper(session, "nonexistent") == []
 
+    def test_empty_arxiv_id_returns_empty(self, session):
+        # Guard: an empty id must not LIKE-match every row.
+        assert strategies_by_paper(session, "") == []
+
+    def test_substring_false_positive_excluded(self, session):
+        # The DB LIKE prefilter matches substrings; the exact JSON check must
+        # then exclude an id that is only a *substring* of a cited id.
+        upsert_strategy(
+            session,
+            generation_method="fusion",
+            strategy_name="LongId",
+            thesis="X",
+            source_papers=[{"arxiv_id": "2401.00120", "sha256": "z"}],
+            asset_universe=["SPY"],
+        )
+        # "2401.0012" is a substring of "2401.00120" but not an exact citation.
+        assert strategies_by_paper(session, "2401.0012") == []
+        # The exact id still matches.
+        assert len(strategies_by_paper(session, "2401.00120")) == 1
+
 
 class TestToDict:
     def test_roundtrip(self, session):

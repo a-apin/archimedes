@@ -203,7 +203,20 @@ def resolve_source_papers(session: Session, strategy_id: str) -> list[dict]:
 
 
 def strategies_by_paper(session: Session, arxiv_id: str) -> list[StrategyRecord]:
-    """Find all strategies citing a given arXiv paper (bidirectional link)."""
-    # JSON array contains query — works for SQLite and Postgres
-    records = session.query(StrategyRecord).all()
-    return [r for r in records if arxiv_id in {p.get("arxiv_id", "") for p in json.loads(r.source_papers)}]
+    """Find all strategies citing a given arXiv paper (bidirectional link).
+
+    Pushes a substring prefilter into the DB so we don't load the entire
+    StrategyRecord table and JSON-parse every row on each call. The LIKE
+    matches any row whose serialized ``source_papers`` text contains the
+    arxiv_id; the exact JSON check below then removes substring false
+    positives (e.g. ``2401.001`` matching ``2401.0012``). Portable across
+    SQLite and Postgres.
+    """
+    if not arxiv_id:
+        return []
+    # Escape LIKE wildcards in the id so they're matched literally.
+    needle = arxiv_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    candidates = (
+        session.query(StrategyRecord).filter(StrategyRecord.source_papers.like(f"%{needle}%", escape="\\")).all()
+    )
+    return [r for r in candidates if arxiv_id in {p.get("arxiv_id", "") for p in json.loads(r.source_papers)}]
