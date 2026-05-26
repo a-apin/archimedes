@@ -118,8 +118,12 @@ button correctly disabled if rigor failed.
 ### Phase 4b — Pick a passing-rigor strategy for the actual deploy
 
 Because fresh generations fail rigor, do the Deploy from a **passing
-Example strategy** (Faber 2007 SMA200, Moskowitz-Ooi-Pedersen TSMOM, or
-Moreira-Muir 2017 Vol-Managed all pass).
+Example strategy**. As of 2026-05-27 exactly two library strategies clear
+all four gates: **Moreira-Muir 2017 Volatility-Managed Portfolios** (DSR
+p = 0.995) and **Moskowitz-Ooi-Pedersen Time Series Momentum** (DSR
+p = 0.976). Faber 2007 GTAA does **not** pass (DSR p = 0.612) despite a
+similar raw Sharpe — see [`docs/analysis/faber-dsr-finding.md`](../analysis/faber-dsr-finding.md)
+for why (skew/kurtosis deflation, working as designed).
 
 1. Library → **Examples** tab → click a passing-rigor entry (green ✓).
 2. Open the Passport. Confirm Deploy button is enabled (full opacity,
