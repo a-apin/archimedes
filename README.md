@@ -13,7 +13,7 @@
 
 ## TL;DR
 
-Describe what you want; Archimedes fuses your intent with live market data and a 10,000-paper quantitative-finance research library into novel strategies, gates them through selection-bias rigor (Deflated Sharpe, Probability of Backtest Overfitting), and lets you execute them into non-custodial vaults on Arc testnet — every reasoning step traceable to a source paper and anchored on-chain.
+Describe what you want; Archimedes fuses your intent with live market data and a quantitative-finance research library (1,014 papers ingested into Postgres so far; ~10,000-paper manifest seed target hydrates incrementally) into novel strategies, gates them through selection-bias rigor (Deflated Sharpe, Probability of Backtest Overfitting), and lets you execute them into non-custodial vaults on Arc testnet — every reasoning step traceable to a source paper and anchored on-chain.
 
 **Hackathon RFB alignment.** Archimedes is built against **[RFB 04 — Adaptive Portfolio Manager](https://luma.com/7i50p2r9)** — the only one of the six Agora Request-For-Builds whose primitives map one-to-one onto what we ship (regime detection, asset allocation by regime, autonomous rebalancing, Kelly + risk-parity sizing, correlation-based diversification, cross-chain-ready execution). **Adjacent fit:** RFB 02 (Prediction Market Trader Intelligence — our +EV / Kelly primitive maps without requiring us to ship prediction markets) and RFB 06 (Social Trading Intelligence — our Tier-1 verified library + paper-anchored passport + DSR/PBO rigor *is* the "AI selects, weights, monitors" leaderboard pattern the RFB describes). RFB 04 is the core claim; the others are bonus surface area.
 
@@ -58,7 +58,8 @@ Foundry, Circle wallet, and oracle targets (`compile`, `test`, `wallet`, `feed`,
 
 **Built today — visible on the live site right now:**
 
-- **Live HTTPS testnet deploy** at <https://archimedes-arc.app/> behind nginx + Route 53 + ACM. 10 Solidity contracts deployed on Arc testnet (chain ID `5042002`).
+- **Live HTTPS testnet deploy** at <https://archimedes-arc.app/> behind nginx + Route 53 + ACM. 11 Solidity contracts deployed on Arc testnet (chain ID `5042002`).
+- **SPEC-1 end-to-end evidence on-chain** — submission-day dress-rehearsal walkthrough captured in [`docs/runbooks/arc-testnet-e2e-evidence.md`](docs/runbooks/arc-testnet-e2e-evidence.md). Two vaults deployed by a real user wallet, **8 transactions confirmed** on Arc testnet (`txreceipt_status: 1` for every one), `vault.creator == user wallet` verified on each — the architectural proof that user funds never pass through platform custody. **The wedge held empirically**: of 6 strategies in the library, exactly the 2 that pass DSR ≥ 0.95 + PBO < 0.5 + OOS Sharpe ≥ 0.5 + look-ahead audit were deployed; the other 4 were correctly gate-blocked.
 - **Real on-chain rebalance traces in production** — the autonomous agent has been writing rebalance txs against the deployed `Vault` + `ReasoningTraceRegistry` contracts; `curl https://archimedes-arc.app/api/traces/?limit=10` returns `arc_tx_hash` values verifiable on `testnet.arcscan.app`.
 - **End-to-end deposit flow** — `CreateVaultModal` → `DepositFlow` stepper signs 3 wallet txs (USDC.approve → vault.deposit → vault.setTargetAllocations). `StrategyPublisher` anchors the passport's `methodology_hash` on the `StrategyRegistry` contract per vault created.
 - **Verify-on-chain (O(1))** — the Reasoning page's "Verify on-chain" button runs a single `eth_getTransactionReceipt` + log decode and surfaces a `testnet.arcscan.app/tx/...` link on success.
@@ -141,7 +142,7 @@ archimedes/
 ├── docs/                 ← design + planning + specs + ADRs + archive (see docs/README.md)
 ├── backend/              ← FastAPI app (Python 3.12) — see docs/chuan-architecture-survey.md
 ├── analytics-engine/     ← backtest engine (uv-managed)
-├── contracts/            ← Solidity (Foundry layout) — 10 contracts deployed on Arc testnet
+├── contracts/            ← Solidity (Foundry layout) — 11 contracts deployed on Arc testnet
 ├── ui/                   ← React 19 + Vite 8 + viem 2.48 (the live frontend)
 ├── nginx/                ← reverse-proxy + UI build container
 ├── wallet-setup/         ← Circle Wallets scripts (oracle wallet, entity-secret rotation)

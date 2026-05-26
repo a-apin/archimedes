@@ -1710,3 +1710,75 @@ Dan DM'ing Chuan in parallel; if response in time, Path B is automatic. If not, 
 ### Recurring pattern this hackathon — pre-close verification gate
 
 Eight issues today (#297, #298, #318, #324, #338, #342, #358, #362) closed before live verification, requiring follow-up work. Most expensive instance: #324 caused a 21-minute rebalance outage on live. Pi has acknowledged the pattern in DM; going-forward expectation: every issue closure includes `curl https://archimedes-arc.app/<endpoint>` output pasted in the closing comment, not just "the deploy ran." The recurring cost is real but each individual diagnosis was fast — root cause is the velocity vs verification trade-off when shipping eight issues in three hours. Worth documenting for future hackathons or any team adopting an agentic-bot workflow.
+
+---
+
+## After-final-wave addendum (2026-05-26 00:00–00:50 UTC)
+
+The "final wave" turned out not to be final. Six more PRs landed in ~50 min covering the third-act polish.
+
+### What shipped on main
+
+| # | Title | Owner | Status |
+|---|---|---|---|
+| #372 | Honest copy: post-#365 wallet gate + corpus count matches API | dbrowneup | Closed — `9,873` → `1,014` ingested; replaced aspirational corpus breakdown with real top-4 categories |
+| #373 | **SPEC-1 evidence: 2 vaults deployed, 8 tx, all confirmed on Arc testnet** | Önder | **The submission load-bearing artifact.** User wallet `0x8b5EEE…` deployed Moreira-Muir + TSMOM vaults; every `vault.creator == user` verified on-chain; 8 receipts replayable on arcscan |
+| #287 (this branch) | Final-day audit + this addendum | dbrowneup | Open — rebased onto post-#373 main, force-push pending |
+
+### What's in flight
+
+| # | Title | Owner | State |
+|---|---|---|---|
+| #374 | Allow vault deploy for failed-rigor strategies | Daniel R | **Open, held** — original premise was "nothing deployable", but #373 just demonstrated 2 strategies are deployable. Erodes the wedge if merged. Kept as break-glass safety net only per Dan's call |
+| #375 | Library cleanup + Pending Backtest relabel | other Claude | Open — kills dual-render bug, relabels `status="rejected" + null metrics` as `🟡 Pending Backtest` (honest about "not yet backtested"). No file overlap with Maestro's work |
+| #377 (this session) | Faucet menu item + clickable Generate cards + sidebar Home anchor + Learnings roadmap badge | dbrowneup (Maestro) | Open — 4-file polish bundle, branched off `79650f8`, no overlap with #375 |
+
+### The "no strategies pass rigor" diagnosis — UI surfacing, not backend
+
+Dan's report that "not a single strategy passes the rigor gate" was diagnostically incomplete. Live API check on 6 seed strategies:
+
+| Strategy | Status | passes_rigor_gate | DSR p | OOS Sharpe |
+|---|---|---|---|---|
+| Capital Preservation T-Bill | live | **false** | 0.812 (too cash-like for the test) | 0.431 |
+| Faber 2007 SMA | live | false | 0.612 | 0.930 |
+| 52-Week High Momentum | candidate | false | 0.609 | 0.910 |
+| **Moreira-Muir Vol-Managed** | live | **TRUE ✓** | 0.995 | 0.969 |
+| **TSMOM (Moskowitz-Ooi-Pedersen)** | live | **TRUE ✓** | 0.976 | 0.762 |
+| Buy-and-Hold Baseline | live | false | — | — |
+
+Two strategies pass. The visibility problem is the Library page rendering both passing strategies under the EfficientFrontier chart as small chips while the Generated tab (default) shows a wall of rejected-status candidates from prior generations. PR #375 fixes the surfacing.
+
+### Önder's #373 — the wedge held empirically
+
+Önder's evidence runbook makes the load-bearing pitch claim concrete:
+
+> *"Of 6 strategies in the library, exactly the 2 that pass DSR ≥ 0.95 + PBO < 0.5 + OOS ratio ≥ 0.5 + look-ahead audit were deployable. The other 4 — including the buy-and-hold baseline — were correctly gate-blocked."*
+
+That sentence is the pitch. The on-chain receipts (8 of them, blocks 44028414–44031374) back it up: judges can replay every step against `testnet.arcscan.app` without trusting any screenshot.
+
+This re-frames #374: Daniel R proposed ungating Deploy because "nothing was deployable." Önder just demonstrated that's not true — the gate works exactly as designed. If #374 ships, the sentence above gets weaker because the gate becomes advisory rather than enforcing. Holding #374 as break-glass only is the right call.
+
+### AMM Path B status — Chuan-blocked, accepted
+
+Pi's parallel `mint authority` check confirmed `0x0546a5a3…db5b62` is Chuan's local Foundry deployer keystore, outside the Circle Developer Wallets account. Dan messaged Chuan directly; no response (likely asleep). Önder's SPEC-1 run succeeded *under* this constraint — the strategies route into SPY/NIKKEI/GOLD/TREASURY/OIL synths which currently have empty pools, so the agent's runtime rigor guard from PR #342 Part 3 will skip those swaps and record honest `"Swap skipped — thin pool"` traces. That outcome is acceptable evidence per the runbook.
+
+### Updated "what's left" — submission window (~2.5h remaining)
+
+1. ✅ **SPEC-1 evidence committed** (Önder, #373)
+2. **#375 merge** — pending other Claude's PR landing
+3. **#377 merge** — pending CI green
+4. **Other Claude's submission polish bundle** — color scheme + text size + Portfolio compaction + Reasoning compaction; in flight as Track 2
+5. **#287 force-push + merge** — after this addendum + final state
+6. **arc-canteen telemetry backfill** — Dan, ~15 min
+7. **ARC-OSS Google Form** — Dan, ~10 min
+
+### Parallel-Claude coordination — what's working
+
+Two hosted Claude sessions running concurrently, both editing this repo. The coordination boundary that's holding:
+
+- **Strict file ownership.** Each session declared its files upfront; no file appears in two PRs.
+- **Branch-per-bundle.** Each session ships one PR per logical bundle (other Claude: #375 then submission-polish; Maestro: #377 + this docs commit on #287). No fan-out across branches.
+- **PR descriptions list non-overlapping files explicitly** so the other session can verify the boundary.
+- **Dan as the human router** between sessions — relays state changes (#373 merging changes the case for #374; the rigor-pass diagnosis changes the priority on #375) so neither session operates on stale context.
+
+Lesson for any future agentic-bot workflow at velocity: a fast human router beats elaborate cross-session protocols, *if* both sessions surface state changes promptly. Cost of the router role on a 5-hour submission window: maybe 15 min of Dan's time over ~12 turns, the cheapest part of the loop.
