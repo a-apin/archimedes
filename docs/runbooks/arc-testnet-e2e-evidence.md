@@ -112,27 +112,48 @@ Both vaults appear in the **Your vault positions** section with correct
 addresses, AUM, and tier (Community). The architectural proof point —
 *"the user controls the vault, the backend doesn't"* — is confirmed.
 
-## Phase 7 — First reasoning trace (pending agent tick)
+## Phase 7 — Reasoning trace (captured 2026-05-27)
 
-The agent ticks every ~5 min. The first trace for these vaults is
-expected within 5–10 min of deploy. Given the on-chain AMM state at the
-time of deploy:
+The agent is **alive and autonomously producing reasoning traces**, each
+hashed and anchored on-chain. A representative trace captured from the live
+`/api/traces` feed:
 
-- Only `pool_0` (sTSLA) carries liquidity (~$1500 USDC equivalent).
-- Pools 1-4 (sNVDA, sSPY, sBTC, sGOLD) are dry.
-- `sOIL` and `sNKY` synthetics have no pools at all (issue #362
-  acknowledged; documented as a testnet limitation in the README).
+| Field | Value |
+| --- | --- |
+| Trace ID | `92235ad9-1fd1-40e0-9c91-227dbd191f5e` |
+| Decision | `skip` |
+| Trigger | `insufficient_liquidity` |
+| Reasoning | `Swap skipped — thin pool: No AMM pool for USDC: getPool returned zero address` |
+| Regime at decision | `risk_on` |
+| Confidence | `0.5865` |
+| Trace hash | `0434b6b58c93d80fa83111836458627e42ae063987e3ec602827a49cc6477563` |
+| Anchor tx (`arc_tx_hash`) | [`0x3813949065...d3b9f73bf`](https://testnet.arcscan.app/tx/0x3813949065cf8eb587be478fe1cdcd2126aac90ea6cc0037b64b395d3b9f73bf) |
+| Commit tx (commit-reveal) | [`0x5a3f7c7713...6c636393c`](https://testnet.arcscan.app/tx/0x5a3f7c771384cd9b9c889982ff910554ec0b4dcd53328ab2912e46c6d636393c) |
+| Verified on-chain | `true` |
 
-Both deployed strategies route into the SPY/NIKKEI/GOLD/TREASURY/OIL
-synth universe — *none* of which currently have AMM liquidity. **The
-expected trace content is therefore `"Swap skipped — thin pool: ..."`,
-the rigor guard from PR #342 Part 3 working honestly.** Either outcome
-(a real rebalance, or an honest skip-with-reason) is acceptable evidence
-per the runbook.
+This single trace demonstrates the full autonomous loop **without faking a
+trade**: the agent classified the regime (`risk_on`), evaluated a rebalance,
+hit the pre-trade liquidity guard, **decided to skip**, hashed the decision,
+and **anchored the hash on Arc** — verifiable by anyone.
 
-This is the demo-honest path: we don't fake liquidity to make the chart
-move. We surface the constraint and rebalance only when the AMM can
-absorb the trade safely.
+### Honest limitations at capture time
+
+1. **The agent's per-vault scope did not include the two operator vaults
+   above.** All live traces at capture were for a bootstrapped demo vault
+   (`0x827a2584…`). The operator's user-created vaults (`0x09eb…`, `0x84B0…`)
+   were funded but not yet on the agent's tick list — related to the
+   per-vault scoping work in issue #307. So the trace above is from a sibling
+   vault, not the operator's own.
+2. **The trace records a skip, not a trade**, because the AMM router returns
+   `getPool returned zero address` for the USDC→synth path — even for the
+   funded sTSLA pool. That is a router lookup bug, tracked separately (see the
+   AMM `getPool` issue). Until it is fixed, *no* vault can actually rebalance;
+   every trace is an honest `skip`.
+
+Both limitations are surfaced rather than hidden. The "agent autonomously
+rebalances on-chain" claim is currently proven only as far as "agent
+autonomously *evaluates, decides, and anchors* on-chain"; the actual
+on-chain swap is blocked by the router bug, not by the agent.
 
 ## Phase 8 — Verify on-chain
 
