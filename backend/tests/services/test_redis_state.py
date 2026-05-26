@@ -86,7 +86,19 @@ class TestRegime:
         fake.set.assert_awaited_once()
         payload = json.loads(fake.set.await_args.args[1])
         assert payload["regime"] == "transition"
-        assert payload["confidence"] == 0.6  # 1 - 0.4
+        # Dynamic confidence formula (introduced in commit fabc57f, "Bug sweep:
+        # dynamic regime confidence + cleanup junk constants"): replaces the
+        # earlier `1 - flat_pct` simple form with a dispersion-aware
+        # consensus signal. With flat_pct=0.4 and the empty-signals fixture:
+        #   vote_ratio = 1.0 - 0.4 = 0.6
+        #   directional = []          (signals list empty)
+        #   avg_strength = 0.0        (no directional signals)
+        #   dispersion_penalty = 0.0  (< 2 weights)
+        #   dyn = clamp(0.6 * (0.5 + 0.5 * 0.0) - 0.0, 0.05, 0.99) = 0.3
+        # Keeping this expectation explicit + commented so a future change to
+        # the formula is caught here (rather than silently producing a wrong
+        # confidence on every agent tick).
+        assert payload["confidence"] == 0.3
         assert payload["source"] == "strategy_consensus"
 
     @pytest.mark.asyncio
