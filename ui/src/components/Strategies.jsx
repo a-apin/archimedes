@@ -50,7 +50,14 @@ function downloadStrategy(strategy, format) {
 function statusTag(status) {
   if (status === 'live') return 'tag-positive'
   if (status === 'validated') return 'tag-accent'
+  if (status === 'pending_backtest') return 'tag-warning'
   return 'tag-muted'
+}
+
+function statusLabel(status) {
+  if (status === 'pending_backtest') return 'Pending Backtest'
+  if (!status) return 'Candidate'
+  return status.charAt(0).toUpperCase() + status.slice(1)
 }
 
 function fmt(v, decimals = 2) {
@@ -398,7 +405,12 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport })
         <td className="caption">{paperCite || (s.paper_year ? `(${s.paper_year})` : '—')}</td>
         <td>
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className={`tag ${statusTag(s.status)}`} style={{ textTransform: 'capitalize' }}>{s.status}</span>
+            <span
+              className={`tag ${statusTag(s.status)}`}
+              title={s.status === 'pending_backtest' ? 'Generated but the rigor gate has not scored real metrics yet — DSR / PBO / OOS Sharpe pending a backtest run.' : undefined}
+            >
+              {statusLabel(s.status)}
+            </span>
             {s.passes_rigor_gate === true && (
               <span className="i-lucide-check w-3.5 h-3.5 text-[var(--positive)]" title="Passes rigor gate" />
             )}
@@ -535,8 +547,12 @@ function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigo
   if (!strategies.length) return emptyState
   return (
     <>
-      {/* Desktop table */}
-      <div className="hidden md:block overflow-x-auto rounded-lg border border-[var(--glass-border)]">
+      {/* Table — renders on every screen size; horizontal-scrolls on narrow
+          viewports. We previously kept a separate mobile card list with
+          `md:hidden`, but UnoCSS doesn't generate the `hidden` utility in
+          this build, so both views rendered on desktop and the page showed
+          every strategy twice. One table beats one duplicate. */}
+      <div className="overflow-x-auto rounded-lg border border-[var(--glass-border)]">
         <table className="lib-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
           <thead>
             <tr style={{ background: 'rgba(255,255,255,0.03)', textAlign: 'left', borderBottom: '1px solid var(--glass-border)' }}>
@@ -563,34 +579,6 @@ function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigo
           </tbody>
         </table>
       </div>
-      {/* Mobile card list */}
-      <div className="md:hidden flex flex-col gap-3">
-        {strategies.map(s => {
-          const sharpe = s.sharpe_ratio != null ? s.sharpe_ratio.toFixed(2) : '—'
-          const cagr = s.cagr != null ? `${(s.cagr * 100).toFixed(1)}%` : '—'
-          const maxDD = s.max_drawdown != null ? `${(s.max_drawdown * 100).toFixed(1)}%` : '—'
-          const statusLabel = s.passes_rigor_gate ? '✅ Rigorous' : s.status === 'live' ? '🟢 Live' : s.status
-          return (
-            <div
-              key={s.id}
-              className="card p-4 cursor-pointer"
-              onClick={() => onOpenPassport?.(s.id)}
-              style={{ border: highlightStrategyId === s.id ? '1px solid var(--accent)' : undefined }}
-            >
-              <div className="font-semibold text-sm mb-1 leading-snug">{s.paper_title || s.id.slice(0, 12)}</div>
-              <div className="caption mb-2" style={{ color: 'var(--text-4)' }}>
-                {s.paper_authors?.join(', ')?.slice(0, 40) || 'Internal'} {s.paper_year && `(${s.paper_year})`}
-              </div>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-                <span><strong>Status:</strong> {statusLabel}</span>
-                <span><strong>Sharpe:</strong> {sharpe}</span>
-                <span><strong>CAGR:</strong> {cagr}</span>
-                <span><strong>Max DD:</strong> {maxDD}</span>
-              </div>
-            </div>
-          )
-        })}
-      </div>
     </>
   )
 }
@@ -605,6 +593,17 @@ function coerceGenerated(row) {
   const sourcePapers = Array.isArray(row.source_papers) ? row.source_papers : []
   const firstPaper = sourcePapers[0]?.arxiv_id || ''
   const year = row.created_at ? new Date(row.created_at).getFullYear() : null
+  // Honest status mapping: the generation pipeline persists status="rejected"
+  // when its synthesis-time signal didn't pass, but for these rows no real
+  // backtest has run yet (every metric column is null). Calling that
+  // "Rejected" is misleading — surface it as "pending_backtest" so users
+  // know what's actually happening: candidate generated, real metrics not
+  // computed yet. The rigor gate verdict + DSR/PBO numbers still render
+  // honestly on the strategy passport.
+  const hasRealMetrics = row.dsr_value != null || row.sharpe_ratio != null
+  const honestStatus = (!hasRealMetrics && row.status === 'rejected')
+    ? 'pending_backtest'
+    : (row.status || 'candidate')
   return {
     id: row.id,
     paper_title: row.strategy_name || '(unnamed)',
@@ -613,7 +612,7 @@ function coerceGenerated(row) {
     paper_year: year,
     paper_venue: row.generation_method,
     methodology_summary: row.thesis || '',
-    status: row.status || 'candidate',
+    status: honestStatus,
     asset_universe: row.asset_universe || [],
     sharpe_ratio: null,
     cagr: null,
