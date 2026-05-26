@@ -7,7 +7,7 @@ const AGENTS = [
   {
     name: 'Strategy Generation Agent',
     role: 'What should be done?',
-    desc: 'Retrieves relevant papers from a 9,873-paper q-fin corpus, reads current market context, and synthesizes a candidate strategy that passes the rigor gate.',
+    desc: 'Retrieves relevant papers from a 1,014-paper q-fin corpus, reads current market context, and synthesizes a candidate strategy that passes the rigor gate.',
     subagents: [
       { name: 'Paper Retrieval', detail: 'SPECTER2 nearest-neighbour + KG entity walk' },
       { name: 'Market Context', detail: 'Regime classifier + on-chain oracle + price history' },
@@ -84,7 +84,7 @@ const MEMORY_LAYERS = [
   {
     tag: 'E',
     name: 'Semantic knowledge',
-    substrate: 'q-fin corpus (9,873 papers, SPECTER2 + clusters + KG)',
+    substrate: 'q-fin corpus (1,014 papers, SPECTER2 + clusters + KG)',
     lifetime: 'Persistent',
     why: 'The substrate the Strategy Generation Agent retrieves from.',
   },
@@ -106,7 +106,7 @@ function PageHeader() {
         paper-anchored, rigor-gated, and auditable end to end.
       </p>
       <p className="body" style={{ color: 'var(--text-3)' }}>
-        Three top-level agents, six memory layers, a 9,873-paper q-fin corpus, and the{' '}
+        Three top-level agents, six memory layers, a 1,014-paper q-fin corpus, and the{' '}
         <code>ReasoningTraceRegistry</code> on Arc anchoring every decision.
       </p>
     </div>
@@ -117,7 +117,7 @@ function HeroStrip() {
   const stats = [
     { n: '3', l: 'Top-level agents', s: 'Generation · Construction · Execution' },
     { n: '6', l: 'Memory layers', s: 'KV cache → on-chain ground truth' },
-    { n: '9,873', l: 'q-fin papers', s: 'SPECTER2 + clusters + KG' },
+    { n: '1,014', l: 'q-fin papers', s: 'SPECTER2 + clusters + KG' },
     { n: '10', l: 'Smart contracts', s: 'Deployed on Arc testnet' },
   ]
   return (
@@ -258,18 +258,18 @@ function CorpusPanel() {
     <div className="card p-5 mb-7">
       <div className="label mb-3">The q-fin corpus — Layer E in detail</div>
       <p className="body mb-4">
-        9,873 academic papers (arXiv preprints across q-fin, ML, math, and agentic AI)
+        1,014 academic papers (arXiv preprints across q-fin, ML, math, and agentic AI),
         ingested via PyMuPDF, embedded with SPECTER2, clustered with HDBSCAN, and linked
-        with REBEL + SciSpacy into a knowledge graph. The Strategy Generation Agent's
+        with REBEL + SciSpacy into a knowledge graph. The Strategy Generation Agent's{' '}
         <strong>Paper Retrieval</strong> sub-agent uses this substrate every time you submit
         a brief.
       </p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
-          { n: '5,000', l: 'q-fin foundations', s: 'arxiv q-fin.*' },
-          { n: '2,000', l: 'ML for finance', s: 'cs.LG + stat.ML' },
-          { n: '500', l: 'Agentic AI', s: 'TradingAgents, Xia, StockBench, …' },
-          { n: '1,500', l: 'Mathematics', s: 'optimization · probability · stats' },
+          { n: '120', l: 'Mathematical Finance', s: 'arxiv q-fin.MF' },
+          { n: '119', l: 'Risk Management', s: 'arxiv q-fin.RM' },
+          { n: '107', l: 'Computational Finance', s: 'arxiv q-fin.CP' },
+          { n: '104', l: 'Statistical Finance', s: 'arxiv q-fin.ST' },
         ].map(b => (
           <div key={b.l} className="card-flat p-3">
             <div className="font-bold" style={{ fontSize: '1.1rem' }}>{b.n}</div>
@@ -279,8 +279,9 @@ function CorpusPanel() {
         ))}
       </div>
       <p className="caption mt-3" style={{ color: 'var(--text-3)' }}>
-        Seed target: ~10,000 papers. Currently ingested: 9,873 — REBEL knowledge-graph extraction
-        on the full set runs as we expand the corpus.
+        1,014 papers ingested across 41 categories (top four shown above). Manifest seed
+        target is ~10,000 — the remainder hydrate into Postgres incrementally as we expand
+        the corpus.
       </p>
     </div>
   )
@@ -342,8 +343,8 @@ function CallToAction({ onNavigate }) {
     <div className="card p-5 text-center">
       <h3 className="serif mb-2" style={{ fontSize: '1.4rem' }}>Ready to try it?</h3>
       <p className="body mb-4" style={{ color: 'var(--text-3)', maxWidth: 520, margin: '0 auto 16px' }}>
-        Describe a strategy in plain English. The pipeline above runs on your brief — no
-        wallet required to generate; wallet only needed to deploy a vault.
+        Describe a strategy in plain English. Sign in with a passkey to generate — no
+        browser extension needed; deploying into a vault uses free testnet USDC.
       </p>
       <div className="flex justify-center gap-3 flex-wrap">
         <button className="btn btn-primary" onClick={() => onNavigate?.('generate')}>

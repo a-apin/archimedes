@@ -43,7 +43,8 @@ export default function Landing({ onNavigate }) {
             </button>
           </div>
           <p className="caption mt-4 text-[var(--text-4)]">
-            No wallet needed to generate. Wallet only required to deposit into a vault.
+            Sign in with a passkey to generate — no browser extension needed.
+            Deploying into a vault is free testnet USDC from the Circle faucet.
           </p>
         </div>
       </section>

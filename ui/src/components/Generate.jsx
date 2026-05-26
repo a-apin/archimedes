@@ -252,7 +252,7 @@ export default function Generate({ onNavigate }) {
               <div className="label mb-2 mt-3">Architecture</div>
               <p className="body mb-3">
                 <strong>Strategy Generation Agent</strong> retrieves relevant papers from a
-                9,873-paper q-fin corpus (SPECTER2 embeddings + clusters), reads current market
+                1,014-paper q-fin corpus (SPECTER2 embeddings + clusters), reads current market
                 context, and synthesizes a candidate strategy. <strong>Portfolio Construction
                 Agent</strong> picks assets, sizes them with Kelly + risk parity, and stress-tests
                 across six scenarios. After you sign to deploy, the <strong>Live Execution
