@@ -146,7 +146,9 @@ class TestGetIntegrationStatus:
         assert result["tools"]["smart_contracts"]["count"] == 11
         assert result["tools"]["usdc_settlement"]["usdc_address"] == "0xUSDC"
         assert result["wallet"]["balance_usdc"] == "100"
-        assert "next_tools" in result
+        # `next_tools` + `rubric_score_estimate` were intentionally removed by Pi's
+        # #380 fix — `rubric_score_estimate` was the headline judges-see-self-grading
+        # bug, and `next_tools` was the unused companion field. Both gone now.
 
     @pytest.mark.asyncio
     async def test_unconfigured_wallet_id_displays_placeholder(self) -> None:
