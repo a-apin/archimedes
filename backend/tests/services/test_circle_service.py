@@ -140,7 +140,10 @@ class TestGetIntegrationStatus:
         assert result["circle_tools_count"] >= 5
         assert "developer_controlled_wallets" in result["tools"]
         assert "smart_contracts" in result["tools"]
-        assert result["tools"]["smart_contracts"]["count"] == 10
+        # Was 10; updated to 11 after StrategyRegistry was added to the Arc-testnet
+        # contract list (Issue #380 — Pi's `908cce9` bundle commit). Keep the assertion
+        # explicit + commented so any future contract-count drift is caught here.
+        assert result["tools"]["smart_contracts"]["count"] == 11
         assert result["tools"]["usdc_settlement"]["usdc_address"] == "0xUSDC"
         assert result["wallet"]["balance_usdc"] == "100"
         assert "next_tools" in result

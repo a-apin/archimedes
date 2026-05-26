@@ -131,105 +131,10 @@ class TestRootAndHealth:
         assert "status" in data
 
 
-class TestFrontierRoutes:
-    def test_frontier_returns_200(self, client):
-        """Frontier endpoint must return 200 regardless of library state."""
-        resp = client.get("/api/strategies/frontier")
-        assert resp.status_code == 200
-
-    def test_frontier_response_shape(self, client):
-        """Response must include 'frontier' and 'strategies' keys."""
-        resp = client.get("/api/strategies/frontier")
-        data = resp.json()
-        assert "frontier" in data
-        assert "strategies" in data
-
-    def test_frontier_points_have_vol_and_return(self, client):
-        """Every frontier point must have numeric vol and return fields."""
-        resp = client.get("/api/strategies/frontier")
-        data = resp.json()
-        for pt in data.get("frontier", []):
-            assert "vol" in pt, "Frontier point missing 'vol'"
-            assert "return" in pt, "Frontier point missing 'return'"
-            assert isinstance(pt["vol"], (int, float))
-            assert isinstance(pt["return"], (int, float))
-
-    def test_frontier_vol_non_negative(self, client):
-        """Volatility must be ≥ 0 for every frontier point."""
-        resp = client.get("/api/strategies/frontier")
-        data = resp.json()
-        for pt in data.get("frontier", []):
-            assert pt["vol"] >= 0, f"Negative vol {pt['vol']} in frontier"
-
-    def test_frontier_insufficient_strategies_returns_empty(self, client):
-        """With < 2 Tier-1 strategies the endpoint returns an empty frontier, not 500."""
-        resp = client.get("/api/strategies/frontier")
-        assert resp.status_code == 200
-        data = resp.json()
-        # Either a populated frontier or an explicit empty list with a message
-        assert isinstance(data.get("frontier"), list)
-
-
-class TestCorrelationRoutes:
-    def test_correlation_returns_200(self, client):
-        """Correlation endpoint must return 200."""
-        resp = client.get("/api/strategies/correlation")
-        assert resp.status_code == 200
-
-    def test_correlation_response_shape(self, client):
-        """Response must include matrix and labels keys."""
-        resp = client.get("/api/strategies/correlation")
-        data = resp.json()
-        assert "matrix" in data
-        assert "labels" in data
-
-    def test_correlation_matrix_is_square(self, client):
-        """Correlation matrix must be N×N where N = len(labels)."""
-        resp = client.get("/api/strategies/correlation")
-        data = resp.json()
-        n = len(data.get("labels", []))
-        matrix = data.get("matrix", [])
-        if n == 0:
-            return  # no strategies with real data — acceptable
-        assert len(matrix) == n, f"Expected {n} rows, got {len(matrix)}"
-        for row in matrix:
-            assert len(row) == n, f"Expected {n} cols per row, got {len(row)}"
-
-    def test_correlation_diagonal_is_one(self, client):
-        """Diagonal entries must be 1.0 (each strategy perfectly correlated with itself)."""
-        resp = client.get("/api/strategies/correlation")
-        data = resp.json()
-        matrix = data.get("matrix", [])
-        for i, row in enumerate(matrix):
-            assert abs(row[i] - 1.0) < 0.01, f"Diagonal [{i}][{i}] = {row[i]}, expected 1.0"
-
-    def test_correlation_values_in_range(self, client):
-        """All correlation values must be in [-1, 1]."""
-        resp = client.get("/api/strategies/correlation")
-        data = resp.json()
-        for row in data.get("matrix", []):
-            for val in row:
-                assert -1.0 <= val <= 1.0, f"Correlation {val} outside [-1, 1]"
-
-    def test_correlation_matrix_is_symmetric(self, client):
-        """Correlation matrix must be symmetric: M[i][j] == M[j][i]."""
-        resp = client.get("/api/strategies/correlation")
-        data = resp.json()
-        matrix = data.get("matrix", [])
-        for i, row in enumerate(matrix):
-            for j, val in enumerate(row):
-                assert abs(val - matrix[j][i]) < 1e-6, (
-                    f"Matrix not symmetric: [{i}][{j}]={val} vs [{j}][{i}]={matrix[j][i]}"
-                )
-
-    def test_avg_pairwise_correlation_present(self, client):
-        """avg_pairwise_correlation must be present and numeric when matrix is non-empty."""
-        resp = client.get("/api/strategies/correlation")
-        data = resp.json()
-        if data.get("matrix"):
-            avg = data.get("avg_pairwise_correlation")
-            assert avg is not None
-            assert -1.0 <= avg <= 1.0
+# NOTE: TestFrontierRoutes and TestCorrelationRoutes were removed in the wake
+# of Issue #383 — /api/strategies/frontier and /api/strategies/correlation were
+# fabricating daily returns from a seeded RNG and have been deleted. UI consumers
+# (CorrelationMatrix.jsx, EfficientFrontier.jsx) are deleted too.
 
 
 class TestStrategyRoutes:
