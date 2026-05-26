@@ -4,17 +4,25 @@ import Breadcrumbs from './Breadcrumbs'
 import WelcomeProfileModal from './WelcomeProfileModal'
 import { NEW_CONTRACTS } from '../config'
 
-// Sidebar groups split the 9 surfaces along the gating boundary:
+// Sidebar groups separate Home (anchor / landing) from the three product-state
+// bands. Empty group label is intentional for the Home entry — it renders as a
+// header-less section so Home reads as the top-of-shell anchor, not a peer of
+// the other groups. The three labelled groups split the remaining surfaces
+// along the gating boundary:
 //   DISCOVER — open to anonymous visitors (no wallet needed)
 //   STRATEGY — wallet-gated: generate + your saved strategies
 //   POSITION — wallet-gated: deployed vaults, on-chain audit, post-hoc review
-// The group label renders as a small-caps section header in the sidebar.
+// Item order inside DISCOVER (Explore → Corpus → Architecture) follows the
+// natural user-onboarding read: browse the seed strategies first, see the
+// substrate they're drawn from second, see the system that fuses them third.
 const NAV = [
+  { group: null, items: [
+    { id: 'landing', label: 'Home', icon: 'i-lucide-home' },
+  ]},
   { group: 'Discover', items: [
-    { id: 'landing',      label: 'Home',         icon: 'i-lucide-home' },
     { id: 'explore',      label: 'Explore',      icon: 'i-lucide-compass' },
-    { id: 'architecture', label: 'Architecture', icon: 'i-lucide-network' },
     { id: 'corpus',       label: 'Corpus',       icon: 'i-lucide-library' },
+    { id: 'architecture', label: 'Architecture', icon: 'i-lucide-network' },
   ]},
   { group: 'Strategy', items: [
     { id: 'generate', label: 'Generate', icon: 'i-lucide-sparkles' },

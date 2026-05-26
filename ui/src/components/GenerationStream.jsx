@@ -231,61 +231,73 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
             gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
             gap: 12,
           }}>
-            {draftedCandidates.map(c => (
-              <div
-                key={c.candidate_id}
-                className="card"
-                style={{
-                  padding: 16,
-                  border: `2px solid ${c.regime === 'bull' ? 'var(--positive, #22c55e)' : c.regime === 'bear' ? 'var(--negative, #ef4444)' : 'var(--glass-border)'}`,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <span style={{
-                    display: 'inline-block',
-                    padding: '2px 10px',
-                    borderRadius: 999,
-                    fontSize: '0.75rem',
-                    fontWeight: 700,
-                    background: c.regime === 'bull' ? 'rgba(34,197,94,0.15)' : c.regime === 'bear' ? 'rgba(239,68,68,0.15)' : 'var(--bg-2)',
-                    color: c.regime === 'bull' ? 'var(--positive, #22c55e)' : c.regime === 'bear' ? 'var(--negative, #ef4444)' : 'var(--text-2)',
-                  }}>
-                    {c.regime === 'bull' ? '🟢 Bull' : c.regime === 'bear' ? '🔴 Bear' : 'Neutral'}
-                  </span>
-                  <span className="label" style={{ fontSize: '0.85rem' }}>{c.strategy_name}</span>
-                </div>
-                {c.weights_preview && (
-                  <div className="caption" style={{ marginBottom: 8 }}>
-                    {Object.entries(c.weights_preview)
-                      .sort(([, a], [, b]) => b - a)
-                      .map(([sym, w]) => `${sym} ${(w * 100).toFixed(0)}%`)
-                      .join(' · ')}
+            {draftedCandidates.map(c => {
+              // Once the candidate has a strategy_id, the entire card becomes
+              // a navigation affordance to its Library passport — the button
+              // below is preserved as a redundant explicit CTA for users who
+              // expect a labelled trigger. The button stops propagation so
+              // its click isn't double-counted.
+              const navigateToLibrary = () => {
+                localStorage.removeItem('archimedes:currentJobId')
+                if (onNavigate) {
+                  onNavigate('library', { highlight: c.strategy_id, tab: 'generated' })
+                } else {
+                  window.location.hash = `#/library?highlight=${c.strategy_id}`
+                }
+              }
+              const clickable = Boolean(c.strategy_id)
+              return (
+                <div
+                  key={c.candidate_id}
+                  className="card"
+                  onClick={clickable ? navigateToLibrary : undefined}
+                  onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigateToLibrary() } } : undefined}
+                  role={clickable ? 'link' : undefined}
+                  tabIndex={clickable ? 0 : undefined}
+                  aria-label={clickable ? `Open ${c.strategy_name} in Library` : undefined}
+                  style={{
+                    padding: 16,
+                    border: `2px solid ${c.regime === 'bull' ? 'var(--positive, #22c55e)' : c.regime === 'bear' ? 'var(--negative, #ef4444)' : 'var(--glass-border)'}`,
+                    cursor: clickable ? 'pointer' : 'default',
+                    transition: 'transform 0.12s ease-out, border-color 0.12s ease-out',
+                  }}
+                  onMouseEnter={clickable ? (e) => { e.currentTarget.style.transform = 'translateY(-1px)' } : undefined}
+                  onMouseLeave={clickable ? (e) => { e.currentTarget.style.transform = 'translateY(0)' } : undefined}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <span style={{
+                      display: 'inline-block',
+                      padding: '2px 10px',
+                      borderRadius: 999,
+                      fontSize: '0.75rem',
+                      fontWeight: 700,
+                      background: c.regime === 'bull' ? 'rgba(34,197,94,0.15)' : c.regime === 'bear' ? 'rgba(239,68,68,0.15)' : 'var(--bg-2)',
+                      color: c.regime === 'bull' ? 'var(--positive, #22c55e)' : c.regime === 'bear' ? 'var(--negative, #ef4444)' : 'var(--text-2)',
+                    }}>
+                      {c.regime === 'bull' ? '🟢 Bull' : c.regime === 'bear' ? '🔴 Bear' : 'Neutral'}
+                    </span>
+                    <span className="label" style={{ fontSize: '0.85rem' }}>{c.strategy_name}</span>
                   </div>
-                )}
-                {c.strategy_id && (
-                  <button
-                    className="btn btn-primary btn-sm"
-                    style={{ width: '100%', marginTop: 4 }}
-                    onClick={() => {
-                      localStorage.removeItem('archimedes:currentJobId')
-                      // Use the React-router-aware navigation passed in from
-                      // the parent Generate page so App.jsx's state machine
-                      // (page + highlightStrategyId + activeTab) updates
-                      // properly. The previous window.location.hash assignment
-                      // bypassed React state and left the Library page rendering
-                      // its initial state without the highlight scroll.
-                      if (onNavigate) {
-                        onNavigate('library', { highlight: c.strategy_id, tab: 'generated' })
-                      } else {
-                        window.location.hash = `#/library?highlight=${c.strategy_id}`
-                      }
-                    }}
-                  >
-                    View in Library →
-                  </button>
-                )}
-              </div>
-            ))}
+                  {c.weights_preview && (
+                    <div className="caption" style={{ marginBottom: 8 }}>
+                      {Object.entries(c.weights_preview)
+                        .sort(([, a], [, b]) => b - a)
+                        .map(([sym, w]) => `${sym} ${(w * 100).toFixed(0)}%`)
+                        .join(' · ')}
+                    </div>
+                  )}
+                  {c.strategy_id && (
+                    <button
+                      className="btn btn-primary btn-sm"
+                      style={{ width: '100%', marginTop: 4 }}
+                      onClick={(e) => { e.stopPropagation(); navigateToLibrary() }}
+                    >
+                      View in Library →
+                    </button>
+                  )}
+                </div>
+              )
+            })}
           </div>
           {failedRegimes.length > 0 && (
             <div className="info-box warning" style={{ marginTop: 12 }}>

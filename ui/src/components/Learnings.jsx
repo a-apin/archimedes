@@ -13,15 +13,44 @@ export default function Learnings({ onNavigate }) {
   return (
     <div>
       <div className="max-w-[720px] mb-7">
-        <h2 className="serif text-[2rem] mb-2.5">Learnings</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+          <h2 className="serif text-[2rem]" style={{ margin: 0 }}>Learnings</h2>
+          <span
+            className="tag"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 700,
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              padding: '4px 10px',
+              background: 'rgba(96, 165, 250, 0.12)',
+              border: '1px solid rgba(96, 165, 250, 0.35)',
+              color: 'var(--info, #60A5FA)',
+            }}
+            title="This page is a roadmap surface — the runtime that populates it lands post-hackathon."
+          >
+            Roadmap · post-hackathon
+          </span>
+        </div>
         <p className="body mb-2.5">
-          Strategies you've deployed — winners and losers, both first-class — with the
-          agent's reasoning available for each rebalance. The whole point: develop your
-          own intuition rather than treat the system as a black box.
+          <strong>This page is a roadmap preview, not a shipped feature.</strong>{' '}
+          The intent: surface the strategies you've deployed — winners and losers,
+          both first-class — with the agent's reasoning available for each rebalance.
+          Develop your own intuition rather than treat the system as a black box.
         </p>
         <p className="body text-[var(--text-3)]">
-          Losing trades are not hidden. Silently rotating away from losses is the failure
-          mode of every "AI fund" — we explicitly don't.
+          Why it isn't live yet: the rebalance-trace history needs to accumulate
+          before per-strategy winner/loser splits become meaningful. The data
+          model and reasoning surface are in place (see <a
+            href="/reasoning"
+            onClick={(e) => { e.preventDefault(); onNavigate?.('reasoning') }}
+            style={{ color: 'var(--accent)' }}
+          >Reasoning</a>); the per-strategy aggregation view lands after the
+          hackathon as a thin layer on top.
+        </p>
+        <p className="body text-[var(--text-3)]">
+          Losing trades are not hidden when this lands. Silently rotating away from
+          losses is the failure mode of every "AI fund" — we explicitly don't.
         </p>
       </div>
 

@@ -218,6 +218,34 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
               <span className="i-lucide-user-pen" style={{ width: 16, height: 16 }} />
               <span>Profile</span>
             </button>
+            {/* Faucet — always visible in the dropdown so the user can top up
+                regardless of current balance. Opens in a new tab so the
+                Archimedes session isn't unloaded. The conditional inline link
+                above (balance < 1) is kept as the urgent-state nudge; this is
+                the durable entry point. */}
+            <a
+              role="menuitem"
+              href="https://faucet.circle.com/"
+              target="_blank"
+              rel="noreferrer"
+              onClick={() => setMenuOpen(false)}
+              title="Get test USDC from Circle's faucet (20 USDC every 2h on Arc testnet)"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                width: '100%', padding: '8px 10px', textAlign: 'left',
+                background: 'transparent', border: 'none', color: 'var(--text-1)',
+                fontSize: '0.85rem', cursor: 'pointer', borderRadius: 6,
+                textDecoration: 'none',
+              }}
+            >
+              <span className="i-lucide-droplets" style={{ width: 16, height: 16 }} />
+              <span style={{ flex: 1 }}>Faucet</span>
+              <span
+                className="i-lucide-external-link"
+                style={{ width: 12, height: 12, color: 'var(--text-4)' }}
+                aria-hidden="true"
+              />
+            </a>
             <button
               type="button"
               role="menuitem"
