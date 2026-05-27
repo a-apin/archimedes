@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
 
@@ -162,8 +163,11 @@ async def corpus_overview() -> dict[str, Any]:
                 for yr, count in year_rows
                 if yr and yr.isdigit() and 1990 <= int(yr) <= 2030
             ]
-    except Exception as exc:
-        logger.warning("corpus_routes: overview DB read failed: %s", exc)
+    except (ImportError, SQLAlchemyError):
+        # Expected when the corpus DB/KG models are absent or the query fails;
+        # the endpoint degrades to the manifest-only shape below. logger.exception
+        # captures the traceback so a *real* failure is debuggable, not silent.
+        logger.exception("corpus_routes: overview DB read failed")
 
     return {
         # Legacy KB-pipeline shape — kept for backward compatibility
@@ -316,8 +320,10 @@ async def kg_search_entities(q: str = Query(..., min_length=2, max_length=120)) 
                     }
                     for r in rel_rows
                 ]
-    except Exception as exc:
-        logger.warning("kg search failed: %s", exc)
+    except (ImportError, SQLAlchemyError):
+        # KG models missing or query failed → return the empty entities/relations
+        # shape below. Traceback logged for debuggability.
+        logger.exception("kg search failed")
     return {
         "query": q,
         "entities": [
@@ -359,8 +365,8 @@ async def kg_entity_detail(entity_id: int) -> dict[str, Any]:
             }
     except HTTPException:
         raise
-    except Exception as exc:
-        logger.exception("kg entity detail failed: %s", exc)
+    except (ImportError, SQLAlchemyError) as exc:
+        logger.exception("kg entity detail failed")
         raise HTTPException(status_code=503, detail="KG store unavailable") from exc
 
 
@@ -391,6 +397,6 @@ async def kg_paper_triples(arxiv_id: str) -> dict[str, Any]:
                     for r in rows
                 ],
             }
-    except Exception as exc:
-        logger.exception("kg paper triples failed: %s", exc)
+    except (ImportError, SQLAlchemyError) as exc:
+        logger.exception("kg paper triples failed")
         raise HTTPException(status_code=503, detail="KG store unavailable") from exc
