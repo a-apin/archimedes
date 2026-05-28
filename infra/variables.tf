@@ -16,11 +16,13 @@ variable "key_name" {
   default     = "archimedes-deploy-key"
 }
 
-variable "aurora_master_password" {
-  description = "Master password for Aurora PostgreSQL. Set via TF_VAR_aurora_master_password env var."
-  type        = string
-  sensitive   = true
-}
+# aurora_master_password moved to infra/modules/security-architecture/
+# Uncomment when re-applying the full security architecture.
+# variable "aurora_master_password" {
+#   description = "Master password for Aurora PostgreSQL. Set via TF_VAR_aurora_master_password env var."
+#   type        = string
+#   sensitive   = true
+# }
 
 variable "project_name" {
   description = "Project name for tagging"
