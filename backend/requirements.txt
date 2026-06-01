@@ -21,7 +21,7 @@ pandas>=2.2
 scipy>=1.13
 
 # Market data
-yfinance>=0.2.40
+yfinance>=1.4.1
 requests>=2.32
 aiohttp>=3.13.5
 # httpx is directly imported by services/corpus_service.py (arXiv intake) and
