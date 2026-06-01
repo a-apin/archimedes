@@ -46,7 +46,7 @@ slowapi>=0.1.9
 
 # Paper ingestion
 arxiv>=2.1
-pypdf>=4.3
+pypdf>=6.12.2
 
 # Semantic retrieval (optional — TF-IDF fallback when absent)
 # paper-qa>=0.70  # Apache 2.0, sentence-transformer embeddings
