@@ -874,3 +874,142 @@ def walk_forward_validate(
         "passes_cliff_gate": passes_cliff_gate,
         "n_splits": len(splits),
     }
+
+
+# ─── parallel multi-strategy backtest runner ─────────────────────────
+
+
+# Keys of a job dict that are forwarded verbatim to ``backtest_portfolio``.
+# Everything else (e.g. ``label``) is metadata used only by the runner.
+_JOB_BACKTEST_KEYS = {
+    "strategy_id",
+    "weights",
+    "start_date",
+    "end_date",
+    "rebalance_days",
+    "initial_cash",
+    "tx_cost_bps",
+    "num_trials_for_dsr",
+    "paper_claimed_sharpe",
+    "paper_title",
+}
+
+# Scalar metrics copied out of each BacktestResult into the runner summary.
+_JOB_REPORTED_METRICS = ("sharpe_ratio", "cagr", "max_drawdown", "sortino_ratio", "volatility")
+
+
+def _run_backtest_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Run a single backtest job and reduce it to a picklable summary dict.
+
+    Module-level (not a closure) so it is picklable by ``ProcessPoolExecutor``
+    under the macOS/Windows spawn start-method — the parallel path therefore
+    actually executes rather than failing to pickle a nested function. A failed
+    backtest is captured as ``{"ok": False, "error": ...}`` rather than raised,
+    so one bad job never aborts the whole sweep.
+    """
+    label = job.get("label") or job.get("strategy_id") or "job"
+    kwargs = {k: v for k, v in job.items() if k in _JOB_BACKTEST_KEYS}
+    try:
+        result, _ = backtest_portfolio(**kwargs)
+        metrics = {m: float(getattr(result, m, float("nan")) or float("nan")) for m in _JOB_REPORTED_METRICS}
+        return {"label": label, "ok": True, "error": None, **metrics}
+    except Exception as exc:  # noqa: BLE001 — non-fatal per-job failure, surfaced in the result
+        logger.debug("run_parallel_backtest job %s failed: %s", label, exc)
+        return {
+            "label": label,
+            "ok": False,
+            "error": str(exc),
+            **{m: float("nan") for m in _JOB_REPORTED_METRICS},
+        }
+
+
+def run_parallel_backtest(
+    *,
+    jobs: list[dict[str, Any]],
+    metric: str = "sharpe_ratio",
+    n_workers: int = 1,
+) -> dict[str, Any]:
+    """Backtest many independent strategy/universe combinations and rank them.
+
+    This is the strategy×universe analogue of ``sensitivity_sweep``: where the
+    sweep varies *parameters* of one strategy on one universe, this runs a list
+    of fully-independent backtests (different strategies, different ticker
+    universes, or both) and produces a ranked comparison. It is the runner used
+    when promoting a batch of CANDIDATE strategies, or when comparing one
+    strategy across several candidate universes, in a single call.
+
+    Each job is a dict forwarded to ``backtest_portfolio``; only the keys in
+    ``_JOB_BACKTEST_KEYS`` are passed through (``strategy_id`` and ``weights``
+    are the minimum). An optional ``"label"`` key names the row in the output;
+    it defaults to ``strategy_id``. The "universe" is implicit in each job's
+    ``weights`` (the set of tickers it allocates to) — the backtester has no
+    separate universe object, so we do not invent one.
+
+    Args:
+        jobs: List of job dicts. Each must contain ``strategy_id`` and
+            ``weights``; may additionally set any of ``start_date``,
+            ``end_date``, ``rebalance_days``, ``initial_cash``, ``tx_cost_bps``,
+            ``num_trials_for_dsr``, ``paper_claimed_sharpe``, ``paper_title``,
+            plus an optional ``label``.
+        metric: Scalar metric used for ranking (one of ``_JOB_REPORTED_METRICS``;
+            ``"sharpe_ratio"`` default). ``max_drawdown`` ranks ascending (less
+            negative / smaller magnitude is better); all others rank descending.
+        n_workers: Worker processes (``ProcessPoolExecutor``). Default 1
+            (sequential). >1 parallelises the per-job market-data fetch +
+            simulation; because network I/O dominates a cold run, it mainly
+            helps when the price cache is warm (e.g. a re-rank over the same
+            universes). Result ordering is independent of ``n_workers``.
+
+    Returns:
+        dict with keys:
+            ``"results"`` — per-job dicts ``{label, ok, error, <metrics...>}``,
+                in the **input order** of ``jobs`` (stable regardless of worker
+                completion order)
+            ``"metric"`` — the ranking metric name
+            ``"ranking"`` — list of labels, best→worst on ``metric`` (failed and
+                NaN-metric jobs are excluded)
+            ``"best"`` / ``"worst"`` — best/worst label (None if none succeeded)
+            ``"n_jobs"`` / ``"n_ok"`` / ``"n_failed"`` — job counts
+
+    Raises:
+        ValueError: if ``jobs`` is empty, if ``metric`` is not a reported
+            metric, or if any job is missing ``strategy_id``/``weights``.
+    """
+    from concurrent.futures import ProcessPoolExecutor
+
+    if not jobs:
+        raise ValueError("jobs must contain at least one backtest job")
+    if metric not in _JOB_REPORTED_METRICS:
+        raise ValueError(f"metric must be one of {_JOB_REPORTED_METRICS}, got {metric!r}")
+    for i, job in enumerate(jobs):
+        if "strategy_id" not in job or "weights" not in job:
+            raise ValueError(f"jobs[{i}] must contain 'strategy_id' and 'weights'")
+
+    if n_workers > 1:
+        # Map preserves input order, so ``results`` is deterministic regardless
+        # of which worker finishes first.
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            results = list(pool.map(_run_backtest_job, jobs))
+    else:
+        results = [_run_backtest_job(job) for job in jobs]
+
+    def _valid(r: dict[str, Any]) -> bool:
+        v = r.get(metric, float("nan"))
+        return bool(r["ok"]) and isinstance(v, float) and v == v  # not NaN
+
+    ranked = [r for r in results if _valid(r)]
+    # max_drawdown is negative/zero — the largest (closest to 0) is best.
+    reverse = metric != "max_drawdown"
+    ranked.sort(key=lambda r: r[metric], reverse=reverse)
+
+    n_ok = sum(1 for r in results if r["ok"])
+    return {
+        "results": results,
+        "metric": metric,
+        "ranking": [r["label"] for r in ranked],
+        "best": ranked[0]["label"] if ranked else None,
+        "worst": ranked[-1]["label"] if ranked else None,
+        "n_jobs": len(jobs),
+        "n_ok": n_ok,
+        "n_failed": len(jobs) - n_ok,
+    }

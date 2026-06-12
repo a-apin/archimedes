@@ -289,3 +289,169 @@ class TestWalkForwardValidate:
                 end_date="2023-03-01",  # only ~60 days
                 n_splits=5,
             )
+
+
+# ─── run_parallel_backtest (mocked, sequential) ──────────────────────
+
+
+class TestRunParallelBacktest:
+    """Tests for run_parallel_backtest.
+
+    All tests use n_workers=1 so they stay hermetic: patching
+    ``backtest_portfolio`` only affects the parent process, and the sequential
+    path runs ``_run_backtest_job`` in-process where the patch is visible. The
+    parallel (n_workers>1) path re-imports the module in spawned children and
+    would bypass the mock + hit the network, so it is not exercised here.
+    """
+
+    def _mock_result(self, sharpe: float, cagr: float = 0.1, max_dd: float = 0.2) -> MagicMock:
+        r = MagicMock()
+        r.sharpe_ratio = sharpe
+        r.cagr = cagr
+        r.max_drawdown = max_dd
+        r.sortino_ratio = sharpe * 1.2
+        r.volatility = 0.15
+        return r
+
+    def test_raises_on_empty_jobs(self):
+        from archimedes.services.portfolio_backtester import run_parallel_backtest
+
+        with pytest.raises(ValueError, match="at least one"):
+            run_parallel_backtest(jobs=[])
+
+    def test_raises_on_bad_metric(self):
+        from archimedes.services.portfolio_backtester import run_parallel_backtest
+
+        with pytest.raises(ValueError, match="metric must be one of"):
+            run_parallel_backtest(
+                jobs=[{"strategy_id": "s1", "weights": {"SPY": 1.0}}],
+                metric="not_a_metric",
+            )
+
+    def test_raises_on_job_missing_keys(self):
+        from archimedes.services.portfolio_backtester import run_parallel_backtest
+
+        with pytest.raises(ValueError, match="must contain 'strategy_id' and 'weights'"):
+            run_parallel_backtest(jobs=[{"strategy_id": "s1"}])  # no weights
+
+    def test_results_preserve_input_order(self):
+        from archimedes.services.portfolio_backtester import run_parallel_backtest
+
+        sharpes = {"a": 0.5, "b": 1.5, "c": 0.9}
+
+        def fake_backtest(*, strategy_id, **kw):
+            return (self._mock_result(sharpes[strategy_id]), {})
+
+        jobs = [
+            {"strategy_id": "a", "weights": {"SPY": 1.0}, "label": "a"},
+            {"strategy_id": "b", "weights": {"QQQ": 1.0}, "label": "b"},
+            {"strategy_id": "c", "weights": {"IWM": 1.0}, "label": "c"},
+        ]
+        with patch("archimedes.services.portfolio_backtester.backtest_portfolio", side_effect=fake_backtest):
+            out = run_parallel_backtest(jobs=jobs)
+
+        assert [r["label"] for r in out["results"]] == ["a", "b", "c"]
+
+    def test_ranking_descending_for_sharpe(self):
+        from archimedes.services.portfolio_backtester import run_parallel_backtest
+
+        sharpes = {"a": 0.5, "b": 1.5, "c": 0.9}
+
+        def fake_backtest(*, strategy_id, **kw):
+            return (self._mock_result(sharpes[strategy_id]), {})
+
+        jobs = [{"strategy_id": k, "weights": {"SPY": 1.0}} for k in ("a", "b", "c")]
+        with patch("archimedes.services.portfolio_backtester.backtest_portfolio", side_effect=fake_backtest):
+            out = run_parallel_backtest(jobs=jobs, metric="sharpe_ratio")
+
+        assert out["ranking"] == ["b", "c", "a"]
+        assert out["best"] == "b"
+        assert out["worst"] == "a"
+
+    def test_ranking_ascending_for_max_drawdown(self):
+        """max_drawdown is a positive magnitude; smallest drawdown is best."""
+        from archimedes.services.portfolio_backtester import run_parallel_backtest
+
+        dds = {"a": 0.40, "b": 0.10, "c": 0.25}
+
+        def fake_backtest(*, strategy_id, **kw):
+            return (self._mock_result(1.0, max_dd=dds[strategy_id]), {})
+
+        jobs = [{"strategy_id": k, "weights": {"SPY": 1.0}} for k in ("a", "b", "c")]
+        with patch("archimedes.services.portfolio_backtester.backtest_portfolio", side_effect=fake_backtest):
+            out = run_parallel_backtest(jobs=jobs, metric="max_drawdown")
+
+        assert out["ranking"] == ["b", "c", "a"]  # 0.10 best, 0.40 worst
+
+    def test_label_defaults_to_strategy_id(self):
+        from archimedes.services.portfolio_backtester import run_parallel_backtest
+
+        def fake_backtest(*, strategy_id, **kw):
+            return (self._mock_result(1.0), {})
+
+        with patch("archimedes.services.portfolio_backtester.backtest_portfolio", side_effect=fake_backtest):
+            out = run_parallel_backtest(jobs=[{"strategy_id": "faber", "weights": {"SPY": 1.0}}])
+
+        assert out["results"][0]["label"] == "faber"
+
+    def test_failed_job_is_captured_not_raised(self):
+        from archimedes.services.portfolio_backtester import run_parallel_backtest
+
+        def fake_backtest(*, strategy_id, **kw):
+            if strategy_id == "bad":
+                raise ValueError("insufficient overlap")
+            return (self._mock_result(1.2), {})
+
+        jobs = [
+            {"strategy_id": "good", "weights": {"SPY": 1.0}},
+            {"strategy_id": "bad", "weights": {"ZZZZ": 1.0}},
+        ]
+        with patch("archimedes.services.portfolio_backtester.backtest_portfolio", side_effect=fake_backtest):
+            out = run_parallel_backtest(jobs=jobs)
+
+        assert out["n_jobs"] == 2
+        assert out["n_ok"] == 1
+        assert out["n_failed"] == 1
+        bad = next(r for r in out["results"] if r["label"] == "bad")
+        assert bad["ok"] is False
+        assert "insufficient overlap" in bad["error"]
+        # Failed job is excluded from the ranking entirely.
+        assert out["ranking"] == ["good"]
+
+    def test_all_jobs_failed_yields_none_best(self):
+        from archimedes.services.portfolio_backtester import run_parallel_backtest
+
+        def fake_backtest(**kw):
+            raise ValueError("boom")
+
+        jobs = [{"strategy_id": "x", "weights": {"SPY": 1.0}}]
+        with patch("archimedes.services.portfolio_backtester.backtest_portfolio", side_effect=fake_backtest):
+            out = run_parallel_backtest(jobs=jobs)
+
+        assert out["best"] is None
+        assert out["worst"] is None
+        assert out["ranking"] == []
+        assert out["n_failed"] == 1
+
+    def test_only_backtest_keys_forwarded(self):
+        """Metadata keys like 'label' must not leak into backtest_portfolio kwargs."""
+        from archimedes.services.portfolio_backtester import run_parallel_backtest
+
+        seen_kwargs = {}
+
+        def fake_backtest(**kw):
+            seen_kwargs.update(kw)
+            return (self._mock_result(1.0), {})
+
+        job = {
+            "strategy_id": "s1",
+            "weights": {"SPY": 1.0},
+            "label": "pretty-name",
+            "tx_cost_bps": 15,
+        }
+        with patch("archimedes.services.portfolio_backtester.backtest_portfolio", side_effect=fake_backtest):
+            run_parallel_backtest(jobs=[job])
+
+        assert "label" not in seen_kwargs
+        assert seen_kwargs["tx_cost_bps"] == 15
+        assert seen_kwargs["strategy_id"] == "s1"
