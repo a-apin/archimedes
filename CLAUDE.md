@@ -847,12 +847,41 @@ recompute and verify against the on-chain anchor. The Day-3 commit-reveal upgrad
 strengthens "trace existed at T" to "trace existed *before* the trade" with proven
 causal ordering — wiring this through the live `ReasoningTraceRegistry` is the v1.5 hop.
 
+> **Honesty caveat (2026-06-22 — see [`AUDIT_2026-06-14.md`](AUDIT_2026-06-14.md) B2 +
+> [`docs/technical-overview-2026-06-22.md`](docs/technical-overview-2026-06-22.md) §3.8).**
+> The commit-reveal path is **not yet wired on the live agent tick.** Both the COMMIT and
+> REVEAL phases in `chain/agent_runner.py` call `trace_publisher.publish()`, which only
+> ever invokes the legacy `publishTrace(address,bytes32,bytes)` anchor-after-the-fact path
+> — the contract's `commit()`/`reveal()` (with `claimedExecutionTime` + hash-binding) are
+> dead from the live path. The UI's green "Temporal Binding ✓ VERIFIED" badge
+> (`ui/src/components/Reasoning.jsx`) is currently backed by a Python boolean
+> (`commit_block < trade_block`) stored in Redis, **not** by on-chain causal proof. So
+> today's guarantee is "trace anchored on-chain (post-trade)," not "provably committed
+> before the trade." Closing this is Phase 0 (P0.3) in the technical overview — until then,
+> don't represent temporal binding as chain-enforced.
+
 ### 3. Non-custodial vault architecture
 
 User funds NEVER pass through platform custody. ERC-4626 vault contracts per
 [`docs/specs/ecosystem-design-spec.md` § 3.2](docs/specs/ecosystem-design-spec.md) hold
 user USDC and synth tokens; the agent has rebalance authority only, not withdraw-to-
 platform authority.
+
+> **Honesty caveat (2026-06-22 — see [`AUDIT_2026-06-14.md`](AUDIT_2026-06-14.md) B1 +
+> [`docs/technical-overview-2026-06-22.md`](docs/technical-overview-2026-06-22.md) §3.8).**
+> Pure custody holds — the agent owns no shares, and `withdraw`/`redeem` require
+> `msg.sender == owner` of those shares, so the agent genuinely cannot pull user funds to
+> the platform. **But the "rebalance-only authority" framing is weaker than it reads
+> on-chain today:** every vault is created via the backend Circle/agent wallet, so
+> `VaultFactory` sets `creator == owner == agent` (`bootstrap_vaults.py` says this
+> verbatim — "the Circle wallet IS the creator"). The 06-14 `onlyOwner` guards on
+> `setTokenOracles` / `setMaxSlippageBps` / `pause` were added precisely to stop a
+> compromised agent from re-pointing an oracle and draining via a self-serving `minOut` —
+> but because the agent **is** the owner, those guards are moot, and there is no
+> `transferOwnership` to the depositing user anywhere in the tree. Net: this is *economic
+> drain on agent-key compromise*, not theft of principal. Fix (give the user's wallet
+> ownership and only `setAgent(backend)`, or use a cold governance key `!=` hot agent key)
+> is Phase 0 (P0.2) in the technical overview.
 
 ### 4. Selection-bias correction (Tier-1 admission gate)
 
