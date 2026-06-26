@@ -6,6 +6,7 @@ All contract calls route through this client.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -15,6 +16,46 @@ from pydantic_settings import BaseSettings
 from web3 import AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.providers import AsyncHTTPProvider
+
+# Committed transitional default addresses for the synths still in the SSOT (#725
+# removed sTSLA/sNVDA — single stocks — so they have NO defaults here). These keep the
+# currently-deployed synths resolvable BEFORE the T3.2 redeploy; at the redeploy, the
+# ARC_<SYMBOL>_ADDRESS env vars override them for the full 59-synth set.
+_SYNTH_DEFAULTS: dict[str, str] = {
+    "sSPY": "0x6fea38dedea0c6bb66ce93e5383c34385d8b889f",
+    "sBTC": "0x317e82be8f7cba6c162ab968fcf695d88e8e0359",
+    "sGOLD": "0xf384562c8bdafce52400eb6839f195695f6fa276",
+    "sOIL": "0x46cead4120f17a968ba1168f1a56563962cf3c4b",
+    "sNKY": "0x445b8f0f827a0d384d1b8ccf18cbc6ec8a543376",
+}
+_ORACLE_DEFAULTS: dict[str, str] = {
+    "sSPY": "0xd8161a8eeab7c7100e2863abe3d5f346b5ff9e52",
+    "sBTC": "0x6cc5f621c4e3b46152e69e5c9873689cbb4a85e8",
+    "sGOLD": "0x35fccde01ae8728c7a7cb83c3f59c701ebecc633",
+    "sOIL": "0x79f354524fd09af16d841a2221af2b2b7bc432c8",
+    "sNKY": "0xcd34a4103ad64a3cf729b1b1a58295ccc957fcee",
+}
+
+
+def _resolve_ssot_addresses(defaults: dict[str, str], suffix: str) -> dict[str, str]:
+    """Build ``{SSOT symbol: address}`` over the deploy-eligible universe (#764).
+
+    For each symbol in ``universe.ON_CHAIN_SYNTHS``, resolve ``ARC_<SYMBOL>_<suffix>``
+    from the environment (``main.load_dotenv`` loads ``.env`` into ``os.environ``; tests
+    use ``monkeypatch.setenv``) else the committed transitional default. Symbols with no
+    address — most of the SSOT until the T3.2 redeploy mints them — are EXCLUDED, so
+    consumers only ever see DEPLOYED synths with non-empty addresses (the invariant the
+    previous 7-field map upheld). Compliance-held single stocks (sTSLA/sNVDA) are not in
+    the SSOT, so they no longer appear on the live path.
+    """
+    from archimedes.universe import ON_CHAIN_SYNTHS
+
+    resolved: dict[str, str] = {}
+    for symbol in ON_CHAIN_SYNTHS:
+        addr = os.getenv(f"ARC_{symbol.upper()}_{suffix}", "") or defaults.get(symbol, "")
+        if addr:
+            resolved[symbol] = addr
+    return resolved
 
 
 class ChainSettings(BaseSettings):
@@ -30,15 +71,16 @@ class ChainSettings(BaseSettings):
     - ``usdc_address``      ← ``ARC_USDC_ADDRESS``
     - ``amm_router_address`` ← ``ARC_AMM_ROUTER_ADDRESS``
     - ``vault_factory_address`` ← ``ARC_VAULT_FACTORY_ADDRESS``
-    - ``stsla_address``     ← ``ARC_STSLA_ADDRESS``  (one per synth)
-    - ``stsla_oracle_address`` ← ``ARC_STSLA_ORACLE_ADDRESS``  (one per oracle)
 
-    The defaults match the deployed Arc-testnet contracts and the ``ARC_*=...``
-    lines emitted by ``backend/archimedes/scripts/deploy_contracts.py``; the full
-    set of override variables is documented in ``.env.example``. The public API
-    (field names plus the ``synth_addresses`` / ``oracle_addresses`` /
-    ``*_account`` properties) is unchanged — only the source-of-truth for each
-    address moved from "hardcoded constant" to "env var with hardcoded fallback".
+    Per-synth token + oracle addresses are NOT individual fields — they are resolved
+    SSOT-driven over ``universe.ON_CHAIN_SYNTHS`` in the ``synth_addresses`` /
+    ``oracle_addresses`` properties (``ARC_<SYMBOL>_ADDRESS`` /
+    ``ARC_<SYMBOL>_ORACLE_ADDRESS`` env, else a committed transitional default;
+    undeployed synths excluded). See #764.
+
+    The defaults match the deployed Arc-testnet contracts and the ``ARC_*=...`` lines
+    emitted by ``backend/archimedes/scripts/deploy_contracts.py``; the full set of
+    override variables is documented in ``.env.example``.
     """
 
     # RPC
@@ -64,25 +106,12 @@ class ChainSettings(BaseSettings):
     asset_registry_address: str = ""  # ARC_ASSET_REGISTRY_ADDRESS
     strategy_registry_address: str = ""  # ARC_STRATEGY_REGISTRY_ADDRESS
 
-    # Individual synthetic token addresses — env-overridable via
-    # ARC_<SYMBOL>_ADDRESS; defaults = deployed Arc testnet contracts.
-    stsla_address: str = "0xd514cd27baf762c650536765cde9b61c876abacd"  # ARC_STSLA_ADDRESS
-    snvda_address: str = "0x805e75019a1291a598dfc134ad2519121a35fb11"  # ARC_SNVDA_ADDRESS
-    sspy_address: str = "0x6fea38dedea0c6bb66ce93e5383c34385d8b889f"  # ARC_SSPY_ADDRESS
-    sbtc_address: str = "0x317e82be8f7cba6c162ab968fcf695d88e8e0359"  # ARC_SBTC_ADDRESS
-    sgold_address: str = "0xf384562c8bdafce52400eb6839f195695f6fa276"  # ARC_SGOLD_ADDRESS
-    soil_address: str = "0x46cead4120f17a968ba1168f1a56563962cf3c4b"  # ARC_SOIL_ADDRESS
-    snky_address: str = "0x445b8f0f827a0d384d1b8ccf18cbc6ec8a543376"  # ARC_SNKY_ADDRESS
-
-    # Individual oracle addresses — env-overridable via
-    # ARC_<SYMBOL>_ORACLE_ADDRESS; defaults = deployed Arc testnet contracts.
-    stsla_oracle_address: str = "0xe1c9f2b11be97097223a66a188fca541e07873a6"  # ARC_STSLA_ORACLE_ADDRESS
-    snvda_oracle_address: str = "0xeb36acf88e739dd312de8278985262146a017374"  # ARC_SNVDA_ORACLE_ADDRESS
-    sspy_oracle_address: str = "0xd8161a8eeab7c7100e2863abe3d5f346b5ff9e52"  # ARC_SSPY_ORACLE_ADDRESS
-    sbtc_oracle_address: str = "0x6cc5f621c4e3b46152e69e5c9873689cbb4a85e8"  # ARC_SBTC_ORACLE_ADDRESS
-    sgold_oracle_address: str = "0x35fccde01ae8728c7a7cb83c3f59c701ebecc633"  # ARC_SGOLD_ORACLE_ADDRESS
-    soil_oracle_address: str = "0x79f354524fd09af16d841a2221af2b2b7bc432c8"  # ARC_SOIL_ORACLE_ADDRESS
-    snky_oracle_address: str = "0xcd34a4103ad64a3cf729b1b1a58295ccc957fcee"  # ARC_SNKY_ORACLE_ADDRESS
+    # NOTE: per-synth token + oracle addresses are NO LONGER individual fields. They
+    # are resolved SSOT-driven over universe.ON_CHAIN_SYNTHS in synth_addresses /
+    # oracle_addresses below — each from ARC_<SYMBOL>_ADDRESS / ARC_<SYMBOL>_ORACLE_ADDRESS
+    # (env) else a committed transitional default (_SYNTH_DEFAULTS / _ORACLE_DEFAULTS),
+    # with undeployed synths excluded. This keeps the map keyed to the SSOT (no
+    # sTSLA/sNVDA drift) and can't go stale as the universe grows. (#764)
 
     # Paths
     abi_dir: str = str(Path(__file__).resolve().parents[3] / "contracts" / "abis")
@@ -103,27 +132,21 @@ class ChainSettings(BaseSettings):
 
     @property
     def synth_addresses(self) -> dict[str, str]:
-        return {
-            "sTSLA": self.stsla_address,
-            "sNVDA": self.snvda_address,
-            "sSPY": self.sspy_address,
-            "sBTC": self.sbtc_address,
-            "sGOLD": self.sgold_address,
-            "sOIL": self.soil_address,
-            "sNKY": self.snky_address,
-        }
+        """Deployed synth token addresses keyed by SSOT symbol (#764).
+
+        SSOT-driven over ``universe.ON_CHAIN_SYNTHS``; each resolved from
+        ``ARC_<SYMBOL>_ADDRESS`` (env, loaded from ``.env`` by ``main.load_dotenv``) else a
+        committed transitional default. Undeployed synths (most of the SSOT until the T3.2
+        redeploy) are EXCLUDED, so consumers only ever see deployed synths with non-empty
+        addresses. Compliance-held single stocks (sTSLA/sNVDA) are not in the SSOT and no
+        longer appear.
+        """
+        return _resolve_ssot_addresses(_SYNTH_DEFAULTS, "ADDRESS")
 
     @property
     def oracle_addresses(self) -> dict[str, str]:
-        return {
-            "sTSLA": self.stsla_oracle_address,
-            "sNVDA": self.snvda_oracle_address,
-            "sSPY": self.sspy_oracle_address,
-            "sBTC": self.sbtc_oracle_address,
-            "sGOLD": self.sgold_oracle_address,
-            "sOIL": self.soil_oracle_address,
-            "sNKY": self.snky_oracle_address,
-        }
+        """Deployed price-oracle addresses keyed by SSOT symbol — see ``synth_addresses`` (#764)."""
+        return _resolve_ssot_addresses(_ORACLE_DEFAULTS, "ORACLE_ADDRESS")
 
 
 class ChainClient:

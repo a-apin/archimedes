@@ -44,7 +44,7 @@ class ConfigService:
             vault_factory=settings.vault_factory_address,
             reasoning_trace_registry=settings.reasoning_trace_registry_address,
             asset_registry=settings.asset_registry_address,
-            price_oracle=settings.stsla_oracle_address,  # Representative oracle
+            price_oracle=next(iter(settings.oracle_addresses.values()), ""),  # representative oracle (first deployed)
             synthetics={k: v for k, v in settings.synth_addresses.items() if v},
             pools=pools,
             vaults=vaults,
