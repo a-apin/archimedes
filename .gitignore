@@ -5,7 +5,6 @@
 
 # Buffer files
 *~
-
 # Python
 __pycache__/
 *.py[cod]
@@ -15,13 +14,11 @@ build/
 .venv/
 venv/
 *.egg
-
 # Node
 node_modules/
 .next/
 .vite/
 .vite-temp/
-
 # Foundry
 contracts/cache/
 contracts/out/
@@ -32,43 +29,34 @@ contracts/broadcast/
 contracts/lib/*
 !contracts/lib/forge-std
 !contracts/lib/openzeppelin-contracts
-
 # OS
 .DS_Store
 Thumbs.db
-
 # Local dev helpers (process PIDs from dev-server scripts; per-machine state)
 .dev-pids/
-
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-
 # Wallet / secrets
 wallet-setup/recovery_file.dat
 *.keystore
 *.key
-
 # Terraform
 infra/.terraform/
 infra/.terraform.lock.hcl
 infra/terraform.tfstate
 infra/terraform.tfstate.backup
-
 # Secrets / credentials — global patterns (never commit these)
 *.pem
-*.key
 *.p12
 *.pfx
 *.crt
 *.tfstate*
-
 # arXiv corpus — track the manifest + README, not the cached binaries
 data/corpus/pdfs/
 data/corpus/text/
-
 # Local SQLite fallback — backend/archimedes/db.py defaults to
 # sqlite:///./archimedes_chat.db when DATABASE_URL is unset (e.g. pytest or
 # the backend run outside docker-compose). Never commit it: an out-of-container
@@ -77,31 +65,29 @@ archimedes_chat.db
 *.db
 *.sqlite
 *.sqlite3
-
 # Per-deploy contract-address dump — written by
 # backend/archimedes/scripts/deploy_contracts.py on every redeploy and goes
 # stale the moment a contract is redeployed. NOT a source of truth — see
 # infra/README.md "Per-deploy artifacts"; ui/src/config.js and
 # backend/archimedes/chain/client.py are authoritative (audit 06-14 I3).
 /deploy_output.json
-
 # Fitted GMM regime model — data-derived (yfinance) + stale-prone; produced
 # offline by scripts/fit_gmm_regime.py and loaded at runtime by
 # GmmRegimeDetector. Never commit it (issue #661); the detector falls back to
 # the rule-based VixRegimeDetector when it is absent.
 backend/archimedes/services/gmm_model.pkl
-
 # Misc
 *.log
 .pytest_cache/
 .coverage
 htmlcov/
-
 .loom/
 !.loom/loom.config.json
-.venv/
 .claude/
 
 # Terraform local provider cache / lock in ANY (incl. nested) module dir
 **/.terraform/
 **/.terraform.lock.hcl
+
+# Foundry-installed contract dependencies
+contracts/lib/

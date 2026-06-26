@@ -229,6 +229,11 @@ class StrategyResponse(BaseModel):
     return_source: str = "noise"  # "risk_premium" | "mispricing" | "productive_growth" | "noise"
     return_source_note: str = ""
 
+    # Nanopayment marketplace (T1.2) — true when the x402 paywall is armed for
+    # constructing this strategy. Drives the "Pay per run" disclosure chip in the
+    # Marketplace UI. Single boolean for the first slice (one paywalled route).
+    is_paywalled: bool = False
+
 
 class StrategyListResponse(BaseModel):
     strategies: list[StrategyResponse]

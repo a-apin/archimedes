@@ -38,6 +38,29 @@ export default function Marketplace({ onNavigate }) {
   const [error, setError] = useState('')
   const [tierFilter, setTierFilter] = useState('all') // 'all' | 1 | 2
   const [sortBy, setSortBy] = useState('aum')
+  // T1.2 nanopayment marketplace — true when the backend has the x402 paywall
+  // armed (ARCHIMEDES_X402_ENABLED=1). Read via the single `is_paywalled` boolean
+  // the strategies API plumbs through; drives the "Pay per run" disclosure chip.
+  const [paywallActive, setPaywallActive] = useState(false)
+
+  // Probe the backend once for the marketplace paywall state. A no-op (chip
+  // stays hidden) unless the operator has armed the x402 flag.
+  useEffect(() => {
+    let cancelled = false
+    const probe = async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/strategies/?limit=1`)
+        if (!r.ok) return
+        const data = await r.json()
+        const first = (data.strategies || [])[0]
+        if (!cancelled && first) setPaywallActive(Boolean(first.is_paywalled))
+      } catch {
+        // Paywall probe is best-effort; the chip simply stays hidden on failure.
+      }
+    }
+    probe()
+    return () => { cancelled = true }
+  }, [])
 
   // Load vaults from the backend marketplace endpoint.
   // We fetch with sort hint, but also re-sort client-side so the dropdown
@@ -193,11 +216,22 @@ export default function Marketplace({ onNavigate }) {
                 <span className="font-semibold text-sm" style={{ color: 'var(--text-1)' }}>
                   {v.name || `Vault ${shortAddr(v.address)}`}
                 </span>
-                <span className={`tag ${v.tier === 1 ? 'tag-accent' : 'tag-muted'}`}>
-                  {v.tier === 1
-                    ? <><span className="i-lucide-trophy w-3.5 h-3.5" /> Verified</>
-                    : <><span className="i-lucide-users w-3.5 h-3.5" /> Community</>}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  {/* T1.2: "Pay per run" disclosure — rendered only when the x402
+                      paywall is armed on the backend and the vault is agent-assisted
+                      (its strategy is the paywalled construct verb). One-line chip
+                      only; the full payment flow is a follow-up issue. */}
+                  {paywallActive && v.is_agent_assisted && (
+                    <span className="tag tag-muted" title="Constructing this strategy charges a sub-cent USDC nanopayment via x402">
+                      <span className="i-lucide-coins w-3.5 h-3.5" /> Pay per run
+                    </span>
+                  )}
+                  <span className={`tag ${v.tier === 1 ? 'tag-accent' : 'tag-muted'}`}>
+                    {v.tier === 1
+                      ? <><span className="i-lucide-trophy w-3.5 h-3.5" /> Verified</>
+                      : <><span className="i-lucide-users w-3.5 h-3.5" /> Community</>}
+                  </span>
+                </div>
               </div>
               <div className="flex items-baseline gap-2 mt-3 mb-1">
                 <span className="text-[1.4rem] font-bold">{fmtUsd(v.aum_usdc)}</span>

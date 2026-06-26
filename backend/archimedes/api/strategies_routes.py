@@ -35,6 +35,7 @@ from archimedes.api.schemas import (
     StrategySignalResponse,
     StrategySignalsResponse,
 )
+from archimedes.api.x402_middleware import x402_enabled, x402_paywall
 from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.services.construction_trace import build_construction_trace
 from archimedes.services.live_rigor_gate import (
@@ -150,6 +151,9 @@ def _to_strategy_response(s: Strategy, verdict: RigorGateVerdict | None = None) 
         regime_tag=s.regime_tag,
         return_source=return_source,
         return_source_note=return_source_note,
+        # T1.2: constructing a strategy is paywalled exactly when the x402
+        # marketplace flag is armed. Single boolean drives the Marketplace chip.
+        is_paywalled=x402_enabled(),
     )
 
 
@@ -1273,6 +1277,8 @@ def _passport_to_strategy_response(record) -> StrategyResponse:
         regime_tag=record.regime_tag,
         return_source=return_source_enum.value,
         return_source_note=return_source_note,
+        # T1.2: see _to_strategy_response — paywalled when the x402 flag is armed.
+        is_paywalled=x402_enabled(),
     )
 
 
@@ -1680,6 +1686,13 @@ async def _run_fusion_job(job_id: str) -> None:
 # ── Construct (architect interactive) ─────────────────────────
 
 
+#: x402 nanopayment paywall for the strategy-construction endpoint (T1.2).
+#: A no-op when ARCHIMEDES_X402_ENABLED is unset; when armed it charges a fixed
+#: sub-cent USDC price into the deployed RevenueSplit (90/10 creator/platform).
+#: This is the ONLY paywalled route in this PR — applied per-route, never global.
+CONSTRUCT_PRICE_USDC = 0.001
+
+
 @strategies_router.post("/construct", response_model=StrategyConstructionResponse)
 @limiter.limit("20/minute")
 async def construct_strategy(
@@ -1687,6 +1700,7 @@ async def construct_strategy(
     request: Request,  # noqa: ARG001 — required by the slowapi limiter / FastAPI
     response: Response,  # noqa: ARG001 — kept for FastAPI handler symmetry
     _wallet: str | None = Depends(gate_generation),
+    _payment: dict | None = Depends(x402_paywall(CONSTRUCT_PRICE_USDC, resource_path="/api/strategies/construct")),
 ):
     """Interactive strategy architect -- the 'design me a portfolio' path."""
     from fastapi import HTTPException
