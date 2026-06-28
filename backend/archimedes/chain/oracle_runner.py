@@ -49,4 +49,15 @@ async def run() -> None:
 
 
 if __name__ == "__main__":
+    # Standalone entrypoint: load .env into os.environ so the SSOT per-synth
+    # oracle-address resolution (chain/client.py reads ARC_<SYMBOL>_ORACLE_ADDRESS
+    # via os.getenv) sees .env overrides even when this runs as a bare `python -m
+    # archimedes.chain.oracle_runner` (no FastAPI main.load_dotenv, no docker
+    # env_file). Mirrors main.py; override=False so an exported env / docker
+    # env_file wins. Under __main__ so importing this module in tests never loads
+    # .env. (Copilot #765)
+    from dotenv import load_dotenv
+
+    load_dotenv("../.env", override=False)
+    load_dotenv(".env", override=False)
     asyncio.run(run())
