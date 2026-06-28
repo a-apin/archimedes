@@ -236,7 +236,9 @@ class TestPushPricesOnChain:
         resp.json = AsyncMock(return_value={"data": {"id": "tx-123"}})
         session_cm, session = _mock_aiohttp_session(post_response=resp)
 
-        good = _price(symbol="sTSLA", usd=110.0)  # +10%, inside the cap
+        # sSPY is an on-chain synth in the SSOT (#764); sTSLA is compliance-held
+        # off-chain (#725) so it has no oracle address and would be skipped.
+        good = _price(symbol="sSPY", usd=110.0)  # +10%, inside the cap
         with (
             patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
             patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
@@ -246,7 +248,7 @@ class TestPushPricesOnChain:
 
         assert result == "tx-123"
         session.post.assert_called_once()
-        assert updater._last_pushed_price_int["sTSLA"] == _int6(110.0)
+        assert updater._last_pushed_price_int["sSPY"] == _int6(110.0)
 
     async def test_fails_closed_when_reference_unobtainable(self, circle_creds):
         # Issue #587, part 2: when the deviation reference is unobtainable
