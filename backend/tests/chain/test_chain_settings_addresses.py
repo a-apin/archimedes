@@ -38,6 +38,25 @@ CORE_ENV_VAR_FOR_FIELD = {
     "strategy_registry_address": "ARC_STRATEGY_REGISTRY_ADDRESS",
 }
 
+# Pinned literals — deliberately NOT imported from the module under test — so an
+# unintended change to a committed default address is CAUGHT, instead of being
+# silently re-read from the same source the assertion compares against (which
+# would make the "defaults are correct" check tautological). (Copilot review #765)
+PINNED_SYNTH_DEFAULTS = {
+    "sSPY": "0x6fea38dedea0c6bb66ce93e5383c34385d8b889f",
+    "sBTC": "0x317e82be8f7cba6c162ab968fcf695d88e8e0359",
+}
+PINNED_ORACLE_DEFAULTS = {
+    "sSPY": "0xd8161a8eeab7c7100e2863abe3d5f346b5ff9e52",
+    "sBTC": "0x6cc5f621c4e3b46152e69e5c9873689cbb4a85e8",
+}
+
+# Any SSOT symbol with no committed default = "undeployed pre-redeploy". Selected
+# dynamically (not hard-coded to e.g. sAGG) so the exclusion tests stay valid if
+# the SSOT/default set changes — a symbol gaining a default or being removed no
+# longer breaks them. (Copilot review #765)
+_UNDEPLOYED_SYNTHS = [s for s in ON_CHAIN_SYNTHS if s not in _SYNTH_DEFAULTS]
+
 
 @pytest.fixture
 def clean_env(monkeypatch):
@@ -82,6 +101,17 @@ class TestSsotSynthMaps:
     def test_maps_use_defaults_for_in_ssot_synths(self, clean_env):
         """The 5 committed transitional defaults (in-SSOT synths) appear in the maps."""
         s = ChainSettings(_env_file=None)
+        # Pinned-literal check FIRST: catches an accidental change to a committed
+        # default address (the imported-dict loop below can't — it re-reads the
+        # same source it asserts against). Guard the pins stay a subset of the
+        # module defaults so they can't silently drift out of meaning.
+        assert set(PINNED_SYNTH_DEFAULTS) <= set(_SYNTH_DEFAULTS)
+        assert set(PINNED_ORACLE_DEFAULTS) <= set(_ORACLE_DEFAULTS)
+        for sym, addr in PINNED_SYNTH_DEFAULTS.items():
+            assert s.synth_addresses[sym] == addr, f"{sym} synth default changed unexpectedly"
+        for sym, addr in PINNED_ORACLE_DEFAULTS.items():
+            assert s.oracle_addresses[sym] == addr, f"{sym} oracle default changed unexpectedly"
+        # Then the full set is present (covers any defaults beyond the pins).
         for sym, addr in _SYNTH_DEFAULTS.items():
             assert s.synth_addresses[sym] == addr, f"{sym} synth default missing"
         for sym, addr in _ORACLE_DEFAULTS.items():
@@ -105,15 +135,20 @@ class TestSsotSynthMaps:
 
     def test_undeployed_synth_excluded(self, clean_env):
         """A SSOT synth with no committed default and no env override is filtered out."""
-        assert "sAGG" in ON_CHAIN_SYNTHS and "sAGG" not in _SYNTH_DEFAULTS
+        if not _UNDEPLOYED_SYNTHS:
+            pytest.skip("every ON_CHAIN_SYNTHS symbol has a committed default — nothing to exclude")
+        sym = _UNDEPLOYED_SYNTHS[0]
         s = ChainSettings(_env_file=None)
-        assert "sAGG" not in s.synth_addresses
+        assert sym not in s.synth_addresses
 
     def test_env_makes_undeployed_synth_appear(self, clean_env):
+        if not _UNDEPLOYED_SYNTHS:
+            pytest.skip("every ON_CHAIN_SYNTHS symbol has a committed default")
+        sym = _UNDEPLOYED_SYNTHS[0]
         override = "0xAAAA000000000000000000000000000000000001"
-        clean_env.setenv("ARC_SAGG_ADDRESS", override)
+        clean_env.setenv(f"ARC_{sym.upper()}_ADDRESS", override)
         s = ChainSettings(_env_file=None)
-        assert s.synth_addresses["sAGG"] == override
+        assert s.synth_addresses[sym] == override
 
     def test_env_overrides_default(self, clean_env):
         synth_override = "0xBBBB000000000000000000000000000000000002"

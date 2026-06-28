@@ -41,12 +41,26 @@ def _resolve_ssot_addresses(defaults: dict[str, str], suffix: str) -> dict[str, 
     """Build ``{SSOT symbol: address}`` over the deploy-eligible universe (#764).
 
     For each symbol in ``universe.ON_CHAIN_SYNTHS``, resolve ``ARC_<SYMBOL>_<suffix>``
-    from the environment (``main.load_dotenv`` loads ``.env`` into ``os.environ``; tests
-    use ``monkeypatch.setenv``) else the committed transitional default. Symbols with no
-    address — most of the SSOT until the T3.2 redeploy mints them — are EXCLUDED, so
-    consumers only ever see DEPLOYED synths with non-empty addresses (the invariant the
-    previous 7-field map upheld). Compliance-held single stocks (sTSLA/sNVDA) are not in
-    the SSOT, so they no longer appear on the live path.
+    else the committed transitional default. Symbols with no address — most of the SSOT
+    until the T3.2 redeploy mints them — are EXCLUDED, so consumers only ever see DEPLOYED
+    synths with non-empty addresses (the invariant the previous 7-field map upheld).
+    Compliance-held single stocks (sTSLA/sNVDA) are not in the SSOT, so they no longer
+    appear on the live path.
+
+    **Resolution source (important):** overrides are read from ``os.environ`` via
+    ``os.getenv`` — NOT through pydantic-settings' ``env_file`` source. Unlike the declared
+    ``ChainSettings`` fields (which pydantic resolves from ``.env`` directly), these
+    per-synth keys are only seen when the variables are present in the *process
+    environment*. Every real entrypoint satisfies this: the FastAPI app via
+    ``main.load_dotenv`` (it loads ``.env`` into ``os.environ`` at import), and the
+    ``oracle`` / ``agent_runner`` processes via docker-compose's ``env_file: .env`` (which
+    injects ``.env`` into the container environment). Tests use ``monkeypatch.setenv``.
+    The one gap to be aware of: a *bare, non-docker* process (e.g. ``python -m
+    archimedes.chain.agent_runner`` run locally) that relies solely on pydantic's
+    ``env_file`` and never exports the vars / calls ``load_dotenv`` will see only the
+    committed defaults here — even though its declared ``ARC_*`` fields still resolve. Run
+    such a process under docker (the prod path) or with ``.env`` exported into the
+    environment.
     """
     from archimedes.universe import ON_CHAIN_SYNTHS
 

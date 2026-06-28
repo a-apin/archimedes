@@ -44,7 +44,10 @@ class ConfigService:
             vault_factory=settings.vault_factory_address,
             reasoning_trace_registry=settings.reasoning_trace_registry_address,
             asset_registry=settings.asset_registry_address,
-            price_oracle=next(iter(settings.oracle_addresses.values()), ""),  # representative oracle (first deployed)
+            # Representative oracle: the first NON-EMPTY address. oracle_addresses
+            # already excludes empties, but skip them here too so an unfiltered
+            # mapping can never yield "" while a valid oracle exists later. (Copilot #765)
+            price_oracle=next((v for v in settings.oracle_addresses.values() if v), ""),
             synthetics={k: v for k, v in settings.synth_addresses.items() if v},
             pools=pools,
             vaults=vaults,
