@@ -115,6 +115,8 @@ class ChainSettings(BaseSettings):
     reasoning_trace_registry_address: str = ""  # ARC_REASONING_TRACE_REGISTRY_ADDRESS
     asset_registry_address: str = ""  # ARC_ASSET_REGISTRY_ADDRESS
     strategy_registry_address: str = ""  # ARC_STRATEGY_REGISTRY_ADDRESS
+    payment_splitter_address: str = ""  # ARC_PAYMENT_SPLITTER_ADDRESS
+    subscription_manager_address: str = ""  # ARC_SUBSCRIPTION_MANAGER_ADDRESS
 
     # NOTE: per-synth token + oracle addresses are NO LONGER individual fields. They
     # are resolved SSOT-driven over universe.ON_CHAIN_SYNTHS in synth_addresses /

@@ -1,0 +1,9 @@
+Error compiling: contracts/vyper/SubscriptionManager.vy
+vyper.exceptions.StructureException: Value is not callable
+
+  contract "contracts/vyper/SubscriptionManager.vy:71", function "subscribe", line 71:30 
+       70
+  ---> 71     wallet_address: address = address(
+  --------------------------------------^
+       72         keccak256(abi_encode(sub_id, block.number, method_id=0x00000000))
+
