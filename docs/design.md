@@ -355,6 +355,21 @@ This directly implements Research #01 (Trading-R1) — the reasoning trace as th
 
 ### 5.2 Smart Contract Architecture
 
+> **Drift caveat (2026-06-22 — see [`technical-overview-2026-06-22.md`](technical-overview-2026-06-22.md) §3.7–3.8).**
+> §5.2 and §5.3 below are the **original Day-1/Day-2 on-chain design and no longer match
+> shipped reality.** The single `ArchimedesVault.sol` shown here was superseded by the
+> Day-3 two-tier synthetic-protocol pivot ([`specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md)):
+> the tree actually ships **11 contracts** — a real ERC-4626 `Vault` (`deposit/withdraw/
+> redeem/previewX`, not the `setRiskProfile`/`getPortfolio` API sketched here), plus
+> `VaultFactory`, `SyntheticVault`, `SyntheticFactory`, `SyntheticToken`, `AMMPool`,
+> `AMMRouter`, `PriceOracle`, `AssetRegistry`, `StrategyRegistry`, and
+> `ReasoningTraceRegistry`. Crucially, the §5.3 "RWA acquisition via CCTP→DEX→Gateway
+> cross-chain bridge" flow was **replaced by on-chain synthetic tokens** (`SyntheticToken`
+> minted against USDC collateral and traded on the local constant-product `AMMPool`); there
+> is no live cross-chain RWA bridging. Treat §5.2/§5.3 as design history; the authoritative
+> on-chain spec is [`specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md) and the
+> shipped-state survey is [`chuan-architecture-survey.md`](chuan-architecture-survey.md).
+
 ```
 ArchimedesVault.sol
 ├── deposit(amount: uint256)           — user deposits USDC
