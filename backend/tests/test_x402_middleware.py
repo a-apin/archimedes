@@ -108,8 +108,7 @@ def test_200_passthrough_when_settled():
             "archimedes.api.x402_middleware.aiohttp.ClientSession",
             return_value=_FakeSessionCM(settle_body, 200),
         ),
-        patch.object(x402_middleware._spend_store, "amount_spent", AsyncMock(return_value=0.0)),
-        patch.object(x402_middleware._spend_store, "record", AsyncMock()),
+        patch.object(x402_middleware._spend_store, "try_charge", AsyncMock(return_value=(True, 0.0))),
     ):
         client = TestClient(_make_app())
         r = client.post("/paid", headers=_sig_header())
@@ -130,9 +129,8 @@ def test_429_when_spend_cap_exceeded():
             "archimedes.api.x402_middleware.aiohttp.ClientSession",
             return_value=_FakeSessionCM(settle_body, 200),
         ),
-        # Already spent 0.10 (== cap); the next 0.001 pushes over → 429.
-        patch.object(x402_middleware._spend_store, "amount_spent", AsyncMock(return_value=0.10)),
-        patch.object(x402_middleware._spend_store, "record", AsyncMock()) as rec,
+        # Already at the 0.10 cap; the atomic try_charge rejects and records nothing → 429.
+        patch.object(x402_middleware._spend_store, "try_charge", AsyncMock(return_value=(False, 0.10))) as charge,
     ):
         client = TestClient(_make_app())
         r = client.post("/paid", headers=_sig_header())
@@ -140,8 +138,8 @@ def test_429_when_spend_cap_exceeded():
     detail = r.json()["detail"]
     assert detail["error"] == "Daily spend cap exceeded"
     assert detail["cap_usdc"] == 0.10
-    # We must NOT record a charge that was rejected.
-    rec.assert_not_called()
+    # The atomic check-and-record owns the "don't record a rejected charge" guarantee.
+    charge.assert_called_once()
 
 
 # ── 4. Flag off → no-op passthrough ───────────────────────────────────────────
@@ -228,6 +226,33 @@ class _FakeRedis:
     async def expire(self, key, ttl):
         return True
 
+    async def eval(self, script, numkeys, *args):
+        """Mirror the _TRY_CHARGE_LUA logic in Python so the atomic API is exercisable
+        hermetically. (True atomicity under concurrency is enforced by Redis running the
+        real EVAL server-side; this double validates the trim/sum/compare/record shape.)"""
+        key, now, cutoff, amount, cap, ttl, member = (
+            args[0],
+            float(args[1]),
+            float(args[2]),
+            float(args[3]),
+            float(args[4]),
+            int(args[5]),
+            args[6],
+        )
+        await self.zremrangebyscore(key, 0, cutoff)
+        members = await self.zrange(key, 0, -1)
+        spent = 0.0
+        for m in members:
+            try:
+                spent += float(str(m).split(":", 1)[1])
+            except (IndexError, ValueError):
+                continue
+        if spent + amount > cap:
+            return [0, str(spent)]
+        await self.zadd(key, {member: now})
+        await self.expire(key, ttl)
+        return [1, str(spent)]
+
 
 async def test_spend_cap_store_records_and_reads():
     """Exercise the real SpendCapStore logic against an in-memory redis double."""
@@ -245,6 +270,83 @@ async def test_spend_cap_store_records_and_reads():
     # An entry older than the 24h window is trimmed on read.
     await store.record("0xABC", 0.10, now=now - x402_middleware.SPEND_WINDOW_SECONDS - 10)
     assert abs(await store.amount_spent("0xABC", now=now + 3) - 0.05) < 1e-9
+
+
+async def test_try_charge_atomic_check_and_record():
+    """try_charge records iff the charge stays within cap, in a single operation.
+
+    The race the atomic path closes: with a separate read-then-write, two concurrent
+    requests near the cap could both pass the check and both record. try_charge folds
+    check+record into one server-side EVAL. Here we drive it sequentially against the
+    in-memory double to pin the contract — allowed charges record, a rejected charge
+    leaves the running total untouched.
+    """
+    store = x402_middleware.SpendCapStore()
+    store._redis = _FakeRedis()
+    cap = 0.10
+    now = 2_000_000.0
+
+    allowed, spent = await store.try_charge("0xABC", 0.06, cap, now=now)
+    assert allowed and spent == 0.0
+    allowed, spent = await store.try_charge("0xABC", 0.03, cap, now=now + 1)
+    assert allowed and abs(spent - 0.06) < 1e-9
+    # 0.09 + 0.02 > 0.10 → rejected, and nothing recorded.
+    allowed, spent = await store.try_charge("0xABC", 0.02, cap, now=now + 2)
+    assert not allowed and abs(spent - 0.09) < 1e-9
+    # The rejected charge did not advance the total.
+    allowed, spent = await store.try_charge("0xABC", 0.001, cap, now=now + 3)
+    assert allowed and abs(spent - 0.09) < 1e-9
+
+
+def test_402_when_settlement_missing_payer():
+    """Settlement success but no `payer` → fail closed (402).
+
+    The spend-cap key must come only from Circle's verified settlement result; we never
+    fall back to the caller-supplied payload `from`, so the cap is never consulted
+    without a verified payer.
+    """
+    settle_body = {"success": True, "transaction": "tx", "network": "eip155:5042002"}  # no payer
+    with (
+        patch(
+            "archimedes.api.x402_middleware.aiohttp.ClientSession",
+            return_value=_FakeSessionCM(settle_body, 200),
+        ),
+        patch.object(x402_middleware._spend_store, "try_charge", AsyncMock(return_value=(True, 0.0))) as charge,
+    ):
+        client = TestClient(_make_app())
+        r = client.post("/paid", headers=_sig_header())
+    assert r.status_code == 402
+    assert "verified payer" in r.json()["detail"]
+    charge.assert_not_called()
+
+
+def test_replay_rejected_when_facilitator_rejects_reused_authorization():
+    """A replayed PAYMENT-SIGNATURE is rejected at settlement, not by the middleware.
+
+    The EIP-3009 `transferWithAuthorization` nonce is single-use at the USDC contract, so
+    the facilitator returns success=false on the second presentation of the same signed
+    authorization. This documents that replay protection is correctly delegated to
+    Circle/EIP-3009 — the first request settles (200), the identical replay 402s, and the
+    handler runs exactly once.
+    """
+    first = {"success": True, "payer": "0xPAYER", "transaction": "tx-1", "network": "eip155:5042002"}
+    replay = {"success": False, "errorReason": "authorization_used", "transaction": "", "network": ""}
+    responses = [_FakeSessionCM(first, 200), _FakeSessionCM(replay, 200)]
+
+    with (
+        patch(
+            "archimedes.api.x402_middleware.aiohttp.ClientSession",
+            side_effect=lambda *_a, **_k: responses.pop(0),
+        ),
+        patch.object(x402_middleware._spend_store, "try_charge", AsyncMock(return_value=(True, 0.0))),
+    ):
+        client = TestClient(_make_app())
+        headers = _sig_header()
+        r1 = client.post("/paid", headers=headers)
+        r2 = client.post("/paid", headers=headers)  # identical signature → replay
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 402
+    assert "authorization_used" in r2.json()["detail"]
 
 
 # ── aiohttp.ClientSession test double ──────────────────────────────────────────

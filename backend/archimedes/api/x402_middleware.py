@@ -137,6 +137,62 @@ class SpendCapStore:
         await r.zadd(key, {member: now})
         await r.expire(key, SPEND_WINDOW_SECONDS)
 
+    async def try_charge(
+        self, payer: str, amount_usdc: float, cap_usdc: float, *, now: float | None = None
+    ) -> tuple[bool, float]:
+        """Atomically check the 24h spend cap AND record the charge if it fits.
+
+        Returns ``(allowed, spent_before)``. When ``allowed`` is True the charge has
+        already been recorded; when False nothing was written.
+
+        This is the atomic replacement for a separate ``amount_spent()`` read followed
+        by a ``record()`` write. That read-then-write had a TOCTOU window: two concurrent
+        requests for the same payer could both observe ``spent`` below the cap and both
+        record, letting a payer exceed the daily cap. The trim + sum + compare +
+        conditional-add here run as ONE server-side ``EVAL`` so the check and the write
+        can never be interleaved by a concurrent request.
+        """
+        r = await self._get_redis()
+        key = f"{self.KEY_PREFIX}{payer.lower()}"
+        now = time.time() if now is None else now
+        cutoff = now - SPEND_WINDOW_SECONDS
+        member = f"{now}:{amount_usdc}"
+        allowed, spent = await r.eval(
+            _TRY_CHARGE_LUA,
+            1,
+            key,
+            str(now),
+            str(cutoff),
+            str(amount_usdc),
+            str(cap_usdc),
+            str(SPEND_WINDOW_SECONDS),
+            member,
+        )
+        # Redis truncates Lua numbers to integers on return, so the running total is
+        # returned as a string to preserve the fractional USDC value.
+        return bool(allowed), float(spent)
+
+
+# Atomic check-and-record for the per-payer cap, run server-side so the read and the
+# conditional write can't interleave. KEYS[1]=spend key; ARGV: now, cutoff, amount, cap,
+# ttl, member ("<ts>:<amount>"). Trims the 24h window, sums the surviving charges, and
+# only adds the new one (returning allowed=1) when it stays within the cap.
+_TRY_CHARGE_LUA = """
+redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[2])
+local members = redis.call('ZRANGE', KEYS[1], 0, -1)
+local spent = 0.0
+for _, m in ipairs(members) do
+    local amt = string.match(m, ':(.*)$')
+    if amt then spent = spent + tonumber(amt) end
+end
+if spent + tonumber(ARGV[3]) > tonumber(ARGV[4]) then
+    return {0, tostring(spent)}
+end
+redis.call('ZADD', KEYS[1], ARGV[1], ARGV[6])
+redis.call('EXPIRE', KEYS[1], ARGV[5])
+return {1, tostring(spent)}
+"""
+
 
 #: Module-level default store. Tests patch `SpendCapStore` methods at this
 #: boundary (per CLAUDE.md "Testing conventions" §"Mock at boundaries").
@@ -211,14 +267,19 @@ def _decode_payment_signature(raw: str) -> dict:
         raise HTTPException(status_code=402, detail="Malformed PAYMENT-SIGNATURE") from exc
 
 
-def _payer_from_payload(payload: dict, settlement: dict) -> str:
-    """Best-effort payer wallet extraction (settlement result, then payload)."""
+def _payer_from_settlement(settlement: dict) -> str:
+    """Spend-cap key — taken ONLY from the facilitator's verified settlement result.
+
+    The payer must come from Circle's settlement response, never from the
+    caller-supplied `PAYMENT-SIGNATURE` payload. Trusting the payload's EIP-3009
+    `from` field would let a caller choose which wallet the daily cap debits — so if
+    a settlement somehow succeeds without a `payer`, we fail closed (402) rather than
+    fall back to an attacker-controlled value.
+    """
     payer = settlement.get("payer")
-    if payer:
-        return str(payer)
-    # Fall back to the EIP-3009 `from` field in the authorization.
-    auth = (payload.get("payload") or {}).get("authorization") or {}
-    return str(auth.get("from", "")) or "unknown"
+    if not payer:
+        raise HTTPException(status_code=402, detail="Settlement missing verified payer")
+    return str(payer)
 
 
 # ── The reusable dependency factory ───────────────────────────────────────────
@@ -282,13 +343,13 @@ def x402_paywall(
             reason = settlement.get("errorReason", "settlement_failed")
             raise HTTPException(status_code=402, detail=f"Payment not settled: {reason}")
 
-        payer = _payer_from_payload(payload, settlement)
+        payer = _payer_from_settlement(settlement)
 
-        # 3. Per-payer daily spend cap → 429.
+        # 3. Per-payer daily spend cap → 429. The check + record is atomic (one
+        #    server-side EVAL) so concurrent requests can't both slip past the cap.
         cap = _max_usdc_per_day()
-        spent = await _spend_store.amount_spent(payer)
-        if spent + price_usdc > cap:
-            reset_in = SPEND_WINDOW_SECONDS
+        allowed, spent = await _spend_store.try_charge(payer, price_usdc, cap)
+        if not allowed:
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -296,10 +357,9 @@ def x402_paywall(
                     "payer": payer,
                     "spent_usdc": round(spent, 6),
                     "cap_usdc": cap,
-                    "resets_in_seconds": reset_in,
+                    "resets_in_seconds": SPEND_WINDOW_SECONDS,
                 },
             )
-        await _spend_store.record(payer, price_usdc)
 
         return {
             "payer": payer,
