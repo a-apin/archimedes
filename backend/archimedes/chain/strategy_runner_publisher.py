@@ -181,9 +181,10 @@ class PublisherAgent:
     async def _load_or_create_vault(self) -> str:
         """Load vault address from Redis or create one."""
         redis_key = f"publisher:vault_address:{self.strategy_id}"
-        cached = await self.redis.redis.get(redis_key)
+        r = await self.redis._get_redis()
+        cached = await r.get(redis_key)
         if cached:
-            return cached.decode()
+            return cached
 
         if DRY_RUN:
             vault_addr = "0x0000000000000000000000000000000000000001"
@@ -196,7 +197,8 @@ class PublisherAgent:
                 agent_assisted=True,
             )
 
-        await self.redis.redis.set(redis_key, vault_addr)
+        r = await self.redis._get_redis()
+        await r.set(redis_key, vault_addr)
         return vault_addr
 
     async def _ensure_pool(self) -> str:
@@ -243,9 +245,10 @@ class PublisherAgent:
     async def _restore_subscribers(self):
         """Load subscriber registry from Redis."""
         redis_key = f"publisher:subscribers:{self.strategy_id}"
-        data = await self.redis.redis.get(redis_key)
+        r = await self.redis._get_redis()
+        data = await r.get(redis_key)
         if data:
-            raw = json.loads(data.decode())
+            raw = json.loads(data)
             self.subscribers = {sid: SubscriberInfo(**info) for sid, info in raw.items()}
             logger.info("Restored %d subscribers from Redis", len(self.subscribers))
         else:
@@ -267,7 +270,8 @@ class PublisherAgent:
             }
             for sid, info in self.subscribers.items()
         }
-        await self.redis.redis.set(redis_key, json.dumps(raw))
+        r = await self.redis._get_redis()
+        await r.set(redis_key, json.dumps(raw))
 
     # ─── Webhook Delivery ──────────────────────────────────────────
 

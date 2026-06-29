@@ -134,9 +134,10 @@ class SubscriberAgent:
     async def _load_or_create_vault(self) -> str:
         """Load vault address from Redis or create one."""
         redis_key = "subscriber:vault_address"
-        cached = await self.redis.redis.get(redis_key)
+        r = await self.redis._get_redis()
+        cached = await r.get(redis_key)
         if cached:
-            return cached.decode()
+            return cached
 
         if DRY_RUN or not self.vault_address:
             vault_addr = "0x0000000000000000000000000000000000000002"
@@ -149,7 +150,8 @@ class SubscriberAgent:
                 agent_assisted=True,
             )
 
-        await self.redis.redis.set(redis_key, vault_addr)
+        r = await self.redis._get_redis()
+        await r.set(redis_key, vault_addr)
         return vault_addr
 
     async def _create_ephemeral_wallet(self) -> tuple[str, str]:
