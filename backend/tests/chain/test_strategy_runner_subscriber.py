@@ -121,8 +121,8 @@ class TestEventHandling:
         subscriber.executor.execute_trades.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_halt_insufficient_balance_logs_warning(self, subscriber):
-        """Halt with insufficient_balance logs a warning."""
+    async def test_halt_unpaid_logs_warning(self, subscriber):
+        """Halt with unpaid logs a warning."""
         import logging
         from archimedes.chain.strategy_runner_subscriber import PublisherEvent
 
@@ -131,9 +131,9 @@ class TestEventHandling:
             event = PublisherEvent(
                 type="halt",
                 tick_id="pub_123_1",
-                step="pre_rebalance",
-                reason="insufficient_balance",
-                message="Need top up",
+                step="load_strategies",
+                reason="unpaid",
+                message="Subscriber did not pay for step",
             )
             await subscriber.handle_event(event)
             mock_warning.assert_called()
@@ -186,19 +186,13 @@ class TestHealthEndpoint:
 
     @pytest.mark.asyncio
     async def test_health_returns_expected_fields(self, subscriber):
-        """Health endpoint returns sub_id, vault, ephemeral_balance."""
-        mock_contract = MagicMock()
-        mock_sub_data = [None, None, None, 10_000_000, None, True, 0]
-        mock_contract.functions.subscriptions.return_value.call = AsyncMock(
-            return_value=mock_sub_data
-        )
-        subscriber.loader._contract.return_value = mock_contract
-
+        """Health endpoint returns sub_id, vault, gateway_balance_usdc."""
         result = await subscriber.handle_health()
         assert result["status"] == "ok"
         assert result["sub_id"] == "0xsubid00000000000000000000000000000000000000000000"
         assert result["vault"] == "0xvault0000000000000000000000000000000000000"
-        assert result["ephemeral_balance"] == 10_000_000
+        assert "gateway_balance_usdc" in result
+        assert isinstance(result["gateway_balance_usdc"], float)
 
 
 # ── Top-up Tests ──────────────────────────────────────────────
@@ -212,39 +206,22 @@ class TestTopUp:
         """Top-up returns success in dry-run mode."""
         from archimedes.chain.strategy_runner_subscriber import TopUpRequest
 
+        subscriber._gateway = AsyncMock()
         req = TopUpRequest(amount_usdc_raw=5_000_000)
         result = await subscriber.handle_top_up(req)
         assert result["status"] == "topped_up"
 
     @pytest.mark.asyncio
     async def test_top_up_non_dry_run(self, subscriber):
-        """Top-up calls renewEphemeralWallet on-chain."""
+        """Top-up calls Gateway deposit."""
         from archimedes.chain.strategy_runner_subscriber import TopUpRequest
 
         with patch("archimedes.chain.strategy_runner_subscriber.DRY_RUN", False):
-            mock_contract = MagicMock()
-            mock_contract.functions.renewEphemeralWallet.return_value.build_transaction = AsyncMock(
-                return_value={"gas": 200_000}
-            )
-            mock_contract.functions.subscriptions.return_value.call = AsyncMock(
-                return_value=[None, None, None, 15_000_000, None, True, 0]
-            )
-            subscriber.loader._contract.return_value = mock_contract
-
-            # Mock helper methods to avoid w3 async issues
-            subscriber._get_nonce = AsyncMock(return_value=5)
-            subscriber._get_gas_price = AsyncMock(return_value=1000000000)
-            subscriber._send_raw = AsyncMock(return_value=b"\x00" * 32)
-
-            # Set up agent_account for signing
-            mock_account = MagicMock()
-            mock_account.address = "0xsubscriber0000000000000000000000000000000"
-            mock_settings = MagicMock()
-            mock_settings.agent_account = mock_account
-            mock_settings.agent_private_key = "0x" + "01" * 32
-            mock_settings.chain_id = 5042002
-            subscriber.settings = mock_settings
+            mock_gateway = AsyncMock()
+            mock_gateway.deposit.return_value = {"success": True, "balance": "15.0"}
+            subscriber._gateway = mock_gateway
 
             req = TopUpRequest(amount_usdc_raw=5_000_000)
             result = await subscriber.handle_top_up(req)
             assert result["status"] == "topped_up"
+            assert result["new_balance"] == 15.0
