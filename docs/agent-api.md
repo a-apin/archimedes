@@ -101,6 +101,32 @@ This is the K=1-generation + externalized-rigor-gate shape from the architecture
 principles: one winner (`selected: true`) plus the considered-and-rejected
 alternatives, each carrying the rigor verdict the user reviews before deploy.
 
+### 4. LIVE GATE — deployability (the SAME verdict a human sees)
+
+The `candidates` payload above carries the *generation-time* rigor verdict. The
+**authoritative deployability verdict** — the one the server-side `create_vault`
+gate (#829) enforces and the human sees on the passport — is the **live rigor gate**
+(#833, compute-on-read from the strategy's real persisted returns). Read it per
+candidate from its persisted strategy:
+
+```
+GET /api/strategies/{strategy_id}
+→ { "rigor_gate_status": "pass" | "fail" | "pending",
+    "passes_rigor_gate": <bool>,     # true ⇒ deployable
+    "real_sharpe": <float|null>, "real_dsr": <float|null>, ... }
+```
+
+- **`pass`** — real returns exist and the live gate passed → `passes_rigor_gate: true`, deployable.
+- **`fail`** — real returns exist and the gate failed ≥1 criterion → not deployable (honest).
+- **`pending`** — no real persisted returns yet → the gate cannot run; not deployable.
+
+> Fusion/debate candidates emit a DSL spec (`weights={}`) scored by
+> `evaluate_fusion_spec`, so they skip the static buy-and-hold backtester. Until the
+> #788/#818 fix, their real backtest returns weren't persisted → the live gate read
+> `pending` forever and nothing was deployable. The fix persists those returns so a
+> fusion/debate winner reads `pass`/`fail` like any other strategy. **Never weaken
+> the gate to force a `pass` — `pending`/`fail` are honest, deployable-only-on-`pass`.**
+
 ## Slice 2 (pending) — DEPLOY + MONITOR
 
 Deploying a vault and reading it back needs a **programmatic signer** (agents

@@ -867,6 +867,11 @@ async def _run_fusion_candidate(
     rigor_verdict: dict[str, Any]
     has_real_rigor = False
     asset_universe: list[str] = []
+    # Real DSL-backtest daily returns, captured so run_generation can persist them →
+    # live_rigor_gate reads pass/fail (not "pending") and the strategy is deployable
+    # (#788/#818). Fusion candidates skip the static buy-and-hold backtester (weights={}),
+    # so this is their only returns-persistence path.
+    real_return_series: list[float] = []
     if proposal.strategy_spec is not None:
         await emit.emit("agent_iteration", candidate_id=candidate_id, iteration_n=2, max_iterations=3)
         await emit.emit(
@@ -909,6 +914,9 @@ async def _run_fusion_candidate(
                 "total_trades": bt.total_trades,
             }
             has_real_rigor = True
+            # Daily returns from the real DSL backtest's equity curve (for live-gate persistence).
+            _ec = list(getattr(bt, "equity_curve", None) or [])
+            real_return_series = [(_ec[i] - _ec[i - 1]) / _ec[i - 1] for i in range(1, len(_ec)) if _ec[i - 1] > 0]
             await emit.emit(
                 "tool_result",
                 candidate_id=candidate_id,
@@ -964,6 +972,7 @@ async def _run_fusion_candidate(
         generation_method="fusion",
         source_arxiv_ids=list(proposal.source_arxiv_ids),
         has_real_rigor=has_real_rigor,
+        return_series=real_return_series or None,
     )
 
 
@@ -1345,6 +1354,21 @@ async def run_generation(
             ]
         )
 
+        # Fusion (and debate) candidates skipped the static backtester above but carry
+        # a REAL DSL backtest — persist its returns so live_rigor_gate reads pass/fail
+        # (not "pending") and the strategy is deployable (#788/#818). Without this, a
+        # fusion winner with a genuine backtest forever reads rigor_gate_status=pending
+        # and the server-side create_vault gate (#829) refuses to deploy it.
+        await asyncio.gather(
+            *[
+                _persist_real_returns(
+                    c, strategy_ids[c.candidate_id], emit, _society_num_trials(library_size, n_candidates)
+                )
+                for c in candidates
+                if c.has_real_rigor and c.return_series
+            ]
+        )
+
         # ── Persist all candidates to episodic memory (T-PE.8) ──
         try:
             from archimedes.services.strategy_memory import persist_proposal
@@ -1497,6 +1521,84 @@ async def _persist_candidate(c: _CandidateResult, brief: GenerateBrief) -> tuple
 
     strategy_id = await asyncio.to_thread(_do_persist)
     return strategy_id, trace_hash
+
+
+async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Emitter, num_trials: int) -> None:
+    """Persist a has_real_rigor candidate's real DSL-backtest returns so the live
+    rigor gate reads ``pass``/``fail`` — not ``pending`` — and the strategy becomes
+    deployable (#788/#818).
+
+    Fusion/debate candidates emit a DSL spec (``weights={}``) scored by
+    ``evaluate_fusion_spec``, so they skip the static buy-and-hold backtester (#829)
+    and would otherwise leave NO ``backtest_results`` row → ``live_rigor_gate`` reads
+    ``pending`` → the strategy is never deployable even though it carries a real
+    backtest. This writes the row from the captured return series so the live gate
+    has real returns to re-grade. Non-blocking: any failure is logged, not raised.
+    """
+    if not c.has_real_rigor or not c.return_series or len(c.return_series) < 10:
+        return
+
+    def _do() -> None:
+        import json as _json
+
+        from archimedes.db import get_session
+        from archimedes.models.backtest import BacktestResult
+        from archimedes.services.backtest_repository import insert_backtest_if_missing
+
+        rv = c.rigor_verdict or {}
+        returns = list(c.return_series)
+        # Rebuild an equity curve (base 1.0) so BOTH the artifact daily_returns AND the
+        # equity-curve fallback in get_daily_returns resolve the same series.
+        equity = [1.0]
+        for ret in returns:
+            equity.append(equity[-1] * (1.0 + ret))
+
+        def _f(key: str) -> float:
+            v = rv.get(key)
+            return float(v) if v is not None else 0.0
+
+        result = BacktestResult(
+            strategy_id=strategy_id,
+            sharpe_ratio=_f("sharpe_ratio"),
+            sortino_ratio=_f("sortino_ratio"),
+            max_drawdown=_f("max_drawdown"),
+            cagr=_f("cagr"),
+            calmar_ratio=_f("calmar_ratio"),
+            win_rate=_f("win_rate"),
+            profit_factor=0.0,
+            total_trades=int(rv.get("total_trades") or 0),
+            avg_holding_period_days=0.0,
+            correlation_to_spy=0.0,
+            correlation_to_btc=0.0,
+            equity_curve=equity,
+            deflated_sharpe_ratio=rv.get("dsr"),
+            dsr_p_value=rv.get("dsr_p_value"),
+            num_trials_in_selection=int(num_trials),
+            pbo_score=rv.get("pbo"),
+            out_of_sample_sharpe=rv.get("oos_sharpe"),
+            look_ahead_audit_passed=bool(rv.get("lookahead_audit_passed", False)),
+            backtest_engine="dsl-fusion",
+        )
+        artifact = {"results": [{"metrics": {"daily_returns": returns}}], "source": c.generation_method}
+        artifact_json = _json.dumps(artifact, default=str)
+        content_hash = hashlib.sha256(artifact_json.encode("utf-8")).hexdigest()
+        with get_session() as session:
+            insert_backtest_if_missing(
+                session,
+                strategy_id=strategy_id,
+                content_hash=content_hash,
+                result=result,
+                operation="DSL_FUSION",
+                artifact_json=artifact_json,
+            )
+
+    try:
+        await asyncio.to_thread(_do)
+        await emit.emit(
+            "backtest_done", candidate_id=c.candidate_id, strategy_id=strategy_id, source=c.generation_method
+        )
+    except Exception as exc:
+        logger.warning("persist_real_returns failed for %s: %s", strategy_id, exc)
 
 
 async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Emitter, num_trials: int = 1) -> None:

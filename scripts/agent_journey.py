@@ -199,6 +199,34 @@ def step_readback(client: httpx.Client, job_id: str) -> bool:
         keys = ", ".join(sorted(verdict.keys())[:6]) if isinstance(verdict, dict) else ""
         print(f"  {marker}  {c.get('strategy_name')!r}  rigor={passes}  [{keys}]")
     print(f"  → best_candidate_id={best_id!r}")
+
+    # ── LIVE rigor gate — the SAME tri-state verdict a human sees on the passport ──
+    # (#833 live_rigor_gate, compute-on-read from real persisted returns). After the
+    # #788 returns-persistence fix, a fusion/debate winner with a real backtest reads
+    # "pass"/"fail" + deployable, not the misleading "pending".
+    _hr("LIVE GATE — deployability (read the persisted strategy passport)")
+    saw_non_pending = False
+    for c in candidates:
+        sid = c.get("strategy_id")
+        if not sid:
+            continue
+        strat = _get(client, f"/api/strategies/{sid}")
+        if not isinstance(strat, dict):
+            print(f"  · /api/strategies/{sid} — unavailable")
+            continue
+        status = strat.get("rigor_gate_status")
+        deployable = bool(strat.get("passes_rigor_gate"))
+        if status and status != "pending":
+            saw_non_pending = True
+        print(
+            f"  {'🏆' if c.get('selected') else '·'}  {c.get('strategy_name')!r}  "
+            f"live_gate={status!r}  deployable={deployable}  real_sharpe={strat.get('real_sharpe')}"
+        )
+    if not saw_non_pending:
+        print(
+            "  ⚠ all strategies read live_gate='pending' — generated candidates have no real "
+            "persisted returns (the #788/#818 deployability gap)."
+        )
     return True
 
 
