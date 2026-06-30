@@ -310,7 +310,7 @@ contract PriceOracle is Ownable {
     ///         unusable — a bad feed degrades rather than bricking every consumer.
     /// @dev    Signature unchanged (no-arg) so Vault / SyntheticVault / SyntheticFactory
     ///         keep compiling and behaving identically. (#724 review: fixes 1 + 2.)
-    function getPrice() external view returns (uint256) {
+    function getPrice() external view virtual returns (uint256) {
         // The admin-fed value is the trusted fallback reference; freshness computed once.
         bool adminFresh = block.timestamp <= lastUpdated + MAX_STALENESS;
 
@@ -358,7 +358,7 @@ contract PriceOracle is Ownable {
     ///         (when the feed is absent/bad) the admin fallback is fresh. View-safe and
     ///         never reverts — no external self-call (#724 review). Note: this does not
     ///         re-check the sanity band; it reports source liveness, not band agreement.
-    function isFresh() external view returns (bool) {
+    function isFresh() external view virtual returns (bool) {
         bool adminFresh = block.timestamp <= lastUpdated + MAX_STALENESS;
         if (address(priceFeed) != address(0)) {
             (bool ok,) = _tryReadChainlink();
@@ -385,7 +385,22 @@ contract PriceOracle is Ownable {
     ///         feed, so the canonical mitigation is unwireable; the underlying "stale
     ///         price survives a restart" risk is covered by the degrade + tight heartbeat.
     function _tryReadChainlink() internal view returns (bool ok, uint256 scaledPrice) {
-        try priceFeed.latestRoundData() returns (
+        return _tryReadFeed(priceFeed, feedDecimals);
+    }
+
+    /// @notice Read + validate + scale ONE AggregatorV3 feed answer to 6 decimals WITHOUT
+    ///         reverting (returns (false, 0) on any problem). Parameterized over
+    ///         (feed, cached decimals) so the single-feed wrapper above AND the multi-feed
+    ///         quorum (QuorumPriceOracle) reuse the identical #724 validation + scaling —
+    ///         one audited primitive, two callers. Fail-soft cases are exactly as documented
+    ///         on `_tryReadChainlink` above. `feed`/`dec` are caller-supplied (the single
+    ///         feed, or one entry of a quorum feed set), never re-read from storage here.
+    function _tryReadFeed(AggregatorV3Interface feed, uint8 dec)
+        internal
+        view
+        returns (bool ok, uint256 scaledPrice)
+    {
+        try feed.latestRoundData() returns (
             uint80 roundId, int256 answer, uint256, uint256 updatedAt, uint80 answeredInRound
         ) {
             if (answer <= 0) return (false, 0);
@@ -395,7 +410,7 @@ contract PriceOracle is Ownable {
             if (block.timestamp > updatedAt + feedStaleness) return (false, 0);
 
             uint256 raw = uint256(answer); // safe: answer > 0 checked above
-            uint8 d = feedDecimals; // cached at setPriceFeed — no per-read external call
+            uint8 d = dec; // cached at config time — no per-read external call
             uint256 scaled;
             if (d == PRICE_DECIMALS) {
                 scaled = raw;

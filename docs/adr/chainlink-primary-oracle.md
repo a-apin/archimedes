@@ -5,6 +5,25 @@
 > **Question being decided:** Where does the on-chain USD price that feeds vault collateral math come from — our admin-set `PriceOracle`, a well-validated external oracle (Chainlink), or some composition of the two?
 > **Related issues/PRs:** [#724](https://github.com/a-apin/archimedes/pull/724) (Chainlink-first read path **+ the #724-review hardening**), [#731](https://github.com/a-apin/archimedes/pull/731) (owner≠agent non-custodial vaults — closed the drain vector). Feed-outage telemetry/alerting is operational follow-up.
 
+> **⚡ Update 2026-06-30 — evolved single-primary → N-feed QUORUM (Arc × Chainlink).** Arc
+> joined the Chainlink Scale program today. Two verified facts reshape this ADR: (1)
+> **what shipped on Arc testnet today is CCIP only** (Router `0xdE4E…`, chain selector,
+> registries) — **Chainlink price *Data Feed* aggregator addresses are NOT published on Arc
+> yet** (announced capability), so per the #1 rule we do not claim "priced by Chainlink on
+> Arc" today; and (2) **Stork + Pyth price feeds ARE verified live on Arc**, so a real
+> ≥2-feed on-chain quorum is achievable *now*. The decision below (single-primary feed +
+> admin fallback) is **superseded by a quorum medianizer**: read all configured
+> `AggregatorV3Interface` sources (Chainlink-when-published, Stork, Pyth-wrapper), return the
+> **median of the fresh ones requiring ≥2 that agree within a band, fail-closed on
+> divergence**, degrading to the same single-feed-plus-admin-band and bounded-admin tiers
+> this ADR specifies. The #724 read path is *generalized*, not discarded — its per-feed
+> validation (`_tryReadFeed`) is the quorum's per-source primitive. **This is pricing only —
+> not settlement** (North Star: price on-chain now, settle on-chain at mainnet). Full design:
+> [`docs/specs/onchain-quorum-oracle-spec.md`](../specs/onchain-quorum-oracle-spec.md)
+> (contract: `QuorumPriceOracle is PriceOracle`). Everything below remains the rationale for
+> *why* an external feed beats a lone admin writer — the quorum just removes the
+> single-feed trust point too.
+
 ## TL;DR
 
 **Make Chainlink (or an equivalent well-validated, generally-accepted oracle) PRIMARY everywhere a feed exists. Keep our custom admin-set `PriceOracle` ONLY as an explicit, logged, tightly-bounded fallback** for the long tail of assets that have no native feed and for the window when a feed is stale or down. This is exactly the "Chainlink-first, admin fallback" architecture PR #724 implements: `getPrice()` reads `latestRoundData()` from a configured `AggregatorV3Interface` feed with full staleness/round-completeness/non-negative validation, and **degrades to the admin-fed `price` whenever the feed is absent (`priceFeed == address(0)`), unusable (reverts/stale/bad answer), or grossly out of band** — reverting only when *both* sources are unusable. The fallback is the weaker link, so it stays bounded (deviation caps + staleness + rate-limit) and loud (distinct events), and it is used only on feed absence or outage — never as the default trust source.
