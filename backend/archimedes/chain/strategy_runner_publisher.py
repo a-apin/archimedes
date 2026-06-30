@@ -30,10 +30,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from archimedes.chain.circle_signer import CircleSigner
-from archimedes.chain.client import ChainSettings
+from archimedes.chain.client import ChainSettings, chain_client
 from archimedes.chain.contracts import ContractLoader
 from archimedes.chain.executor import ChainExecutor
+from archimedes.models.portfolio import (
+    Portfolio,
+    RiskProfile,
+    TargetAllocation,
+    TradeDirection,
+    TradeOrder,
+)
+from archimedes.models.regime import EnsembleConsensus
+from archimedes.services.portfolio_constructor import PortfolioConstructor
 from archimedes.services.redis_state import AgentStateStore
+from archimedes.services.strategy_provider import default_provider
+from archimedes.services.strategy_signal_evaluator import (
+    StrategySignals,
+    strategy_evaluator,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +64,7 @@ PUBLISHER_POOL_ID = os.getenv("PUBLISHER_POOL_ID", "")
 CREATOR_ADDRESS = os.getenv("CREATOR_ADDRESS", "")
 PLATFORM_WALLET = os.getenv("PLATFORM_WALLET", "")
 FLAT_FEE_PER_ACTION = int(os.getenv("FLAT_FEE_PER_ACTION", "100"))
+PUBLISHER_USDC_FLOOR = float(os.getenv("PUBLISHER_USDC_FLOOR", "0.20"))
 PAYMENT_SPLITTER_ADDRESS = os.getenv("PAYMENT_SPLITTER_ADDRESS", "")
 SUBSCRIPTION_MANAGER_ADDRESS = os.getenv("SUBSCRIPTION_MANAGER_ADDRESS", "")
 AGENT_PRIVATE_KEY = os.getenv("AGENT_PRIVATE_KEY", "")
@@ -127,6 +142,8 @@ class PublisherAgent:
         self.executor = ChainExecutor(loader=self.loader)
         self.circle_signer = CircleSigner()
         self.redis = AgentStateStore()
+        self.provider = default_provider()
+        self.portfolio_constructor = PortfolioConstructor()
 
         # Override contract addresses from env vars (not in ChainSettings)
         self.payment_splitter_address = PAYMENT_SPLITTER_ADDRESS or self.settings.payment_splitter_address
@@ -401,58 +418,304 @@ class PublisherAgent:
 
         return False, "", ""
 
+    # ─── Pipeline helpers ──────────────────────────────────────────
+
+    @staticmethod
+    def _serialize_trade(trade: TradeOrder) -> dict[str, Any]:
+        """Convert a TradeOrder to a JSON-serializable dict."""
+        return {
+            "symbol": trade.symbol,
+            "token_address": trade.token_address,
+            "direction": trade.direction.value,
+            "amount": trade.amount,
+            "estimated_usdc_value": trade.estimated_usdc_value,
+            "max_slippage_bps": trade.max_slippage_bps,
+        }
+
+    def _weights_to_targets(
+        self, weights: dict[str, float], all_signals: list[StrategySignals] | None = None
+    ) -> list[TargetAllocation]:
+        """Convert weight dict → TargetAllocation list (cf. agent_runner.py)."""
+        symbol_strategies: dict[str, list[str]] = {}
+        if all_signals:
+            for ss in all_signals:
+                for sig in ss.signals:
+                    symbol_strategies.setdefault(sig.asset, []).append(ss.strategy_id)
+
+        usdc_addr = chain_client.settings.usdc_address
+        synth_addrs = chain_client.settings.synth_addresses
+
+        targets: list[TargetAllocation] = []
+        for symbol, weight in weights.items():
+            token_address = usdc_addr if symbol == "USDC" else synth_addrs.get(symbol, "")
+            targets.append(
+                TargetAllocation(
+                    symbol=symbol,
+                    token_address=token_address,
+                    weight=weight,
+                    strategy_ids=symbol_strategies.get(symbol, []),
+                )
+            )
+        return targets
+
+    async def _compute_trades(
+        self,
+        portfolio: Portfolio,
+        targets: list[TargetAllocation],
+    ) -> list[TradeOrder]:
+        """Diff current portfolio vs target weights → trade list (cf. agent_runner.py).
+        Uses a 15% drift threshold.
+        """
+        threshold = 0.15
+        current_weights = portfolio.weights_dict
+        target_map = {t.symbol: t for t in targets}
+
+        trades: list[TradeOrder] = []
+        all_symbols = set(target_map.keys()) | set(current_weights.keys())
+
+        for sym in all_symbols:
+            current_w = current_weights.get(sym, 0.0)
+            target = target_map.get(sym)
+            target_w = target.weight if target else 0.0
+            token_addr = target.token_address if target else ""
+
+            drift = target_w - current_w
+            if abs(drift) < threshold:
+                continue
+
+            usdc_value = abs(drift) * portfolio.total_value_usdc
+            direction = TradeDirection.BUY if drift > 0 else TradeDirection.SELL
+            amount = usdc_value  # amount in USDC-value terms
+
+            trades.append(
+                TradeOrder(
+                    symbol=sym,
+                    token_address=token_addr,
+                    direction=direction,
+                    amount=amount,
+                    estimated_usdc_value=usdc_value,
+                )
+            )
+
+        return trades
+
+    async def _charge_step(self, tick_id: str, step_name: str, action_count: int = 1) -> bool:
+        """Charge all active subscribers for one pipeline step.
+
+        Deactivates subscribers whose balance is insufficient. Returns False
+        if no active subscribers remain after charging.
+        """
+        for sub_id, info in list(self.subscribers.items()):
+            if not info.active:
+                continue
+            charged = await self._charge_subscriber(sub_id, action_count)
+            if not charged:
+                info.active = False
+                halt_pl = _halt_payload(
+                    tick_id,
+                    step_name,
+                    "insufficient_balance",
+                    f"Subscriber {sub_id} has insufficient balance",
+                )
+                await self._notify_one(sub_id, halt_pl)
+
+        active_count = sum(1 for info in self.subscribers.values() if info.active)
+        if active_count == 0:
+            halt_pl = _halt_payload(
+                tick_id, step_name, "no_active_subscribers", "No active subscribers remain",
+            )
+            await self._notify_all(halt_pl, only_active=False)
+            logger.warning("[%s] All subscribers deactivated at step '%s'", tick_id, step_name)
+            return False
+        return True
+
     # ─── Tick ──────────────────────────────────────────────────────
 
     async def tick(self):
-        """Run one evaluation + notification cycle."""
+        """Run one full evaluation + notification cycle.
+
+        Mirrors agent_runner.py's tick() pipeline — four discrete steps,
+        each independently chargeable and able to halt:
+          1. Load strategies
+          2. Evaluate strategy signals against live market data
+          3. Aggregate signals into target weights
+          4. Build target allocations
+
+        After the pipeline, trades are computed and charged per-leg
+        (post-USDC-filter) before on-chain execution.
+        """
         self._tick_counter += 1
         tick_id = f"{TICK_ID_PREFIX}_{int(time.time())}_{self._tick_counter}"
 
         logger.info("Tick %d (%s) — %d subscribers", self._tick_counter, tick_id, len(self.subscribers))
 
-        # 1. Load & evaluate strategy (simplified — single strategy)
-        signals = await self._evaluate_strategy()
-        if not signals:
-            halted, reason, msg = True, "strategy_error", "Strategy evaluation returned no signals"
-            halt_pl = _halt_payload(tick_id, "strategy_evaluation", reason, msg)
-            await self._notify_all(halt_pl, only_active=False)
-            logger.warning("Halted: %s", msg)
-            return
-
-        # 2. Halt check after evaluation
+        # Pre-pipeline halt check
         halted, reason, msg = self._halt_check()
         if halted:
-            halt_pl = _halt_payload(tick_id, "post_evaluation", reason, msg)
+            halt_pl = _halt_payload(tick_id, "pre_pipeline", reason, msg)
             await self._notify_all(halt_pl, only_active=False)
             logger.warning("Halted: %s", msg)
             return
 
-        # 3. Notify evaluation step (no charge)
-        for step_name in ["signal_collection", "signal_analysis", "weight_computation"]:
-            step_halted, step_reason, step_msg = self._halt_check()
-            if step_halted:
-                halt_pl = _halt_payload(tick_id, step_name, step_reason, step_msg)
-                await self._notify_all(halt_pl, only_active=False)
-                logger.warning("Halted at %s: %s", step_name, step_msg)
-                return
+        # ═══════════════════════════════════════════════════════════
+        # STEP 1: Load strategies
+        # ═══════════════════════════════════════════════════════════
+        from archimedes.strategies.registry import StrategyRegistry
 
-            pl = _eval_step_payload(step_name, tick_id, {"status": "ok", "signals_count": len(signals)})
-            await self._notify_all(pl)
-
-        # 4. Determine if rebalance needed
-        trades, target_weights = await self._compute_rebalance(signals)
-        if not trades:
-            logger.info("No rebalance needed this tick")
+        registry = StrategyRegistry()
+        strategy = registry.get(self.strategy_id)
+        if not strategy:
+            halt_pl = _halt_payload(
+                tick_id, "load_strategies", "strategy_not_found",
+                f"Strategy {self.strategy_id} not found",
+            )
+            await self._notify_all(halt_pl, only_active=False)
+            logger.warning("[%s] Strategy %s not found — halting", tick_id, self.strategy_id)
             return
 
-        action_count = len(trades)
+        logger.info("[%s] Loaded strategy: %s", tick_id, getattr(strategy, "paper_title", self.strategy_id))
 
-        # 5. Pre-rebalance: charge each active subscriber
+        if not await self._charge_step(tick_id, "load_strategies"):
+            return
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 2: Evaluate strategy signals against live market data
+        # ═══════════════════════════════════════════════════════════
+        synth_assets = [sym for sym, addr in chain_client.settings.synth_addresses.items() if addr]
+
+        try:
+            all_signals: list[StrategySignals] = await asyncio.to_thread(
+                strategy_evaluator.evaluate_strategies,
+                [strategy],
+                synth_assets,
+            )
+        except Exception as exc:
+            logger.error("[%s] Signal evaluation failed: %s", tick_id, exc)
+            halt_pl = _halt_payload(
+                tick_id, "evaluate_signals", "evaluation_error", str(exc),
+            )
+            await self._notify_all(halt_pl, only_active=False)
+            return
+
+        if not all_signals:
+            halt_pl = _halt_payload(
+                tick_id, "evaluate_signals", "no_signals",
+                "Strategy produced no signals",
+            )
+            await self._notify_all(halt_pl, only_active=False)
+            logger.warning("[%s] No signals produced — halting", tick_id)
+            return
+
+        n_signals = sum(len(ss.signals) for ss in all_signals)
+        logger.info("[%s] %d signals across %d strategy", tick_id, n_signals, len(all_signals))
+
+        if not await self._charge_step(tick_id, "evaluate_signals"):
+            return
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 3: Aggregate signals into target weights
+        # ═══════════════════════════════════════════════════════════
+        try:
+            target_weights = strategy_evaluator.aggregate_signals(
+                all_signals,
+                usdc_floor=PUBLISHER_USDC_FLOOR,
+            )
+        except Exception as exc:
+            logger.error("[%s] Weight aggregation failed: %s", tick_id, exc)
+            halt_pl = _halt_payload(
+                tick_id, "aggregate_weights", "aggregation_error", str(exc),
+            )
+            await self._notify_all(halt_pl, only_active=False)
+            return
+
+        if not target_weights:
+            halt_pl = _halt_payload(
+                tick_id, "aggregate_weights", "empty_weights",
+                "Aggregation produced empty target weights",
+            )
+            await self._notify_all(halt_pl, only_active=False)
+            logger.warning("[%s] Empty target weights — halting", tick_id)
+            return
+
+        logger.info(
+            "[%s] Target weights: %s",
+            tick_id,
+            " | ".join(f"{k}={v:.0%}" for k, v in target_weights.items()),
+        )
+
+        if not await self._charge_step(tick_id, "aggregate_weights"):
+            return
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 4: Build target allocations
+        # ═══════════════════════════════════════════════════════════
+        try:
+            allocations = self.portfolio_constructor.construct(
+                risk_profile=RiskProfile.MODERATE,
+                strategies=[strategy],
+                backtest_results={},
+                regime=None,
+                ensemble_consensus=None,
+                base_weights=target_weights,
+            )
+            targets = self._weights_to_targets(
+                {a.symbol: a.weight for a in allocations}, all_signals
+            )
+        except Exception as exc:
+            logger.error("[%s] Allocation construction failed: %s", tick_id, exc)
+            halt_pl = _halt_payload(
+                tick_id, "build_allocations", "construction_error", str(exc),
+            )
+            await self._notify_all(halt_pl, only_active=False)
+            return
+
+        if not targets:
+            halt_pl = _halt_payload(
+                tick_id, "build_allocations", "empty_targets",
+                "Allocation construction produced empty targets",
+            )
+            await self._notify_all(halt_pl, only_active=False)
+            logger.warning("[%s] Empty allocations — halting", tick_id)
+            return
+
+        if not await self._charge_step(tick_id, "build_allocations"):
+            return
+
+        # ═══════════════════════════════════════════════════════════
+        # TRADE PHASE: compute trades, charge per-leg, execute
+        # ═══════════════════════════════════════════════════════════
+        trades, target_weights_dict = await self._compute_rebalance(all_signals, targets)
+        if not trades:
+            logger.info("[%s] No rebalance needed this tick", tick_id)
+            return
+
+        # Compute post-USDC-filter leg count for per-action charging
+        usdc_addr = chain_client.to_checksum(chain_client.settings.usdc_address)
+        non_usdc_trades = [
+            t for t in trades
+            if chain_client.to_checksum(t.token_address) != usdc_addr
+        ]
+        trade_action_count = len(non_usdc_trades)
+
+        if trade_action_count == 0:
+            logger.info("[%s] All trades are USDC-denominated — no on-chain action needed", tick_id)
+            return
+
+        # Pre-compute token splits for payload (filtered like execute_trades)
+        tokens_in: list[str] = []
+        tokens_out: list[str] = []
+        for t in non_usdc_trades:
+            if t.direction == TradeDirection.BUY:
+                tokens_in.append(t.token_address)
+            else:
+                tokens_out.append(t.token_address)
+
+        # Charge per active subscriber for the filtered leg count
         for sub_id, info in list(self.subscribers.items()):
             if not info.active:
                 continue
 
-            charged = await self._charge_subscriber(sub_id, action_count)
+            charged = await self._charge_subscriber(sub_id, trade_action_count)
             if not charged:
                 info.active = False
                 halt_pl = _halt_payload(
@@ -463,16 +726,19 @@ class PublisherAgent:
                 )
                 await self._notify_one(sub_id, halt_pl)
             else:
-                # 6. Send rebalance payload to charged subscribers only
-                pl = _rebalance_payload(tick_id, action_count, trades, target_weights)
+                # Build extended rebalance payload with split info
+                serialized_trades = [self._serialize_trade(t) for t in trades]
+                pl = _rebalance_payload(tick_id, trade_action_count, serialized_trades, target_weights_dict)
+                pl["tokens_in"] = tokens_in
+                pl["tokens_out"] = tokens_out
                 await self._notify_one(sub_id, pl)
 
-        # 7. Execute rebalance on publisher's own vault (non-dry-run)
+        # Execute rebalance on publisher's own vault (non-dry-run)
         if not DRY_RUN:
             try:
                 await self.executor.execute_trades(self.vault_address, trades)
             except Exception as exc:
-                logger.error("Rebalance execution failed: %s", exc)
+                logger.error("[%s] Rebalance execution failed: %s", tick_id, exc)
 
         # Persist subscriber state
         await self._persist_subscribers()
@@ -500,18 +766,42 @@ class PublisherAgent:
             logger.error("Strategy evaluation error: %s", exc)
             return None
 
-    async def _compute_rebalance(self, signals: dict) -> tuple[list, dict]:
-        """Compute rebalance trades from signals.
+    async def _compute_rebalance(
+        self,
+        all_signals: list[StrategySignals],
+        targets: list[TargetAllocation],
+    ) -> tuple[list[TradeOrder], dict[str, float]]:
+        """Compute rebalance trades from target allocations.
 
-        Returns (trades, target_weights).
+        Reads the current portfolio from on-chain, diffs against targets,
+        and returns (trades, target_weights_dict). Returns empty list if
+        no drift exceeds the threshold.
         """
-        # Simplified: in production this would compute target allocations,
-        # compare with current portfolio, and generate trades.
-        # For the publisher, we rely on the strategy's signal to determine
-        # whether a rebalance is needed.
-        if not signals:
+        # Read current portfolio from on-chain
+        try:
+            portfolio = await self.executor.read_portfolio(self.vault_address)
+        except Exception as exc:
+            logger.warning(
+                "Cannot read portfolio for %s: %s",
+                self.vault_address[:10],
+                exc,
+            )
             return [], {}
-        return [], {}
+
+        logger.info(
+            "Portfolio %s: AUM=$%.2f, %d holdings",
+            self.vault_address[:10],
+            portfolio.total_value_usdc,
+            len(portfolio.holdings),
+        )
+
+        # Compute trades by diffing current vs target
+        trades = await self._compute_trades(portfolio, targets)
+
+        # Build target_weights dict for the notification payload
+        target_weights_out = {t.symbol: t.weight for t in targets}
+
+        return trades, target_weights_out
 
     # ─── HTTP API (FastAPI routes) ─────────────────────────────────
 

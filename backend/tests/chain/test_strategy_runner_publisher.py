@@ -47,6 +47,7 @@ def publisher():
     agent.redis = MagicMock()
     agent.redis.redis = MagicMock()
     agent.redis.redis.set = AsyncMock()
+    agent.redis._get_redis = AsyncMock(return_value=agent.redis.redis)
     agent.circle_signer = MagicMock()
     agent.circle_signer.is_configured = False
     agent.subscription_manager_address = "0xsubmgr000000000000000000000000000000000000"
