@@ -50,6 +50,11 @@ DEFAULT_MAX_DEVIATION_BPS = 2000
 # Max age of the upstream observation before we refuse to push it on-chain.
 # Override via ORACLE_MAX_UPSTREAM_STALENESS_SECONDS.
 DEFAULT_MAX_UPSTREAM_STALENESS_SECONDS = 900  # 15 minutes
+# Secondary-source cross-check band (#775): the max divergence (bps) between a
+# NON-yfinance primary (Pyth/Stork via the PRICE_SOURCE cascade) and an
+# independent yfinance reading before we fail closed. Generous default — both
+# sources lag between updates; Önder owns tuning. 0 disables the cross-check.
+DEFAULT_CROSSCHECK_BAND_BPS = 5000  # 50%
 
 
 def _encrypt_entity_secret(entity_secret_hex: str, public_key_pem: str) -> str:
@@ -93,6 +98,9 @@ class OracleUpdater:
         # Last price (6-dec int) we successfully submitted, per symbol —
         # fallback deviation reference when the on-chain read fails.
         self._last_pushed_price_int: dict[str, int] = {}
+
+        # Secondary-source cross-check band (#775).
+        self._crosscheck_band_bps: int = int(os.getenv("PRICE_CROSSCHECK_BAND_BPS", str(DEFAULT_CROSSCHECK_BAND_BPS)))
 
     # ─── Public API ──────────────────────────────────────────────
 
@@ -194,6 +202,10 @@ class OracleUpdater:
                 # that are non-positive, stale upstream, or deviate too far
                 # from the last known good price.
                 rejection = await self._validate_for_push(price, price_int)
+                # Secondary-source cross-check (#775): only when the sanity gate
+                # already passed (avoid the extra yfinance fetch on a rejected price).
+                if rejection is None:
+                    rejection = await self._cross_check_secondary(price)
                 if rejection is not None:
                     logger.warning(f"Refusing to push {price.symbol} price {price.price_usd}: {rejection}")
                     continue
@@ -307,6 +319,65 @@ class OracleUpdater:
                     f"{reference_int / 1e6:.2f} exceeds {self._max_deviation_bps} bps cap"
                 )
 
+        return None
+
+    async def _cross_check_secondary(self, price: AssetPrice) -> str | None:
+        """Secondary-source cross-check (#775): compare a NON-yfinance primary
+        (Pyth/Stork via the PRICE_SOURCE cascade) against an independent yfinance
+        reading and fail closed when they diverge beyond the band. Returns a
+        rejection reason, or None to proceed.
+
+        **Asymmetric, by design.** A stale / missing / flaky yfinance NEVER blocks
+        a healthy primary — otherwise a yfinance outage (it's known-flaky, #772)
+        would become a trading halt and the guardrail itself the failure. yfinance
+        problems only proceed-and-log; only a *confident* divergence between two
+        healthy sources fails closed.
+
+        Honest claim this earns: *"primary cross-checked against an independent
+        yfinance market source, fail-closed on divergence beyond a band."* NOT
+        "decentralized 2-of-3" (yfinance is centralized + off-chain). The check is
+        a no-op when the primary IS yfinance (same source — not independent) or
+        when no yfinance ticker exists for the symbol. Band/staleness thresholds
+        are Önder's lane to tune (collaborate per #775).
+        """
+        if self._crosscheck_band_bps <= 0:
+            return None  # disabled
+        if price.source == "yfinance":
+            return None  # primary IS yfinance — not an independent second source
+        yf_ticker = YFINANCE_MAP.get(price.symbol)
+        if not yf_ticker:
+            return None  # no independent yfinance ticker for this symbol → can't cross-check → proceed
+        try:
+            secondary = await self._fetch_yfinance_single(yf_ticker)
+        except Exception as exc:
+            logger.warning(
+                "cross-check: yfinance fetch failed for %s (%s) — proceeding on primary (asymmetric)",
+                price.symbol,
+                exc,
+            )
+            return None
+        if secondary is None or secondary <= 0:
+            logger.info(
+                "cross-check: no usable yfinance secondary for %s — proceeding on primary (asymmetric)",
+                price.symbol,
+            )
+            return None
+
+        deviation_bps = abs(price.price_usd - secondary) / secondary * 10_000
+        if deviation_bps > self._crosscheck_band_bps:
+            return (
+                f"cross-check FAIL: primary({price.source}) {price.price_usd:.4f} diverges "
+                f"{deviation_bps:.0f} bps from independent yfinance {secondary:.4f} "
+                f"(band {self._crosscheck_band_bps} bps) — failing closed"
+            )
+        logger.debug(
+            "cross-check OK for %s: primary(%s) %.4f vs yfinance %.4f (%.0f bps)",
+            price.symbol,
+            price.source,
+            price.price_usd,
+            secondary,
+            deviation_bps,
+        )
         return None
 
     async def _get_reference_price_int(self, symbol: str) -> tuple[int | None, bool]:
