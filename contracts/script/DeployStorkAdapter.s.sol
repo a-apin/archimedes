@@ -35,6 +35,8 @@ contract DeployStorkAdapter is Script {
         console.log("Stork contract:", storkContract);
         console.logBytes32(priceId);
         console.log("Adapter:", address(adapter));
-        console.log("Next: PriceOracle(asset).setPriceFeed(", address(adapter), ") as owner");
+        // The adapter address is logged above; forge-std has no console.log(string,address,string)
+        // overload, so keep this a plain-string hint rather than interpolating the address inline.
+        console.log("Next: call PriceOracle(asset).setPriceFeed(adapter) as owner");
     }
 }

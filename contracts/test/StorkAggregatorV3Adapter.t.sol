@@ -28,7 +28,6 @@ contract StorkAggregatorV3AdapterTest is Test {
     uint256 constant EXPECTED_6DEC = 392_600_000;
 
     address constant OWNER = address(0x1);
-    address constant ALICE = address(0x2);
 
     function setUp() public {
         vm.warp(1_000_000);
