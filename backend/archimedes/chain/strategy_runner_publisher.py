@@ -33,6 +33,7 @@ from archimedes.chain.circle_signer import CircleSigner
 from archimedes.chain.client import ChainSettings, chain_client
 from archimedes.chain.contracts import ContractLoader
 from archimedes.chain.executor import ChainExecutor
+from archimedes.chain.v_check import VCheck
 from archimedes.models.portfolio import (
     Portfolio,
     RiskProfile,
@@ -682,14 +683,179 @@ class PublisherAgent:
             return
 
         # ═══════════════════════════════════════════════════════════
-        # TRADE PHASE: compute trades, charge per-leg, execute
+        # STEPS 5-10: Process vault (read portfolio → gates → trade)
         # ═══════════════════════════════════════════════════════════
-        trades, target_weights_dict = await self._compute_rebalance(all_signals, targets)
-        if not trades:
-            logger.info("[%s] No rebalance needed this tick", tick_id)
+        await self._process_vault(tick_id, targets, all_signals)
+
+    async def _process_vault(
+        self,
+        tick_id: str,
+        targets: list[TargetAllocation],
+        all_signals: list[StrategySignals],
+    ) -> None:
+        """Process the publisher's single vault — Steps 5-10 of the pipeline.
+
+        Mirrors agent_runner.py's _process_vault step order:
+          5. Read portfolio              (hard gate — halt on failure)
+          6. Empty-vault check           (hard gate — halt if empty)
+          7. Set token oracles           (soft gate — always charged)
+          8. Set target allocations      (soft gate — always charged)
+          9. Compute trades / aligned    (hard gate — halt if aligned)
+         10. V_check validity gate       (hard gate — halt on failure)
+
+        After step 10 passes, charges per-leg (post-USDC-filter) and executes.
+        """
+        # ═══════════════════════════════════════════════════════════
+        # STEP 5: Read portfolio
+        # ═══════════════════════════════════════════════════════════
+        try:
+            portfolio = await self.executor.read_portfolio(self.vault_address)
+        except Exception as exc:
+            logger.warning("[%s] Cannot read portfolio for %s: %s", tick_id, self.vault_address[:10], exc)
+            halt_pl = _halt_payload(tick_id, "read_portfolio", "read_error", str(exc))
+            await self._notify_all(halt_pl, only_active=False)
             return
 
-        # Compute post-USDC-filter leg count for per-action charging
+        logger.info(
+            "[%s] Portfolio %s: AUM=$%.2f, %d holdings",
+            tick_id,
+            self.vault_address[:10],
+            portfolio.total_value_usdc,
+            len(portfolio.holdings),
+        )
+
+        if not await self._charge_step(tick_id, "read_portfolio"):
+            return
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 6: Empty-vault check
+        # ═══════════════════════════════════════════════════════════
+        if portfolio.total_value_usdc <= 0 and not portfolio.holdings:
+            halt_pl = _halt_payload(tick_id, "empty_vault", "empty_vault",
+                                    "Vault is empty — awaiting initial deposit")
+            await self._notify_all(halt_pl, only_active=False)
+            logger.warning("[%s] Vault %s is empty — halting", tick_id, self.vault_address[:10])
+            return
+
+        if not await self._charge_step(tick_id, "empty_vault"):
+            return
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 7: Set token oracles (soft gate)
+        # ═══════════════════════════════════════════════════════════
+        try:
+            oracle_tokens: list[str] = []
+            oracle_addrs: list[str] = []
+            for t in targets:
+                if t.weight > 0 and t.token_address:
+                    if t.symbol == "USDC":
+                        continue
+                    oracle_addr = chain_client.settings.oracle_addresses.get(t.symbol)
+                    if oracle_addr:
+                        oracle_tokens.append(t.token_address)
+                        oracle_addrs.append(oracle_addr)
+
+            if oracle_tokens:
+                await self.executor.set_token_oracles(
+                    self.vault_address, oracle_tokens, oracle_addrs,
+                )
+                logger.info(
+                    "[%s] Set %d token oracles on vault %s",
+                    tick_id, len(oracle_tokens), self.vault_address[:10],
+                )
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to set token oracles on %s: %s",
+                tick_id, self.vault_address[:10], exc,
+            )
+
+        if not await self._charge_step(tick_id, "set_token_oracles"):
+            return
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 8: Set target allocations on vault (soft gate)
+        # ═══════════════════════════════════════════════════════════
+        try:
+            alloc_tokens: list[str] = []
+            alloc_weights: list[int] = []
+            for t in targets:
+                if t.weight > 0 and t.token_address:
+                    alloc_tokens.append(t.token_address)
+                    alloc_weights.append(int(t.weight * 10000))  # BPS
+
+            if alloc_tokens:
+                total_bps = sum(alloc_weights)
+                if total_bps > 0 and total_bps != 10000:
+                    scale = 10000 / total_bps
+                    alloc_weights = [int(round(w * scale)) for w in alloc_weights]
+                    diff = 10000 - sum(alloc_weights)
+                    if diff != 0 and alloc_weights:
+                        alloc_weights[0] += diff
+
+                await self.executor.set_target_allocations(
+                    self.vault_address, alloc_tokens, alloc_weights,
+                )
+                logger.info(
+                    "[%s] Set %d target allocations on vault %s",
+                    tick_id, len(alloc_tokens), self.vault_address[:10],
+                )
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to set target allocations on %s: %s",
+                tick_id, self.vault_address[:10], exc,
+            )
+
+        if not await self._charge_step(tick_id, "set_target_allocations"):
+            return
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 9: Compute trades / aligned check
+        # ═══════════════════════════════════════════════════════════
+        trades = await self._compute_trades(portfolio, targets)
+        target_weights_dict = {t.symbol: t.weight for t in targets}
+
+        if not trades:
+            logger.info("[%s] Portfolio aligned — no trades needed", tick_id)
+            halt_pl = _halt_payload(tick_id, "aligned", "aligned",
+                                    "Portfolio already matches target weights")
+            await self._notify_all(halt_pl, only_active=False)
+            return
+
+        if not await self._charge_step(tick_id, "compute_trades"):
+            return
+
+        # ═══════════════════════════════════════════════════════════
+        # STEP 10: V_check validity gate
+        # ═══════════════════════════════════════════════════════════
+        alloc_weights_bps: dict[str, int] = {}
+        for t in targets:
+            if t.weight > 0 and t.token_address:
+                alloc_weights_bps[t.symbol] = int(round(t.weight * 10000))
+
+        if alloc_weights_bps:
+            residual = sum(alloc_weights_bps.values()) - 10000
+            if residual != 0:
+                largest = max(alloc_weights_bps, key=alloc_weights_bps.get)
+                alloc_weights_bps[largest] -= residual
+
+        v_check = VCheck(weights_bps=alloc_weights_bps)
+        v_result = v_check.run()
+        if not v_result.passed:
+            logger.warning(
+                "[%s] V_check FAILED for vault %s: %s",
+                tick_id, self.vault_address[:10], "; ".join(v_result.failures),
+            )
+            halt_pl = _halt_payload(tick_id, "v_check_failed", "v_check_failed",
+                                    "; ".join(v_result.failures))
+            await self._notify_all(halt_pl, only_active=False)
+            return
+
+        if not await self._charge_step(tick_id, "v_check"):
+            return
+
+        # ═══════════════════════════════════════════════════════════
+        # TRADE-LEG CHARGE + EXECUTION (section 4)
+        # ═══════════════════════════════════════════════════════════
         usdc_addr = chain_client.to_checksum(chain_client.settings.usdc_address)
         non_usdc_trades = [
             t for t in trades
@@ -701,7 +867,7 @@ class PublisherAgent:
             logger.info("[%s] All trades are USDC-denominated — no on-chain action needed", tick_id)
             return
 
-        # Pre-compute token splits for payload (filtered like execute_trades)
+        # Pre-compute token splits for payload
         tokens_in: list[str] = []
         tokens_out: list[str] = []
         for t in non_usdc_trades:
@@ -719,89 +885,25 @@ class PublisherAgent:
             if not charged:
                 info.active = False
                 halt_pl = _halt_payload(
-                    tick_id,
-                    "pre_rebalance",
-                    "insufficient_balance",
+                    tick_id, "trade_execution", "insufficient_balance",
                     f"Subscriber {sub_id} has insufficient balance",
                 )
                 await self._notify_one(sub_id, halt_pl)
             else:
-                # Build extended rebalance payload with split info
                 serialized_trades = [self._serialize_trade(t) for t in trades]
                 pl = _rebalance_payload(tick_id, trade_action_count, serialized_trades, target_weights_dict)
                 pl["tokens_in"] = tokens_in
                 pl["tokens_out"] = tokens_out
                 await self._notify_one(sub_id, pl)
 
-        # Execute rebalance on publisher's own vault (non-dry-run)
+        # Execute rebalance on publisher's own vault
         if not DRY_RUN:
             try:
                 await self.executor.execute_trades(self.vault_address, trades)
             except Exception as exc:
                 logger.error("[%s] Rebalance execution failed: %s", tick_id, exc)
 
-        # Persist subscriber state
         await self._persist_subscribers()
-
-    async def _evaluate_strategy(self) -> dict[str, Any] | None:
-        """Evaluate a single strategy. Simplified for publisher context."""
-        try:
-            from archimedes.strategies.registry import StrategyRegistry
-
-            registry = StrategyRegistry()
-            strategy = registry.get(self.strategy_id)
-            if not strategy:
-                logger.warning("Strategy %s not found", self.strategy_id)
-                return None
-
-            # Evaluate signals (simplified)
-            from archimedes.chain.strategy_signal_evaluator import evaluate_strategy_signals
-
-            signals = await evaluate_strategy_signals(
-                self.strategy_id,
-                strategy.parameters,
-            )
-            return signals or {}
-        except Exception as exc:
-            logger.error("Strategy evaluation error: %s", exc)
-            return None
-
-    async def _compute_rebalance(
-        self,
-        all_signals: list[StrategySignals],
-        targets: list[TargetAllocation],
-    ) -> tuple[list[TradeOrder], dict[str, float]]:
-        """Compute rebalance trades from target allocations.
-
-        Reads the current portfolio from on-chain, diffs against targets,
-        and returns (trades, target_weights_dict). Returns empty list if
-        no drift exceeds the threshold.
-        """
-        # Read current portfolio from on-chain
-        try:
-            portfolio = await self.executor.read_portfolio(self.vault_address)
-        except Exception as exc:
-            logger.warning(
-                "Cannot read portfolio for %s: %s",
-                self.vault_address[:10],
-                exc,
-            )
-            return [], {}
-
-        logger.info(
-            "Portfolio %s: AUM=$%.2f, %d holdings",
-            self.vault_address[:10],
-            portfolio.total_value_usdc,
-            len(portfolio.holdings),
-        )
-
-        # Compute trades by diffing current vs target
-        trades = await self._compute_trades(portfolio, targets)
-
-        # Build target_weights dict for the notification payload
-        target_weights_out = {t.symbol: t.weight for t in targets}
-
-        return trades, target_weights_out
 
     # ─── HTTP API (FastAPI routes) ─────────────────────────────────
 
