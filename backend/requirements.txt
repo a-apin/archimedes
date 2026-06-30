@@ -59,6 +59,15 @@ eth-account>=0.13.7
 eth-utils>=6.0.0
 cryptography>=49.0.0
 
+# Smart-contract tooling — Vyper marketplace contracts (SubscriptionManager /
+# PaymentSplitter). vyper compiles the .vy sources to bytecode for the Foundry
+# deploy script; titanoboa (`import boa`) is the in-process EVM harness the
+# hermetic contract tests (backend/tests/contracts/) run against — no RPC, no
+# .env, no Circle creds. Test/deploy tooling only; not imported by runtime code.
+# (Image-weight follow-up: could move to a dev-requirements split later.)
+vyper==0.4.3
+titanoboa>=0.2.5
+
 ## Rate limiting
 slowapi>=0.1.10
 
