@@ -7,6 +7,7 @@ pool_id is ALWAYS derived server-side via derive_pool_id (D-POOL).
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -343,7 +344,12 @@ async def stop_publish(
     strategy_id: str,
     wallet: str = Depends(require_verified_wallet),
 ):
-    """Stop a published strategy (creator only)."""
+    """Stop a published strategy (creator only).
+
+    Cascades retire to all running subscribers: marks them ``"retired"`` with
+    ``stopped_at`` set and surfaces an advisory notice to call
+    ``unsubscribe()`` from their own wallet (TASK 18).
+    """
     market = _get_market(request)
 
     with get_session() as session:
@@ -359,7 +365,30 @@ async def stop_publish(
         if pub_row is None:
             raise HTTPException(status_code=404, detail="Publisher not found or not owned by you")
         pub_row.status = "stopped"
+
+        # Cascade retire to all running subscribers (TASK 18)
+        sub_rows = (
+            session.query(MarketplaceAgent)
+            .filter(
+                MarketplaceAgent.role == "subscriber",
+                MarketplaceAgent.strategy_id == strategy_id,
+                MarketplaceAgent.status == "running",
+            )
+            .all()
+        )
+        retired_sub_ids: list[str] = []
+        for sub_row in sub_rows:
+            sub_row.status = "retired"
+            sub_row.stopped_at = datetime.now(UTC)
+            retired_sub_ids.append(sub_row.sub_id)
+
         session.commit()
+
+    if retired_sub_ids:
+        logger.info(
+            "Retired %d subscriber(s) for strategy %s: %s",
+            len(retired_sub_ids), strategy_id, retired_sub_ids,
+        )
 
     await market.stop_publisher(strategy_id)
     return {"status": "stopped", "strategy_id": strategy_id}

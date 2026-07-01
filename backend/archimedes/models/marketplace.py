@@ -31,7 +31,7 @@ class MarketplaceAgent(Base):
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "role": self.role,
             "strategy_id": self.strategy_id,
             "creator_wallet": self.creator_wallet,
@@ -44,3 +44,10 @@ class MarketplaceAgent(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "stopped_at": self.stopped_at.isoformat() if self.stopped_at else None,
         }
+        if self.role == "subscriber" and self.status == "retired":
+            d["notice"] = (
+                "This strategy has been retired by its creator. Your subscription "
+                "is no longer active on the marketplace. Any unused balance remains "
+                "reserved on-chain — call unsubscribe() from your wallet to reclaim it."
+            )
+        return d

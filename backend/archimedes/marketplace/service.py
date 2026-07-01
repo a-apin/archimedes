@@ -104,6 +104,7 @@ class Publisher:
     creator_wallet: str
     subscribers: dict[str, Subscriber] = field(default_factory=dict)
     task: asyncio.Task | None = None
+    retired: bool = False
 
 
 class MarketService:
@@ -152,13 +153,33 @@ class MarketService:
         logger.info("Started publisher for %s (vault=%s, %d subscribers)", strategy_id, vault_address, len(subscribers))
 
     async def stop_publisher(self, strategy_id: str) -> None:
-        """Stop a publisher loop."""
-        pub = self.publishers.pop(strategy_id, None)
-        if pub and pub.task:
-            pub.task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await pub.task
-            logger.info("Stopped publisher for %s", strategy_id)
+        """Stop a publisher loop.
+
+        Sets the retired flag so the current tick finishes cleanly (no mid-charge
+        cancellation), clears the Redis subscriber cache, and emits a retire event.
+        """
+        pub = self.publishers.get(strategy_id)
+        if pub is None:
+            return
+
+        # Signal retirement so _run_loop exits after current tick completes
+        pub.retired = True
+
+        # Wait for current tick to finish (no mid-charge cancellation)
+        if pub.task and not pub.task.done():
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(pub.task, timeout=360)
+
+        # Safe to remove now that the task has finished
+        self.publishers.pop(strategy_id, None)
+
+        # Clear Redis subscriber cache
+        await self.state.save_subscribers(strategy_id, {})
+
+        # Emit retire event
+        await self.state.append_event(strategy_id, {"type": "publisher_retired", "strategy_id": strategy_id})
+
+        logger.info("Stopped publisher for %s", strategy_id)
 
     async def add_subscriber(self, strategy_id: str, sub: Subscriber) -> None:
         """Register a subscriber for a strategy.
@@ -196,96 +217,141 @@ class MarketService:
     # ---- the loop (leader-guarded, runs one strategy) --------------------
 
     async def _run_loop(self, strategy_id: str) -> None:
-        """Continuously tick a strategy, leader-guarded."""
+        """Continuously tick a strategy, leader-guarded.
+
+        Each strategy gets its own per-strategy lock so strategies tick
+        independently (C2). The loop exits cleanly when the publisher is
+        retired (TASK 18) so the current tick finishes uninterrupted.
+        """
         while not self._stop.is_set():
             try:
-                if await self.state.try_acquire_leader():  # D-LEADER
+                if await self.state.try_acquire_leader(strategy_id):  # D-LEADER
                     try:
                         await self.tick(strategy_id)
                     except Exception:
                         logger.exception("tick failed for %s", strategy_id)
             except Exception:
                 logger.exception("leader acquisition failed for %s", strategy_id)
+
+            # Check if retired before sleeping — allows clean stop without
+            # mid-charge cancellation (TASK 18).
+            pub = self.publishers.get(strategy_id)
+            if pub is None or pub.retired:
+                break
+
             await asyncio.sleep(self.interval)
 
     async def tick(self, strategy_id: str) -> None:
-        """Run one full rebalance cycle for a strategy."""
+        """Run one full rebalance cycle for a strategy.
+
+        Lock is released in ``finally`` so tick cadence is governed purely by
+        ``interval`` and not by TTL expiry.  A midpoint ``renew_leader`` call
+        acts as cheap crash-safety insurance for slow ticks.
+        """
         pub = self.publishers.get(strategy_id)
         if pub is None:
             return
+
         tick_id = f"{strategy_id}:{int(time.time())}"
 
         # Build token address map once for all compute_trades calls
         addr_map = {**self.settings.synth_addresses, "USDC": self.settings.usdc_address}
 
-        # 1. REAL rebalance computation (reuse main) — NOT a stub.
-        target_weights = await self._evaluate(strategy_id)
-        portfolio = await self.executor.read_portfolio(pub.vault_address)
-        trades = compute_trades(portfolio, target_weights, token_addresses=addr_map)
+        try:
+            # 1. REAL rebalance computation (reuse main) — NOT a stub.
+            target_weights = await self._evaluate(strategy_id)
+            portfolio = await self.executor.read_portfolio(pub.vault_address)
+            trades = compute_trades(portfolio, target_weights, token_addresses=addr_map)
 
-        await self.state.append_event(
-            strategy_id,
-            {
-                "type": "evaluation_step",
-                "tick_id": tick_id,
-                "target_weights": target_weights,
-            },
-        )
+            await self.state.append_event(
+                strategy_id,
+                {
+                    "type": "evaluation_step",
+                    "tick_id": tick_id,
+                    "target_weights": target_weights,
+                },
+            )
 
-        if not trades:
-            logger.info("[%s] No trades needed", tick_id)
-            return
+            if not trades:
+                logger.info("[%s] No trades needed", tick_id)
+                return
 
-        action_count = len(trades)
+            action_count = len(trades)
 
-        # 2. Pre-charge each active subscriber on-chain, then apply in-process.
-        # Bound concurrency to 5 simultaneous subscribers (M6).
-        _sub_sem = asyncio.Semaphore(5)
+            # 2. Pre-charge each active subscriber on-chain, then apply in-process.
+            # Bound concurrency to 5 simultaneous subscribers (M6).
+            _sub_sem = asyncio.Semaphore(5)
 
-        async def _process_subscriber(sub: Subscriber) -> None:
-            async with _sub_sem:
-                ok = await self._charge(sub.sub_id, action_count)
-                if not ok:
-                    sub.active = False
-                    self._deactivate_subscriber_db(strategy_id, sub.sub_id)
-                    await self.state.append_event(
-                        strategy_id,
-                        {
-                            "type": "halt",
-                            "sub_id": sub.sub_id,
-                            "reason": "insufficient_balance",
-                            "tick_id": tick_id,
-                        },
-                    )
-                    return
-                await self._apply_to_subscriber(sub, trades, target_weights, tick_id, addr_map)
+            async def _process_subscriber(sub: Subscriber) -> None:
+                async with _sub_sem:
+                    ok = await self._charge(sub.sub_id, action_count)
+                    if not ok:
+                        sub.active = False
+                        self._deactivate_subscriber_db(strategy_id, sub.sub_id)
+                        await self.state.append_event(
+                            strategy_id,
+                            {
+                                "type": "halt",
+                                "sub_id": sub.sub_id,
+                                "reason": "insufficient_balance",
+                                "tick_id": tick_id,
+                            },
+                        )
+                        return
+                    await self._apply_to_subscriber(sub, trades, target_weights, tick_id, addr_map)
 
-        tasks = [_process_subscriber(sub) for sub in pub.subscribers.values() if sub.active]
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for r in results:
-                if isinstance(r, Exception):
-                    logger.error("Subscriber processing failed: %s", r)
+            # Split active subscribers into two halves; renew the per-strategy
+            # leader lock at the midpoint as crash-safety insurance.
+            active_subs = [sub for sub in pub.subscribers.values() if sub.active]
+            midpoint = len(active_subs) // 2
 
-        # 3. Execute on publisher's own vault too (non-dry-run).
-        if not self.dry_run:
-            try:
-                await self.executor.execute_trades(pub.vault_address, trades)
-            except Exception:
-                logger.exception("publisher vault rebalance failed for %s", strategy_id)
+            # Process first half (or all subscribers if fewer than 2)
+            first_batch = active_subs[:midpoint] if midpoint else active_subs
+            if first_batch:
+                results = await asyncio.gather(
+                    *[_process_subscriber(sub) for sub in first_batch],
+                    return_exceptions=True,
+                )
+                for r in results:
+                    if isinstance(r, Exception):
+                        logger.error("Subscriber processing failed: %s", r)
 
-        await self.state.append_event(
-            strategy_id,
-            {
-                "type": "rebalance",
-                "tick_id": tick_id,
-                "action_count": action_count,
-            },
-        )
-        await self.state.save_subscribers(
-            strategy_id,
-            {sid: vars(s) for sid, s in pub.subscribers.items()},
-        )
+            # Midpoint renewal — cheap crash insurance for a slow tick.
+            # Called exactly once per tick regardless of subscriber count.
+            await self.state.renew_leader(strategy_id)
+
+            # Process second half (only if we split above)
+            if midpoint:
+                second_half = active_subs[midpoint:]
+                results = await asyncio.gather(
+                    *[_process_subscriber(sub) for sub in second_half],
+                    return_exceptions=True,
+                )
+                for r in results:
+                    if isinstance(r, Exception):
+                        logger.error("Subscriber processing failed: %s", r)
+
+            # 3. Execute on publisher's own vault too (non-dry-run).
+            if not self.dry_run:
+                try:
+                    await self.executor.execute_trades(pub.vault_address, trades)
+                except Exception:
+                    logger.exception("publisher vault rebalance failed for %s", strategy_id)
+
+            await self.state.append_event(
+                strategy_id,
+                {
+                    "type": "rebalance",
+                    "tick_id": tick_id,
+                    "action_count": action_count,
+                },
+            )
+            await self.state.save_subscribers(
+                strategy_id,
+                {sid: vars(s) for sid, s in pub.subscribers.items()},
+            )
+        finally:
+            await self.state.release_leader(strategy_id)
 
     # ---- helpers ---------------------------------------------------------
 

@@ -22,6 +22,8 @@ def market():
     # Mock state
     svc.state = MagicMock()
     svc.state.try_acquire_leader = AsyncMock(return_value=True)
+    svc.state.renew_leader = AsyncMock()
+    svc.state.release_leader = AsyncMock()
     svc.state.append_event = AsyncMock()
     svc.state.save_subscribers = AsyncMock()
     return svc

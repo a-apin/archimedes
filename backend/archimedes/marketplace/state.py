@@ -15,7 +15,9 @@ from archimedes.services.redis_state import AgentStateStore
 
 _EVENTS_PREFIX = "archimedes:market:events:"  # + strategy_id  (capped list)
 _SUBS_PREFIX = "archimedes:market:subs:"  # + strategy_id  (JSON dict cache)
-_LEADER_KEY = "archimedes:market:leader"
+_LEADER_PREFIX = "archimedes:market:leader:"  # + strategy_id
+
+LEADER_LOCK_TTL_SECONDS = 60
 
 
 class MarketState:
@@ -41,10 +43,14 @@ class MarketState:
         raw = await r.get(f"{_SUBS_PREFIX}{strategy_id}")
         return json.loads(raw) if raw else {}  # raw is str|None
 
-    async def try_acquire_leader(self, ttl_seconds: int = 30) -> bool:
+    async def try_acquire_leader(self, strategy_id: str, ttl_seconds: int = LEADER_LOCK_TTL_SECONDS) -> bool:
         r = await self.store._get_redis()
-        return bool(await r.set(_LEADER_KEY, "1", nx=True, ex=ttl_seconds))
+        return bool(await r.set(f"{_LEADER_PREFIX}{strategy_id}", "1", nx=True, ex=ttl_seconds))
 
-    async def renew_leader(self, ttl_seconds: int = 30) -> None:
+    async def renew_leader(self, strategy_id: str, ttl_seconds: int = LEADER_LOCK_TTL_SECONDS) -> None:
         r = await self.store._get_redis()
-        await r.set(_LEADER_KEY, "1", ex=ttl_seconds)
+        await r.set(f"{_LEADER_PREFIX}{strategy_id}", "1", ex=ttl_seconds)
+
+    async def release_leader(self, strategy_id: str) -> None:
+        r = await self.store._get_redis()
+        await r.delete(f"{_LEADER_PREFIX}{strategy_id}")

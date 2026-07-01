@@ -47,11 +47,24 @@ async def test_load_subscribers_empty(state: MarketState):
 
 
 @pytest.mark.asyncio
-async def test_leader_lock_acquire_and_renew(state: MarketState):
-    assert await state.try_acquire_leader(ttl_seconds=10) is True
-    # second acquire should fail (already held)
-    assert await state.try_acquire_leader(ttl_seconds=10) is False
-    # renew
-    await state.renew_leader(ttl_seconds=10)
-    # still held after renew
-    assert await state.try_acquire_leader(ttl_seconds=10) is False
+async def test_per_strategy_leader_lock(state: MarketState):
+    """Each strategy gets its own independent lock (C2)."""
+    # Acquire lock for strategy A
+    assert await state.try_acquire_leader("strat_a", ttl_seconds=10) is True
+    # Second acquire for same strategy should fail
+    assert await state.try_acquire_leader("strat_a", ttl_seconds=10) is False
+    # Different strategy can acquire independently
+    assert await state.try_acquire_leader("strat_b", ttl_seconds=10) is True
+
+    # Renew strategy A lock
+    await state.renew_leader("strat_a", ttl_seconds=10)
+    # Still held after renew
+    assert await state.try_acquire_leader("strat_a", ttl_seconds=10) is False
+
+    # Release strategy A
+    await state.release_leader("strat_a")
+    # Now can re-acquire
+    assert await state.try_acquire_leader("strat_a", ttl_seconds=10) is True
+
+    # Strategy B lock is unaffected by A's release
+    assert await state.try_acquire_leader("strat_b", ttl_seconds=10) is False
