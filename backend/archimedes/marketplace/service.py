@@ -4,9 +4,11 @@ Replaces the container-per-agent model. Reuses the working rebalance path
 from agent_runner (aggregate_signals -> read_portfolio -> compute_trades ->
 execute_trades). NO Docker, NO webhook HTTP between agents.
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -70,8 +72,8 @@ def compute_trades(portfolio: Portfolio, target_weights: dict[str, float]) -> li
 
 @dataclass
 class Subscriber:
-    sub_id: str            # 0x-hex
-    pool_id: str           # 0x-hex
+    sub_id: str  # 0x-hex
+    pool_id: str  # 0x-hex
     vault_address: str
     ephemeral_wallet: str
     subscriber_wallet: str
@@ -104,7 +106,7 @@ class MarketService:
         self.provider = default_provider()
         self.interval = interval_seconds
         self.dry_run = dry_run
-        self.publishers: dict[str, Publisher] = {}   # strategy_id -> Publisher
+        self.publishers: dict[str, Publisher] = {}  # strategy_id -> Publisher
         self._stop = asyncio.Event()
 
     # ---- lifecycle -------------------------------------------------------
@@ -131,18 +133,15 @@ class MarketService:
 
         pub.task = asyncio.create_task(self._run_loop(strategy_id))
         self.publishers[strategy_id] = pub
-        logger.info("Started publisher for %s (vault=%s, %d subscribers)",
-                     strategy_id, vault_address, len(subscribers))
+        logger.info("Started publisher for %s (vault=%s, %d subscribers)", strategy_id, vault_address, len(subscribers))
 
     async def stop_publisher(self, strategy_id: str) -> None:
         """Stop a publisher loop."""
         pub = self.publishers.pop(strategy_id, None)
         if pub and pub.task:
             pub.task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await pub.task
-            except asyncio.CancelledError:
-                pass
             logger.info("Stopped publisher for %s", strategy_id)
 
     async def add_subscriber(self, strategy_id: str, sub: Subscriber) -> None:
@@ -182,7 +181,7 @@ class MarketService:
         """Continuously tick a strategy, leader-guarded."""
         while not self._stop.is_set():
             try:
-                if await self.state.try_acquire_leader():   # D-LEADER
+                if await self.state.try_acquire_leader():  # D-LEADER
                     try:
                         await self.tick(strategy_id)
                     except Exception:
@@ -203,10 +202,14 @@ class MarketService:
         portfolio = await self.executor.read_portfolio(pub.vault_address)
         trades = compute_trades(portfolio, target_weights)
 
-        await self.state.append_event(strategy_id, {
-            "type": "evaluation_step", "tick_id": tick_id,
-            "target_weights": target_weights,
-        })
+        await self.state.append_event(
+            strategy_id,
+            {
+                "type": "evaluation_step",
+                "tick_id": tick_id,
+                "target_weights": target_weights,
+            },
+        )
 
         if not trades:
             logger.info("[%s] No trades needed", tick_id)
@@ -221,10 +224,15 @@ class MarketService:
             ok = await self._charge(sub.sub_id, action_count)
             if not ok:
                 sub.active = False
-                await self.state.append_event(strategy_id, {
-                    "type": "halt", "sub_id": sub.sub_id,
-                    "reason": "insufficient_balance", "tick_id": tick_id,
-                })
+                await self.state.append_event(
+                    strategy_id,
+                    {
+                        "type": "halt",
+                        "sub_id": sub.sub_id,
+                        "reason": "insufficient_balance",
+                        "tick_id": tick_id,
+                    },
+                )
                 continue
             await self._apply_to_subscriber(sub, trades, target_weights, tick_id)
 
@@ -235,10 +243,14 @@ class MarketService:
             except Exception:
                 logger.exception("publisher vault rebalance failed for %s", strategy_id)
 
-        await self.state.append_event(strategy_id, {
-            "type": "rebalance", "tick_id": tick_id,
-            "action_count": action_count,
-        })
+        await self.state.append_event(
+            strategy_id,
+            {
+                "type": "rebalance",
+                "tick_id": tick_id,
+                "action_count": action_count,
+            },
+        )
         await self.state.save_subscribers(
             strategy_id,
             {sid: vars(s) for sid, s in pub.subscribers.items()},
@@ -270,11 +282,10 @@ class MarketService:
             logger.warning("No signals produced for %s", strategy_id)
             return {}
 
-        target_weights = strategy_evaluator.aggregate_signals(
+        return strategy_evaluator.aggregate_signals(
             all_signals,
             usdc_floor=_USDC_FLOOR,
         )
-        return target_weights
 
     async def _charge(self, sub_id: str, action_count: int) -> bool:
         """Charge a subscriber on-chain. Returns True on success."""
@@ -286,14 +297,21 @@ class MarketService:
             return False
         try:
             if self.signer.is_configured:
-                await self.signer.execute_contract(addr, "chargeActions(bytes32,uint256)", [to_bytes32(sub_id), action_count])
+                await self.signer.execute_contract(
+                    addr, "chargeActions(bytes32,uint256)", [to_bytes32(sub_id), action_count]
+                )
             else:
                 c = self.loader._contract(addr, "SubscriptionManager")
                 tx = await c.functions.chargeActions(to_bytes32(sub_id), action_count).build_transaction(
-                    {"from": self.settings.agent_account.address,
-                     "nonce": await self.loader.client.w3.eth.get_transaction_count(
-                         self.settings.agent_account.address),
-                     "gas": 200_000, "gasPrice": await self.loader.client.w3.eth.gas_price})
+                    {
+                        "from": self.settings.agent_account.address,
+                        "nonce": await self.loader.client.w3.eth.get_transaction_count(
+                            self.settings.agent_account.address
+                        ),
+                        "gas": 200_000,
+                        "gasPrice": await self.loader.client.w3.eth.gas_price,
+                    }
+                )
                 signed = self.settings.agent_account.sign_transaction(tx)
                 h = await self.loader.client.w3.eth.send_raw_transaction(signed.raw_transaction)
                 await self.loader.client.w3.eth.wait_for_transaction_receipt(h)
@@ -302,8 +320,9 @@ class MarketService:
             logger.warning("chargeActions failed for %s: %s", sub_id, exc)
             return False
 
-    async def _apply_to_subscriber(self, sub: Subscriber, trades: list[TradeOrder],
-                                    target_weights: dict[str, float], tick_id: str) -> None:
+    async def _apply_to_subscriber(
+        self, sub: Subscriber, _trades: list[TradeOrder], target_weights: dict[str, float], _tick_id: str
+    ) -> None:
         """In-process fan-out (D-FANOUT): map publisher trades to the subscriber's own
         vault via read_portfolio + compute_trades, then execute_trades on sub.vault_address."""
         if self.dry_run:

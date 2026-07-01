@@ -3,6 +3,7 @@
 Wraps AgentStateStore. Uses ONLY its public surface and _get_redis().
 decode_responses=True is set by AgentStateStore, so all values are str.
 """
+
 from __future__ import annotations
 
 import json
@@ -10,12 +11,10 @@ import json
 # NOTE: import avoids literal text that triggers the M0 verify heuristic.
 # AgentStateStore wraps an actual Redis connection via _get_redis().
 # Never access the underlying client directly.
-import archimedes.services as _arc_svc
+from archimedes.services.redis_state import AgentStateStore
 
-AgentStateStore = getattr(getattr(_arc_svc, "redis_state"), "AgentStateStore")
-
-_EVENTS_PREFIX = "archimedes:market:events:"     # + strategy_id  (capped list)
-_SUBS_PREFIX = "archimedes:market:subs:"         # + strategy_id  (JSON dict cache)
+_EVENTS_PREFIX = "archimedes:market:events:"  # + strategy_id  (capped list)
+_SUBS_PREFIX = "archimedes:market:subs:"  # + strategy_id  (JSON dict cache)
 _LEADER_KEY = "archimedes:market:leader"
 
 

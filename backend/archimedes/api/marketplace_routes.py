@@ -3,9 +3,9 @@
 Session pattern: with get_session() as session (matches codebase convention).
 pool_id is ALWAYS derived server-side via derive_pool_id (D-POOL).
 """
+
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -93,9 +93,7 @@ async def publish_strategy(
             )
         else:
             c = market.loader._contract(splitter_addr, "PaymentSplitter")
-            tx = await c.functions.createPool(
-                to_bytes32(pool_id), wallet, platform_wallet or wallet
-            ).build_transaction(
+            tx = await c.functions.createPool(to_bytes32(pool_id), wallet, platform_wallet or wallet).build_transaction(
                 {
                     "from": market.settings.agent_account.address,
                     "nonce": await market.loader.client.w3.eth.get_transaction_count(
@@ -155,7 +153,6 @@ async def subscribe_strategy(
     pool_id = body.get("pool_id", "").strip()
     sub_id = body.get("sub_id", "").strip()
     ephemeral_wallet = body.get("ephemeral_wallet", "").strip()
-    initial_deposit = int(body.get("initial_deposit_usdc", 0))
 
     if not strategy_id or not pool_id or not sub_id or not ephemeral_wallet:
         raise HTTPException(status_code=400, detail="strategy_id, pool_id, sub_id, and ephemeral_wallet are required")
@@ -203,7 +200,7 @@ async def subscribe_strategy(
             raise
         except Exception as exc:
             logger.warning("on-chain subscription validation failed: %s", exc)
-            raise HTTPException(status_code=400, detail="Could not validate subscription on-chain")
+            raise HTTPException(status_code=400, detail="Could not validate subscription on-chain") from exc
 
     # 4. Create vault for subscriber if needed
     vault_address = ""
@@ -218,7 +215,7 @@ async def subscribe_strategy(
         )
     except Exception as exc:
         logger.warning("create_vault for subscriber failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to create subscriber vault")
+        raise HTTPException(status_code=500, detail="Failed to create subscriber vault") from exc
 
     # 5. Insert subscriber row
     with get_session() as session:
@@ -394,7 +391,7 @@ async def get_strategy_detail(request: Request, strategy_id: str):
 
 @marketplace_router.get("/my-subscriptions")
 async def my_subscriptions(
-    request: Request,
+    _request: Request,
     wallet: str = Depends(require_verified_wallet),
 ):
     """Current wallet's subscriptions."""

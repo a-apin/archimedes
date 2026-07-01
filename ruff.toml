@@ -84,3 +84,8 @@ ignore = [
 "tests/**" = ["ARG", "SLF"]
 "backend/archimedes/scripts/**" = ["ARG"]
 "backend/archimedes/evaluation/stockbench/__main__.py" = ["ARG"]
+# marketplace uses ContractLoader._contract (well-known codebase pattern) and
+# AgentStateStore._get_redis (spec-mandated, see D-BYTES32/D-FANOUT) — both are
+# intentional private-member accesses.
+"backend/archimedes/marketplace/**" = ["SLF"]
+"backend/archimedes/api/marketplace_routes.py" = ["SLF"]

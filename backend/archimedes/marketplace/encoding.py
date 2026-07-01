@@ -1,4 +1,5 @@
 """Canonical bytes32 + pool_id encoding for the marketplace (D-BYTES32, D-POOL)."""
+
 from __future__ import annotations
 
 from eth_abi import encode as abi_encode
@@ -10,7 +11,7 @@ def to_bytes32(hexstr: str) -> bytes:
     """0x-hex string -> 32 raw bytes for a contract call. Rejects bad input."""
     h = hexstr.removeprefix("0x")
     if len(h) != 64:
-        raise ValueError(f"expected 32-byte hex, got {len(h)//2} bytes: {hexstr!r}")
+        raise ValueError(f"expected 32-byte hex, got {len(h) // 2} bytes: {hexstr!r}")
     return bytes.fromhex(h)
 
 
