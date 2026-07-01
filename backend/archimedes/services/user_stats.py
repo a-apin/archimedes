@@ -26,9 +26,11 @@ logger = logging.getLogger(__name__)
 # from running a Postgres COUNT on every request. Per-process and fail-safe: only a
 # SUCCESSFUL read (a genuine count, including a real 0) is cached; a query error is
 # NOT cached (the next call retries) and still returns 0.
+#
+# Held in a MUTATED-IN-PLACE dict (never reassigned) so there is no module global to
+# rebind — ``"ts" == 0`` means nothing is cached yet.
 _CACHE_TTL_SECONDS = 30.0
-# (last successful count, monotonic timestamp of that read). ts == 0 → nothing cached yet.
-_cache: tuple[int, float] = (0, 0.0)
+_cache: dict[str, float] = {"value": 0.0, "ts": 0.0}
 
 
 def _query_distinct_user_count() -> int | None:
@@ -62,19 +64,18 @@ def get_distinct_user_count() -> int:
     don't hammer Postgres; a failed read is NOT cached, so the next call retries.
     Returns 0 on any error (never raises).
     """
-    global _cache
     now = time.monotonic()
-    value, ts = _cache
-    if ts and (now - ts) < _CACHE_TTL_SECONDS:
-        return value
+    if _cache["ts"] and (now - _cache["ts"]) < _CACHE_TTL_SECONDS:
+        return int(_cache["value"])
     result = _query_distinct_user_count()
     if result is None:
         return 0  # query error → don't cache; the next call retries
-    _cache = (result, now)
+    _cache["value"] = result
+    _cache["ts"] = now
     return result
 
 
 def _reset_cache() -> None:
     """Clear the TTL cache. Test hook so cached state can't leak between tests."""
-    global _cache
-    _cache = (0, 0.0)
+    _cache["value"] = 0.0
+    _cache["ts"] = 0.0
