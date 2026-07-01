@@ -306,6 +306,7 @@ class MarketService:
                     paid = await self._verify_payment(sub.sub_id)
                     if not paid:
                         sub.active = False
+                        self._persist_halt_state(strategy_id, sub.sub_id)
                         await self.state.append_event(
                             strategy_id,
                             {
@@ -482,6 +483,26 @@ class MarketService:
                     session.commit()
         except Exception:
             logger.exception("Failed to persist subscriber deactivation for %s/%s", strategy_id, sub_id)
+
+    def _persist_halt_state(self, strategy_id: str, sub_id: str) -> None:
+        """Persist subscriber halt state to Postgres on payment failure (C-5)."""
+        try:
+            with get_session() as session:
+                row = (
+                    session.query(MarketplaceAgent)
+                    .filter(
+                        MarketplaceAgent.role == "subscriber",
+                        MarketplaceAgent.strategy_id == strategy_id,
+                        MarketplaceAgent.sub_id == sub_id,
+                        MarketplaceAgent.status == "running",
+                    )
+                    .first()
+                )
+                if row is not None:
+                    row.halted = True
+                    session.commit()
+        except Exception:
+            logger.exception("Failed to persist halt state for %s/%s", strategy_id, sub_id)
 
     async def _apply_to_subscriber(
         self,

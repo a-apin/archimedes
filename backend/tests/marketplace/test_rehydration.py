@@ -8,8 +8,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
-
-from archimedes.marketplace.service import MarketService, Publisher, Subscriber
+from archimedes.marketplace.service import MarketService, Subscriber
 
 
 @pytest.fixture
@@ -225,3 +224,44 @@ async def test_two_strategies_independent_subscribers(market: MarketService):
         call("strat_f", expected_a),
         call("strat_g", expected_b),
     ])
+
+
+# ─── halt-state rehydration (C-5) ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_halted_subscriber_rehydrates_as_inactive(market: MarketService):
+    """A previously halted subscriber rehydrates as inactive (C-5)."""
+    subs = {"0x" + "nn" * 32: _make_sub("nn", active=False)}
+
+    await market.start_publisher(
+        strategy_id="strat_h",
+        pool_id="0x" + "oo" * 32,
+        vault_address="0xvault_h",
+        creator_wallet="0xcreator",
+        subscribers=subs,
+    )
+
+    sub = market.publishers["strat_h"].subscribers["0x" + "nn" * 32]
+    assert sub.active is False
+
+    # Redis was written through with active=False
+    saved = market.state.save_subscribers.call_args[0][1]
+    assert saved["0x" + "nn" * 32]["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_never_halted_subscriber_still_rehydrates_active(market: MarketService):
+    """A never-halted subscriber still rehydrates as active (C-5 regression)."""
+    subs = {"0x" + "pp" * 32: _make_sub("pp", active=True)}
+
+    await market.start_publisher(
+        strategy_id="strat_i",
+        pool_id="0x" + "qq" * 32,
+        vault_address="0xvault_i",
+        creator_wallet="0xcreator",
+        subscribers=subs,
+    )
+
+    sub = market.publishers["strat_i"].subscribers["0x" + "pp" * 32]
+    assert sub.active is True

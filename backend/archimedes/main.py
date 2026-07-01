@@ -114,8 +114,8 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # 3a. Rehydrate running publishers from Postgres
     try:
         from archimedes.db import get_session
-        from archimedes.models.marketplace import MarketplaceAgent
         from archimedes.marketplace.service import Subscriber
+        from archimedes.models.marketplace import MarketplaceAgent
 
         with get_session() as session:
             publishers = (
@@ -145,7 +145,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 vault_address=srow.vault_address,
                 ephemeral_wallet=srow.ephemeral_wallet,
                 subscriber_wallet=srow.subscriber_wallet,
-                active=True,
+                active=not srow.halted,
             )
 
         for row in publishers:

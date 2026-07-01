@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Index, Integer, Numeric, String, text
+from sqlalchemy import Boolean, DateTime, Index, Integer, Numeric, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from archimedes.models.chat import Base
@@ -34,6 +34,7 @@ class MarketplaceAgent(Base):
     vault_address: Mapped[str] = mapped_column(String(42), nullable=False, default="")
     ephemeral_wallet: Mapped[str] = mapped_column(String(42), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")  # running | stopped
+    halted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # subscriber halted for non-payment (C-5)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
