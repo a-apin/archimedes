@@ -3,11 +3,13 @@ subscription marketplace.
 
 Runs a FastAPI server alongside an agent loop. The agent loop:
 1. Evaluates its single strategy against live market data.
-2. Pushes evaluation_step events to all registered subscriber webhooks.
-3. Before rebalancing, charges each subscriber on-chain via
-   SubscriptionManager.chargeActions().
-4. Sends rebalance payload only to successfully charged subscribers.
-5. If halted (no subscribers, strategy error, etc.), broadcasts halt
+2. Pushes evaluation_step events (with x402 charge URLs) to subscribers.
+3. Subscribers pay per step via Circle Gateway (off-chain x402
+   EIP-3009 TransferWithAuthorization authorisations).
+4. Sends rebalance payload only to subscribers who paid for all steps.
+5. After Gateway on-chain settlement, calls PaymentSplitter.split()
+   for revenue distribution (90% creator / 10% platform).
+6. If halted (no subscribers, strategy error, etc.), broadcasts halt
    notification (free, no charge).
 """
 
@@ -24,9 +26,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
-import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from archimedes.chain.circle_signer import CircleSigner
@@ -42,6 +44,7 @@ from archimedes.models.portfolio import (
     TradeOrder,
 )
 from archimedes.models.regime import EnsembleConsensus
+from archimedes.services.batch_facilitator import BatchFacilitatorClient
 from archimedes.services.portfolio_constructor import PortfolioConstructor
 from archimedes.services.redis_state import AgentStateStore
 from archimedes.services.strategy_provider import default_provider
@@ -62,6 +65,7 @@ PUBLISHER_PORT = int(os.getenv("PUBLISHER_PORT", "8080"))
 PUBLISHER_STRATEGY_ID = os.getenv("PUBLISHER_STRATEGY_ID", "")
 PUBLISHER_VAULT_ADDRESS = os.getenv("PUBLISHER_VAULT_ADDRESS", "")
 PUBLISHER_POOL_ID = os.getenv("PUBLISHER_POOL_ID", "")
+PUBLISHER_BASE_URL = os.getenv("PUBLISHER_BASE_URL", "").rstrip("/")
 CREATOR_ADDRESS = os.getenv("CREATOR_ADDRESS", "")
 PLATFORM_WALLET = os.getenv("PLATFORM_WALLET", "")
 FLAT_FEE_PER_ACTION = int(os.getenv("FLAT_FEE_PER_ACTION", "100"))
@@ -69,6 +73,12 @@ PUBLISHER_USDC_FLOOR = float(os.getenv("PUBLISHER_USDC_FLOOR", "0.20"))
 PAYMENT_SPLITTER_ADDRESS = os.getenv("PAYMENT_SPLITTER_ADDRESS", "")
 SUBSCRIPTION_MANAGER_ADDRESS = os.getenv("SUBSCRIPTION_MANAGER_ADDRESS", "")
 AGENT_PRIVATE_KEY = os.getenv("AGENT_PRIVATE_KEY", "")
+
+# Circle Gateway / x402
+CIRCLE_GATEWAY_API_KEY = os.getenv("CIRCLE_GATEWAY_API_KEY", "")
+CIRCLE_GATEWAY_URL = os.getenv("CIRCLE_GATEWAY_URL", "https://api.circle.com")
+FLAT_FEE_PER_STEP_USDC = os.getenv("FLAT_FEE_PER_STEP_USDC", "0.001")
+CHARGE_GRACE_PERIOD_SECONDS = int(os.getenv("CHARGE_GRACE_PERIOD_SECONDS", "15"))
 
 MAX_WEBHOOK_RETRIES = 3
 WEBHOOK_BACKOFF = 1.0  # seconds, doubles each retry
@@ -100,13 +110,14 @@ class UpdateEphemeralRequest(BaseModel):
 # ─── HTTP Payload Builders ─────────────────────────────────────────────
 
 
-def _eval_step_payload(step: str, tick_id: str, signals: dict[str, Any]) -> dict:
+def _eval_step_payload(step: str, tick_id: str, signals: dict[str, Any], charge_url: str = "") -> dict:
     return {
         "type": "evaluation_step",
         "step": step,
         "tick_id": tick_id,
         "halted": False,
         "signal_summary": signals,
+        "charge_url": charge_url,
     }
 
 
@@ -166,10 +177,14 @@ class PublisherAgent:
         # Session for webhook delivery
         self._http_session: aiohttp.ClientSession | None = None
 
+        # Circle Gateway x402 facilitator (initialised in _setup_gateway_middleware)
+        self._facilitator: BatchFacilitatorClient | None = None
+        self._payment_requirements: dict[str, Any] = {}
+
     # ─── Initialization ────────────────────────────────────────────
 
     async def initialize(self):
-        """One-time startup: create vault, create pool, load subscribers."""
+        """One-time startup: create vault, create pool, load subscribers, init Gateway."""
         if self._initialized:
             return
 
@@ -188,12 +203,16 @@ class PublisherAgent:
         # Restore subscriber registry from Redis
         await self._restore_subscribers()
 
+        # Initialise Circle Gateway x402 facilitator
+        await self._setup_gateway_middleware()
+
         self._initialized = True
         logger.info(
-            "Publisher initialized: strategy=%s vault=%s pool=%s",
+            "Publisher initialized: strategy=%s vault=%s pool=%s gateway=%s",
             self.strategy_id,
             self.vault_address,
             self.pool_id,
+            bool(self._facilitator is not None),
         )
 
     async def _load_or_create_vault(self) -> str:
@@ -369,39 +388,86 @@ class PublisherAgent:
         tx_hash = await w3.eth.send_raw_transaction(raw_tx)
         return await w3.eth.wait_for_transaction_receipt(tx_hash)
 
-    async def _charge_subscriber(self, sub_id: str, action_count: int) -> bool:
-        """Charge a subscriber for N actions. Returns True if successful."""
-        if not self.subscription_manager_address:
-            logger.warning("SubscriptionManager not configured — skipping charge")
-            return False
+    # ─── Gateway x402 helpers ──────────────────────────────────────
+
+    async def _setup_gateway_middleware(self) -> None:
+        """Initialise the Circle Gateway BatchFacilitator client.
+
+        Populates ``self._facilitator`` and ``self._payment_requirements``
+        used by the ``/charge/{tick_id}/{step}`` endpoint.
+        """
+        self._facilitator = BatchFacilitatorClient(
+            url=CIRCLE_GATEWAY_URL,
+            api_key=CIRCLE_GATEWAY_API_KEY,
+        )
+        self._payment_requirements = {
+            "payTo": PLATFORM_WALLET,
+            "amount": FLAT_FEE_PER_STEP_USDC,
+            "chain": "arcTestnet",
+            "network": "arcTestnet",
+        }
+        logger.info(
+            "Gateway facilitator initialised (platform=%s, fee=%s USDC/step)",
+            PLATFORM_WALLET or "(not set)",
+            FLAT_FEE_PER_STEP_USDC,
+        )
+
+    async def _check_and_split_settlement(self, settle_result: dict[str, Any]) -> None:
+        """If settlement includes an on-chain tx hash, split revenue via PaymentSplitter.
+
+        Called from the ``/charge/{tick_id}/{step}`` endpoint after a
+        successful Gateway settlement.  Delegates the on-chain split to
+        ``PaymentSplitter.split(pool_id, amount)``.
+        """
+        tx_hash = settle_result.get("transaction_hash")
+        if not tx_hash:
+            return  # settlement queued for batch — no split yet
+
+        payer = settle_result.get("payer", "")
+        amount_settled = settle_result.get("amount_settled_usdc_raw", 0)
+
+        if not self.payment_splitter_address or not self.pool_id:
+            logger.debug("PaymentSplitter not configured — skipping split")
+            return
+
+        # Avoid double-splitting the same on-chain settlement
+        r = await self.redis._get_redis()
+        already_split = await r.get(f"split_done:{tx_hash}")
+        if already_split:
+            logger.debug("Settlement %s already split — skipping", tx_hash[:10])
+            return
 
         if DRY_RUN:
-            logger.info("DRY RUN: charge %s for %d actions", sub_id, action_count)
-            return True
+            logger.info(
+                "DRY RUN: split(amount=%s, pool=%s) for payer %s",
+                amount_settled, self.pool_id, payer[:10],
+            )
+            return
 
-        contract = self.loader._contract(self.subscription_manager_address, "SubscriptionManager")
         try:
+            contract = self.loader._contract(self.payment_splitter_address, "PaymentSplitter")
             if self.circle_signer.is_configured:
                 await self.circle_signer.execute_contract(
-                    self.subscription_manager_address,
-                    "chargeActions",
-                    [sub_id, action_count],
+                    self.payment_splitter_address,
+                    "split",
+                    [self.pool_id, amount_settled],
                 )
             else:
-                tx = await contract.functions.chargeActions(sub_id, action_count).build_transaction(
-                    {
-                        "from": self.settings.agent_account.address,
-                        "nonce": await self._get_nonce(),
-                        "gas": 200_000,
-                        "gasPrice": await self._get_gas_price(),
-                    }
-                )
+                tx = await contract.functions.split(
+                    self.pool_id, amount_settled
+                ).build_transaction({
+                    "from": self.settings.agent_account.address,
+                    "nonce": await self._get_nonce(),
+                    "gas": 150_000,
+                    "gasPrice": await self._get_gas_price(),
+                })
                 signed = self.settings.agent_account.sign_transaction(tx)
                 await self._send_raw(signed.raw_transaction)
-            return True
+            # Mark split as done with 7-day TTL
+            await r.setex(f"split_done:{tx_hash}", 604_800, "1")
+            logger.info("PaymentSplitter.split(pool=%s, amount=%s) succeeded", self.pool_id[:10], amount_settled)
         except Exception as exc:
-            logger.warning("chargeActions failed for %s: %s", sub_id, exc)
-            return False
+            logger.warning("PaymentSplitter.split failed: %s", exc)
 
     # ─── Halt Check ────────────────────────────────────────────────
 
@@ -501,32 +567,62 @@ class PublisherAgent:
         return trades
 
     async def _charge_step(self, tick_id: str, step_name: str, action_count: int = 1) -> bool:
-        """Charge all active subscribers for one pipeline step.
+        """x402 gateway charge for one pipeline step.
 
-        Deactivates subscribers whose balance is insufficient. Returns False
-        if no active subscribers remain after charging.
+        Sends an ``evaluation_step`` webhook containing the ``charge_url`` to
+        every active subscriber, waits ``CHARGE_GRACE_PERIOD_SECONDS`` for
+        them to pay (the subscriber calls ``gateway.pay(charge_url)``, which
+        hits the ``/charge/{tick_id}/{step_name}`` endpoint on this agent),
+        then checks Redis for payment confirmation.
+
+        Subscribers that fail to pay are marked inactive and sent a halt
+        notification.  Returns ``False`` if no active subscribers remain.
         """
+        if not PUBLISHER_BASE_URL:
+            logger.warning("PUBLISHER_BASE_URL not set — cannot build charge URL, skipping step charge")
+            return True
+
+        charge_url = f"{PUBLISHER_BASE_URL}/charge/{tick_id}/{step_name}"
+
+        # Build a minimal signal summary so subscribers know what this step is
+        step_signals: dict[str, Any] = {"step": step_name}
+
+        payload = _eval_step_payload(step_name, tick_id, step_signals, charge_url)
+        await self._notify_all(payload, only_active=True)
+
+        if DRY_RUN:
+            logger.info("DRY RUN: step '%s' charge_url=%s — skipping payment wait", step_name, charge_url)
+            return True
+
+        # Wait for subscribers to pay
+        await asyncio.sleep(CHARGE_GRACE_PERIOD_SECONDS)
+
+        # Check Redis for payment confirmations
+        r = await self.redis._get_redis()
         for sub_id, info in list(self.subscribers.items()):
             if not info.active:
                 continue
-            charged = await self._charge_subscriber(sub_id, action_count)
-            if not charged:
+            redis_key = f"charged:{tick_id}:{step_name}:{info.ephemeral_wallet}"
+            paid = await r.get(redis_key)
+            if paid:
+                logger.debug("[%s] Subscriber %s paid step '%s'", tick_id, sub_id[:10], step_name)
+            else:
                 info.active = False
                 halt_pl = _halt_payload(
-                    tick_id,
-                    step_name,
-                    "insufficient_balance",
-                    f"Subscriber {sub_id} has insufficient balance",
+                    tick_id, step_name, "unpaid",
+                    f"Subscriber {sub_id} did not pay for step '{step_name}'",
                 )
                 await self._notify_one(sub_id, halt_pl)
+                logger.warning("[%s] Subscriber %s did not pay step '%s' — deactivated", tick_id, sub_id[:10], step_name)
 
         active_count = sum(1 for info in self.subscribers.values() if info.active)
         if active_count == 0:
             halt_pl = _halt_payload(
-                tick_id, step_name, "no_active_subscribers", "No active subscribers remain",
+                tick_id, step_name, "no_active_subscribers",
+                "No active subscribers remain after payment check",
             )
             await self._notify_all(halt_pl, only_active=False)
-            logger.warning("[%s] All subscribers deactivated at step '%s'", tick_id, step_name)
+            logger.warning("[%s] All subscribers failed to pay at step '%s'", tick_id, step_name)
             return False
         return True
 
@@ -854,7 +950,7 @@ class PublisherAgent:
             return
 
         # ═══════════════════════════════════════════════════════════
-        # TRADE-LEG CHARGE + EXECUTION (section 4)
+        # TRADE-LEG CHARGE + EXECUTION (x402 gateway)
         # ═══════════════════════════════════════════════════════════
         usdc_addr = chain_client.to_checksum(chain_client.settings.usdc_address)
         non_usdc_trades = [
@@ -876,27 +972,63 @@ class PublisherAgent:
             else:
                 tokens_out.append(t.token_address)
 
-        # Charge per active subscriber for the filtered leg count
-        for sub_id, info in list(self.subscribers.items()):
-            if not info.active:
-                continue
+        # x402 gateway charge for trade execution
+        step_name_trade = "trade_execution"
+        if PUBLISHER_BASE_URL:
+            charge_url = f"{PUBLISHER_BASE_URL}/charge/{tick_id}/{step_name_trade}"
+            trade_signals: dict[str, Any] = {
+                "step": step_name_trade,
+                "trade_action_count": trade_action_count,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+            }
+            trade_payload = _eval_step_payload(step_name_trade, tick_id, trade_signals, charge_url)
+            trade_payload["halted"] = False
+            await self._notify_all(trade_payload, only_active=True)
 
-            charged = await self._charge_subscriber(sub_id, trade_action_count)
-            if not charged:
-                info.active = False
-                halt_pl = _halt_payload(
-                    tick_id, "trade_execution", "insufficient_balance",
-                    f"Subscriber {sub_id} has insufficient balance",
-                )
-                await self._notify_one(sub_id, halt_pl)
+            if not DRY_RUN:
+                await asyncio.sleep(CHARGE_GRACE_PERIOD_SECONDS)
+
+                # Check who paid
+                r = await self.redis._get_redis()
+                for sub_id, info in list(self.subscribers.items()):
+                    if not info.active:
+                        continue
+                    redis_key = f"charged:{tick_id}:{step_name_trade}:{info.ephemeral_wallet}"
+                    paid = await r.get(redis_key)
+                    if paid:
+                        serialized_trades = [self._serialize_trade(t) for t in trades]
+                        pl = _rebalance_payload(tick_id, trade_action_count, serialized_trades, target_weights_dict)
+                        pl["tokens_in"] = tokens_in
+                        pl["tokens_out"] = tokens_out
+                        await self._notify_one(sub_id, pl)
+                    else:
+                        info.active = False
+                        halt_pl = _halt_payload(
+                            tick_id, step_name_trade, "unpaid",
+                            f"Subscriber {sub_id} did not pay for trade step",
+                        )
+                        await self._notify_one(sub_id, halt_pl)
             else:
-                serialized_trades = [self._serialize_trade(t) for t in trades]
-                pl = _rebalance_payload(tick_id, trade_action_count, serialized_trades, target_weights_dict)
-                pl["tokens_in"] = tokens_in
-                pl["tokens_out"] = tokens_out
-                await self._notify_one(sub_id, pl)
+                # DRY_RUN: send rebalance payload immediately
+                for sub_id, info in list(self.subscribers.items()):
+                    if info.active:
+                        serialized_trades = [self._serialize_trade(t) for t in trades]
+                        pl = _rebalance_payload(tick_id, trade_action_count, serialized_trades, target_weights_dict)
+                        pl["tokens_in"] = tokens_in
+                        pl["tokens_out"] = tokens_out
+                        await self._notify_one(sub_id, pl)
+        else:
+            logger.warning("PUBLISHER_BASE_URL not set — cannot charge for trade step; sending rebalance payload anyway")
+            for sub_id, info in list(self.subscribers.items()):
+                if info.active:
+                    serialized_trades = [self._serialize_trade(t) for t in trades]
+                    pl = _rebalance_payload(tick_id, trade_action_count, serialized_trades, target_weights_dict)
+                    pl["tokens_in"] = tokens_in
+                    pl["tokens_out"] = tokens_out
+                    await self._notify_one(sub_id, pl)
 
-        # Execute rebalance on publisher's own vault
+        # Execute rebalance on publisher's own vault (always, regardless of subscriber payments)
         if not DRY_RUN:
             try:
                 await self.executor.execute_trades(self.vault_address, trades)
@@ -1041,6 +1173,62 @@ async def health():
 @app.get("/subscribers")
 async def subscribers():
     return await agent.handle_subscribers_list()
+
+
+@app.post("/charge/{tick_id}/{step}")
+async def charge_step(tick_id: str, step: str, request: Request):
+    """x402 payment endpoint — called by subscribers via GatewayClient.pay().
+
+    1. First GET returns 402 with ``PAYMENT-REQUIRED`` header.
+    2. Subscriber signs EIP-3009 and retries with ``Payment-Signature`` header.
+    3. On success, records the payment in Redis and returns 200.
+    """
+    payment_header = request.headers.get("Payment-Signature")
+
+    # Phase 1 — no Payment-Signature → return 402 with requirements
+    if not payment_header:
+        return Response(
+            status_code=402,
+            headers={
+                "PAYMENT-REQUIRED": json.dumps(agent._payment_requirements),
+                "Content-Type": "application/json",
+            },
+        )
+
+    if DRY_RUN:
+        # Dry-run: accept any payment-signed request
+        payer = request.headers.get("X-Payer", "dry_run_payer")
+        redis_key = f"charged:{tick_id}:{step}:{payer}"
+        r = await agent.redis._get_redis()
+        await r.setex(redis_key, 2 * INTERVAL, "1")
+        return {"status": "charged", "tick_id": tick_id, "step": step}
+
+    # Phase 2 — verify + settle via Circle Gateway
+    if not agent._facilitator:
+        raise HTTPException(status_code=503, detail="Gateway facilitator not configured")
+
+    verify_result = await agent._facilitator.verify(payment_header, agent._payment_requirements)
+    if not verify_result.get("success"):
+        raise HTTPException(status_code=402, detail="Payment verification failed")
+
+    settle_result = await agent._facilitator.settle(payment_header, agent._payment_requirements)
+    if not settle_result.get("success"):
+        raise HTTPException(status_code=402, detail="Payment settlement failed")
+
+    # Record payment in Redis (TTL = 2 tick intervals)
+    payer = settle_result.get("payer", "")
+    redis_key = f"charged:{tick_id}:{step}:{payer}"
+    r = await agent.redis._get_redis()
+    await r.setex(redis_key, 2 * INTERVAL, "1")
+
+    # Revenue split if the Gateway already settled on-chain
+    await agent._check_and_split_settlement(settle_result)
+
+    logger.info(
+        "x402 charge accepted: tick=%s step=%s payer=%s",
+        tick_id, step, payer[:10] if payer else "unknown",
+    )
+    return {"status": "charged", "tick_id": tick_id, "step": step, "payer": payer}
 
 
 async def _run_loop():

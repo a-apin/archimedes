@@ -194,15 +194,18 @@ class TestHaltDetection:
 
 
 class TestChargeAndRebalance:
-    """chargeActions revert marking subscriber inactive."""
+    """Gateway x402 charging marks inactive on non-payment."""
 
     @pytest.mark.asyncio
-    async def test_charge_revert_marks_inactive(self, publisher):
-        """chargeActions revert marks subscriber inactive and skips rebalance."""
+    async def test_charge_step_unpaid_marks_inactive(self, publisher):
+        """_charge_step deactivates subscribers who don't pay in the grace window."""
         from archimedes.chain.strategy_runner_publisher import SubscriberInfo
 
-        with patch("archimedes.chain.strategy_runner_publisher.DRY_RUN", False):
-            sub_id = "sub_charge_fail"
+        with (
+            patch("archimedes.chain.strategy_runner_publisher.DRY_RUN", False),
+            patch("archimedes.chain.strategy_runner_publisher.PUBLISHER_BASE_URL", "http://publisher:8000"),
+        ):
+            sub_id = "sub_no_pay"
             publisher.subscribers[sub_id] = SubscriberInfo(
                 sub_id=sub_id,
                 webhook_url="http://example.com/events",
@@ -210,37 +213,48 @@ class TestChargeAndRebalance:
                 active=True,
             )
 
-            mock_contract = MagicMock()
-            mock_contract.functions.chargeActions.return_value.build_transaction = AsyncMock(
-                side_effect=Exception("insufficient balance")
-            )
-            publisher.loader._contract.return_value = mock_contract
+            with (
+                patch.object(publisher, "_notify_all", AsyncMock()),
+                patch.object(publisher, "_notify_one", AsyncMock()),
+                patch("asyncio.sleep", AsyncMock()),
+            ):
+                mock_redis = AsyncMock()
+                mock_redis.get.return_value = None
+                publisher.redis._get_redis = AsyncMock(return_value=mock_redis)
 
-            result = await publisher._charge_subscriber(sub_id, 3)
-            assert not result
+                result = await publisher._charge_step("tick_1", "load_strategies")
+                assert not result
+                assert not publisher.subscribers[sub_id].active
 
     @pytest.mark.asyncio
-    async def test_charge_revert_non_dry_run(self, publisher):
-        """chargeActions revert marks subscriber inactive (non-dry-run)."""
+    async def test_charge_step_payment_keeps_active(self, publisher):
+        """_charge_step keeps subscribers active when payment is confirmed."""
         from archimedes.chain.strategy_runner_publisher import SubscriberInfo
 
-        with patch("archimedes.chain.strategy_runner_publisher.DRY_RUN", False):
-            sub_id = "sub_charge_fail_real"
+        with (
+            patch("archimedes.chain.strategy_runner_publisher.DRY_RUN", False),
+            patch("archimedes.chain.strategy_runner_publisher.PUBLISHER_BASE_URL", "http://publisher:8000"),
+        ):
+            sub_id = "sub_paid"
             publisher.subscribers[sub_id] = SubscriberInfo(
                 sub_id=sub_id,
                 webhook_url="http://example.com/events",
-                ephemeral_wallet="0xabc",
+                ephemeral_wallet="0xpaid",
                 active=True,
             )
 
-            mock_contract = MagicMock()
-            mock_contract.functions.chargeActions.return_value.build_transaction = AsyncMock(
-                side_effect=Exception("insufficient balance")
-            )
-            publisher.loader._contract.return_value = mock_contract
+            with (
+                patch.object(publisher, "_notify_all", AsyncMock()),
+                patch.object(publisher, "_notify_one", AsyncMock()),
+                patch("asyncio.sleep", AsyncMock()),
+            ):
+                mock_redis = AsyncMock()
+                mock_redis.get.return_value = b"1"
+                publisher.redis._get_redis = AsyncMock(return_value=mock_redis)
 
-            result = await publisher._charge_subscriber(sub_id, 3)
-            assert not result
+                result = await publisher._charge_step("tick_1", "load_strategies")
+                assert result
+                assert publisher.subscribers[sub_id].active
 
     @pytest.mark.asyncio
     async def test_rebalance_payload_structure(self, publisher):

@@ -28,6 +28,7 @@ from archimedes.chain.circle_signer import CircleSigner
 from archimedes.chain.client import ChainSettings
 from archimedes.chain.contracts import ContractLoader
 from archimedes.chain.executor import ChainExecutor
+from archimedes.services.gateway_client import GatewayClient
 from archimedes.services.redis_state import AgentStateStore
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,14 @@ INITIAL_DEPOSIT_USDC = int(os.getenv("INITIAL_DEPOSIT_USDC", "10000000"))
 LOW_BALANCE_THRESHOLD = int(os.getenv("LOW_BALANCE_THRESHOLD", "1000000"))
 DRY_RUN = os.getenv("AGENT_DRY_RUN", "false").lower() == "true"
 
+# Circle Gateway / x402
+CIRCLE_GATEWAY_API_KEY = os.getenv("CIRCLE_GATEWAY_API_KEY", "")
+CIRCLE_GATEWAY_URL = os.getenv("CIRCLE_GATEWAY_URL", "https://api.circle.com")
+GATEWAY_LOW_BALANCE_THRESHOLD_USDC = float(os.getenv("GATEWAY_LOW_BALANCE_THRESHOLD_USDC", "5.0"))
+GATEWAY_AUTO_DEPOSIT_AMOUNT_USDC = float(os.getenv("GATEWAY_AUTO_DEPOSIT_AMOUNT_USDC", "10.0"))
+EPHEMERAL_KEY_ENCRYPTION_KEY = os.getenv("EPHEMERAL_KEY_ENCRYPTION_KEY", "")
+REDIS_EPHEMERAL_KEY_KEY = "subscriber:ephemeral_private_key"
+
 PUBLISHER_REGISTRATION_RETRIES = 5
 PUBLISHER_REGISTRATION_BACKOFF = 2.0  # seconds
 
@@ -68,6 +77,7 @@ class PublisherEvent(BaseModel):
     trades: list[dict] = Field(default_factory=list)
     target_weights: dict[str, float] = Field(default_factory=dict)
     signal_summary: dict[str, Any] = Field(default_factory=dict)
+    charge_url: str = Field(default="", description="x402 payment URL for this step")
     halted: bool = Field(default=False)
 
 
@@ -106,10 +116,15 @@ class SubscriberAgent:
         # HTTP session
         self._http_session: aiohttp.ClientSession | None = None
 
+        # Circle Gateway x402 client (initialised in initialize())
+        self._gateway: GatewayClient | None = None
+        self._ephemeral_private_key: str = ""
+        self._last_payment_failed: bool = False
+
     # ─── Initialization ────────────────────────────────────────────
 
     async def initialize(self):
-        """Startup sequence: create vault, ephemeral wallet, register."""
+        """Startup sequence: create vault, ephemeral key, wallet, GatewayClient, register."""
         if self._initialized:
             return
 
@@ -118,18 +133,126 @@ class SubscriberAgent:
         self.vault_address = vault_addr
         logger.info("Vault: %s", self.vault_address)
 
-        # 2. Create ephemeral wallet via SubscriptionManager.subscribe()
+        # 2. Load or generate ephemeral private key (for x402 signing)
+        self._ephemeral_private_key = await self._load_or_generate_ephemeral_key()
+        logger.info("Ephemeral key loaded (addr=%s)", self._gateway_wallet_address()[:10] if self._ephemeral_private_key else "none")
+
+        # 3. Initialise Circle Gateway x402 client
+        self._gateway = GatewayClient(
+            url=CIRCLE_GATEWAY_URL,
+            api_key=CIRCLE_GATEWAY_API_KEY,
+            chain="arcTestnet",
+            private_key=self._ephemeral_private_key,
+        )
+
+        # 4. Create ephemeral wallet via SubscriptionManager.subscribe()
         sub_id, wallet_addr = await self._create_ephemeral_wallet()
         self.sub_id = sub_id
         self.ephemeral_wallet_address = wallet_addr
         logger.info("Ephemeral wallet: %s (sub_id: %s)", wallet_addr, sub_id)
 
-        # 3. Register with publisher
+        # 5. Register with publisher
         if PUBLISHER_ENDPOINT:
             await self._register_with_publisher()
 
+        # 6. Ensure Gateway has sufficient balance
+        if self._gateway and self._ephemeral_private_key and not DRY_RUN:
+            await self._ensure_gateway_balance()
+
         self._initialized = True
-        logger.info("Subscriber initialized")
+        logger.info("Subscriber initialized (gateway=%s)", bool(self._gateway))
+
+    # ─── Ephemeral key management (x402 gateway signing) ───────────
+
+    async def _load_or_generate_ephemeral_key(self) -> str:
+        """Load the ephemeral private key from Redis, or generate + persist it.
+
+        The key is stored encrypted in Redis (AES-GCM with the
+        ``EPHEMERAL_KEY_ENCRYPTION_KEY`` env var) so it survives restarts.
+        If no encryption key is configured the key is stored in plain text
+        (local dev only).
+        """
+        r = await self.redis._get_redis()
+        stored = await r.get(REDIS_EPHEMERAL_KEY_KEY)
+        if stored:
+            try:
+                return self._decrypt_key(stored) if EPHEMERAL_KEY_ENCRYPTION_KEY else stored
+            except Exception as exc:
+                logger.warning("Failed to decrypt ephemeral key — generating new one: %s", exc)
+
+        # Generate a new random private key
+        import secrets
+        raw_key = "0x" + secrets.token_hex(32)
+        from eth_account import Account
+        account = Account.from_key(raw_key)
+        logger.info("Generated new ephemeral key with address %s", account.address)
+
+        # Persist
+        to_store = self._encrypt_key(raw_key) if EPHEMERAL_KEY_ENCRYPTION_KEY else raw_key
+        await r.set(REDIS_EPHEMERAL_KEY_KEY, to_store)
+        return raw_key
+
+    def _gateway_wallet_address(self) -> str:
+        """Derive the Gateway wallet address from the ephemeral private key."""
+        if not self._ephemeral_private_key:
+            return "0x0000000000000000000000000000000000000000"
+        from eth_account import Account
+        return Account.from_key(self._ephemeral_private_key).address
+
+    @staticmethod
+    def _encrypt_key(plain_hex: str) -> str:
+        """AES-256-GCM encrypt the hex key using EPHEMERAL_KEY_ENCRYPTION_KEY.
+
+        Returns a hex-encoded ``nonce || ciphertext || tag`` blob.
+        """
+        if not EPHEMERAL_KEY_ENCRYPTION_KEY:
+            return plain_hex
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        key = EPHEMERAL_KEY_ENCRYPTION_KEY.encode("utf-8").ljust(32, b"\0")[:32]
+        nonce = os.urandom(12)
+        ct = AESGCM(key).encrypt(nonce, plain_hex.encode("utf-8"), None)
+        return (nonce + ct).hex()
+
+    @staticmethod
+    def _decrypt_key(blob_hex: str) -> str:
+        """Decrypt a hex-encoded ``nonce || ciphertext || tag`` blob."""
+        if not EPHEMERAL_KEY_ENCRYPTION_KEY:
+            return blob_hex
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        blob = bytes.fromhex(blob_hex)
+        key = EPHEMERAL_KEY_ENCRYPTION_KEY.encode("utf-8").ljust(32, b"\0")[:32]
+        nonce, ct = blob[:12], blob[12:]
+        return AESGCM(key).decrypt(nonce, ct, None).decode("utf-8")
+
+    # ─── Gateway Balance ───────────────────────────────────────────
+
+    async def _ensure_gateway_balance(self) -> None:
+        """Check Gateway spendable balance and auto-deposit if below threshold."""
+        if not self._gateway:
+            logger.warning("Gateway not configured — skipping balance check")
+            return
+
+        try:
+            balance_str = await self._gateway.getBalance()
+            balance = float(balance_str or "0")
+            logger.info("Gateway balance: %.2f USDC", balance)
+
+            if balance < GATEWAY_LOW_BALANCE_THRESHOLD_USDC:
+                amount = GATEWAY_AUTO_DEPOSIT_AMOUNT_USDC
+                logger.info(
+                    "Gateway balance %.2f USDC < threshold %.2f USDC — depositing %.2f USDC",
+                    balance, GATEWAY_LOW_BALANCE_THRESHOLD_USDC, amount,
+                )
+                result = await self._gateway.deposit(str(amount))
+                if result.get("success"):
+                    new_balance = result.get("balance", amount)
+                    logger.info("Gateway deposit succeeded — new balance: %s USDC", new_balance)
+                else:
+                    logger.warning("Gateway deposit failed: %s", result.get("error"))
+        except Exception as exc:
+            logger.warning("Gateway balance check failed: %s", exc)
+
+    # ─── Vault ─────────────────────────────────────────────────────
 
     async def _load_or_create_vault(self) -> str:
         """Load vault address from Redis or create one."""
@@ -328,21 +451,36 @@ class SubscriberAgent:
         return {"status": "received", "type": event.type}
 
     async def _handle_evaluation_step(self, event: PublisherEvent):
-        """Log the step and check ephemeral wallet balance."""
+        """Pay for the step via Gateway (x402) and check Gateway balance."""
         logger.info("Evaluation step: %s (tick: %s)", event.step, event.tick_id)
 
-        # Check balance
-        balance = await self._ephemeral_balance()
-        if balance < LOW_BALANCE_THRESHOLD:
-            logger.warning(
-                "Low ephemeral wallet balance: %d USDC raw (threshold: %d)",
-                balance, LOW_BALANCE_THRESHOLD,
-            )
+        # 1. Ensure Gateway has sufficient balance before paying
+        if self._gateway and not DRY_RUN:
+            await self._ensure_gateway_balance()
+
+        # 2. Pay via x402 if the publisher included a charge_url
+        charge_url = event.charge_url or ""
+        if charge_url and self._gateway and not DRY_RUN:
+            result = await self._gateway.pay(charge_url)
+            if result.get("success"):
+                logger.info("x402 payment succeeded for step '%s'", event.step)
+                self._last_payment_failed = False
+            else:
+                logger.warning("x402 payment FAILED for step '%s': %s", event.step, result.get("error"))
+                self._last_payment_failed = True
+        elif charge_url and DRY_RUN:
+            logger.info("DRY RUN: would pay x402 for step '%s' at %s", event.step, charge_url)
+            self._last_payment_failed = False
 
     async def _handle_rebalance(self, event: PublisherEvent):
-        """Execute rebalance on subscriber vault."""
+        """Execute rebalance on subscriber vault (guarded by payment check)."""
         if not event.trades:
             logger.warning("Rebalance event has no trades — skipping")
+            return
+
+        # Payment guard — do not rebalance if the last evaluation step payment failed
+        if self._last_payment_failed:
+            logger.warning("Last payment failed — skipping rebalance for tick %s", event.tick_id)
             return
 
         if DRY_RUN:
@@ -383,61 +521,54 @@ class SubscriberAgent:
             event.step, event.reason, event.message,
         )
 
-        if event.reason == "insufficient_balance":
+        if event.reason == "unpaid":
             logger.warning(
-                "Ephemeral wallet needs top-up. Use POST /top-up or call "
-                "SubscriptionManager.renewEphemeralWallet()"
+                "Publisher flagged non-payment for step '%s'. Use POST /top-up "
+                "or check Gateway balance at %s",
+                event.step, CIRCLE_GATEWAY_URL,
             )
 
     # ─── Top-up ────────────────────────────────────────────────────
 
     async def handle_top_up(self, req: TopUpRequest) -> dict:
-        """Top up the ephemeral wallet."""
-        if not self.subscription_manager_address:
-            raise HTTPException(status_code=500, detail="SubscriptionManager not configured")
+        """Top up the Gateway balance (replaces on-chain ephemeral top-up)."""
+        if not self._gateway:
+            raise HTTPException(status_code=500, detail="Gateway not configured — cannot top-up")
 
         if DRY_RUN:
-            logger.info("DRY RUN: would top up %d USDC raw", req.amount_usdc_raw)
-            return {"status": "topped_up", "new_balance": 0}
-
-        contract = self.loader._contract(
-            self.subscription_manager_address, "SubscriptionManager"
-        )
+            logger.info("DRY RUN: would deposit %d USDC to Gateway", req.amount_usdc_raw)
+            return {"status": "topped_up", "new_balance": 0.0}
 
         try:
-            if self.circle_signer.is_configured:
-                await self.circle_signer.execute_contract(
-                    self.subscription_manager_address,
-                    "renewEphemeralWallet",
-                    [self.sub_id, req.amount_usdc_raw],
-                )
-            else:
-                tx = await contract.functions.renewEphemeralWallet(
-                    self.sub_id, req.amount_usdc_raw
-                ).build_transaction({
-                    "from": self.settings.agent_account.address,
-                    "nonce": await self._get_nonce(),
-                    "gas": 200_000,
-                    "gasPrice": await self._get_gas_price(),
-                })
-                signed = self.settings.agent_account.sign_transaction(tx)
-                await self._send_raw(signed.raw_transaction)
+            amount_usdc = str(req.amount_usdc_raw / 1_000_000)  # convert raw → decimal USDC
+            result = await self._gateway.deposit(amount_usdc)
 
-            new_balance = await self._ephemeral_balance()
+            if not result.get("success"):
+                raise HTTPException(status_code=500, detail=f"Gateway deposit failed: {result.get('error')}")
+
+            new_balance = float(result.get("balance", 0))
             return {"status": "topped_up", "new_balance": new_balance}
 
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Top-up failed: {exc}")
 
     # ─── Health ────────────────────────────────────────────────────
 
     async def handle_health(self) -> dict:
-        balance = await self._ephemeral_balance()
+        balance = 0.0
+        if self._gateway:
+            try:
+                bal_str = await self._gateway.getBalance()
+                balance = float(bal_str or "0")
+            except Exception:
+                pass
         return {
             "status": "ok",
             "sub_id": self.sub_id,
             "vault": self.vault_address,
-            "ephemeral_balance": balance,
+            "gateway_balance_usdc": balance,
         }
 
     # ─── HTTP Helpers ──────────────────────────────────────────────
