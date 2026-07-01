@@ -143,3 +143,134 @@ async def test_tick_no_trades_skips_payment(market: MarketService):
             await market.tick("strat_c")
             mock_verify.assert_not_called()
             market.executor.execute_trades.assert_not_called()
+
+
+# ── H3 — Liability ledger (charge-succeeds / mirror-fails) ─────────────
+
+
+@pytest.mark.asyncio
+async def test_tick_records_liability_when_mirror_fails(market: MarketService):
+    """When payment succeeds but the subscriber mirror trade fails, a liability
+    is recorded for that subscriber."""
+    with (
+        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()),
+    ):
+        market.publishers["strat_d"] = Publisher(
+            strategy_id="strat_d",
+            pool_id="0x" + "11" * 32,
+            vault_address="0xpublisher_vault",
+            creator_wallet="0xpublisher",
+        )
+        market.publishers["strat_d"].subscribers["sub_3"] = Subscriber(
+            sub_id="0x" + "22" * 32,
+            pool_id="0x" + "33" * 32,
+            vault_address="0xsub_vault",
+            ephemeral_wallet="0xephemeral",
+            subscriber_wallet="0xsubscriber",
+            active=True,
+        )
+
+        # Payment succeeds but mirror (apply) fails
+        with (
+            patch.object(market, "_verify_payment", AsyncMock(return_value=True)),
+            patch.object(market, "_record_liability", AsyncMock()) as mock_record,
+            patch.object(market, "_apply_to_subscriber", AsyncMock(return_value=False)),
+        ):
+            await market.tick("strat_d")
+
+            # Liability was recorded for the subscriber
+            mock_record.assert_awaited_once()
+            args = mock_record.await_args.args
+            assert args[0].sub_id == "0x" + "22" * 32
+            assert args[1] == "strat_d"
+            assert args[2] is not None  # tick_id
+            assert args[3] == len(_dummy_trades())  # action_count
+
+
+@pytest.mark.asyncio
+async def test_tick_no_liability_when_mirror_succeeds(market: MarketService):
+    """When mirror succeeds, no liability is recorded."""
+    with (
+        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()),
+    ):
+        market.publishers["strat_e"] = Publisher(
+            strategy_id="strat_e",
+            pool_id="0x" + "44" * 32,
+            vault_address="0xpublisher_vault",
+            creator_wallet="0xpublisher",
+        )
+        market.publishers["strat_e"].subscribers["sub_4"] = Subscriber(
+            sub_id="0x" + "55" * 32,
+            pool_id="0x" + "66" * 32,
+            vault_address="0xsub_vault",
+            ephemeral_wallet="0xephemeral",
+            subscriber_wallet="0xsubscriber",
+            active=True,
+        )
+
+        with (
+            patch.object(market, "_verify_payment", AsyncMock(return_value=True)),
+            patch.object(market, "_record_liability", AsyncMock()) as mock_record,
+            patch.object(market, "_apply_to_subscriber", AsyncMock(return_value=True)),
+        ):
+            await market.tick("strat_e")
+
+            mock_record.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tick_no_liability_when_payment_fails(market: MarketService):
+    """When payment fails, the subscriber is skipped and no liability is recorded
+    (the charge itself didn't succeed, so no liability arises)."""
+    with (
+        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()),
+    ):
+        market.publishers["strat_f"] = Publisher(
+            strategy_id="strat_f",
+            pool_id="0x" + "77" * 32,
+            vault_address="0xpublisher_vault",
+            creator_wallet="0xpublisher",
+        )
+        market.publishers["strat_f"].subscribers["sub_5"] = Subscriber(
+            sub_id="0x" + "88" * 32,
+            pool_id="0x" + "99" * 32,
+            vault_address="0xsub_vault",
+            ephemeral_wallet="0xephemeral",
+            subscriber_wallet="0xsubscriber",
+            active=True,
+        )
+
+        with (
+            patch.object(market, "_verify_payment", AsyncMock(return_value=False)),
+            patch.object(market, "_record_liability", AsyncMock()) as mock_record,
+        ):
+            await market.tick("strat_f")
+
+            mock_record.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_record_liability_best_effort(market: MarketService):
+    """``_record_liability`` is best-effort: a DB failure logs but does not raise
+    and does not emit an event (since the DB write failed first)."""
+    sub = Subscriber(
+        sub_id="0x" + "aa" * 32,
+        pool_id="0x" + "bb" * 32,
+        vault_address="0xsub_vault",
+        ephemeral_wallet="0xephemeral",
+        subscriber_wallet="0xsubscriber",
+        active=True,
+    )
+
+    # Count events before
+    before_count = market.state.append_event.await_count
+
+    with patch("archimedes.marketplace.service.get_session", side_effect=RuntimeError("DB down")):
+        # Must not raise despite DB failure
+        await market._record_liability(sub, "strat_g", "tick_1", 3)
+
+    # No new event was emitted (DB failure was caught before append_event)
+    assert market.state.append_event.await_count == before_count

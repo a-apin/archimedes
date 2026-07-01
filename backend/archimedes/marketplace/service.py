@@ -18,8 +18,10 @@ from archimedes.chain.circle_signer import CircleSigner
 from archimedes.chain.client import ChainSettings
 from archimedes.chain.contracts import ContractLoader
 from archimedes.chain.executor import ChainExecutor
+from archimedes.db import get_session
 from archimedes.marketplace.encoding import to_bytes32
 from archimedes.marketplace.state import MarketState
+from archimedes.models.marketplace import SubscriberLiability
 from archimedes.models.portfolio import Portfolio, TargetAllocation, TradeDirection, TradeOrder
 from archimedes.services.strategy_provider import default_provider
 from archimedes.services.strategy_signal_evaluator import (
@@ -313,7 +315,11 @@ class MarketService:
                             },
                         )
                         return
-                    await self._apply_to_subscriber(sub, trades, target_weights, tick_id, addr_map)
+                    mirrored = await self._apply_to_subscriber(
+                        sub, trades, target_weights, tick_id, addr_map,
+                    )
+                    if not mirrored:
+                        await self._record_liability(sub, strategy_id, tick_id, action_count)
 
             # Split active subscribers into two halves; renew the per-strategy
             # leader lock at the midpoint as crash-safety insurance.
@@ -410,6 +416,52 @@ class MarketService:
             return True
         return await self.state.has_active_payment(sub_id)
 
+    async def _record_liability(
+        self, sub: Subscriber, strategy_id: str, tick_id: str, action_count: int
+    ) -> None:
+        """Record a charge-succeeded/mirror-failed liability. Best-effort:
+        a failure here must not abort the tick or block subsequent subscribers."""
+        unit_price = None
+        try:
+            addr = self.settings.subscription_manager_address
+            if addr:
+                c = self.loader._contract(addr, "SubscriptionManager")
+                unit_price = await c.functions.flat_fee_per_action().call()
+        except Exception:
+            logger.warning("Could not read flat_fee_per_action for liability record on %s", sub.sub_id)
+
+        amount_owed = action_count * unit_price if unit_price is not None else None
+
+        try:
+            with get_session() as session:
+                session.add(
+                    SubscriberLiability(
+                        sub_id=sub.sub_id,
+                        strategy_id=strategy_id,
+                        tick_id=tick_id,
+                        action_count=action_count,
+                        unit_price_usdc=unit_price,
+                        amount_owed_usdc=amount_owed,
+                    )
+                )
+                session.commit()
+            await self.state.append_event(
+                strategy_id,
+                {
+                    "type": "liability_recorded",
+                    "sub_id": sub.sub_id,
+                    "tick_id": tick_id,
+                    "action_count": action_count,
+                    "amount_owed_usdc": amount_owed,
+                },
+            )
+            logger.warning(
+                "Liability recorded: sub=%s tick=%s action_count=%d amount_owed=%s",
+                sub.sub_id, tick_id, action_count, amount_owed,
+            )
+        except Exception:
+            logger.exception("Failed to record liability for %s / %s", sub.sub_id, tick_id)
+
     async def _apply_to_subscriber(
         self,
         sub: Subscriber,
@@ -417,14 +469,20 @@ class MarketService:
         target_weights: dict[str, float],
         _tick_id: str,
         addr_map: dict[str, str] | None = None,
-    ) -> None:
+    ) -> bool:
         """In-process fan-out (D-FANOUT): map publisher trades to the subscriber's own
-        vault via read_portfolio + compute_trades, then execute_trades on sub.vault_address."""
+        vault via read_portfolio + compute_trades, then execute_trades on sub.vault_address.
+
+        Returns ``True`` on success (or dry-run). Returns ``False`` if the mirror
+        fails — the caller (``tick``) decides whether to record a liability.
+        """
         if self.dry_run:
-            return
+            return True
         try:
             sub_portfolio = await self.executor.read_portfolio(sub.vault_address)
             sub_trades = compute_trades(sub_portfolio, target_weights, token_addresses=addr_map)
             await self.executor.execute_trades(sub.vault_address, sub_trades)
+            return True
         except Exception:
             logger.exception("subscriber apply failed for %s", sub.sub_id)
+            return False
