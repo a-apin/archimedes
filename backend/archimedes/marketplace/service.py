@@ -33,13 +33,22 @@ _DRIFT_THRESHOLD = 0.15
 _USDC_FLOOR = float(os.getenv("AGENT_USDC_FLOOR", "0.20"))
 
 
-def compute_trades(portfolio: Portfolio, target_weights: dict[str, float]) -> list[TradeOrder]:
+def compute_trades(
+    portfolio: Portfolio,
+    target_weights: dict[str, float],
+    token_addresses: dict[str, str] | None = None,
+) -> list[TradeOrder]:
     """PORT of StrategyRunner._compute_trades (agent_runner.py:806).
 
     Diff current portfolio vs target weights → trade list.
+    token_addresses maps symbol → checksummed contract address (includes USDC).
     """
+    addr_map = token_addresses or {}
     current_weights = portfolio.weights_dict
-    target_map = {sym: TargetAllocation(symbol=sym, weight=w, token_address="") for sym, w in target_weights.items()}
+    target_map = {
+        sym: TargetAllocation(symbol=sym, weight=w, token_address=addr_map.get(sym, ""))
+        for sym, w in target_weights.items()
+    }
 
     trades: list[TradeOrder] = []
     all_symbols = set(target_map.keys()) | set(current_weights.keys())
@@ -49,6 +58,11 @@ def compute_trades(portfolio: Portfolio, target_weights: dict[str, float]) -> li
         target = target_map.get(sym)
         target_w = target.weight if target else 0.0
         token_addr = target.token_address if target else ""
+
+        # Skip unresolved symbols — no address means we cannot trade them
+        if not token_addr and sym != "USDC":
+            logger.warning("no token address for %s; skipping", sym)
+            continue
 
         drift = target_w - current_w
         if abs(drift) < _DRIFT_THRESHOLD:
@@ -197,10 +211,13 @@ class MarketService:
             return
         tick_id = f"{strategy_id}:{int(time.time())}"
 
+        # Build token address map once for all compute_trades calls
+        addr_map = {**self.settings.synth_addresses, "USDC": self.settings.usdc_address}
+
         # 1. REAL rebalance computation (reuse main) — NOT a stub.
         target_weights = await self._evaluate(strategy_id)
         portfolio = await self.executor.read_portfolio(pub.vault_address)
-        trades = compute_trades(portfolio, target_weights)
+        trades = compute_trades(portfolio, target_weights, token_addresses=addr_map)
 
         await self.state.append_event(
             strategy_id,
@@ -234,7 +251,7 @@ class MarketService:
                     },
                 )
                 continue
-            await self._apply_to_subscriber(sub, trades, target_weights, tick_id)
+            await self._apply_to_subscriber(sub, trades, target_weights, tick_id, addr_map)
 
         # 3. Execute on publisher's own vault too (non-dry-run).
         if not self.dry_run:
@@ -321,7 +338,8 @@ class MarketService:
             return False
 
     async def _apply_to_subscriber(
-        self, sub: Subscriber, _trades: list[TradeOrder], target_weights: dict[str, float], _tick_id: str
+        self, sub: Subscriber, _trades: list[TradeOrder], target_weights: dict[str, float],
+        _tick_id: str, addr_map: dict[str, str] | None = None,
     ) -> None:
         """In-process fan-out (D-FANOUT): map publisher trades to the subscriber's own
         vault via read_portfolio + compute_trades, then execute_trades on sub.vault_address."""
@@ -329,7 +347,7 @@ class MarketService:
             return
         try:
             sub_portfolio = await self.executor.read_portfolio(sub.vault_address)
-            sub_trades = compute_trades(sub_portfolio, target_weights)
+            sub_trades = compute_trades(sub_portfolio, target_weights, token_addresses=addr_map)
             await self.executor.execute_trades(sub.vault_address, sub_trades)
         except Exception:
             logger.exception("subscriber apply failed for %s", sub.sub_id)
