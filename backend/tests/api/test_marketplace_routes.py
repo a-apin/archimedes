@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,6 +20,14 @@ def _setup_db():
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture(autouse=True)
+def _mock_strategy_provider():
+    """Patch strategy_provider.get_strategy to return a truthy value for test IDs."""
+    with patch("archimedes.api.marketplace_routes.strategy_provider") as mock:
+        mock.get_strategy.return_value = MagicMock(id="test_strat")
+        yield mock
 
 
 @pytest.fixture
@@ -64,6 +72,16 @@ def app():
 @pytest.fixture
 def client(app):
     return TestClient(app)
+
+
+def test_publish_rejects_unknown_strategy(client, _mock_strategy_provider):
+    """Publish with a non-existent strategy_id returns 404."""
+    _mock_strategy_provider.get_strategy.return_value = None
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "nonexistent", "vault_address": "0xvault"},
+    )
+    assert resp.status_code == 404, resp.text
 
 
 def test_publish_creates_publisher_row(client):

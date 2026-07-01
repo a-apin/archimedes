@@ -10,6 +10,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from archimedes.api._route_helpers import strategy_provider
 from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.limiter import limiter
 from archimedes.db import get_session
@@ -53,6 +54,10 @@ async def publish_strategy(
 
     if not strategy_id:
         raise HTTPException(status_code=400, detail="strategy_id is required")
+
+    # 0. Validate strategy exists in the provider
+    if strategy_provider.get_strategy(strategy_id) is None:
+        raise HTTPException(status_code=404, detail=f"Strategy not found: {strategy_id}")
 
     # 1. Reject if publisher already running for this strategy
     with get_session() as session:
