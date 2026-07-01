@@ -181,10 +181,11 @@ class MarketService:
         # Signal retirement so _run_loop exits after current tick completes
         pub.retired = True
 
-        # Wait for current tick to finish (no mid-charge cancellation)
+        # Wait for current sleep + one full tick to complete, not a fixed
+        # guess — interval can be configured above the old hardcoded 360s.
         if pub.task and not pub.task.done():
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(pub.task, timeout=360)
+                await asyncio.wait_for(pub.task, timeout=self.interval + 60)
 
         # Safe to remove now that the task has finished
         self.publishers.pop(strategy_id, None)
