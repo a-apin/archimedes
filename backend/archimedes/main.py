@@ -10,6 +10,9 @@ import os
 
 # Load .env into os.environ at import time for modules that use os.getenv()
 # (circle_signer, oracle_updater) — pydantic ChainSettings handles ARC_ vars itself.
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,12 +76,81 @@ else:
     _docs_url = "/docs"
     _openapi_url = "/openapi.json"
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+    """FastAPI lifespan context manager — startup before yield, shutdown after."""
+    _logger = logging.getLogger("archimedes.startup")
+
+    # ── STARTUP ──────────────────────────────────────────────────────────
+    # 1. Populate selection-bias rigor gate fields (idempotent)
+    try:
+        from archimedes.api.selection_bias_routes import evaluate_rigor_gate
+
+        result = await evaluate_rigor_gate()
+        if result.total > 0:
+            _logger.info("startup: rigor gate computed — %d/%d passing", result.passing, result.total)
+    except Exception as exc:
+        _logger.warning("startup: rigor gate population failed (non-fatal): %s", exc)
+
+    # 2. Seed papers table from manifest.jsonl (idempotent)
+    try:
+        from archimedes.services.corpus_service import seed_from_manifest
+
+        inserted = seed_from_manifest()
+        if inserted > 0:
+            _logger.info("startup: seeded %d new papers from manifest", inserted)
+    except Exception as exc:
+        _logger.warning("startup: corpus seed failed (non-fatal): %s", exc)
+
+    # 3. Start the in-process marketplace engine (MarketService)
+    from archimedes.marketplace.service import MarketService
+
+    interval = int(os.getenv("AGENT_INTERVAL_SECONDS", "300"))
+    dry_run = os.getenv("AGENT_DRY_RUN", "false").lower() in ("1", "true", "yes")
+    market = MarketService(interval_seconds=interval, dry_run=dry_run)
+    _app.state.market = market
+    _logger.info("marketplace engine started (interval=%ds, dry_run=%s)", interval, dry_run)
+
+    # 3a. Rehydrate running publishers from Postgres
+    try:
+        from archimedes.db import get_session
+        from archimedes.models.marketplace import MarketplaceAgent
+
+        with get_session() as session:
+            publishers = (
+                session.query(MarketplaceAgent)
+                .filter(MarketplaceAgent.role == "publisher", MarketplaceAgent.status == "running")
+                .all()
+            )
+        for row in publishers:
+            await market.start_publisher(
+                strategy_id=row.strategy_id,
+                pool_id=row.pool_id,
+                vault_address=row.vault_address,
+                creator_wallet=row.creator_wallet,
+            )
+            _logger.info("rehydrated publisher %s (vault=%s)", row.strategy_id, row.vault_address)
+    except Exception as exc:
+        _logger.warning("startup: publisher rehydration failed (non-fatal): %s", exc)
+
+    yield  # ── app is now running ────────────────────────────────────────
+
+    # ── SHUTDOWN ─────────────────────────────────────────────────────────
+    market = getattr(_app.state, "market", None)
+    if market is not None:
+        market._stop.set()
+        for strategy_id in list(market.publishers.keys()):
+            await market.stop_publisher(strategy_id)
+        _logger.info("marketplace engine stopped")
+
+
 app = FastAPI(
     title="Archimedes",
     description="Agentic trading, grounded in research — settled on Arc.",
     version="0.1.0",
     docs_url=_docs_url,
     openapi_url=_openapi_url,
+    lifespan=lifespan,
 )
 
 # Wire rate limiter into the app state

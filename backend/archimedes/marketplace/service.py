@@ -260,11 +260,7 @@ class MarketService:
                     return
                 await self._apply_to_subscriber(sub, trades, target_weights, tick_id, addr_map)
 
-        tasks = [
-            _process_subscriber(sub)
-            for sub in pub.subscribers.values()
-            if sub.active
-        ]
+        tasks = [_process_subscriber(sub) for sub in pub.subscribers.values() if sub.active]
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for r in results:
@@ -376,8 +372,12 @@ class MarketService:
             return False
 
     async def _apply_to_subscriber(
-        self, sub: Subscriber, _trades: list[TradeOrder], target_weights: dict[str, float],
-        _tick_id: str, addr_map: dict[str, str] | None = None,
+        self,
+        sub: Subscriber,
+        _trades: list[TradeOrder],
+        target_weights: dict[str, float],
+        _tick_id: str,
+        addr_map: dict[str, str] | None = None,
     ) -> None:
         """In-process fan-out (D-FANOUT): map publisher trades to the subscriber's own
         vault via read_portfolio + compute_trades, then execute_trades on sub.vault_address."""

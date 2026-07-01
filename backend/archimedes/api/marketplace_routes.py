@@ -108,7 +108,9 @@ async def publish_strategy(
                 )
             else:
                 c = market.loader._contract(splitter_addr, "PaymentSplitter")
-                tx = await c.functions.createPool(to_bytes32(pool_id), wallet, platform_wallet or wallet).build_transaction(
+                tx = await c.functions.createPool(
+                    to_bytes32(pool_id), wallet, platform_wallet or wallet
+                ).build_transaction(
                     {
                         "from": market.settings.agent_account.address,
                         "nonce": await market.loader.client.w3.eth.get_transaction_count(
