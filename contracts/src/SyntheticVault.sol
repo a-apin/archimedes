@@ -42,6 +42,10 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     event Burned(address indexed user, uint256 synthIn, uint256 usdcOut, uint256 fee);
     event CollateralRatioUpdated(uint256 oldRatio, uint256 newRatio);
     event FeesCollected(uint256 amount);
+    /// @notice Emitted when a redemption is scaled down by the pro-rata solvency cap
+    ///         (collateral C < liability L). `grossValue` is the uncapped current-price
+    ///         claim; `cappedValue` is the C/L-scaled payout (haircut = gross - capped).
+    event RedemptionHaircut(address indexed user, uint256 grossValue, uint256 cappedValue);
 
     // ─── Errors ──────────────────────────────────────────────────────
 
@@ -124,14 +128,12 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
         uint256 usdcValue = (synthAmount * assetPrice) / (10 ** SYNTH_DECIMALS);
 
         // Pro-rata solvency cap: under stress, scale the claim by C/L so redemption
-        // order cannot redistribute value between holders (see @dev above).
-        // Safe subtraction: protocolFees should never exceed balance, but fee rounding
-        // over many small operations could cause a transient underflow; clamp to 0.
-        uint256 _burnBal = usdc.balanceOf(address(this));
-        uint256 available = _burnBal > protocolFees ? _burnBal - protocolFees : 0;
-        uint256 totalLiability = (synthToken.totalSupply() * assetPrice) / (10 ** SYNTH_DECIMALS);
-        if (totalLiability > available) {
-            usdcValue = (usdcValue * available) / totalLiability;
+        // order cannot redistribute value between holders (see @dev above + _applySolvencyCap).
+        uint256 grossValue = usdcValue;
+        bool haircutApplied;
+        (usdcValue, haircutApplied) = _applySolvencyCap(usdcValue, assetPrice);
+        if (haircutApplied) {
+            emit RedemptionHaircut(msg.sender, grossValue, usdcValue);
         }
 
         uint256 fee = (usdcValue * burnFeeBps) / BPS;
@@ -149,6 +151,27 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
 
         emit Burned(msg.sender, synthAmount, usdcOut, fee);
         return usdcOut;
+    }
+
+    /// @dev Apply the pro-rata solvency cap to a redemption's gross USDC claim. Under
+    ///      stress (total liability L > available collateral C) the claim is scaled by
+    ///      C/L so redemption order cannot redistribute value between holders (audit
+    ///      #509). Shared verbatim by burn() and previewBurn() so preview == actual.
+    ///      Returns the (possibly capped) value and whether the cap bound. Safe
+    ///      subtraction: protocolFees should never exceed balance, but fee rounding over
+    ///      many small operations could cause a transient underflow; clamp to 0.
+    function _applySolvencyCap(uint256 usdcValue, uint256 assetPrice)
+        internal
+        view
+        returns (uint256 cappedValue, bool haircutApplied)
+    {
+        uint256 bal = usdc.balanceOf(address(this));
+        uint256 available = bal > protocolFees ? bal - protocolFees : 0;
+        uint256 totalLiability = (synthToken.totalSupply() * assetPrice) / (10 ** SYNTH_DECIMALS);
+        if (totalLiability > available) {
+            return ((usdcValue * available) / totalLiability, true);
+        }
+        return (usdcValue, false);
     }
 
     // ─── Views ───────────────────────────────────────────────────────
@@ -169,13 +192,7 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
         uint256 usdcValue = (synthAmount * assetPrice) / (10 ** SYNTH_DECIMALS);
 
         // Mirror burn()'s pro-rata solvency cap so preview == actual under stress.
-        // Safe subtraction: clamp to 0 in the contrived case protocolFees > balance.
-        uint256 _previewBal = usdc.balanceOf(address(this));
-        uint256 available = _previewBal > protocolFees ? _previewBal - protocolFees : 0;
-        uint256 totalLiability = (synthToken.totalSupply() * assetPrice) / (10 ** SYNTH_DECIMALS);
-        if (totalLiability > available) {
-            usdcValue = (usdcValue * available) / totalLiability;
-        }
+        (usdcValue, ) = _applySolvencyCap(usdcValue, assetPrice);
 
         uint256 fee = (usdcValue * burnFeeBps) / BPS;
         return usdcValue - fee;

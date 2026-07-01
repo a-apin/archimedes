@@ -13,7 +13,9 @@ Convention:
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, model_validator
 
 # ═══════════════════════════════════════════════════════════════
 # Assets
@@ -261,6 +263,27 @@ class TraceResponse(BaseModel):
     trade_tx_hash: str | None = None
     trade_block_number: int | None = None
     temporal_binding_valid: bool | None = None
+    # Provenance of the temporal-binding claim (#714 / T0.3). "chain" only when the
+    # real commit-reveal path ran (an on-chain trace_id was minted); "none" otherwise
+    # (legacy publishTrace anchor, dry-run, or no commit recorded). The UI "Temporal
+    # Binding ✓ VERIFIED" badge must key off this, not a bare boolean from Redis.
+    temporal_binding_source: Literal["chain", "none"] = "none"
+
+    @model_validator(mode="after")
+    def _temporal_binding_requires_chain_source(self) -> TraceResponse:
+        """Claim-integrity guard (#714): temporal_binding_valid may only assert a
+        verified binding when it is backed by on-chain commit-reveal receipts.
+
+        Closes the audit finding (AUDIT_2026-06-14 #3) where the badge could read True
+        off a Redis boolean: regardless of what the persisted dict holds, a non-"chain"
+        source can never surface a True binding — it is coerced to None ("not applicable").
+        ``is_verified`` is deliberately left untouched: a publishTrace anchor is a genuine
+        on-chain hash confirmation, so reporting it verified is honest — only the stronger
+        *temporal* binding claim is gated here.
+        """
+        if self.temporal_binding_source != "chain" and self.temporal_binding_valid:
+            self.temporal_binding_valid = None
+        return self
 
 
 class TradeExecutedResponse(BaseModel):

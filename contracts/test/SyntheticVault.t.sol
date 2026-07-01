@@ -438,6 +438,54 @@ contract SyntheticVaultTest is Test {
         assertEq(payout, expected, "full price value when solvent");
     }
 
+    /// @dev Under stress the pro-rata cap binds, so burn() emits RedemptionHaircut with
+    ///      the redeemer indexed and grossValue > cappedValue (the haircut magnitude).
+    function test_burn_emits_RedemptionHaircut_under_stress() public {
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        uint256 synthOut = vault.mint(usdcAmount);
+        vm.stopPrank();
+
+        vm.prank(owner);
+        oracle.forceSetPrice((INITIAL_PRICE * 150) / 100); // +50% -> C < L
+
+        vm.recordLogs();
+        vm.prank(alice);
+        vault.burn(synthOut);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 sig = keccak256("RedemptionHaircut(address,uint256,uint256)");
+        bool found;
+        for (uint256 i; i < logs.length; i++) {
+            if (logs[i].topics[0] == sig) {
+                found = true;
+                assertEq(address(uint160(uint256(logs[i].topics[1]))), alice, "redeemer indexed");
+                (uint256 gross, uint256 capped) = abi.decode(logs[i].data, (uint256, uint256));
+                assertGt(gross, capped, "haircut reduces the payout");
+            }
+        }
+        assertTrue(found, "RedemptionHaircut emitted when the cap binds");
+    }
+
+    /// @dev When healthy (cap inactive) burn() must NOT emit RedemptionHaircut.
+    function test_burn_no_RedemptionHaircut_when_healthy() public {
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        uint256 synthOut = vault.mint(usdcAmount);
+
+        vm.recordLogs();
+        vault.burn(synthOut);
+        vm.stopPrank();
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 sig = keccak256("RedemptionHaircut(address,uint256,uint256)");
+        for (uint256 i; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != sig, "no haircut event when solvent");
+        }
+    }
+
     /// @dev previewBurn must mirror burn exactly while the haircut is active.
     function test_preview_burn_matches_under_stress() public {
         uint256 usdcAmount = 10_000 * 10**6;

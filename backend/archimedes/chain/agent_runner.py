@@ -1034,15 +1034,25 @@ class StrategyRunner:
                 "is_verified": reveal_tx is not None,
                 # IPFS provenance pointer (T1.4)
                 "ipfs_cid": ipfs_cid,
-                # Temporal binding fields
+                # Temporal binding fields. The "chain" source — and any True binding —
+                # require the REAL commit-reveal path: trace_id is non-None ONLY when
+                # ReasoningTraceRegistry.commit() minted an on-chain id (the publishTrace
+                # fallback returns trace_id=None but still carries a commit_block from its
+                # receipt). Gating on trace_id stops a fallback anchor's blocks from
+                # masquerading as a verified temporal binding (#714 / AUDIT_2026-06-14 #3).
                 "commit_tx_hash": commit_tx,
                 "commit_block_number": commit_block,
                 "reveal_tx_hash": reveal_tx,
                 "reveal_block_number": reveal_block,
                 "trade_tx_hash": tx_hashes[0] if tx_hashes else None,
                 "trade_block_number": trade_block,
+                "temporal_binding_source": "chain" if trace_id is not None else "none",
                 "temporal_binding_valid": (
-                    commit_block is not None and trade_block is not None and commit_block < trade_block
+                    trace_id is not None
+                    and commit_block is not None
+                    and trade_block is not None
+                    and reveal_block is not None
+                    and commit_block < trade_block <= reveal_block
                 ),
             }
             await self.state.save_trace(off_chain_data)

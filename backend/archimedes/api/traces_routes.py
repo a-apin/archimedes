@@ -69,6 +69,7 @@ async def list_traces(
                         trade_tx_hash=t.get("trade_tx_hash"),
                         trade_block_number=t.get("trade_block_number"),
                         temporal_binding_valid=t.get("temporal_binding_valid"),
+                        temporal_binding_source=t.get("temporal_binding_source", "none"),
                     )
                 )
             return TraceListResponse(traces=traces, total=total)
@@ -147,6 +148,7 @@ async def get_trace(trace_id: str):
                 trade_tx_hash=off_chain.get("trade_tx_hash"),
                 trade_block_number=off_chain.get("trade_block_number"),
                 temporal_binding_valid=off_chain.get("temporal_binding_valid"),
+                temporal_binding_source=off_chain.get("temporal_binding_source", "none"),
             )
 
         try:

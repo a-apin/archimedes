@@ -28,6 +28,7 @@ from archimedes.api.selection_bias_routes import (
     StrategyRigorResult,
     _load_strategy_code,
 )
+from archimedes.services.rigor_evaluator import run_rigor_gate
 from httpx import ASGITransport, AsyncClient
 
 # ── Hermetic DB fixture ────────────────────────────────────────────────
@@ -49,6 +50,43 @@ def _use_tmp_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
     init_db()
     yield
+
+
+# ── CPCV honest not-run reporting (#771) ───────────────────────────────
+
+
+class TestCpcvHonestNotRun:
+    """#771: the selection-bias surface must not advertise CPCV as a method while
+    emitting a bare "MISSING". The live route calls run_rigor_gate WITHOUT a
+    cv_returns_matrix (the analytics-engine doesn't emit one yet), so CPCV must be
+    reported as an explicit NOT_RUN status with its reason — never a bare placeholder
+    and never a fabricated value.
+    """
+
+    @staticmethod
+    def _series():
+        rng = np.random.default_rng(7)
+        return list(rng.normal(0.001, 0.01, 400))
+
+    def test_cpcv_reports_explicit_not_run_label(self):
+        # Exactly how selection_bias_routes.evaluate_rigor_gate calls it: no matrix.
+        result = run_rigor_gate("s1", self._series(), num_trials=6)
+        cpcv = result.gate_details["cpcv"]
+        assert cpcv.startswith("NOT_RUN"), cpcv
+        assert "combinatorial" in cpcv.lower(), "the not-run reason must be surfaced"
+        assert cpcv != "MISSING", "no bare placeholder that implies a silent method"
+
+    def test_cpcv_label_is_not_a_fabricated_value(self):
+        # Anti-goal: the not-run label must not look like a computed CPCV verdict.
+        cpcv = run_rigor_gate("s1", self._series(), num_trials=6).gate_details["cpcv"]
+        assert not cpcv.startswith(("PASS", "FAIL")), "must not mimic a computed verdict"
+
+    def test_cpcv_not_run_stays_non_gating(self):
+        # CPCV is not enforced when absent: no positive_fraction is computed, so the
+        # NOT_RUN status cannot, by itself, flip pass/fail for the other criteria.
+        result = run_rigor_gate("s1", self._series(), num_trials=6)
+        assert result.cpcv_positive_fraction is None
+        assert isinstance(result.passes_all, bool)
 
 
 # ── Schema unit tests ──────────────────────────────────────────────────

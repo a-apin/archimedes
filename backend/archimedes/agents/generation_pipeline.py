@@ -485,6 +485,7 @@ async def _run_fixture_candidate(
     emit: _Emitter,
     regime: str = "neutral",
     agent: Any = None,  # noqa: ARG001 — signature parity with _run_live_candidate; fixture path ignores it
+    selection_pool_size: int = 1,  # noqa: ARG001 — signature parity; fixture path computes no DSR num_trials
 ) -> _CandidateResult:
     """Synthetic generation that exercises every event the live agent emits.
 
@@ -587,8 +588,25 @@ _REGIME_PROMPT_SUFFIX = {
 }
 
 
+def _society_num_trials(library_size: int, selection_pool_size: int) -> int:
+    """Effective DSR multiple-testing trial count on the agentic society path (#770).
+
+    The winner survived selection from ``selection_pool_size`` (N) generated candidates
+    AND is promoted into a library of ``library_size`` — two independent selection layers,
+    so the deflation count is their SUM (approach A, Bailey & López de Prado 2014). See
+    ``docs/specs/selection-bias-corrections-spec.md`` § 1.3 addendum. Floored at 1.
+    """
+    return max(1, library_size + selection_pool_size)
+
+
 async def _run_live_candidate(
-    *, candidate_id: str, brief: GenerateBrief, emit: _Emitter, regime: str = "neutral", agent: Any = None
+    *,
+    candidate_id: str,
+    brief: GenerateBrief,
+    emit: _Emitter,
+    regime: str = "neutral",
+    agent: Any = None,
+    selection_pool_size: int = 1,
 ) -> _CandidateResult:
     """Drive the real ``portfolio_agent`` with per-iteration event emission.
 
@@ -705,7 +723,15 @@ async def _run_live_candidate(
     # primitive is computed from referenced curated source and gates `passing`.
     return_series = _portfolio_return_series(weights, price_histories)
     lookahead_passed = _lookahead_for_candidate(referenced_strategies)
-    verdict = _rigor_verdict_for(return_series, num_trials=max(1, len(strategies)), lookahead_passed=lookahead_passed)
+    # num_trials = selection-from-N candidates + library context (#770). The agentic
+    # society generates `selection_pool_size` candidates, backtests all, and keeps the
+    # best — selection-from-N is itself a multiple-testing search, so the DSR must be
+    # deflated for BOTH that pool AND the library the winner joins, not the library
+    # alone (which understated deflation and inflated the survivor's DSR). Additive
+    # N + library_size per the selection-bias-corrections spec § 1.3 (Bailey & López de
+    # Prado 2014); the correction can only make the gate stricter. (Önder's call — A.)
+    num_trials = _society_num_trials(len(strategies), selection_pool_size)
+    verdict = _rigor_verdict_for(return_series, num_trials=num_trials, lookahead_passed=lookahead_passed)
     # Derive meaningful name + thesis from the brief and agent output (#299)
     top_picks = sorted(weights.items(), key=lambda x: -x[1])[:3]
     pick_summary = " / ".join(t for t, _ in top_picks)
@@ -761,6 +787,7 @@ async def _run_fusion_candidate(
     emit: _Emitter,
     regime: str = "neutral",
     agent: Any = None,  # noqa: ARG001 — signature parity with _run_live_candidate; fusion path builds its own client
+    selection_pool_size: int = 1,  # noqa: ARG001 — signature parity; fusion candidates skip the static DSR path
 ) -> _CandidateResult:
     """Drive the existing fusion engine with per-step streaming event emission.
 
@@ -1123,6 +1150,7 @@ async def run_generation(
                     emit=emit,
                     regime=regime,
                     agent=job_agent,
+                    selection_pool_size=n_candidates,  # #770: DSR deflates for the N-candidate search
                 )
             except FusionUnavailable as exc:
                 # Fusion was selected + precheck passed, but at runtime the
@@ -1143,6 +1171,7 @@ async def run_generation(
                         emit=emit,
                         regime=regime,
                         agent=job_agent,  # preserve the user's free-tier model pick on fallback (#748)
+                        selection_pool_size=n_candidates,  # #770: DSR deflates for the N-candidate search
                     )
                 except Exception as exc2:
                     logger.exception("agent fallback %s (%s) failed: %s", candidate_id, regime, exc2)
@@ -1253,7 +1282,10 @@ async def run_generation(
         # static backtester on a fusion candidate that has nothing static to run.
         await asyncio.gather(
             *[
-                _backtest_and_persist(c, strategy_ids[c.candidate_id], emit, library_size)
+                # num_trials = N candidates + library context (#770), not library alone.
+                _backtest_and_persist(
+                    c, strategy_ids[c.candidate_id], emit, _society_num_trials(library_size, n_candidates)
+                )
                 for c in candidates
                 if c.generation_method != "fusion"
             ]
@@ -1428,8 +1460,9 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         c: The candidate that was just persisted.
         strategy_id: The DB id returned by :func:`_persist_candidate`.
         emit: The SSE emitter to surface backtest progress to the UI.
-        num_trials: Curated-library size, fed to ``backtest_portfolio`` as
-            ``num_trials_for_dsr`` for the DSR multiple-testing correction.
+        num_trials: Effective trial count for the DSR multiple-testing correction —
+            N generated candidates + curated-library size on the society path (#770),
+            fed to ``backtest_portfolio`` as ``num_trials_for_dsr``.
     """
     # Fixture mode (offline tests, no-LLM environments) — skip the network
     # round-trip. The test suite covers this function's behavior via direct
@@ -1472,9 +1505,10 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         from archimedes.services.portfolio_backtester import backtest_portfolio
 
         # Run the actual backtest. Raises on insufficient data / fetch failure.
-        # num_trials_for_dsr = curated-library size (selection-bias-corrections-
-        # spec.md § 1.3) — the DSR multiple-testing correction for the selection
-        # set this candidate was chosen from, not the default of 1.
+        # num_trials_for_dsr = N candidates + curated-library size (#770,
+        # selection-bias-corrections-spec.md § 1.3) — the DSR multiple-testing
+        # correction for the full selection set: the N-candidate society search
+        # this winner survived PLUS the library it joins, not library alone.
         result, artifact = backtest_portfolio(
             strategy_id=strategy_id,
             weights=c.weights,

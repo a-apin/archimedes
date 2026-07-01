@@ -129,8 +129,10 @@ async def evaluate_rigor_gate():
     per-split OOS returns that comes from re-running the full backtest engine
     across combinatorial window splits.  That rolling re-backtest pipeline is
     not yet wired here, so run_rigor_gate() is called without cv_returns_matrix
-    and CPCV is honestly reported as MISSING on every strategy.  Wire it once
-    the analytics-engine supports combinatorial window output.
+    and CPCV is reported as an explicit NOT_RUN status (with the reason) on every
+    strategy — never a bare "MISSING" that would imply a method silently producing
+    no number (#771).  Wire it once the analytics-engine supports combinatorial
+    window output.
     """
     strategies = _provider.list_strategies()
 
@@ -174,6 +176,10 @@ async def evaluate_rigor_gate():
     valid_returns = {k: v for k, v in returns_by_strategy.items() if len(v) >= 10}
     pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
 
+    # num_trials = library size here (#770). This route grades the EXISTING persisted
+    # library, so the selection set is the library itself — there is no fresh
+    # N-candidate society pool to add (that additive correction, N + library_size,
+    # applies only on the live society generation path in generation_pipeline.py).
     num_trials = max(len(valid_returns), 1)
 
     # The strategy library is the multiple-testing selection set; correlated
@@ -215,7 +221,8 @@ async def evaluate_rigor_gate():
 
         # cv_returns_matrix intentionally omitted — CPCV requires a 2-D array
         # of per-combinatorial-split OOS returns that the analytics-engine does
-        # not yet produce.  run_rigor_gate() will report cpcv as MISSING.
+        # not yet produce.  run_rigor_gate() reports cpcv as an explicit NOT_RUN
+        # status with the reason (#771), not a bare "MISSING".
         gate_result = run_rigor_gate(
             strategy_id=s.id,
             daily_returns=daily_returns,

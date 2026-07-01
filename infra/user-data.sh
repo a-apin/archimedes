@@ -62,6 +62,13 @@ POSTGRES_PASSWORD=$${DB_PASS}
 POSTGRES_DB=archimedes
 REDIS_URL=redis://redis:6379/0
 DATABASE_URL=postgresql://archimedes:$${DB_PASS}@postgres:5432/archimedes
+# The postgres/redis services are profile-gated (profiles: ["localdb"]) so the
+# default compose run starts only the app against MANAGED stores. This freshly
+# bootstrapped instance writes in-stack DATABASE_URL/REDIS_URL above, so it MUST
+# enable the localdb profile or those services won't start and the app can't
+# connect. Cutover to managed Aurora/ElastiCache is a deliberate manual step:
+# edit this .env to the managed URLs and REMOVE this line, then recreate. (#780)
+COMPOSE_PROFILES=localdb
 ENVEOF
 chmod 600 /opt/archimedes/.env
 chown ubuntu:ubuntu /opt/archimedes/.env

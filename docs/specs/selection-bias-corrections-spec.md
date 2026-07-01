@@ -120,6 +120,42 @@ the candidate pool size from the most recent extraction pass, not the
 library size — the LLM tried K methodology variants and we picked the best.
 This will be wired in T5 (post-hackathon if not reached).
 
+#### Addendum (#770) — the agentic society path: N + library_size
+
+The agentic society (PR #766) generates **N candidates** (`n_candidates`), backtests
+**all** of them, rigor-gates **all**, and keeps the **best**. Selection-from-N is itself
+a multiple-testing search distinct from the library context the winner then joins, so the
+effective trial count on the society path is the **sum**:
+
+```
+num_trials = n_candidates + library_size            # the chosen formula (A)
+```
+
+**Rationale.** The survivor was chosen through two independent selection layers — it beat
+`n_candidates - 1` siblings in the society round *and* it is being promoted into a library
+of `library_size` prior strategies. Both are searches over which the maximum was taken, so
+both inflate the observed Sharpe under the Bailey & López de Prado (2014) best-of-N null;
+the additive count is the conservative, defensible deflation. It can only make the gate
+**stricter** (anti-goal compliant): with `n_candidates ≥ 1` it is always `≥ library_size`,
+the prior (under-deflating) value.
+
+**Why not effective-N (correlation-adjusted) here.** `compute_dsr` already accepts an
+`average_correlation` and can deflate by effective *independent* trials
+`N_eff = N / (1 + (N-1)ρ̄)` — the principled refinement when candidates are correlated
+(same brief, overlapping universes). We deliberately ship the **simple additive count
+first** (smaller blast radius, strictly conservative) and leave the candidate-pool
+correlation correction as a follow-up; over-deflation (treating correlated candidates as
+independent) only *tightens* the gate, never loosens it, so the simple form is safe to ship.
+
+**Scope note.** This additive correction applies to the **live society generation path**
+(`agents/generation_pipeline.py`). The `/api/selection-bias/gate` route grades the
+**existing persisted library**, where the selection set is the library itself — there is no
+fresh candidate pool, so that route keeps `num_trials = library_size`.
+
+> **Owner sign-off:** the choice of formula (additive A vs. effective-N B) is Önder's
+> statistics call. This addendum records approach **A** as the shipped default pending his
+> review; promoting to B is a follow-up if candidate-pool over-deflation proves material.
+
 ## 2. Probability of Backtest Overfitting (PBO)
 
 **Reference:** Bailey, D. H., Borwein, J., López de Prado, M., & Zhu, J.

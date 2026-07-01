@@ -2,9 +2,17 @@
 # Usage: docker compose up --build -d
 
 services:
-  # ---------- Data stores ----------
+  # ---------- Data stores (LOCAL ONLY — see profiles note) ----------
+  # postgres + redis run ONLY when the `localdb` profile is active
+  # (COMPOSE_PROFILES=localdb, set in .env.example for local dev). In PRODUCTION
+  # the .env omits COMPOSE_PROFILES, so these two services are NOT started and
+  # the app talks to managed Aurora + ElastiCache via DATABASE_URL / REDIS_URL.
+  # This makes ONE compose file serve both: `docker compose up` locally brings up
+  # the full self-contained stack; the same command in prod (no localdb profile)
+  # runs the app tier against managed stores. See docs/deployment.md.
   postgres:
     image: postgres:16-alpine
+    profiles: ["localdb"]
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-archimedes}
@@ -22,6 +30,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    profiles: ["localdb"]
     restart: unless-stopped
     # NO host port binding — Redis is internal-only.
     healthcheck:
@@ -70,11 +79,17 @@ services:
       - .env
     healthcheck:
       disable: true
+    # required: false → these app services still start when postgres/redis are
+    # NOT in the active profile (production = managed Aurora/ElastiCache). When
+    # the `localdb` profile IS active, they wait for the local DB/cache to be
+    # healthy. (required on depends_on needs docker compose ≥ 2.20.)
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
       redis:
         condition: service_healthy
+        required: false
 
   # ---------- Strategy Agent (autonomous portfolio runner) ----------
   agent:
@@ -98,11 +113,17 @@ services:
       - ./contracts/abis:/contracts/abis:ro
     healthcheck:
       disable: true
+    # required: false → these app services still start when postgres/redis are
+    # NOT in the active profile (production = managed Aurora/ElastiCache). When
+    # the `localdb` profile IS active, they wait for the local DB/cache to be
+    # healthy. (required on depends_on needs docker compose ≥ 2.20.)
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
       redis:
         condition: service_healthy
+        required: false
 
   # ---------- Backend API ----------
   backend:
@@ -145,11 +166,17 @@ services:
       - ./contracts/abis:/contracts/abis:ro
       - ./data/corpus:/app/data/corpus:ro
       - archimedes-corpus-artifact:/app/data/corpus-artifact
+    # required: false → these app services still start when postgres/redis are
+    # NOT in the active profile (production = managed Aurora/ElastiCache). When
+    # the `localdb` profile IS active, they wait for the local DB/cache to be
+    # healthy. (required on depends_on needs docker compose ≥ 2.20.)
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
       redis:
         condition: service_healthy
+        required: false
 
   # ---------- KB pipeline runner (Phase 3c skeleton) ----------
   # Polls the corpus + artifact volume and re-runs the SPECTER2 / HDBSCAN /
@@ -179,9 +206,11 @@ services:
     volumes:
       - ./data/corpus:/srv/corpus-text:ro
       - archimedes-corpus-artifact:/srv/corpus-artifact:rw
+    # required: false → starts against managed Aurora in prod (no localdb profile).
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
 
 volumes:
   pgdata:

@@ -80,7 +80,7 @@ jobs:
 
     steps:
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b  # v6.2.0
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b  # v6.2.1
         with:
           role-to-assume: arn:aws:iam::037613907429:role/archimedes-github-deploy
           aws-region: ${{ env.AWS_REGION }}
@@ -115,11 +115,15 @@ jobs:
               "# infra/iam/README.md for the SSM population runbook.",
               "grep -q '"'"'^PUBLIC_DOMAIN='"'"' .env || echo '"'"'PUBLIC_DOMAIN=https://archimedes-arc.com'"'"' >> .env",
               "docker compose build",
-              "# Remove renamed orphan containers left by interrupted --force-recreate runs.",
-              "# docker --filter name= uses Go RE2: [0-9a-f]+ matches the hex rename prefix.",
-              "# (An escaped-brace quantifier matches a literal brace, so it never fired —",
-              "# the bug that let oracle orphans block deploys after back-to-back pushes.)",
-              "docker ps -aq --filter '"'"'name=^[0-9a-f]+_archimedes-'"'"' | xargs -r docker rm -f 2>/dev/null || true",
+              "# Remove orphan containers left by an interrupted --force-recreate.",
+              "# Docker renames the old container to <hex>_<name> before deleting it; if a",
+              "# run is interrupted mid-recreate the orphan survives, and the next recreate",
+              "# hits a name Conflict and fails the whole deploy (run 28382331990: the",
+              "# oracle orphan fbdabd2fa619_archimedes-oracle-1). The prior",
+              "# `docker ps --filter name=^...` never matched it because the filter anchor",
+              "# is unreliable against the slash-prefixed names Docker stores (/<hex>_...).",
+              "# Grep the clean `--format {{.Names}}` output (no leading slash) so ^ fires.",
+              "docker ps -a --format '"'"'{{.Names}}'"'"' | grep -E '"'"'^[0-9a-f]+_archimedes-'"'"' | xargs -r docker rm -f 2>/dev/null || true",
               "docker compose up -d --force-recreate --remove-orphans",
               "docker image prune -f",
               "docker compose exec -T backend python -m archimedes.scripts.seed_backtests_from_artifacts || echo WARN_SEED_SKIP",

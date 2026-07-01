@@ -473,7 +473,14 @@ class RigorGateResult:
             else:
                 details["cpcv"] = f"FAIL (OOS+ only {self.cpcv_positive_fraction:.0%} of paths, need ≥ 50%)"
         else:
-            details["cpcv"] = "MISSING"
+            # Honest not-run status (#771): the surface must never advertise CPCV as a
+            # method while silently emitting a bare "MISSING". CPCV needs a 2-D (S, T)
+            # matrix of per-combinatorial-split OOS returns; it is mathematically invalid
+            # on a single static return series, so when no matrix is supplied we say so
+            # explicitly rather than implying a method that produced no number.
+            details["cpcv"] = (
+                "NOT_RUN (no combinatorial OOS matrix supplied; CPCV is invalid on a single static return series)"
+            )
 
         details["look_ahead"] = "PASS" if self.look_ahead_passed else "FAIL"
 

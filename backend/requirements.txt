@@ -2,7 +2,7 @@
 # This file is used by Docker; conda env is for local dev.
 
 # Web backend
-fastapi>=0.115
+fastapi>=0.138.1
 # Pinned directly to close PYSEC-2026-161 (Host-header validation bypass);
 # FastAPI's transitive range can resolve to vulnerable starlette 1.0.0
 # without this floor. Floor raised to 1.3.1 to close CVE-2026-54282 /
@@ -12,13 +12,18 @@ starlette>=1.3.1
 uvicorn[standard]>=0.49.0
 sqlalchemy>=2.0.51
 psycopg2-binary>=2.9.12
-redis>=8.0.0
+redis>=8.0.1
 pydantic>=2.13.4
 pydantic-settings>=2.14.1
 python-dotenv>=1.2.2
 
 # Data + numerics
 numpy>=2.4.6,<3.0
+# 3.0.4 was yanked from PyPI after the dependabot bump (#798) merged, so
+# `pandas>=3.0.4` became unsatisfiable and broke every fresh CI install +
+# Docker build (latest available is 3.0.3). Floor lowered to the newest
+# non-yanked release. (NB: environment.yml still floors pandas>=2.2 — a
+# pre-existing local-vs-prod major drift to reconcile separately.)
 pandas>=3.0.3
 scipy>=1.13
 scikit-learn>=1.5  # GaussianMixture + StandardScaler for the data-driven GmmRegimeDetector (issue #661); BSD-3-Clause
@@ -46,7 +51,7 @@ urllib3>=2.7.0
 backtrader>=1.9.78.123
 
 # LLM
-anthropic>=0.104.1
+anthropic>=0.112.0
 
 # On-chain / Web3
 web3>=7.16.0
@@ -58,7 +63,7 @@ cryptography>=49.0.0
 slowapi>=0.1.10
 
 # Paper ingestion
-arxiv>=2.1
+arxiv>=4.0.0
 # Floor raised to 6.13.3 to close 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25).
 pypdf>=6.13.3
 

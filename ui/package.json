@@ -24,18 +24,18 @@
     "@iconify-json/cryptocurrency-color": "^1.2.4",
     "@iconify-json/logos": "^1.2.11",
     "@iconify-json/lucide": "^1.2.114",
-    "@iconify-json/simple-icons": "^1.2.86",
+    "@iconify-json/simple-icons": "^1.2.87",
     "@iconify-json/token-branded": "^1.2.40",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.2",
+    "@vitejs/plugin-react": "^6.0.3",
     "cssnano": "^8.0.2",
-    "eslint": "^10.5.0",
+    "eslint": "^10.6.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
-    "globals": "^17.6.0",
+    "globals": "^17.7.0",
     "sass-embedded": "^1.99.0",
     "unocss": "^66.7.2",
-    "vite": "^8.0.16"
+    "vite": "^8.1.0"
   }
 }
