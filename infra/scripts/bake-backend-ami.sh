@@ -16,8 +16,8 @@
 # infra/scripts/setup-https.sh.
 #
 # Usage:
-#   AWS_PROFILE=archimedes ./infra/scripts/bake-backend-ami.sh
-#   AWS_PROFILE=archimedes SOURCE_INSTANCE_ID=i-0abc... ./infra/scripts/bake-backend-ami.sh
+#   AWS_PROFILE=ArchimedesDanAdmin ./infra/scripts/bake-backend-ami.sh
+#   AWS_PROFILE=ArchimedesDanAdmin SOURCE_INSTANCE_ID=i-0abc... ./infra/scripts/bake-backend-ami.sh
 #
 # On success it prints the new AMI id. Feed it back to Terraform via:
 #   terraform apply -var "backend_ami_id=ami-0newbakedami..."
@@ -30,7 +30,7 @@
 
 set -euo pipefail
 
-REGION="${AWS_REGION:-eu-west-2}"
+REGION="${AWS_REGION:-us-east-1}"
 PROJECT="${PROJECT_NAME:-archimedes}"
 TIMESTAMP="$(date -u +%Y%m%d-%H%M%S)"
 AMI_NAME="${PROJECT}-backend-${TIMESTAMP}"

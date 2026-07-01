@@ -55,8 +55,8 @@
         "dynamodb:DescribeTable"
       ],
       "Resource": [
-        "arn:aws:dynamodb:eu-west-2:159903201072:table/archimedes-papers-index",
-        "arn:aws:dynamodb:eu-west-2:159903201072:table/archimedes-papers-index/index/*"
+        "arn:aws:dynamodb:us-east-1:037613907429:table/archimedes-papers-index",
+        "arn:aws:dynamodb:us-east-1:037613907429:table/archimedes-papers-index/index/*"
       ]
     },
     {
@@ -81,8 +81,7 @@
       "Condition": {
         "StringEquals": {
           "kms:ViaService": [
-            "ssm.us-east-1.amazonaws.com",
-            "ssm.eu-west-2.amazonaws.com"
+            "ssm.us-east-1.amazonaws.com"
           ]
         }
       }

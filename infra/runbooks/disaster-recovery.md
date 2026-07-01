@@ -7,7 +7,7 @@
 > AWS credentials here). Treat every command as *review-then-run*, and schedule a
 > real game-day drill (see § Drills) before relying on this.
 
-Region: `eu-west-2`. Account / profile: `archimedes` (see `CLAUDE.md` § AWS
+Region: `us-east-1`. Account / profile: `ArchimedesDanAdmin` (see `CLAUDE.md` § AWS
 account access). All admin access is via **SSM Session Manager**, not SSH.
 
 ---
@@ -37,11 +37,11 @@ alarm (see `infra/cloudwatch.tf`), or `https://archimedes-arc.com/` 502/503.
    aws elbv2 describe-target-health \
      --target-group-arn "$(aws elbv2 describe-target-groups \
         --names archimedes-backend-tg --query 'TargetGroups[0].TargetGroupArn' --output text)" \
-     --region eu-west-2
+     --region us-east-1
    ```
 2. Try an in-place recovery first (fastest). Open a session and restart the stack:
    ```bash
-   aws ssm start-session --target <instance-id> --region eu-west-2
+   aws ssm start-session --target <instance-id> --region us-east-1
    # on host:
    cd /opt/archimedes && docker compose ps && docker compose up -d
    ```

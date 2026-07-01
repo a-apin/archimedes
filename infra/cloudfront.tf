@@ -23,7 +23,7 @@ provider "aws" {
 
 # ── ACM certificate for CloudFront (us-east-1) ────────────────
 # Separate from the REGIONAL ALB cert (aws_acm_certificate.main in alb.tf,
-# eu-west-2). CloudFront can only attach a us-east-1 cert.
+# us-east-1). CloudFront can only attach a us-east-1 cert.
 resource "aws_acm_certificate" "cloudfront" {
   provider                  = aws.us_east_1
   domain_name               = var.domain_name

@@ -54,11 +54,11 @@ the LLM payloads; prefer a scoped-down exclusion over blocking the whole group.
 
 ```bash
 # List the metrics the WAF is emitting:
-aws cloudwatch list-metrics --namespace AWS/WAFV2 --region eu-west-2
+aws cloudwatch list-metrics --namespace AWS/WAFV2 --region us-east-1
 
 # Blocked vs allowed counts for the ACL over the last hour (fill in the ACL
 # dimensions from the console — Region/Rule/WebACL):
 aws cloudwatch get-metric-statistics --namespace AWS/WAFV2 \
   --metric-name BlockedRequests --start-time "$(date -u -v-1H +%FT%TZ)" \
-  --end-time "$(date -u +%FT%TZ)" --period 300 --statistics Sum --region eu-west-2
+  --end-time "$(date -u +%FT%TZ)" --period 300 --statistics Sum --region us-east-1
 ```

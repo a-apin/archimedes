@@ -7,7 +7,7 @@
 set -euo pipefail
 
 SECRETS_FILE="${1:?Usage: $0 /path/to/secrets.env}"
-REGION="${AWS_REGION:-eu-west-2}"
+REGION="${AWS_REGION:-us-east-1}"
 PREFIX="${AWS_SSM_PATH_PREFIX:-/archimedes/prod}"
 
 if [ ! -f "$SECRETS_FILE" ]; then

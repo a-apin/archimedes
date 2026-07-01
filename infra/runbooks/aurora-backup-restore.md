@@ -3,7 +3,7 @@
 > **Status:** Authored 2026-06-12, **not yet drilled.** Commands target the
 > cluster defined in `infra/aurora.tf` (`aws_rds_cluster.main`, identifier
 > `archimedes-aurora`, instance `archimedes-aurora-1`, engine `aurora-postgresql`
-> 16.4). Run in `eu-west-2` with `AWS_PROFILE=archimedes`. **Review each command
+> 16.4). Run in `us-east-1` with `AWS_PROFILE=ArchimedesDanAdmin`. **Review each command
 > before running** — they were not executed in the authoring environment.
 
 ---
@@ -40,10 +40,10 @@ snapshots below.
 aws rds create-db-cluster-snapshot \
   --db-cluster-identifier archimedes-aurora \
   --db-cluster-snapshot-identifier archimedes-aurora-manual-$(date +%Y%m%d-%H%M) \
-  --region eu-west-2
+  --region us-east-1
 # wait until available:
 aws rds wait db-cluster-snapshot-available \
-  --db-cluster-snapshot-identifier <the-id-you-just-used> --region eu-west-2
+  --db-cluster-snapshot-identifier <the-id-you-just-used> --region us-east-1
 ```
 
 ---
@@ -59,7 +59,7 @@ aws rds restore-db-cluster-to-point-in-time \
   --source-db-cluster-identifier archimedes-aurora \
   --db-cluster-identifier archimedes-aurora-restore \
   --restore-to-time 2026-06-12T13:45:00Z \
-  --region eu-west-2
+  --region us-east-1
 #   …or for the latest possible point: add  --use-latest-restorable-time
 #   (and drop --restore-to-time).
 
@@ -69,14 +69,14 @@ aws rds create-db-instance \
   --db-cluster-identifier archimedes-aurora-restore \
   --engine aurora-postgresql \
   --db-instance-class db.serverless \
-  --region eu-west-2
+  --region us-east-1
 aws rds wait db-instance-available \
-  --db-instance-identifier archimedes-aurora-restore-1 --region eu-west-2
+  --db-instance-identifier archimedes-aurora-restore-1 --region us-east-1
 
 # 3. Get the new endpoint and validate before cutover.
 aws rds describe-db-clusters \
   --db-cluster-identifier archimedes-aurora-restore \
-  --query 'DBClusters[0].Endpoint' --output text --region eu-west-2
+  --query 'DBClusters[0].Endpoint' --output text --region us-east-1
 ```
 
 **Validate** against the restore endpoint (read-only first): row counts on
@@ -89,9 +89,9 @@ the most recent rows; confirm the bad migration/corruption is absent.
   keeps working. Rename live out of the way, then restore into its name:
   ```bash
   aws rds modify-db-cluster --db-cluster-identifier archimedes-aurora \
-    --new-db-cluster-identifier archimedes-aurora-broken --apply-immediately --region eu-west-2
+    --new-db-cluster-identifier archimedes-aurora-broken --apply-immediately --region us-east-1
   aws rds modify-db-cluster --db-cluster-identifier archimedes-aurora-restore \
-    --new-db-cluster-identifier archimedes-aurora --apply-immediately --region eu-west-2
+    --new-db-cluster-identifier archimedes-aurora --apply-immediately --region us-east-1
   ```
   ⚠️ Renaming changes the endpoint host; if `DATABASE_URL` pins the endpoint DNS,
   update SSM and restart the app (`docker compose up -d`). Confirm which form the
@@ -116,7 +116,7 @@ aws rds restore-db-cluster-from-snapshot \
   --db-cluster-identifier archimedes-aurora-fromsnap \
   --snapshot-identifier <snapshot-id> \
   --engine aurora-postgresql \
-  --region eu-west-2
+  --region us-east-1
 # then create-db-instance as in PITR step 2.
 ```
 
