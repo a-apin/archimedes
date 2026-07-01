@@ -2,7 +2,7 @@
 #
 # Architecture:
 #   - New VPC with /16 CIDR (10.0.0.0/16)
-#   - 2 public subnets (ALB, NAT instances) in eu-west-2a + eu-west-2b
+#   - 2 public subnets (ALB, NAT instances) in us-east-1a + us-east-1b
 #   - 2 private subnets (EC2, Aurora, ElastiCache) in same AZs
 #   - fck-nat t4g.nano instances (one per AZ) for outbound internet
 #   - Internet Gateway for public subnets

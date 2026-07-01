@@ -61,7 +61,7 @@ class TestLoadSsmSecrets:
     def test_loads_parameters_into_env(self, mock_boto3, monkeypatch):
         """SSM parameters are injected into os.environ."""
         monkeypatch.setenv("AWS_SSM_PATH_PREFIX", "/archimedes/prod/")
-        monkeypatch.setenv("AWS_REGION", "eu-west-2")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
 
         mock_client = self._mock_ssm_response(
             [
@@ -83,7 +83,7 @@ class TestLoadSsmSecrets:
     def test_does_not_override_existing_by_default(self, mock_boto3, monkeypatch):
         """Existing env vars are NOT overwritten when override_existing=False."""
         monkeypatch.setenv("AWS_SSM_PATH_PREFIX", "/archimedes/prod/")
-        monkeypatch.setenv("AWS_REGION", "eu-west-2")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
         monkeypatch.setenv("TEST_SECRET_1", "original-value")
 
         mock_client = self._mock_ssm_response(
@@ -104,7 +104,7 @@ class TestLoadSsmSecrets:
     def test_override_existing_when_flag_set(self, mock_boto3, monkeypatch):
         """With override_existing=True, SSM values replace existing env vars."""
         monkeypatch.setenv("AWS_SSM_PATH_PREFIX", "/archimedes/prod/")
-        monkeypatch.setenv("AWS_REGION", "eu-west-2")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
         monkeypatch.setenv("TEST_SECRET_1", "original-value")
 
         mock_client = self._mock_ssm_response(
@@ -165,7 +165,7 @@ class TestLoadSsmSecrets:
     def test_pagination(self, mock_boto3, monkeypatch):
         """Handles paginated SSM responses correctly."""
         monkeypatch.setenv("AWS_SSM_PATH_PREFIX", "/archimedes/prod/")
-        monkeypatch.setenv("AWS_REGION", "eu-west-2")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
 
         mock_client = MagicMock()
         # First page returns a NextToken

@@ -35,36 +35,36 @@ with Terraform). No DynamoDB table needed.
 ```bash
 # S3 bucket — versioned, encrypted, no public access
 aws s3api create-bucket \
-  --bucket archimedes-tfstate-159903201072 \
+  --bucket archimedes-tfstate-037613907429 \
   --region us-east-1 \
   --create-bucket-configuration LocationConstraint=us-east-1
 
 aws s3api put-bucket-versioning \
-  --bucket archimedes-tfstate-159903201072 \
+  --bucket archimedes-tfstate-037613907429 \
   --versioning-configuration Status=Enabled
 
 aws s3api put-bucket-encryption \
-  --bucket archimedes-tfstate-159903201072 \
+  --bucket archimedes-tfstate-037613907429 \
   --server-side-encryption-configuration \
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 
 aws s3api put-public-access-block \
-  --bucket archimedes-tfstate-159903201072 \
+  --bucket archimedes-tfstate-037613907429 \
   --public-access-block-configuration \
   BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 
 # Bucket policy: deny non-TLS + restrict to account only
 aws s3api put-bucket-policy \
-  --bucket archimedes-tfstate-159903201072 \
+  --bucket archimedes-tfstate-037613907429 \
   --policy '{
     "Version": "2012-10-17",
     "Statement": [
       {"Sid":"DenyNonTLS","Effect":"Deny","Principal":"*","Action":"s3:*",
-       "Resource":["arn:aws:s3:::archimedes-tfstate-159903201072","arn:aws:s3:::archimedes-tfstate-159903201072/*"],
+       "Resource":["arn:aws:s3:::archimedes-tfstate-037613907429","arn:aws:s3:::archimedes-tfstate-037613907429/*"],
        "Condition":{"Bool":{"aws:SecureTransport":"false"}}},
       {"Sid":"RestrictToAccount","Effect":"Deny","Principal":"*","Action":"s3:*",
-       "Resource":["arn:aws:s3:::archimedes-tfstate-159903201072","arn:aws:s3:::archimedes-tfstate-159903201072/*"],
-       "Condition":{"StringNotEquals":{"aws:PrincipalAccount":"159903201072"}}}
+       "Resource":["arn:aws:s3:::archimedes-tfstate-037613907429","arn:aws:s3:::archimedes-tfstate-037613907429/*"],
+       "Condition":{"StringNotEquals":{"aws:PrincipalAccount":"037613907429"}}}
     ]}'
 ```
 

@@ -13,7 +13,7 @@ GitHub (main branch)
 GitHub Actions (deploy.yml)
     │  SSH
     ▼
-EC2 (t3.medium, eu-west-2)
+EC2 (t3.medium, us-east-1)
     │
     ├── docker compose (6 services)
     │   ├── backend   (FastAPI :8000) — health-checked
@@ -36,10 +36,10 @@ EC2 (t3.medium, eu-west-2)
 | ------------- | ----------------------------------------------------- |
 | Instance ID   | `i-0987f70a131ed3ab1`                                 |
 | Type          | `t3.medium` (2 vCPU, 4 GB RAM)                        |
-| Region        | `eu-west-2` (London)                                  |
+| Region        | `us-east-1` (N. Virginia)                                  |
 | AMI           | Ubuntu 24.04 LTS (x86_64)                            |
 | Public IP     | `13.40.112.220`                                       |
-| Public DNS    | `ec2-13-40-112-220.eu-west-2.compute.amazonaws.com`   |
+| Public DNS    | `ec2-13-40-112-220.us-east-1.compute.amazonaws.com`   |
 | Volume        | 20 GB gp3                                             |
 | Cost          | ~$17/month                                            |
 

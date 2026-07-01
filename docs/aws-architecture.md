@@ -3,7 +3,7 @@
 > **Status:** Living doc. Written 2026-05-28. Reflects actual deployed state;
 > planned-but-not-applied Terraform resources are clearly marked.
 >
-> **AWS Account:** `159903201072` (root), region `eu-west-2` (London).
+> **AWS Account:** `037613907429` (root), region `us-east-1` (N. Virginia).
 > **Account owner:** Chuan (team lead, CTO @ Gyld Finance). This is a shared
 > account also running Kaleidoscope and Lighthouse workloads — only
 > Archimedes-specific resources are inventoried here.
@@ -43,7 +43,7 @@ Internet → Route 53 → Elastic IP → EC2 (nginx:80/443) → Docker network
 | **ACM Certificate** | `arn:aws:acm:us-east-1::certificate/9ba0da81...` | TLS cert for `archimedes-arc.com` | DNS-validated, ISSUED | **$0** |
 | **S3: Corpus Artifacts** | `archimedes-corpus-artifacts-prod` | KB pipeline output (empty) | SSE-S3, versioned | **~$0** |
 | **S3: Paper PDFs** | `archimedes-paper-pdfs-prod` | Ingested paper PDFs (empty) | SSE-S3 | **~$0** |
-| **S3: TF State** | `archimedes-tfstate-159903201072` | Terraform remote state | Versioned, SSE-S3, S3-native locking | **~$0** |
+| **S3: TF State** | `archimedes-tfstate-037613907429` | Terraform remote state | Versioned, SSE-S3, S3-native locking | **~$0** |
 | **DynamoDB** | `archimedes-papers-index` | Paper metadata index | PAY_PER_REQUEST, 0 items | **~$0** |
 | **SSM Parameters** | `/archimedes/prod/*` (5 params) | Secrets: ANTHROPIC_AUTH_TOKEN, CIRCLE_API_KEY, CIRCLE_ENTITY_SECRET, DATABASE_URL, REDIS_URL | SecureString, KMS-encrypted | **$0.25** |
 | **IAM Role: Backend** | `archimedes-backend-role` | EC2 instance profile: S3 corpus r/w, DynamoDB papers r/w, SSM params read, KMS decrypt | Inline policy | **$0** |
@@ -109,8 +109,8 @@ Internet → Route 53 → ALB (HTTPS, WAF) → EC2 (private subnet, port 80)
 |---|---|---|---|
 | **VPC** | `vpc.tf` | 10.0.0.0/16, DNS support enabled | **$0** |
 | **Internet Gateway** | `vpc.tf` | For public subnets | **$0** |
-| **2× Public Subnets** | `vpc.tf` | 10.0.0.0/24, 10.0.1.0/24 (eu-west-2a/b) | **$0** |
-| **2× Private Subnets** | `vpc.tf` | 10.0.10.0/24, 10.0.11.0/24 (eu-west-2a/b) | **$0** |
+| **2× Public Subnets** | `vpc.tf` | 10.0.0.0/24, 10.0.1.0/24 (us-east-1a/b) | **$0** |
+| **2× Private Subnets** | `vpc.tf` | 10.0.10.0/24, 10.0.11.0/24 (us-east-1a/b) | **$0** |
 | **2× NAT Instances** | `vpc.tf` | fck-nat on t4g.nano, one per AZ | **~$7.88** |
 | **VPC Peering** | `aurora.tf` | Default VPC ↔ new VPC (transitional) | **$0** + data transfer |
 | **Aurora Serverless v2** | `aurora.tf` | PostgreSQL 16.4, 0.5–16 ACU, encrypted, 7-day backups | **~$43.80** (min 0.5 ACU × $0.12/hr × 730) |
@@ -267,16 +267,16 @@ auto-scaling, fine for our workload).
 
 ```bash
 # 1. Check instance status
-aws ec2 describe-instance-status --instance-ids i-0987f70a131ed3ab1 --region eu-west-2
+aws ec2 describe-instance-status --instance-ids i-0987f70a131ed3ab1 --region us-east-1
 
 # 2. If InstanceStatus = impaired:
-aws ec2 reboot-instances --instance-ids i-0987f70a131ed3ab1 --region eu-west-2
+aws ec2 reboot-instances --instance-ids i-0987f70a131ed3ab1 --region us-east-1
 # Wait 2 min, recheck. If still impaired:
 
 # 3. Stop → Start (fresh host)
-aws ec2 stop-instances --instance-ids i-0987f70a131ed3ab1 --region eu-west-2
+aws ec2 stop-instances --instance-ids i-0987f70a131ed3ab1 --region us-east-1
 # Wait for 'stopped' state
-aws ec2 start-instances --instance-ids i-0987f70a131ed3ab1 --region eu-west-2
+aws ec2 start-instances --instance-ids i-0987f70a131ed3ab1 --region us-east-1
 # Wait for InstanceStatus = ok
 
 # 4. DNS update (EIP should prevent this, but verify)
@@ -293,7 +293,7 @@ curl -s https://archimedes-arc.com/api/health
 ```bash
 aws ssm send-command \
   --instance-ids i-0987f70a131ed3ab1 \
-  --region eu-west-2 \
+  --region us-east-1 \
   --document-name AWS-RunShellScript \
   --parameters '{"commands":["sudo docker ps --format \"table {{.Names}}\t{{.Status}}\"","free -h","df -h /","sudo docker system df"]}' \
   --timeout-seconds 30
@@ -304,7 +304,7 @@ aws ssm send-command \
 ```bash
 aws ssm send-command \
   --instance-ids i-0987f70a131ed3ab1 \
-  --region eu-west-2 \
+  --region us-east-1 \
   --document-name AWS-RunShellScript \
   --parameters '{"commands":["sudo docker builder prune -af"]}' \
   --timeout-seconds 120
@@ -331,7 +331,7 @@ gh workflow run deploy.yml --ref main
 | Deploy builds on-instance (OOM risk) | Medium | Accepted for hackathon | Post-hackathon: ECR |
 | WAF managed rules in COUNT mode | Low | Intentional (observation period) | Flip to BLOCK after 48h |
 | `archimedes-dan-browne-credentials` secret | Low | Staged for Dan's one-time retrieval | Delete after retrieval |
-| ACM cert in us-east-1, ALB in eu-west-2 | Info | ACM for ALB must be in us-east-1 for CloudFront; regional ALB can use eu-west-2 cert. Current cert in us-east-1 works for global services but a separate eu-west-2 cert is needed for regional ALB. | Verify on apply |
+| ACM cert in us-east-1, ALB in us-east-1 | Info | ACM for ALB must be in us-east-1 for CloudFront; regional ALB can use us-east-1 cert. Current cert in us-east-1 works for global services but a separate us-east-1 cert is needed for regional ALB. | Verify on apply |
 
 ---
 

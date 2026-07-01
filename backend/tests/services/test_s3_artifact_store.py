@@ -20,7 +20,7 @@ class TestS3ArtifactStore:
         store = S3ArtifactStore.__new__(S3ArtifactStore)
         store.__init__()
         assert store.bucket == "archimedes-corpus-artifacts-prod"
-        assert store.region == "eu-west-2"
+        assert store.region == "us-east-1"
 
     def test_init_custom(self):
         store = S3ArtifactStore(bucket="my-bucket", region="us-east-1")

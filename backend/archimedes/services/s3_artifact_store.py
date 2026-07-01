@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_ARTIFACTS_BUCKET = "archimedes-corpus-artifacts-prod"
 _DEFAULT_PDFS_BUCKET = "archimedes-paper-pdfs-prod"
-_DEFAULT_REGION = "eu-west-2"
+_DEFAULT_REGION = "us-east-1"
 
 
 class S3ArtifactStore:

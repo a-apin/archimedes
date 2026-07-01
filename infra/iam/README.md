@@ -108,10 +108,10 @@ Store each as a **SecureString** so it is KMS-encrypted at rest:
 ```bash
 for k in LLM_PROVIDER LLM_AUTH_TOKEN LLM_BASE_URL EMAIL_ENCRYPTION_KEY VITE_CIRCLE_CLIENT_KEY; do
   read -rsp "$k: " v; echo
-  aws ssm put-parameter --region eu-west-2 --type SecureString \
+  aws ssm put-parameter --region us-east-1 --type SecureString \
     --name "/archimedes/prod/$k" --value "$v" --overwrite
 done
-aws ssm get-parameters-by-path --region eu-west-2 \
+aws ssm get-parameters-by-path --region us-east-1 \
   --path /archimedes/prod --recursive --query 'Parameter[].Name'   # verify (names only)
 ```
 

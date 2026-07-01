@@ -66,7 +66,7 @@ def load_ssm_secrets(
 
     Args:
         prefix: SSM path prefix (default: AWS_SSM_PATH_PREFIX env var or /archimedes/prod/)
-        region: AWS region (default: AWS_REGION env var or eu-west-2)
+        region: AWS region (default: AWS_REGION env var or us-east-1)
         override_existing: If True, overwrite env vars that already have values.
             Default False — .env values take precedence (useful for local dev override).
 
@@ -82,7 +82,7 @@ def load_ssm_secrets(
         logger.debug("secrets_service: AWS_SSM_PATH_PREFIX not set — skipping SSM load")
         return 0
 
-    region = region or os.environ.get("AWS_REGION", "eu-west-2")
+    region = region or os.environ.get("AWS_REGION", "us-east-1")
 
     try:
         import boto3
@@ -139,7 +139,7 @@ def _fetch_all_parameters(client: Any, prefix: str) -> list[dict[str, Any]]:
 def list_ssm_parameters(prefix: str | None = None, region: str | None = None) -> list[str]:
     """List parameter names (not values) under the prefix. Useful for diagnostics."""
     prefix = prefix or os.environ.get("AWS_SSM_PATH_PREFIX", _DEFAULT_PREFIX)
-    region = region or os.environ.get("AWS_REGION", "eu-west-2")
+    region = region or os.environ.get("AWS_REGION", "us-east-1")
 
     try:
         import boto3

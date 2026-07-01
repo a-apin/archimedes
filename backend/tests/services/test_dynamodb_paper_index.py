@@ -41,7 +41,7 @@ class TestDynamoDBPaperIndex:
         index = DynamoDBPaperIndex.__new__(DynamoDBPaperIndex)
         index.__init__()
         assert index.table_name == "archimedes-papers-index"
-        assert index.region == "eu-west-2"
+        assert index.region == "us-east-1"
 
     def test_init_from_env(self, monkeypatch):
         monkeypatch.setenv("AWS_DYNAMODB_PAPERS_TABLE", "custom-table")

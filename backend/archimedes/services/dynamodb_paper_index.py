@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TABLE = "archimedes-papers-index"
-_DEFAULT_REGION = "eu-west-2"
+_DEFAULT_REGION = "us-east-1"
 
 
 def _sanitize_for_dynamo(item: dict[str, Any]) -> dict[str, Any]:
