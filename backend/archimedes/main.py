@@ -37,6 +37,7 @@ from archimedes.api.leaderboard_routes import leaderboard_router
 from archimedes.api.limiter import limiter
 
 # (the marketplace route registration was removed — hardcoded fees + invented math, Issue #381)
+from archimedes.api.metrics_private_routes import metrics_private_router
 from archimedes.api.metrics_routes import metrics_router
 from archimedes.api.portfolio_routes import portfolio_router
 from archimedes.api.proposals_routes import proposals_router
@@ -260,6 +261,7 @@ app.include_router(user_router)
 app.include_router(auth_router)
 app.include_router(proposals_router)
 app.include_router(metrics_router)
+app.include_router(metrics_private_router)
 app.include_router(leaderboard_router)
 
 
@@ -342,6 +344,7 @@ async def health():
 
     # Human-vs-agent traction counts (issue #428). Fail-safe: get_counts
     # returns (0, 0) when Redis is unreachable, so /health never degrades on it.
+    # NOTE: these are cumulative per-request tallies (site traffic, NOT users).
     human_count = 0
     agent_count = 0
     try:
@@ -354,6 +357,17 @@ async def health():
             await _store.close()
     except Exception:
         logger.debug("telemetry counts read failed", exc_info=True)
+
+    # Distinct "real users" = wallet rows in user_profiles (issue #830). Surfaced
+    # next to the request tallies so no doc/monitor can conflate traffic with
+    # users. Fail-safe: returns 0 on any DB error.
+    real_users = 0
+    try:
+        from archimedes.services.user_stats import get_distinct_user_count
+
+        real_users = get_distinct_user_count()
+    except Exception:
+        logger.debug("real_users count read failed", exc_info=True)
 
     # Claim-integrity: corpus honesty fields (issue #778).
     # The `corpus_papers` / `corpus_db_count` counts above are *metadata records*
@@ -398,8 +412,11 @@ async def health():
         "status": "ok" if connected else "degraded",
         "service": "archimedes-backend",
         "chain_connected": connected,
+        # human_count / agent_count are cumulative per-request tallies (site
+        # traffic, NOT users). real_users is the honest distinct-user count.
         "human_count": human_count,
         "agent_count": agent_count,
+        "real_users": real_users,
         "corpus_papers": len(corpus),
         "corpus_db_count": db_count,
         "corpus_source": corpus_source,

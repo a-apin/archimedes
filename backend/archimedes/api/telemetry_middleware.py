@@ -45,6 +45,44 @@ _AGENT_UA_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Paths whose traffic is infra/telemetry polling, not a real visit: the health
+# probes (Docker/CI/CloudFront) and the metrics-READ endpoints (the dashboard
+# polling *itself*). Excluding them from the counter stops the instrument from
+# counting its own reads (issue #830). This changes WHICH requests increment, not
+# the INCR semantics of the requests that do — a real page hit still counts once.
+#
+# NOTE: the exclusion is a READ exclusion. The metrics-read surfaces are only ever
+# read via GET/HEAD, so we exclude those methods only. The one WRITE under
+# ``/api/metrics`` — the POST ``/api/metrics/funnel/event`` beacon — is a real user
+# action (a browser that rendered the page fired it) and MUST still count.
+_COUNTER_EXCLUDED_PREFIXES: tuple[str, ...] = (
+    "/health",
+    "/api/health",
+    "/api/metrics",
+)
+
+# Methods that a metrics-read/health poll uses. Only these are excluded on the
+# telemetry prefixes; a POST (the funnel/event beacon) always counts.
+_READ_METHODS: frozenset[str] = frozenset({"GET", "HEAD"})
+
+
+def _is_counted_request(request: Request) -> bool:
+    """False for infra/telemetry-poll READS + CORS preflights (issue #830).
+
+    OPTIONS is a CORS preflight, never a user action → never counted. The excluded
+    prefixes (health probes + metrics-read endpoints) are only skipped for READ
+    methods (GET/HEAD); the POST ``/api/metrics/funnel/event`` beacon is a real
+    user action and still counts. Everything else counts, exactly as before.
+    """
+    method = request.method
+    if method == "OPTIONS":
+        return False
+    if method not in _READ_METHODS:
+        # A write (e.g. the funnel/event beacon POST) is a real action → count it.
+        return True
+    path = request.url.path
+    return not any(path == p or path.startswith(p + "/") for p in _COUNTER_EXCLUDED_PREFIXES)
+
 
 def _is_browser_ua(user_agent: str) -> bool:
     """A real browser sends a ``Mozilla/...`` UA. Empty/non-Mozilla → not a browser."""
@@ -114,26 +152,30 @@ async def telemetry_middleware(request: Request, call_next):
         request.state.is_agent = is_agent
         request.state.agent_type = agent_type
 
-        # Lazy import keeps the store off the import-time critical path and
-        # makes the boundary (the Redis client) easy to mock in tests.
-        from archimedes.services.telemetry_store import TelemetryStore
+        # Count every real request, but skip infra/telemetry-poll paths and CORS
+        # preflights (issue #830) so the counter stops counting its own reads. The
+        # request is still classified + tagged above; only the INCR is skipped.
+        if _is_counted_request(request):
+            # Lazy import keeps the store off the import-time critical path and
+            # makes the boundary (the Redis client) easy to mock in tests.
+            from archimedes.services.telemetry_store import TelemetryStore
 
-        store = TelemetryStore()
-        try:
-            if is_agent:
-                await store.increment_agent()
-            else:
-                await store.increment_human()
-        finally:
-            await store.close()
+            store = TelemetryStore()
+            try:
+                if is_agent:
+                    await store.increment_agent()
+                else:
+                    await store.increment_human()
+            finally:
+                await store.close()
 
-        # Visitor insights (#787): record country + device for HUMAN visitors so we
-        # can see where our (un-promoted) traffic comes from. Fail-safe + humans-only
-        # (skips agents/crawlers). Uses request.state.visitor_id, set by the
-        # visitor-id middleware which runs outermost (before this one).
-        from archimedes.api.visitor_insights import record_visitor_insight
-
-        await record_visitor_insight(request, is_agent)
+        # Visitor insights (#787, #830): geography + device are NOT recorded here.
+        # Recording on every human-classified request leaked browser-UA bots
+        # through the open-demo default and inflated the distinct-visitor count
+        # (the 17-vs-50 discrepancy). The single source of truth for "distinct
+        # visitor" is the JS-gated `landed` beacon (see api/metrics_routes.py
+        # record_funnel_event), which shares the same archimedes_vid dedup key as
+        # the funnel — so geo/device and the funnel `landed` count agree.
     except Exception as exc:
         # Fail-safe: never let telemetry raise into the request path.
         logger.debug("telemetry middleware classify/count failed: %s", exc)
