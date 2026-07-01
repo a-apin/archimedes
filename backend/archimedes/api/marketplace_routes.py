@@ -19,6 +19,8 @@ from archimedes.db import get_session
 from archimedes.marketplace.encoding import derive_pool_id, to_bytes32
 from archimedes.marketplace.service import MarketService, Subscriber
 from archimedes.models.marketplace import MarketplaceAgent
+from archimedes.models.strategy_generators import wallet_can_publish
+from archimedes.models.strategy_store import StrategyRecord
 
 
 # ─── x402 Gateway Models ────────────────────────────────────────────────
@@ -87,6 +89,15 @@ async def publish_strategy(
         )
         if existing is not None:
             raise HTTPException(status_code=409, detail=f"Publisher already exists for strategy '{strategy_id}'")
+
+    # 1a. D5 ownership check — only the wallet that generated a strategy (or
+    #     a PLATFORM_ADMIN_WALLETS member for example strategies) can publish it.
+    with get_session() as session:
+        record = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Strategy '{strategy_id}' not found")
+        if not wallet_can_publish(session, strategy_id=strategy_id, wallet_address=wallet, is_example=record.is_example):
+            raise HTTPException(status_code=403, detail="You did not generate this strategy and cannot publish it")
 
     # 2. Derive pool_id (D-POOL) — NEVER from client
     pool_id = derive_pool_id(strategy_id, wallet)
@@ -475,6 +486,36 @@ async def list_published(request: Request):
         d["events"] = await market.state.get_events(d["strategy_id"], count=5)
         results.append(d)
 
+    return results
+
+
+# ---------------------------------------------------------------------------
+# GET /api/marketplace/my-published
+# ---------------------------------------------------------------------------
+
+
+@marketplace_router.get("/my-published")
+async def list_my_published(
+    request: Request,
+    wallet: str = Depends(require_verified_wallet),
+):
+    """Same as GET /published but scoped to the caller's own publisher rows.
+
+    Powers the 'Published' tab in Strategies.jsx.
+    """
+    market = _get_market(request)
+    with get_session() as session:
+        rows = (
+            session.query(MarketplaceAgent)
+            .filter(MarketplaceAgent.role == "publisher", MarketplaceAgent.creator_wallet == wallet.lower())
+            .all()
+        )
+    results = []
+    for row in rows:
+        d = row.to_dict()
+        subs = market.publishers.get(d["strategy_id"], None)
+        d["subscriber_count"] = len(subs.subscribers) if subs else 0
+        results.append(d)
     return results
 
 

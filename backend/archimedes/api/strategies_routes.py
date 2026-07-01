@@ -491,6 +491,7 @@ async def list_generated_strategies(request: Request, limit: int = Query(50, ge=
     from sqlalchemy import or_
 
     from archimedes.db import get_session
+    from archimedes.models.strategy_generators import StrategyGenerator
     from archimedes.models.strategy_store import StrategyRecord
 
     caller = get_verified_wallet(request)  # None when anonymous — never an error
