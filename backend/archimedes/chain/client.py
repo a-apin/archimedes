@@ -18,22 +18,18 @@ from web3.middleware import ExtraDataToPOAMiddleware
 from web3.providers import AsyncHTTPProvider
 
 # Committed transitional default addresses for the synths still in the SSOT (#725
-# removed sTSLA/sNVDA — single stocks — so they have NO defaults here). These keep the
-# currently-deployed synths resolvable BEFORE the T3.2 redeploy; at the redeploy, the
-# ARC_<SYMBOL>_ADDRESS env vars override them for the full 59-synth set.
+# removed sTSLA/sNVDA — single stocks — so they have NO defaults here; #842 retired
+# sGOLD/sOIL/sNKY from the universe — sGOLD→sGLD/sXAU, sOIL/sNKY dropped — so their
+# stale defaults were removed too, keeping this map an exact subset of ON_CHAIN_SYNTHS).
+# These keep the currently-deployed synths resolvable BEFORE the T3.2 redeploy; at the
+# redeploy, the ARC_<SYMBOL>_ADDRESS env vars override them for the full synth set.
 _SYNTH_DEFAULTS: dict[str, str] = {
     "sSPY": "0x6fea38dedea0c6bb66ce93e5383c34385d8b889f",
     "sBTC": "0x317e82be8f7cba6c162ab968fcf695d88e8e0359",
-    "sGOLD": "0xf384562c8bdafce52400eb6839f195695f6fa276",
-    "sOIL": "0x46cead4120f17a968ba1168f1a56563962cf3c4b",
-    "sNKY": "0x445b8f0f827a0d384d1b8ccf18cbc6ec8a543376",
 }
 _ORACLE_DEFAULTS: dict[str, str] = {
     "sSPY": "0xd8161a8eeab7c7100e2863abe3d5f346b5ff9e52",
     "sBTC": "0x6cc5f621c4e3b46152e69e5c9873689cbb4a85e8",
-    "sGOLD": "0x35fccde01ae8728c7a7cb83c3f59c701ebecc633",
-    "sOIL": "0x79f354524fd09af16d841a2221af2b2b7bc432c8",
-    "sNKY": "0xcd34a4103ad64a3cf729b1b1a58295ccc957fcee",
 }
 
 

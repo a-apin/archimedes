@@ -45,16 +45,10 @@ CORE_ENV_VAR_FOR_FIELD = {
 PINNED_SYNTH_DEFAULTS = {
     "sSPY": "0x6fea38dedea0c6bb66ce93e5383c34385d8b889f",
     "sBTC": "0x317e82be8f7cba6c162ab968fcf695d88e8e0359",
-    "sGOLD": "0xf384562c8bdafce52400eb6839f195695f6fa276",
-    "sOIL": "0x46cead4120f17a968ba1168f1a56563962cf3c4b",
-    "sNKY": "0x445b8f0f827a0d384d1b8ccf18cbc6ec8a543376",
 }
 PINNED_ORACLE_DEFAULTS = {
     "sSPY": "0xd8161a8eeab7c7100e2863abe3d5f346b5ff9e52",
     "sBTC": "0x6cc5f621c4e3b46152e69e5c9873689cbb4a85e8",
-    "sGOLD": "0x35fccde01ae8728c7a7cb83c3f59c701ebecc633",
-    "sOIL": "0x79f354524fd09af16d841a2221af2b2b7bc432c8",
-    "sNKY": "0xcd34a4103ad64a3cf729b1b1a58295ccc957fcee",
 }
 
 # Any SSOT symbol with no committed default = "undeployed pre-redeploy". Selected
@@ -105,7 +99,7 @@ class TestCoreFields:
 
 class TestSsotSynthMaps:
     def test_maps_use_defaults_for_in_ssot_synths(self, clean_env):
-        """The 5 committed transitional defaults (in-SSOT synths) appear in the maps."""
+        """The committed transitional defaults (in-SSOT synths) appear in the maps."""
         s = ChainSettings(_env_file=None)
         # Pinned-literal check FIRST: catches an accidental change to a committed
         # default address (the imported-dict loop below can't — it re-reads the
