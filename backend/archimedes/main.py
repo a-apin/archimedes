@@ -170,8 +170,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     market = getattr(_app.state, "market", None)
     if market is not None:
         market._stop.set()
-        for strategy_id in list(market.publishers.keys()):
-            await market.stop_publisher(strategy_id)
+        strategy_ids = list(market.publishers.keys())
+        if strategy_ids:
+            await asyncio.gather(
+                *(market.stop_publisher(sid) for sid in strategy_ids),
+            )
         _logger.info("marketplace engine stopped")
 
 
