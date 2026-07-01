@@ -82,33 +82,43 @@ async def publish_strategy(
             owner_wallet=wallet,
         )
 
-    # 4. Call PaymentSplitter.createPool on-chain (owner key only)
+    # 4. Check on-chain pool status, then createPool if needed (owner key only)
+    splitter_addr = market.settings.payment_splitter_address
+    pool_already_active = False
     try:
-        splitter_addr = market.settings.payment_splitter_address
-        if market.signer.is_configured:
-            await market.signer.execute_contract(
-                splitter_addr,
-                "createPool(bytes32,address,address)",
-                [to_bytes32(pool_id), wallet, platform_wallet or wallet],
-            )
-        else:
-            c = market.loader._contract(splitter_addr, "PaymentSplitter")
-            tx = await c.functions.createPool(to_bytes32(pool_id), wallet, platform_wallet or wallet).build_transaction(
-                {
-                    "from": market.settings.agent_account.address,
-                    "nonce": await market.loader.client.w3.eth.get_transaction_count(
-                        market.settings.agent_account.address
-                    ),
-                    "gas": 200_000,
-                    "gasPrice": await market.loader.client.w3.eth.gas_price,
-                }
-            )
-            signed = market.settings.agent_account.sign_transaction(tx)
-            h = await market.loader.client.w3.eth.send_raw_transaction(signed.raw_transaction)
-            await market.loader.client.w3.eth.wait_for_transaction_receipt(h)
-    except Exception as exc:
-        logger.warning("createPool failed (pool may already exist): %s", exc)
-        # Non-fatal — pool may already be active from a prior run
+        sp_c = market.loader._contract(splitter_addr, "PaymentSplitter")
+        sp_data = await sp_c.functions.pools(to_bytes32(pool_id)).call()
+        # pools returns (creator, platform, total_collected, total_disbursed, active)
+        pool_already_active = bool(sp_data[4]) if len(sp_data) >= 5 else False
+    except Exception:
+        logger.warning("pools() staticcall failed; proceeding with createPool")
+
+    if not pool_already_active:
+        try:
+            if market.signer.is_configured:
+                await market.signer.execute_contract(
+                    splitter_addr,
+                    "createPool(bytes32,address,address)",
+                    [to_bytes32(pool_id), wallet, platform_wallet or wallet],
+                )
+            else:
+                c = market.loader._contract(splitter_addr, "PaymentSplitter")
+                tx = await c.functions.createPool(to_bytes32(pool_id), wallet, platform_wallet or wallet).build_transaction(
+                    {
+                        "from": market.settings.agent_account.address,
+                        "nonce": await market.loader.client.w3.eth.get_transaction_count(
+                            market.settings.agent_account.address
+                        ),
+                        "gas": 200_000,
+                        "gasPrice": await market.loader.client.w3.eth.gas_price,
+                    }
+                )
+                signed = market.settings.agent_account.sign_transaction(tx)
+                h = await market.loader.client.w3.eth.send_raw_transaction(signed.raw_transaction)
+                await market.loader.client.w3.eth.wait_for_transaction_receipt(h)
+        except Exception as exc:
+            logger.error("createPool failed: %s", exc)
+            raise HTTPException(status_code=502, detail=f"Failed to create pool on-chain: {exc}") from exc
 
     # 5. Insert publisher row — write pool_id into the real pool_id column
     with get_session() as session:

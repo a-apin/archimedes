@@ -35,14 +35,19 @@ def app():
 
     market = MagicMock(spec=MarketService)
     market.dry_run = True
+    # Use the signer path for contract calls (simpler mock surface)
     market.signer = MagicMock()
-    market.signer.is_configured = False
+    market.signer.is_configured = True
+    market.signer.execute_contract = AsyncMock()
     market.executor = MagicMock()
     market.executor.create_vault = AsyncMock(return_value="0xvault")
     market.loader = MagicMock()
+    market.loader._contract.return_value.functions.pools.return_value.call = AsyncMock(
+        return_value=("0xaddr", "0xaddr", 0, 0, False)
+    )
     market.settings = MagicMock()
     market.settings.payment_splitter_address = "0xsplitter"
-    market.settings.agent_account = MagicMock()
+    market.settings.subscription_manager_address = "0xsubmgr"
     market.start_publisher = AsyncMock()
     market.add_subscriber = AsyncMock()
     market.remove_subscriber = AsyncMock()
