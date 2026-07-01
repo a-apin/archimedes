@@ -12,8 +12,9 @@ import logging
 import os
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from archimedes.api._route_helpers import strategy_provider
 from archimedes.api.auth_siwe import require_verified_wallet
@@ -173,18 +174,26 @@ async def publish_strategy(
             logger.error("createPool failed: %s", exc)
             raise HTTPException(status_code=502, detail=f"Failed to create pool on-chain: {exc}") from exc
 
-    # 5. Insert publisher row — write pool_id into the real pool_id column
+    # 5. Insert publisher row (DB-level partial unique index prevents
+    #    two running publishers for the same strategy_id — C-4).
     with get_session() as session:
-        agent = MarketplaceAgent(
-            role="publisher",
-            strategy_id=strategy_id,
-            creator_wallet=wallet,
-            pool_id=pool_id,
-            vault_address=vault_address,
-        )
-        session.add(agent)
-        session.commit()
-        result = agent.to_dict()
+        try:
+            agent = MarketplaceAgent(
+                role="publisher",
+                strategy_id=strategy_id,
+                creator_wallet=wallet,
+                pool_id=pool_id,
+                vault_address=vault_address,
+            )
+            session.add(agent)
+            session.commit()
+            result = agent.to_dict()
+        except IntegrityError:
+            session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=f"Publisher already exists for strategy '{strategy_id}'",
+            ) from None
 
     # 6. Start the publisher loop
     await market.start_publisher(strategy_id, pool_id, vault_address, wallet)

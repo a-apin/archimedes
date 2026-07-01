@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Integer, Numeric, String
+from sqlalchemy import DateTime, Index, Integer, Numeric, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from archimedes.models.chat import Base
@@ -12,6 +12,15 @@ from archimedes.models.chat import Base
 
 class MarketplaceAgent(Base):
     __tablename__ = "marketplace_agents"
+
+    __table_args__ = (
+        Index(
+            "uq_marketplace_agents_running_publisher",
+            "strategy_id",
+            unique=True,
+            postgresql_where=text("role = 'publisher' AND status = 'running'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     role: Mapped[str] = mapped_column(String(16), nullable=False)  # "publisher" | "subscriber"
