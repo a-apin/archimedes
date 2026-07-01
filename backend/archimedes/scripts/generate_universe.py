@@ -482,22 +482,25 @@ _COMMENT = (
     "SYNTHETICS is derived from here) AND the backtest path (every symbol here is present in "
     "strategy_signal_evaluator.GLOBAL_ASSETS via its `yfinance_ticker` and so is backtestable). The "
     "parity invariant in backend/tests/test_universe_parity.py fails CI if the two ever diverge. "
-    "HONEST per-source oracle schema: `yfinance_ticker` is REQUIRED (backtest source + parity key); "
-    "`pyth_feed_id` is a REAL Pyth Hermes feed id or null (never fabricated); `stork_asset_id` and "
-    "`chainlink_feed` are null for now (no public Stork catalog to resolve yet; Arc has no price Data "
-    "Feeds yet). `oracle_tier` is only a HINT derived from the count of configured feeds — the "
-    "AUTHORITATIVE tier is determined on-chain via QuorumPriceOracle.priceWithProvenance() (PR #840). "
+    "HONEST oracle schema (Chainlink-only, #724): `yfinance_ticker` is REQUIRED (backtest source + "
+    "parity key); `chainlink_feed` is the live on-chain price source when configured (null for now — "
+    "Arc has no Chainlink Data Feeds yet, only CCIP as of 2026-06-30); `pyth_feed_id` is a REAL Pyth "
+    "Hermes id or null (never fabricated), retained as REFERENCE metadata only — NOT on the live "
+    "oracle path; `stork_asset_id` is null (multi-source quorum dropped 2026-07-01). `oracle_tier` is "
+    "the live PriceOracle tier: `chainlink` when a Data Feed is configured for the synth, else `admin`. "
     "Add-only by convention; do not rename or repurpose existing symbols. Single-stock synths are NOT "
     "live here — see `_compliance_review` below."
 )
 
 _CHAINLINK_NOTE = (
-    "Oracle sources: admin-push + Pyth Hermes (#826) + Stork adapter (#828), medianed on-chain "
-    "by QuorumPriceOracle (#840). Chainlink price Data Feeds are NOT yet deployed on Arc testnet "
-    "(only CCIP as of 2026-06-30) — `chainlink_feed` is null pending Arc publishing feed addresses; "
-    "wiring is one addFeed call away. `oracle_tier` is a hint (quorum if >=2 of {pyth,stork,chainlink} "
-    "are set, single_checked if exactly 1, admin if 0); the authoritative tier is on-chain via "
-    "QuorumPriceOracle.priceWithProvenance()."
+    "Oracle: Chainlink-only via the on-chain PriceOracle (#724) — one Chainlink AggregatorV3Interface "
+    "Data Feed per synth, with a bounded admin-push fallback (yfinance-derived) when no feed is "
+    "configured or it reads stale/out-of-band. Chainlink price Data Feeds are NOT yet deployed on Arc "
+    "testnet (only CCIP as of 2026-06-30) — `chainlink_feed` is null pending Arc publishing feed "
+    "addresses; wiring is one `setPriceFeed` call away. Until then the live source is the bounded "
+    "admin push, so `oracle_tier` is `admin` everywhere (it becomes `chainlink` per-synth once its "
+    "feed is configured). The multi-source quorum (Pyth/Stork median) was dropped 2026-07-01; "
+    "`pyth_feed_id` is retained as reference metadata only and is NOT on the live oracle path."
 )
 
 
@@ -566,9 +569,11 @@ def resolve_pyth_id(asset: Asset, idx: dict[tuple[str, str], str]) -> str | None
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _oracle_tier(pyth: str | None, stork: str | None, chainlink: str | None) -> str:
-    n = sum(1 for v in (pyth, stork, chainlink) if v)
-    return "quorum" if n >= 2 else ("single_checked" if n == 1 else "admin")
+def _oracle_tier(chainlink: str | None) -> str:
+    # Chainlink-only oracle (#724 PriceOracle): the live per-synth tier is `chainlink`
+    # when a Chainlink Data Feed is configured, else the bounded admin fallback. The
+    # multi-source quorum (pyth/stork median) was dropped 2026-07-01.
+    return "chainlink" if chainlink else "admin"
 
 
 def build_synthetics(idx: dict[tuple[str, str], str]) -> dict[str, dict]:
@@ -589,7 +594,7 @@ def build_synthetics(idx: dict[tuple[str, str], str]) -> dict[str, dict]:
             "pyth_feed_id": pyth,
             "stork_asset_id": stork,
             "chainlink_feed": chainlink,
-            "oracle_tier": _oracle_tier(pyth, stork, chainlink),
+            "oracle_tier": _oracle_tier(chainlink),
         }
     return out
 
