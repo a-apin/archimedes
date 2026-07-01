@@ -21,7 +21,7 @@ from archimedes.chain.executor import ChainExecutor
 from archimedes.db import get_session
 from archimedes.marketplace.encoding import to_bytes32
 from archimedes.marketplace.state import MarketState
-from archimedes.models.marketplace import SubscriberLiability
+from archimedes.models.marketplace import MarketplaceAgent, SubscriberLiability
 from archimedes.models.portfolio import Portfolio, TargetAllocation, TradeDirection, TradeOrder
 from archimedes.services.strategy_provider import default_provider
 from archimedes.services.strategy_signal_evaluator import (
@@ -461,6 +461,26 @@ class MarketService:
             )
         except Exception:
             logger.exception("Failed to record liability for %s / %s", sub.sub_id, tick_id)
+
+    def _deactivate_subscriber_db(self, strategy_id: str, sub_id: str) -> None:
+        """Persist subscriber deactivation to Postgres on unsubscribe (M5/A1)."""
+        try:
+            with get_session() as session:
+                row = (
+                    session.query(MarketplaceAgent)
+                    .filter(
+                        MarketplaceAgent.role == "subscriber",
+                        MarketplaceAgent.strategy_id == strategy_id,
+                        MarketplaceAgent.sub_id == sub_id,
+                        MarketplaceAgent.status == "running",
+                    )
+                    .first()
+                )
+                if row is not None:
+                    row.status = "stopped"
+                    session.commit()
+        except Exception:
+            logger.exception("Failed to persist subscriber deactivation for %s/%s", strategy_id, sub_id)
 
     async def _apply_to_subscriber(
         self,
