@@ -115,6 +115,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     try:
         from archimedes.db import get_session
         from archimedes.models.marketplace import MarketplaceAgent
+        from archimedes.marketplace.service import Subscriber
 
         with get_session() as session:
             publishers = (
@@ -122,14 +123,44 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 .filter(MarketplaceAgent.role == "publisher", MarketplaceAgent.status == "running")
                 .all()
             )
+            strategy_ids = [row.strategy_id for row in publishers]
+            subscriber_rows = (
+                session.query(MarketplaceAgent)
+                .filter(
+                    MarketplaceAgent.role == "subscriber",
+                    MarketplaceAgent.status == "running",
+                    MarketplaceAgent.strategy_id.in_(strategy_ids),
+                )
+                .all()
+                if strategy_ids
+                else []
+            )
+
+        # Group subscriber rows by strategy_id
+        subscribers_by_strategy: dict[str, dict[str, Subscriber]] = {}
+        for srow in subscriber_rows:
+            subscribers_by_strategy.setdefault(srow.strategy_id, {})[srow.sub_id] = Subscriber(
+                sub_id=srow.sub_id,
+                pool_id=srow.pool_id,
+                vault_address=srow.vault_address,
+                ephemeral_wallet=srow.ephemeral_wallet,
+                subscriber_wallet=srow.subscriber_wallet,
+                active=True,
+            )
+
         for row in publishers:
+            subs = subscribers_by_strategy.get(row.strategy_id, {})
             await market.start_publisher(
                 strategy_id=row.strategy_id,
                 pool_id=row.pool_id,
                 vault_address=row.vault_address,
                 creator_wallet=row.creator_wallet,
+                subscribers=subs,
             )
-            _logger.info("rehydrated publisher %s (vault=%s)", row.strategy_id, row.vault_address)
+            _logger.info(
+                "rehydrated publisher %s (vault=%s, %d subscribers from Postgres)",
+                row.strategy_id, row.vault_address, len(subs),
+            )
     except Exception as exc:
         _logger.warning("startup: publisher rehydration failed (non-fatal): %s", exc)
 

@@ -126,17 +126,34 @@ class MarketService:
 
     # ---- lifecycle -------------------------------------------------------
 
-    async def start_publisher(self, strategy_id: str, pool_id: str, vault_address: str, creator_wallet: str) -> None:
-        """Start a publisher loop for a strategy. Idempotent."""
+    async def start_publisher(
+        self,
+        strategy_id: str,
+        pool_id: str,
+        vault_address: str,
+        creator_wallet: str,
+        subscribers: dict[str, Subscriber] | None = None,
+    ) -> None:
+        """Start a publisher loop for a strategy. Idempotent.
+
+        If *subscribers* is provided (e.g. rehydrated from Postgres on boot —
+        the source of truth, D4), it is used as-is and written through to Redis
+        to repopulate the cache. Otherwise subscribers are loaded from the Redis
+        cache — used by the live /publish path, where no subscribers exist yet.
+        """
         if strategy_id in self.publishers and self.publishers[strategy_id].task is not None:
             logger.info("Publisher %s already running", strategy_id)
             return
 
-        # Rehydrate subscribers from Redis
-        raw = await self.state.load_subscribers(strategy_id)
-        subscribers: dict[str, Subscriber] = {}
-        for sid, data in raw.items():
-            subscribers[sid] = Subscriber(**data)
+        if subscribers is not None:
+            # Postgres is truth (D4) — overwrite the Redis cache unconditionally,
+            # including with an empty dict if Postgres shows zero active subs.
+            await self.state.save_subscribers(
+                strategy_id, {sid: vars(s) for sid, s in subscribers.items()}
+            )
+        else:
+            raw = await self.state.load_subscribers(strategy_id)
+            subscribers = {sid: Subscriber(**data) for sid, data in raw.items()}
 
         pub = Publisher(
             strategy_id=strategy_id,
