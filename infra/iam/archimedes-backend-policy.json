@@ -81,7 +81,6 @@
       "Condition": {
         "StringEquals": {
           "kms:ViaService": [
-            "ssm.us-east-1.amazonaws.com",
             "ssm.us-east-1.amazonaws.com"
           ]
         }

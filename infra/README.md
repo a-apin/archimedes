@@ -36,8 +36,7 @@ with Terraform). No DynamoDB table needed.
 # S3 bucket — versioned, encrypted, no public access
 aws s3api create-bucket \
   --bucket archimedes-tfstate-037613907429 \
-  --region us-east-1 \
-  --create-bucket-configuration LocationConstraint=us-east-1
+  --region us-east-1
 
 aws s3api put-bucket-versioning \
   --bucket archimedes-tfstate-037613907429 \

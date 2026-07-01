@@ -7,7 +7,7 @@
 > AWS credentials here). Treat every command as *review-then-run*, and schedule a
 > real game-day drill (see § Drills) before relying on this.
 
-Region: `us-east-1`. Account / profile: `archimedes` (see `CLAUDE.md` § AWS
+Region: `us-east-1`. Account / profile: `ArchimedesDanAdmin` (see `CLAUDE.md` § AWS
 account access). All admin access is via **SSM Session Manager**, not SSH.
 
 ---
