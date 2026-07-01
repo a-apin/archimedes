@@ -18,8 +18,10 @@ from archimedes.chain.circle_signer import CircleSigner
 from archimedes.chain.client import ChainSettings
 from archimedes.chain.contracts import ContractLoader
 from archimedes.chain.executor import ChainExecutor
+from archimedes.db import get_session
 from archimedes.marketplace.encoding import to_bytes32
 from archimedes.marketplace.state import MarketState
+from archimedes.models.marketplace import MarketplaceAgent
 from archimedes.models.portfolio import Portfolio, TargetAllocation, TradeDirection, TradeOrder
 from archimedes.services.strategy_provider import default_provider
 from archimedes.services.strategy_signal_evaluator import (
@@ -186,6 +188,7 @@ class MarketService:
         pub = self.publishers.get(strategy_id)
         if pub and sub_id in pub.subscribers:
             pub.subscribers[sub_id].active = False
+            self._deactivate_subscriber_db(strategy_id, sub_id)
             del pub.subscribers[sub_id]
             await self.state.save_subscribers(strategy_id, {sid: vars(s) for sid, s in pub.subscribers.items()})
             logger.info("Removed subscriber %s from %s", sub_id, strategy_id)
@@ -242,6 +245,7 @@ class MarketService:
             ok = await self._charge(sub.sub_id, action_count)
             if not ok:
                 sub.active = False
+                self._deactivate_subscriber_db(strategy_id, sub.sub_id)
                 await self.state.append_event(
                     strategy_id,
                     {
@@ -304,6 +308,26 @@ class MarketService:
             all_signals,
             usdc_floor=_USDC_FLOOR,
         )
+
+    def _deactivate_subscriber_db(self, strategy_id: str, sub_id: str) -> None:
+        """Persist subscriber deactivation to Postgres (M5)."""
+        try:
+            with get_session() as session:
+                row = (
+                    session.query(MarketplaceAgent)
+                    .filter(
+                        MarketplaceAgent.role == "subscriber",
+                        MarketplaceAgent.strategy_id == strategy_id,
+                        MarketplaceAgent.sub_id == sub_id,
+                        MarketplaceAgent.status == "running",
+                    )
+                    .first()
+                )
+                if row is not None:
+                    row.status = "stopped"
+                    session.commit()
+        except Exception:
+            logger.exception("Failed to persist subscriber deactivation for %s/%s", strategy_id, sub_id)
 
     async def _charge(self, sub_id: str, action_count: int) -> bool:
         """Charge a subscriber on-chain. Returns True on success."""
