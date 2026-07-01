@@ -242,9 +242,10 @@ class MarketService:
         """
         while not self._stop.is_set():
             try:
-                if await self.state.try_acquire_leader(strategy_id):  # D-LEADER
+                token = await self.state.try_acquire_leader(strategy_id)  # D-LEADER
+                if token is not None:
                     try:
-                        await self.tick(strategy_id)
+                        await self.tick(strategy_id, leader_token=token)
                     except Exception:
                         logger.exception("tick failed for %s", strategy_id)
             except Exception:
@@ -258,7 +259,7 @@ class MarketService:
 
             await asyncio.sleep(self.interval)
 
-    async def tick(self, strategy_id: str) -> None:
+    async def tick(self, strategy_id: str, leader_token: str | None = None) -> None:
         """Run one full rebalance cycle for a strategy.
 
         Lock is released in ``finally`` so tick cadence is governed purely by
@@ -339,7 +340,7 @@ class MarketService:
 
             # Midpoint renewal — cheap crash insurance for a slow tick.
             # Called exactly once per tick regardless of subscriber count.
-            await self.state.renew_leader(strategy_id)
+            await self.state.renew_leader(strategy_id, token=leader_token)
 
             # Process second half (only if we split above)
             if midpoint:
@@ -372,7 +373,7 @@ class MarketService:
                 {sid: vars(s) for sid, s in pub.subscribers.items()},
             )
         finally:
-            await self.state.release_leader(strategy_id)
+            await self.state.release_leader(strategy_id, token=leader_token)
 
     # ---- helpers ---------------------------------------------------------
 

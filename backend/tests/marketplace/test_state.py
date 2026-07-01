@@ -49,25 +49,60 @@ async def test_load_subscribers_empty(state: MarketState):
 @pytest.mark.asyncio
 async def test_per_strategy_leader_lock(state: MarketState):
     """Each strategy gets its own independent lock (C2)."""
-    # Acquire lock for strategy A
-    assert await state.try_acquire_leader("strat_a", ttl_seconds=10) is True
+    # Acquire lock for strategy A — returns a token (str), not None
+    token_a = await state.try_acquire_leader("strat_a", ttl_seconds=10)
+    assert token_a is not None
     # Second acquire for same strategy should fail
-    assert await state.try_acquire_leader("strat_a", ttl_seconds=10) is False
+    assert await state.try_acquire_leader("strat_a", ttl_seconds=10) is None
     # Different strategy can acquire independently
-    assert await state.try_acquire_leader("strat_b", ttl_seconds=10) is True
+    token_b = await state.try_acquire_leader("strat_b", ttl_seconds=10)
+    assert token_b is not None
 
-    # Renew strategy A lock
-    await state.renew_leader("strat_a", ttl_seconds=10)
+    # Renew strategy A lock with the correct token
+    await state.renew_leader("strat_a", token=token_a, ttl_seconds=10)
     # Still held after renew
-    assert await state.try_acquire_leader("strat_a", ttl_seconds=10) is False
+    assert await state.try_acquire_leader("strat_a", ttl_seconds=10) is None
 
-    # Release strategy A
-    await state.release_leader("strat_a")
+    # Release strategy A with the correct token
+    await state.release_leader("strat_a", token=token_a)
     # Now can re-acquire
-    assert await state.try_acquire_leader("strat_a", ttl_seconds=10) is True
+    token_a2 = await state.try_acquire_leader("strat_a", ttl_seconds=10)
+    assert token_a2 is not None
 
     # Strategy B lock is unaffected by A's release
-    assert await state.try_acquire_leader("strat_b", ttl_seconds=10) is False
+    assert await state.try_acquire_leader("strat_b", ttl_seconds=10) is None
+
+
+@pytest.mark.asyncio
+async def test_release_leader_rejects_wrong_token(state: MarketState):
+    """Stale-owner release is a no-op."""
+    token = await state.try_acquire_leader("strat_x", ttl_seconds=10)
+    assert token is not None
+
+    # A different token should NOT release the lock
+    await state.release_leader("strat_x", token="wrong-token")
+    # Lock still held
+    assert await state.try_acquire_leader("strat_x", ttl_seconds=10) is None
+
+    # Correct token does release
+    await state.release_leader("strat_x", token=token)
+    assert await state.try_acquire_leader("strat_x", ttl_seconds=10) is not None
+
+
+@pytest.mark.asyncio
+async def test_renew_leader_rejects_wrong_token(state: MarketState):
+    """Stale-owner renew is a no-op."""
+    token = await state.try_acquire_leader("strat_y", ttl_seconds=10)
+    assert token is not None
+
+    # A different token should NOT extend the lock
+    await state.renew_leader("strat_y", token="wrong-token", ttl_seconds=10)
+    # Lock still held by original owner
+    assert await state.try_acquire_leader("strat_y", ttl_seconds=10) is None
+
+    # Correct token extends
+    await state.renew_leader("strat_y", token=token, ttl_seconds=10)
+    assert await state.try_acquire_leader("strat_y", ttl_seconds=10) is None
 
 
 # ---- x402 payment state tests ------------------------------------------

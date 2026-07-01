@@ -21,7 +21,7 @@ def market():
     svc.loader = MagicMock()
     # Mock state
     svc.state = MagicMock()
-    svc.state.try_acquire_leader = AsyncMock(return_value=True)
+    svc.state.try_acquire_leader = AsyncMock(return_value="test-token")
     svc.state.renew_leader = AsyncMock()
     svc.state.release_leader = AsyncMock()
     svc.state.append_event = AsyncMock()
@@ -294,10 +294,10 @@ async def test_tick_releases_leader_lock_in_finally(market: MarketService):
         patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
         patch("archimedes.marketplace.service.compute_trades", return_value=[]),
     ):
-        await market.tick("strat_release")
+        await market.tick("strat_release", leader_token="t1")
 
-    # release_leader was called exactly once with the strategy_id
-    market.state.release_leader.assert_awaited_once_with("strat_release")
+    # release_leader was called exactly once with the strategy_id and token
+    market.state.release_leader.assert_awaited_once_with("strat_release", token="t1")
 
 
 @pytest.mark.asyncio
@@ -312,10 +312,10 @@ async def test_tick_releases_leader_lock_on_exception(market: MarketService):
     )
     with patch.object(market, "_evaluate", AsyncMock(side_effect=RuntimeError("boom"))):
         with pytest.raises(RuntimeError):
-            await market.tick("strat_err")
+            await market.tick("strat_err", leader_token="t2")
 
-    # release_leader was still called
-    market.state.release_leader.assert_awaited_once_with("strat_err")
+    # release_leader was still called with the token
+    market.state.release_leader.assert_awaited_once_with("strat_err", token="t2")
 
 
 @pytest.mark.asyncio
@@ -351,10 +351,10 @@ async def test_tick_renews_leader_at_midpoint(market: MarketService):
         patch.object(market, "_verify_payment", AsyncMock(return_value=True)),
         patch.object(market, "_apply_to_subscriber", AsyncMock(return_value=True)),
     ):
-        await market.tick("strat_renew")
+        await market.tick("strat_renew", leader_token="t3")
 
-    # renew_leader was called exactly once with the strategy_id
-    market.state.renew_leader.assert_awaited_once_with("strat_renew")
+    # renew_leader was called exactly once with the strategy_id and token
+    market.state.renew_leader.assert_awaited_once_with("strat_renew", token="t3")
 
 
 @pytest.mark.asyncio
@@ -389,7 +389,7 @@ async def test_two_strategies_tick_independently(market: MarketService):
 @pytest.mark.asyncio
 async def test_run_loop_uses_per_strategy_key(market: MarketService):
     """_run_loop acquires the per-strategy lock on each iteration."""
-    market.state.try_acquire_leader = AsyncMock(return_value=True)
+    market.state.try_acquire_leader = AsyncMock(return_value="loop-token")
 
     # Make the publisher retired so the loop exits after one iteration
     pub = Publisher(
