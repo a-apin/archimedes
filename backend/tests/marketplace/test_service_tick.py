@@ -43,9 +43,9 @@ def _dummy_trades():
 
 
 @pytest.mark.asyncio
-async def test_tick_produces_trades_and_charges(market: MarketService):
+async def test_tick_produces_trades_and_verifies_payment(market: MarketService):
     """The economic core: _evaluate returns weights, compute_trades returns
-    non-empty trades, chargeActions is called, subscriber vault is traded."""
+    non-empty trades, payment is verified, subscriber vault is traded."""
     with (
         patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
         patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()),
@@ -65,11 +65,11 @@ async def test_tick_produces_trades_and_charges(market: MarketService):
             active=True,
         )
 
-        with patch.object(market, "_charge", AsyncMock(return_value=True)) as mock_charge:
+        with patch.object(market, "_verify_payment", AsyncMock(return_value=True)) as mock_verify:
             await market.tick("strat_a")
 
-            # _charge was called with the right action_count
-            mock_charge.assert_awaited_once_with("0x" + "bb" * 32, 1)
+            # _verify_payment was called with the right sub_id
+            mock_verify.assert_awaited_once_with("0x" + "bb" * 32)
 
             # execute_trades was called for publisher vault
             market.executor.execute_trades.assert_any_call("0xpublisher_vault", _dummy_trades())
@@ -79,8 +79,8 @@ async def test_tick_produces_trades_and_charges(market: MarketService):
 
 
 @pytest.mark.asyncio
-async def test_tick_marks_subscriber_inactive_on_charge_failure(market: MarketService):
-    """When chargeActions reverts, the subscriber is marked inactive and no
+async def test_tick_marks_subscriber_inactive_on_payment_failure(market: MarketService):
+    """When payment verification fails, the subscriber is marked inactive and no
     trades are executed for them."""
     with (
         patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
@@ -101,7 +101,7 @@ async def test_tick_marks_subscriber_inactive_on_charge_failure(market: MarketSe
             active=True,
         )
 
-        with patch.object(market, "_charge", AsyncMock(return_value=False)):
+        with patch.object(market, "_verify_payment", AsyncMock(return_value=False)):
             await market.tick("strat_b")
 
             # subscriber marked inactive
@@ -114,6 +114,9 @@ async def test_tick_marks_subscriber_inactive_on_charge_failure(market: MarketSe
             ]
             assert len(halt_calls) >= 1
 
+            # verify halt event has the new reason
+            assert halt_calls[0][0][1].get("reason") == "payment_required"
+
             # execute_trades NOT called for subscriber vault
             sub_calls = [
                 c for c in market.executor.execute_trades.call_args_list
@@ -123,8 +126,8 @@ async def test_tick_marks_subscriber_inactive_on_charge_failure(market: MarketSe
 
 
 @pytest.mark.asyncio
-async def test_tick_no_trades_skips_charge(market: MarketService):
-    """When compute_trades returns empty, no charge or execution happens."""
+async def test_tick_no_trades_skips_payment(market: MarketService):
+    """When compute_trades returns empty, no payment verification or execution happens."""
     with (
         patch.object(market, "_evaluate", AsyncMock(return_value={})),
         patch("archimedes.marketplace.service.compute_trades", return_value=[]),
@@ -136,7 +139,7 @@ async def test_tick_no_trades_skips_charge(market: MarketService):
             creator_wallet="0xpublisher",
         )
 
-        with patch.object(market, "_charge", AsyncMock()) as mock_charge:
+        with patch.object(market, "_verify_payment", AsyncMock()) as mock_verify:
             await market.tick("strat_c")
-            mock_charge.assert_not_called()
+            mock_verify.assert_not_called()
             market.executor.execute_trades.assert_not_called()

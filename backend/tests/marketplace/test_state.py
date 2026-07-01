@@ -68,3 +68,62 @@ async def test_per_strategy_leader_lock(state: MarketState):
 
     # Strategy B lock is unaffected by A's release
     assert await state.try_acquire_leader("strat_b", ttl_seconds=10) is False
+
+
+# ---- x402 payment state tests ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_save_and_get_payment(state: MarketState):
+    """Round-trip a payment record through Redis."""
+    await state.save_payment("0xsub1", {"paid": True, "amount_usdc_raw": 100_000})
+    payment = await state.get_payment("0xsub1")
+    assert payment is not None
+    assert payment["paid"] is True
+    assert payment["amount_usdc_raw"] == 100_000
+    assert "recorded_at" in payment  # auto-added timestamp
+
+
+@pytest.mark.asyncio
+async def test_get_payment_nonexistent(state: MarketState):
+    """Nonexistent payment returns None."""
+    payment = await state.get_payment("0xnonexistent")
+    assert payment is None
+
+
+@pytest.mark.asyncio
+async def test_has_active_payment_true(state: MarketState):
+    """has_active_payment returns True for a recorded payment."""
+    await state.save_payment("0xsub2", {"paid": True})
+    assert await state.has_active_payment("0xsub2") is True
+
+
+@pytest.mark.asyncio
+async def test_has_active_payment_false_when_not_paid(state: MarketState):
+    """has_active_payment returns False when payment exists but paid=False."""
+    await state.save_payment("0xsub3", {"paid": False})
+    assert await state.has_active_payment("0xsub3") is False
+
+
+@pytest.mark.asyncio
+async def test_has_active_payment_false_when_missing(state: MarketState):
+    """has_active_payment returns False when no payment record exists."""
+    assert await state.has_active_payment("0xnonexistent") is False
+
+
+@pytest.mark.asyncio
+async def test_delete_payment(state: MarketState):
+    """Deleting a payment removes it from Redis."""
+    await state.save_payment("0xsub4", {"paid": True})
+    assert await state.has_active_payment("0xsub4") is True
+    await state.delete_payment("0xsub4")
+    assert await state.has_active_payment("0xsub4") is False
+
+
+@pytest.mark.asyncio
+async def test_payment_independent_per_subscriber(state: MarketState):
+    """Each subscriber has an independent payment record."""
+    await state.save_payment("0xsub_a", {"paid": True})
+    await state.save_payment("0xsub_b", {"paid": False})
+    assert await state.has_active_payment("0xsub_a") is True
+    assert await state.has_active_payment("0xsub_b") is False

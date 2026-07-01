@@ -1,4 +1,4 @@
-"""Marketplace routes — publish / subscribe / browse.
+"""Marketplace routes — publish / subscribe / browse / x402 payment.
 
 Session pattern: with get_session() as session (matches codebase convention).
 pool_id is ALWAYS derived server-side via derive_pool_id (D-POOL).
@@ -10,6 +10,7 @@ import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from archimedes.api._route_helpers import strategy_provider
 from archimedes.api.auth_siwe import require_verified_wallet
@@ -18,6 +19,19 @@ from archimedes.db import get_session
 from archimedes.marketplace.encoding import derive_pool_id, to_bytes32
 from archimedes.marketplace.service import MarketService, Subscriber
 from archimedes.models.marketplace import MarketplaceAgent
+
+
+# ─── x402 Gateway Models ────────────────────────────────────────────────
+
+
+class PaymentNotification(BaseModel):
+    """Webhook payload from the x402 payment gateway."""
+
+    sub_id: str = Field(..., description="0x-hex subscriber ID (bytes32)")
+    tx_hash: str = Field(default="", description="On-chain transaction hash")
+    amount_usdc_raw: int = Field(default=0, description="Amount paid in USDC raw (6 decimals)")
+    status: str = Field(default="confirmed", description="Payment status: confirmed | failed")
+
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +345,48 @@ async def unsubscribe_strategy(
 
     await market.remove_subscriber(strategy_id, sub_id)
     return {"status": "unsubscribed", "strategy_id": strategy_id}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/marketplace/payment-webhook  (x402 gateway callback)
+# ---------------------------------------------------------------------------
+
+
+@marketplace_router.post("/payment-webhook")
+async def payment_webhook(
+    request: Request,
+    body: PaymentNotification,
+):
+    """Receive x402 gateway payment confirmation.
+
+    Called by the x402 payment gateway when a subscriber's off-chain
+    payment is confirmed.  Records the payment in Redis so the next
+    tick can verify it without an on-chain ``chargeActions`` call.
+
+    This endpoint is intentionally **unauthenticated** — the gateway
+    signs requests out of band; in production, validate a shared secret
+    or HMAC header before processing.
+    """
+    market = _get_market(request)
+
+    if body.status != "confirmed":
+        logger.info("x402 payment not confirmed for %s (status=%s)", body.sub_id, body.status)
+        return {"status": "ignored", "sub_id": body.sub_id}
+
+    await market.state.save_payment(
+        body.sub_id,
+        {
+            "paid": True,
+            "amount_usdc_raw": body.amount_usdc_raw,
+            "tx_hash": body.tx_hash,
+            "gateway_status": body.status,
+        },
+    )
+    logger.info(
+        "x402 payment recorded for %s (amount=%d, tx=%s)",
+        body.sub_id, body.amount_usdc_raw, body.tx_hash,
+    )
+    return {"status": "recorded", "sub_id": body.sub_id}
 
 
 # ---------------------------------------------------------------------------

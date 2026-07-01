@@ -18,10 +18,8 @@ from archimedes.chain.circle_signer import CircleSigner
 from archimedes.chain.client import ChainSettings
 from archimedes.chain.contracts import ContractLoader
 from archimedes.chain.executor import ChainExecutor
-from archimedes.db import get_session
 from archimedes.marketplace.encoding import to_bytes32
 from archimedes.marketplace.state import MarketState
-from archimedes.models.marketplace import MarketplaceAgent
 from archimedes.models.portfolio import Portfolio, TargetAllocation, TradeDirection, TradeOrder
 from archimedes.services.strategy_provider import default_provider
 from archimedes.services.strategy_signal_evaluator import (
@@ -278,22 +276,22 @@ class MarketService:
 
             action_count = len(trades)
 
-            # 2. Pre-charge each active subscriber on-chain, then apply in-process.
-            # Bound concurrency to 5 simultaneous subscribers (M6).
+            # 2. Verify x402 payment for each active subscriber, then apply
+            # in-process trades.  Bound concurrency to 5 simultaneous
+            # subscribers (M6).
             _sub_sem = asyncio.Semaphore(5)
 
             async def _process_subscriber(sub: Subscriber) -> None:
                 async with _sub_sem:
-                    ok = await self._charge(sub.sub_id, action_count)
-                    if not ok:
+                    paid = await self._verify_payment(sub.sub_id)
+                    if not paid:
                         sub.active = False
-                        self._deactivate_subscriber_db(strategy_id, sub.sub_id)
                         await self.state.append_event(
                             strategy_id,
                             {
                                 "type": "halt",
                                 "sub_id": sub.sub_id,
-                                "reason": "insufficient_balance",
+                                "reason": "payment_required",
                                 "tick_id": tick_id,
                             },
                         )
@@ -384,58 +382,16 @@ class MarketService:
             usdc_floor=_USDC_FLOOR,
         )
 
-    def _deactivate_subscriber_db(self, strategy_id: str, sub_id: str) -> None:
-        """Persist subscriber deactivation to Postgres (M5)."""
-        try:
-            with get_session() as session:
-                row = (
-                    session.query(MarketplaceAgent)
-                    .filter(
-                        MarketplaceAgent.role == "subscriber",
-                        MarketplaceAgent.strategy_id == strategy_id,
-                        MarketplaceAgent.sub_id == sub_id,
-                        MarketplaceAgent.status == "running",
-                    )
-                    .first()
-                )
-                if row is not None:
-                    row.status = "stopped"
-                    session.commit()
-        except Exception:
-            logger.exception("Failed to persist subscriber deactivation for %s/%s", strategy_id, sub_id)
+    async def _verify_payment(self, sub_id: str) -> bool:
+        """Verify x402 payment for a subscriber.
 
-    async def _charge(self, sub_id: str, action_count: int) -> bool:
-        """Charge a subscriber on-chain. Returns True on success."""
+        Checks Redis for an active payment record.  In dry-run mode all
+        payments are considered valid so the engine is exercisable without
+        a real gateway.
+        """
         if self.dry_run:
             return True
-        addr = self.settings.subscription_manager_address
-        if not addr:
-            logger.warning("subscription_manager_address not set")
-            return False
-        try:
-            if self.signer.is_configured:
-                await self.signer.execute_contract(
-                    addr, "chargeActions(bytes32,uint256)", [to_bytes32(sub_id), action_count]
-                )
-            else:
-                c = self.loader._contract(addr, "SubscriptionManager")
-                tx = await c.functions.chargeActions(to_bytes32(sub_id), action_count).build_transaction(
-                    {
-                        "from": self.settings.agent_account.address,
-                        "nonce": await self.loader.client.w3.eth.get_transaction_count(
-                            self.settings.agent_account.address
-                        ),
-                        "gas": 200_000,
-                        "gasPrice": await self.loader.client.w3.eth.gas_price,
-                    }
-                )
-                signed = self.settings.agent_account.sign_transaction(tx)
-                h = await self.loader.client.w3.eth.send_raw_transaction(signed.raw_transaction)
-                await self.loader.client.w3.eth.wait_for_transaction_receipt(h)
-            return True
-        except Exception as exc:
-            logger.warning("chargeActions failed for %s: %s", sub_id, exc)
-            return False
+        return await self.state.has_active_payment(sub_id)
 
     async def _apply_to_subscriber(
         self,

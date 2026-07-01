@@ -62,6 +62,7 @@ def app():
     market.stop_publisher = AsyncMock()
     market.state = MagicMock()
     market.state.save_subscribers = AsyncMock()
+    market.state.save_payment = AsyncMock()
     market.state.get_events = AsyncMock(return_value=[])
     market.publishers = {}
 
@@ -228,3 +229,46 @@ def test_subscribe_rejects_pool_id_mismatch_on_chain(client, app):
     )
     assert resp.status_code == 400, resp.text
     assert "pool_id" in resp.text.lower() or "does not match" in resp.text
+
+
+# ─── x402 payment webhook tests ───────────────────────────────────────
+
+
+def test_payment_webhook_records_confirmed_payment(client, app):
+    """Confirmed payment notification is recorded via state.save_payment."""
+    market = app.state.market
+    resp = client.post(
+        "/api/marketplace/payment-webhook",
+        json={
+            "sub_id": "0x" + "bb" * 32,
+            "tx_hash": "0x" + "cc" * 32,
+            "amount_usdc_raw": 100_000,
+            "status": "confirmed",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "recorded", "sub_id": "0x" + "bb" * 32}
+    market.state.save_payment.assert_awaited_once_with(
+        "0x" + "bb" * 32,
+        {
+            "paid": True,
+            "amount_usdc_raw": 100_000,
+            "tx_hash": "0x" + "cc" * 32,
+            "gateway_status": "confirmed",
+        },
+    )
+
+
+def test_payment_webhook_ignores_non_confirmed(client, app):
+    """Non-confirmed status is ignored, no payment recorded."""
+    market = app.state.market
+    resp = client.post(
+        "/api/marketplace/payment-webhook",
+        json={
+            "sub_id": "0x" + "dd" * 32,
+            "status": "failed",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ignored", "sub_id": "0x" + "dd" * 32}
+    market.state.save_payment.assert_not_called()

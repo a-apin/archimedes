@@ -7,6 +7,7 @@ decode_responses=True is set by AgentStateStore, so all values are str.
 from __future__ import annotations
 
 import json
+import time
 
 # NOTE: import avoids literal text that triggers the M0 verify heuristic.
 # AgentStateStore wraps an actual Redis connection via _get_redis().
@@ -16,8 +17,10 @@ from archimedes.services.redis_state import AgentStateStore
 _EVENTS_PREFIX = "archimedes:market:events:"  # + strategy_id  (capped list)
 _SUBS_PREFIX = "archimedes:market:subs:"  # + strategy_id  (JSON dict cache)
 _LEADER_PREFIX = "archimedes:market:leader:"  # + strategy_id
+_PAYMENT_PREFIX = "archimedes:market:payment:"  # + sub_id  (x402 payment status)
 
 LEADER_LOCK_TTL_SECONDS = 60
+PAYMENT_TTL_SECONDS = 3600  # payments considered valid for 1 hour
 
 
 class MarketState:
@@ -54,3 +57,42 @@ class MarketState:
     async def release_leader(self, strategy_id: str) -> None:
         r = await self.store._get_redis()
         await r.delete(f"{_LEADER_PREFIX}{strategy_id}")
+
+    # ---- x402 gateway payment state ---------------------------------------
+
+    async def save_payment(self, sub_id: str, payment_data: dict) -> None:
+        """Record an x402 payment for a subscriber.
+
+        Stores payment metadata in Redis with a TTL so stale payments
+        expire naturally.  The payment gateway webhook calls this on
+        successful payment confirmation.
+        """
+        r = await self.store._get_redis()
+        payment_data["recorded_at"] = time.time()
+        await r.set(
+            f"{_PAYMENT_PREFIX}{sub_id}",
+            json.dumps(payment_data),
+            ex=PAYMENT_TTL_SECONDS,
+        )
+
+    async def get_payment(self, sub_id: str) -> dict | None:
+        """Retrieve payment status for a subscriber.
+
+        Returns None if no payment record exists or the TTL has expired.
+        """
+        r = await self.store._get_redis()
+        raw = await r.get(f"{_PAYMENT_PREFIX}{sub_id}")
+        return json.loads(raw) if raw else None
+
+    async def has_active_payment(self, sub_id: str) -> bool:
+        """Check whether a subscriber has a valid (non-expired) payment."""
+        payment = await self.get_payment(sub_id)
+        if payment is None:
+            return False
+        # Payment is active if it exists (TTL handles expiry) and is marked valid
+        return bool(payment.get("paid", False))
+
+    async def delete_payment(self, sub_id: str) -> None:
+        """Remove a payment record (e.g. on unsubscribe)."""
+        r = await self.store._get_redis()
+        await r.delete(f"{_PAYMENT_PREFIX}{sub_id}")
