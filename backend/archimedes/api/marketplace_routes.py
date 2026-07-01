@@ -181,7 +181,7 @@ async def publish_strategy(
             agent = MarketplaceAgent(
                 role="publisher",
                 strategy_id=strategy_id,
-                creator_wallet=wallet,
+                creator_wallet=wallet.lower(),
                 pool_id=pool_id,
                 vault_address=vault_address,
             )
@@ -265,7 +265,7 @@ async def subscribe_strategy(
             session.query(MarketplaceAgent)
             .filter(
                 MarketplaceAgent.role == "subscriber",
-                MarketplaceAgent.subscriber_wallet == wallet,
+                MarketplaceAgent.subscriber_wallet == wallet.lower(),
                 MarketplaceAgent.strategy_id == strategy_id,
                 MarketplaceAgent.status == "running",
             )
@@ -334,7 +334,7 @@ async def subscribe_strategy(
         agent = MarketplaceAgent(
             role="subscriber",
             strategy_id=strategy_id,
-            subscriber_wallet=wallet,
+            subscriber_wallet=wallet.lower(),
             sub_id=sub_id,
             pool_id=pool_id,
             vault_address=vault_address,
@@ -350,7 +350,7 @@ async def subscribe_strategy(
         pool_id=pool_id,
         vault_address=vault_address,
         ephemeral_wallet=ephemeral_wallet,
-        subscriber_wallet=wallet,
+        subscriber_wallet=wallet.lower(),
     )
     await market.add_subscriber(strategy_id, sub)
 
@@ -376,7 +376,7 @@ async def unsubscribe_strategy(
             session.query(MarketplaceAgent)
             .filter(
                 MarketplaceAgent.role == "subscriber",
-                MarketplaceAgent.subscriber_wallet == wallet,
+                MarketplaceAgent.subscriber_wallet == wallet.lower(),
                 MarketplaceAgent.strategy_id == strategy_id,
                 MarketplaceAgent.status == "running",
             )
@@ -461,7 +461,7 @@ async def stop_publish(
             session.query(MarketplaceAgent)
             .filter(
                 MarketplaceAgent.role == "publisher",
-                MarketplaceAgent.creator_wallet == wallet,
+                MarketplaceAgent.creator_wallet == wallet.lower(),
                 MarketplaceAgent.strategy_id == strategy_id,
             )
             .first()
@@ -615,7 +615,7 @@ async def my_subscriptions(
             session.query(MarketplaceAgent)
             .filter(
                 MarketplaceAgent.role == "subscriber",
-                MarketplaceAgent.subscriber_wallet == wallet,
+                MarketplaceAgent.subscriber_wallet == wallet.lower(),
             )
             .order_by(MarketplaceAgent.created_at.desc())
             .all()
