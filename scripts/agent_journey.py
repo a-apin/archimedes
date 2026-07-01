@@ -220,7 +220,7 @@ def step_readback(client: httpx.Client, job_id: str) -> bool:
             saw_non_pending = True
         print(
             f"  {'🏆' if c.get('selected') else '·'}  {c.get('strategy_name')!r}  "
-            f"live_gate={status!r}  deployable={deployable}  real_sharpe={strat.get('real_sharpe')}"
+            f"live_gate={status!r}  deployable={deployable}  sharpe={strat.get('sharpe_ratio')}"
         )
     if not saw_non_pending:
         print(

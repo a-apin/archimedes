@@ -1523,6 +1523,59 @@ async def _persist_candidate(c: _CandidateResult, brief: GenerateBrief) -> tuple
     return strategy_id, trace_hash
 
 
+def _refresh_passport_real_metrics(
+    session: Any, c: _CandidateResult, strategy_id: str, result: Any, *, passes_rigor_gate: bool, n_obs: int
+) -> None:
+    """Refresh the strategy_passports ``real_*`` columns + ``passes_rigor_gate`` for a
+    fusion/debate candidate whose real returns were just persisted.
+
+    The single-strategy read path (``_passport_to_strategy_response``) derives
+    ``rigor_gate_status`` from the STORED passport columns (``pending`` while
+    ``sharpe_ratio is None``) and the deploy gate (``_strategy_rigor_status``) reads
+    ``record.passes_rigor_gate`` — neither re-grades the ``backtest_results`` row. So
+    persisting the row alone leaves both at ``pending``; this in-place passport update
+    is what makes the endpoint + deploy gate see the real verdict. Mirrors the passport
+    refresh in ``_backtest_and_persist``. ``passes_rigor_gate`` is the live-gate re-grade
+    of the real returns (single source of truth).
+    """
+    from datetime import date as _date
+
+    from archimedes.models.paper_ref import PaperRef
+    from archimedes.models.strategy import StrategyPassport, StrategyStatus
+    from archimedes.models.strategy_store import StrategyRecord
+    from archimedes.services.passport_loader import ingest_passport
+
+    record = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+    status_val = StrategyStatus(record.status) if record and record.status else StrategyStatus.CANDIDATE
+    papers = [PaperRef(arxiv_id=p.get("arxiv_id"), title=p.get("title", "")) for p in (c.source_papers or [])]
+    regime_tag = {"bull": "bull", "bear": "bear"}.get(c.regime, "regime_neutral")
+    passport = StrategyPassport(
+        id=strategy_id,
+        papers=papers,
+        methodology_summary=c.thesis or "",
+        asset_universe=c.asset_universe or [],
+        status=status_val,
+        regime_tag=regime_tag,
+        real_sharpe=result.sharpe_ratio,
+        real_sortino=result.sortino_ratio,
+        real_cagr=result.cagr,
+        real_max_dd=result.max_drawdown,
+        real_calmar=result.calmar_ratio,
+        real_corr_spy=result.correlation_to_spy,
+        real_total_trades=result.total_trades,
+        real_backtest_start=(result.backtest_start.isoformat() if isinstance(result.backtest_start, _date) else None),
+        real_backtest_end=(result.backtest_end.isoformat() if isinstance(result.backtest_end, _date) else None),
+        deflated_sharpe_ratio=result.deflated_sharpe_ratio,
+        dsr_p_value=result.dsr_p_value,
+        num_trials_in_selection=result.num_trials_in_selection,
+        pbo_score=result.pbo_score,
+        out_of_sample_sharpe=result.out_of_sample_sharpe,
+        passes_rigor_gate=passes_rigor_gate,
+        n_obs_daily=n_obs,
+    )
+    ingest_passport(session, passport, generation_method=c.generation_method, force_update=True)
+
+
 async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Emitter, num_trials: int) -> None:
     """Persist a has_real_rigor candidate's real DSL-backtest returns so the live
     rigor gate reads ``pass``/``fail`` — not ``pending`` — and the strategy becomes
@@ -1533,9 +1586,23 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
     and would otherwise leave NO ``backtest_results`` row → ``live_rigor_gate`` reads
     ``pending`` → the strategy is never deployable even though it carries a real
     backtest. This writes the row from the captured return series so the live gate
-    has real returns to re-grade. Non-blocking: any failure is logged, not raised.
+    has real returns to re-grade, and refreshes the passport ``real_*`` columns +
+    ``passes_rigor_gate`` (which is what the single-strategy read path + the deploy
+    gate actually consume). Non-blocking: any failure is logged + emitted, not raised.
+
+    **Claim-integrity gate:** persists ONLY when the backtest ran on REAL data
+    (``data_source != "synthetic"``). ``evaluate_fusion_spec`` defaults to a random
+    synthetic series when no ``data_feed`` is wired, and grading a random walk as a
+    real pass/fail would be a #1-rule violation — so a synthetic run stays honestly
+    ``pending`` (never persisted, never deployable). Real-data wiring is tracked
+    separately; until then fusion candidates correctly read ``pending``.
     """
+    rv = c.rigor_verdict or {}
     if not c.has_real_rigor or not c.return_series or len(c.return_series) < 10:
+        return
+    if str(rv.get("data_source") or "synthetic") == "synthetic":
+        # Synthetic backtest — grading it as real would be a claims-integrity violation.
+        logger.info("persist_real_returns: %s ran on synthetic data — staying honestly 'pending'", strategy_id)
         return
 
     def _do() -> None:
@@ -1544,8 +1611,8 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
         from archimedes.db import get_session
         from archimedes.models.backtest import BacktestResult
         from archimedes.services.backtest_repository import insert_backtest_if_missing
+        from archimedes.services.live_rigor_gate import verdict_from_returns
 
-        rv = c.rigor_verdict or {}
         returns = list(c.return_series)
         # Rebuild an equity curve (base 1.0) so BOTH the artifact daily_returns AND the
         # equity-curve fallback in get_daily_returns resolve the same series.
@@ -1556,6 +1623,10 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
         def _f(key: str) -> float:
             v = rv.get(key)
             return float(v) if v is not None else 0.0
+
+        def _of(key: str) -> float | None:
+            v = rv.get(key)
+            return float(v) if v is not None else None
 
         result = BacktestResult(
             strategy_id=strategy_id,
@@ -1571,17 +1642,25 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             correlation_to_spy=0.0,
             correlation_to_btc=0.0,
             equity_curve=equity,
-            deflated_sharpe_ratio=rv.get("dsr"),
-            dsr_p_value=rv.get("dsr_p_value"),
+            deflated_sharpe_ratio=_of("dsr"),
+            dsr_p_value=_of("dsr_p_value"),
             num_trials_in_selection=int(num_trials),
-            pbo_score=rv.get("pbo"),
-            out_of_sample_sharpe=rv.get("oos_sharpe"),
+            pbo_score=_of("pbo"),
+            out_of_sample_sharpe=_of("oos_sharpe"),
             look_ahead_audit_passed=bool(rv.get("lookahead_audit_passed", False)),
             backtest_engine="dsl-fusion",
         )
-        artifact = {"results": [{"metrics": {"daily_returns": returns}}], "source": c.generation_method}
+        artifact = {
+            "results": [{"metrics": {"daily_returns": returns}}],
+            "source": c.generation_method,
+            "data_source": rv.get("data_source"),
+        }
         artifact_json = _json.dumps(artifact, default=str)
         content_hash = hashlib.sha256(artifact_json.encode("utf-8")).hexdigest()
+        # The live gate is the single source of truth: re-grade the REAL returns so the
+        # persisted passes_rigor_gate matches what verdicts_for_strategies computes.
+        live = verdict_from_returns(strategy_id, returns, num_trials=int(num_trials))
+
         with get_session() as session:
             insert_backtest_if_missing(
                 session,
@@ -1591,6 +1670,12 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
                 operation="DSL_FUSION",
                 artifact_json=artifact_json,
             )
+            _refresh_passport_real_metrics(
+                session, c, strategy_id, result, passes_rigor_gate=live.passes, n_obs=len(returns)
+            )
+            # WITHOUT this commit the flushed rows roll back on close → gate stays "pending"
+            # (the sibling _backtest_and_persist commits too). Empirically: flush-only = 0 rows.
+            session.commit()
 
     try:
         await asyncio.to_thread(_do)
@@ -1599,6 +1684,7 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
         )
     except Exception as exc:
         logger.warning("persist_real_returns failed for %s: %s", strategy_id, exc)
+        await emit.emit("backtest_failed", candidate_id=c.candidate_id, strategy_id=strategy_id, error=str(exc))
 
 
 async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Emitter, num_trials: int = 1) -> None:

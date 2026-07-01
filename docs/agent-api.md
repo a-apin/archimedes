@@ -112,8 +112,12 @@ candidate from its persisted strategy:
 ```
 GET /api/strategies/{strategy_id}
 → { "rigor_gate_status": "pass" | "fail" | "pending",
-    "passes_rigor_gate": <bool>,     # true ⇒ deployable
-    "real_sharpe": <float|null>, "real_dsr": <float|null>, ... }
+    "passes_rigor_gate": <bool>,          # true ⇒ deployable
+    "sharpe_ratio": <float|null>,          # real backtest Sharpe (null while pending)
+    "deflated_sharpe_ratio": <float|null>,
+    "dsr_p_value": <float|null>,
+    "out_of_sample_sharpe": <float|null>,
+    "pbo_score": <float|null>, ... }
 ```
 
 - **`pass`** — real returns exist and the live gate passed → `passes_rigor_gate: true`, deployable.
