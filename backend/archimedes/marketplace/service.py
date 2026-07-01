@@ -14,10 +14,9 @@ import os
 import time
 from dataclasses import dataclass, field
 
-from archimedes.chain.circle_signer import CircleSigner
-from archimedes.chain.client import ChainSettings
-from archimedes.chain.contracts import ContractLoader
-from archimedes.chain.executor import ChainExecutor
+from archimedes.chain.circle_signer import circle_signer
+from archimedes.chain.client import chain_client
+from archimedes.chain.executor import chain_executor
 from archimedes.db import get_session
 from archimedes.marketplace.encoding import to_bytes32
 from archimedes.marketplace.state import MarketState
@@ -115,10 +114,10 @@ class MarketService:
     """
 
     def __init__(self, interval_seconds: int = 300, dry_run: bool = False):
-        self.settings = ChainSettings()
-        self.loader = ContractLoader()
-        self.executor = ChainExecutor(loader=self.loader)
-        self.signer = CircleSigner()
+        self.settings = chain_client.settings
+        self.signer = circle_signer
+        self.executor = chain_executor
+        self.loader = chain_executor.loader
         self.state = MarketState()
         self.provider = default_provider()
         self.interval = interval_seconds
