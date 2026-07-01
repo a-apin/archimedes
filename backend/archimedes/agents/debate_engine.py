@@ -365,10 +365,15 @@ async def _critic_rigor(pool: list[Any], num_trials: int) -> list[tuple[Any, Any
     cohort.
     """
     from archimedes.services.fusion_evaluator import evaluate_fusion_spec
+    from archimedes.services.fusion_market_data import real_data_enabled
+
+    # Real data per candidate (#788/#818): the fetch is cached per ticker-set,
+    # so a pool sharing a universe costs one yfinance round-trip, not N.
+    _use_real = real_data_enabled()
 
     def _backtest(proposal: Any) -> Any:
         try:
-            return evaluate_fusion_spec(proposal.strategy_spec, num_trials=num_trials)
+            return evaluate_fusion_spec(proposal.strategy_spec, num_trials=num_trials, use_real_data=_use_real)
         except Exception as exc:
             logger.info("debate C-rigor: dropped a candidate on backtest error: %s", exc)
             return None

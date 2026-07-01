@@ -881,10 +881,14 @@ async def _run_fusion_candidate(
             args_summary="backtest + DSR/PBO/OOS rigor gate",
         )
         from archimedes.services.fusion_evaluator import evaluate_fusion_spec
+        from archimedes.services.fusion_market_data import real_data_enabled
 
+        # Real data (the deployability unlock, #788/#818): a cold yfinance fetch
+        # for the spec's universe plus the per-asset variant grid can take a few
+        # minutes — 300s bounds it; the panel cache makes warm runs fast again.
         eval_result = await asyncio.wait_for(
-            asyncio.to_thread(evaluate_fusion_spec, proposal.strategy_spec),
-            timeout=120.0,
+            asyncio.to_thread(evaluate_fusion_spec, proposal.strategy_spec, use_real_data=real_data_enabled()),
+            timeout=300.0,
         )
         asset_universe = list(proposal.strategy_spec.get("asset_universe", []) or [])
         if eval_result.success and eval_result.rigor is not None:
