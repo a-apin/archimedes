@@ -20,6 +20,10 @@ import VaultDetail from './components/VaultDetail'
 import OnboardingTour, { hasCompletedOnboarding } from './components/OnboardingTour'
 import WalletGate from './components/WalletGate'
 import MobileBanner from './components/MobileBanner'
+import MarketplacePage from './components/MarketplacePage'
+import StrategyDetailPage from './components/StrategyDetailPage'
+import PublishPage from './components/PublishPage'
+import SubscriptionsPage from './components/SubscriptionsPage'
 import { apiPost } from './api'
 import './App.css'
 
@@ -43,6 +47,9 @@ const PAGE_TO_PATH = {
   insights:  '/insights',
   about:     '/about',
   imprint:   '/imprint',
+  marketplace: '/marketplace',
+  publish:     '/publish',
+  subscriptions: '/subscriptions',
 }
 
 const PATH_TO_PAGE = Object.fromEntries(
@@ -74,6 +81,11 @@ function resolveRoute(pathname = '/', search = '') {
     if (id) return { page: 'strategy', vaultAddress: null, traceId: null, strategyId: id, highlight, tab: null, matched: true }
   }
 
+  if (pathname.startsWith('/marketplace/strategy/')) {
+    const id = pathname.replace('/marketplace/strategy/', '')
+    if (id) return { page: 'market-strategy', vaultAddress: null, traceId: null, strategyId: decodeURIComponent(id), highlight, tab: null, matched: true }
+  }
+
   // Legacy paths still in the wild — funnel them to the spine.
   const vaultAddress = params.get('vault')
   if (vaultAddress) return { page: 'vault-detail', vaultAddress, traceId: null, strategyId: null, highlight, tab: null, matched: true }
@@ -84,6 +96,7 @@ function resolveRoute(pathname = '/', search = '') {
 function pageToPath(page, selectedVault = null, highlight = null, strategyId = null, traceId = null, tab = null) {
   if (page === 'vault-detail' && selectedVault) return `/portfolio/vaults/${selectedVault}`
   if (page === 'strategy' && strategyId) return `/strategy/${encodeURIComponent(strategyId)}`
+  if (page === 'market-strategy' && strategyId) return `/marketplace/strategy/${encodeURIComponent(strategyId)}`
   const base = PAGE_TO_PATH[page] ?? '/'
   const params = new URLSearchParams()
   if (highlight && page === 'library') params.set('highlight', highlight)
@@ -176,7 +189,7 @@ export default function App() {
     }
     if (Object.prototype.hasOwnProperty.call(opts, 'strategyId')) {
       setSelectedStrategy(opts.strategyId)
-    } else if (nextPage !== 'strategy') {
+    } else if (nextPage !== 'strategy' && nextPage !== 'market-strategy') {
       setSelectedStrategy(null)
     }
     setHighlightStrategyId(nextPage === 'library' ? nextHighlight : null)
@@ -298,9 +311,13 @@ export default function App() {
           <Learnings onNavigate={navigateToPage} />
         </WalletGate>
       )
-      case 'insights':     return <Insights />
-      case 'vault-detail': return <VaultDetail address={selectedVault} onBack={backToPortfolio} />
-      default:             return <NotFound page={page} onNavigate={navigateToPage} />
+      case 'insights':       return <Insights />
+      case 'vault-detail':   return <VaultDetail address={selectedVault} onBack={backToPortfolio} />
+      case 'marketplace':    return <MarketplacePage onNavigate={navigateToPage} />
+      case 'market-strategy': return <StrategyDetailPage strategyId={selectedStrategy} onNavigate={navigateToPage} />
+      case 'publish':        return <PublishPage onNavigate={navigateToPage} />
+      case 'subscriptions':  return <SubscriptionsPage onNavigate={navigateToPage} />
+      default:               return <NotFound page={page} onNavigate={navigateToPage} />
     }
   }
 

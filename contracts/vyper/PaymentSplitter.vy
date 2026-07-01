@@ -51,18 +51,13 @@ def createPool(pool_id: bytes32, creator: address, platform: address):
 @external
 def split(pool_id: bytes32, amount: uint256):
     assert self.pools[pool_id].active, "pool not active"
-
     creator_share: uint256 = amount * 90 // 100
     platform_share: uint256 = amount - creator_share
-
     pool: Pool = self.pools[pool_id]
-
-    assert extcall IERC20(self.usdc).transferFrom(msg.sender, pool.creator, creator_share), "creator transfer failed"
-    assert extcall IERC20(self.usdc).transferFrom(msg.sender, pool.platform, platform_share), "platform transfer failed"
-
+    assert extcall IERC20(self.usdc).transfer(pool.creator, creator_share), "creator transfer failed"
+    assert extcall IERC20(self.usdc).transfer(pool.platform, platform_share), "platform transfer failed"
     self.pools[pool_id].total_collected += amount
     self.pools[pool_id].total_disbursed += amount
-
     log PaymentSplit(pool_id, amount, creator_share, platform_share)
 
 @external

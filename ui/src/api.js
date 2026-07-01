@@ -44,3 +44,19 @@ export async function apiPost(path, body) {
   }
   return res.json()
 }
+
+/**
+ * DELETE an endpoint. Throws a clean error on non-2xx responses.
+ * @param {string} path — API path
+ * @returns {Promise<any>} parsed JSON
+ */
+export async function apiDelete(path) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  })
+  if (!res.ok) {
+    throw new Error(`Backend returned ${res.status}`)
+  }
+  return res.json()
+}

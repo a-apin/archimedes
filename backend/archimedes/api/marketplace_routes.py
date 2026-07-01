@@ -1,0 +1,412 @@
+"""Marketplace routes — publish / subscribe / browse.
+
+Session pattern: with get_session() as session (matches codebase convention).
+pool_id is ALWAYS derived server-side via derive_pool_id (D-POOL).
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from archimedes.api.auth_siwe import require_verified_wallet
+from archimedes.api.limiter import limiter
+from archimedes.db import get_session
+from archimedes.marketplace.encoding import derive_pool_id, to_bytes32
+from archimedes.marketplace.service import MarketService, Subscriber
+from archimedes.models.marketplace import MarketplaceAgent
+
+logger = logging.getLogger(__name__)
+
+marketplace_router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
+
+
+def _get_market(request: Request) -> MarketService:
+    market: MarketService | None = getattr(request.app.state, "market", None)
+    if market is None:
+        raise HTTPException(status_code=503, detail="Marketplace engine not available")
+    return market
+
+
+# ---------------------------------------------------------------------------
+# POST /api/marketplace/publish
+# ---------------------------------------------------------------------------
+
+
+@marketplace_router.post("/publish")
+@limiter.limit("3/minute")
+async def publish_strategy(
+    request: Request,
+    body: dict,
+    wallet: str = Depends(require_verified_wallet),
+):
+    """Publish a strategy to the marketplace.
+
+    Body: {strategy_id, vault_address?, platform_wallet?}
+    pool_id is DERIVED server-side (D-POOL). Never accept it from the client.
+    """
+    market = _get_market(request)
+    strategy_id = body.get("strategy_id", "").strip()
+    vault_address = body.get("vault_address", "").strip() or ""
+    platform_wallet = body.get("platform_wallet", "").strip() or ""
+
+    if not strategy_id:
+        raise HTTPException(status_code=400, detail="strategy_id is required")
+
+    # 1. Reject if publisher already running for this strategy
+    with get_session() as session:
+        existing = (
+            session.query(MarketplaceAgent)
+            .filter(
+                MarketplaceAgent.role == "publisher",
+                MarketplaceAgent.strategy_id == strategy_id,
+                MarketplaceAgent.status == "running",
+            )
+            .first()
+        )
+        if existing is not None:
+            raise HTTPException(status_code=409, detail=f"Publisher already exists for strategy '{strategy_id}'")
+
+    # 2. Derive pool_id (D-POOL) — NEVER from client
+    pool_id = derive_pool_id(strategy_id, wallet)
+
+    # 3. Create vault if not provided
+    if not vault_address:
+        vault_address = await market.executor.create_vault(
+            name=strategy_id,
+            symbol=f"VLT-{strategy_id[:8].upper()}",
+            management_fee_bps=0,
+            performance_fee_bps=0,
+            agent_assisted=True,
+            owner_wallet=wallet,
+        )
+
+    # 4. Call PaymentSplitter.createPool on-chain (owner key only)
+    try:
+        splitter_addr = market.settings.payment_splitter_address
+        if market.signer.is_configured:
+            await market.signer.execute_contract(
+                splitter_addr,
+                "createPool(bytes32,address,address)",
+                [to_bytes32(pool_id), wallet, platform_wallet or wallet],
+            )
+        else:
+            c = market.loader._contract(splitter_addr, "PaymentSplitter")
+            tx = await c.functions.createPool(
+                to_bytes32(pool_id), wallet, platform_wallet or wallet
+            ).build_transaction(
+                {
+                    "from": market.settings.agent_account.address,
+                    "nonce": await market.loader.client.w3.eth.get_transaction_count(
+                        market.settings.agent_account.address
+                    ),
+                    "gas": 200_000,
+                    "gasPrice": await market.loader.client.w3.eth.gas_price,
+                }
+            )
+            signed = market.settings.agent_account.sign_transaction(tx)
+            h = await market.loader.client.w3.eth.send_raw_transaction(signed.raw_transaction)
+            await market.loader.client.w3.eth.wait_for_transaction_receipt(h)
+    except Exception as exc:
+        logger.warning("createPool failed (pool may already exist): %s", exc)
+        # Non-fatal — pool may already be active from a prior run
+
+    # 5. Insert publisher row — write pool_id into the real pool_id column
+    with get_session() as session:
+        agent = MarketplaceAgent(
+            role="publisher",
+            strategy_id=strategy_id,
+            creator_wallet=wallet,
+            pool_id=pool_id,
+            vault_address=vault_address,
+        )
+        session.add(agent)
+        session.commit()
+        result = agent.to_dict()
+
+    # 6. Start the publisher loop
+    await market.start_publisher(strategy_id, pool_id, vault_address, wallet)
+
+    result["pool_id"] = pool_id
+    return result
+
+
+# ---------------------------------------------------------------------------
+# POST /api/marketplace/subscribe
+# ---------------------------------------------------------------------------
+
+
+@marketplace_router.post("/subscribe")
+@limiter.limit("5/minute")
+async def subscribe_strategy(
+    request: Request,
+    body: dict,
+    wallet: str = Depends(require_verified_wallet),
+):
+    """Subscribe to a published strategy.
+
+    Body: {strategy_id, pool_id, sub_id, ephemeral_wallet, initial_deposit_usdc}
+    The browser wallet already called USDC.approve + SubscriptionManager.subscribe
+    on-chain (D-SUB). The backend trusts the sub_id from the on-chain event.
+    """
+    market = _get_market(request)
+    strategy_id = body.get("strategy_id", "").strip()
+    pool_id = body.get("pool_id", "").strip()
+    sub_id = body.get("sub_id", "").strip()
+    ephemeral_wallet = body.get("ephemeral_wallet", "").strip()
+    initial_deposit = int(body.get("initial_deposit_usdc", 0))
+
+    if not strategy_id or not pool_id or not sub_id or not ephemeral_wallet:
+        raise HTTPException(status_code=400, detail="strategy_id, pool_id, sub_id, and ephemeral_wallet are required")
+
+    # 1. Find the publisher
+    pub_row = None
+    with get_session() as session:
+        pub_row = (
+            session.query(MarketplaceAgent)
+            .filter(
+                MarketplaceAgent.role == "publisher",
+                MarketplaceAgent.strategy_id == strategy_id,
+                MarketplaceAgent.status == "running",
+            )
+            .first()
+        )
+    if pub_row is None:
+        raise HTTPException(status_code=404, detail=f"No running publisher for strategy '{strategy_id}'")
+
+    # 2. Reject if this wallet is already subscribed
+    with get_session() as session:
+        existing = (
+            session.query(MarketplaceAgent)
+            .filter(
+                MarketplaceAgent.role == "subscriber",
+                MarketplaceAgent.subscriber_wallet == wallet,
+                MarketplaceAgent.strategy_id == strategy_id,
+                MarketplaceAgent.status == "running",
+            )
+            .first()
+        )
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="Already subscribed to this strategy")
+
+    # 3. Validate on-chain (skip in dry-run)
+    if not market.dry_run:
+        try:
+            sm_addr = market.settings.subscription_manager_address
+            c = market.loader._contract(sm_addr, "SubscriptionManager")
+            sub_data = await c.functions.subscriptions(to_bytes32(sub_id)).call()
+            # sub_data: (subscriber, pool_id, ephemeral_wallet, reserved_usdc, webhook_url, active, created_at)
+            if len(sub_data) < 6 or not sub_data[5]:
+                raise HTTPException(status_code=400, detail="Subscription not active on-chain")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("on-chain subscription validation failed: %s", exc)
+            raise HTTPException(status_code=400, detail="Could not validate subscription on-chain")
+
+    # 4. Create vault for subscriber if needed
+    vault_address = ""
+    try:
+        vault_address = await market.executor.create_vault(
+            name=f"sub-{strategy_id}",
+            symbol=f"SUB-{strategy_id[:8].upper()}",
+            management_fee_bps=0,
+            performance_fee_bps=0,
+            agent_assisted=True,
+            owner_wallet=wallet,
+        )
+    except Exception as exc:
+        logger.warning("create_vault for subscriber failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to create subscriber vault")
+
+    # 5. Insert subscriber row
+    with get_session() as session:
+        agent = MarketplaceAgent(
+            role="subscriber",
+            strategy_id=strategy_id,
+            subscriber_wallet=wallet,
+            sub_id=sub_id,
+            pool_id=pool_id,
+            vault_address=vault_address,
+            ephemeral_wallet=ephemeral_wallet,
+        )
+        session.add(agent)
+        session.commit()
+        result = agent.to_dict()
+
+    # 6. Register subscriber with the engine
+    sub = Subscriber(
+        sub_id=sub_id,
+        pool_id=pool_id,
+        vault_address=vault_address,
+        ephemeral_wallet=ephemeral_wallet,
+        subscriber_wallet=wallet,
+    )
+    await market.add_subscriber(strategy_id, sub)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/marketplace/subscribe/{strategy_id}
+# ---------------------------------------------------------------------------
+
+
+@marketplace_router.delete("/subscribe/{strategy_id}")
+async def unsubscribe_strategy(
+    request: Request,
+    strategy_id: str,
+    wallet: str = Depends(require_verified_wallet),
+):
+    """Unsubscribe current wallet from a strategy."""
+    market = _get_market(request)
+
+    with get_session() as session:
+        sub_row = (
+            session.query(MarketplaceAgent)
+            .filter(
+                MarketplaceAgent.role == "subscriber",
+                MarketplaceAgent.subscriber_wallet == wallet,
+                MarketplaceAgent.strategy_id == strategy_id,
+                MarketplaceAgent.status == "running",
+            )
+            .first()
+        )
+        if sub_row is None:
+            raise HTTPException(status_code=404, detail="Active subscription not found")
+        sub_row.status = "stopped"
+        session.commit()
+        sub_id = sub_row.sub_id
+
+    await market.remove_subscriber(strategy_id, sub_id)
+    return {"status": "unsubscribed", "strategy_id": strategy_id}
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/marketplace/publish/{strategy_id}
+# ---------------------------------------------------------------------------
+
+
+@marketplace_router.delete("/publish/{strategy_id}")
+async def stop_publish(
+    request: Request,
+    strategy_id: str,
+    wallet: str = Depends(require_verified_wallet),
+):
+    """Stop a published strategy (creator only)."""
+    market = _get_market(request)
+
+    with get_session() as session:
+        pub_row = (
+            session.query(MarketplaceAgent)
+            .filter(
+                MarketplaceAgent.role == "publisher",
+                MarketplaceAgent.creator_wallet == wallet,
+                MarketplaceAgent.strategy_id == strategy_id,
+            )
+            .first()
+        )
+        if pub_row is None:
+            raise HTTPException(status_code=404, detail="Publisher not found or not owned by you")
+        pub_row.status = "stopped"
+        session.commit()
+
+    await market.stop_publisher(strategy_id)
+    return {"status": "stopped", "strategy_id": strategy_id}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/marketplace/published
+# ---------------------------------------------------------------------------
+
+
+@marketplace_router.get("/published")
+async def list_published(request: Request):
+    """List all running publishers with subscriber counts."""
+    market = _get_market(request)
+
+    with get_session() as session:
+        rows = (
+            session.query(MarketplaceAgent)
+            .filter(MarketplaceAgent.role == "publisher", MarketplaceAgent.status == "running")
+            .all()
+        )
+
+    results = []
+    for row in rows:
+        d = row.to_dict()
+        subs = market.publishers.get(d["strategy_id"], None)
+        d["subscriber_count"] = len(subs.subscribers) if subs else 0
+        d["events"] = await market.state.get_events(d["strategy_id"], count=5)
+        results.append(d)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# GET /api/marketplace/published/{strategy_id}
+# ---------------------------------------------------------------------------
+
+
+@marketplace_router.get("/published/{strategy_id}")
+async def get_strategy_detail(request: Request, strategy_id: str):
+    """Get one published strategy + subscriber summaries + recent events."""
+    market = _get_market(request)
+
+    with get_session() as session:
+        row = (
+            session.query(MarketplaceAgent)
+            .filter(
+                MarketplaceAgent.role == "publisher",
+                MarketplaceAgent.strategy_id == strategy_id,
+                MarketplaceAgent.status == "running",
+            )
+            .first()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Publisher '{strategy_id}' not found")
+
+        subscriber_rows = (
+            session.query(MarketplaceAgent)
+            .filter(
+                MarketplaceAgent.role == "subscriber",
+                MarketplaceAgent.strategy_id == strategy_id,
+            )
+            .all()
+        )
+
+    d = row.to_dict()
+    d["subscribers"] = [s.to_dict() for s in subscriber_rows]
+    d["events"] = await market.state.get_events(strategy_id, count=50)
+
+    pub = market.publishers.get(strategy_id)
+    d["subscriber_count"] = len(pub.subscribers) if pub else 0
+    d["is_running"] = pub is not None
+
+    return d
+
+
+# ---------------------------------------------------------------------------
+# GET /api/marketplace/my-subscriptions
+# ---------------------------------------------------------------------------
+
+
+@marketplace_router.get("/my-subscriptions")
+async def my_subscriptions(
+    request: Request,
+    wallet: str = Depends(require_verified_wallet),
+):
+    """Current wallet's subscriptions."""
+    with get_session() as session:
+        rows = (
+            session.query(MarketplaceAgent)
+            .filter(
+                MarketplaceAgent.role == "subscriber",
+                MarketplaceAgent.subscriber_wallet == wallet,
+            )
+            .order_by(MarketplaceAgent.created_at.desc())
+            .all()
+        )
+
+    return [r.to_dict() for r in rows]

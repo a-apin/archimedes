@@ -6,6 +6,7 @@ interface IERC20:
 
 interface IPaymentSplitter:
     def split(pool_id: bytes32, amount: uint256): nonpayable
+    def pools(pool_id: bytes32) -> (address, address, uint256, uint256, bool): view
 
 struct Subscription:
     subscriber: address
@@ -55,48 +56,32 @@ def __init__(_splitter: address, _usdc: address, _flat_fee: uint256):
     self.flat_fee_per_action = _flat_fee
 
 @external
-def subscribe(
-    pool_id: bytes32,
-    webhook_url: String[256],
-    initial_deposit: uint256
-) -> bytes32:
+def subscribe(pool_id: bytes32, webhook_url: String[256], initial_deposit: uint256) -> bytes32:
     assert len(webhook_url) > 0, "webhook_url required"
-
-    sub_id: bytes32 = keccak256(
-        abi_encode(pool_id, msg.sender, block.timestamp, method_id=0x00000000)
-    )
-
+    _c: address = empty(address)
+    _p: address = empty(address)
+    _tc: uint256 = 0
+    _td: uint256 = 0
+    _pool_active: bool = False
+    _c, _p, _tc, _td, _pool_active = staticcall IPaymentSplitter(self.splitter).pools(pool_id)
+    assert _pool_active, "pool not active"
+    sub_id: bytes32 = keccak256(abi_encode(pool_id, msg.sender, block.timestamp, method_id=0x00000000))
     assert not self.subscriptions[sub_id].active, "already subscribed"
-
     wallet_address: address = convert(
-        slice(keccak256(abi_encode(sub_id, block.number, method_id=0x00000000)), 0, 20),
-        address
+        slice(keccak256(abi_encode(sub_id, block.number, method_id=0x00000000)), 0, 20), address
     )
-
     assert self.ephemeral_wallets[wallet_address].owner == empty(address), "wallet exists"
-
     if initial_deposit > 0:
         assert extcall IERC20(self.usdc).transferFrom(msg.sender, self, initial_deposit), "deposit failed"
-
     self.ephemeral_wallets[wallet_address] = EphemeralWallet(
-        owner=msg.sender,
-        balance=initial_deposit,
-        subscription_id=sub_id
+        owner=msg.sender, balance=initial_deposit, subscription_id=sub_id
     )
-
     self.subscriptions[sub_id] = Subscription(
-        subscriber=msg.sender,
-        pool_id=pool_id,
-        ephemeral_wallet=wallet_address,
-        reserved_usdc=initial_deposit,
-        webhook_url=webhook_url,
-        active=True,
-        created_at=block.timestamp
+        subscriber=msg.sender, pool_id=pool_id, ephemeral_wallet=wallet_address,
+        reserved_usdc=initial_deposit, webhook_url=webhook_url, active=True, created_at=block.timestamp
     )
-
     log EphemeralWalletCreated(sub_id, wallet_address, msg.sender)
     log Subscribed(sub_id, msg.sender, pool_id, webhook_url)
-
     return sub_id
 
 @external
@@ -104,33 +89,25 @@ def renewEphemeralWallet(sub_id: bytes32, top_up_amount: uint256):
     sub: Subscription = self.subscriptions[sub_id]
     assert sub.active, "subscription not active"
     assert sub.subscriber == msg.sender, "not subscriber"
-
     if top_up_amount > 0:
         assert extcall IERC20(self.usdc).transferFrom(msg.sender, self, top_up_amount), "top-up failed"
-
     self.ephemeral_wallets[sub.ephemeral_wallet].balance += top_up_amount
     self.subscriptions[sub_id].reserved_usdc += top_up_amount
-
     log EphemeralWalletCreated(sub_id, sub.ephemeral_wallet, msg.sender)
 
 @external
 def chargeActions(sub_id: bytes32, action_count: uint256):
+    assert msg.sender == self.owner, "only owner"          # <-- D-CHARGE hardening (new)
     assert action_count > 0, "action_count must be > 0"
-
     sub: Subscription = self.subscriptions[sub_id]
     assert sub.active, "subscription not active"
-
     total_charge: uint256 = action_count * self.flat_fee_per_action
     wallet: EphemeralWallet = self.ephemeral_wallets[sub.ephemeral_wallet]
     assert wallet.balance >= total_charge, "insufficient balance"
-
     self.ephemeral_wallets[sub.ephemeral_wallet].balance -= total_charge
     self.subscriptions[sub_id].reserved_usdc -= total_charge
-
     assert extcall IERC20(self.usdc).transfer(self.splitter, total_charge), "transfer to splitter failed"
-
     extcall IPaymentSplitter(self.splitter).split(sub.pool_id, total_charge)
-
     log ActionCharged(sub_id, action_count, total_charge)
 
 @external
@@ -138,15 +115,12 @@ def unsubscribe(sub_id: bytes32):
     sub: Subscription = self.subscriptions[sub_id]
     assert sub.active, "subscription not active"
     assert sub.subscriber == msg.sender, "not subscriber"
-
     self.subscriptions[sub_id].active = False
     self.subscriptions[sub_id].reserved_usdc = 0
-
     remaining: uint256 = self.ephemeral_wallets[sub.ephemeral_wallet].balance
     if remaining > 0:
         self.ephemeral_wallets[sub.ephemeral_wallet].balance = 0
         assert extcall IERC20(self.usdc).transfer(msg.sender, remaining), "refund failed"
-
     log Unsubscribed(sub_id)
 
 @external
