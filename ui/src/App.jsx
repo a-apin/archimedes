@@ -124,8 +124,11 @@ export default function App() {
   // Conversion funnel (#787): emit the top-of-funnel "landed" beacon once per
   // browser session. This is JS-only, so crawlers (which dominate raw request
   // counts but don't run JS) are naturally excluded — the funnel is a truer
-  // human signal than the cumulative request counters. Best-effort: a failed
-  // beacon must never affect the page.
+  // human signal than the cumulative request counters. As of #830 this same
+  // beacon is the single source of truth for "distinct visitor": the server
+  // records geography + device off it too (same archimedes_vid dedup key), so
+  // the funnel `landed` count and the geo/device counts agree by construction.
+  // Best-effort: a failed beacon must never affect the page.
   useEffect(() => {
     try {
       if (sessionStorage.getItem('archimedes_landed')) return

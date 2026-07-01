@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Query, Request
 
 from archimedes.api.funnel_middleware import record_funnel
+from archimedes.api.visitor_insights import record_visitor_insight
 from archimedes.models.telemetry import (
     CountryCount,
     FunnelEventRequest,
@@ -27,6 +28,7 @@ from archimedes.models.telemetry import (
 )
 from archimedes.services.funnel_store import CLIENT_EMITTABLE_STAGES, STAGES, FunnelStore
 from archimedes.services.telemetry_store import TelemetryStore
+from archimedes.services.user_stats import get_distinct_user_count
 from archimedes.services.visitor_insights_store import VisitorInsightsStore
 
 metrics_router = APIRouter(prefix="/api", tags=["metrics"])
@@ -60,10 +62,16 @@ def _build_funnel(counts: dict[str, int], window: str) -> FunnelResponse:
 
 @metrics_router.get("/metrics", response_model=MetricsResponse)
 async def get_metrics() -> MetricsResponse:
-    """Return the live human-vs-agent traction counts.
+    """Return the live human-vs-agent traction counts + the honest user count.
 
-    Fail-safe: ``TelemetryStore.get_counts`` returns ``(0, 0)`` when Redis is
-    unreachable, so this endpoint always responds 200 with a well-formed shape.
+    ``human_count`` / ``agent_count`` / ``total_requests`` are cumulative
+    per-request tallies (site traffic, NOT users). ``real_users`` is the distinct
+    wallet count from ``user_profiles`` — the honest distinct-user number surfaced
+    alongside so the tallies can't be mis-cited as users (issue #830).
+
+    Fail-safe: ``TelemetryStore.get_counts`` returns ``(0, 0)`` and
+    ``get_distinct_user_count`` returns ``0`` on error, so this endpoint always
+    responds 200 with a well-formed shape.
     """
     store = TelemetryStore()
     try:
@@ -71,10 +79,13 @@ async def get_metrics() -> MetricsResponse:
     finally:
         await store.close()
 
+    real_users = get_distinct_user_count()
+
     return MetricsResponse(
         human_count=human_count,
         agent_count=agent_count,
         total_requests=human_count + agent_count,
+        real_users=real_users,
         timestamp=datetime.now(UTC).isoformat(),
     )
 
@@ -113,10 +124,17 @@ async def record_funnel_event(req: FunnelEventRequest, request: Request) -> dict
     downstream stage is recorded server-side at its authoritative transition so a
     client cannot inflate it. Always 200 (``recorded`` flags whether it counted);
     the visitor id is read from the ``archimedes_vid`` cookie via request state.
+
+    Issue #830: this JS-gated ``landed`` beacon is the single source of truth for
+    "distinct visitor". We record geography + device here (same ``archimedes_vid``
+    dedup key as the funnel) so geo/device count exactly the ``landed`` population
+    — reconciling the funnel-vs-visitors discrepancy. Both writes are fail-safe.
     """
     if req.stage not in CLIENT_EMITTABLE_STAGES:
         return {"recorded": False}
     await record_funnel(request, req.stage)
+    # Geography + device off the same landed beacon (one distinct-visitor source).
+    await record_visitor_insight(request)
     return {"recorded": True}
 
 

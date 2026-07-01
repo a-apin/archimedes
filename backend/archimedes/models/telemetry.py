@@ -24,13 +24,20 @@ from pydantic import BaseModel, Field
 class MetricsResponse(BaseModel):
     """Public traction counter — humans vs agents over the live deployment.
 
-    Served by ``GET /api/metrics``. Counts are monotonic cumulative totals
-    since the Redis counters were last reset (deploy / flush).
+    Served by ``GET /api/metrics``. The ``*_count`` / ``total_requests`` fields are
+    **cumulative per-request tallies (site traffic, NOT users)** — monotonic totals
+    since the Redis counters were last reset (deploy / flush). ``real_users`` is the
+    honest distinct-user number (wallet rows in ``user_profiles``) surfaced adjacent
+    so the traffic tallies can never be read as a user count (issue #830).
     """
 
-    human_count: int = Field(..., description="Requests classified as human (SIWE session / browser).")
-    agent_count: int = Field(..., description="Requests classified as agent (internal key / bot UA).")
-    total_requests: int = Field(..., description="human_count + agent_count.")
+    human_count: int = Field(..., description="Human-UA REQUESTS (cumulative, site traffic — NOT users).")
+    agent_count: int = Field(..., description="Agent/bot REQUESTS (cumulative, site traffic — NOT users).")
+    total_requests: int = Field(..., description="human_count + agent_count (cumulative requests — NOT users).")
+    real_users: int = Field(
+        default=0,
+        description="Distinct users = wallet rows in user_profiles. The honest distinct-user count (issue #830).",
+    )
     timestamp: str = Field(..., description="ISO-8601 UTC timestamp this snapshot was read.")
 
 

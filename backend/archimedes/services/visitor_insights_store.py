@@ -2,7 +2,7 @@
 
 We have zero promotion and a zero-conversion problem, so understanding WHO lands
 on the site (where from, on what kind of device) is high-value signal. This
-records, per day, the distinct *human-ish* visitors broken down by:
+records, per day, the distinct visitors broken down by:
 
   - **country** — the ISO-3166 code CloudFront geolocates from the viewer IP and
     forwards as the ``CloudFront-Viewer-Country`` header (the ALB/origin can't see
@@ -13,8 +13,16 @@ records, per day, the distinct *human-ish* visitors broken down by:
 
 Distinct counts use Redis HyperLogLog keyed on the anonymous ``archimedes_vid``
 (no PII, no raw-id retention) — same privacy-friendly approach as the funnel.
-Only requests classified as human (not agents/bots) are recorded, so the
-geography reflects real visitors, not datacenter crawler IPs.
+
+Population (issue #830): this is recorded from the **same JS-gated ``landed``
+beacon population the conversion funnel uses** — one source of truth for
+"distinct visitor" across funnel, geography, and device. The beacon is emitted
+by the SPA's JavaScript, which non-JS crawlers don't execute, so the recorded
+population is browser-rendered visitors — NOT every server-side human-classified
+request (that population leaks browser-UA bots through the open-demo default and
+was the source of the 17-vs-50 discrepancy this issue reconciles). It is still an
+UA/beacon-derived signal, not a verified-identity count; distinct *users* are the
+wallet count in ``user_profiles``.
 
 Mirrors ``services/funnel_store.py`` / ``telemetry_store.py``: same
 ``redis.asyncio`` convention and **fail-safe by construction** — every method
@@ -65,10 +73,10 @@ class VisitorInsightsStore:
             self._redis = aioredis.from_url(self._url, decode_responses=True)
         return self._redis
 
-    # ─── Record (write path — telemetry middleware, humans only) ─────────
+    # ─── Record (write path — JS-gated `landed` beacon, issue #830) ──────
 
     async def record(self, country: str | None, device: str, visitor_id: str) -> None:
-        """Record one human visit's country + device for ``visitor_id``. Never raises."""
+        """Record one landed visit's country + device for ``visitor_id``. Never raises."""
         if not visitor_id:
             return
         cc = _norm_country(country)

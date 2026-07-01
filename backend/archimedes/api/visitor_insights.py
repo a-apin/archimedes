@@ -2,11 +2,17 @@
 
 Derives the visitor's country (CloudFront-Viewer-Country) and device class
 (CloudFront device headers, falling back to a User-Agent sniff) and records them
-via ``VisitorInsightsStore``. Called from the telemetry middleware, which already
-classifies human-vs-agent and has the anonymous ``visitor_id`` on request state.
+via ``VisitorInsightsStore``.
 
-Humans only: agent/crawler traffic is skipped so the geography reflects real
-visitors, not datacenter crawler IPs. Fail-safe — never raises into the request.
+Population (issue #830): called from the **JS-gated ``landed`` beacon path**
+(``POST /api/metrics/funnel/event`` with ``stage="landed"``), the same trigger
+and same ``archimedes_vid`` dedup key the conversion funnel uses. This is the one
+source of truth for "distinct visitor": geography + device now count exactly the
+population the funnel's ``landed`` stage counts, reconciling the 17-vs-50 gap that
+came from recording on every server-side human-classified request (which leaked
+browser-UA bots through the open-demo default). Non-JS crawlers don't run the
+beacon, so they don't appear here — but this is still an UA/beacon-derived signal,
+not a verified-identity count. Fail-safe — never raises into the request.
 """
 
 from __future__ import annotations
@@ -40,8 +46,14 @@ def _device_class(request: Request) -> str:
     return "unknown"
 
 
-async def record_visitor_insight(request: Request, is_agent: bool) -> None:
-    """Record this request's visitor geography + device (humans only). Never raises."""
+async def record_visitor_insight(request: Request, is_agent: bool = False) -> None:
+    """Record this visitor's geography + device. Never raises.
+
+    Called from the JS-gated ``landed`` beacon path (issue #830), so the caller is
+    a browser that actually rendered the page. ``is_agent`` is retained as a
+    defense-in-depth skip (a beacon carrying an internal-agent key / bot UA is not
+    a real visitor) and defaults to ``False`` for the ordinary beacon call.
+    """
     if is_agent:
         return
     try:
