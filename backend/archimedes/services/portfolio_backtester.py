@@ -63,14 +63,16 @@ MIN_BARS_FOR_BACKTEST = 60  # ~3 months; refuse to backtest shorter windows
 def _ensure_analytics_import() -> None:
     """Place ``analytics-engine/src`` on sys.path so its ``data`` module imports.
 
-    Mirrors :func:`archimedes.scripts.run_backtests._ensure_analytics_import` —
-    we deliberately reuse the analytics-engine's yfinance wrapper rather than
-    pulling yfinance directly here, so a single function owns the fetch+
-    normalize contract.
+    Delegates to ``fusion_market_data._ensure_analytics_import``, which walks up
+    from its own file to find the package. The previous fixed ``parents[3]``
+    resolved to ``/`` inside the container (host and image layouts differ), so
+    every real-data backtest in prod raised ``No module named
+    'archimedes_analytics_engine'`` and strategies never left "pending"
+    (dogfood find, 2026-07-01). One function owns the path contract now.
     """
-    analytics_src = Path(__file__).resolve().parents[3] / "analytics-engine" / "src"
-    if str(analytics_src) not in sys.path:
-        sys.path.insert(0, str(analytics_src))
+    from archimedes.services.fusion_market_data import _ensure_analytics_import as _walk_and_insert
+
+    _walk_and_insert()
 
 
 def _fetch_price_panel(symbols: list[str], start: str, end: str) -> tuple[pd.DataFrame, pd.DataFrame]:

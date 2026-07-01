@@ -110,6 +110,10 @@ services:
       - .env
     volumes:
       - ./analytics-engine/strategies:/app/analytics-engine/strategies:ro
+      # src/ carries the archimedes_analytics_engine package (fetch_ohlcv) —
+      # without it, every real-data backtest in the container fails closed to
+      # synthetic/"pending" (dogfood find, 2026-07-01).
+      - ./analytics-engine/src:/app/analytics-engine/src:ro
       - ./contracts/abis:/contracts/abis:ro
     healthcheck:
       disable: true
@@ -163,6 +167,10 @@ services:
     volumes:
       - ./analytics-engine/strategies:/app/analytics-engine/strategies:ro
       - ./analytics-engine/artifacts:/app/analytics-engine/artifacts:ro
+      # src/ carries the archimedes_analytics_engine package (fetch_ohlcv) —
+      # without it, every real-data backtest in the container fails closed to
+      # synthetic/"pending" (dogfood find, 2026-07-01).
+      - ./analytics-engine/src:/app/analytics-engine/src:ro
       - ./contracts/abis:/contracts/abis:ro
       - ./data/corpus:/app/data/corpus:ro
       - archimedes-corpus-artifact:/app/data/corpus-artifact

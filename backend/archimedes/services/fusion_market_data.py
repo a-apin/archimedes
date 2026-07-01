@@ -71,12 +71,26 @@ def real_data_enabled() -> bool:
 def _ensure_analytics_import() -> None:
     """Place ``analytics-engine/src`` on sys.path so its ``data`` module imports.
 
-    Mirrors ``portfolio_backtester._ensure_analytics_import`` — one function
-    (``fetch_ohlcv``) owns the yfinance fetch+normalize contract repo-wide.
+    Walks UP from this file until it finds the package: the host repo layout
+    (``backend/archimedes/...`` with ``analytics-engine`` at the repo root) and
+    the container layout (``/app/archimedes/...`` with ``/app/analytics-engine``
+    mounted) put it a different number of levels up. The previous fixed
+    ``parents[3]`` silently resolved to ``/`` inside the container, which broke
+    EVERY real-data backtest in prod (dogfood find, 2026-07-01 — the reason
+    strategies never left "pending"). ``portfolio_backtester`` delegates here so
+    one function owns the path contract repo-wide.
     """
-    analytics_src = Path(__file__).resolve().parents[3] / "analytics-engine" / "src"
-    if str(analytics_src) not in sys.path:
-        sys.path.insert(0, str(analytics_src))
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        src = parent / "analytics-engine" / "src"
+        if (src / "archimedes_analytics_engine").is_dir():
+            if str(src) not in sys.path:
+                sys.path.insert(0, str(src))
+            return
+    logger.warning(
+        "analytics-engine/src not found above %s — real-data fetches will fail closed to synthetic",
+        here,
+    )
 
 
 def _fetch_one(yf_ticker: str, start: str, end: str) -> Any:
