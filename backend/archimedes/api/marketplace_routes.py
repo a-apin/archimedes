@@ -6,10 +6,13 @@ pool_id is ALWAYS derived server-side via derive_pool_id (D-POOL).
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
+import os
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel, Field
 
 from archimedes.api._route_helpers import strategy_provider
@@ -37,6 +40,24 @@ class PaymentNotification(BaseModel):
 logger = logging.getLogger(__name__)
 
 marketplace_router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
+
+_WEBHOOK_SECRET = os.getenv("X402_WEBHOOK_SECRET")
+
+
+def _verify_webhook_signature(raw_body: bytes, signature: str | None) -> None:
+    """Verify the HMAC-SHA256 signature on an x402 webhook request.
+
+    Pattern mirrors ``_verify_session`` in ``auth_siwe.py`` — constant-time
+    comparison via ``hmac.compare_digest``.
+    """
+    if not _WEBHOOK_SECRET:
+        logger.warning("X402_WEBHOOK_SECRET not set; webhook auth disabled")
+        return
+    if not signature:
+        raise HTTPException(status_code=401, detail="Missing X-Webhook-Signature header")
+    expected = hmac.new(_WEBHOOK_SECRET.encode(), raw_body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
 
 def _get_market(request: Request) -> MarketService:
@@ -371,6 +392,7 @@ async def unsubscribe_strategy(
 async def payment_webhook(
     request: Request,
     body: PaymentNotification,
+    x_webhook_signature: str | None = Header(default=None),
 ):
     """Receive x402 gateway payment confirmation.
 
@@ -378,10 +400,12 @@ async def payment_webhook(
     payment is confirmed.  Records the payment in Redis so the next
     tick can verify it without an on-chain ``chargeActions`` call.
 
-    This endpoint is intentionally **unauthenticated** — the gateway
-    signs requests out of band; in production, validate a shared secret
-    or HMAC header before processing.
+    Requires an HMAC-SHA256 signature in the ``X-Webhook-Signature``
+    header, keyed by ``X402_WEBHOOK_SECRET``, over the raw request body.
     """
+    raw_body = await request.body()
+    _verify_webhook_signature(raw_body, x_webhook_signature)
+
     market = _get_market(request)
 
     if body.status != "confirmed":

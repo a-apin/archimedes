@@ -1,6 +1,10 @@
 """Tests for marketplace API routes."""
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,10 +12,23 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from archimedes.api.auth_siwe import require_verified_wallet
+from archimedes.api import marketplace_routes as mr
 from archimedes.api.marketplace_routes import marketplace_router
 from archimedes.db import Base, engine
 
 TEST_WALLET = "0x0000000000000000000000000000000000000001"
+TEST_WEBHOOK_SECRET = "test-x402-webhook-secret"
+
+
+def _signed_webhook_headers(body_dict: dict) -> tuple[bytes, dict[str, str]]:
+    """Encode *body_dict* as JSON and sign it with ``TEST_WEBHOOK_SECRET``.
+
+    Returns ``(raw_body, headers_dict)`` for use with
+    ``TestClient.post(content=raw_body, headers=headers)``.
+    """
+    raw = json.dumps(body_dict, separators=(",", ":")).encode()
+    sig = hmac.new(TEST_WEBHOOK_SECRET.encode(), raw, hashlib.sha256).hexdigest()
+    return raw, {"Content-Type": "application/json", "X-Webhook-Signature": sig}
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +37,14 @@ def _setup_db():
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture(autouse=True)
+def _webhook_secret():
+    """Set a known webhook secret for every test in this module."""
+    mr._WEBHOOK_SECRET = TEST_WEBHOOK_SECRET
+    yield
+    mr._WEBHOOK_SECRET = None
 
 
 @pytest.fixture(autouse=True)
@@ -234,18 +259,39 @@ def test_subscribe_rejects_pool_id_mismatch_on_chain(client, app):
 # ─── x402 payment webhook tests ───────────────────────────────────────
 
 
+def test_payment_webhook_rejects_missing_signature(client, app):
+    """Unsigned webhook request is rejected with 401."""
+    resp = client.post(
+        "/api/marketplace/payment-webhook",
+        json={"sub_id": "0x" + "bb" * 32, "status": "confirmed"},
+    )
+    assert resp.status_code == 401, resp.text
+    assert "Missing X-Webhook-Signature header" in resp.text
+    # Ensure the secret is not leaked in the response body
+    assert TEST_WEBHOOK_SECRET not in resp.text
+
+
+def test_payment_webhook_rejects_bad_signature(client, app):
+    """Webhook request with a wrong signature is rejected with 401."""
+    raw, _ = _signed_webhook_headers({"sub_id": "0x" + "bb" * 32, "status": "confirmed"})
+    bad_headers = {"Content-Type": "application/json", "X-Webhook-Signature": "deadbeef"}
+    resp = client.post("/api/marketplace/payment-webhook", content=raw, headers=bad_headers)
+    assert resp.status_code == 401, resp.text
+    assert "Invalid webhook signature" in resp.text
+    assert TEST_WEBHOOK_SECRET not in resp.text
+
+
 def test_payment_webhook_records_confirmed_payment(client, app):
     """Confirmed payment notification is recorded via state.save_payment."""
     market = app.state.market
-    resp = client.post(
-        "/api/marketplace/payment-webhook",
-        json={
-            "sub_id": "0x" + "bb" * 32,
-            "tx_hash": "0x" + "cc" * 32,
-            "amount_usdc_raw": 100_000,
-            "status": "confirmed",
-        },
-    )
+    body = {
+        "sub_id": "0x" + "bb" * 32,
+        "tx_hash": "0x" + "cc" * 32,
+        "amount_usdc_raw": 100_000,
+        "status": "confirmed",
+    }
+    raw, headers = _signed_webhook_headers(body)
+    resp = client.post("/api/marketplace/payment-webhook", content=raw, headers=headers)
     assert resp.status_code == 200
     assert resp.json() == {"status": "recorded", "sub_id": "0x" + "bb" * 32}
     market.state.save_payment.assert_awaited_once_with(
@@ -262,13 +308,9 @@ def test_payment_webhook_records_confirmed_payment(client, app):
 def test_payment_webhook_ignores_non_confirmed(client, app):
     """Non-confirmed status is ignored, no payment recorded."""
     market = app.state.market
-    resp = client.post(
-        "/api/marketplace/payment-webhook",
-        json={
-            "sub_id": "0x" + "dd" * 32,
-            "status": "failed",
-        },
-    )
+    body = {"sub_id": "0x" + "dd" * 32, "status": "failed"}
+    raw, headers = _signed_webhook_headers(body)
+    resp = client.post("/api/marketplace/payment-webhook", content=raw, headers=headers)
     assert resp.status_code == 200
     assert resp.json() == {"status": "ignored", "sub_id": "0x" + "dd" * 32}
     market.state.save_payment.assert_not_called()
