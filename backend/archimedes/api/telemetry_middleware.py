@@ -46,26 +46,40 @@ _AGENT_UA_PATTERN = re.compile(
 )
 
 # Paths whose traffic is infra/telemetry polling, not a real visit: the health
-# probes (Docker/CI/CloudFront) and the metrics-read endpoints (the dashboard
+# probes (Docker/CI/CloudFront) and the metrics-READ endpoints (the dashboard
 # polling *itself*). Excluding them from the counter stops the instrument from
 # counting its own reads (issue #830). This changes WHICH requests increment, not
 # the INCR semantics of the requests that do — a real page hit still counts once.
+#
+# NOTE: the exclusion is a READ exclusion. The metrics-read surfaces are only ever
+# read via GET/HEAD, so we exclude those methods only. The one WRITE under
+# ``/api/metrics`` — the POST ``/api/metrics/funnel/event`` beacon — is a real user
+# action (a browser that rendered the page fired it) and MUST still count.
 _COUNTER_EXCLUDED_PREFIXES: tuple[str, ...] = (
     "/health",
     "/api/health",
     "/api/metrics",
 )
 
+# Methods that a metrics-read/health poll uses. Only these are excluded on the
+# telemetry prefixes; a POST (the funnel/event beacon) always counts.
+_READ_METHODS: frozenset[str] = frozenset({"GET", "HEAD"})
+
 
 def _is_counted_request(request: Request) -> bool:
-    """False for infra/telemetry-poll paths + CORS preflights (issue #830).
+    """False for infra/telemetry-poll READS + CORS preflights (issue #830).
 
-    OPTIONS is a CORS preflight, never a user action. The excluded prefixes are
-    health probes and the metrics-read endpoints (the dashboard polling itself).
-    Everything else counts, exactly as before.
+    OPTIONS is a CORS preflight, never a user action → never counted. The excluded
+    prefixes (health probes + metrics-read endpoints) are only skipped for READ
+    methods (GET/HEAD); the POST ``/api/metrics/funnel/event`` beacon is a real
+    user action and still counts. Everything else counts, exactly as before.
     """
-    if request.method == "OPTIONS":
+    method = request.method
+    if method == "OPTIONS":
         return False
+    if method not in _READ_METHODS:
+        # A write (e.g. the funnel/event beacon POST) is a real action → count it.
+        return True
     path = request.url.path
     return not any(path == p or path.startswith(p + "/") for p in _COUNTER_EXCLUDED_PREFIXES)
 

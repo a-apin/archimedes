@@ -10,12 +10,19 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from archimedes.api.visitor_insights import _device_class, record_visitor_insight
-from archimedes.services.visitor_insights_store import (
-    DEVICE_CLASSES,
-    VisitorInsightsStore,
-    _norm_country,
-)
+# Single import style per module (CodeQL: no mixed ``import`` / ``from ... import``
+# for the same module). These three modules are also monkeypatched by attribute in
+# some tests, so we bind them as module aliases and reference their symbols through
+# the alias everywhere — one consistent style, and the monkeypatch targets stay live.
+import archimedes.api.metrics_routes as mr
+import archimedes.api.visitor_insights as vmod
+import archimedes.services.visitor_insights_store as vstore
+
+_device_class = vmod._device_class
+record_visitor_insight = vmod.record_visitor_insight
+DEVICE_CLASSES = vstore.DEVICE_CLASSES
+VisitorInsightsStore = vstore.VisitorInsightsStore
+_norm_country = vstore._norm_country
 
 
 def _mock_redis(pfcounts=None, members=None):
@@ -278,7 +285,6 @@ async def test_beacon_path_records_both_funnel_and_visitor_insight():
     Confirms the single trigger drives both surfaces with the same visitor id —
     this is the wiring that keeps the two distinct-visitor counts in lockstep.
     """
-    from archimedes.api.metrics_routes import record_funnel_event
     from archimedes.models.telemetry import FunnelEventRequest
 
     funnel_calls: list = []
@@ -288,9 +294,7 @@ async def test_beacon_path_records_both_funnel_and_visitor_insight():
         funnel_calls.append((getattr(request.state, "visitor_id", None), stage))
 
     async def _fake_record_insight(request, is_agent=False):
-        insight_calls.append(getattr(request.state, "visitor_id", None))
-
-    import archimedes.api.metrics_routes as mr
+        insight_calls.append((getattr(request.state, "visitor_id", None), is_agent))
 
     orig_funnel = mr.record_funnel
     orig_insight = mr.record_visitor_insight
@@ -299,20 +303,53 @@ async def test_beacon_path_records_both_funnel_and_visitor_insight():
     try:
         req = _req({"user-agent": "Mozilla/5.0"})
         req.state.visitor_id = "vid-beacon"
-        await record_funnel_event(FunnelEventRequest(stage="landed"), req)
+        # No is_agent on state → the beacon defaults it to False (ordinary human).
+        await mr.record_funnel_event(FunnelEventRequest(stage="landed"), req)
     finally:
         mr.record_funnel = orig_funnel
         mr.record_visitor_insight = orig_insight
 
-    # Same vid drove both surfaces off the single landed beacon.
+    # Same vid drove both surfaces off the single landed beacon; is_agent=False.
     assert funnel_calls == [("vid-beacon", "landed")]
-    assert insight_calls == ["vid-beacon"]
+    assert insight_calls == [("vid-beacon", False)]
+
+
+async def test_beacon_passes_is_agent_through_to_visitor_insight():
+    """The beacon forwards ``request.state.is_agent`` so the agent-skip fires (issue #830 review).
+
+    Copilot flagged that ``record_funnel_event`` dropped the classifier's ``is_agent``
+    verdict, defeating the defense-in-depth skip in ``record_visitor_insight``. This
+    pins that the beacon now passes it through — an agent-classified beacon reaches
+    ``record_visitor_insight`` with ``is_agent=True``.
+    """
+    from archimedes.models.telemetry import FunnelEventRequest
+
+    seen: list = []
+
+    async def _noop_funnel(request, stage):
+        pass
+
+    async def _capture_insight(request, is_agent=False):
+        seen.append(is_agent)
+
+    orig_funnel = mr.record_funnel
+    orig_insight = mr.record_visitor_insight
+    mr.record_funnel = _noop_funnel
+    mr.record_visitor_insight = _capture_insight
+    try:
+        req = _req({"user-agent": "curl/8.0"})
+        req.state.visitor_id = "vid-agent"
+        req.state.is_agent = True  # what the telemetry middleware would have set
+        await mr.record_funnel_event(FunnelEventRequest(stage="landed"), req)
+    finally:
+        mr.record_funnel = orig_funnel
+        mr.record_visitor_insight = orig_insight
+
+    assert seen == [True]
 
 
 async def test_non_landed_beacon_records_neither():
     """A non-emittable stage records nothing (only `landed` is client-emittable)."""
-    import archimedes.api.metrics_routes as mr
-    from archimedes.api.metrics_routes import record_funnel_event
     from archimedes.models.telemetry import FunnelEventRequest
 
     calls = {"n": 0}
@@ -325,7 +362,7 @@ async def test_non_landed_beacon_records_neither():
     mr.record_funnel = _boom
     mr.record_visitor_insight = _boom
     try:
-        out = await record_funnel_event(FunnelEventRequest(stage="wallet_connected"), _req())
+        out = await mr.record_funnel_event(FunnelEventRequest(stage="wallet_connected"), _req())
     finally:
         mr.record_funnel = orig_funnel
         mr.record_visitor_insight = orig_insight
@@ -351,8 +388,6 @@ async def test_browser_ua_no_session_is_recorded_by_the_classifier():
         async def close(self):
             pass
 
-    import archimedes.services.visitor_insights_store as vstore
-
     orig = vstore.VisitorInsightsStore
     vstore.VisitorInsightsStore = FakeStore
     try:
@@ -371,8 +406,6 @@ async def test_browser_ua_no_session_is_recorded_by_the_classifier():
 
 def test_store_docstring_does_not_overclaim_real_visitors():
     """The store docstring must not claim 'real visitors, not datacenter crawler IPs' (#830)."""
-    import archimedes.services.visitor_insights_store as vstore
-
     doc = (vstore.__doc__ or "") + (vstore.VisitorInsightsStore.__doc__ or "")
     assert "real visitors, not datacenter" not in doc
     assert "human-ish" not in doc
@@ -380,7 +413,5 @@ def test_store_docstring_does_not_overclaim_real_visitors():
 
 def test_capture_helper_docstring_does_not_overclaim():
     """The capture helper docstring must not claim it excludes crawlers as 'real visitors' (#830)."""
-    import archimedes.api.visitor_insights as vmod
-
     doc = vmod.__doc__ or ""
     assert "real visitors, not datacenter" not in doc

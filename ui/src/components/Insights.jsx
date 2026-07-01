@@ -56,6 +56,7 @@ export default function Insights() {
   const [visitors, setVisitors] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [visitorsError, setVisitorsError] = useState(null)
 
   // SIWE session drives the private (cost/ops) tab. Anonymous viewers only ever
   // see the public dashboard; the internal cards read SIWE-gated endpoints.
@@ -65,19 +66,27 @@ export default function Insights() {
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setVisitorsError(null)
+    // Core dashboard = metrics + funnel; visitor-insights is loaded independently
+    // so a transient visitors failure (500/network) degrades to a partial render
+    // (the visitors card shows an error/empty state) instead of blanking the whole
+    // dashboard — per-endpoint resilience (#830 review).
     try {
-      // All three are public GET endpoints; visitor-insights is deployed alongside
-      // the funnel now (same JS-gated population, #830), so no not-live branch.
-      const [m, f, v] = await Promise.all([
+      const [m, f] = await Promise.all([
         apiGet('/api/metrics'),
         apiGet('/api/metrics/funnel'),
-        apiGet('/api/metrics/visitors'),
       ])
       setMetrics(m)
       setFunnel(f)
-      setVisitors(v)
     } catch (e) {
       setError(String(e.message || e))
+    }
+    try {
+      const v = await apiGet('/api/metrics/visitors')
+      setVisitors(v)
+    } catch (e) {
+      setVisitors(null)
+      setVisitorsError(String(e.message || e))
     }
     setLoading(false)
   }, [])
@@ -169,8 +178,10 @@ export default function Insights() {
               counts reconcile with the funnel’s <em>Landed</em> number. Country is <code>ZZ</code> until the
               CloudFront <code>terraform apply</code> (#795) forwards <code>Viewer-Country</code>.
             </p>
-            {loading && !visitors ? (
+            {loading && !visitors && !visitorsError ? (
               <Empty>Loading visitor insights…</Empty>
+            ) : visitorsError ? (
+              <Empty>Couldn’t load visitor insights: {visitorsError}</Empty>
             ) : !visitors || ((visitors.countries?.length ?? 0) === 0 && totalDevices === 0) ? (
               <Empty>No visitors recorded yet.</Empty>
             ) : (

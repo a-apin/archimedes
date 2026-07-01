@@ -134,7 +134,13 @@ async def record_funnel_event(req: FunnelEventRequest, request: Request) -> dict
         return {"recorded": False}
     await record_funnel(request, req.stage)
     # Geography + device off the same landed beacon (one distinct-visitor source).
-    await record_visitor_insight(request)
+    # Pass the telemetry classifier's verdict through so the defense-in-depth
+    # ``is_agent`` skip in ``record_visitor_insight`` actually fires — a beacon
+    # carrying an internal-agent key / bot UA must not inflate the visitor count.
+    # ``request.state.is_agent`` is set by the telemetry middleware; default to
+    # ``False`` (an ordinary human beacon) if that middleware error-swallowed.
+    is_agent = bool(getattr(request.state, "is_agent", False))
+    await record_visitor_insight(request, is_agent=is_agent)
     return {"recorded": True}
 
 

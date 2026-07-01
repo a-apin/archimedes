@@ -28,7 +28,12 @@ from starlette.requests import Request
 _WALLET = "0x1111111111111111111111111111111111111111"
 
 
-def _make_request(headers: dict[str, str] | None = None, cookies: dict[str, str] | None = None) -> Request:
+def _make_request(
+    headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
+    method: str = "GET",
+    path: str = "/api/anything",
+) -> Request:
     """Build a minimal ASGI ``Request`` with given headers/cookies (hermetic)."""
     raw_headers: list[tuple[bytes, bytes]] = []
     for k, v in (headers or {}).items():
@@ -38,8 +43,8 @@ def _make_request(headers: dict[str, str] | None = None, cookies: dict[str, str]
         raw_headers.append((b"cookie", cookie_str.encode()))
     scope = {
         "type": "http",
-        "method": "GET",
-        "path": "/api/anything",
+        "method": method,
+        "path": path,
         "headers": raw_headers,
         "query_string": b"",
     }
@@ -118,6 +123,43 @@ def test_expired_session_is_not_human_session():
     is_agent, agent_type = classify_request(request)
     assert is_agent is True
     assert agent_type == "external"
+
+
+# ── _is_counted_request: read-exclusion is method-aware (issue #830) ──────────
+
+
+def test_metrics_read_get_is_not_counted():
+    """A GET metrics-read poll (the dashboard polling itself) is excluded."""
+    from archimedes.api.telemetry_middleware import _is_counted_request
+
+    for path in ("/api/metrics", "/api/metrics/funnel", "/api/metrics/visitors", "/health", "/api/health"):
+        assert _is_counted_request(_make_request(method="GET", path=path)) is False
+
+
+def test_funnel_event_beacon_post_is_counted():
+    """The POST ``/api/metrics/funnel/event`` beacon is a real user action → counts.
+
+    Regression for the read-exclusion bug: excluding the ``/api/metrics`` prefix for
+    ALL methods wrongly stopped counting the beacon POST (issue #830 review).
+    """
+    from archimedes.api.telemetry_middleware import _is_counted_request
+
+    assert _is_counted_request(_make_request(method="POST", path="/api/metrics/funnel/event")) is True
+
+
+def test_options_preflight_is_not_counted():
+    """OPTIONS is a CORS preflight, never a user action."""
+    from archimedes.api.telemetry_middleware import _is_counted_request
+
+    assert _is_counted_request(_make_request(method="OPTIONS", path="/api/metrics/funnel/event")) is False
+    assert _is_counted_request(_make_request(method="OPTIONS", path="/api/strategies")) is False
+
+
+def test_ordinary_request_is_counted():
+    """A normal page/API GET (not a metrics-read/health path) still counts."""
+    from archimedes.api.telemetry_middleware import _is_counted_request
+
+    assert _is_counted_request(_make_request(method="GET", path="/api/strategies")) is True
 
 
 # ── middleware fail-safe ─────────────────────────────────────────
