@@ -239,24 +239,37 @@ class MarketService:
         action_count = len(trades)
 
         # 2. Pre-charge each active subscriber on-chain, then apply in-process.
-        for sub in list(pub.subscribers.values()):
-            if not sub.active:
-                continue
-            ok = await self._charge(sub.sub_id, action_count)
-            if not ok:
-                sub.active = False
-                self._deactivate_subscriber_db(strategy_id, sub.sub_id)
-                await self.state.append_event(
-                    strategy_id,
-                    {
-                        "type": "halt",
-                        "sub_id": sub.sub_id,
-                        "reason": "insufficient_balance",
-                        "tick_id": tick_id,
-                    },
-                )
-                continue
-            await self._apply_to_subscriber(sub, trades, target_weights, tick_id, addr_map)
+        # Bound concurrency to 5 simultaneous subscribers (M6).
+        _sub_sem = asyncio.Semaphore(5)
+
+        async def _process_subscriber(sub: Subscriber) -> None:
+            async with _sub_sem:
+                ok = await self._charge(sub.sub_id, action_count)
+                if not ok:
+                    sub.active = False
+                    self._deactivate_subscriber_db(strategy_id, sub.sub_id)
+                    await self.state.append_event(
+                        strategy_id,
+                        {
+                            "type": "halt",
+                            "sub_id": sub.sub_id,
+                            "reason": "insufficient_balance",
+                            "tick_id": tick_id,
+                        },
+                    )
+                    return
+                await self._apply_to_subscriber(sub, trades, target_weights, tick_id, addr_map)
+
+        tasks = [
+            _process_subscriber(sub)
+            for sub in pub.subscribers.values()
+            if sub.active
+        ]
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in results:
+                if isinstance(r, Exception):
+                    logger.error("Subscriber processing failed: %s", r)
 
         # 3. Execute on publisher's own vault too (non-dry-run).
         if not self.dry_run:
