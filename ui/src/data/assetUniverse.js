@@ -10,48 +10,43 @@
 export const ASSET_GROUPS = [
   {
     id: 'us_equity',
-    label: 'US equity & sectors',
-    assets: ['DIA', 'IWM', 'QQQ', 'SPY', 'XLE', 'XLF', 'XLI', 'XLK', 'XLU', 'XLV'],
+    label: 'US equity, sectors & themes',
+    assets: ['ARKG', 'ARKK', 'BOTZ', 'CIBR', 'DGRO', 'DIA', 'FDN', 'HACK', 'IBB', 'IFRA', 'IGV', 'IJH', 'IJR', 'ITB', 'ITOT', 'IVV', 'IWD', 'IWF', 'IWM', 'IYR', 'JETS', 'KRE', 'MDY', 'MTUM', 'NOBL', 'OIH', 'PAVE', 'QQQ', 'QUAL', 'ROBO', 'RSP', 'SCHB', 'SCHD', 'SCHH', 'SKYY', 'SMH', 'SOXX', 'SPLV', 'SPY', 'USMV', 'VB', 'VGT', 'VIG', 'VLUE', 'VNQ', 'VNQI', 'VO', 'VOO', 'VTI', 'VTV', 'VUG', 'VYM', 'XBI', 'XLB', 'XLC', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLRE', 'XLU', 'XLV', 'XLY', 'XOP'],
   },
   {
     id: 'intl_equity',
     label: 'International equity',
-    assets: ['CAC_ETF', 'DAX_ETF', 'EEM', 'EWJ', 'EWY', 'EZU', 'FTSE_ETF', 'INDA', 'MCHI', 'TUR_ETF'],
-  },
-  {
-    id: 'indices',
-    label: 'Equity indices',
-    assets: ['BIST100', 'CAC40', 'DAX40', 'FTSE100', 'NIKKEI'],
+    assets: ['ACWI', 'ARGT', 'ASHR', 'DXJ', 'ECH', 'EEM', 'EFA', 'EIDO', 'EIRL', 'ENZL', 'EPI', 'EPOL', 'EWA', 'EWC', 'EWD', 'EWG', 'EWH', 'EWI', 'EWJ', 'EWK', 'EWL', 'EWM', 'EWN', 'EWO', 'EWP', 'EWQ', 'EWS', 'EWT', 'EWU', 'EWW', 'EWY', 'EWZ', 'EZA', 'EZU', 'FXI', 'GXG', 'IEFA', 'IEMG', 'ILF', 'INDA', 'KWEB', 'MCHI', 'THD', 'TUR', 'VEA', 'VNM', 'VT', 'VWO', 'VXUS'],
   },
   {
     id: 'crypto',
     label: 'Crypto',
-    assets: ['BTC', 'ETH', 'SOL'],
+    assets: ['AAVE', 'ADA', 'ALGO', 'APE', 'APT', 'AR', 'ARB', 'ATOM', 'AVAX', 'AXS', 'BCH', 'BNB', 'BTC', 'CHZ', 'CRV', 'DASH', 'DOGE', 'DOT', 'DYDX', 'EGLD', 'ENA', 'ENJ', 'ETC', 'ETH', 'FET', 'FIL', 'FLOW', 'GALA', 'GMX', 'GRT', 'HBAR', 'ICP', 'IMX', 'INJ', 'IOTA', 'JTO', 'JUP', 'KAS', 'KAVA', 'KSM', 'LDO', 'LINK', 'LTC', 'MINA', 'NEAR', 'ONDO', 'OP', 'POL', 'PYTH', 'QNT', 'RENDER', 'ROSE', 'RUNE', 'SAND', 'SEI', 'SNX', 'SOL', 'STX', 'SUI', 'THETA', 'TIA', 'TON', 'TRX', 'UNI', 'VET', 'WLD', 'XLM', 'XRP', 'XTZ', 'YFI', 'ZEC'],
   },
   {
     id: 'fx',
     label: 'FX',
-    assets: ['EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/TRY'],
+    assets: ['AUD/JPY', 'AUD/USD', 'EUR/CHF', 'EUR/GBP', 'EUR/JPY', 'EUR/NOK', 'EUR/SEK', 'EUR/USD', 'GBP/JPY', 'GBP/USD', 'NZD/USD', 'USD/BRL', 'USD/CAD', 'USD/CHF', 'USD/CNH', 'USD/CZK', 'USD/HKD', 'USD/HUF', 'USD/ILS', 'USD/INR', 'USD/JPY', 'USD/KRW', 'USD/MXN', 'USD/NOK', 'USD/PLN', 'USD/SEK', 'USD/SGD', 'USD/THB', 'USD/TRY', 'USD/ZAR'],
   },
   {
     id: 'metals',
     label: 'Metals',
-    assets: ['COPPER_FUT', 'GDX', 'GDXJ', 'GLD', 'GOLD_FUT', 'PALLADIUM', 'PLATINUM', 'SILVER_FUT', 'SLV'],
+    assets: ['COPPER_SPOT', 'COPX', 'GDX', 'GDXJ', 'GLD', 'GOLD_SPOT', 'IAU', 'PALL', 'PALL_SPOT', 'PLAT_SPOT', 'PPLT', 'SIL', 'SILVER_SPOT', 'SLV', 'XME'],
   },
   {
-    id: 'energy',
-    label: 'Energy',
-    assets: ['BRENT_FUT', 'NATGAS_FUT', 'UNG', 'USO', 'WTI_FUT'],
+    id: 'commodities',
+    label: 'Commodities & energy',
+    assets: ['BNO', 'CORN', 'DBA', 'DBB', 'DBC', 'GSG', 'ICLN', 'LIT', 'MOO', 'PDBC', 'SOYB', 'TAN', 'UNG', 'URA', 'USO', 'WEAT', 'WOOD'],
   },
   {
-    id: 'agriculture',
-    label: 'Agriculture',
-    assets: ['CORN_FUT', 'SOY_FUT', 'WHEAT_FUT'],
+    id: 'volatility',
+    label: 'Volatility',
+    assets: ['SVXY', 'UVXY', 'VXX'],
   },
   {
     id: 'fixed_income',
     label: 'Fixed income & credit',
-    assets: ['AGG', 'BIL', 'EMB', 'HYG', 'IEF', 'LQD', 'MUB', 'SHY', 'TIP', 'TLT'],
+    assets: ['AGG', 'ANGL', 'BIL', 'BKLN', 'BND', 'BNDX', 'BWX', 'EMB', 'EMLC', 'FLOT', 'GOVT', 'HYG', 'IEF', 'IUSB', 'JNK', 'LQD', 'MBB', 'MINT', 'MUB', 'PFF', 'SHV', 'SHY', 'TIP', 'TLT', 'VCIT', 'VCSH', 'VGIT', 'VGLT', 'VGSH', 'VTEB', 'VTIP'],
   },
 ]
 

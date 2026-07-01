@@ -3,10 +3,12 @@
 A human-readable, drift-proof breakdown of exactly what Archimedes prices on-chain —
 rendered FROM ``backend/archimedes/data/synthetic_universe.json`` (the SSOT) so the doc
 can never go stale relative to the actual universe. The on-chain deploy-eligible synths
-are grouped by asset class with their oracle price and Chainlink-coverage flag; the
-single-name equity synths held BACK from the live path (backtest-only, pending compliance
-review) are listed separately. A test (``test_asset_universe_doc.py``) byte-diffs a fresh
-render against the committed file to fail CI on stale output (#757).
+are grouped by asset class with their oracle price and HONEST per-source oracle coverage
+(``pyth_feed_id`` present/absent, ``stork_asset_id``, ``chainlink_feed``, and the derived
+``oracle_tier`` hint — T1.5b / #759); the single-name equity synths held BACK from the live
+path (backtest-only, pending compliance review) are listed separately. A test
+(``test_asset_universe_doc.py``) byte-diffs a fresh render against the committed file to fail
+CI on stale output (#757).
 
 Usage (the #757 canonical command goes through the thin ``scripts/`` wrapper; the
 module form is equivalent)::
@@ -26,7 +28,6 @@ from pathlib import Path
 from archimedes.universe import (
     COMPLIANCE_FLAGGED_SINGLE_STOCKS,
     SYNTHETIC_UNIVERSE,
-    chainlink_covered_synths,
 )
 
 # repo-root-relative: scripts -> archimedes -> backend -> <repo root>
@@ -49,19 +50,29 @@ _CLASS_LABELS = {
     "fx": "FX",
     "us_equity_etf": "US equity ETFs",
     "us_sector_etf": "US sector ETFs",
+    "us_thematic_etf": "US thematic/industry ETFs",
+    "factor_etf": "Style / factor ETFs",
+    "reit_etf": "REIT / real-estate ETFs",
+    "intl_equity_etf": "International equity ETFs",
+    "intl_bond": "International bonds",
     "eu_equity_etf": "EU equity ETFs",
     "eu_index": "EU indices",
     "asia_equity_etf": "Asia equity ETFs",
     "asia_index": "Asia indices",
     "em_equity_etf": "EM equity ETFs",
+    "latam_equity_etf": "LatAm equity ETFs",
     "tr_equity_etf": "Turkish equity ETFs",
     "tr_index": "Turkish indices",
     "metal_etf": "Metal ETFs",
     "metal_eq_etf": "Metal-miner ETFs",
     "metal_fut": "Metal futures",
+    "metal_spot": "Metal spot",
+    "commodity_etf": "Commodity ETFs",
     "energy_etf": "Energy ETFs",
     "energy_fut": "Energy futures",
+    "agri_etf": "Agricultural ETFs",
     "agri_fut": "Agricultural futures",
+    "volatility_etf": "Volatility ETFs",
     "us_bond_agg": "US bonds — aggregate",
     "us_bond_long": "US bonds — long",
     "us_bond_mid": "US bonds — intermediate",
@@ -92,12 +103,14 @@ def render_doc() -> str:
     specs = sorted(
         SYNTHETIC_UNIVERSE.values(), key=lambda s: (_CLASS_LABELS.get(s.asset_class, s.asset_class), s.symbol)
     )
-    covered = set(chainlink_covered_synths())
     n_total = len(specs)
-    n_covered = len(covered)
-    n_not_covered = n_total - n_covered
+    n_pyth = sum(1 for s in specs if s.pyth_feed_id)
+    n_no_pyth = n_total - n_pyth
+    n_stork = sum(1 for s in specs if s.stork_asset_id)
+    n_chainlink = sum(1 for s in specs if s.chainlink_feed)
     n_classes = len({s.asset_class for s in specs})
     n_flagged = len(COMPLIANCE_FLAGGED_SINGLE_STOCKS)
+    tiers = sorted({s.oracle_tier for s in specs})
     cr = _compliance_review()
 
     out: list[str] = []
@@ -118,8 +131,21 @@ def render_doc() -> str:
     )
     out.append("")
     out.append(f"- **On-chain deploy-eligible synths:** {n_total} across {n_classes} asset classes")
-    out.append(f"- **Chainlink-covered:** {n_covered} covered · {n_not_covered} not covered (of {n_total})")
+    out.append(
+        f"- **Oracle coverage (per source):** {n_pyth} with a real Pyth Hermes feed · "
+        f"{n_no_pyth} Pyth-null · {n_stork} Stork · {n_chainlink} Chainlink (of {n_total})"
+    )
+    out.append(f"- **Expected oracle tiers (hint):** {', '.join(tiers)}")
     out.append(f"- **Single-name equity synths held back (backtest-only, compliance):** {n_flagged}")
+    out.append("")
+    out.append(
+        "**Oracle honesty (T1.5b / #759):** `pyth_feed_id` is a REAL Pyth Hermes id or null "
+        "(never fabricated); `stork_asset_id` and `chainlink_feed` are null for now — no public "
+        "Stork catalog to resolve yet, and Chainlink price Data Feeds are NOT yet deployed on Arc "
+        "testnet (only CCIP as of 2026-06-30). `oracle_tier` is a HINT from the count of configured "
+        "feeds (`quorum` ≥2, `single_checked` =1, `admin` =0); the AUTHORITATIVE tier is on-chain via "
+        "`QuorumPriceOracle.priceWithProvenance()` (#840)."
+    )
     out.append("")
     out.append(
         "**Parity invariant:** every on-chain synth is also backtestable "
@@ -132,18 +158,20 @@ def render_doc() -> str:
     out.append("")
     out.append(f"All {n_total} synths below are **on-chain-eligible** (priced on the live path).")
     out.append("")
-    # Columns follow the #757 required schema, machine-greppable: BARE symbol (so the
-    # `^\|\s*s[A-Z]` acceptance regex counts exactly these rows — the compliance list below
-    # is inline-backticked, not table rows), raw `asset_class`, `chainlink_covered` rendered
-    # as true/false (so the documented `grep -c 'true *|'` equals the covered count), and an
-    # explicit `on-chain-eligible` marker.
-    out.append("| symbol | name | asset_class | price_usd | decimals | chainlink_covered | on-chain-eligible |")
-    out.append("|---|---|---|---:|---:|:---:|:---:|")
+    # Machine-greppable columns: BARE symbol first (so the `^\|\s*s[A-Z]` acceptance regex counts
+    # exactly these rows — the compliance list below is inline-backticked, not table rows), raw
+    # `asset_class`, and HONEST per-source oracle columns. `pyth` renders yes/no so the split is
+    # greppable; `chainlink_feed` renders null everywhere (Arc has no feeds yet); `oracle_tier` is
+    # the derived hint.
+    out.append("| symbol | name | asset_class | price_usd | pyth | stork | chainlink_feed | oracle_tier |")
+    out.append("|---|---|---|---:|:---:|:---:|:---:|:---:|")
     for spec in specs:
-        chainlink = "true" if spec.chainlink_covered else "false"
+        pyth = "yes" if spec.pyth_feed_id else "no"
+        stork = "yes" if spec.stork_asset_id else "no"
+        chainlink = spec.chainlink_feed if spec.chainlink_feed else "null"
         out.append(
             f"| {spec.symbol} | {spec.name} | {spec.asset_class} | "
-            f"{_fmt_price(spec.price_usd)} | {spec.decimals} | {chainlink} | live ✅ |"
+            f"{_fmt_price(spec.price_usd)} | {pyth} | {stork} | {chainlink} | {spec.oracle_tier} |"
         )
     out.append("")
     out.append("## Held back — single-name equities (backtest-only)")

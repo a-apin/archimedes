@@ -50,9 +50,9 @@ ON_CHAIN: frozenset[str] = frozenset(ON_CHAIN_SYNTHS)
 def test_ssot_loaded_non_empty() -> None:
     # A silent SSOT-load failure (missing/garbled JSON) would make every other
     # parity check pass vacuously on an empty set — guard against it.
-    assert len(SYNTHETIC_UNIVERSE) >= 50, (
-        f"SSOT loaded only {len(SYNTHETIC_UNIVERSE)} synths — expected the expanded "
-        "universe (~59). Did synthetic_universe.json fail to load?"
+    assert len(SYNTHETIC_UNIVERSE) >= 200, (
+        f"SSOT loaded only {len(SYNTHETIC_UNIVERSE)} synths — expected the cascade-aligned "
+        "expanded universe (~280, #759). Did synthetic_universe.json fail to load?"
     )
     assert frozenset(SYNTHETIC_UNIVERSE.keys()) == ON_CHAIN
 
@@ -126,10 +126,13 @@ def test_synthetics_for_deploy_is_deterministic_and_sorted() -> None:
 
 
 def test_universe_expanded_at_least_5x() -> None:
-    # The T1.5 goal: expand the on-chain universe 5–10X from the legacy 7 synths.
+    # The T1.5 goal was to expand the on-chain universe 5–10X from the legacy 7 synths;
+    # T1.5b (#759) grows it further to a cascade-aligned ~300-instrument universe. Floor at
+    # 250 (the low end of the #759 accept range) — comfortably >5X the legacy 7.
     legacy_size = 7
-    assert len(ON_CHAIN) >= 5 * legacy_size, (
-        f"On-chain universe is {len(ON_CHAIN)}; expected at least {5 * legacy_size} (5X the legacy 7-synth universe)."
+    assert len(ON_CHAIN) >= 250, (
+        f"On-chain universe is {len(ON_CHAIN)}; expected at least 250 "
+        f"(cascade-aligned #759 target; >{5 * legacy_size} = 5X the legacy {legacy_size}-synth universe)."
     )
 
 
