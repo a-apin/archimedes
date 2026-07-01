@@ -280,6 +280,10 @@ async def subscribe_strategy(
             logger.warning("on-chain subscription validation failed: %s", exc)
             raise HTTPException(status_code=400, detail="Could not validate subscription on-chain") from exc
 
+    # A5: Use the server-derived pool_id for storage, not the client-supplied one.
+    # Derivation is cheap and safe in dry-run mode too.
+    pool_id = derive_pool_id(strategy_id, pub_row.creator_wallet)
+
     # 4. Create vault for subscriber if needed
     vault_address = ""
     try:
