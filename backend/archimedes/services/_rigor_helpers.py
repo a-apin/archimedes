@@ -741,7 +741,12 @@ def compute_sharpe_ci(
     sr_daily = sharpe_annual / math.sqrt(_ANNUALIZATION)
     se = math.sqrt((1.0 + 0.5 * sr_daily**2) * _ANNUALIZATION / n_obs_daily)
     z = norm.ppf((1.0 + confidence) / 2.0)
-    return (sharpe_annual - z * se, sharpe_annual + z * se)
+    # `norm.ppf` returns a numpy scalar, so `z * se` (and the returned tuple)
+    # is np.float64 unless cast. A raw np.float64 breaks the passport DB insert:
+    # psycopg2 renders it as `np.float64(-0.33)` and parses `np` as a schema →
+    # `InvalidSchemaName: schema "np" does not exist`, rolling back the passport
+    # sync. Cast to plain float to honor the tuple[float, float] contract.
+    return (float(sharpe_annual - z * se), float(sharpe_annual + z * se))
 
 
 # ─── 6. Private helpers ──────────────────────────────────────────────
