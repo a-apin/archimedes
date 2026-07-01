@@ -16,7 +16,7 @@ from archimedes.api._route_helpers import strategy_provider
 from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.limiter import limiter
 from archimedes.db import get_session
-from archimedes.marketplace.encoding import derive_pool_id, to_bytes32
+from archimedes.marketplace.encoding import derive_pool_id, to_bytes32, to_hexstr
 from archimedes.marketplace.service import MarketService, Subscriber
 from archimedes.models.marketplace import MarketplaceAgent
 from archimedes.models.strategy_generators import wallet_can_publish
@@ -266,9 +266,10 @@ async def subscribe_strategy(
                 )
 
             # P0 (H1): on-chain pool_id must match the derived pool_id for this strategy
-            onchain_pool_bytes = sub_data[1]
+            # A4: Use to_hexstr for unconditional normalization — no silent skip path.
+            onchain_pool_raw = sub_data[1]
             derived_pool = derive_pool_id(strategy_id, pub_row.creator_wallet)
-            if isinstance(onchain_pool_bytes, bytes) and onchain_pool_bytes != to_bytes32(derived_pool):
+            if to_hexstr(onchain_pool_raw) != to_hexstr(to_bytes32(derived_pool)):
                 raise HTTPException(
                     status_code=400,
                     detail="On-chain pool_id does not match derived pool_id for this strategy",
