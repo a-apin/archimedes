@@ -26,6 +26,7 @@ def market():
     svc.state.release_leader = AsyncMock()
     svc.state.append_event = AsyncMock()
     svc.state.save_subscribers = AsyncMock()
+    svc.state.load_subscribers = AsyncMock(return_value={})
     return svc
 
 
@@ -274,3 +275,134 @@ async def test_record_liability_best_effort(market: MarketService):
 
     # No new event was emitted (DB failure was caught before append_event)
     assert market.state.append_event.await_count == before_count
+
+
+# ── TASK 17 — Leader lock: per-strategy isolation + explicit release + renewal ─
+
+
+@pytest.mark.asyncio
+async def test_tick_releases_leader_lock_in_finally(market: MarketService):
+    """Tick releases the per-strategy leader lock in ``finally`` after a
+    successful run (C3, explicit release)."""
+    market.publishers["strat_release"] = Publisher(
+        strategy_id="strat_release",
+        pool_id="0x" + "aa" * 32,
+        vault_address="0xpub",
+        creator_wallet="0xcreator",
+    )
+    with (
+        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch("archimedes.marketplace.service.compute_trades", return_value=[]),
+    ):
+        await market.tick("strat_release")
+
+    # release_leader was called exactly once with the strategy_id
+    market.state.release_leader.assert_awaited_once_with("strat_release")
+
+
+@pytest.mark.asyncio
+async def test_tick_releases_leader_lock_on_exception(market: MarketService):
+    """Tick releases the per-strategy lock even when tick fails midway, so
+    the next interval re-acquires cleanly regardless of TTL."""
+    market.publishers["strat_err"] = Publisher(
+        strategy_id="strat_err",
+        pool_id="0x" + "bb" * 32,
+        vault_address="0xpub",
+        creator_wallet="0xcreator",
+    )
+    with patch.object(market, "_evaluate", AsyncMock(side_effect=RuntimeError("boom"))):
+        with pytest.raises(RuntimeError):
+            await market.tick("strat_err")
+
+    # release_leader was still called
+    market.state.release_leader.assert_awaited_once_with("strat_err")
+
+
+@pytest.mark.asyncio
+async def test_tick_renews_leader_at_midpoint(market: MarketService):
+    """renew_leader is called exactly once per tick, midway through the
+    subscriber list (crash-safety insurance)."""
+    market.publishers["strat_renew"] = Publisher(
+        strategy_id="strat_renew",
+        pool_id="0x" + "cc" * 32,
+        vault_address="0xpub",
+        creator_wallet="0xcreator",
+    )
+    market.publishers["strat_renew"].subscribers["sub_1"] = Subscriber(
+        sub_id="0x" + "11" * 32,
+        pool_id="0x" + "22" * 32,
+        vault_address="0xsub_vault",
+        ephemeral_wallet="0xephemeral",
+        subscriber_wallet="0xsub",
+        active=True,
+    )
+    market.publishers["strat_renew"].subscribers["sub_2"] = Subscriber(
+        sub_id="0x" + "33" * 32,
+        pool_id="0x" + "44" * 32,
+        vault_address="0xsub_vault",
+        ephemeral_wallet="0xephemeral",
+        subscriber_wallet="0xsub",
+        active=True,
+    )
+
+    with (
+        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()),
+        patch.object(market, "_verify_payment", AsyncMock(return_value=True)),
+        patch.object(market, "_apply_to_subscriber", AsyncMock(return_value=True)),
+    ):
+        await market.tick("strat_renew")
+
+    # renew_leader was called exactly once with the strategy_id
+    market.state.renew_leader.assert_awaited_once_with("strat_renew")
+
+
+@pytest.mark.asyncio
+async def test_two_strategies_tick_independently(market: MarketService):
+    """Two strategies both complete their tick bodies — the tick() method
+    is not gated by a global lock (C2; per-strategy lock acquisition lives
+    in _run_loop, not tick())."""
+    market.publishers["strat_a"] = Publisher(
+        strategy_id="strat_a",
+        pool_id="0x" + "aa" * 32,
+        vault_address="0xpub_a",
+        creator_wallet="0xcreator",
+    )
+    market.publishers["strat_b"] = Publisher(
+        strategy_id="strat_b",
+        pool_id="0x" + "bb" * 32,
+        vault_address="0xpub_b",
+        creator_wallet="0xcreator",
+    )
+
+    with (
+        patch.object(market, "_evaluate", AsyncMock(return_value={})),
+        patch("archimedes.marketplace.service.compute_trades", return_value=[]),
+    ):
+        await market.tick("strat_a")
+        await market.tick("strat_b")
+
+    # Both tick bodies executed fully, both released locks independently
+    assert market.state.release_leader.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_loop_uses_per_strategy_key(market: MarketService):
+    """_run_loop acquires the per-strategy lock on each iteration."""
+    market.state.try_acquire_leader = AsyncMock(return_value=True)
+
+    # Make the publisher retired so the loop exits after one iteration
+    pub = Publisher(
+        strategy_id="strat_loop",
+        pool_id="0x" + "dd" * 32,
+        vault_address="0xpub",
+        creator_wallet="0xcreator",
+    )
+    pub.retired = True  # signal exit after first iteration
+    market.publishers["strat_loop"] = pub
+
+    with patch.object(market, "tick", AsyncMock()):
+        await market._run_loop("strat_loop")
+
+    # try_acquire_leader was called with the per-strategy key
+    market.state.try_acquire_leader.assert_awaited_with("strat_loop")
