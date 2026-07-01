@@ -295,6 +295,21 @@ def test_sharpe_ci_symmetric_around_point_estimate():
     assert abs(mid - sr) < 1e-9, f"CI midpoint {mid:.6f} must equal SR {sr}"
 
 
+def test_sharpe_ci_returns_plain_python_float():
+    """Regression: the CI must be plain ``float``, never ``np.float64``.
+
+    ``norm.ppf`` returns a numpy scalar, so without an explicit cast the tuple
+    leaks ``np.float64`` into ``sharpe_ci_lower``/``sharpe_ci_upper`` on the
+    strategy passport. psycopg2 then renders it as ``np.float64(-0.33)`` and
+    parses ``np`` as a schema, raising ``InvalidSchemaName: schema "np" does
+    not exist`` and rolling back the passport DB sync. ``isinstance(x, float)``
+    does NOT catch this (np.float64 subclasses float) — assert the exact type.
+    """
+    lower, upper = compute_sharpe_ci(1.0, n_obs_daily=252, confidence=0.95)
+    assert type(lower) is float, f"lower is {type(lower).__name__}, must be plain float"
+    assert type(upper) is float, f"upper is {type(upper).__name__}, must be plain float"
+
+
 def test_sharpe_ci_wider_with_fewer_obs():
     """Fewer observations → wider confidence interval."""
     sr = 0.8
