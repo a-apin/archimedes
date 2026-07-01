@@ -22,7 +22,6 @@ from archimedes.models.marketplace import MarketplaceAgent
 from archimedes.models.strategy_generators import wallet_can_publish
 from archimedes.models.strategy_store import StrategyRecord
 
-
 # ─── x402 Gateway Models ────────────────────────────────────────────────
 
 
@@ -119,8 +118,8 @@ async def publish_strategy(
     try:
         sp_c = market.loader._contract(splitter_addr, "PaymentSplitter")
         sp_data = await sp_c.functions.pools(to_bytes32(pool_id)).call()
-        # pools returns (creator, platform, total_collected, total_disbursed, active)
-        pool_already_active = bool(sp_data[4]) if len(sp_data) >= 5 else False
+        # pools returns (creator, platform, total_collected, total_disbursed, held_balance, active)
+        pool_already_active = bool(sp_data[5]) if len(sp_data) >= 6 else False
     except Exception:
         logger.warning("pools() staticcall failed; proceeding with createPool")
 
