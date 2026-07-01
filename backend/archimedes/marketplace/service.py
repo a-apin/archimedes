@@ -159,19 +159,20 @@ class MarketService:
             logger.info("Stopped publisher for %s", strategy_id)
 
     async def add_subscriber(self, strategy_id: str, sub: Subscriber) -> None:
-        """Register a subscriber for a strategy."""
-        # Validate on-chain unless dry_run
+        """Register a subscriber for a strategy.
+
+        Validates on-chain before adding. Any validation failure (inactive,
+        RPC error, invalid sub_id) raises — fails closed (M4).
+        """
         if not self.dry_run:
+            c = self.loader._contract(self.settings.subscription_manager_address, "SubscriptionManager")
             try:
-                c = self.loader._contract(self.settings.subscription_manager_address, "SubscriptionManager")
                 sub_data = await c.functions.subscriptions(to_bytes32(sub.sub_id)).call()
-                active = sub_data[5]  # 6th field: active
-                if not active:
-                    raise ValueError("subscription not active on-chain")
-            except ValueError as exc:
-                if "subscription not active" in str(exc):
-                    raise
-                logger.warning("Could not validate sub_id %s on-chain: %s", sub.sub_id, exc)
+            except Exception as exc:
+                raise ValueError(f"on-chain validation failed for {sub.sub_id}: {exc}") from exc
+            active = bool(sub_data[5])  # 6th field: active
+            if not active:
+                raise ValueError(f"subscription {sub.sub_id} not active on-chain")
 
         pub = self.publishers.get(strategy_id)
         if pub is None:
