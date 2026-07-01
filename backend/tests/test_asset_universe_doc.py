@@ -15,7 +15,7 @@ from pathlib import Path
 from archimedes.universe import (
     COMPLIANCE_FLAGGED_SINGLE_STOCKS,
     ON_CHAIN_SYNTHS,
-    chainlink_covered_synths,
+    SYNTHETIC_UNIVERSE,
 )
 
 
@@ -79,19 +79,34 @@ def test_compliance_held_singles_are_listed() -> None:
         assert f"`{sym}`" in text, f"compliance-flagged {sym} missing from docs/asset-universe.md"
 
 
-def test_chainlink_covered_column_is_machine_greppable() -> None:
-    # #757 requires a machine-greppable `chainlink_covered` column rendering true/false, so the
-    # documented `grep -c 'true *|'` verification works and the true/false split matches the SSOT.
+def test_pyth_coverage_column_is_machine_greppable() -> None:
+    # T1.5b (#759): the honest per-source oracle schema replaces the misleading
+    # `chainlink_covered:bool`. The doc renders a machine-greppable `pyth` yes/no column so the
+    # Pyth-covered vs Pyth-null split matches the SSOT, plus a `chainlink_feed` column that is
+    # `null` EVERYWHERE (Arc has no price Data Feeds yet — only CCIP as of 2026-06-30).
     text = _doc_path().read_text(encoding="utf-8")
-    n_true = text.count("| true |")
-    n_false = text.count("| false |")
-    assert n_true == len(chainlink_covered_synths()), f"true rows ({n_true}) != covered count"
-    assert n_false == len(ON_CHAIN_SYNTHS) - len(chainlink_covered_synths()), (
-        f"false rows ({n_false}) != not-covered count"
-    )
-    # mirror the issue's `grep -c 'true *|'` line count exactly
-    grep_true = sum(1 for line in text.splitlines() if re.search(r"\btrue *\|", line))
-    assert grep_true == len(chainlink_covered_synths())
+    n_pyth = sum(1 for s in SYNTHETIC_UNIVERSE.values() if s.pyth_feed_id)
+    n_no_pyth = len(ON_CHAIN_SYNTHS) - n_pyth
+    # count only DATA rows: a synth row starts with `| sXXX |`; `pyth` is the 5th cell.
+    row_re = re.compile(r"^\|\s*s[A-Z][A-Za-z0-9-]*\s*\|[^\n]*", re.MULTILINE)
+    rows = row_re.findall(text)
+    assert len(rows) == len(ON_CHAIN_SYNTHS), f"data-row count {len(rows)} != synth count"
+    yes = sum(1 for r in rows if r.split("|")[5].strip() == "yes")
+    no = sum(1 for r in rows if r.split("|")[5].strip() == "no")
+    assert yes == n_pyth, f"pyth=yes rows ({yes}) != real-pyth-id count ({n_pyth})"
+    assert no == n_no_pyth, f"pyth=no rows ({no}) != pyth-null count ({n_no_pyth})"
+
+
+def test_chainlink_feed_is_null_everywhere() -> None:
+    # HONEST claim: Chainlink price Data Feeds are NOT live on Arc yet, so every `chainlink_feed`
+    # in the SSOT is null and every table row renders `chainlink_feed = null`. If Arc later
+    # publishes feed addresses and we wire one in, this test must be updated deliberately.
+    for spec in SYNTHETIC_UNIVERSE.values():
+        assert spec.chainlink_feed is None, f"{spec.symbol} has a chainlink_feed but Arc has no feeds yet"
+    text = _doc_path().read_text(encoding="utf-8")
+    row_re = re.compile(r"^\|\s*s[A-Z][A-Za-z0-9-]*\s*\|[^\n]*", re.MULTILINE)
+    for r in row_re.findall(text):
+        assert r.split("|")[7].strip() == "null", f"chainlink_feed column is not null: {r[:60]}"
 
 
 def test_parity_invariant_states_disjointness() -> None:
@@ -125,7 +140,10 @@ def test_check_cli_detects_drift_via_subprocess(tmp_path: Path) -> None:
     from archimedes.scripts.gen_asset_universe_doc import render_doc
 
     drifted = tmp_path / "asset-universe.md"
-    drifted.write_text(render_doc() + "| sFAKE | Fake | crypto | $1.00 | 6 | true | live ✅ |\n", encoding="utf-8")
+    drifted.write_text(
+        render_doc() + "| sFAKE | Fake | crypto | $1.00 | yes | no | null | single_checked |\n",
+        encoding="utf-8",
+    )
     hostile = {
         "ASSET_UNIVERSE_DOC_PATH": str(drifted),
         "LC_ALL": "C",

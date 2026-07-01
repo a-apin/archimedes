@@ -42,14 +42,28 @@ _OUTPUT_PATH = Path(__file__).resolve().parents[3] / "ui" / "src" / "data" / "as
 # Coarse user-facing buckets → the SSOT asset_classes they cover. Order is the display order
 # in the picker. Every deploy-eligible asset_class MUST appear in exactly one bucket (asserted).
 _GROUPS: list[tuple[str, str, list[str]]] = [
-    ("us_equity", "US equity & sectors", ["us_equity_etf", "us_sector_etf"]),
-    ("intl_equity", "International equity", ["eu_equity_etf", "asia_equity_etf", "em_equity_etf", "tr_equity_etf"]),
-    ("indices", "Equity indices", ["eu_index", "asia_index", "tr_index"]),
+    (
+        "us_equity",
+        "US equity, sectors & themes",
+        ["us_equity_etf", "us_sector_etf", "us_thematic_etf", "factor_etf", "reit_etf"],
+    ),
+    (
+        "intl_equity",
+        "International equity",
+        [
+            "intl_equity_etf",
+            "eu_equity_etf",
+            "asia_equity_etf",
+            "em_equity_etf",
+            "latam_equity_etf",
+            "tr_equity_etf",
+        ],
+    ),
     ("crypto", "Crypto", ["crypto"]),
     ("fx", "FX", ["fx"]),
-    ("metals", "Metals", ["metal_etf", "metal_eq_etf", "metal_fut"]),
-    ("energy", "Energy", ["energy_etf", "energy_fut"]),
-    ("agriculture", "Agriculture", ["agri_fut"]),
+    ("metals", "Metals", ["metal_etf", "metal_eq_etf", "metal_fut", "metal_spot"]),
+    ("commodities", "Commodities & energy", ["commodity_etf", "energy_etf", "energy_fut", "agri_etf", "agri_fut"]),
+    ("volatility", "Volatility", ["volatility_etf"]),
     (
         "fixed_income",
         "Fixed income & credit",
@@ -64,6 +78,7 @@ _GROUPS: list[tuple[str, str, list[str]]] = [
             "credit_ig",
             "credit_hy",
             "em_bond",
+            "intl_bond",
         ],
     ),
 ]
