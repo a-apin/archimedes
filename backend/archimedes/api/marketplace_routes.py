@@ -196,6 +196,26 @@ async def subscribe_strategy(
             # sub_data: (subscriber, pool_id, ephemeral_wallet, reserved_usdc, webhook_url, active, created_at)
             if len(sub_data) < 6 or not sub_data[5]:
                 raise HTTPException(status_code=400, detail="Subscription not active on-chain")
+
+            # P0 (H1): on-chain subscriber must match the authenticated caller
+            onchain_subscriber = sub_data[0]
+            if isinstance(onchain_subscriber, bytes):
+                onchain_subscriber = "0x" + onchain_subscriber.hex()
+            onchain_subscriber = onchain_subscriber.lower()
+            if onchain_subscriber != wallet.lower():
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"On-chain subscriber ({onchain_subscriber}) does not match wallet ({wallet})",
+                )
+
+            # P0 (H1): on-chain pool_id must match the derived pool_id for this strategy
+            onchain_pool_bytes = sub_data[1]
+            derived_pool = derive_pool_id(strategy_id, pub_row.creator_wallet)
+            if isinstance(onchain_pool_bytes, bytes) and onchain_pool_bytes != to_bytes32(derived_pool):
+                raise HTTPException(
+                    status_code=400,
+                    detail="On-chain pool_id does not match derived pool_id for this strategy",
+                )
         except HTTPException:
             raise
         except Exception as exc:
