@@ -21,11 +21,18 @@ No network, no Circle, no Arc RPC.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from archimedes.chain.client import chain_client
 from archimedes.chain.oracle_updater import OracleUpdater
 from archimedes.models.asset import AssetPrice
+
+# oracle_addresses is SSOT-driven (#764/#765) and excludes compliance-held single stocks
+# (sTSLA/sNVDA are not in the SSOT), so this decimal-formatting test mocks the address
+# boundary to stay independent of the deployed-universe contents — it pins the 6-dec int
+# formula, not address resolution.
+_TEST_ORACLE_ADDRS = {"sTSLA": "0x" + "11" * 20, "sNVDA": "0x" + "22" * 20}
 
 
 def _price(symbol: str = "sTSLA", usd: float = 185.50) -> AssetPrice:
@@ -65,6 +72,12 @@ class TestOraclePriceFormatting:
         with (
             patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
             patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(
+                type(chain_client.settings),
+                "oracle_addresses",
+                new_callable=PropertyMock,
+                return_value=_TEST_ORACLE_ADDRS,
+            ),
             # First push for this symbol → reference confirmed absent → allowed.
             patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(None, True))),
         ):
@@ -91,6 +104,12 @@ class TestOraclePriceFormatting:
         with (
             patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
             patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(
+                type(chain_client.settings),
+                "oracle_addresses",
+                new_callable=PropertyMock,
+                return_value=_TEST_ORACLE_ADDRS,
+            ),
             patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(None, True))),
         ):
             await updater.push_prices_on_chain([_price(symbol="sNVDA", usd=1.0000005)])
