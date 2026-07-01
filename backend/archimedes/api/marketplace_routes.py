@@ -174,6 +174,21 @@ async def subscribe_strategy(
     if not strategy_id or not pool_id or not sub_id or not ephemeral_wallet:
         raise HTTPException(status_code=400, detail="strategy_id, pool_id, sub_id, and ephemeral_wallet are required")
 
+    # 0a. Validate sub_id format — must be 0x-prefixed 66-char hex (D-BYTES32)
+    if not sub_id.startswith("0x") or len(sub_id) != 66:
+        raise HTTPException(status_code=400, detail="sub_id must be a 0x-prefixed 32-byte hex string (66 chars)")
+    try:
+        int(sub_id, 16)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="sub_id is not valid hex") from None
+    # Reject all-zero sub_id (on-chain will never return this)
+    if int(sub_id, 16) == 0:
+        raise HTTPException(status_code=400, detail="sub_id cannot be zero")
+
+    # 0b. Validate strategy exists in the provider (M2)
+    if strategy_provider.get_strategy(strategy_id) is None:
+        raise HTTPException(status_code=404, detail=f"Strategy not found: {strategy_id}")
+
     # 1. Find the publisher
     pub_row = None
     with get_session() as session:
