@@ -1,1 +1,217 @@
-[{"name": "PoolCreated", "inputs": [{"name": "pool_id", "type": "bytes32", "indexed": true}, {"name": "creator", "type": "address", "indexed": true}, {"name": "platform", "type": "address", "indexed": true}], "anonymous": false, "type": "event"}, {"name": "PaymentSplit", "inputs": [{"name": "pool_id", "type": "bytes32", "indexed": true}, {"name": "amount", "type": "uint256", "indexed": false}, {"name": "creator_share", "type": "uint256", "indexed": false}, {"name": "platform_share", "type": "uint256", "indexed": false}], "anonymous": false, "type": "event"}, {"stateMutability": "nonpayable", "type": "function", "name": "createPool", "inputs": [{"name": "pool_id", "type": "bytes32"}, {"name": "creator", "type": "address"}, {"name": "platform", "type": "address"}], "outputs": []}, {"stateMutability": "nonpayable", "type": "function", "name": "split", "inputs": [{"name": "pool_id", "type": "bytes32"}, {"name": "amount", "type": "uint256"}], "outputs": []}, {"stateMutability": "nonpayable", "type": "function", "name": "deactivatePool", "inputs": [{"name": "pool_id", "type": "bytes32"}], "outputs": []}, {"stateMutability": "view", "type": "function", "name": "pools", "inputs": [{"name": "arg0", "type": "bytes32"}], "outputs": [{"name": "", "type": "tuple", "components": [{"name": "creator", "type": "address"}, {"name": "platform", "type": "address"}, {"name": "total_collected", "type": "uint256"}, {"name": "total_disbursed", "type": "uint256"}, {"name": "active", "type": "bool"}]}]}, {"stateMutability": "view", "type": "function", "name": "usdc", "inputs": [], "outputs": [{"name": "", "type": "address"}]}, {"stateMutability": "view", "type": "function", "name": "owner", "inputs": [], "outputs": [{"name": "", "type": "address"}]}, {"stateMutability": "nonpayable", "type": "constructor", "inputs": [{"name": "_usdc", "type": "address"}], "outputs": []}]
+{
+  "abi": [
+    {
+      "name": "PoolCreated",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "bytes32",
+          "indexed": true
+        },
+        {
+          "name": "creator",
+          "type": "address",
+          "indexed": true
+        },
+        {
+          "name": "platform",
+          "type": "address",
+          "indexed": true
+        }
+      ],
+      "anonymous": false,
+      "type": "event"
+    },
+    {
+      "name": "PoolFunded",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "bytes32",
+          "indexed": true
+        },
+        {
+          "name": "funder",
+          "type": "address",
+          "indexed": true
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "indexed": false
+        }
+      ],
+      "anonymous": false,
+      "type": "event"
+    },
+    {
+      "name": "PaymentSplit",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "bytes32",
+          "indexed": true
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "indexed": false
+        },
+        {
+          "name": "creator_share",
+          "type": "uint256",
+          "indexed": false
+        },
+        {
+          "name": "platform_share",
+          "type": "uint256",
+          "indexed": false
+        }
+      ],
+      "anonymous": false,
+      "type": "event"
+    },
+    {
+      "stateMutability": "nonpayable",
+      "type": "function",
+      "name": "createPool",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "bytes32"
+        },
+        {
+          "name": "creator",
+          "type": "address"
+        },
+        {
+          "name": "platform",
+          "type": "address"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "stateMutability": "nonpayable",
+      "type": "function",
+      "name": "depositToPool",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "bytes32"
+        },
+        {
+          "name": "amount",
+          "type": "uint256"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "stateMutability": "nonpayable",
+      "type": "function",
+      "name": "withdraw",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "bytes32"
+        },
+        {
+          "name": "amount",
+          "type": "uint256"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "stateMutability": "nonpayable",
+      "type": "function",
+      "name": "deactivatePool",
+      "inputs": [
+        {
+          "name": "pool_id",
+          "type": "bytes32"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "stateMutability": "view",
+      "type": "function",
+      "name": "pools",
+      "inputs": [
+        {
+          "name": "arg0",
+          "type": "bytes32"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "tuple",
+          "components": [
+            {
+              "name": "creator",
+              "type": "address"
+            },
+            {
+              "name": "platform",
+              "type": "address"
+            },
+            {
+              "name": "total_collected",
+              "type": "uint256"
+            },
+            {
+              "name": "total_disbursed",
+              "type": "uint256"
+            },
+            {
+              "name": "held_balance",
+              "type": "uint256"
+            },
+            {
+              "name": "active",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "stateMutability": "view",
+      "type": "function",
+      "name": "usdc",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address"
+        }
+      ]
+    },
+    {
+      "stateMutability": "view",
+      "type": "function",
+      "name": "owner",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address"
+        }
+      ]
+    },
+    {
+      "stateMutability": "nonpayable",
+      "type": "constructor",
+      "inputs": [
+        {
+          "name": "_usdc",
+          "type": "address"
+        }
+      ],
+      "outputs": []
+    }
+  ]
+}
