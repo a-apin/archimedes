@@ -1,1 +1,311 @@
-[{"name": "Subscribed", "inputs": [{"name": "sub_id", "type": "bytes32", "indexed": true}, {"name": "subscriber", "type": "address", "indexed": true}, {"name": "pool_id", "type": "bytes32", "indexed": true}, {"name": "webhook_url", "type": "string", "indexed": false}], "anonymous": false, "type": "event"}, {"name": "EphemeralWalletCreated", "inputs": [{"name": "sub_id", "type": "bytes32", "indexed": true}, {"name": "wallet_address", "type": "address", "indexed": true}, {"name": "subscriber", "type": "address", "indexed": true}], "anonymous": false, "type": "event"}, {"name": "ActionCharged", "inputs": [{"name": "sub_id", "type": "bytes32", "indexed": true}, {"name": "actions", "type": "uint256", "indexed": false}, {"name": "total_charged", "type": "uint256", "indexed": false}], "anonymous": false, "type": "event"}, {"name": "Unsubscribed", "inputs": [{"name": "sub_id", "type": "bytes32", "indexed": true}], "anonymous": false, "type": "event"}, {"stateMutability": "nonpayable", "type": "function", "name": "subscribe", "inputs": [{"name": "pool_id", "type": "bytes32"}, {"name": "webhook_url", "type": "string"}, {"name": "initial_deposit", "type": "uint256"}], "outputs": [{"name": "", "type": "bytes32"}]}, {"stateMutability": "nonpayable", "type": "function", "name": "renewEphemeralWallet", "inputs": [{"name": "sub_id", "type": "bytes32"}, {"name": "top_up_amount", "type": "uint256"}], "outputs": []}, {"stateMutability": "nonpayable", "type": "function", "name": "chargeActions", "inputs": [{"name": "sub_id", "type": "bytes32"}, {"name": "action_count", "type": "uint256"}], "outputs": []}, {"stateMutability": "nonpayable", "type": "function", "name": "unsubscribe", "inputs": [{"name": "sub_id", "type": "bytes32"}], "outputs": []}, {"stateMutability": "nonpayable", "type": "function", "name": "setFlatFee", "inputs": [{"name": "fee", "type": "uint256"}], "outputs": []}, {"stateMutability": "view", "type": "function", "name": "subscriptions", "inputs": [{"name": "arg0", "type": "bytes32"}], "outputs": [{"name": "", "type": "tuple", "components": [{"name": "subscriber", "type": "address"}, {"name": "pool_id", "type": "bytes32"}, {"name": "ephemeral_wallet", "type": "address"}, {"name": "reserved_usdc", "type": "uint256"}, {"name": "webhook_url", "type": "string"}, {"name": "active", "type": "bool"}, {"name": "created_at", "type": "uint256"}]}]}, {"stateMutability": "view", "type": "function", "name": "ephemeral_wallets", "inputs": [{"name": "arg0", "type": "address"}], "outputs": [{"name": "", "type": "tuple", "components": [{"name": "owner", "type": "address"}, {"name": "balance", "type": "uint256"}, {"name": "subscription_id", "type": "bytes32"}]}]}, {"stateMutability": "view", "type": "function", "name": "splitter", "inputs": [], "outputs": [{"name": "", "type": "address"}]}, {"stateMutability": "view", "type": "function", "name": "usdc", "inputs": [], "outputs": [{"name": "", "type": "address"}]}, {"stateMutability": "view", "type": "function", "name": "owner", "inputs": [], "outputs": [{"name": "", "type": "address"}]}, {"stateMutability": "view", "type": "function", "name": "flat_fee_per_action", "inputs": [], "outputs": [{"name": "", "type": "uint256"}]}, {"stateMutability": "nonpayable", "type": "constructor", "inputs": [{"name": "_splitter", "type": "address"}, {"name": "_usdc", "type": "address"}, {"name": "_flat_fee", "type": "uint256"}], "outputs": []}]
+[
+  {
+    "name": "Subscribed",
+    "inputs": [
+      {
+        "name": "sub_id",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "subscriber",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "pool_id",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "webhook_url",
+        "type": "string",
+        "indexed": false
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "name": "EphemeralWalletCreated",
+    "inputs": [
+      {
+        "name": "sub_id",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "wallet_address",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "subscriber",
+        "type": "address",
+        "indexed": true
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "name": "ActionCharged",
+    "inputs": [
+      {
+        "name": "sub_id",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "actions",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "total_charged",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "name": "Unsubscribed",
+    "inputs": [
+      {
+        "name": "sub_id",
+        "type": "bytes32",
+        "indexed": true
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "subscribe",
+    "inputs": [
+      {
+        "name": "pool_id",
+        "type": "bytes32"
+      },
+      {
+        "name": "webhook_url",
+        "type": "string"
+      },
+      {
+        "name": "initial_deposit",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32"
+      }
+    ]
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "renewEphemeralWallet",
+    "inputs": [
+      {
+        "name": "sub_id",
+        "type": "bytes32"
+      },
+      {
+        "name": "top_up_amount",
+        "type": "uint256"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "chargeActions",
+    "inputs": [
+      {
+        "name": "sub_id",
+        "type": "bytes32"
+      },
+      {
+        "name": "action_count",
+        "type": "uint256"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "unsubscribe",
+    "inputs": [
+      {
+        "name": "sub_id",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "setFlatFee",
+    "inputs": [
+      {
+        "name": "fee",
+        "type": "uint256"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "subscriptions",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "subscriber",
+            "type": "address"
+          },
+          {
+            "name": "pool_id",
+            "type": "bytes32"
+          },
+          {
+            "name": "ephemeral_wallet",
+            "type": "address"
+          },
+          {
+            "name": "reserved_usdc",
+            "type": "uint256"
+          },
+          {
+            "name": "webhook_url",
+            "type": "string"
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "created_at",
+            "type": "uint256"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "ephemeral_wallets",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "owner",
+            "type": "address"
+          },
+          {
+            "name": "balance",
+            "type": "uint256"
+          },
+          {
+            "name": "subscription_id",
+            "type": "bytes32"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "splitter",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "usdc",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "owner",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "flat_fee_per_action",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "_splitter",
+        "type": "address"
+      },
+      {
+        "name": "_usdc",
+        "type": "address"
+      },
+      {
+        "name": "_flat_fee",
+        "type": "uint256"
+      }
+    ],
+    "outputs": []
+  }
+]
