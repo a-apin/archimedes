@@ -36,6 +36,11 @@ Usage::
     # offline / hermetic: point at a cached catalog file instead of the network:
     PYTHONPATH=backend python -m archimedes.scripts.generate_universe --report \
         --catalog /path/to/price_feeds.json
+
+The ``--write`` path is gated on the #772 data-quality harness: every curated
+yfinance ticker must pass ``verify_instrument`` over the 2y backtest window
+(fetchable, coverage, gaps, survivorship) or the write refuses with per-ticker
+reasons. ``--skip-data-quality`` bypasses the check (loudly) for offline runs.
 """
 
 from __future__ import annotations
@@ -604,6 +609,39 @@ def build_global_assets_rows() -> list[tuple[str, tuple[str, str, str, str]]]:
     return [(a.synth, (a.yf, a.display, a.asset_class, a.exchange)) for a in sorted(CURATED, key=lambda x: x.synth)]
 
 
+def vet_data_quality(window_years: int = 2, _downloader=None):
+    """Run the #772 data-quality harness over every CURATED yfinance ticker.
+
+    The window matches the evaluator's backtest fetch (period="2y" in
+    ``_fetch_price_history``), so a ticker is admitted only if the history the
+    backtests will actually consume is fetchable, covers the window, has no
+    large gaps, and still trades near the window end. ``_downloader`` is the
+    test seam — injected so tests never touch the network.
+    """
+    import pandas as pd
+
+    from archimedes.services.data_quality import verify_universe
+
+    end = pd.Timestamp.today().normalize()
+    start = end - pd.DateOffset(years=window_years)
+    tickers = sorted({a.yf for a in CURATED})
+    return verify_universe(tickers, start, end, _downloader=_downloader)
+
+
+def _dq_gate(report) -> None:
+    """Refuse admission when any ticker fails the harness. Bad data gets
+    excluded at the source (the curator fixes or drops the entry), never
+    padded into the SSOT (#772 anti-goal)."""
+    if report.rejected:
+        lines = [f"  {t}: {'; '.join(reasons)}" for t, reasons in sorted(report.rejected.items())]
+        raise SystemExit(
+            f"data-quality gate: {len(report.rejected)} ticker(s) failed verification "
+            f"({len(report.admitted)} passed) — refusing to write the SSOT.\n"
+            + "\n".join(lines)
+            + "\nFix or drop the entries in CURATED, or rerun with --skip-data-quality (offline only)."
+        )
+
+
 def _assert_no_dupes() -> None:
     seen = set()
     for a in CURATED:
@@ -671,6 +709,12 @@ def main(argv: list[str] | None = None) -> int:
     feeds = load_pyth_catalog(catalog_path)
     idx = build_pyth_index(feeds)
     if "--write" in argv:
+        if "--skip-data-quality" in argv:
+            print("WARNING: --skip-data-quality set — writing the SSOT without the #772 harness check")
+        else:
+            report = vet_data_quality()
+            _dq_gate(report)
+            print(f"data-quality gate: all {len(report.admitted)} tickers passed")
         _write_ssot(idx)
     elif "--print-global-assets" in argv:
         _print_global_assets()
