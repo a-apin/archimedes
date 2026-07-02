@@ -102,8 +102,8 @@ async def start_generation(
     # Tag the job with its creator (audit 2026-06-14) so cancel can be scoped to
     # the owner. When no SIWE session exists (flag off / anonymous), owner_wallet
     # is None and the job stays cancellable by anyone — preserving today's open
-    # behavior with no flag-day risk. owner_wallet is inert to the pipeline
-    # (run_generation reads brief/n_candidates from the task args, not payload).
+    # behavior with no flag-day risk. The same wallet is also threaded into
+    # run_generation below so persisted candidates carry per-user ownership.
     job_id = await store.enqueue(
         job_type="generate",
         payload={
@@ -121,7 +121,12 @@ async def start_generation(
 
     # Fire-and-forget the pipeline. The route doesn't await it; the SSE stream
     # below tails the event log written by the pipeline as it runs.
-    task = asyncio.create_task(_run_with_cleanup(job_id, req.brief, req.n_candidates, req.mode, selected_model))
+    # _wallet is the SIWE-derived owner from gate_generation — the SAME value
+    # stored in the job payload above; threading it into the pipeline stamps
+    # ownership onto every persisted candidate (never a client-supplied value).
+    task = asyncio.create_task(
+        _run_with_cleanup(job_id, req.brief, req.n_candidates, req.mode, selected_model, _wallet)
+    )
     _register_task(job_id, task)
 
     # Conversion funnel (#787): a generation actually started for this visitor —
@@ -141,9 +146,17 @@ async def _run_with_cleanup(
     n_candidates: int,
     mode: str | None = None,
     model: str | None = None,
+    owner_wallet: str | None = None,
 ) -> None:
     try:
-        await run_generation(job_id=job_id, brief=brief, n_candidates=n_candidates, mode=mode, model=model)
+        await run_generation(
+            job_id=job_id,
+            brief=brief,
+            n_candidates=n_candidates,
+            mode=mode,
+            model=model,
+            owner_wallet=owner_wallet,
+        )
     except asyncio.CancelledError:
         raise
     except Exception:  # safety net — run_generation already emits error events

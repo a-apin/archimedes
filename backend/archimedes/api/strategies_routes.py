@@ -26,7 +26,7 @@ from archimedes.api.architect_schemas import (
     StrategyConstructionRequest,
     StrategyConstructionResponse,
 )
-from archimedes.api.auth_siwe import gate_generation
+from archimedes.api.auth_siwe import gate_generation, get_verified_wallet, require_verified_wallet
 from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
     SignalResponse,
@@ -224,22 +224,37 @@ async def list_strategies(
 
 
 @strategies_router.get("/generated")
-async def list_generated_strategies(limit: int = Query(50, ge=1, le=200)):
-    """List fusion/architect-generated strategies from the strategy_store table."""
+async def list_generated_strategies(request: Request, limit: int = Query(50, ge=1, le=200)):
+    """List fusion/architect-generated strategies from the strategy_store table.
+
+    Private-until-published: a row is visible when it ``is_published`` OR when
+    the caller's verified SIWE wallet matches ``owner_wallet`` (best-effort
+    session read — anonymous callers see only published rows). Legacy ownerless
+    rows are therefore invisible until purged (scripts/purge_orphan_generated.py)
+    or published. Curated examples live on GET /api/strategies/ and stay public.
+    """
+
+    from sqlalchemy import func, or_
 
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
 
+    caller = get_verified_wallet(request)  # None when anonymous — never an error
+
     rows: list[dict] = []
     try:
         with get_session() as session:  # type: _Session
-            records = (
-                session.query(StrategyRecord)
-                .filter(StrategyRecord.is_example.is_(False))
-                .order_by(StrategyRecord.created_at.desc())
-                .limit(limit)
-                .all()
-            )
+            query = session.query(StrategyRecord).filter(StrategyRecord.is_example.is_(False))
+            if caller:
+                query = query.filter(
+                    or_(
+                        StrategyRecord.is_published.is_(True),
+                        func.lower(StrategyRecord.owner_wallet) == caller.lower(),
+                    )
+                )
+            else:
+                query = query.filter(StrategyRecord.is_published.is_(True))
+            records = query.order_by(StrategyRecord.created_at.desc()).limit(limit).all()
             rows = [r.to_dict() for r in records]
     except Exception as exc:
         import logging as _logging
@@ -1277,10 +1292,16 @@ def _passport_to_strategy_response(record) -> StrategyResponse:
 
 
 @strategies_router.get("/{strategy_id}", response_model=StrategyResponse)
-async def get_strategy(strategy_id: str):
+async def get_strategy(strategy_id: str, request: Request):
     """Get a single strategy by ID. Tries LocalStrategyProvider (curated)
     first; falls through to the strategy_passports table for fusion- and
-    architect-generated strategies so they're clickable from Library."""
+    architect-generated strategies so they're clickable from Library.
+
+    Private-until-published: a non-example, unpublished strategy_store row is
+    404 unless the caller's verified SIWE wallet is its owner (best-effort
+    session read). 404 — not 403 — so non-owners can't probe for existence.
+    Curated strategies (provider path / is_example rows) stay fully public.
+    """
     from fastapi import HTTPException
 
     strat = strategy_provider.get_strategy(strategy_id)
@@ -1288,14 +1309,68 @@ async def get_strategy(strategy_id: str):
         return _to_strategy_response(strat)
 
     from archimedes.db import get_session
+    from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.passport_loader import get_passport
 
     with get_session() as session:
+        row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+        if row is not None and not row.is_example and not row.is_published:
+            caller = get_verified_wallet(request)
+            is_owner = bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
+            if not is_owner:
+                raise HTTPException(status_code=404, detail="Strategy not found")
         record = get_passport(session, strategy_id)
         if record is not None:
             return _passport_to_strategy_response(record)
 
     raise HTTPException(status_code=404, detail="Strategy not found")
+
+
+@strategies_router.patch("/{strategy_id}")
+async def rename_strategy(
+    strategy_id: str,
+    payload: dict,
+    wallet: str = Depends(require_verified_wallet),
+):
+    """Rename an owned, generated strategy — ``{"name": "<1..80 chars>"}``.
+
+    Owner-gated: requires a verified SIWE session AND the caller must be the
+    row's ``owner_wallet``. Curated examples (``is_example``) are not renamable.
+    The generation-time ``content_hash``/``provenance_hash`` are deliberately
+    NOT recomputed — they are provenance of the original generation, not of the
+    display name. The strategy_passports table carries no display-name column,
+    so only strategy_store is updated.
+    """
+    from datetime import datetime
+
+    from fastapi import HTTPException
+
+    from archimedes.db import get_session
+    from archimedes.models.strategy_store import StrategyRecord
+
+    name = payload.get("name")
+    if not isinstance(name, str):
+        raise HTTPException(status_code=422, detail="'name' (string) is required")
+    name = name.strip()
+    if not 1 <= len(name) <= 80:
+        raise HTTPException(status_code=422, detail="name must be 1–80 characters after trimming")
+
+    with get_session() as session:
+        row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+        if row is None or row.is_example:
+            # Curated examples are not user-owned — same 404 as a missing row.
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        if not (row.owner_wallet and row.owner_wallet.lower() == wallet.lower()):
+            # Hide unpublished rows from non-owners (404); published rows are
+            # visible, so an honest 403 is returned instead.
+            if row.is_published:
+                raise HTTPException(status_code=403, detail="Not authorized to rename this strategy.")
+            raise HTTPException(status_code=404, detail="Strategy not found")
+
+        row.strategy_name = name
+        row.updated_at = datetime.now(UTC)
+        session.commit()
+        return {"strategy": row.to_dict()}
 
 
 # ── Strategy generation (fusion / architect) ──────────────────
@@ -1399,6 +1474,10 @@ async def generate_strategy(
                 "strategic_direction": strategic_direction,
                 "max_papers": max_papers,
                 "market_context": market_context,
+                # SIWE-derived owner (gate_generation) — server-bound, never
+                # client-supplied. Stamped on the persisted fusion strategy so
+                # this legacy path stops producing ownerless orphan rows.
+                "owner_wallet": _wallet,
             },
         )
     finally:
@@ -1537,6 +1616,7 @@ async def _run_fusion_job(job_id: str) -> None:
                     risk_profile=rp.value,
                     provenance_hash=result.model,
                     rigor_verdict=rigor_verdict_dict,
+                    owner_wallet=payload.get("owner_wallet"),
                 )
                 session.commit()
                 strategy_id = record.id
