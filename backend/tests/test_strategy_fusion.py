@@ -137,13 +137,18 @@ class _MockBackend:
     served_model = "glm-4.7"  # what actually answers (response.model)
 
     def __init__(self) -> None:
+        # .system/.user hold the FIRST (proposal) call — the spec-repair retry
+        # appends later calls to .calls without clobbering what tests assert on.
         self.system: str | None = None
         self.user: str | None = None
+        self.calls: list[tuple[str, str]] = []
 
     def complete(self, system: str, user: str) -> str:
-        self.system = system
-        self.user = user
-        payload = json.loads(user)
+        self.calls.append((system, user))
+        if self.system is None:
+            self.system = system
+            self.user = user
+        payload = json.loads(self.user)
         ids = [p["arxiv_id"] for p in payload["candidate_papers"][:2]]
         return json.dumps(
             {
