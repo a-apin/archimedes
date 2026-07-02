@@ -323,9 +323,13 @@ class AssetMarketService:
                     address=chain_client.to_checksum(oracle_addr),
                     abi=oracle_abi,
                 )
+                # Bound each read by BOTH the per-read cap and the remaining
+                # total budget — otherwise a read started near the deadline can
+                # overshoot the endpoint budget by up to _ORACLE_READ_TIMEOUT.
+                remaining = deadline - time.monotonic()
                 price_raw, updated_at = await asyncio.wait_for(
                     contract.functions.getPrice(chain_client.to_checksum(synth_addr)).call(),
-                    timeout=_ORACLE_READ_TIMEOUT,
+                    timeout=max(0.1, min(_ORACLE_READ_TIMEOUT, remaining)),
                 )
                 price_usd = float(price_raw) / 1e6  # 6 decimals per PriceOracle.sol
                 stale = (now_ts - updated_at) > _STALE_WINDOW_SECONDS
@@ -388,7 +392,9 @@ class AssetMarketService:
                 break
             except Exception as exc:
                 logger.warning("explore: history chunk fetch failed (%d symbols): %s", len(chunk), exc)
-                # A failed chunk doesn't spend the budget — later chunks may still succeed.
+                # Keep going: later chunks may still succeed. (The wall-clock
+                # budget is an absolute deadline, so time burned in a failing
+                # chunk IS spent — this only skips the failed chunk's data.)
         return histories
 
     # ── Main list ─────────────────────────────────────────────────────────
