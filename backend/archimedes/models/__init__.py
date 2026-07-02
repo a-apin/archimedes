@@ -4,7 +4,7 @@
 
 from archimedes.models.asset import AssetInfo, AssetPrice, AssetType
 from archimedes.models.backtest import BacktestResult
-from archimedes.models.marketplace import MarketplaceAgent, SubscriberLiability
+from archimedes.models.marketplace import MarketplaceAgent, SubscriberLiability, SubscriberTickLog
 from archimedes.models.paper_ref import PaperRef
 from archimedes.models.portfolio import (
     Portfolio,
@@ -34,6 +34,7 @@ __all__ = [
     "AssetType",
     "MarketplaceAgent",
     "SubscriberLiability",
+    "SubscriberTickLog",
     # Backtest
     "BacktestResult",
     "DecisionType",

@@ -20,6 +20,7 @@ _SUBS_PREFIX = "archimedes:market:subs:"  # + strategy_id  (JSON dict cache)
 _LEADER_PREFIX = "archimedes:market:leader:"  # + strategy_id
 _PAYMENT_PREFIX = "archimedes:market:payment:"  # + sub_id  (x402 payment status)
 _EPHEMERAL_KEY_PREFIX = "archimedes:market:ephkey:"  # + sub_id (hex private key)
+_SUBTICK_PREFIX = "archimedes:market:subtick:"  # + sub_id  (capped list, last 200)
 _KEY_REGIME_LOCK = "archimedes:regime:lock"  # global regime-classification lock
 
 LEADER_LOCK_TTL_SECONDS = 60
@@ -170,3 +171,16 @@ class MarketState:
     async def delete_ephemeral_key(self, sub_id: str) -> None:
         r = await self.store._get_redis()
         await r.delete(f"{_EPHEMERAL_KEY_PREFIX}{sub_id}")
+
+    # ---- subscriber tick log (Redis mirror, last 200) -----------------------
+
+    async def push_subscriber_tick(self, sub_id: str, payload: dict) -> None:
+        r = await self.store._get_redis()
+        key = f"{_SUBTICK_PREFIX}{sub_id}"
+        await r.lpush(key, json.dumps(payload, default=str))
+        await r.ltrim(key, 0, 199)
+
+    async def get_subscriber_ticks(self, sub_id: str, count: int = 50) -> list[dict]:
+        r = await self.store._get_redis()
+        raw = await r.lrange(f"{_SUBTICK_PREFIX}{sub_id}", 0, count - 1)
+        return [json.loads(e) for e in raw]  # already str
