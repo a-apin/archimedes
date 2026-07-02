@@ -166,7 +166,9 @@ services:
       - .env
     volumes:
       - ./analytics-engine/strategies:/app/analytics-engine/strategies:ro
-      - ./analytics-engine/artifacts:/app/analytics-engine/artifacts:ro
+      # rw: run_backtests (the backtest backfill) WRITES fresh artifact JSONs
+      # here; the seeder + provenance readers consume them.
+      - ./analytics-engine/artifacts:/app/analytics-engine/artifacts
       # src/ carries the archimedes_analytics_engine package (fetch_ohlcv) —
       # without it, every real-data backtest in the container fails closed to
       # synthetic/"pending" (dogfood find, 2026-07-01).

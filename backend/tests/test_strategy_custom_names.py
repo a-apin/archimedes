@@ -102,7 +102,7 @@ def persisted(monkeypatch):
     """Capture what _persist_candidate would write, without a DB."""
     captured: list = []
 
-    async def _fake_persist(c, _brief):  # signature mirrors _persist_candidate(c, brief)
+    async def _fake_persist(c, _brief, *, owner_wallet=None):  # mirrors _persist_candidate(c, brief, *, owner_wallet)
         # Snapshot immutable values AT persist time — appending the mutable
         # candidate object would let a later rename slip past these assertions
         # (Copilot, #849).
