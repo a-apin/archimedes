@@ -103,7 +103,10 @@ def persisted(monkeypatch):
     captured: list = []
 
     async def _fake_persist(c, _brief):  # signature mirrors _persist_candidate(c, brief)
-        captured.append(c)
+        # Snapshot immutable values AT persist time — appending the mutable
+        # candidate object would let a later rename slip past these assertions
+        # (Copilot, #849).
+        captured.append((c.candidate_id, c.strategy_name))
         return (f"strat_{c.candidate_id}", f"0x{c.candidate_id}")
 
     monkeypatch.setattr("archimedes.agents.generation_pipeline._persist_candidate", _fake_persist)
@@ -133,7 +136,7 @@ async def test_winner_gets_user_name_rejects_keep_auto_names(persisted):
 
     # The rename landed BEFORE persistence: the persisted record set contains
     # the user's name exactly once (winner) and the auto name for the reject.
-    persisted_names = sorted(c.strategy_name for c in persisted)
+    persisted_names = sorted(name for _cid, name in persisted)
     assert persisted_names.count("Dan's Custom Alpha") == 1
     assert len(persisted_names) == 2
 
@@ -149,4 +152,4 @@ async def test_no_name_keeps_auto_names_for_all(persisted):
         # Auto-derived fixture names embed the intent snippet + risk appetite.
         assert "dual regime trend following" in c["strategy_name"]
     # Persisted names match the surfaced names (nothing renamed on the way in).
-    assert sorted(c.strategy_name for c in persisted) == sorted(c["strategy_name"] for c in result["candidates"])
+    assert sorted(name for _cid, name in persisted) == sorted(c["strategy_name"] for c in result["candidates"])
