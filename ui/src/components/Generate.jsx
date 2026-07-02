@@ -36,6 +36,9 @@ const RISK_PROFILES = [
 export default function Generate({ onNavigate }) {
   // ── Unified form state ──
   const [intent, setIntent] = useState('')
+  // Optional user-chosen strategy name. Empty → backend auto-derives one; when
+  // set, the WINNING candidate takes it verbatim (rejects keep auto names).
+  const [strategyName, setStrategyName] = useState('')
   const [helpOpen, setHelpOpen] = useState(false)
   const [riskAppetite, setRiskAppetite] = useState('moderate')
   const [selectedAssets, setSelectedAssets] = useState([])
@@ -113,6 +116,7 @@ export default function Generate({ onNavigate }) {
         risk_appetite: riskAppetite,
         asset_classes: selectedAssets.length > 0 ? selectedAssets : undefined,
         max_papers: depth,
+        ...(strategyName.trim() ? { name: strategyName.trim() } : {}),
       },
       ...(selectedModel ? { model: selectedModel } : {}),
     }
@@ -377,6 +381,17 @@ export default function Generate({ onNavigate }) {
             placeholder="e.g. A 13-week treasury alternative with low volatility and crypto upside on Fridays"
             rows={4}
             className="chat-input w-full mb-3 p-2.5 leading-relaxed"
+            disabled={starting}
+          />
+
+          <div className="label mb-2">Strategy name (optional)</div>
+          <input
+            type="text"
+            value={strategyName}
+            onChange={e => setStrategyName(e.target.value)}
+            placeholder="Optional — name your strategy"
+            maxLength={80}
+            className="chat-input w-full mb-3 px-2.5 py-1.5"
             disabled={starting}
           />
 
