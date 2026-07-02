@@ -38,8 +38,19 @@ class RunConfig:
 
 
 def _repo_root() -> Path:
-    # .../backend/archimedes/scripts/run_backtests.py -> repo root
-    return Path(__file__).resolve().parents[3]
+    """Nearest ancestor that contains ``analytics-engine`` — layout-robust.
+
+    Host layout: .../backend/archimedes/scripts/... with analytics-engine at
+    the repo root (parents[3]). Container layout: /app/archimedes/scripts/...
+    with /app/analytics-engine mounted (parents[2]). A fixed parents[3]
+    resolved to "/" inside the container, so the prod backfill raised
+    ModuleNotFoundError (same class of bug as #846's portfolio_backtester fix).
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "analytics-engine").is_dir():
+            return parent
+    return here.parents[3]  # historical fallback; loudly wrong paths beat a crash here
 
 
 def _analytics_strategy_dir(repo_root: Path) -> Path:
