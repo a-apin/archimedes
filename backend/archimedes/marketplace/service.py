@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import time
@@ -17,23 +18,62 @@ from dataclasses import dataclass, field
 from archimedes.chain.circle_signer import circle_signer
 from archimedes.chain.client import chain_client
 from archimedes.chain.executor import chain_executor
+from archimedes.chain.oracle_updater import OracleUpdater
+from archimedes.chain.v_check import VCheck
 from archimedes.db import get_session
+from archimedes.interfaces.math import IRegimeDetector
 from archimedes.marketplace import payments
 from archimedes.marketplace.encoding import to_bytes32
 from archimedes.marketplace.state import MarketState
 from archimedes.models.marketplace import MarketplaceAgent, SubscriberLiability
-from archimedes.models.portfolio import Portfolio, TargetAllocation, TradeDirection, TradeOrder
+from archimedes.models.portfolio import Portfolio, RiskProfile, TargetAllocation, TradeDirection, TradeOrder
+from archimedes.models.regime import EnsembleConsensus, RegimeClassification
+from archimedes.services.gmm_regime_detector import GmmRegimeDetector
+from archimedes.services.portfolio_constructor import PortfolioConstructor
 from archimedes.services.strategy_provider import default_provider
 from archimedes.services.strategy_signal_evaluator import (
     StrategySignals,
     strategy_evaluator,
 )
+from archimedes.services.vix_regime_detector import VixRegimeDetector
 
 logger = logging.getLogger(__name__)
 
 _DRIFT_THRESHOLD = 0.15
 _USDC_FLOOR = float(os.getenv("AGENT_USDC_FLOOR", "0.20"))
 FLAT_FEE_PER_ACTION = int(os.getenv("FLAT_FEE_PER_ACTION", "100"))  # raw 6-dec USDC
+_MARKET_REGIME_UNKNOWN = "unknown"
+
+# Per-publisher ensemble-consensus key prefix (namespaced by strategy_id)
+_KEY_ENSEMBLE_CONSENSUS_PREFIX = "archimedes:ensemble_consensus:publisher:"
+
+
+def _regime_classification_from_cache(cached: dict) -> RegimeClassification | None:
+    """Rebuild a RegimeClassification from a cached Redis dict.
+
+    Returns None if the cached dict lacks required fields.
+    """
+    from datetime import datetime
+
+    from archimedes.models.regime import Regime, RegimeSignals
+
+    try:
+        signals = RegimeSignals(
+            vix_level=cached.get("vix", 0.0),
+            vix_rate_of_change=0.0,
+            sp500_above_ma50=cached.get("sp500_above_ma50", False),
+            sp500_above_ma200=cached.get("sp500_above_ma200", False),
+        )
+        return RegimeClassification(
+            regime=Regime(cached["regime"]),
+            confidence=cached.get("confidence", 0.0),
+            signals=signals,
+            timestamp=datetime.fromisoformat(cached["timestamp"]),
+            regime_changed=cached.get("regime_changed", False),
+        )
+    except (KeyError, ValueError, TypeError) as exc:
+        logger.warning("Failed to rebuild regime from cache: %s", exc)
+        return None
 
 
 def compute_trades(
@@ -126,6 +166,13 @@ class MarketService:
         self.dry_run = dry_run
         self.publishers: dict[str, Publisher] = {}  # strategy_id -> Publisher
         self._stop = asyncio.Event()
+        # Regime detection (same pattern as agent_runner)
+        self.oracle = OracleUpdater()
+        self.regime_detector: IRegimeDetector = GmmRegimeDetector(fallback=VixRegimeDetector())
+        # Position sizer — throttles raw weights by regime + consensus
+        self.portfolio_constructor: PortfolioConstructor = PortfolioConstructor()
+        self._synth_addrs = chain_client.settings.synth_addresses
+        self._usdc_addr = chain_client.settings.usdc_address
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -278,10 +325,11 @@ class MarketService:
         addr_map = {**self.settings.synth_addresses, "USDC": self.settings.usdc_address}
 
         try:
-            # 1. REAL rebalance computation (reuse main) — NOT a stub.
-            target_weights = await self._evaluate(strategy_id)
-            portfolio = await self.executor.read_portfolio(pub.vault_address)
-            trades = compute_trades(portfolio, target_weights, token_addresses=addr_map)
+            # ── Step 2-3: Evaluate + aggregate signals ─────────────────
+            target_weights, all_signals = await self._evaluate(strategy_id)
+            if not target_weights:
+                logger.info("[%s] No target weights — skipping tick", tick_id)
+                return
 
             await self.state.append_event(
                 strategy_id,
@@ -292,13 +340,161 @@ class MarketService:
                 },
             )
 
+            # ── Step 4: Ensemble consensus ─────────────────────────────
+            flat_count = sum(1 for ss in all_signals for s in ss.signals if s.signal.value == "flat")
+            total_count = sum(len(ss.signals) for ss in all_signals)
+            if total_count > 0:
+                consensus = EnsembleConsensus.from_signal_counts(flat_count, total_count)
+            else:
+                consensus = None
+
+            # ── Steps 5 & 6: Regime classify + persist (M1 gate) ──────
+            if await self.state.try_acquire_regime_lock():
+                regime_classification, market_regime = await self._classify_market_regime(tick_id)
+                if regime_classification is not None:
+                    await self.state.store.save_regime(regime_classification)
+            else:
+                cached = await self.state.store.load_regime()
+                if cached:
+                    regime_classification = _regime_classification_from_cache(cached)
+                    market_regime = regime_classification.regime.value if regime_classification else _MARKET_REGIME_UNKNOWN
+                else:
+                    regime_classification = None
+                    market_regime = _MARKET_REGIME_UNKNOWN
+
+            # ── Step 7: Persist ensemble consensus (per-publisher key) ─
+            if consensus is not None:
+                await self._save_publisher_consensus(strategy_id, consensus, all_signals)
+
+            # ── Step 8: Position-scale throttle via PortfolioConstructor ─
+            strategy = self.provider.get_strategy(strategy_id)
+            strategies = [strategy] if strategy else []
+            allocations = self.portfolio_constructor.construct(
+                risk_profile=RiskProfile.MODERATE,
+                strategies=strategies,
+                backtest_results={},
+                regime=regime_classification,
+                ensemble_consensus=consensus,
+                base_weights=target_weights,
+            )
+
+            # ── Step 9: Weights → targets with provenance ──────────────
+            targets = self._weights_to_targets(
+                {a.symbol: a.weight for a in allocations}, all_signals
+            )
+
+            # ── Step 13.1: Read portfolio ──────────────────────────────
+            portfolio = await self.executor.read_portfolio(pub.vault_address)
+
+            # ── Step 13.3: Set token oracles ───────────────────────────
+            try:
+                oracle_tokens = []
+                oracle_addrs = []
+                for t in targets:
+                    if t.weight > 0 and t.token_address:
+                        symbol = t.symbol
+                        if symbol == "USDC":
+                            continue
+                        oracle_addr = self.settings.oracle_addresses.get(symbol)
+                        if oracle_addr:
+                            oracle_tokens.append(t.token_address)
+                            oracle_addrs.append(oracle_addr)
+
+                if oracle_tokens:
+                    await self.executor.set_token_oracles(
+                        pub.vault_address,
+                        oracle_tokens,
+                        oracle_addrs,
+                    )
+                    logger.info(
+                        "[%s] Set %d token oracles on vault %s",
+                        tick_id,
+                        len(oracle_tokens),
+                        pub.vault_address[:10],
+                    )
+            except Exception as e:
+                logger.warning(
+                    "[%s] Failed to set token oracles on %s: %s",
+                    tick_id,
+                    pub.vault_address[:10],
+                    e,
+                )
+
+            # ── Step 13.4: Set target allocations (normalize 10000 BPS) ─
+            try:
+                alloc_tokens = []
+                alloc_weights = []
+                for t in targets:
+                    if t.weight > 0 and t.token_address:
+                        alloc_tokens.append(t.token_address)
+                        alloc_weights.append(int(t.weight * 10000))  # BPS
+
+                if alloc_tokens:
+                    # Normalize to exactly 10000 BPS
+                    total_bps = sum(alloc_weights)
+                    if total_bps > 0 and total_bps != 10000:
+                        scale = 10000 / total_bps
+                        alloc_weights = [int(round(w * scale)) for w in alloc_weights]
+                        # Fix rounding residue
+                        diff = 10000 - sum(alloc_weights)
+                        if diff != 0 and alloc_weights:
+                            alloc_weights[0] += diff
+
+                    await self.executor.set_target_allocations(
+                        pub.vault_address,
+                        alloc_tokens,
+                        alloc_weights,
+                    )
+                    logger.info(
+                        "[%s] Set target allocations on vault %s",
+                        tick_id,
+                        pub.vault_address[:10],
+                    )
+            except Exception as e:
+                logger.warning(
+                    "[%s] Failed to set allocations on %s: %s",
+                    tick_id,
+                    pub.vault_address[:10],
+                    e,
+                )
+
+            # ── Step 13.5: Compute trades ──────────────────────────────
+            trades = compute_trades(portfolio, target_weights, token_addresses=addr_map)
+
             if not trades:
                 logger.info("[%s] No trades needed", tick_id)
+                # ── Step 13.11 (no-op): no trades → no artifacts ───────
                 return
 
             action_count = len(trades)
 
-            # 2. Verify x402 payment for each active subscriber, then apply
+            # ── Step 13.7: VCheck gate ──────────────────────────────────
+            alloc_weights_bps: dict[str, int] = {}
+            for t in targets:
+                if t.weight > 0 and t.token_address:
+                    alloc_weights_bps[t.symbol] = int(round(t.weight * 10000))
+            if alloc_weights_bps:
+                residual = sum(alloc_weights_bps.values()) - 10000
+                if residual != 0:
+                    largest = max(alloc_weights_bps, key=alloc_weights_bps.get)
+                    alloc_weights_bps[largest] -= residual
+            v_check = VCheck(weights_bps=alloc_weights_bps)
+            v_result = v_check.run()
+            if not v_result.passed:
+                logger.warning(
+                    "[%s] V_check FAILED for %s: %s — skipping tick",
+                    tick_id,
+                    pub.vault_address[:10],
+                    "; ".join(v_result.failures),
+                )
+                await self.state.append_event(strategy_id, {
+                    "type": "skip", "reason": "v_check_failed",
+                    "tick_id": tick_id, "failures": v_result.failures,
+                })
+                return
+
+            # ── Step 2 (subscriber block, left untouched per spec) ─────
+            # Verify x402 payment for each active subscriber, then apply
             # in-process trades.  Bound concurrency to 5 simultaneous
             # subscribers (M6).
             _sub_sem = asyncio.Semaphore(5)
@@ -358,21 +554,19 @@ class MarketService:
                     if isinstance(r, Exception):
                         logger.error("Subscriber processing failed: %s", r)
 
-            # 3. Execute on publisher's own vault too (non-dry-run).
+            # ── Step 13.10: Execute publisher vault trades ─────────────
             if not self.dry_run:
                 try:
                     await self.executor.execute_trades(pub.vault_address, trades)
+                    # ── Step 13.11: Post-rebalance audit artifacts ──────
+                    await self.state.store.save_last_rebalance(pub.vault_address)
+                    await self.state.append_event(strategy_id, {
+                        "type": "rebalance", "tick_id": tick_id,
+                        "action_count": action_count, "target_weights": target_weights,
+                    })
                 except Exception:
                     logger.exception("publisher vault rebalance failed for %s", strategy_id)
 
-            await self.state.append_event(
-                strategy_id,
-                {
-                    "type": "rebalance",
-                    "tick_id": tick_id,
-                    "action_count": action_count,
-                },
-            )
             await self.state.save_subscribers(
                 strategy_id,
                 {sid: vars(s) for sid, s in pub.subscribers.items()},
@@ -382,16 +576,16 @@ class MarketService:
 
     # ---- helpers ---------------------------------------------------------
 
-    async def _evaluate(self, strategy_id: str) -> dict[str, float]:
-        """Return target_weights dict.
+    async def _evaluate(self, strategy_id: str) -> tuple[dict[str, float], list[StrategySignals]]:
+        """Return (target_weights, all_signals).
 
         Reuse strategy_evaluator.aggregate_signals exactly as agent_runner.tick()
-        does. Return {} on empty.
+        does. Return ({}, []) on empty.
         """
         strategy = self.provider.get_strategy(strategy_id)
         if strategy is None:
             logger.warning("Strategy %s not found", strategy_id)
-            return {}
+            return {}, []
 
         synth_assets = [sym for sym, addr in self.settings.synth_addresses.items() if addr]
 
@@ -404,12 +598,129 @@ class MarketService:
 
         if not all_signals:
             logger.warning("No signals produced for %s", strategy_id)
-            return {}
+            return {}, []
 
-        return strategy_evaluator.aggregate_signals(
+        target_weights = strategy_evaluator.aggregate_signals(
             all_signals,
             usdc_floor=_USDC_FLOOR,
         )
+        return target_weights, all_signals
+
+    # ─── Exogenous market-regime classification (port from agent_runner) ───
+
+    async def _classify_market_regime(self, tick_id: str) -> tuple[RegimeClassification | None, str]:
+        """Fetch a market snapshot and classify the exogenous market regime.
+
+        Returns ``(classification, regime_value)``. On any failure degrades
+        gracefully to ``(None, "unknown")``.
+        """
+        try:
+            snapshot = await self.oracle.fetch_market_snapshot()
+        except Exception as e:
+            logger.warning(
+                "[tick %s] Market snapshot fetch failed (%s) — regime=unknown",
+                tick_id, e,
+            )
+            return None, _MARKET_REGIME_UNKNOWN
+
+        if not snapshot.has_regime_signals:
+            logger.warning(
+                "[tick %s] Snapshot missing regime signals — regime=unknown",
+                tick_id,
+            )
+            return None, _MARKET_REGIME_UNKNOWN
+
+        try:
+            classification = self.regime_detector.classify(snapshot)
+        except Exception as e:
+            logger.warning(
+                "[tick %s] Regime classification failed (%s) — regime=unknown",
+                tick_id, e,
+            )
+            return None, _MARKET_REGIME_UNKNOWN
+
+        logger.info(
+            "[tick %s] Market regime: %s (confidence=%.2f, VIX=%.1f, changed=%s)",
+            tick_id,
+            classification.regime.value,
+            classification.confidence,
+            classification.signals.vix_level,
+            classification.regime_changed,
+        )
+        return classification, classification.regime.value
+
+    # ─── Weights → target allocations with provenance ───────────────────
+
+    def _weights_to_targets(
+        self, weights: dict[str, float], all_signals: list[StrategySignals] | None = None
+    ) -> list[TargetAllocation]:
+        """Convert weight dict → TargetAllocation list (port of agent_runner.py:779)."""
+        # Build symbol → strategy_ids map from signals
+        symbol_strategies: dict[str, list[str]] = {}
+        if all_signals:
+            for ss in all_signals:
+                for sig in ss.signals:
+                    symbol_strategies.setdefault(sig.asset, []).append(ss.strategy_id)
+
+        targets: list[TargetAllocation] = []
+        for symbol, weight in weights.items():
+            token_address = self._usdc_addr if symbol == "USDC" else self._synth_addrs.get(symbol, "")
+
+            targets.append(
+                TargetAllocation(
+                    symbol=symbol,
+                    token_address=token_address,
+                    weight=weight,
+                    strategy_ids=symbol_strategies.get(symbol, []),
+                )
+            )
+        return targets
+
+    # ─── Per-publisher ensemble consensus persistence ───────────────────
+
+    async def _save_publisher_consensus(
+        self, strategy_id: str, consensus: EnsembleConsensus, all_signals: list[StrategySignals]
+    ) -> None:
+        """Persist ensemble consensus under a per-publisher key."""
+        from datetime import UTC, datetime
+
+        r = await self.state.store._get_redis()
+        signal_summary = {}
+        for ss in all_signals:
+            for s in ss.signals:
+                signal_summary[s.asset] = {
+                    "signal": s.signal.value,
+                    "weight": s.weight,
+                    "reason": s.reason,
+                    "strategy": ss.paper_title[:40],
+                }
+        flat_pct = consensus.flat_pct
+        if all_signals:
+            directional = [s for ss in all_signals for s in ss.signals if s.signal.value != "flat"]
+            vote_ratio = 1.0 - flat_pct
+            avg_strength = sum(abs(s.weight) for s in directional) / max(len(directional), 1) if directional else 0.0
+            avg_strength = min(avg_strength, 1.0)
+            all_weights = [s.weight for ss in all_signals for s in ss.signals]
+            if len(all_weights) >= 2:
+                mean_w = sum(all_weights) / len(all_weights)
+                variance = sum((w - mean_w) ** 2 for w in all_weights) / len(all_weights)
+                dispersion_penalty = min(variance**0.5 * 2, 0.3)
+            else:
+                dispersion_penalty = 0.0
+            dyn_confidence = max(0.05, min(0.99, vote_ratio * (0.5 + 0.5 * avg_strength) - dispersion_penalty))
+        else:
+            dyn_confidence = 0.5
+        data = {
+            "label": consensus.label.value,
+            "confidence": round(dyn_confidence, 4),
+            "flat_pct": round(flat_pct, 2),
+            "strategy_count": consensus.signal_count or len(all_signals),
+            "signals": signal_summary,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "source": "strategy_consensus",
+        }
+        key = f"{_KEY_ENSEMBLE_CONSENSUS_PREFIX}{strategy_id}"
+        await r.set(key, json.dumps(data))
 
     async def _verify_payment(
         self,

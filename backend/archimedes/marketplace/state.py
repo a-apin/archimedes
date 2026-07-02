@@ -20,6 +20,7 @@ _SUBS_PREFIX = "archimedes:market:subs:"  # + strategy_id  (JSON dict cache)
 _LEADER_PREFIX = "archimedes:market:leader:"  # + strategy_id
 _PAYMENT_PREFIX = "archimedes:market:payment:"  # + sub_id  (x402 payment status)
 _EPHEMERAL_KEY_PREFIX = "archimedes:market:ephkey:"  # + sub_id (hex private key)
+_KEY_REGIME_LOCK = "archimedes:regime:lock"  # global regime-classification lock
 
 LEADER_LOCK_TTL_SECONDS = 60
 PAYMENT_TTL_SECONDS = 3600  # payments considered valid for 1 hour
@@ -102,6 +103,18 @@ class MarketState:
             r = await self.store._get_redis()
             self._cas_del = r.register_script(_COMPARE_AND_DELETE)
         await self._cas_del(keys=[key], args=[token])
+
+    # ---- Regime lock (global, one classifier across all publisher tasks) ---
+
+    async def try_acquire_regime_lock(self, ttl_seconds: int = 30) -> bool:
+        """Attempt to acquire the global regime-classification lock.
+
+        Only one publisher task should classify the exogenous market regime
+        per tick window. Returns True if this caller acquired the lock.
+        """
+        r = await self.store._get_redis()
+        acquired = await r.set(_KEY_REGIME_LOCK, "1", nx=True, ex=ttl_seconds)
+        return bool(acquired)
 
     # ---- x402 gateway payment state ---------------------------------------
 

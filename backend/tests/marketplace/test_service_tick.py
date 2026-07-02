@@ -6,6 +6,33 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from archimedes.marketplace.service import MarketService, Publisher, Subscriber
+from archimedes.services.strategy_signal_evaluator import StrategySignals
+
+
+def _dummy_signals():
+    """Build a minimal StrategySignals list for _evaluate mock returns."""
+    from archimedes.services.strategy_signal_evaluator import AssetSignal, Signal
+
+    ss = MagicMock(spec=StrategySignals)
+    ss.signals = [
+        AssetSignal(
+            asset="ETH", signal=Signal.LONG, weight=0.5, reason="test",
+            strategy_id="test_strat", strategy_name="test",
+        ),
+    ]
+    ss.paper_title = "test"
+    ss.strategy_id = "test_strat"
+    return [ss]
+
+
+def _dummy_targets():
+    """Build a minimal TargetAllocation list that passes VCheck."""
+    from archimedes.models.portfolio import TargetAllocation
+
+    return [
+        TargetAllocation(symbol="ETH", token_address="0x" + "ee" * 20, weight=0.5, strategy_ids=["test_strat"]),
+        TargetAllocation(symbol="USDC", token_address="0x" + "ff" * 20, weight=0.5, strategy_ids=[]),
+    ]
 
 
 @pytest.fixture
@@ -13,8 +40,12 @@ def market():
     svc = MarketService(interval_seconds=9999, dry_run=False)
     # Mock the heavy dependencies
     svc.executor = MagicMock()
-    svc.executor.read_portfolio = AsyncMock(return_value={"usdc": 10000})
+    svc.executor.read_portfolio = AsyncMock(
+        return_value=MagicMock(total_value_usdc=10000, weights_dict={})
+    )
     svc.executor.execute_trades = AsyncMock()
+    svc.executor.set_token_oracles = AsyncMock()
+    svc.executor.set_target_allocations = AsyncMock()
     svc.signer = MagicMock()
     svc.signer.is_configured = False
     # Mock the chain contract loader
@@ -27,6 +58,21 @@ def market():
     svc.state.append_event = AsyncMock()
     svc.state.save_subscribers = AsyncMock()
     svc.state.load_subscribers = AsyncMock(return_value={})
+    # Regime lock gate: skip actual classification, use cache-miss path
+    svc.state.try_acquire_regime_lock = AsyncMock(return_value=False)
+    svc.state.store = MagicMock()
+    svc.state.store.load_regime = AsyncMock(return_value=None)
+    svc.state.store.save_last_rebalance = AsyncMock()
+    # Mock portfolio_constructor to return passable allocations for existing tests
+    svc.portfolio_constructor = MagicMock()
+    svc.portfolio_constructor.construct = MagicMock(return_value=[
+        MagicMock(symbol="ETH", weight=0.5, token_address="0x" + "ee" * 20),
+        MagicMock(symbol="USDC", weight=0.5, token_address="0x" + "ff" * 20),
+    ])
+    # Mock _weights_to_targets to return targets with valid addresses
+    svc._weights_to_targets = MagicMock(return_value=_dummy_targets())
+    # Mock _save_publisher_consensus to no-op
+    svc._save_publisher_consensus = AsyncMock()
     return svc
 
 
@@ -48,7 +94,7 @@ async def test_tick_produces_trades_and_verifies_payment(market: MarketService):
     """The economic core: _evaluate returns weights, compute_trades returns
     non-empty trades, payment is verified, subscriber vault is traded."""
     with (
-        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch.object(market, "_evaluate", AsyncMock(return_value=({"ETH": 0.5}, _dummy_signals()))),
         patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()),
     ):
         market.publishers["strat_a"] = Publisher(
@@ -88,7 +134,7 @@ async def test_tick_marks_subscriber_inactive_on_payment_failure(market: MarketS
     """When payment verification fails, the subscriber is marked inactive and no
     trades are executed for them."""
     with (
-        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch.object(market, "_evaluate", AsyncMock(return_value=({"ETH": 0.5}, _dummy_signals()))),
         patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()),
     ):
         market.publishers["strat_b"] = Publisher(
@@ -134,7 +180,7 @@ async def test_tick_marks_subscriber_inactive_on_payment_failure(market: MarketS
 async def test_tick_no_trades_skips_payment(market: MarketService):
     """When compute_trades returns empty, no payment verification or execution happens."""
     with (
-        patch.object(market, "_evaluate", AsyncMock(return_value={})),
+        patch.object(market, "_evaluate", AsyncMock(return_value=({}, _dummy_signals()))),
         patch("archimedes.marketplace.service.compute_trades", return_value=[]),
     ):
         market.publishers["strat_c"] = Publisher(
@@ -158,7 +204,7 @@ async def test_tick_records_liability_when_mirror_fails(market: MarketService):
     """When payment succeeds but the subscriber mirror trade fails, a liability
     is recorded for that subscriber."""
     with (
-        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch.object(market, "_evaluate", AsyncMock(return_value=({"ETH": 0.5}, _dummy_signals()))),
         patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()),
     ):
         market.publishers["strat_d"] = Publisher(
@@ -197,7 +243,7 @@ async def test_tick_records_liability_when_mirror_fails(market: MarketService):
 async def test_tick_no_liability_when_mirror_succeeds(market: MarketService):
     """When mirror succeeds, no liability is recorded."""
     with (
-        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch.object(market, "_evaluate", AsyncMock(return_value=({"ETH": 0.5}, _dummy_signals()))),
         patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()),
     ):
         market.publishers["strat_e"] = Publisher(
@@ -230,7 +276,7 @@ async def test_tick_no_liability_when_payment_fails(market: MarketService):
     """When payment fails, the subscriber is skipped and no liability is recorded
     (the charge itself didn't succeed, so no liability arises)."""
     with (
-        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch.object(market, "_evaluate", AsyncMock(return_value=({"ETH": 0.5}, _dummy_signals()))),
         patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()),
     ):
         market.publishers["strat_f"] = Publisher(
@@ -295,7 +341,7 @@ async def test_tick_releases_leader_lock_in_finally(market: MarketService):
         creator_wallet="0xcreator",
     )
     with (
-        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch.object(market, "_evaluate", AsyncMock(return_value=({"ETH": 0.5}, _dummy_signals()))),
         patch("archimedes.marketplace.service.compute_trades", return_value=[]),
     ):
         await market.tick("strat_release", leader_token="t1")
@@ -350,7 +396,7 @@ async def test_tick_renews_leader_at_midpoint(market: MarketService):
     )
 
     with (
-        patch.object(market, "_evaluate", AsyncMock(return_value={"ETH": 0.5})),
+        patch.object(market, "_evaluate", AsyncMock(return_value=({"ETH": 0.5}, _dummy_signals()))),
         patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()),
         patch.object(market, "_verify_payment", AsyncMock(return_value=True)),
         patch.object(market, "_apply_to_subscriber", AsyncMock(return_value=True)),
@@ -380,7 +426,7 @@ async def test_two_strategies_tick_independently(market: MarketService):
     )
 
     with (
-        patch.object(market, "_evaluate", AsyncMock(return_value={})),
+        patch.object(market, "_evaluate", AsyncMock(return_value=({}, _dummy_signals()))),
         patch("archimedes.marketplace.service.compute_trades", return_value=[]),
     ):
         await market.tick("strat_a")
