@@ -47,6 +47,17 @@ class ExploreAssetsResponse(BaseModel):
     assets: list[AssetExploreItem]
     cache_ttl_seconds: int = 30
     generated_at: str
+    universe_size: int = Field(
+        default=0,
+        description="Total size of the deploy-eligible SSOT universe this listing covers "
+        "(archimedes.universe.ON_CHAIN_SYNTHS — same set as the Generate picker)",
+    )
+    priced_count: int = Field(
+        default=0,
+        description="How many assets carry a non-null current_price in this response. "
+        "priced_count < universe_size means an honest partial result (cold caches / "
+        "fetch budget exhausted); coverage converges on subsequent requests.",
+    )
 
 
 class ExploreHistoryPoint(BaseModel):
