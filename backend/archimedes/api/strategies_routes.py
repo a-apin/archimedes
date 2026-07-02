@@ -255,7 +255,7 @@ async def list_generated_strategies(request: Request, limit: int = Query(50, ge=
             else:
                 query = query.filter(StrategyRecord.is_published.is_(True))
             records = query.order_by(StrategyRecord.created_at.desc()).limit(limit).all()
-            rows = [r.to_dict() for r in records]
+            rows = [_redact_owner_wallet(r.to_dict(), caller) for r in records]
     except Exception as exc:
         import logging as _logging
 
@@ -1163,36 +1163,98 @@ async def run_stress_test(payload: dict, request: Request, response: Response): 
 # ── Unified Passport Store (Issue #160 Phase 2) ───────────────────────────
 
 
+def _redact_owner_wallet(d: dict, caller: str | None) -> dict:
+    """Strip ``owner_wallet`` from a public payload unless the caller IS the owner.
+
+    Wallet addresses are pseudonymous PII and a linkability vector; publishing a
+    strategy publishes the strategy, not its creator's wallet. Attribution is a
+    marketplace (#713) decision to make deliberately later.
+    """
+    ow = d.get("owner_wallet")
+    if not (caller and ow and str(ow).lower() == caller.lower()):
+        d.pop("owner_wallet", None)
+    return d
+
+
+def _visible_passports(session, records: list, caller: str | None) -> list:
+    """Apply private-until-published to raw passport records.
+
+    The passports table mirrors ``strategy_store`` ids, so leaving these
+    endpoints ungated would defeat the 404-hides-existence design on
+    ``GET /api/strategies/{id}`` by simple id substitution. Visibility mirrors
+    ``list_generated_strategies``: curated passports are always public; a
+    generated passport is public when its store row is ``is_example`` or
+    ``is_published``; otherwise it is owner-only. Ownerless generated legacy
+    rows stay hidden (purge-pending — scripts/purge_orphan_generated.py).
+    """
+    from archimedes.models.strategy_store import StrategyRecord
+
+    ids = [r.id for r in records]
+    store_flags: dict[str, tuple[bool, bool]] = {}
+    if ids:
+        rows = (
+            session.query(StrategyRecord.id, StrategyRecord.is_example, StrategyRecord.is_published)
+            .filter(StrategyRecord.id.in_(ids))
+            .all()
+        )
+        store_flags = {sid: (bool(ex), bool(pub)) for sid, ex, pub in rows}
+
+    visible = []
+    for r in records:
+        if (r.generation_method or "").lower() == "curated":
+            visible.append(r)
+            continue
+        is_example, is_published = store_flags.get(r.id, (False, False))
+        if is_example or is_published:
+            visible.append(r)
+            continue
+        if caller and r.owner_wallet and r.owner_wallet.lower() == caller.lower():
+            visible.append(r)
+    return visible
+
+
 @strategies_router.get("/passports")
 async def list_strategy_passports(
+    request: Request,
     status: str | None = Query(None),
     regime_tag: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
 ):
-    """List strategies from the unified strategy_passports table."""
+    """List strategies from the unified strategy_passports table.
+
+    Private-until-published applies here exactly as on ``/generated`` — see
+    ``_visible_passports``.
+    """
     from archimedes.db import get_session
     from archimedes.services.passport_loader import list_passports
 
+    caller = get_verified_wallet(request)  # None when anonymous — never an error
     with get_session() as session:
         records = list_passports(session, status=status, regime_tag=regime_tag)
-        passports = [r.to_dict() for r in records[:limit]]
+        records = _visible_passports(session, records, caller)
+        passports = [_redact_owner_wallet(r.to_dict(), caller) for r in records[:limit]]
 
     return {"passports": passports, "total": len(passports), "source": "strategy_passports"}
 
 
 @strategies_router.get("/passports/{strategy_id}")
-async def get_strategy_passport(strategy_id: str):
-    """Get a single passport in its native dict shape from strategy_passports."""
+async def get_strategy_passport(request: Request, strategy_id: str):
+    """Get a single passport in its native dict shape from strategy_passports.
+
+    Unpublished non-example passports 404 for non-owners (never 403 — a 403
+    would confirm the id exists).
+    """
     from fastapi import HTTPException
 
     from archimedes.db import get_session
     from archimedes.services.passport_loader import get_passport
 
+    caller = get_verified_wallet(request)
     with get_session() as session:
         record = get_passport(session, strategy_id)
-        if record is None:
+        if record is None or not _visible_passports(session, [record], caller):
             raise HTTPException(status_code=404, detail="Passport not found")
-        return record.to_dict()
+        return _redact_owner_wallet(record.to_dict(), caller)
 
 
 def _passport_to_strategy_response(record) -> StrategyResponse:

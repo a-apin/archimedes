@@ -433,3 +433,92 @@ def test_purge_execute_deletes_orphans_and_cascades():
         assert session.query(StrategyPassportRecord).filter_by(id="orphan0000000001").first() is None
         assert session.query(PassportPaperRef).filter_by(passport_id="orphan0000000001").count() == 0
         assert session.query(BacktestResultRecord).filter_by(strategy_id="orphan0000000001").count() == 0
+
+
+# ── /passports must not bypass private-until-published (adversarial-verify
+#    blocker fix): the passports table mirrors strategy_store ids, so these
+#    endpoints must enforce the SAME visibility rule as /generated and
+#    GET /api/strategies/{id}, and must not disclose owner wallets publicly. ──
+
+
+def _mk_owned_passport(sid: str, *, owner: str | None = None, generation_method: str = "fusion"):
+    from archimedes.models.strategy_passport_record import StrategyPassportRecord
+
+    with get_session() as session:
+        session.add(
+            StrategyPassportRecord(
+                id=sid,
+                content_hash=("0z" + sid).ljust(66, "0"),
+                generation_method=generation_method,
+                methodology_summary="test",
+                asset_universe="[]",
+                owner_wallet=owner.lower() if owner else None,
+            )
+        )
+        session.commit()
+
+
+async def test_passports_list_enforces_private_until_published():
+    _mk_strategy("ppb00000000000001", owner=_W_OTHER, published=True)
+    _mk_owned_passport("ppb00000000000001", owner=_W_OTHER)
+    _mk_strategy("ppv00000000000001", owner=_W_OWNER, published=False)
+    _mk_owned_passport("ppv00000000000001", owner=_W_OWNER)
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        anon = (await client.get("/api/strategies/passports")).json()["passports"]
+        anon_ids = {p["id"] for p in anon}
+        # The unpublished strategy must not be enumerable anonymously…
+        assert "ppv00000000000001" not in anon_ids
+        assert "ppb00000000000001" in anon_ids
+        # …and the published one must not disclose its owner's wallet.
+        pub = next(p for p in anon if p["id"] == "ppb00000000000001")
+        assert "owner_wallet" not in pub
+
+        owner = (await client.get("/api/strategies/passports", cookies=_siwe_cookies(_W_OWNER))).json()["passports"]
+        owner_ids = {p["id"] for p in owner}
+        assert "ppv00000000000001" in owner_ids  # owner sees their own private row
+        mine = next(p for p in owner if p["id"] == "ppv00000000000001")
+        assert mine.get("owner_wallet") == _W_OWNER.lower()  # visible to the owner only
+
+
+async def test_passport_detail_404_hides_unpublished_from_non_owners():
+    sid = "ppd00000000000001"
+    _mk_strategy(sid, owner=_W_OWNER, published=False)
+    _mk_owned_passport(sid, owner=_W_OWNER)
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # The verifier's exact counterexample: id substitution into /passports/{id}.
+        assert (await client.get(f"/api/strategies/passports/{sid}")).status_code == 404
+        assert (
+            await client.get(f"/api/strategies/passports/{sid}", cookies=_siwe_cookies(_W_OTHER))
+        ).status_code == 404  # 404 (not 403) — existence stays hidden
+        ok = await client.get(f"/api/strategies/passports/{sid}", cookies=_siwe_cookies(_W_OWNER))
+        assert ok.status_code == 200
+        assert ok.json().get("owner_wallet") == _W_OWNER.lower()
+
+
+async def test_passport_curated_stays_public():
+    _mk_owned_passport("pcu00000000000001", owner=None, generation_method="curated")
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/strategies/passports/pcu00000000000001")
+    assert resp.status_code == 200
+
+
+async def test_generated_list_redacts_owner_wallet_for_non_owners():
+    _mk_strategy("prd00000000000001", owner=_W_OTHER, published=True)
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        anon = (await client.get("/api/strategies/generated")).json()["strategies"]
+        assert all("owner_wallet" not in s for s in anon)
+        owned = (await client.get("/api/strategies/generated", cookies=_siwe_cookies(_W_OTHER))).json()["strategies"]
+        mine = next(s for s in owned if s["id"] == "prd00000000000001")
+        assert mine.get("owner_wallet") == _W_OTHER.lower()
