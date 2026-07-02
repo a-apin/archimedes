@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import WalletConnect from './WalletConnect'
 import Breadcrumbs from './Breadcrumbs'
 import WelcomeProfileModal from './WelcomeProfileModal'
-import { NEW_CONTRACTS } from '../config'
+import { NEW_CONTRACTS, getStoredWalletName } from '../config'
 
 // Sidebar groups separate Home (anchor / landing) from the three product-state
 // bands. Empty group label is intentional for the Home entry — it renders as a
@@ -106,7 +106,11 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
     if (profile) setUserProfile(profile)
   }
 
+  // Display-name fallback chain: backend profile display_name → wallet name
+  // saved at Circle passkey creation (localStorage, keyed by address) →
+  // WalletConnect renders the truncated address when this is null.
   const displayName = userProfile?.display_name
+    || (walletAddr ? getStoredWalletName(walletAddr) : null)
 
   const handleNav = (id) => {
     setPage(id)
