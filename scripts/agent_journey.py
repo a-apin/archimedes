@@ -151,6 +151,12 @@ def step_auth(client: httpx.Client, base: str, *, ephemeral: bool) -> str | None
     # plain client cookie so the authenticated journey works on http too. The
     # server is untouched — this is purely harness-side cookie plumbing.
     if urlsplit(base).scheme == "http":
+        host = (urlsplit(base).hostname or "").lower()
+        if host not in {"localhost", "127.0.0.1", "::1"}:
+            # Downgrading a Secure cookie over non-local plain HTTP would send
+            # the session token in cleartext across a real network — refuse.
+            print(f"  ✗ refusing to send the session cookie over http to non-local host {host!r}; use https")
+            return None
         token = r.cookies.get(_SESSION_COOKIE)
         if token:
             client.cookies.set(_SESSION_COOKIE, token)

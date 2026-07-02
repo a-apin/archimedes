@@ -114,3 +114,25 @@ def test_gate_on_rejects_tampered_session(monkeypatch):
     client.cookies.set(_COOKIE_NAME, '{"wallet":"0xdeadbeef","iat":9999999999}|deadbeef')
     resp = client.post("/g")
     assert resp.status_code == 401
+
+
+# ── No existence oracle on per-job reads (Copilot, #851) ─────────────────────
+
+
+async def test_gated_job_reads_401_before_lookup_no_existence_oracle(monkeypatch):
+    """Gating ON + anonymous: a MISSING job must yield 401 (same as an existing
+    one), never 404 — a 404-for-missing / 401-for-existing split lets an
+    unauthenticated caller probe which job_ids exist. The auth check must run
+    before the store lookup on both the SSE stream and the candidates read."""
+    from httpx import ASGITransport, AsyncClient
+
+    monkeypatch.setenv("REQUIRE_SIWE_FOR_GENERATION", "true")
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for path in (
+            "/api/generate/stream/nonexistent-job-id",
+            "/api/generate/jobs/nonexistent-job-id/candidates",
+        ):
+            resp = await client.get(path)
+            assert resp.status_code == 401, f"{path}: expected 401 pre-lookup, got {resp.status_code}"

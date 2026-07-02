@@ -42,6 +42,8 @@ import os
 import sys
 import time
 
+from decimal import ROUND_DOWN, Decimal
+
 import httpx
 
 ARC_CHAIN_ID = 5042002  # Arc testnet (0x4cef52)
@@ -58,7 +60,9 @@ def _load_dotenv_if_available() -> None:
 
         load_dotenv()
     except ImportError:
-        pass
+        # Optional convenience only: without python-dotenv the caller simply
+        # exports the env vars themselves — nothing to do here.
+        return
 
 
 def _rpc_call(client: httpx.Client, url: str, method: str, params: list) -> object:
@@ -85,7 +89,10 @@ def fund_via_treasury(to: str, amount: float, rpc: str, decimals: int, execute: 
         print("✗ DEV_WALLET_PRIVATE_KEY is not a valid private key.")  # never echo the value
         return 2
 
-    value = int(amount * 10**decimals)
+    # Decimal, not binary float: int(0.1 * 10**6) style truncation silently
+    # under/over-funds on-chain amounts (Copilot, #851). The CLI string parses
+    # exactly; quantize to whole base units.
+    value = int((Decimal(str(amount)) * (10**decimals)).to_integral_value(rounding=ROUND_DOWN))
     print(f"treasury transfer plan (chain {ARC_CHAIN_ID}, native USDC = gas):")
     print(f"  from:    {acct.address}")
     print(f"  to:      {to}")

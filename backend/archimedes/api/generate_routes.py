@@ -61,6 +61,18 @@ def _register_task(job_id: str, task: asyncio.Task) -> None:
     task.add_done_callback(lambda _t, jid=job_id: _RUNNING_TASKS.pop(jid, None))
 
 
+def _require_job_auth(caller_wallet: str | None) -> None:
+    """Pre-lookup auth gate for per-job READ endpoints (gating ON only).
+
+    Must run BEFORE the job-store lookup: answering 404 (missing) vs 401
+    (exists, auth required) from a post-lookup check lets an unauthenticated
+    caller probe job_id existence. With this guard an anonymous caller gets
+    401 for every job_id — real or not — and learns nothing (Copilot, #851).
+    """
+    if _generation_auth_required() and not caller_wallet:
+        raise HTTPException(status_code=401, detail="Authentication required. Connect your wallet and sign in.")
+
+
 def _require_job_access(job: dict, caller_wallet: str | None, job_id: str) -> None:
     """Owner-scope per-job READ endpoints when SIWE-for-generation is ON.
 
@@ -189,6 +201,7 @@ async def stream_events(
     and re-subscribes on mount). Owner-scoped when SIWE-for-generation is on
     (see ``_require_job_access``); open when the gate is explicitly off.
     """
+    _require_job_auth(caller_wallet)  # 401 BEFORE the lookup — no existence oracle
     store = get_job_store()
     job = await store.get(job_id)
     if not job:
@@ -356,6 +369,7 @@ async def list_candidates(
 
     Owner-scoped when SIWE-for-generation is on (``_require_job_access``).
     """
+    _require_job_auth(caller_wallet)  # 401 BEFORE the lookup — no existence oracle
     store = get_job_store()
     job = await store.get(job_id)
     if not job:
