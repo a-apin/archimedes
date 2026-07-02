@@ -8,12 +8,20 @@ one definition of what an event looks like on the wire.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ── Request side ──────────────────────────────────────────────────────────
+
+# User-chosen strategy name limits. Whitespace is collapsed BEFORE these
+# checks, so \t/\n arriving in a paste are normalized rather than rejected;
+# any control character that survives collapsing (NUL, ESC, DEL, …) is a
+# hard reject — those never belong in a display name.
+NAME_MAX_LEN = 80
+_NAME_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class GenerateBrief(BaseModel):
@@ -24,6 +32,30 @@ class GenerateBrief(BaseModel):
     asset_classes: list[str] | None = None
     capital_usdc: float | None = None
     max_papers: int = Field(default=5, ge=1, le=20)
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Optional user-chosen strategy name (1–80 chars after whitespace normalization). "
+            "Applied verbatim to the WINNING candidate only; considered-rejects keep their "
+            "auto-derived names so the library never shows N identically-named strategies "
+            "per generation. Empty/whitespace-only is treated as unset."
+        ),
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _sanitize_name(cls, v: str | None) -> str | None:
+        """Strip + collapse internal whitespace; empty → None; reject control chars / >80 chars."""
+        if v is None:
+            return None
+        v = re.sub(r"\s+", " ", v).strip()
+        if not v:
+            return None
+        if _NAME_CONTROL_CHARS.search(v):
+            raise ValueError("name must not contain control characters")
+        if len(v) > NAME_MAX_LEN:
+            raise ValueError(f"name must be at most {NAME_MAX_LEN} characters")
+        return v
 
 
 class GenerateStartRequest(BaseModel):

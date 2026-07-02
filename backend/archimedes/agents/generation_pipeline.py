@@ -979,6 +979,19 @@ async def _run_fusion_candidate(
 # ── Pipeline entry point ──────────────────────────────────────────────────
 
 
+def _resolve_name(brief: GenerateBrief, default: str) -> str:
+    """Prefer the user's ``brief.name`` over an auto-derived default.
+
+    Single choke point for user-chosen strategy names: every runner
+    (fixture / live agent / fusion / debate) auto-derives a ``strategy_name``,
+    and ``run_generation`` applies the user's name to the WINNER only — right
+    before persistence, so the library record, passport, episodic memory, and
+    job result all carry it. ``brief.name`` is already sanitized (stripped,
+    whitespace-collapsed, 1–80 chars) by the ``GenerateBrief`` validator.
+    """
+    return brief.name or default
+
+
 def _served_model_for(job_agent: Any, use_live: bool) -> str:
     """Resolve the model id that actually served this job, for provenance.
 
@@ -1288,6 +1301,12 @@ async def run_generation(
             pool,
             key=lambda c: c.rigor_verdict.get("dsr") or 0.0,
         )
+        # User-chosen name (brief.name) applies to the WINNER only, and must land
+        # BEFORE the persist loop below so every downstream surface (library
+        # record, passport, episodic memory, job result) reads it. Considered-
+        # rejects keep their auto-derived names — renaming them too would produce
+        # multiple identically-named strategies per generation.
+        best.strategy_name = _resolve_name(brief, best.strategy_name)
         await emit.emit(
             "best_selected",
             best_candidate_id=best.candidate_id,
