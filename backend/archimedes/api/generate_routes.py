@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from archimedes.agents.generation_pipeline import run_generation
-from archimedes.api.auth_siwe import gate_generation, get_verified_wallet
+from archimedes.api.auth_siwe import _generation_auth_required, gate_generation, get_verified_wallet
 from archimedes.api.funnel_middleware import record_funnel
 from archimedes.api.generate_schemas import (
     CandidatesListResponse,
@@ -59,6 +59,44 @@ _RUNNING_TASKS: dict[str, asyncio.Task] = {}
 def _register_task(job_id: str, task: asyncio.Task) -> None:
     _RUNNING_TASKS[job_id] = task
     task.add_done_callback(lambda _t, jid=job_id: _RUNNING_TASKS.pop(jid, None))
+
+
+def _require_job_auth(caller_wallet: str | None) -> None:
+    """Pre-lookup auth gate for per-job READ endpoints (gating ON only).
+
+    Must run BEFORE the job-store lookup: answering 404 (missing) vs 401
+    (exists, auth required) from a post-lookup check lets an unauthenticated
+    caller probe job_id existence. With this guard an anonymous caller gets
+    401 for every job_id — real or not — and learns nothing (Copilot, #851).
+    """
+    if _generation_auth_required() and not caller_wallet:
+        raise HTTPException(status_code=401, detail="Authentication required. Connect your wallet and sign in.")
+
+
+def _require_job_access(job: dict, caller_wallet: str | None, job_id: str) -> None:
+    """Owner-scope per-job READ endpoints when SIWE-for-generation is ON.
+
+    Gating OFF (explicit local-dev opt-out) → no-op, preserving the historical
+    open behavior: anyone who knows a job_id can stream/read it.
+
+    Gating ON (secure default):
+      - no verified session → 401 (same contract as gate_generation);
+      - session wallet ≠ ``payload.owner_wallet`` → **404, not 403** — a
+        mismatched caller must not be able to confirm the job even exists
+        (existence-oracle avoidance; message identical to the not-found path);
+      - ownerless jobs (created while gating was off) stay readable by any
+        *authenticated* caller — no lock-out of pre-flip jobs, no anon leak.
+
+    Browser note: EventSource sends cookies on same-origin requests, so the
+    SSE stream authenticates exactly like fetch() does — no client change.
+    """
+    if not _generation_auth_required():
+        return
+    if not caller_wallet:
+        raise HTTPException(status_code=401, detail="Authentication required. Connect your wallet and sign in.")
+    owner_wallet = (job.get("payload") or {}).get("owner_wallet")
+    if owner_wallet and owner_wallet.lower() != caller_wallet.lower():
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
 
 
 @generate_router.post("/start", response_model=GenerateStartResponse, status_code=202)
@@ -164,17 +202,24 @@ async def _run_with_cleanup(
 
 
 @generate_router.get("/stream/{job_id}")
-async def stream_events(job_id: str, request: Request) -> StreamingResponse:
+async def stream_events(
+    job_id: str,
+    request: Request,
+    caller_wallet: str | None = Depends(get_verified_wallet),
+) -> StreamingResponse:
     """Server-Sent Events. Tails the job's Redis event log.
 
     Honours ``Last-Event-ID`` for client resume after a disconnect (the spec
     calls this out — the frontend stashes ``currentJobId`` in localStorage
-    and re-subscribes on mount).
+    and re-subscribes on mount). Owner-scoped when SIWE-for-generation is on
+    (see ``_require_job_access``); open when the gate is explicitly off.
     """
+    _require_job_auth(caller_wallet)  # 401 BEFORE the lookup — no existence oracle
     store = get_job_store()
     job = await store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
+    _require_job_access(job, caller_wallet, job_id)
 
     try:
         last_event_id = int(request.headers.get("Last-Event-ID", "0"))
@@ -282,8 +327,20 @@ async def cancel_job(
 
 
 @generate_router.get("/jobs", response_model=JobsListResponse)
-async def list_jobs(limit: int = Query(default=20, ge=1, le=100)) -> JobsListResponse:
-    """Recent jobs for the GenerationStatus UI."""
+async def list_jobs(
+    limit: int = Query(default=20, ge=1, le=100),
+    caller_wallet: str | None = Depends(get_verified_wallet),
+) -> JobsListResponse:
+    """Recent jobs for the GenerationStatus UI.
+
+    When SIWE-for-generation is ON the listing requires a session and is
+    filtered to the caller's own jobs (plus ownerless pre-flip jobs) — the
+    same no-existence-oracle stance as the per-job endpoints. When the gate
+    is explicitly off, the historical open listing is preserved.
+    """
+    gated = _generation_auth_required()
+    if gated and not caller_wallet:
+        raise HTTPException(status_code=401, detail="Authentication required. Connect your wallet and sign in.")
     store = get_job_store()
     raw = await store.list_recent_jobs(limit=limit)
     summaries: list[JobSummary] = []
@@ -291,6 +348,9 @@ async def list_jobs(limit: int = Query(default=20, ge=1, le=100)) -> JobsListRes
         if j.get("type") != "generate":
             continue
         payload = j.get("payload") or {}
+        owner_wallet = payload.get("owner_wallet")
+        if gated and owner_wallet and owner_wallet.lower() != (caller_wallet or "").lower():
+            continue
         brief = payload.get("brief") or {}
         result = j.get("result") or {}
         summaries.append(
@@ -314,12 +374,20 @@ def _normalize_state(s: str) -> str:
 
 
 @generate_router.get("/jobs/{job_id}/candidates", response_model=CandidatesListResponse)
-async def list_candidates(job_id: str) -> CandidatesListResponse:
-    """Rejected-candidate viewer. Empty list until ``done``."""
+async def list_candidates(
+    job_id: str,
+    caller_wallet: str | None = Depends(get_verified_wallet),
+) -> CandidatesListResponse:
+    """Rejected-candidate viewer. Empty list until ``done``.
+
+    Owner-scoped when SIWE-for-generation is on (``_require_job_access``).
+    """
+    _require_job_auth(caller_wallet)  # 401 BEFORE the lookup — no existence oracle
     store = get_job_store()
     job = await store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
+    _require_job_access(job, caller_wallet, job_id)
     result = job.get("result") or {}
     cands = result.get("candidates", []) or []
     return CandidatesListResponse(

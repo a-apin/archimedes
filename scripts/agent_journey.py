@@ -14,14 +14,24 @@ Two payoffs, immediately:
      agent User-Agent, so the telemetry classifier counts it as an external agent
      and the conversion funnel (#787) attributes its ``generation_started``.
 
-The READ + GENERATE paths need NO signing (``REQUIRE_SIWE_FOR_GENERATION`` is off),
-so this slice runs today. DEPLOY + MONITOR (which need a programmatic signer, since
-agents can't do browser passkeys) are slice 2 — see issue #788.
+Slice 2 (this revision) adds **agent-auth**: a programmatic EOA signs the SIWE
+(EIP-4361) challenge from ``GET /api/auth/nonce`` and posts it to
+``POST /api/auth/verify``, establishing the same session cookie the browser gets.
+With ``REQUIRE_SIWE_FOR_GENERATION`` now defaulting ON server-side, the GENERATE
+path (and the per-job stream/candidates reads, which are owner-scoped under the
+gate) requires this session; READ stays public.
+
+Key handling: the private key comes ONLY from the ``AGENT_WALLET_KEY`` env var
+(never a CLI arg, never printed/logged), or ``--ephemeral`` mints a throwaway
+in-memory key via ``eth_account.Account.create()``. Use a fresh TESTNET dev key —
+never a funded/mainnet key.
 
 Usage:
     python scripts/agent_journey.py --base https://archimedes-arc.com
+    AGENT_WALLET_KEY=0x... python scripts/agent_journey.py            # auth auto-on
+    python scripts/agent_journey.py --ephemeral                       # throwaway wallet
+    python scripts/agent_journey.py --no-auth --read-only             # anon read smoke
     python scripts/agent_journey.py --base http://localhost:8000 --intent "low-vol momentum"
-    python scripts/agent_journey.py --read-only          # skip generation (cheap smoke)
 
 Exit code is nonzero if a hard step fails, so this doubles as a journey smoke test.
 """
@@ -29,8 +39,11 @@ Exit code is nonzero if a hard step fails, so this doubles as a journey smoke te
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
+from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -40,6 +53,121 @@ AGENT_UA = "archimedes-agent-journey/0.1 (+https://github.com/a-apin/archimedes/
 
 # Terminal SSE event names from api/generate_schemas.py::EventName.
 _TERMINAL_EVENTS = {"done", "error"}
+
+# SIWE constants — must match the backend bindings (api/auth_siwe.py): the
+# verifier REQUIRES domain + chain-id + fresh Issued At, and rejects mismatches.
+ARC_CHAIN_ID = 5042002  # Arc testnet (0x4cef52)
+_SESSION_COOKIE = "archimedes_session"
+_KEY_ENV = "AGENT_WALLET_KEY"  # the ONLY source for a persistent key — never a CLI arg
+
+
+def build_siwe_message(
+    domain: str,
+    wallet: str,
+    nonce: str,
+    issued_at: str,
+    chain_id: int = ARC_CHAIN_ID,
+    statement: str = "Sign in to Archimedes.",
+) -> str:
+    """Build an EIP-4361 (SIWE) message the backend verifier accepts.
+
+    Mirrors backend/tests/test_auth_siwe.py::test_verify_with_valid_signature —
+    the reference programmatic recipe. The backend binds on: the domain in the
+    first line (must equal its PUBLIC_DOMAIN), ``Chain ID:`` (must be Arc's
+    5042002), ``Nonce:`` (live, single-use), and ``Issued At:`` (fresh within
+    5 min). The wallet is the first 42-char 0x line.
+    """
+    return (
+        f"{domain} wants you to sign in with your Ethereum account:\n"
+        f"{wallet}\n\n"
+        f"{statement}\n\n"
+        f"URI: https://{domain}\n"
+        f"Version: 1\n"
+        f"Chain ID: {chain_id}\n"
+        f"Nonce: {nonce}\n"
+        f"Issued At: {issued_at}"
+    )
+
+
+def _domain_from_base(base: str) -> str:
+    """Bare authority from a --base URL (scheme/path stripped) — SIWE domain shape."""
+    parts = urlsplit(base if "://" in base else f"https://{base}")
+    return (parts.netloc or parts.path).rstrip("/")
+
+
+def step_auth(client: httpx.Client, base: str, *, ephemeral: bool) -> str | None:
+    """SIWE sign-in with a programmatic EOA. Returns the wallet address, or None.
+
+    nonce + issued_at come from ``GET /api/auth/nonce``; the domain is the one
+    the server advertises in that same response (its PUBLIC_DOMAIN — the value
+    the verifier binds on), falling back to the --base host if absent. Using the
+    server-advertised domain keeps the harness working against localhost dev,
+    where PUBLIC_DOMAIN and the --base host differ; the server still enforces
+    every binding, so nothing is weakened client-side.
+    """
+    from eth_account import Account
+    from eth_account.messages import encode_defunct
+
+    _hr("AUTH — SIWE (EIP-4361) with a programmatic EOA")
+
+    if ephemeral:
+        acct = Account.create()
+        print("  · ephemeral wallet (throwaway key, in-memory only)")
+    else:
+        key = os.environ.get(_KEY_ENV, "").strip()
+        if not key:
+            print(f"  ✗ {_KEY_ENV} not set (and --ephemeral not given) — cannot authenticate")
+            return None
+        try:
+            acct = Account.from_key(key)
+        except (ValueError, TypeError):
+            # Never echo the key material — not even in the error path.
+            print(f"  ✗ {_KEY_ENV} is not a valid private key")
+            return None
+    wallet = acct.address
+    print(f"  · wallet address: {wallet}")
+
+    nonce_data = _get(client, "/api/auth/nonce")
+    if not isinstance(nonce_data, dict) or "nonce" not in nonce_data:
+        print("  ✗ /api/auth/nonce — unusable response; cannot authenticate")
+        return None
+    domain = nonce_data.get("domain") or _domain_from_base(base)
+    issued_at = datetime.fromtimestamp(int(nonce_data.get("issued_at", time.time())), tz=UTC).isoformat()
+
+    message = build_siwe_message(domain=domain, wallet=wallet.lower(), nonce=nonce_data["nonce"], issued_at=issued_at)
+    signed = acct.sign_message(encode_defunct(text=message))
+
+    try:
+        r = client.post("/api/auth/verify", json={"message": message, "signature": signed.signature.hex()})
+    except httpx.HTTPError as exc:
+        print(f"  ✗ POST /api/auth/verify — transport error: {exc}")
+        return None
+    if r.status_code != 200:
+        print(f"  ✗ POST /api/auth/verify — HTTP {r.status_code}: {r.text[:200]}")
+        return None
+
+    # The session cookie is flagged Secure; over a plain-http --base (local dev)
+    # the stdlib cookie policy would store but never SEND it. Re-set it as a
+    # plain client cookie so the authenticated journey works on http too. The
+    # server is untouched — this is purely harness-side cookie plumbing.
+    if urlsplit(base).scheme == "http":
+        host = (urlsplit(base).hostname or "").lower()
+        if host not in {"localhost", "127.0.0.1", "::1"}:
+            # Downgrading a Secure cookie over non-local plain HTTP would send
+            # the session token in cleartext across a real network — refuse.
+            print(f"  ✗ refusing to send the session cookie over http to non-local host {host!r}; use https")
+            return None
+        token = r.cookies.get(_SESSION_COOKIE)
+        if token:
+            client.cookies.set(_SESSION_COOKIE, token)
+
+    session = _get(client, "/api/auth/session")
+    authenticated = isinstance(session, dict) and session.get("authenticated") is True
+    print(f"  ✓ authenticated as {r.json().get('wallet')}  (session check: {authenticated})")
+    if not authenticated:
+        print("  ✗ session cookie did not round-trip — continuing unauthenticated")
+        return None
+    return wallet
 
 
 def _hr(title: str) -> None:
@@ -110,7 +238,7 @@ def step_generate(client: httpx.Client, intent: str, risk: str, timeout_s: float
     deadline check never runs, so the harness can hang until the process is killed. Acceptable
     for a dogfooding harness; a production client should add a wall-clock watchdog / cancel.
     """
-    _hr("GENERATE — start + stream (no wallet)")
+    _hr("GENERATE — start + stream (session cookie if authenticated)")
 
     body = {
         "brief": {"intent": intent, "risk_appetite": risk, "max_papers": 5},
@@ -241,11 +369,36 @@ def main() -> int:
     )
     ap.add_argument("--read-only", action="store_true", help="skip generation (cheap smoke test)")
     ap.add_argument("--timeout", type=float, default=120.0, help="generation stream timeout (s)")
+    ap.add_argument(
+        "--auth",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=f"SIWE sign-in with the EOA key from ${_KEY_ENV} (env only — never a CLI arg). "
+        f"Default: on when ${_KEY_ENV} is set; --no-auth forces anonymous.",
+    )
+    ap.add_argument(
+        "--ephemeral",
+        action="store_true",
+        help="mint a throwaway in-memory wallet (Account.create()) and SIWE-auth with it; implies --auth",
+    )
     args = ap.parse_args()
+
+    # Auth resolution: --ephemeral implies auth; otherwise --auth/--no-auth wins;
+    # otherwise auto — on exactly when the key env var is present.
+    want_auth = args.ephemeral or (args.auth if args.auth is not None else bool(os.environ.get(_KEY_ENV)))
 
     print(f"Archimedes agent journey → {args.base}")
     client = httpx.Client(base_url=args.base, headers={"User-Agent": AGENT_UA}, timeout=30.0, follow_redirects=True)
+    wallet: str | None = None
     try:
+        if want_auth:
+            wallet = step_auth(client, args.base, ephemeral=args.ephemeral)
+            if wallet is None and not args.read_only:
+                # With the server's secure-by-default generation gate, an unauthenticated
+                # generate would just 401 — fail loudly here instead.
+                print("\nRESULT: SIWE auth failed and generation requires it — aborting.")
+                return 2
+        print(f"\n  auth status: {'authenticated as ' + wallet if wallet else 'anonymous'}")
         step_read(client)
         if args.read_only:
             print("\n(read-only — skipping generation)")

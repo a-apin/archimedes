@@ -1,15 +1,20 @@
 """Tests for the SIWE gate on expensive LLM-generation endpoints.
 
 The gate (``gate_generation``) is controlled by REQUIRE_SIWE_FOR_GENERATION and
-defaults OFF so enabling it is an explicit, post-verification flip — it can never
-silently break the live Generate flow on deploy. These tests exercise the
-dependency in isolation against a minimal app (no Redis / job store needed),
-minting a session cookie with the same in-process HMAC key the verifier uses.
+is now SECURE BY DEFAULT (2026-07 flip): with the flag unset, production requires
+a verified SIWE session. Two carve-outs keep everything else working:
+  - an explicit ``false`` opts out (local dev / demo — documented in .env.example);
+  - under TESTING (the hermetic suite, set by conftest) an UNSET flag stays off,
+    mirroring the slowapi-limiter / wallet-less-quota TESTING treatment — an
+    explicit true/false always wins over the carve-out.
+These tests exercise the dependency in isolation against a minimal app (no
+Redis / job store needed), minting a session cookie with the same in-process
+HMAC key the verifier uses.
 """
 
 import time
 
-from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session, gate_generation
+from archimedes.api.auth_siwe import _COOKIE_NAME, _generation_auth_required, _sign_session, gate_generation
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
@@ -25,11 +30,52 @@ def _make_client() -> TestClient:
 
 
 def test_gate_off_allows_anonymous(monkeypatch):
-    """Default (flag unset): anonymous callers pass through, wallet is None."""
+    """Flag unset under TESTING (conftest sets it): anonymous callers pass through."""
     monkeypatch.delenv("REQUIRE_SIWE_FOR_GENERATION", raising=False)
     resp = _make_client().post("/g")
     assert resp.status_code == 200
     assert resp.json()["wallet"] is None
+
+
+# ── The 2026-07 secure-by-default flip ──────────────────────────────
+
+
+def test_default_is_secure_outside_testing(monkeypatch):
+    """Flag unset AND no TESTING (production shape): the gate is ON — anon → 401."""
+    monkeypatch.delenv("REQUIRE_SIWE_FOR_GENERATION", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+    assert _generation_auth_required() is True
+    resp = _make_client().post("/g")
+    assert resp.status_code == 401
+
+
+def test_explicit_false_opts_out_outside_testing(monkeypatch):
+    """REQUIRE_SIWE_FOR_GENERATION=false (the documented local-dev opt-out) keeps
+    the open behavior even without TESTING."""
+    monkeypatch.setenv("REQUIRE_SIWE_FOR_GENERATION", "false")
+    monkeypatch.delenv("TESTING", raising=False)
+    assert _generation_auth_required() is False
+    resp = _make_client().post("/g")
+    assert resp.status_code == 200
+    assert resp.json()["wallet"] is None
+
+
+def test_explicit_true_wins_over_testing_carveout(monkeypatch):
+    """An explicit true is enforced even under TESTING — gating-on tests rely on this."""
+    monkeypatch.setenv("REQUIRE_SIWE_FOR_GENERATION", "true")
+    assert _generation_auth_required() is True
+
+
+def test_default_secure_with_valid_session(monkeypatch):
+    """Production default (gate on): a valid SIWE session is accepted."""
+    monkeypatch.delenv("REQUIRE_SIWE_FOR_GENERATION", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+    wallet = "0x" + "ef" * 20
+    client = _make_client()
+    client.cookies.set(_COOKIE_NAME, _sign_session(wallet, time.time()))
+    resp = client.post("/g")
+    assert resp.status_code == 200
+    assert resp.json()["wallet"] == wallet.lower()
 
 
 def test_gate_off_attributes_session_when_present(monkeypatch):
@@ -68,3 +114,25 @@ def test_gate_on_rejects_tampered_session(monkeypatch):
     client.cookies.set(_COOKIE_NAME, '{"wallet":"0xdeadbeef","iat":9999999999}|deadbeef')
     resp = client.post("/g")
     assert resp.status_code == 401
+
+
+# ── No existence oracle on per-job reads (Copilot, #851) ─────────────────────
+
+
+async def test_gated_job_reads_401_before_lookup_no_existence_oracle(monkeypatch):
+    """Gating ON + anonymous: a MISSING job must yield 401 (same as an existing
+    one), never 404 — a 404-for-missing / 401-for-existing split lets an
+    unauthenticated caller probe which job_ids exist. The auth check must run
+    before the store lookup on both the SSE stream and the candidates read."""
+    from httpx import ASGITransport, AsyncClient
+
+    monkeypatch.setenv("REQUIRE_SIWE_FOR_GENERATION", "true")
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for path in (
+            "/api/generate/stream/nonexistent-job-id",
+            "/api/generate/jobs/nonexistent-job-id/candidates",
+        ):
+            resp = await client.get(path)
+            assert resp.status_code == 401, f"{path}: expected 401 pre-lookup, got {resp.status_code}"
