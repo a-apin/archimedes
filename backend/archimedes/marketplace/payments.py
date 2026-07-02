@@ -66,6 +66,7 @@ async def charge(
     tick_id: str,
     action_count: int,
     flat_fee_raw: int,
+    step: str | None = None,
 ) -> bool:
     """Charge one subscriber for one tick. Returns True iff the micropayment
     was verified AND settled by Circle's facilitator. Never raises: every
@@ -81,7 +82,8 @@ async def charge(
 
         # 1. Publisher side: build 402 requirements. `path` is a logical
         # resource identifier only — no HTTP route exists or is needed.
-        path = f"/charge/{strategy_id}/{tick_id}/{sub_id}"
+        suffix = f"/{step}" if step else ""
+        path = f"/charge/{strategy_id}/{tick_id}/{sub_id}{suffix}"
         required = middleware.require(price, path)
         x402 = get_payment_required(
             required["headers"].get("PAYMENT-REQUIRED"),

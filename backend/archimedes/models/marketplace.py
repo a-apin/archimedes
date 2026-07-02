@@ -95,3 +95,21 @@ class SubscriberLiability(Base):
             "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
             "resolution_note": self.resolution_note,
         }
+
+
+class SubscriberTickLog(Base):
+    __tablename__ = "subscriber_tick_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sub_id: Mapped[str] = mapped_column(String(66), nullable=False, index=True)
+    strategy_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    tick_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    step_reached: Mapped[str] = mapped_column(String(32), nullable=False)
+    halted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    halt_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    halt_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    charged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    action_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
