@@ -136,6 +136,28 @@ def test_universe_expanded_at_least_5x() -> None:
     )
 
 
+def test_explore_universe_matches_generate_picker_source() -> None:
+    # Invariant 6 (#759 follow-up to #842): the Explore page's backend listing
+    # (asset_market_service._explore_universe) iterates EXACTLY the deploy-eligible
+    # SSOT set — the same source the Generate picker is generated from
+    # (gen_ui_asset_universe renders ON_CHAIN_SYNTHS). Historically Explore
+    # iterated the ~74-name DEFAULT_SCAN_UNIVERSE scan subset and silently
+    # showed a stale fraction of the universe.
+    from archimedes.scripts.gen_ui_asset_universe import expected_tickers
+    from archimedes.services.asset_market_service import _explore_universe
+
+    explore = _explore_universe()
+    assert len(explore) == len(set(explore)), "duplicate symbol in Explore universe"
+    assert frozenset(explore) == ON_CHAIN, (
+        "Explore's universe drifted from the deploy-eligible SSOT set. "
+        f"only-in-explore={sorted(frozenset(explore) - ON_CHAIN)} "
+        f"only-in-ssot={sorted(ON_CHAIN - frozenset(explore))}"
+    )
+    # And the display-symbol projection is exactly the Generate picker's ticker set,
+    # so both pages provably show the same universe.
+    assert {GLOBAL_ASSETS[s][1] for s in explore} == expected_tickers()
+
+
 def _generated_solidity_path() -> Path:
     import archimedes  # backend/archimedes/__init__.py → parents: archimedes, backend, <repo>
 

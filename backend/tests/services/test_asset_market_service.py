@@ -3,6 +3,14 @@
 Per issue #168: the service reads on-chain PriceOracle via chain_client as
 the primary price source, falls back to yfinance for change/vol, and marks
 stale when oracle data is >5 min old.
+
+Universe alignment (#759 follow-up to PR #842): the listing iterates the
+deploy-eligible SSOT universe (``archimedes.universe.ON_CHAIN_SYNTHS`` — the
+same set the Generate picker uses), NOT the legacy ``DEFAULT_SCAN_UNIVERSE``
+scan subset; card names come from the SSOT display name; and a cold /
+budget-exhausted fetch degrades to an honest partial result (all universe
+symbols listed, unfetched ones as ``price_source="none"``) instead of a
+timeout. All tests are hermetic — yfinance / chain boundaries are mocked.
 """
 
 from __future__ import annotations
@@ -13,8 +21,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from archimedes.services.asset_market_service import (
     AssetMarketService,
+    _explore_universe,
     _pct_change,
     _realized_vol_annual,
+    _ssot_display_name,
 )
 
 # ── Unit tests for stat math ──────────────────────────────────────────────
@@ -165,7 +175,7 @@ class TestListAssets:
         with (
             patch("archimedes.chain.client.chain_client", mock_chain_client),
             patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
-            patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sSPY"]),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sSPY"]),
             patch(
                 "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
                 {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")},
@@ -203,7 +213,7 @@ class TestListAssets:
         with (
             patch.object(service, "_read_oracle_prices", return_value={}),
             patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
-            patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", ["sSPY"]),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sSPY"]),
             patch(
                 "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
                 {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")},
@@ -225,10 +235,193 @@ class TestListAssets:
         with (
             patch.object(service, "_read_oracle_prices", return_value={}),
             patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value={}),
-            patch("archimedes.services.strategy_signal_evaluator.DEFAULT_SCAN_UNIVERSE", []),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=[]),
             patch("archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS", {}),
         ):
             resp1 = await service.list_assets()
             resp2 = await service.list_assets()
 
         assert resp1 is resp2  # Same object (cached)
+
+
+# ── Universe alignment (#759 follow-up to #842) ────────────────────────────
+
+
+class TestExploreUniverseAlignment:
+    def test_explore_universe_is_the_deploy_eligible_ssot(self):
+        """_explore_universe() must be ON_CHAIN_SYNTHS (the Generate-picker set),
+        not DEFAULT_SCAN_UNIVERSE and not the single-stock-carrying GLOBAL_ASSETS."""
+        from archimedes.services.strategy_signal_evaluator import DEFAULT_SCAN_UNIVERSE, GLOBAL_ASSETS
+        from archimedes.universe import ON_CHAIN_SYNTHS
+
+        universe = _explore_universe()
+        assert universe == list(ON_CHAIN_SYNTHS)
+        assert set(universe) != set(DEFAULT_SCAN_UNIVERSE)  # not the legacy ~74-name scan subset
+        assert len(universe) > len(DEFAULT_SCAN_UNIVERSE)
+        assert set(universe) <= set(GLOBAL_ASSETS)  # every card resolvable to a yfinance ticker
+
+    @pytest.mark.asyncio
+    async def test_list_assets_iterates_ssot_universe_not_scan_universe(self):
+        """Every SSOT-universe symbol gets a card — including ones with no data —
+        and the counts disclose data coverage honestly."""
+        service = AssetMarketService()
+        mock_histories = {
+            "sAAA": {"close": [10.0, 11.0], "dates": ["2026-06-29", "2026-06-30"]},
+        }
+
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sAAA", "sBBB"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {
+                    "sAAA": ("AAA", "AAA", "us_equity_etf", "NYSE"),
+                    "sBBB": ("BBB", "BBB", "us_equity_etf", "NYSE"),
+                },
+            ),
+        ):
+            resp = await service.list_assets()
+
+        symbols = {a.symbol for a in resp.assets}
+        assert symbols == {"sAAA", "sBBB"}  # full universe listed, not just fetched symbols
+        assert resp.universe_size == 2
+        assert resp.priced_count == 1
+        bbb = next(a for a in resp.assets if a.symbol == "sBBB")
+        assert bbb.current_price is None
+        assert bbb.price_source == "none"
+        assert bbb.is_stale is True  # honestly stale: no source at all
+
+    @pytest.mark.asyncio
+    async def test_card_name_uses_ssot_display_name_with_ticker_fallback(self):
+        """Card names come from the SSOT (synthetic_universe.json), not a
+        blanket f"Synthetic {ticker}"; symbols absent from the SSOT fall back
+        to the ticker."""
+        service = AssetMarketService()
+
+        fake_spec = MagicMock()
+        fake_spec.name = "Synthetic TLT (20+yr)"
+
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value={}),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sTLT", "sZZZ"]),
+            patch("archimedes.universe.SYNTHETIC_UNIVERSE", {"sTLT": fake_spec}),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {
+                    "sTLT": ("TLT", "TLT", "us_bond_long", "NASDAQ"),
+                    "sZZZ": ("ZZZ", "ZZZ", "us_equity_etf", "NYSE"),
+                },
+            ),
+        ):
+            resp = await service.list_assets()
+
+        by_symbol = {a.symbol: a for a in resp.assets}
+        assert by_symbol["sTLT"].name == "Synthetic TLT (20+yr)"  # SSOT display name
+        assert by_symbol["sZZZ"].name == "ZZZ"  # ticker fallback (not in SSOT)
+
+    def test_ssot_display_name_real_ssot(self):
+        """Against the real SSOT: sTLT carries a richer name than 'Synthetic TLT'."""
+        assert _ssot_display_name("sTLT", "TLT") == "Synthetic TLT (20+yr)"
+        assert _ssot_display_name("sNOT_A_SYNTH", "FALLBACK") == "FALLBACK"
+
+
+# ── Partial-result degradation (budgeted history fetch) ─────────────────────
+
+
+class TestBudgetedHistoryFetch:
+    @pytest.mark.asyncio
+    async def test_budget_exhausted_serves_partial_not_timeout(self):
+        """With a zero fetch budget, list_assets still answers: every universe
+        symbol is listed, prices are honestly null, priced_count == 0."""
+        service = AssetMarketService()
+        fetch_mock = MagicMock()
+
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", fetch_mock),
+            patch("archimedes.services.asset_market_service._HISTORY_FETCH_BUDGET_SECONDS", 0.0),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sAAA", "sBBB"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {
+                    "sAAA": ("AAA", "AAA", "us_equity_etf", "NYSE"),
+                    "sBBB": ("BBB", "BBB", "us_equity_etf", "NYSE"),
+                },
+            ),
+        ):
+            resp = await service.list_assets()
+
+        fetch_mock.assert_not_called()  # budget gone before the first chunk
+        assert {a.symbol for a in resp.assets} == {"sAAA", "sBBB"}
+        assert resp.universe_size == 2
+        assert resp.priced_count == 0
+        assert all(a.price_source == "none" for a in resp.assets)
+
+    @pytest.mark.asyncio
+    async def test_chunked_fetch_merges_all_chunks(self):
+        """Chunk size 1 over 3 symbols → 3 evaluator calls, results merged."""
+        service = AssetMarketService()
+        per_chunk = {
+            "sAAA": {"sAAA": {"close": [1.0, 2.0], "dates": ["d1", "d2"]}},
+            "sBBB": {"sBBB": {"close": [3.0, 4.0], "dates": ["d1", "d2"]}},
+            "sCCC": {"sCCC": {"close": [5.0, 6.0], "dates": ["d1", "d2"]}},
+        }
+        calls: list[list[str]] = []
+
+        def fake_fetch(symbols, period):
+            calls.append(list(symbols))
+            return per_chunk[symbols[0]]
+
+        with (
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", side_effect=fake_fetch),
+            patch("archimedes.services.asset_market_service._HISTORY_CHUNK_SIZE", 1),
+        ):
+            histories = await service._fetch_histories_budgeted(["sAAA", "sBBB", "sCCC"])
+
+        assert calls == [["sAAA"], ["sBBB"], ["sCCC"]]
+        assert set(histories) == {"sAAA", "sBBB", "sCCC"}
+
+    @pytest.mark.asyncio
+    async def test_slow_chunk_times_out_and_serves_what_it_has(self):
+        """A chunk that overruns the remaining budget is cut off; earlier
+        chunks' data is still served (honest partial, not an exception)."""
+        service = AssetMarketService()
+        calls: list[list[str]] = []
+
+        def fake_fetch(symbols, period):
+            calls.append(list(symbols))
+            if symbols[0] == "sBBB":
+                time.sleep(0.5)  # overruns the 0.2s budget
+            return {symbols[0]: {"close": [1.0], "dates": ["d1"]}}
+
+        with (
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", side_effect=fake_fetch),
+            patch("archimedes.services.asset_market_service._HISTORY_CHUNK_SIZE", 1),
+            patch("archimedes.services.asset_market_service._HISTORY_FETCH_BUDGET_SECONDS", 0.2),
+        ):
+            histories = await service._fetch_histories_budgeted(["sAAA", "sBBB", "sCCC"])
+
+        assert "sAAA" in histories  # fetched before the budget ran out
+        assert "sCCC" not in histories  # never attempted after the timeout
+        assert [c[0] for c in calls] == ["sAAA", "sBBB"]
+
+    @pytest.mark.asyncio
+    async def test_failed_chunk_does_not_kill_later_chunks(self):
+        """A chunk raising (upstream hiccup) is logged and skipped; later
+        chunks still fetch."""
+        service = AssetMarketService()
+
+        def fake_fetch(symbols, period):
+            if symbols[0] == "sAAA":
+                raise RuntimeError("yfinance hiccup")
+            return {symbols[0]: {"close": [1.0], "dates": ["d1"]}}
+
+        with (
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", side_effect=fake_fetch),
+            patch("archimedes.services.asset_market_service._HISTORY_CHUNK_SIZE", 1),
+        ):
+            histories = await service._fetch_histories_budgeted(["sAAA", "sBBB"])
+
+        assert set(histories) == {"sBBB"}
