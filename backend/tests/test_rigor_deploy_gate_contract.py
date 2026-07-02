@@ -154,7 +154,7 @@ async def test_live_pipeline_result_matches_candidates_contract(monkeypatch):
     future refactor can't drift one without the test catching it.
     """
 
-    async def _fake_persist(c, _brief):  # signature mirrors _persist_candidate(c, brief)
+    async def _fake_persist(c, _brief, **_kw):  # mirrors _persist_candidate(c, brief, *, owner_wallet=None)
         return (f"strat_{c.candidate_id}", f"0x{c.candidate_id}")
 
     monkeypatch.setattr(

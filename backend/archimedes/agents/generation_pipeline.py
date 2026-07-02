@@ -1015,6 +1015,7 @@ async def run_generation(
     mode: str | None = None,
     model: str | None = None,
     dual_regime: bool = True,
+    owner_wallet: str | None = None,
 ) -> None:
     """Run the full streaming generation pipeline for one job.
 
@@ -1027,6 +1028,12 @@ async def run_generation(
     by the route). When set, the live path constructs a per-job LLM backend on
     that model; when ``None`` it uses the shared singleton on the env default —
     behavior UNCHANGED.
+
+    ``owner_wallet`` is the SIWE-derived wallet from the job payload (bound
+    server-side by ``gate_generation`` — never client-supplied). It is stamped
+    onto every persisted candidate so generated strategies are per-user and
+    private-until-published. ``None`` (anonymous / flag off) persists an
+    ownerless row, preserving today's behavior.
 
     Designed to be called as a fire-and-forget asyncio task from the route
     handler. Exceptions are caught + emitted as ``error`` events so the SSE
@@ -1307,7 +1314,7 @@ async def run_generation(
         # highlighted but both are navigable from the library.
         strategy_ids: dict[str, str] = {}  # candidate_id → strategy_id
         for c in candidates:
-            sid, thash = await _persist_candidate(c, brief)
+            sid, thash = await _persist_candidate(c, brief, owner_wallet=owner_wallet)
             strategy_ids[c.candidate_id] = sid
             await emit.emit(
                 "trace_hashed",
@@ -1447,11 +1454,16 @@ async def run_generation(
         await store.update_status(job_id, "error", error=str(exc))
 
 
-async def _persist_candidate(c: _CandidateResult, brief: GenerateBrief) -> tuple[str, str]:
+async def _persist_candidate(
+    c: _CandidateResult, brief: GenerateBrief, *, owner_wallet: str | None = None
+) -> tuple[str, str]:
     """Upsert the candidate as a Strategy + return (strategy_id, trace_hash).
 
     Trace hash is the keccak of the canonical (brief, candidate) tuple — gives
     every generation a deterministic identifier mirrored on-chain in v1.5.
+
+    ``owner_wallet`` (SIWE-derived, threaded from run_generation) is stamped on
+    both the strategy_store row and its strategy_passports mirror.
     """
     from web3 import Web3
 
@@ -1488,6 +1500,7 @@ async def _persist_candidate(c: _CandidateResult, brief: GenerateBrief) -> tuple
                 rigor_verdict=c.rigor_verdict,
                 provenance_hash=trace_hash,
                 is_example=False,
+                owner_wallet=owner_wallet,
             )
             session.commit()
 
@@ -1516,7 +1529,13 @@ async def _persist_candidate(c: _CandidateResult, brief: GenerateBrief) -> tuple
                     out_of_sample_sharpe=c.rigor_verdict.get("oos_sharpe") if c.rigor_verdict else None,
                 )
                 with get_session() as sess2:
-                    ingest_passport(sess2, passport, generation_method=c.generation_method, force_update=True)
+                    ingest_passport(
+                        sess2,
+                        passport,
+                        generation_method=c.generation_method,
+                        force_update=True,
+                        owner_wallet=owner_wallet,
+                    )
                     sess2.commit()
             except Exception as exc:
                 logger.warning("unified passport persist failed (non-blocking): %s", exc)

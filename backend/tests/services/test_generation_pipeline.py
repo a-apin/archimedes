@@ -336,7 +336,7 @@ async def test_dual_regime_persists_both_with_correct_regime_tags():
     persist_calls = []
     call_count = [0]
 
-    async def mock_persist(c, b):
+    async def mock_persist(c, b, **_kw):  # accepts owner_wallet kwarg
         call_count[0] += 1
         sid = f"strat_{c.regime}_{call_count[0]}"
         persist_calls.append({"regime": c.regime, "strategy_id": sid})

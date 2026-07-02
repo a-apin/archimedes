@@ -101,6 +101,55 @@ def init_db() -> None:
         except Exception as exc:
             logger.warning("init_db: papers schema patch failed (non-fatal): %s", exc)
 
+    _ensure_ownership_columns()
+
+
+def _ensure_ownership_columns() -> None:
+    """Idempotent ADD COLUMN for per-user strategy ownership.
+
+    Unlike the Postgres-only ``ADD COLUMN IF NOT EXISTS`` patches above, these
+    columns must also land on a pre-existing SQLite file (local dev DBs that
+    predate the model change — create_all only covers FRESH databases), and
+    SQLite doesn't support ``IF NOT EXISTS`` in ``ADD COLUMN``. So this helper
+    uses dialect-safe introspection (``sqlalchemy.inspect``) and only ALTERs
+    when a column is actually missing — works identically on SQLite and
+    Postgres. Non-fatal on failure, matching the patch block above.
+    """
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text
+
+    wanted: dict[str, list[tuple[str, str]]] = {
+        "strategy_store": [
+            ("owner_wallet", "VARCHAR(42)"),
+            # TRUE/FALSE literals are valid DDL defaults on both dialects
+            # (SQLite ≥3.23 parses them as 1/0).
+            ("is_published", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ],
+        "strategy_passports": [
+            ("owner_wallet", "VARCHAR(42)"),
+        ],
+    }
+    try:
+        inspector = sa_inspect(engine)
+        with engine.begin() as conn:
+            for table, columns in wanted.items():
+                if not inspector.has_table(table):
+                    continue
+                existing = {col["name"] for col in inspector.get_columns(table)}
+                for name, ddl in columns:
+                    if name not in existing:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                        logger.info("init_db: added %s.%s", table, name)
+            # The model declares index=True on strategy_store.owner_wallet;
+            # create_all only builds it on fresh DBs, so mirror it here for
+            # ALTERed ones. IF NOT EXISTS is valid on both SQLite and Postgres.
+            if inspector.has_table("strategy_store"):
+                conn.execute(
+                    text("CREATE INDEX IF NOT EXISTS ix_strategy_store_owner_wallet ON strategy_store (owner_wallet)")
+                )
+    except Exception as exc:
+        logger.warning("init_db: ownership column patch failed (non-fatal): %s", exc)
+
 
 def get_session() -> Session:
     """Get a new DB session. Use as context manager."""

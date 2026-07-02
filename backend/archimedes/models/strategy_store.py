@@ -53,6 +53,15 @@ class StrategyRecord(Base):
     rigor_verdict = Column(Text, nullable=True)  # JSON: DSR/PBO/walk-forward results
     is_example = Column(Boolean, nullable=False, default=False)  # hand-curated static strategies
 
+    # Ownership + visibility (per-user strategies, private-until-published).
+    # owner_wallet is ALWAYS the SIWE-derived wallet bound server-side (mirrors
+    # VaultMetadata.creator_address) — never a client-supplied value. Stored
+    # lowercase. NULL = legacy/anonymous row. is_published is a dormant flag
+    # (nothing flips it yet — the publish flow is a future marketplace hop);
+    # unpublished non-example rows are visible only to their owner.
+    owner_wallet = Column(String(42), nullable=True, index=True)
+    is_published = Column(Boolean, nullable=False, default=False)
+
     # On-chain registration (populated when strategy passes rigor gate)
     on_chain_registration_tx = Column(String(66), nullable=True)  # 0x-prefixed tx hash
     on_chain_registration_block = Column(String(32), nullable=True)  # block number as string
@@ -92,6 +101,8 @@ class StrategyRecord(Base):
             "status": self.status,
             "rigor_verdict": json.loads(self.rigor_verdict) if self.rigor_verdict else None,
             "is_example": self.is_example,
+            "owner_wallet": self.owner_wallet,
+            "is_published": bool(self.is_published),
             "parent_id": self.parent_id,
             "on_chain_registration_tx": self.on_chain_registration_tx,
             "on_chain_registration_block": self.on_chain_registration_block,
@@ -137,8 +148,15 @@ def upsert_strategy(
     parent_id: str | None = None,
     provenance_hash: str | None = None,
     is_example: bool = False,
+    owner_wallet: str | None = None,
 ) -> StrategyRecord:
-    """Idempotent upsert: same content → same row, no duplicates."""
+    """Idempotent upsert: same content → same row, no duplicates.
+
+    ``owner_wallet`` must be the SIWE-derived wallet (never client-supplied);
+    it is normalized to lowercase. On a content-hash match, ownership is only
+    backfilled onto ownerless rows — an existing owner is never overwritten.
+    """
+    owner_wallet = owner_wallet.lower() if owner_wallet else None
     content_hash = _compute_content_hash(
         generation_method,
         strategy_name,
@@ -149,6 +167,11 @@ def upsert_strategy(
 
     existing = session.query(StrategyRecord).filter_by(content_hash=content_hash).first()
     if existing:
+        # Backfill ownership on a legacy/anonymous row; never reassign an owner.
+        if owner_wallet and not existing.owner_wallet:
+            existing.owner_wallet = owner_wallet
+            existing.updated_at = datetime.now(UTC)
+            session.flush()
         # Update status/verdict if provided, but don't duplicate
         if rigor_verdict is not None:
             existing.rigor_verdict = json.dumps(rigor_verdict)
@@ -179,6 +202,7 @@ def upsert_strategy(
         parent_id=parent_id,
         provenance_hash=provenance_hash,
         is_example=is_example,
+        owner_wallet=owner_wallet,
     )
     if rigor_verdict:
         # Same transition rule as the upsert-existing branch above

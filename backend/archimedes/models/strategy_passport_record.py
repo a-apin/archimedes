@@ -70,6 +70,12 @@ class StrategyPassportRecord(Base):
     curator_wallet = Column(String(42), nullable=True)
     curator_note = Column(Text, nullable=True)
 
+    # ── Ownership (mirror of strategy_store.owner_wallet) ────
+    # SIWE-derived generating wallet, bound server-side; lowercase; NULL for
+    # curated/legacy rows. Visibility gating reads strategy_store (source of
+    # truth); this mirror keeps the passport row self-describing.
+    owner_wallet = Column(String(42), nullable=True)
+
     # ── Code binding ─────────────────────────────────────────
     strategy_code_path = Column(String(512), nullable=True)
     strategy_code_hash = Column(String(64), nullable=True)
@@ -189,6 +195,7 @@ class StrategyPassportRecord(Base):
             "asset_universe": json.loads(self.asset_universe) if self.asset_universe else [],
             "status": self.status,
             "regime_tag": self.regime_tag,
+            "owner_wallet": self.owner_wallet,
             "passes_rigor_gate": self.passes_rigor_gate,
             "sharpe_ratio": self.sharpe_ratio,
             "sortino_ratio": self.sortino_ratio,
