@@ -114,22 +114,36 @@ def require_verified_wallet(request: Request) -> str:
 def _generation_auth_required() -> bool:
     """Whether expensive LLM-generation endpoints require a SIWE session.
 
-    Off by default so enabling is an explicit, post-verification flip — gating
-    paid endpoints can never *silently* break the live Generate flow on deploy.
-    Set REQUIRE_SIWE_FOR_GENERATION=true once the UI SIWE round-trip is confirmed
-    working end-to-end (a session cookie is established before Generate is called).
+    Secure by default (flipped 2026-07-01, agent-auth slice 2): with
+    REQUIRE_SIWE_FOR_GENERATION unset, paid LLM endpoints require a verified
+    SIWE session — closing the unauthenticated budget-drain vector (audit
+    2026-06-13 B12). Opt out explicitly with REQUIRE_SIWE_FOR_GENERATION=false
+    (local dev / demo — documented in .env.example).
+
+    TESTING carve-out: the hermetic suite runs with TESTING=1 (conftest) and
+    exercises the open path throughout; when the flag is UNSET under TESTING the
+    gate stays off, mirroring how the slowapi limiter and the wallet-less quota
+    already treat TESTING. An explicit true/false always wins over the carve-out,
+    so gating-on tests simply set REQUIRE_SIWE_FOR_GENERATION=true.
     """
-    return os.getenv("REQUIRE_SIWE_FOR_GENERATION", "").strip().lower() in ("1", "true", "yes", "on")
+    raw = os.getenv("REQUIRE_SIWE_FOR_GENERATION", "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    # Unset/unrecognized → secure by default, except under the hermetic test env.
+    return not os.getenv("TESTING")
 
 
 def gate_generation(request: Request) -> str | None:
     """FastAPI dependency for paid LLM-generation endpoints.
 
-    When REQUIRE_SIWE_FOR_GENERATION is enabled, behaves like
-    ``require_verified_wallet`` (401 without a session). When disabled (default),
-    returns the best-effort wallet for attribution without enforcing — preserving
-    today's open behavior. This mitigates the unauthenticated-LLM budget-drain
-    vector (audit 2026-06-13) without a flag-day risk to the live demo.
+    When REQUIRE_SIWE_FOR_GENERATION is enabled (the default — see
+    ``_generation_auth_required``), behaves like ``require_verified_wallet``
+    (401 without a session). When explicitly disabled, returns the best-effort
+    wallet for attribution without enforcing — the old open behavior, kept as
+    a local-dev/demo opt-out. This closes the unauthenticated-LLM budget-drain
+    vector (audit 2026-06-13).
     """
     if _generation_auth_required():
         return require_verified_wallet(request)

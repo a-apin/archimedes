@@ -1,9 +1,10 @@
 """Wallet-less generation quota — a strict per-IP daily cap (anti-abuse).
 
-The Generate path is intentionally **open** (`REQUIRE_SIWE_FOR_GENERATION` off) so
-visitors — humans *and* agents — can try the product before connecting a wallet
-(value-before-wallet, #787). But an open LLM-spending endpoint is a flood/abuse
-risk: an agent in a loop could hammer `/api/generate/start` and burn LLM budget.
+When the Generate path is run **open** (`REQUIRE_SIWE_FOR_GENERATION=false` — an
+explicit opt-out since the 2026-07 secure-by-default flip), visitors — humans
+*and* agents — can try the product before connecting a wallet (value-before-wallet,
+#787). But an open LLM-spending endpoint is a flood/abuse risk: an agent in a loop
+could hammer `/api/generate/start` and burn LLM budget.
 
 This module caps **wallet-less** generations to a small daily allowance per client
 IP. Authenticated (SIWE-wallet) callers bypass the cap entirely. When the cap is
