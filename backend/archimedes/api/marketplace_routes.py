@@ -22,6 +22,7 @@ from archimedes.api.limiter import limiter
 from archimedes.db import get_session
 from archimedes.marketplace.encoding import derive_pool_id, to_bytes32, to_hexstr
 from archimedes.marketplace.service import MarketService, Subscriber
+from eth_account import Account
 from archimedes.models.marketplace import MarketplaceAgent
 from archimedes.models.strategy_generators import wallet_can_publish
 from archimedes.models.strategy_store import StrategyRecord
@@ -226,8 +227,8 @@ async def subscribe_strategy(
     sub_id = body.get("sub_id", "").strip()
     ephemeral_wallet = body.get("ephemeral_wallet", "").strip()
 
-    if not strategy_id or not pool_id or not sub_id or not ephemeral_wallet:
-        raise HTTPException(status_code=400, detail="strategy_id, pool_id, sub_id, and ephemeral_wallet are required")
+    if not strategy_id or not pool_id or not sub_id:
+        raise HTTPException(status_code=400, detail="strategy_id, pool_id, and sub_id are required")
 
     # 0a. Validate sub_id format — must be 0x-prefixed 66-char hex (D-BYTES32)
     if not sub_id.startswith("0x") or len(sub_id) != 66:
@@ -314,6 +315,13 @@ async def subscribe_strategy(
     # Derivation is cheap and safe in dry-run mode too.
     pool_id = derive_pool_id(strategy_id, pub_row.creator_wallet)
 
+    # 3b. Backend-generated ephemeral keypair for x402 signing (D1).
+    # The monolith signs micropayments in-process, so the backend owns
+    # this key. Client-supplied ephemeral_wallet is ignored for storage.
+    eph_account = Account.create()
+    ephemeral_wallet = eph_account.address
+    await market.state.save_ephemeral_key(sub_id, eph_account.key.hex())
+
     # 4. Create vault for subscriber if needed
     vault_address = ""
     try:
@@ -389,6 +397,12 @@ async def unsubscribe_strategy(
         sub_id = sub_row.sub_id
 
     await market.remove_subscriber(strategy_id, sub_id)
+
+    try:
+        await market.state.delete_ephemeral_key(sub_id)
+    except Exception:
+        logger.warning("failed to delete ephemeral key for %s", sub_id)
+
     return {"status": "unsubscribed", "strategy_id": strategy_id}
 
 

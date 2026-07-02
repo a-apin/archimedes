@@ -19,6 +19,7 @@ _EVENTS_PREFIX = "archimedes:market:events:"  # + strategy_id  (capped list)
 _SUBS_PREFIX = "archimedes:market:subs:"  # + strategy_id  (JSON dict cache)
 _LEADER_PREFIX = "archimedes:market:leader:"  # + strategy_id
 _PAYMENT_PREFIX = "archimedes:market:payment:"  # + sub_id  (x402 payment status)
+_EPHEMERAL_KEY_PREFIX = "archimedes:market:ephkey:"  # + sub_id (hex private key)
 
 LEADER_LOCK_TTL_SECONDS = 60
 PAYMENT_TTL_SECONDS = 3600  # payments considered valid for 1 hour
@@ -140,3 +141,19 @@ class MarketState:
         """Remove a payment record (e.g. on unsubscribe)."""
         r = await self.store._get_redis()
         await r.delete(f"{_PAYMENT_PREFIX}{sub_id}")
+
+    # ---- subscriber ephemeral signing keys (D1) ----------------------------
+
+    async def save_ephemeral_key(self, sub_id: str, private_key: str) -> None:
+        """Persist a subscriber's ephemeral signing key. No TTL — the key
+        must outlive any individual payment record."""
+        r = await self.store._get_redis()
+        await r.set(f"{_EPHEMERAL_KEY_PREFIX}{sub_id}", private_key)
+
+    async def get_ephemeral_key(self, sub_id: str) -> str | None:
+        r = await self.store._get_redis()
+        return await r.get(f"{_EPHEMERAL_KEY_PREFIX}{sub_id}")
+
+    async def delete_ephemeral_key(self, sub_id: str) -> None:
+        r = await self.store._get_redis()
+        await r.delete(f"{_EPHEMERAL_KEY_PREFIX}{sub_id}")

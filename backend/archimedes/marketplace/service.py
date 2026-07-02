@@ -18,6 +18,7 @@ from archimedes.chain.circle_signer import circle_signer
 from archimedes.chain.client import chain_client
 from archimedes.chain.executor import chain_executor
 from archimedes.db import get_session
+from archimedes.marketplace import payments
 from archimedes.marketplace.encoding import to_bytes32
 from archimedes.marketplace.state import MarketState
 from archimedes.models.marketplace import MarketplaceAgent, SubscriberLiability
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 _DRIFT_THRESHOLD = 0.15
 _USDC_FLOOR = float(os.getenv("AGENT_USDC_FLOOR", "0.20"))
+FLAT_FEE_PER_ACTION = int(os.getenv("FLAT_FEE_PER_ACTION", "100"))  # raw 6-dec USDC
 
 
 def compute_trades(
@@ -303,7 +305,9 @@ class MarketService:
 
             async def _process_subscriber(sub: Subscriber) -> None:
                 async with _sub_sem:
-                    paid = await self._verify_payment(sub.sub_id)
+                    paid = await self._verify_payment(
+                        sub, strategy_id, tick_id, action_count,
+                    )
                     if not paid:
                         sub.active = False
                         self._persist_halt_state(strategy_id, sub.sub_id)
@@ -407,16 +411,40 @@ class MarketService:
             usdc_floor=_USDC_FLOOR,
         )
 
-    async def _verify_payment(self, sub_id: str) -> bool:
-        """Verify x402 payment for a subscriber.
+    async def _verify_payment(
+        self,
+        sub: Subscriber,
+        strategy_id: str,
+        tick_id: str,
+        action_count: int,
+    ) -> bool:
+        """Charge one subscriber for this tick via Circle's Gateway (x402).
 
-        Checks Redis for an active payment record.  In dry-run mode all
-        payments are considered valid so the engine is exercisable without
-        a real gateway.
+        Builds payment requirements, signs them in-process with the
+        subscriber's ephemeral key, and verify+settles through Circle's
+        facilitator (circlekit). Circle batches and settles on-chain on its
+        own cadence — no settlement logic lives here.
+
+        In dry-run mode all payments are considered valid so the engine is
+        exercisable without a real gateway.
         """
         if self.dry_run:
             return True
-        return await self.state.has_active_payment(sub_id)
+        eph_key = await self.state.get_ephemeral_key(sub.sub_id)
+        if not eph_key:
+            logger.warning(
+                "[%s] no ephemeral key stored for sub %s — treating as unpaid",
+                tick_id, sub.sub_id,
+            )
+            return False
+        return await payments.charge(
+            sub_id=sub.sub_id,
+            ephemeral_key=eph_key,
+            strategy_id=strategy_id,
+            tick_id=tick_id,
+            action_count=action_count,
+            flat_fee_raw=FLAT_FEE_PER_ACTION,
+        )
 
     async def _record_liability(
         self, sub: Subscriber, strategy_id: str, tick_id: str, action_count: int

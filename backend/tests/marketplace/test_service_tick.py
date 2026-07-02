@@ -69,8 +69,12 @@ async def test_tick_produces_trades_and_verifies_payment(market: MarketService):
         with patch.object(market, "_verify_payment", AsyncMock(return_value=True)) as mock_verify:
             await market.tick("strat_a")
 
-            # _verify_payment was called with the right sub_id
-            mock_verify.assert_awaited_once_with("0x" + "bb" * 32)
+            # _verify_payment was called with the right subscriber and args
+            mock_verify.assert_awaited_once()
+            args, _ = mock_verify.await_args
+            assert args[0].sub_id == "0x" + "bb" * 32
+            assert args[1] == "strat_a"
+            assert args[3] == len(_dummy_trades())  # action_count
 
             # execute_trades was called for publisher vault
             market.executor.execute_trades.assert_any_call("0xpublisher_vault", _dummy_trades())

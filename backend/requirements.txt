@@ -51,6 +51,9 @@ urllib3>=2.7.0
 # Backtesting
 backtrader>=1.9.78.123
 
+# x402 micropayments via Circle Gateway (D1)
+circle-titanoboa-sdk>=0.1.0
+
 # LLM
 anthropic>=0.112.0
 
