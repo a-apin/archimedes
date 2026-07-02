@@ -129,6 +129,19 @@ def resolve_universe(asset_universe: list[str]) -> dict[str, str]:
             continue
         logger.warning("fusion real-data: %r is outside the universe SSOT — skipping", sym)
 
+    # Dedupe by yfinance ticker: an LLM can emit the same asset in two forms
+    # ("AAVE" + "AAVE-USD"), which would double-fetch and — worse — double the
+    # sleeve in the portfolio backtest, silently reweighting it. First form wins.
+    seen_yf: set[str] = set()
+    deduped: dict[str, str] = {}
+    for sym, yf_ticker in resolved.items():
+        if yf_ticker in seen_yf:
+            logger.warning("fusion real-data: %r duplicates %s — dropping the duplicate form", sym, yf_ticker)
+            continue
+        seen_yf.add(yf_ticker)
+        deduped[sym] = yf_ticker
+    resolved = deduped
+
     if len(resolved) > _MAX_ASSETS:
         dropped = list(resolved)[_MAX_ASSETS:]
         logger.warning(
@@ -184,13 +197,24 @@ def fetch_real_panel(
             try:
                 fetched[yf_ticker] = _fetch_one(yf_ticker, start, end)
             except Exception as exc:
-                # One dead ticker shrinks the panel rather than killing it; if
-                # everything dies we return None below.
-                logger.warning("fusion real-data: fetch failed for %s (%s): %s", sym, yf_ticker, exc)
-        if not fetched:
-            return None
+                # Fail CLOSED on ANY mapped-ticker failure: a shrunken panel is a
+                # DIFFERENT universe than the spec requested, and grading it as if
+                # complete would attach an admissible verdict to a strategy that
+                # was never actually backtested as specified.
+                logger.warning(
+                    "fusion real-data: fetch failed for %s (%s): %s — failing closed to synthetic",
+                    sym,
+                    yf_ticker,
+                    exc,
+                )
+                return None
+        now = time.monotonic()
         with _cache_lock:
-            _panel_cache[cache_key] = (time.monotonic(), fetched)
+            # Opportunistic pruning: the key includes `end` (changes daily), so
+            # without this the cache grows without bound in a long-lived service.
+            for k in [k for k, (ts, _) in _panel_cache.items() if now - ts >= _CACHE_TTL_S]:
+                del _panel_cache[k]
+            _panel_cache[cache_key] = (now, fetched)
 
     frames = {sym: fetched[yf] for sym, yf in resolved.items() if yf in fetched}
     panel = _panel_from_frames(frames, resolved)

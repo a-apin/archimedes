@@ -65,7 +65,10 @@ def test_resolve_universe_maps_synth_display_and_yf_forms():
     resolved = fmd.resolve_universe(["sSPY", "AAVE", "AAVE-USD", "TOTALLY_FAKE_XYZ"])
     assert resolved.get("sSPY") == "SPY"
     assert resolved.get("AAVE") == "AAVE-USD"
-    assert resolved.get("AAVE-USD") == "AAVE-USD"
+    # "AAVE-USD" duplicates the same yfinance ticker as "AAVE" — deduped (first
+    # form wins), else the portfolio would carry the sleeve twice.
+    assert "AAVE-USD" not in resolved
+    assert list(resolved.values()).count("AAVE-USD") == 1
     assert "TOTALLY_FAKE_XYZ" not in resolved  # outside the SSOT → skipped
 
 
@@ -111,6 +114,13 @@ def test_fetch_real_panel_min_bars_fails_closed_even_from_cache(monkeypatch):
 def test_fetch_real_panel_unmappable_universe_returns_none(monkeypatch):
     _patch_fetch(monkeypatch, {})
     assert fmd.fetch_real_panel(["NOT_IN_SSOT"]) is None
+
+
+def test_fetch_real_panel_fails_closed_on_partial_fetch(monkeypatch):
+    # SPY resolves+fetches fine but AAVE-USD errors: a shrunken panel would be a
+    # DIFFERENT universe than the spec requested — must fail closed, not shrink.
+    _patch_fetch(monkeypatch, {"SPY": _frame(1)})
+    assert fmd.fetch_real_panel(["SPY", "AAVE"]) is None
 
 
 # ── evaluate_fusion_spec on real data ─────────────────────────────────
