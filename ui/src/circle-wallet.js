@@ -101,6 +101,20 @@ export function sanitizeWalletName(name) {
   return cleaned.length >= 5 ? cleaned : null
 }
 
+// UI-facing display name for a newly registered wallet: the user's typed name,
+// trimmed and capped at 40 chars. Distinct from sanitizeWalletName above, which
+// maps the name into Circle's username charset for the OS passkey-picker label —
+// the display name keeps spaces/punctuation so the app UI shows what the user
+// actually typed. Returns undefined for empty/blank input so callers fall
+// through to the address-based label.
+const DISPLAY_NAME_MAX_CHARS = 40
+
+function toDisplayWalletName(name) {
+  if (typeof name !== 'string') return undefined
+  const trimmed = name.trim().slice(0, DISPLAY_NAME_MAX_CHARS)
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
 export function clearCircleSession() {
   try {
     localStorage.removeItem(CREDENTIAL_STORAGE_KEY)
@@ -153,7 +167,10 @@ function friendlyPasskeyError(err) {
 //     usernames. New credential → new MSCA address.
 //
 // Returns the smart account + address + credential (persisted to localStorage
-// for silent next-session rehydrate — see rehydrateSmartAccount). Throws a
+// for silent next-session rehydrate — see rehydrateSmartAccount). Register mode
+// also echoes the user-typed wallet name (trimmed, ≤40 chars) as `walletName`
+// so the caller can persist it for the app UI; login mode returns undefined —
+// discoverable login can't know which passkey the user picked. Throws a
 // friendly message on WebAuthn cancellation / domain mismatch / name collision.
 export async function connectCirclePasskey({ mode = 'login', walletName } = {}) {
   if (!circlePasskeyEnabled()) {
@@ -208,6 +225,10 @@ export async function connectCirclePasskey({ mode = 'login', walletName } = {}) 
     client,
     credential,
     mode,
+    // Register mode: the user-typed name (trimmed, ≤40 chars) for app-UI
+    // persistence; undefined when blank or in login mode (discoverable login
+    // doesn't reveal which passkey was picked).
+    walletName: mode === 'register' ? toDisplayWalletName(walletName) : undefined,
   }
 }
 

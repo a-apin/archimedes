@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
+import { getStoredWalletName } from '../config'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 const STORAGE_PREFIX = 'archimedes.welcomeProfileSeen.'
@@ -17,7 +18,11 @@ const INTEREST_OPTIONS = ['Equities', 'Bonds', 'Commodities', 'Crypto', 'FX']
 // All fields remain optional in both modes.
 export default function WelcomeProfileModal({ walletAddr, onDone, mode = 'welcome', existingProfile = null }) {
   const isEdit = mode === 'edit'
-  const [displayName, setDisplayName] = useState(existingProfile?.display_name || '')
+  // Prefill priority: backend profile display_name → wallet name saved at
+  // Circle passkey creation (localStorage) → empty. Still fully editable.
+  const [displayName, setDisplayName] = useState(
+    existingProfile?.display_name || (walletAddr && getStoredWalletName(walletAddr)) || ''
+  )
   const [email, setEmail] = useState(existingProfile?.email || '')
   const [selectedInterests, setSelectedInterests] = useState(existingProfile?.interests || [])
   const [attribution, setAttribution] = useState(existingProfile?.attribution || '')

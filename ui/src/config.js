@@ -167,6 +167,13 @@ export function discoverEip6963Wallets() {
 }
 
 const STORAGE_KEY = 'archimedes_wallet'
+// User-chosen wallet display names keyed by LOWERCASE address, e.g.
+// { "0xabc…": "Trading" }. Deliberately a SEPARATE localStorage key from
+// STORAGE_KEY: disconnecting clears the connection meta (clearWalletMeta), and
+// the names must survive that so signing back into the same passkey wallet
+// re-surfaces its name. Clients that never wrote this key just read null —
+// same for the legacy {providerId, address} meta shape, which is unchanged.
+const WALLET_NAMES_KEY = 'archimedes_wallet_names'
 
 // Synthetic provider id for the Circle Modular Wallets path. Distinct from
 // the EOA paths (metamask / coinbase / eip6963:*) so connectWallet() +
@@ -191,9 +198,36 @@ export function getSmartAccount() { return _smartAccount }
 // account — required for createBundlerClient. Null for EOA paths.
 export function getSmartAccountClient() { return _smartAccountClient }
 
-function saveWalletMeta(providerId, address) {
+function loadWalletNames() {
+  try {
+    const raw = localStorage.getItem(WALLET_NAMES_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch { return {} }
+}
+
+// Returns the user-chosen display name for a wallet address (saved when the
+// wallet was created via the Circle passkey register flow), or null when none
+// is stored. Middle rung of the UI display-name fallback chain:
+//   backend profile display_name → stored wallet name → truncated address.
+export function getStoredWalletName(address) {
+  if (!address) return null
+  const name = loadWalletNames()[address.toLowerCase()]
+  return typeof name === 'string' && name.length > 0 ? name : null
+}
+
+// Persist connection meta. `name` is optional — the Circle passkey register
+// flow passes the user-chosen wallet name; when present it is stored keyed by
+// lowercase address under WALLET_NAMES_KEY. The {providerId, address} shape
+// under STORAGE_KEY is unchanged so previously stored meta keeps parsing.
+function saveWalletMeta(providerId, address, name) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ providerId, address }))
+    if (address && typeof name === 'string' && name.trim().length > 0) {
+      const names = loadWalletNames()
+      names[address.toLowerCase()] = name.trim()
+      localStorage.setItem(WALLET_NAMES_KEY, JSON.stringify(names))
+    }
   } catch { /* storage unavailable */ }
 }
 
@@ -346,7 +380,10 @@ export async function connectCircleWallet({ mode = 'login', walletName } = {}) {
   _walletClient = null
   _smartAccount = result.smartAccount
   _smartAccountClient = result.client
-  saveWalletMeta(CIRCLE_PROVIDER_ID, _address)
+  // result.walletName is only set on register (trimmed, ≤40 chars) — login is
+  // discoverable so no name comes back; any previously stored name for this
+  // address is left intact for getStoredWalletName().
+  saveWalletMeta(CIRCLE_PROVIDER_ID, _address, result.walletName)
   return { address: _address, provider: CIRCLE_PROVIDER_ID }
 }
 
