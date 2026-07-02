@@ -24,6 +24,17 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+# Data-quality / fetch-verification harness (#772). verify_instrument is the
+# per-ticker precondition every name must clear before admission to the universe
+# below; verify_universe aggregates it. Re-exported so callers (and the universe
+# parity test) gate GLOBAL_ASSETS on clean, gap-free, survivorship-aware data —
+# poisoned history silently inflates Sharpe and corrupts the DSR/PBO gate.
+from archimedes.services.data_quality import (  # noqa: F401 - re-exported for the universe-admission precondition
+    UniverseReport,
+    verify_instrument,
+    verify_universe,
+)
+
 # REUSE the SAME spec validator the rigor gate runs, so an invalid spec fails
 # loudly here exactly as it would at admission time. The condition-tree evaluator
 # (``_eval_condition``) is the SAME one the backtest interpreter uses — imported
@@ -550,6 +561,28 @@ class StrategySignals:
 
 
 # ─── Price data helper ────────────────────────────────────────────
+
+
+def verify_universe_data_quality(
+    start: str,
+    end: str,
+    synths: list[str] | None = None,
+    *,
+    _downloader=None,
+) -> UniverseReport:
+    """Run the #772 data-quality harness over the universe's yfinance tickers.
+
+    Precondition for the #759 universe expansion: a synth should be admitted to
+    ``GLOBAL_ASSETS`` only if its underlying ticker passes ``verify_instrument``
+    over the backtest window (fetchable, full-window, gap-free, survivorship-
+    clean). Defaults to the current ``GLOBAL_ASSETS`` keys; pass ``synths`` to
+    vet a candidate set before adding it. ``_downloader`` is injected by tests to
+    mock the yfinance boundary. Returns the :class:`UniverseReport` — callers
+    admit ``report.admitted`` and must exclude (never pad) ``report.rejected``.
+    """
+    keys = synths if synths is not None else list(GLOBAL_ASSETS.keys())
+    tickers = [GLOBAL_ASSETS[s][0] for s in keys if s in GLOBAL_ASSETS]
+    return verify_universe(tickers, start, end, _downloader=_downloader)
 
 
 def _fetch_price_history(symbol: str, period: str = "2y", interval: str = "1d") -> pd.Series:
