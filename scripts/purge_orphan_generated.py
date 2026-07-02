@@ -48,6 +48,9 @@ def find_orphans(session):
         .filter(
             StrategyRecord.is_example.is_(False),
             StrategyRecord.owner_wallet.is_(None),
+            # Published rows are deliberately public — never purge them, even
+            # if ownerless (Copilot review, #850).
+            StrategyRecord.is_published.is_(False),
         )
         .order_by(StrategyRecord.created_at.asc())
         .all()
@@ -127,16 +130,13 @@ def purge_orphans(*, execute: bool = False) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=True,
-        help="Print what would be deleted without deleting (the default).",
-    )
+    # Dry-run IS the default; the only switch is the explicit opt-in to delete.
+    # (A separate --dry-run flag with default=True was decorative and misleading
+    # — it changed nothing. Copilot review, #850.)
     parser.add_argument(
         "--execute",
         action="store_true",
-        help="Actually delete the orphan rows (one transaction).",
+        help="Actually delete the orphan rows (one transaction). Without this flag the script only prints what would be deleted.",
     )
     args = parser.parse_args()
 

@@ -21,8 +21,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import archimedes.db as db
 from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
-from archimedes.db import get_session
 from httpx import ASGITransport, AsyncClient
 
 _W_OWNER = "0xAbC0000000000000000000000000000000000001"  # mixed case on purpose
@@ -39,7 +39,6 @@ def _use_tmp_db(tmp_path, monkeypatch):
     re-point them; rebind both to a per-test engine, then init_db() registers
     every table (incl. the passport side-effect imports).
     """
-    import archimedes.db as db
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
@@ -68,7 +67,7 @@ def _mk_strategy(
 ):
     from archimedes.models.strategy_store import StrategyRecord
 
-    with get_session() as session:
+    with db.get_session() as session:
         row = StrategyRecord(
             id=sid,
             content_hash=("0x" + sid).ljust(66, "0"),
@@ -90,7 +89,7 @@ def _mk_strategy(
 def _mk_passport(sid: str, *, with_paper_ref: bool = True):
     from archimedes.models.strategy_passport_record import PassportPaperRef, StrategyPassportRecord
 
-    with get_session() as session:
+    with db.get_session() as session:
         record = StrategyPassportRecord(
             id=sid,
             content_hash=("0y" + sid).ljust(66, "0"),
@@ -107,7 +106,7 @@ def _mk_passport(sid: str, *, with_paper_ref: bool = True):
 def _mk_backtest(sid: str):
     from archimedes.models.backtest_store import BacktestResultRecord
 
-    with get_session() as session:
+    with db.get_session() as session:
         session.add(BacktestResultRecord(strategy_id=sid, content_hash=f"bt_{sid}"))
         session.commit()
 
@@ -119,7 +118,6 @@ def test_migration_adds_ownership_columns_to_legacy_sqlite(tmp_path, monkeypatch
     """A pre-existing strategy_store WITHOUT the new columns gets them ALTERed
     in by init_db() (create_all skips existing tables, so introspection-driven
     ADD COLUMN is what covers live DBs). Second init_db() is a no-op."""
-    import archimedes.db as db
     from sqlalchemy import create_engine, inspect, text
     from sqlalchemy.orm import sessionmaker
 
@@ -161,7 +159,7 @@ def test_migration_adds_ownership_columns_to_legacy_sqlite(tmp_path, monkeypatch
 def test_upsert_strategy_persists_lowercase_owner_and_defaults_unpublished():
     from archimedes.models.strategy_store import StrategyRecord, upsert_strategy
 
-    with get_session() as session:
+    with db.get_session() as session:
         record = upsert_strategy(
             session,
             generation_method="fusion",
@@ -174,7 +172,7 @@ def test_upsert_strategy_persists_lowercase_owner_and_defaults_unpublished():
         session.commit()
         sid = record.id
 
-    with get_session() as session:
+    with db.get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=sid).first()
         assert row.owner_wallet == _W_OWNER.lower()
         assert row.is_published is False
@@ -193,16 +191,16 @@ def test_upsert_backfills_ownerless_row_but_never_reassigns():
         "source_papers": [],
         "asset_universe": ["SPY"],
     }
-    with get_session() as session:
+    with db.get_session() as session:
         sid = upsert_strategy(session, **kwargs).id  # ownerless legacy row
         session.commit()
-    with get_session() as session:
+    with db.get_session() as session:
         upsert_strategy(session, **kwargs, owner_wallet=_W_OWNER)  # backfills
         session.commit()
-    with get_session() as session:
+    with db.get_session() as session:
         upsert_strategy(session, **kwargs, owner_wallet=_W_OTHER)  # must NOT steal
         session.commit()
-    with get_session() as session:
+    with db.get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=sid).first()
         assert row.owner_wallet == _W_OWNER.lower()
 
@@ -246,7 +244,7 @@ async def test_run_generation_threads_owner_wallet_to_store_and_passport(monkeyp
     with patch("archimedes.agents.generation_pipeline._backtest_and_persist", new=AsyncMock()):
         await run_generation(job_id="job_own_1", brief=brief, store=store, owner_wallet=_W_OWNER)
 
-    with get_session() as session:
+    with db.get_session() as session:
         rows = session.query(StrategyRecord).filter(StrategyRecord.is_example.is_(False)).all()
         assert rows, "pipeline persisted no strategies"
         for row in rows:
@@ -342,7 +340,7 @@ async def test_rename_owner_only():
     assert owner.status_code == 200
     assert owner.json()["strategy"]["strategy_name"] == "After"  # stripped
 
-    with get_session() as session:
+    with db.get_session() as session:
         assert session.query(StrategyRecord).filter_by(id=sid).first().strategy_name == "After"
 
 
@@ -412,7 +410,7 @@ def test_purge_dry_run_is_default_and_deletes_nothing(capsys):
     assert "orphan0000000001" in out  # prints exactly what would be deleted
     assert "owned00000000001" not in out
 
-    with get_session() as session:
+    with db.get_session() as session:
         assert session.query(StrategyRecord).count() == 3  # nothing deleted
 
 
@@ -427,7 +425,7 @@ def test_purge_execute_deletes_orphans_and_cascades():
     summary = purge.purge_orphans(execute=True)
     assert summary == {"strategies": 1, "passports": 1, "backtests": 1, "executed": True}
 
-    with get_session() as session:
+    with db.get_session() as session:
         remaining = {r.id for r in session.query(StrategyRecord).all()}
         assert remaining == {"owned00000000001", "examp00000000001"}
         assert session.query(StrategyPassportRecord).filter_by(id="orphan0000000001").first() is None
@@ -444,7 +442,7 @@ def test_purge_execute_deletes_orphans_and_cascades():
 def _mk_owned_passport(sid: str, *, owner: str | None = None, generation_method: str = "fusion"):
     from archimedes.models.strategy_passport_record import StrategyPassportRecord
 
-    with get_session() as session:
+    with db.get_session() as session:
         session.add(
             StrategyPassportRecord(
                 id=sid,

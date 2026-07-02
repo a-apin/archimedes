@@ -234,7 +234,7 @@ async def list_generated_strategies(request: Request, limit: int = Query(50, ge=
     or published. Curated examples live on GET /api/strategies/ and stay public.
     """
 
-    from sqlalchemy import func, or_
+    from sqlalchemy import or_
 
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
@@ -246,10 +246,13 @@ async def list_generated_strategies(request: Request, limit: int = Query(50, ge=
         with get_session() as session:  # type: _Session
             query = session.query(StrategyRecord).filter(StrategyRecord.is_example.is_(False))
             if caller:
+                # owner_wallet is stored lowercase (upsert_strategy) and
+                # get_verified_wallet returns lowercase — compare directly so the
+                # owner_wallet index stays usable (no per-row func.lower()).
                 query = query.filter(
                     or_(
                         StrategyRecord.is_published.is_(True),
-                        func.lower(StrategyRecord.owner_wallet) == caller.lower(),
+                        StrategyRecord.owner_wallet == caller.lower(),
                     )
                 )
             else:
