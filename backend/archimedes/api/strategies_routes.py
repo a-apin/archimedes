@@ -1480,8 +1480,11 @@ async def _run_fusion_job(job_id: str) -> None:
         if result.strategy_spec is not None:
             try:
                 from archimedes.services.fusion_evaluator import evaluate_fusion_spec
+                from archimedes.services.fusion_market_data import real_data_enabled
 
-                eval_result = await asyncio.to_thread(evaluate_fusion_spec, result.strategy_spec)
+                eval_result = await asyncio.to_thread(
+                    evaluate_fusion_spec, result.strategy_spec, use_real_data=real_data_enabled()
+                )
             except Exception as _eval_exc:
                 import logging as _logging
 

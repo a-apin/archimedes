@@ -145,9 +145,16 @@ _DEFAULT_TX_BPS = 10
 _SYNTHETIC_SOURCE = "synthetic"
 
 
-def _data_source_label(data_feed: Any, data_csv_path: str | Path | None) -> str:
+def _data_source_label(
+    data_feed: Any,
+    data_csv_path: str | Path | None,
+    data_feed_factory: Any = None,
+    label_override: str | None = None,
+) -> str:
     """Honest provenance label for the price series a backtest ran on."""
-    if data_feed is not None:
+    if label_override is not None:
+        return label_override
+    if data_feed is not None or data_feed_factory is not None:
         return "provided"
     if data_csv_path is not None:
         return f"csv:{Path(data_csv_path).name}"
@@ -167,14 +174,19 @@ def run_dsl_backtest(
     spec: StrategySpec,
     *,
     data_feed: Any = None,
+    data_feed_factory: Any = None,
+    data_source_label: str | None = None,
     data_csv_path: str | Path | None = None,
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
 ) -> BacktestMetrics:
     """Run a backtest for a DSL-interpreted strategy.
 
-    If ``data_feed`` is None and ``data_csv_path`` is set, builds a
-    ``GenericCSVData`` feed from the CSV. If both are None, generates a
+    ``data_feed_factory`` (preferred for real data) is a zero-arg callable
+    returning a FRESH feed — a concrete backtrader feed is consumed by a single
+    ``cerebro.run()``, so anything that re-runs (the variant grid) must build a
+    new feed per run. If ``data_feed`` is None and ``data_csv_path`` is set,
+    builds a ``GenericCSVData`` feed from the CSV. If all are None, generates a
     deterministic synthetic price series. The equity curve is captured
     **bar-by-bar** via a backtrader analyzer.
     """
@@ -184,7 +196,7 @@ def run_dsl_backtest(
     cerebro = bt.Cerebro(stdstats=False)
     cerebro.addstrategy(strategy_cls)
 
-    data_source = _data_source_label(data_feed, data_csv_path)
+    data_source = _data_source_label(data_feed, data_csv_path, data_feed_factory, data_source_label)
     if data_source == _SYNTHETIC_SOURCE:
         logger.warning(
             "run_dsl_backtest[%s] is using SYNTHETIC price data — rigor metrics "
@@ -193,6 +205,8 @@ def run_dsl_backtest(
             spec.name,
         )
 
+    if data_feed is None and data_feed_factory is not None:
+        data_feed = data_feed_factory()
     if data_feed is None:
         data_feed = _csv_data_feed(Path(data_csv_path)) if data_csv_path is not None else _synthetic_data()
 
@@ -274,6 +288,8 @@ def run_dsl_backtest_variants(
     spec: StrategySpec,
     *,
     data_feed: Any = None,
+    data_feed_factory: Any = None,
+    data_source_label: str | None = None,
     data_csv_path: str | Path | None = None,
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
@@ -283,6 +299,8 @@ def run_dsl_backtest_variants(
     If ``spec.parameter_variants`` is ``None`` or empty, returns a
     single-entry dict ``{"base": metrics}`` for the unmodified spec.
     Otherwise expands the variant grid and runs one backtest per combination.
+    Prefer ``data_feed_factory`` over ``data_feed`` when running a real grid:
+    a concrete feed object is consumed by the first run.
 
     Returns:
         ``{variant_id: BacktestMetrics}`` where variant_id is a
@@ -292,6 +310,8 @@ def run_dsl_backtest_variants(
         metrics = run_dsl_backtest(
             spec,
             data_feed=data_feed,
+            data_feed_factory=data_feed_factory,
+            data_source_label=data_source_label,
             data_csv_path=data_csv_path,
             initial_cash=initial_cash,
             tx_cost_bps=tx_cost_bps,
@@ -318,6 +338,8 @@ def run_dsl_backtest_variants(
         variant_metrics = _run_variant_backtest(
             strategy_cls,
             data_feed=data_feed,
+            data_feed_factory=data_feed_factory,
+            data_source_label=data_source_label,
             data_csv_path=data_csv_path,
             initial_cash=initial_cash,
             tx_cost_bps=tx_cost_bps,
@@ -331,6 +353,8 @@ def _run_variant_backtest(
     strategy_cls: Any,
     *,
     data_feed: Any = None,
+    data_feed_factory: Any = None,
+    data_source_label: str | None = None,
     data_csv_path: str | Path | None = None,
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
@@ -338,10 +362,12 @@ def _run_variant_backtest(
     """Run a single variant backtest given an already-interpreted strategy class."""
     import backtrader as bt
 
-    data_source = _data_source_label(data_feed, data_csv_path)
+    data_source = _data_source_label(data_feed, data_csv_path, data_feed_factory, data_source_label)
     cerebro = bt.Cerebro(stdstats=False)
     cerebro.addstrategy(strategy_cls)
 
+    if data_feed is None and data_feed_factory is not None:
+        data_feed = data_feed_factory()
     if data_feed is None:
         data_feed = _csv_data_feed(Path(data_csv_path)) if data_csv_path is not None else _synthetic_data()
 
@@ -413,6 +439,155 @@ def _run_variant_backtest(
         backtest_end=date(2026, 4, 30) if data_csv_path is None else None,
         data_source=data_source,
     )
+
+
+# ── Multi-asset portfolio runner (real data, #788/#818) ──────────────
+#
+# The DSL engine is single-feed by construction (the interpreted strategy only
+# reads ``self.data``), so a multi-asset spec is evaluated honestly by applying
+# the SAME rules to EACH asset over an inner-joined real panel (identical dates
+# per sleeve) with equal cash per sleeve, then judging the SUMMED sleeve equity
+# as the portfolio. No cross-sleeve rebalancing is simulated — the aggregate is
+# a buy-the-sleeves portfolio, which matches the DSL's per-asset semantics.
+
+
+def _aggregate_portfolio_metrics(
+    per_asset: dict[str, BacktestMetrics],
+    *,
+    label: str,
+    backtest_start: date | None,
+    backtest_end: date | None,
+) -> BacktestMetrics:
+    """Combine per-asset sleeve backtests into portfolio-level metrics."""
+    curves = [m.equity_curve for m in per_asset.values()]
+    n_bars = min(len(c) for c in curves)
+    if any(len(c) != n_bars for c in curves):
+        # Sleeves run on an inner-joined panel, so equal lengths are expected;
+        # a mismatch means a feed dropped bars — truncate and say so.
+        logger.warning(
+            "portfolio sleeves have unequal bar counts %s — truncating to %d",
+            [len(c) for c in curves],
+            n_bars,
+        )
+    portfolio_curve = [sum(c[i] for c in curves) for i in range(n_bars)]
+
+    daily_returns = [
+        (portfolio_curve[i] - portfolio_curve[i - 1]) / portfolio_curve[i - 1]
+        for i in range(1, len(portfolio_curve))
+        if portfolio_curve[i - 1] > 0
+    ]
+    initial = portfolio_curve[0] if portfolio_curve else 0.0
+    final = portfolio_curve[-1] if portfolio_curve else 0.0
+    total_return = (final - initial) / initial if initial > 0 else 0.0
+    years = max(n_bars / 252, 0.01)
+    cagr = (1 + total_return) ** (1 / years) - 1 if total_return > -1 else -1.0
+
+    # Same rf-convention split as the single-feed runner (display rf=0).
+    sharpe = _annualized_sharpe(daily_returns, rf_annual=0.0)
+    sortino = _annualized_sortino(daily_returns, rf_annual=0.0)
+    max_dd = _max_drawdown(portfolio_curve)
+    calmar = cagr / max_dd if max_dd > 0 else 0.0
+
+    total_trades = sum(m.total_trades for m in per_asset.values())
+    if total_trades > 0:
+        win_rate = sum(m.win_rate * m.total_trades for m in per_asset.values()) / total_trades
+        avg_holding = sum(m.avg_holding_period_days * m.total_trades for m in per_asset.values()) / total_trades
+    else:
+        win_rate = 0.0
+        avg_holding = 0.0
+
+    return BacktestMetrics(
+        sharpe_ratio=round(sharpe, 4),
+        sortino_ratio=round(sortino, 4),
+        max_drawdown=round(max_dd, 4),
+        cagr=round(cagr, 4),
+        calmar_ratio=round(calmar, 4),
+        win_rate=round(win_rate, 4),
+        total_trades=total_trades,
+        avg_holding_period_days=round(avg_holding, 2),
+        equity_curve=[round(e, 2) for e in portfolio_curve],
+        monthly_returns=[round(m, 4) for m in _compute_monthly_returns(portfolio_curve)],
+        backtest_start=backtest_start,
+        backtest_end=backtest_end,
+        data_source=label,
+    )
+
+
+def run_dsl_backtest_portfolio(
+    spec: StrategySpec,
+    feed_factories: dict[str, Any],
+    *,
+    label: str,
+    backtest_start: date | None = None,
+    backtest_end: date | None = None,
+    initial_cash: float = _DEFAULT_CASH,
+    tx_cost_bps: int = _DEFAULT_TX_BPS,
+) -> BacktestMetrics:
+    """Backtest a DSL spec per asset over real feeds and aggregate the sleeves."""
+    per_asset: dict[str, BacktestMetrics] = {}
+    sleeve_cash = initial_cash / max(1, len(feed_factories))
+    for sym, factory in feed_factories.items():
+        per_asset[sym] = run_dsl_backtest(
+            spec,
+            data_feed_factory=factory,
+            data_source_label=label,
+            initial_cash=sleeve_cash,
+            tx_cost_bps=tx_cost_bps,
+        )
+    return _aggregate_portfolio_metrics(
+        per_asset, label=label, backtest_start=backtest_start, backtest_end=backtest_end
+    )
+
+
+def run_dsl_backtest_portfolio_variants(
+    spec: StrategySpec,
+    feed_factories: dict[str, Any],
+    *,
+    label: str,
+    backtest_start: date | None = None,
+    backtest_end: date | None = None,
+    initial_cash: float = _DEFAULT_CASH,
+    tx_cost_bps: int = _DEFAULT_TX_BPS,
+) -> dict[str, BacktestMetrics]:
+    """Variant grid over real multi-asset feeds — one aggregated portfolio per combo."""
+    if spec.parameter_variants is None or not spec.parameter_variants:
+        return {
+            "base": run_dsl_backtest_portfolio(
+                spec,
+                feed_factories,
+                label=label,
+                backtest_start=backtest_start,
+                backtest_end=backtest_end,
+                initial_cash=initial_cash,
+                tx_cost_bps=tx_cost_bps,
+            )
+        }
+
+    import itertools
+
+    variant_keys = sorted(spec.parameter_variants.keys())
+    variant_value_lists = [spec.parameter_variants[k] for k in variant_keys]
+    sleeve_cash = initial_cash / max(1, len(feed_factories))
+
+    results: dict[str, BacktestMetrics] = {}
+    for combo in itertools.product(*variant_value_lists):
+        overrides = {k: int(v) for k, v in zip(variant_keys, combo, strict=False)}
+        variant_id = "_".join(str(v) for v in combo)
+        strategy_cls = interpret_variant(spec, overrides)
+        per_asset = {
+            sym: _run_variant_backtest(
+                strategy_cls,
+                data_feed_factory=factory,
+                data_source_label=label,
+                initial_cash=sleeve_cash,
+                tx_cost_bps=tx_cost_bps,
+            )
+            for sym, factory in feed_factories.items()
+        }
+        results[variant_id] = _aggregate_portfolio_metrics(
+            per_asset, label=label, backtest_start=backtest_start, backtest_end=backtest_end
+        )
+    return results
 
 
 # ── Rigor gate ────────────────────────────────────────────────────────
@@ -580,11 +755,20 @@ def evaluate_fusion_spec(
     *,
     data_feed: Any = None,
     num_trials: int | None = None,
+    use_real_data: bool = False,
 ) -> FusionEvalResult:
     """Full pipeline: validate → interpret → backtest → rigor gate.
 
     ``num_trials=None`` (the default) defers to ``apply_rigor_gate``'s own
     fallback (the curated library size) — see ``_default_num_trials``.
+
+    ``use_real_data=True`` (the live generate/debate paths) fetches real daily
+    OHLCV for the spec's asset universe via ``fusion_market_data`` and runs the
+    multi-asset portfolio backtest — the only route to an ``admissible``
+    verdict. It fails CLOSED: if nothing in the universe maps to the SSOT or
+    the fetch/join comes up short, the run falls back to the synthetic path,
+    which stays honestly inadmissible ("pending" at the live gate) — never a
+    fake pass. Default False keeps unit tests hermetic (no network).
     """
     try:
         spec = validate_strategy_spec(spec_dict)
@@ -597,8 +781,36 @@ def evaluate_fusion_spec(
             error=str(e),
         )
 
+    real_factories: dict[str, Any] | None = None
+    real_label = ""
+    real_start: date | None = None
+    real_end: date | None = None
+    if use_real_data and data_feed is None:
+        from archimedes.services import fusion_market_data
+
+        panel = fusion_market_data.fetch_real_panel(spec.asset_universe)
+        if panel is not None:
+            real_factories = {sym: fusion_market_data.feed_factory(df) for sym, df in panel.frames.items()}
+            real_label, real_start, real_end = panel.label, panel.start, panel.end
+        else:
+            logger.warning(
+                "fusion eval[%s]: real data unavailable for universe %s — "
+                "falling back to SYNTHETIC (verdict will be inadmissible)",
+                spec.name,
+                spec.asset_universe,
+            )
+
     try:
-        metrics = run_dsl_backtest(spec, data_feed=data_feed)
+        if real_factories:
+            metrics = run_dsl_backtest_portfolio(
+                spec,
+                real_factories,
+                label=real_label,
+                backtest_start=real_start,
+                backtest_end=real_end,
+            )
+        else:
+            metrics = run_dsl_backtest(spec, data_feed=data_feed)
     except Exception as e:
         logger.exception("DSL backtest failed for %s", spec.name)
         return FusionEvalResult(spec=spec, backtest=None, rigor=None, error=str(e))
@@ -607,7 +819,16 @@ def evaluate_fusion_spec(
     variants_metrics: dict[str, BacktestMetrics] | None = None
     if spec.parameter_variants is not None and len(spec.parameter_variants) >= 1:
         try:
-            variants_metrics = run_dsl_backtest_variants(spec, data_feed=data_feed)
+            if real_factories:
+                variants_metrics = run_dsl_backtest_portfolio_variants(
+                    spec,
+                    real_factories,
+                    label=real_label,
+                    backtest_start=real_start,
+                    backtest_end=real_end,
+                )
+            else:
+                variants_metrics = run_dsl_backtest_variants(spec, data_feed=data_feed)
         except Exception as e:
             logger.warning("variant backtest failed for %s: %s", spec.name, e)
             variants_metrics = None
