@@ -27,26 +27,33 @@ logger = logging.getLogger(__name__)
 
 _USDC_DECIMALS = 6
 
-_middleware: GatewayMiddleware | None = None
+# Per-creator Gateway middleware cache, keyed by lowercase seller address.
+_middleware_cache: dict[str, GatewayMiddleware] = {}
 
 
-def get_gateway_middleware() -> GatewayMiddleware:
-    """Lazy process-wide middleware singleton (config read at first use)."""
-    global _middleware
-    if _middleware is None:
-        seller = os.getenv("GATEWAY_SELLER_ADDRESS", "").strip()
-        chain = os.getenv("GATEWAY_CHAIN", "arcTestnet").strip()
-        if not seller or int(seller, 16) == 0:
-            raise RuntimeError(
-                "GATEWAY_SELLER_ADDRESS is not configured — refusing to "
-                "charge into the zero address."
-            )
-        _middleware = create_gateway_middleware(
-            seller_address=seller,
-            chain=chain,
-            description="Archimedes copy-trading tick charge",
+def get_gateway_middleware(seller_address: str) -> GatewayMiddleware:
+    """Return a GatewayMiddleware for *seller_address*, cached indefinitely.
+
+    Each creator's agent Circle wallet address gets its own middleware
+    instance.  The zero address is unconditionally refused.
+    """
+    key = seller_address.lower()
+    if key in _middleware_cache:
+        return _middleware_cache[key]
+
+    if not seller_address or int(seller_address, 16) == 0:
+        raise RuntimeError(
+            f"refusing to charge into zero address ({seller_address})"
         )
-    return _middleware
+
+    chain = os.getenv("GATEWAY_CHAIN", "arcTestnet").strip()
+    mw = create_gateway_middleware(
+        seller_address=seller_address,
+        chain=chain,
+        description="Archimedes copy-trading tick charge",
+    )
+    _middleware_cache[key] = mw
+    return mw
 
 
 def fee_to_price(action_count: int, flat_fee_raw: int) -> str:
@@ -62,6 +69,7 @@ def fee_to_price(action_count: int, flat_fee_raw: int) -> str:
 async def charge(
     sub_id: str,
     ephemeral_key: str,
+    seller_address: str,
     strategy_id: str,
     tick_id: str,
     action_count: int,
@@ -71,9 +79,13 @@ async def charge(
     """Charge one subscriber for one tick. Returns True iff the micropayment
     was verified AND settled by Circle's facilitator. Never raises: every
     failure mode is logged and returned as False (the caller's existing
-    halt path handles unpaid subscribers)."""
+    halt path handles unpaid subscribers).
+
+    *seller_address* is the creator's agent Circle wallet 0x address that
+    receives the Gateway settlement (per-creator, not a global singleton).
+    """
     try:
-        middleware = get_gateway_middleware()
+        middleware = get_gateway_middleware(seller_address)
         price = fee_to_price(action_count, flat_fee_raw)
 
         # Zero-amount tick: nothing to charge, treat as paid.

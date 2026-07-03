@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 _DRIFT_THRESHOLD = 0.15
 _USDC_FLOOR = float(os.getenv("AGENT_USDC_FLOOR", "0.20"))
 FLAT_FEE_PER_ACTION = int(os.getenv("FLAT_FEE_PER_ACTION", "100"))  # raw 6-dec USDC
+CHARGE_BATCH_SIZE = int(os.getenv("CHARGE_BATCH_SIZE", "10"))  # concurrent Circle signing calls per batch
 _MARKET_REGIME_UNKNOWN = "unknown"
 
 # Per-publisher ensemble-consensus key prefix (namespaced by strategy_id)
@@ -147,6 +148,8 @@ class Publisher:
     pool_id: str
     vault_address: str
     creator_wallet: str
+    gateway_seller_address: str = ""
+    agent_wallet_id: str = ""
     subscribers: dict[str, Subscriber] = field(default_factory=dict)
     task: asyncio.Task | None = None
     retired: bool = False
@@ -209,6 +212,8 @@ class MarketService:
         pool_id: str,
         vault_address: str,
         creator_wallet: str,
+        gateway_seller_address: str = "",
+        agent_wallet_id: str = "",
         subscribers: dict[str, Subscriber] | None = None,
     ) -> None:
         """Start a publisher loop for a strategy. Idempotent.
@@ -237,6 +242,8 @@ class MarketService:
             pool_id=pool_id,
             vault_address=vault_address,
             creator_wallet=creator_wallet,
+            gateway_seller_address=gateway_seller_address,
+            agent_wallet_id=agent_wallet_id,
             subscribers=subscribers,
         )
 
@@ -579,7 +586,7 @@ class MarketService:
 
         async def _one(sub):
             async with sem:
-                paid = await self._charge_one(sub, strategy_id, tick_id, TickStep.REBALANCE, action_count)
+                paid = await self._charge_one(pub, sub, strategy_id, tick_id, TickStep.REBALANCE, action_count)
                 if not paid:
                     self._defer_subscriber(pub, sub)
                     await self.record_subscriber_tick(SubscriberTickRecord(
@@ -666,15 +673,20 @@ class MarketService:
         self._persist_halt_state(pub.strategy_id, sub.sub_id)
 
     # F6.5 — single charge, reused by pipeline + REBALANCE
-    async def _charge_one(self, sub, strategy_id, tick_id, step: TickStep, action_count: int) -> bool:
+    async def _charge_one(self, pub, sub, strategy_id, tick_id, step: TickStep, action_count: int) -> bool:
         if self.dry_run:
             return True
+        if not pub.gateway_seller_address:
+            logger.warning("[%s] no gateway_seller_address for pub %s — unpaid", tick_id, strategy_id)
+            return False
         eph_key = await self.state.get_ephemeral_key(sub.sub_id)
         if not eph_key:
             logger.warning("[%s] no ephemeral key for sub %s — unpaid", tick_id, sub.sub_id)
             return False
         return await payments.charge(
-            sub_id=sub.sub_id, ephemeral_key=eph_key, strategy_id=strategy_id, tick_id=tick_id,
+            sub_id=sub.sub_id, ephemeral_key=eph_key,
+            seller_address=pub.gateway_seller_address,
+            strategy_id=strategy_id, tick_id=tick_id,
             action_count=action_count, flat_fee_raw=FLAT_FEE_PER_ACTION, step=step.value,
         )
 
@@ -682,7 +694,7 @@ class MarketService:
     async def _charge_step(self, pub, active, strategy_id, tick_id, step: TickStep):
         survivors = []
         for sub in active:
-            paid = await self._charge_one(sub, strategy_id, tick_id, step, action_count=1)
+            paid = await self._charge_one(pub, sub, strategy_id, tick_id, step, action_count=1)
             if paid:
                 await self.record_subscriber_tick(SubscriberTickRecord(
                     sub_id=sub.sub_id, strategy_id=strategy_id, tick_id=tick_id,
@@ -879,13 +891,14 @@ class MarketService:
 
     async def _verify_payment(
         self,
+        pub: Publisher,
         sub: Subscriber,
         strategy_id: str,
         tick_id: str,
         action_count: int,
     ) -> bool:
         """Legacy delegate — replaced by _charge_one.  Kept for test compat."""
-        return await self._charge_one(sub, strategy_id, tick_id, TickStep.LOAD_STRATEGY, action_count)
+        return await self._charge_one(pub, sub, strategy_id, tick_id, TickStep.LOAD_STRATEGY, action_count)
 
     async def _record_liability(
         self, sub: Subscriber, strategy_id: str, tick_id: str, action_count: int

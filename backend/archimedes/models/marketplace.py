@@ -35,6 +35,11 @@ class MarketplaceAgent(Base):
     ephemeral_wallet: Mapped[str] = mapped_column(String(42), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")  # running | stopped
     halted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # subscriber halted for non-payment (C-5)
+    # Per-creator Gateway seller address (publisher role). The creator's Circle
+    # agent wallet 0x address that receives x402 Gateway settlement.
+    gateway_seller_address: Mapped[str | None] = mapped_column(String(42), nullable=True, default=None)
+    # Circle wallet UUID controlling the gateway_seller_address.
+    agent_wallet_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
@@ -51,6 +56,8 @@ class MarketplaceAgent(Base):
             "vault_address": self.vault_address,
             "ephemeral_wallet": self.ephemeral_wallet,
             "status": self.status,
+            "gateway_seller_address": self.gateway_seller_address,
+            "agent_wallet_id": self.agent_wallet_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "stopped_at": self.stopped_at.isoformat() if self.stopped_at else None,
         }

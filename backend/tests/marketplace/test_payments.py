@@ -32,6 +32,7 @@ async def test_charge_zero_amount_is_paid_without_network():
     with patch.object(payments, "get_gateway_middleware") as mw:
         ok = await payments.charge(
             sub_id="0x" + "11" * 32, ephemeral_key="0x" + "22" * 32,
+            seller_address="0xSeller000000000000000000000000000000000001",
             strategy_id="s", tick_id="t", action_count=0, flat_fee_raw=100,
         )
     assert ok is True
@@ -54,6 +55,7 @@ async def test_charge_success_path():
     ):
         ok = await payments.charge(
             sub_id="0x" + "11" * 32, ephemeral_key="0x" + "22" * 32,
+            seller_address="0xSeller000000000000000000000000000000000001",
             strategy_id="s", tick_id="t", action_count=2, flat_fee_raw=100,
         )
     assert ok is True
@@ -78,6 +80,7 @@ async def test_charge_verify_invalid_returns_false():
     ):
         ok = await payments.charge(
             sub_id="0x" + "11" * 32, ephemeral_key="0x" + "22" * 32,
+            seller_address="0xSeller000000000000000000000000000000000001",
             strategy_id="s", tick_id="t", action_count=2, flat_fee_raw=100,
         )
     assert ok is False
@@ -91,6 +94,22 @@ async def test_charge_exception_returns_false():
     ):
         ok = await payments.charge(
             sub_id="0x" + "11" * 32, ephemeral_key="0x" + "22" * 32,
+            seller_address="0xSeller000000000000000000000000000000000001",
             strategy_id="s", tick_id="t", action_count=2, flat_fee_raw=100,
         )
     assert ok is False
+
+def test_get_gateway_middleware_zero_address_raises():
+    with pytest.raises(RuntimeError):
+        payments.get_gateway_middleware("0x0000000000000000000000000000000000000000")
+
+
+def test_get_gateway_middleware_caches_per_address():
+    addr1 = "0x" + "01" * 20
+    addr2 = "0x" + "02" * 20
+    payments._middleware_cache.clear()
+    mw1 = payments.get_gateway_middleware(addr1)
+    mw2 = payments.get_gateway_middleware(addr1)
+    mw3 = payments.get_gateway_middleware(addr2)
+    assert mw1 is mw2  # same address returns cached
+    assert mw1 is not mw3  # different addresses are distinct

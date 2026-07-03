@@ -83,13 +83,33 @@ async def publish_strategy(
 ):
     """Publish a strategy to the marketplace.
 
-    Body: {strategy_id, vault_address?, platform_wallet?}
+    Body: {strategy_id, vault_address?, platform_wallet?,
+           gateway_seller_address?, agent_wallet_id?}
     pool_id is DERIVED server-side (D-POOL). Never accept it from the client.
     """
     market = _get_market(request)
     strategy_id = body.get("strategy_id", "").strip()
     vault_address = body.get("vault_address", "").strip() or ""
     platform_wallet = body.get("platform_wallet", "").strip() or ""
+    gateway_seller_address = body.get("gateway_seller_address", "").strip() or ""
+    agent_wallet_id = body.get("agent_wallet_id", "").strip() or ""
+
+    # Validate gateway_seller_address is a non-zero checksummable address.
+    if gateway_seller_address:
+        from web3 import Web3
+        try:
+            checksummed = Web3.to_checksum_address(gateway_seller_address)
+        except (ValueError, Exception):
+            raise HTTPException(
+                status_code=400,
+                detail="gateway_seller_address is not a valid Ethereum address",
+            ) from None
+        if int(checksummed, 16) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="gateway_seller_address must not be the zero address",
+            )
+        gateway_seller_address = checksummed
 
     if not strategy_id:
         raise HTTPException(status_code=400, detail="strategy_id is required")
@@ -185,6 +205,8 @@ async def publish_strategy(
                 creator_wallet=wallet.lower(),
                 pool_id=pool_id,
                 vault_address=vault_address,
+                gateway_seller_address=gateway_seller_address or None,
+                agent_wallet_id=agent_wallet_id or None,
             )
             session.add(agent)
             session.commit()
@@ -197,7 +219,11 @@ async def publish_strategy(
             ) from None
 
     # 6. Start the publisher loop
-    await market.start_publisher(strategy_id, pool_id, vault_address, wallet)
+    await market.start_publisher(
+        strategy_id, pool_id, vault_address, wallet,
+        gateway_seller_address=gateway_seller_address,
+        agent_wallet_id=agent_wallet_id,
+    )
 
     result["pool_id"] = pool_id
     return result
