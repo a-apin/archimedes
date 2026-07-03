@@ -327,57 +327,62 @@ async def compute_pbo_endpoint(req: PBORequest, request: Request, response: Resp
 # ── Helpers ──────────────────────────────────────────────────
 
 
-# Cache the (expensive) library CSCV PBO keyed on the store's file signature so
+# Cache the (expensive) library CSCV PBO keyed on the store's DB signature so
 # the C(16, 8) = 12,870-combination CSCV runs only when the daily-returns store
 # actually changes — matching compute_library_pbo's documented "recompute on
-# store growth" refresh cadence. The store is add-only + idempotent, so a change
-# in the (filename, st_mtime_ns) signature is the "selection set changed" signal.
-_LIBRARY_PBO_CACHE: dict[tuple[tuple[str, int], ...], tuple[float | None, str | None, int]] = {}
+# store growth" refresh cadence. #774: the store moved from committed JSON files
+# to the strategy_daily_returns table; (row_count, max_id) is the DB-native
+# equivalent of the old (filename, st_mtime_ns) file signature — it changes
+# whenever rows are added, and a stem's replace-on-remeasure (delete + reinsert)
+# gets fresh autoincrement ids, so a same-count replace still flips max_id.
+_LIBRARY_PBO_CACHE: dict[tuple[int, int], tuple[float | None, str | None, int]] = {}
 
 
-def _store_signature(store_dir) -> tuple[tuple[str, int], ...] | None:
-    """Sorted ``(filename, st_mtime_ns)`` over the store's ``*.json`` files.
+def _store_signature() -> tuple[int, int] | None:
+    """``(row_count, max_id)`` over ``strategy_daily_returns``.
 
-    Returns ``None`` when the directory is absent (degrades gracefully). Used as
-    the cache key: a new/changed/removed file flips the signature and forces a
-    recompute; an unchanged store reuses the cached value.
+    Returns ``None`` when the table is empty or unreachable (degrades
+    gracefully). Used as the cache key: any row added/replaced changes the
+    signature and forces a recompute; an unchanged store reuses the cached
+    value.
     """
-    from pathlib import Path
+    from sqlalchemy import func
 
-    if store_dir is None or not Path(store_dir).is_dir():
-        return None
+    from archimedes.db import get_session
+    from archimedes.models.daily_returns_store import StrategyDailyReturn
+
     try:
-        return tuple(sorted((p.name, p.stat().st_mtime_ns) for p in Path(store_dir).glob("*.json")))
-    except OSError:
+        with get_session() as session:
+            count, max_id = session.query(func.count(StrategyDailyReturn.id), func.max(StrategyDailyReturn.id)).one()
+    except Exception:
         return None
+    if not count:
+        return None
+    return (count, max_id or 0)
 
 
 def _cached_library_pbo() -> tuple[float | None, str | None, int]:
     """Load the daily-returns store and compute the single library CSCV PBO.
 
     Returns ``(value, data_vintage, selection_set_size)`` where ``value`` is the
-    library PBO (``None`` fail-closed / store absent), ``data_vintage`` is the
+    library PBO (``None`` fail-closed / store empty), ``data_vintage`` is the
     store's max vintage, and ``selection_set_size`` is the number of aligned
-    series actually used by the CSCV. Cached on the store file signature so the
+    series actually used by the CSCV. Cached on the store's DB signature so the
     expensive CSCV does not re-run on every request.
 
-    Never raises: an absent/empty/malformed store yields ``(None, None, 0)``.
+    Never raises: an empty store or a DB read failure yields ``(None, None, 0)``.
     """
-    from archimedes.services.rigor_evaluator import (
-        _resolve_daily_returns_store_dir,
-        align_returns_store,
-    )
+    from archimedes.services.rigor_evaluator import align_returns_store
 
-    store_dir = _resolve_daily_returns_store_dir()
-    signature = _store_signature(store_dir)
+    signature = _store_signature()
     if signature is None:
         return None, None, 0
     if signature in _LIBRARY_PBO_CACHE:
         return _LIBRARY_PBO_CACHE[signature]
 
-    store, data_vintage = load_daily_returns_store(store_dir)
+    store, data_vintage = load_daily_returns_store()
     # selection_set_size = number of series that actually survive date-alignment
-    # (the count CSCV runs over), not the raw file count.
+    # (the count CSCV runs over), not the raw row count.
     selection_set_size = len(align_returns_store(store))
     value = compute_library_pbo(store)
     result = (value, data_vintage, selection_set_size)
