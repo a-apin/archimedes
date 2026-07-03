@@ -129,8 +129,7 @@ jobs:
               "docker compose exec -T backend python -m archimedes.scripts.seed_backtests_from_artifacts || echo WARN_SEED_SKIP",
               "docker compose exec -dT backend python -m archimedes.scripts.hydrate_corpus || echo WARN_HYDRATE_SKIP",
               "docker compose exec -T backend python -c '"'"'import asyncio; from archimedes.services.amm_bootstrap import bootstrap_amm_liquidity; r=asyncio.run(bootstrap_amm_liquidity()); print(dict(r))'"'"' || echo WARN_BOOTSTRAP_SKIP",
-              "sleep 10",
-              "docker compose exec -T backend python -c '"'"'import urllib.request; r=urllib.request.urlopen(\"http://localhost:8000/health\"); print(r.read().decode()[:80])'"'"'",
+              "for i in $(seq 1 24); do if docker compose exec -T backend python -c '"'"'import urllib.request; r=urllib.request.urlopen(\"http://localhost:8000/health\", timeout=5); print(r.read().decode()[:80])'"'"'; then echo HEALTH_OK after ${i}x5s; break; fi; if [ $i -eq 24 ]; then echo HEALTH_TIMEOUT after 120s; exit 1; fi; sleep 5; done",
               "echo DEPLOY_COMPLETE"
             ]' \
             --region "$AWS_REGION" \
