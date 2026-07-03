@@ -298,6 +298,12 @@ class _CandidateResult:
     # downstream buy-and-hold backtest step is skipped — it would clobber the
     # already-computed fusion metrics with a different, weight-less read).
     has_real_rigor: bool = False
+    # The society num_trials (#770, N + library_size) this candidate's DSR was
+    # first computed with. Recorded so the post-loop correlation patch (#822)
+    # recomputes DSR at the SAME trial count — only the average_correlation term
+    # changes, never the deflation count itself. 0 on the fixture/fusion paths,
+    # which don't run the buy-and-hold DSR patch.
+    dsr_num_trials: int = 0
 
 
 # ── Rigor adapter (Önder's rigor_evaluator on agent output) ───────────────
@@ -349,6 +355,7 @@ def _rigor_verdict_for(
     num_trials: int,
     *,
     lookahead_passed: bool = True,
+    average_correlation: float = 0.0,
 ) -> dict[str, Any]:
     """Run Önder's rigor primitives on a portfolio return series.
 
@@ -360,6 +367,12 @@ def _rigor_verdict_for(
     of the strategy universe the winner was selected from (the curated library),
     NOT 1. With ``num_trials=1`` the DSR expectation-of-max term collapses to 0
     and the ratio is undeflated, which silently defeats the gate.
+
+    ``average_correlation`` is the mean pairwise correlation among the
+    ``num_trials`` society candidates (approach B, issue #822). Defaults to
+    ``0.0`` — the independent-trials assumption (approach A, #811/#770) — which
+    the caller keeps as the fallback whenever a pool-wide correlation can't be
+    estimated (fewer than two candidate return series).
 
     ``lookahead_passed`` is the look-ahead-audit verdict, computed by the caller
     (see ``_lookahead_for_candidate``) so the primitive actually gates the
@@ -381,7 +394,7 @@ def _rigor_verdict_for(
         compute_oos_sharpe,
     )
 
-    dsr, dsr_p = compute_dsr(return_series, num_trials=max(1, num_trials))
+    dsr, dsr_p = compute_dsr(return_series, num_trials=max(1, num_trials), average_correlation=average_correlation)
     oos = compute_oos_sharpe(return_series)
     in_sample_sharpe = compute_in_sample_sharpe(return_series)
     # PBO is library-level (needs ≥2 candidate return series); the caller
@@ -482,6 +495,67 @@ def _patch_pbo(candidates: list[_CandidateResult]) -> None:
         # `passing` to require both the per-strategy DSR test AND library-PBO
         # under the 0.5 threshold.
         c.rigor_verdict["passing"] = bool(c.rigor_verdict.get("passing") and pbo < 0.5)
+
+
+def _patch_dsr_with_pool_correlation(candidates: list[_CandidateResult]) -> None:
+    """Re-deflate each buy-and-hold candidate's DSR using the REAL candidate-pool ρ̄.
+
+    Approach B (#822) for the society DSR multiple-testing correction. #811 (#770)
+    set ``average_correlation=0.0`` — i.e. treated the N society candidates as
+    mutually independent trials. They're generated from the same user brief over
+    overlapping universes, so they're typically strongly correlated (ρ̄ ≈ 0.5–0.9),
+    and feeding ρ̄=0 over-deflates ``E[max_N]``, over-stating the gate's strictness.
+    Under equicorrelation the effective trial count is
+    ``N_eff = N / (1 + (N-1)·ρ̄)`` (Cheverud 2001; Nyholt 2004) — this patch estimates
+    the real ρ̄ across the pool's return series (``compute_average_pairwise_correlation``)
+    and recomputes DSR at the SAME ``dsr_num_trials`` each candidate was already
+    deflated at, so only the correlation term changes.
+
+    Runs AFTER ``_patch_pbo`` and mirrors its shape and scope: fusion/debate
+    candidates (``has_real_rigor=True``) carry a real DSR from their own CSCV
+    evaluator and are SKIPPED — recomputing over the buy-and-hold pool would
+    clobber a correctly-computed value with an unrelated one. With fewer than
+    two eligible return series (no correlation estimable), every candidate's DSR
+    is left untouched — approach A (ρ̄=0) is the fallback, per the issue.
+
+    A correlated pool can only RELAX the deflation relative to ρ̄=0 (never tighten
+    beyond it — ``N_eff <= N`` always), so ``dsr_p_value`` only ever moves up or
+    stays the same here, never down. ``passing`` is re-derived from the full set
+    of admission legs (DSR, OOS/cliff, look-ahead) rather than AND-ed in, since a
+    higher DSR p-value can flip a candidate from failing to passing, not just the
+    reverse (unlike the PBO patch above, which can only tighten).
+    """
+    agent_cands = [c for c in candidates if not c.has_real_rigor]
+    series_map: dict[str, list[float]] = {c.candidate_id: c.return_series for c in agent_cands if c.return_series}
+    if len(series_map) < 2:
+        return  # approach A (ρ̄=0) fallback — nothing to patch, verdicts already reflect it
+
+    from archimedes.services.rigor_evaluator import compute_average_pairwise_correlation, compute_dsr
+
+    avg_correlation = compute_average_pairwise_correlation(series_map)
+    if avg_correlation <= 0.0:
+        return  # no correlation relief to apply — ρ̄=0 verdicts are already correct
+
+    for c in agent_cands:
+        v = c.rigor_verdict
+        if v.get("dsr") is None or not c.return_series or c.dsr_num_trials < 1:
+            continue  # too-short series or never ran the buy-and-hold DSR — nothing to recompute
+        dsr, dsr_p = compute_dsr(c.return_series, num_trials=c.dsr_num_trials, average_correlation=avg_correlation)
+        if dsr is None or dsr_p is None:
+            continue
+        v["dsr"] = round(float(dsr), 4)
+        v["dsr_p_value"] = round(float(dsr_p), 4)
+        oos = v.get("oos_sharpe")
+        in_sample = v.get("in_sample_sharpe")
+        oos_pass = oos is not None and oos > 0.0
+        if oos_pass and in_sample is not None and math.isfinite(in_sample) and in_sample > 0 and oos / in_sample < 0.5:
+            oos_pass = False
+        # PBO's own leg is folded into `passing` by `_patch_pbo` already; re-derive
+        # from the ORIGINAL passing value's PBO contribution by requiring it again
+        # here (pbo < 0.5, undefined-PBO / N<2 patched to 0.0 which always passes).
+        pbo = v.get("pbo")
+        pbo_pass = pbo is None or pbo < 0.5
+        v["passing"] = bool(dsr_p >= 0.95 and oos_pass and v.get("lookahead_audit_passed", False) and pbo_pass)
 
 
 # ── Event emitter ─────────────────────────────────────────────────────────
@@ -789,6 +863,7 @@ async def _run_live_candidate(
         passes_rigor=verdict.get("passing", False),
         regime=regime,
         return_series=return_series,
+        dsr_num_trials=num_trials,
     )
 
 
@@ -1315,6 +1390,11 @@ async def run_generation(
         # gracefully by setting PBO=0.0). After this, every candidate's
         # rigor_verdict has all four fields (DSR, PBO, OOS Sharpe, lookahead).
         _patch_pbo(candidates)
+        # Re-deflate DSR using the REAL candidate-pool correlation (#822, approach B
+        # for #770/#811). Runs after PBO so it can re-derive `passing`'s PBO leg from
+        # the already-patched value. Falls back to the untouched ρ̄=0 verdicts (approach
+        # A) whenever fewer than two buy-and-hold return series are available.
+        _patch_dsr_with_pool_correlation(candidates)
         for c in candidates:
             c.passes_rigor = c.rigor_verdict.get("passing", False)
 
