@@ -15,12 +15,14 @@ Flow per charge (all in-process, no HTTP between publisher/subscriber):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from decimal import Decimal
 
-from circlekit import PrivateKeySigner, create_gateway_middleware
+from circlekit import create_gateway_middleware
 from circlekit.server import GatewayMiddleware
+from circlekit.wallets import CircleWalletSigner
 from circlekit.x402 import create_payment_header, get_payment_required
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,19 @@ _USDC_DECIMALS = 6
 
 # Per-creator Gateway middleware cache, keyed by lowercase seller address.
 _middleware_cache: dict[str, GatewayMiddleware] = {}
+
+# CircleWalletSigner cache, keyed by wallet_id (one signer per wallet).
+# Constructing a signer re-inits the Circle client; caching avoids that.
+_signer_cache: dict[str, CircleWalletSigner] = {}
+
+
+def _get_signer(wallet_id: str, wallet_address: str) -> CircleWalletSigner:
+    """Return a cached CircleWalletSigner for *wallet_id*."""
+    if wallet_id not in _signer_cache:
+        _signer_cache[wallet_id] = CircleWalletSigner(
+            wallet_id=wallet_id, wallet_address=wallet_address,
+        )
+    return _signer_cache[wallet_id]
 
 
 def get_gateway_middleware(seller_address: str) -> GatewayMiddleware:
@@ -68,7 +83,8 @@ def fee_to_price(action_count: int, flat_fee_raw: int) -> str:
 
 async def charge(
     sub_id: str,
-    ephemeral_key: str,
+    wallet_id: str,
+    wallet_address: str,
     seller_address: str,
     strategy_id: str,
     tick_id: str,
@@ -83,6 +99,8 @@ async def charge(
 
     *seller_address* is the creator's agent Circle wallet 0x address that
     receives the Gateway settlement (per-creator, not a global singleton).
+    *wallet_id* is the subscriber's Circle Developer-Controlled Wallet UUID.
+    *wallet_address* is the subscriber's Circle wallet 0x address.
     """
     try:
         middleware = get_gateway_middleware(seller_address)
@@ -106,9 +124,13 @@ async def charge(
             logger.error("[%s] no gateway payment option in 402 body", tick_id)
             return False
 
-        # 2. Subscriber side (same process): sign with the ephemeral key.
-        signer = PrivateKeySigner(ephemeral_key)
-        header = create_payment_header(signer=signer, requirements=requirements)
+        # 2. Subscriber side (same process): sign via Circle Wallet.
+        # Event-loop safety: CircleWalletSigner.sign_typed_data and
+        # create_payment_header make blocking HTTPS calls.
+        signer = _get_signer(wallet_id, wallet_address)
+        header = await asyncio.to_thread(
+            create_payment_header, signer=signer, requirements=requirements,
+        )
 
         # 3. Verify + settle via Circle's facilitator.
         verify_result = await middleware.verify(header, price)

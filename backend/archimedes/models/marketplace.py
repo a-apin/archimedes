@@ -40,6 +40,8 @@ class MarketplaceAgent(Base):
     gateway_seller_address: Mapped[str | None] = mapped_column(String(42), nullable=True, default=None)
     # Circle wallet UUID controlling the gateway_seller_address.
     agent_wallet_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    # Circle Developer-Controlled Wallet UUID for subscriber x402 signing.
+    circle_wallet_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )

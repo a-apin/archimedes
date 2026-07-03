@@ -341,12 +341,20 @@ async def subscribe_strategy(
     # Derivation is cheap and safe in dry-run mode too.
     pool_id = derive_pool_id(strategy_id, pub_row.creator_wallet)
 
-    # 3b. Backend-generated ephemeral keypair for x402 signing (D1).
-    # The monolith signs micropayments in-process, so the backend owns
-    # this key. Client-supplied ephemeral_wallet is ignored for storage.
-    eph_account = Account.create()
-    ephemeral_wallet = eph_account.address
-    await market.state.save_ephemeral_key(sub_id, eph_account.key.hex())
+    # 3b. Provision a Circle Developer-Controlled Wallet for this subscriber
+    # (replaces the old Account.create() + raw-key path — kills D2/D3).
+    # If provisioning fails, the subscribe fails closed (no row inserted).
+    from archimedes.marketplace.wallet_provisioner import provision_subscriber_wallet
+    try:
+        wallet_id, wallet_address = await provision_subscriber_wallet(sub_id)
+    except Exception as exc:
+        logger.warning("Circle wallet provisioning failed for sub %s: %s", sub_id, exc)
+        raise HTTPException(status_code=502, detail="Failed to provision subscriber wallet") from exc
+
+    # 3c. The subscriber's Circle wallet address is the funded address and
+    # the x402 signer address. Store as ephemeral_wallet (existing column
+    # name) to limit blast radius.
+    ephemeral_wallet = wallet_address
 
     # 4. Create vault for subscriber if needed
     vault_address = ""
@@ -373,6 +381,7 @@ async def subscribe_strategy(
             pool_id=pool_id,
             vault_address=vault_address,
             ephemeral_wallet=ephemeral_wallet,
+            circle_wallet_id=wallet_id,
         )
         session.add(agent)
         session.commit()
@@ -424,11 +433,8 @@ async def unsubscribe_strategy(
 
     await market.remove_subscriber(strategy_id, sub_id)
 
-    try:
-        await market.state.delete_ephemeral_key(sub_id)
-    except Exception:
-        logger.warning("failed to delete ephemeral key for %s", sub_id)
-
+    # Ephemeral key cleanup is no longer needed — Circle wallet is the
+    # signer (P3) and lives on independent of this unsubscribe lifecycle.
     return {"status": "unsubscribed", "strategy_id": strategy_id}
 
 
