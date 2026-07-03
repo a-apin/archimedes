@@ -80,7 +80,6 @@ def app():
     )
     market.settings = MagicMock()
     market.settings.payment_splitter_address = "0xsplitter"
-    market.settings.subscription_manager_address = "0xsubmgr"
     market.start_publisher = AsyncMock()
     market.add_subscriber = AsyncMock()
     market.remove_subscriber = AsyncMock()
@@ -174,29 +173,10 @@ def test_list_published_empty(client):
     assert resp.json() == []
 
 
-def _make_sub_data(
-    subscriber_addr: str = "0x0000000000000000000000000000000000000001",
-    pool_id_bytes: bytes | None = None,
-    active: bool = True,
-) -> tuple:
-    """Build a SubscriptionManager.subscriptions() return tuple."""
-    from archimedes.marketplace.encoding import derive_pool_id, to_bytes32
+def test_subscribe_succeeds_live_mode_no_chain_calls(client, app):
+    """Subscribe succeeds in live mode (dry_run=False) with no SubscriptionManager calls."""
+    from archimedes.marketplace.wallet_provisioner import provision_subscriber_wallet
 
-    if pool_id_bytes is None:
-        pool_id_bytes = to_bytes32(derive_pool_id("test_strat", "0x0000000000000000000000000000000000000001"))
-    return (
-        subscriber_addr,      # subscriber (address → str via Web3)
-        pool_id_bytes,        # pool_id (bytes32)
-        "0x0000000000000000000000000000000000000eee",  # ephemeral_wallet
-        1000,                 # reserved_usdc
-        "https://placeholder",  # webhook_url
-        active,               # active
-        1000000,              # created_at
-    )
-
-
-def test_subscribe_rejects_wallet_mismatch_on_chain(client, app):
-    """Subscribe returns 403 when on-chain subscriber does not match caller."""
     # Create publisher first
     resp = client.post(
         "/api/marketplace/publish",
@@ -204,56 +184,33 @@ def test_subscribe_rejects_wallet_mismatch_on_chain(client, app):
     )
     assert resp.status_code == 200
 
-    # Enable on-chain validation with a mismatched subscriber address
+    # Enable live mode
     market = app.state.market
     market.dry_run = False
-    sub_data = _make_sub_data(subscriber_addr="0x0000000000000000000000000000000000000bbb")
-    mock_call = AsyncMock(return_value=sub_data)
-    market.loader._contract.return_value.functions.subscriptions.return_value.call = mock_call
 
-    resp = client.post(
-        "/api/marketplace/subscribe",
-        json={
-            "strategy_id": "test_strat",
-            "pool_id": "0x" + "aa" * 32,
-            "sub_id": "0x" + "bb" * 32,
-            "ephemeral_wallet": "0xeph",
-            "initial_deposit_usdc": 100,
-        },
-    )
-    assert resp.status_code == 403, resp.text
-    assert "does not match" in resp.text
-
-
-def test_subscribe_rejects_pool_id_mismatch_on_chain(client, app):
-    """Subscribe returns 400 when on-chain pool_id does not match derived pool_id."""
-    # Create publisher first
-    resp = client.post(
-        "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault"},
-    )
-    assert resp.status_code == 200
-
-    # Enable on-chain validation with a wrong pool_id
-    market = app.state.market
-    market.dry_run = False
-    wrong_pool = b"\xee" + b"\x00" * 31  # 32 bytes, different from derived pool
-    sub_data = _make_sub_data(pool_id_bytes=wrong_pool)
-    mock_call = AsyncMock(return_value=sub_data)
-    market.loader._contract.return_value.functions.subscriptions.return_value.call = mock_call
-
-    resp = client.post(
-        "/api/marketplace/subscribe",
-        json={
-            "strategy_id": "test_strat",
-            "pool_id": "0x" + "aa" * 32,
-            "sub_id": "0x" + "bb" * 32,
-            "ephemeral_wallet": "0xeph",
-            "initial_deposit_usdc": 100,
-        },
-    )
-    assert resp.status_code == 400, resp.text
-    assert "pool_id" in resp.text.lower() or "does not match" in resp.text
+    # Mock the wallet provisioner so it succeeds without real Circle API
+    wallet_id = "test-wallet-uuid"
+    wallet_address = "0x0000000000000000000000000000000000000eee"
+    with patch("archimedes.api.marketplace_routes.provision_subscriber_wallet",
+              new=AsyncMock(return_value=(wallet_id, wallet_address))):
+        resp = client.post(
+            "/api/marketplace/subscribe",
+            json={
+                "strategy_id": "test_strat",
+                "sub_id": "0x" + "bb" * 32,
+                "ephemeral_wallet": "0xeph",
+            },
+        )
+    # Should succeed — on-chain validation is gone (P7)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["role"] == "subscriber"
+    assert data["sub_id"] == "0x" + "bb" * 32
+    # No SubscriptionManager contract calls should have been made
+    contract = market.loader._contract
+    for call_args in contract.call_args_list:
+        name = call_args[0][1] if len(call_args[0]) > 1 else ""
+        assert "SubscriptionManager" not in name, f"Unexpected SubscriptionManager call: {call_args}"
 
 
 # ─── x402 payment webhook tests ───────────────────────────────────────

@@ -133,10 +133,10 @@ class PublisherAgent:
         self.payment_splitter_address = (
             PAYMENT_SPLITTER_ADDRESS or self.settings.payment_splitter_address
         )
-        self.subscription_manager_address = (
-            SUBSCRIPTION_MANAGER_ADDRESS
-            or self.settings.subscription_manager_address
-        )
+        # SubscriptionManager is fully detached (P7). The env var is still
+        # read for legacy container-mode runners; the marketplace monolith
+        # uses Postgres as the subscription registry.
+        self.subscription_manager_address = SUBSCRIPTION_MANAGER_ADDRESS or ""
 
         # Strategy identity
         self.strategy_id = PUBLISHER_STRATEGY_ID
