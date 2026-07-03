@@ -449,14 +449,46 @@ export async function getWalletClient() {
   if (_providerId === CIRCLE_PROVIDER_ID) {
     // Passkey wallets sign via Circle's bundler (executeUserOp), not viem
     // writeContract — callers should branch on getConnectedProvider() and
-    // use the executor for that path. This error fires only if a code path
-    // forgot to branch.
+    // use the executor for that path (message signing: signSiweMessage below).
+    // This error fires only if a code path forgot to branch.
     throw new Error(
       'This action is not yet wired for passkey wallets. ' +
       'The deposit flow uses Circle bundler execution; other flows still need that wrapper.',
     )
   }
   throw new Error('No wallet connected. Click "Connect Wallet" to continue.')
+}
+
+// Sign a plain text message with WHATEVER wallet is connected (#869).
+// EOA path: viem walletClient.signMessage (secp256k1 personal_sign).
+// Circle passkey path: the smart account's WebAuthn owner signs the account's
+// replay-safe hash (ERC-1271 convention); if the account contract is not yet
+// deployed (no user-op sent yet), the signature is wrapped per ERC-6492 with
+// the account's factory args so the backend's deployless verifier can
+// deploy-and-check it counterfactually.
+export async function signSiweMessage(message) {
+  if (_providerId === CIRCLE_PROVIDER_ID && _smartAccount) {
+    const signature = await _smartAccount.signMessage({ message })
+    try {
+      const deployed = typeof _smartAccount.isDeployed === 'function'
+        ? await _smartAccount.isDeployed()
+        : true
+      if (!deployed && typeof _smartAccount.getFactoryArgs === 'function') {
+        const { factory, factoryData } = await _smartAccount.getFactoryArgs()
+        if (factory && factoryData) {
+          const { serializeErc6492Signature } = await import('viem')
+          return serializeErc6492Signature({ address: factory, data: factoryData, signature })
+        }
+      }
+    } catch (wrapErr) {
+      // Wrapping is an optimization for counterfactual accounts — a deployed
+      // account's plain ERC-1271 signature verifies fine without it.
+      console.warn('ERC-6492 wrap skipped:', wrapErr.message)
+    }
+    return signature
+  }
+  const walletClient = await getWalletClient()
+  return walletClient.signMessage({ message })
 }
 
 // Returns all wallet providers detected in the page — curated WALLET_PROVIDERS

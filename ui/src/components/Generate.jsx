@@ -87,12 +87,13 @@ export default function Generate({ onNavigate }) {
   // when REQUIRE_SIWE_FOR_GENERATION is enabled; until then this is invoked
   // lazily on a 401 so the flow keeps working the moment the flag flips.
   const ensureSiweSession = async () => {
-    const { getWalletClient, getAddress } = await import('../config')
+    const { getAddress } = await import('../config')
     const { authenticateWithSIWE } = await import('../siwe')
     const address = getAddress()
     if (!address) throw new Error('Connect your wallet, then sign in to generate.')
-    const walletClient = await getWalletClient()
-    await authenticateWithSIWE(walletClient, address)
+    // Provider-aware signing (#869): passkey wallets sign via their smart
+    // account, EOAs via the viem wallet client — never getWalletClient() here.
+    await authenticateWithSIWE(address)
   }
 
   const startJob = async () => {

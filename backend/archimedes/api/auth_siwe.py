@@ -288,21 +288,39 @@ async def verify_signature(request: Request, response: Response):
     elif not found:
         raise HTTPException(status_code=401, detail="Nonce not found or already used")
 
-    # Recover the signer address from the signature
+    # Recover the signer address from the signature (EOA fast path — no RPC).
+    # Smart-contract wallets (Circle passkey MSCAs, #869) sign with a WebAuthn
+    # P-256 owner, so secp256k1 recovery either fails outright or recovers an
+    # unrelated address — those fall through to the ERC-1271/6492 path below.
+    recovered_lower = None
     try:
         signable = encode_defunct(text=message)
         recovered = Account.recover_message(signable, signature=signature)
         recovered_lower = recovered.lower()
     except Exception as exc:
-        logger.warning("SIWE signature recovery failed: %s", exc)
-        raise HTTPException(status_code=401, detail="Invalid signature") from exc
+        logger.info("SIWE EOA recovery failed (may be a smart-wallet signature): %s", exc)
 
-    # Verify the recovered address matches the claimed wallet
-    if wallet_from_message and recovered_lower != wallet_from_message:
-        raise HTTPException(
-            status_code=401,
-            detail=f"Signature address {recovered_lower} does not match claimed wallet {wallet_from_message}",
-        )
+    if recovered_lower and (not wallet_from_message or recovered_lower == wallet_from_message):
+        verified_wallet = recovered_lower
+    elif wallet_from_message:
+        # ERC-1271 (deployed) / ERC-6492 (counterfactual) smart-account
+        # verification via one deployless eth_call — see _erc6492.py. The
+        # claimed wallet is what gets verified: only a signature its contract
+        # (or its 6492 factory-deployed instance) accepts authenticates it.
+        from archimedes.api._erc6492 import verify_smart_wallet_signature
+
+        rpc_url = os.getenv("ARC_ARC_RPC_URL", "https://rpc.testnet.arc.network")
+        if not await verify_smart_wallet_signature(wallet_from_message, message, signature, rpc_url):
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid signature (EOA recovery and smart-wallet verification both failed)",
+            )
+        verified_wallet = wallet_from_message
+        logger.info("SIWE smart-wallet (ERC-1271/6492) verification succeeded for %s…", verified_wallet[:10])
+    else:
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    recovered_lower = verified_wallet
 
     # Issue session cookie
     now = time.time()

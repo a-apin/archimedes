@@ -17,11 +17,14 @@ const CHAIN_ID = import.meta.env.VITE_ARC_CHAIN_ID ?? '5042002'
 /**
  * Perform SIWE authentication: request nonce, sign message, verify.
  *
- * @param {object} walletClient — viem wallet client (from getWalletClient())
+ * Signing is provider-aware via config.signSiweMessage (#869): EOA wallets
+ * personal_sign; Circle passkey wallets sign through their smart account
+ * (WebAuthn → ERC-1271, ERC-6492-wrapped when the account is undeployed).
+ *
  * @param {string} address — the connected wallet address
  * @returns {Promise<{authenticated: boolean, wallet: string}>}
  */
-export async function authenticateWithSIWE(walletClient, address) {
+export async function authenticateWithSIWE(address) {
   // Step 1: Request a nonce from the backend
   const nonceRes = await fetch(`${API_BASE}/api/auth/nonce`)
   if (!nonceRes.ok) throw new Error(`Nonce request failed (${nonceRes.status})`)
@@ -42,7 +45,8 @@ export async function authenticateWithSIWE(walletClient, address) {
   ].join('\n')
 
   // Step 3: Sign the message (wallet popup — Touch ID or MetaMask confirm)
-  const signature = await walletClient.signMessage({ message })
+  const { signSiweMessage } = await import('./config')
+  const signature = await signSiweMessage(message)
 
   // Step 4: Send to backend for verification
   const verifyRes = await fetch(`${API_BASE}/api/auth/verify`, {
