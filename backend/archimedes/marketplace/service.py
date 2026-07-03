@@ -140,6 +140,7 @@ class Subscriber:
     ephemeral_wallet: str
     subscriber_wallet: str
     active: bool = True
+    circle_wallet_id: str = ""  # Circle Developer-Controlled Wallet UUID for x402 signing
 
 
 @dataclass
@@ -284,19 +285,10 @@ class MarketService:
     async def add_subscriber(self, strategy_id: str, sub: Subscriber) -> None:
         """Register a subscriber for a strategy.
 
-        Validates on-chain before adding. Any validation failure (inactive,
-        RPC error, invalid sub_id) raises — fails closed (M4).
+        The Postgres row is the registry of record (P7). No on-chain
+        validation is performed — SubscriptionManager is fully detached.
+        Raises ValueError if the publisher is not running.
         """
-        if not self.dry_run:
-            c = self.loader._contract(self.settings.subscription_manager_address, "SubscriptionManager")
-            try:
-                sub_data = await c.functions.subscriptions(to_bytes32(sub.sub_id)).call()
-            except Exception as exc:
-                raise ValueError(f"on-chain validation failed for {sub.sub_id}: {exc}") from exc
-            active = bool(sub_data[5])  # 6th field: active
-            if not active:
-                raise ValueError(f"subscription {sub.sub_id} not active on-chain")
-
         pub = self.publishers.get(strategy_id)
         if pub is None:
             raise ValueError(f"no running publisher for {strategy_id}")
@@ -661,6 +653,9 @@ class MarketService:
             return False
         try:
             vault = await self.executor.read_portfolio(sub.vault_address)
+            # sub.ephemeral_wallet IS the subscriber's Circle Developer-Controlled
+            # Wallet address (P3) — this check truthfully validates the funded
+            # wallet that the x402 signer controls.
             eph_raw = await self._usdc_balance_of(sub.ephemeral_wallet)
         except Exception:
             return False
@@ -679,12 +674,12 @@ class MarketService:
         if not pub.gateway_seller_address:
             logger.warning("[%s] no gateway_seller_address for pub %s — unpaid", tick_id, strategy_id)
             return False
-        eph_key = await self.state.get_ephemeral_key(sub.sub_id)
-        if not eph_key:
-            logger.warning("[%s] no ephemeral key for sub %s — unpaid", tick_id, sub.sub_id)
+        if not sub.circle_wallet_id:
+            logger.warning("[%s] no circle_wallet_id for sub %s — unpaid", tick_id, sub.sub_id)
             return False
         return await payments.charge(
-            sub_id=sub.sub_id, ephemeral_key=eph_key,
+            sub_id=sub.sub_id, wallet_id=sub.circle_wallet_id,
+            wallet_address=sub.ephemeral_wallet,
             seller_address=pub.gateway_seller_address,
             strategy_id=strategy_id, tick_id=tick_id,
             action_count=action_count, flat_fee_raw=FLAT_FEE_PER_ACTION, step=step.value,

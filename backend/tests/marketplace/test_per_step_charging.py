@@ -89,7 +89,6 @@ def market():
     svc.state.append_event = AsyncMock()
     svc.state.save_subscribers = AsyncMock()
     svc.state.load_subscribers = AsyncMock(return_value={})
-    svc.state.get_ephemeral_key = AsyncMock(return_value="eph_key")
     svc.state.try_acquire_regime_lock = AsyncMock(return_value=False)
     svc.state.store = MagicMock()
     svc.state.store.load_regime = AsyncMock(return_value=None)
@@ -111,6 +110,7 @@ def _add_publisher(market, sid="strat_a"):
     pub = Publisher(
         strategy_id=sid, pool_id="0x" + "aa" * 32,
         vault_address="0xpublisher_vault", creator_wallet="0xpublisher",
+        gateway_seller_address="0xgateway_seller",
     )
     market.publishers[sid] = pub
     return pub
@@ -121,6 +121,7 @@ def _add_sub(pub, sub_id="sub_1", active=True):
         sub_id="0x" + sub_id * 32, pool_id="0x" + "bb" * 32,
         vault_address="0xsub_vault", ephemeral_wallet="0xephemeral",
         subscriber_wallet="0xsubscriber", active=active,
+        circle_wallet_id="wallet_circle_id",
     )
     pub.subscribers[sub_id] = sub
     return sub

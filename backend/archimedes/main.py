@@ -139,13 +139,23 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         # Group subscriber rows by strategy_id
         subscribers_by_strategy: dict[str, dict[str, Subscriber]] = {}
         for srow in subscriber_rows:
+            if not srow.circle_wallet_id:
+                _logger.warning(
+                    "rehydrate: subscriber %s has NULL circle_wallet_id — "
+                    "marking inactive (fail closed, legacy row)",
+                    srow.sub_id,
+                )
+                subscriber_active = False
+            else:
+                subscriber_active = not srow.halted
             subscribers_by_strategy.setdefault(srow.strategy_id, {})[srow.sub_id] = Subscriber(
                 sub_id=srow.sub_id,
                 pool_id=srow.pool_id,
                 vault_address=srow.vault_address,
                 ephemeral_wallet=srow.ephemeral_wallet,
                 subscriber_wallet=srow.subscriber_wallet,
-                active=not srow.halted,
+                active=subscriber_active,
+                circle_wallet_id=srow.circle_wallet_id or "",
             )
 
         for row in publishers:
