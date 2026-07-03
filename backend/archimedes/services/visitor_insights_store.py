@@ -76,13 +76,28 @@ class VisitorInsightsStore:
     # ─── Record (write path — JS-gated `landed` beacon, issue #830) ──────
 
     async def record(self, country: str | None, device: str, visitor_id: str) -> None:
-        """Record one landed visit's country + device for ``visitor_id``. Never raises."""
+        """Record ``visitor_id``'s country + device, attributed once per visitor.
+
+        Only the visitor's FIRST recorded landed beacon buckets them into a
+        country/device — a repeat visitor whose classified country or device
+        differs across visits (VPN, mobile hotspot vs. home wifi, a flaky UA
+        parse, …) is NOT re-bucketed. Without this gate, summing the
+        per-country or per-device breakdowns can exceed the funnel's single
+        overall ``landed`` distinct-visitor count, even though each
+        individual bucket's own HLL count is internally correct — the
+        Insights page promises these sums reconcile with ``landed``
+        (issue #854 finding #6), and first-seen attribution is what makes
+        that true by construction rather than by coincidence. Never raises.
+        """
         if not visitor_id:
             return
         cc = _norm_country(country)
         dev = device if device in DEVICE_CLASSES else "unknown"
         try:
             r = await self._get_redis()
+            first_seen = await r.sadd(f"{_PREFIX}:attributed", visitor_id)
+            if not first_seen:
+                return
             day = _today()
             country_day = f"{_PREFIX}:country:day:{day}:{cc}"
             device_day = f"{_PREFIX}:device:day:{day}:{dev}"

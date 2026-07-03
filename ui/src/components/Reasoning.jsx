@@ -8,21 +8,28 @@ import { regimeMeta } from '../regime'
 
 
 
-function timeAgo(ts) {
-  if (!ts) return '—'
-  const d = new Date(ts)
-  if (isNaN(d.getTime())) {
-    // Unix timestamp
-    const secs = Math.floor(Date.now() / 1000) - Number(ts)
-    if (secs < 60) return `${secs}s ago`
-    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
-    if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`
-    return `${Math.floor(secs / 86400)}d ago`
-  }
-  const secs = Math.floor((Date.now() - d.getTime()) / 1000)
+function formatAgo(secs) {
   if (secs < 60) return `${secs}s ago`
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
-  return `${Math.floor(secs / 3600)}h ago`
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`
+  return `${Math.floor(secs / 86400)}d ago`
+}
+
+function timeAgo(ts) {
+  if (!ts) return 'unknown'
+  // Resolve to an epoch-ms value via both a date-string parse and a raw
+  // numeric (Unix seconds) parse, then use whichever succeeds.
+  const asDate = new Date(ts)
+  const epochMs = !isNaN(asDate.getTime()) ? asDate.getTime() : Number(ts) * 1000
+  // A missing/null timestamp from the backend often serializes as epoch 0
+  // ("1970-01-01T00:00:00Z" or numeric 0) rather than an empty value — that
+  // is not a real 56-years-ago event, it's an absent timestamp. Guard it
+  // explicitly so it renders "unknown" instead of a nonsensical multi-decade
+  // relative delta (observed live as "494774h ago").
+  if (!Number.isFinite(epochMs) || epochMs <= 0) return 'unknown'
+  const secs = Math.floor((Date.now() - epochMs) / 1000)
+  if (secs < 0) return 'unknown'
+  return formatAgo(secs)
 }
 
 function shortAddr(addr) {

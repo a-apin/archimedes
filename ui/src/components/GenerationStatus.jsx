@@ -18,6 +18,10 @@ function timeAgo(iso) {
   if (!iso) return '—'
   const d = new Date(iso)
   if (isNaN(d.getTime())) return iso
+  // A missing timestamp often round-trips as epoch 0 rather than an empty
+  // value — that's not a real multi-decade-old event, it's an absent
+  // timestamp, so render it the same as the no-value case.
+  if (d.getTime() <= 0) return '—'
   const secs = Math.floor((Date.now() - d.getTime()) / 1000)
   if (secs < 60) return `${secs}s ago`
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`

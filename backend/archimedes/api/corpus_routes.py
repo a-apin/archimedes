@@ -122,18 +122,27 @@ async def corpus_overview() -> dict[str, Any]:
                 .group_by(PaperRecord.cluster_id)
                 .all()
             )
-            # Category + year histograms restricted to KB-processed papers so
-            # the chart numbers match what the user can actually inspect end
-            # to end (paper detail + topic cluster + similarity neighbors).
-            # Showing histogram over all 10K metadata rows would imply the
-            # KB pipeline ran on rows it hasn't touched yet.
+            # Category + year histograms cover the FULL catalog (not just
+            # KB-processed papers) — issue #854 finding #5: restricting these
+            # to `cluster_id IS NOT NULL` meant they read 0/0/0 with the
+            # header badges reading "0 papers · 0 categories" while the
+            # Catalog tab in the same view listed all 10,000 papers, because
+            # the KB pipeline (SPECTER2/HDBSCAN clustering) hasn't produced
+            # an artifact yet and so never populates `cluster_id`. Category +
+            # year are arxiv metadata facts (ingested for every paper up
+            # front, same source Catalog already reads), not KB-pipeline
+            # output — showing them for the full catalog makes no claim
+            # about KB-processing status. KB-derived facts (similarity
+            # graph, topic clusters) still correctly gate on the pipeline
+            # artifact via /api/corpus/graph + /api/corpus/kg/* (503 with an
+            # honest "pipeline not yet run" message) — only the plain
+            # metadata histograms below were mis-scoped.
             cat_rows = (
                 session.query(
                     PaperRecord.primary_category,
                     func.count(PaperRecord.arxiv_id),
                 )
                 .filter(PaperRecord.primary_category != "")
-                .filter(PaperRecord.cluster_id.isnot(None))
                 .group_by(PaperRecord.primary_category)
                 .order_by(func.count(PaperRecord.arxiv_id).desc())
                 .all()
@@ -153,7 +162,6 @@ async def corpus_overview() -> dict[str, Any]:
                     func.count(PaperRecord.arxiv_id),
                 )
                 .filter(PaperRecord.published != "")
-                .filter(PaperRecord.cluster_id.isnot(None))
                 .group_by("yr")
                 .order_by("yr")
                 .all()
@@ -178,10 +186,15 @@ async def corpus_overview() -> dict[str, Any]:
         "last_run_ts": (manifest or {}).get("run_ts"),
         "pipeline_status": (manifest or {}).get("status", "never run"),
         # UI shape — read by CorpusExplorer.jsx for header chips + Overview tab.
-        # total_papers reflects the *processed* count so the prominent number
-        # users see matches what they can inspect end to end. Catalog tab
-        # defaults to processed_only=true (see papers_routes.py).
-        "total_papers": processed_papers,
+        # total_papers reflects the full catalog count (paper_count), matching
+        # what the Catalog tab shows: papers_routes.py's `processed_only=true`
+        # default falls back to the full 10K-row corpus (via load_corpus())
+        # whenever the KB-processed subset is empty, so Catalog's real total
+        # is `paper_count`, not `processed_papers`. Reporting `processed_papers`
+        # here — 0 until the KB pipeline's first clustering run — produced the
+        # "0 papers · 0 categories" header while Catalog listed 10,000
+        # (issue #854 finding #5).
+        "total_papers": paper_count,
         "categories": categories,
         "year_distribution": year_distribution,
         "source": "arxiv q-fin + adjacent",

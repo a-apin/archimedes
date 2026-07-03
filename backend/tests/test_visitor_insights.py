@@ -25,7 +25,7 @@ VisitorInsightsStore = vstore.VisitorInsightsStore
 _norm_country = vstore._norm_country
 
 
-def _mock_redis(pfcounts=None, members=None):
+def _mock_redis(pfcounts=None, members=None, first_seen=1):
     pipe = MagicMock()
     pipe.pfadd = MagicMock(return_value=pipe)
     pipe.expire = MagicMock(return_value=pipe)
@@ -35,6 +35,10 @@ def _mock_redis(pfcounts=None, members=None):
     r = MagicMock()
     r.pipeline = MagicMock(return_value=pipe)
     r.smembers = AsyncMock(return_value=members or set())
+    # Top-level (non-pipelined) SADD used by `record()`'s first-seen-only
+    # attribution gate — 1 = newly attributed (proceed), 0 = already
+    # attributed on an earlier visit (short-circuit, no re-bucketing).
+    r.sadd = AsyncMock(return_value=first_seen)
     return r, pipe
 
 
@@ -199,6 +203,18 @@ class _FakeHLLRedis:
     async def smembers(self, key: str):
         return set(self.sets.get(key, set()))
 
+    async def sadd(self, key: str, member: str) -> int:
+        """Top-level (non-pipelined) SADD — used by the first-seen gate.
+
+        Exact SET semantics (unlike PFADD/HLL): returns 1 if newly added,
+        0 if the member was already present.
+        """
+        bucket = self.sets.setdefault(key, set())
+        if member in bucket:
+            return 0
+        bucket.add(member)
+        return 1
+
 
 class _FakePipe:
     def __init__(self, r: _FakeHLLRedis) -> None:
@@ -277,6 +293,56 @@ async def test_landed_population_reconciles_funnel_and_geo_device():
     assert country_sum == n
     assert device_sum == n
     assert country_sum == device_sum == landed
+
+
+async def test_repeat_visits_with_drifting_country_device_still_reconcile():
+    """A returning visitor classified under a DIFFERENT country/device on a
+    later visit must NOT be double-bucketed (issue #854 finding #6).
+
+    Before first-seen attribution, Insights showed Top Countries summing to
+    106 and Device summing to 104 against a funnel `landed` of 61 — because
+    a repeat visitor recorded under >1 country or device across visits was
+    counted once per bucket even though the funnel counts them once overall.
+    This drives 5 distinct visitors through 2 visits each, with country and
+    device DRIFTING on the second visit, and asserts the sums still equal
+    the funnel population.
+    """
+    from unittest.mock import AsyncMock
+
+    from archimedes.services.funnel_store import FunnelStore
+
+    shared = _FakeHLLRedis()
+
+    funnel = FunnelStore()
+    funnel._get_redis = AsyncMock(return_value=shared)
+    insights = VisitorInsightsStore()
+    insights._get_redis = AsyncMock(return_value=shared)
+
+    n = 5
+    for i in range(n):
+        vid = f"vid-{i}"
+        # First visit.
+        await funnel.record("landed", vid)
+        await insights.record("US", "desktop", vid)
+        # Second visit, later — classified differently (VPN / new device /
+        # flaky UA sniff). The funnel sees the SAME distinct visitor again
+        # (idempotent); the naive pre-fix behavior would double-bucket them
+        # into a second country AND a second device.
+        await funnel.record("landed", vid)
+        await insights.record("DE", "mobile", vid)
+
+    landed = (await funnel.get_totals())["landed"]
+    countries, devices = await insights.get_insights()
+    country_sum = sum(countries.values())
+    device_sum = sum(devices.values())
+
+    assert landed == n
+    assert country_sum == n
+    assert device_sum == n
+    # First-seen attribution: every visitor's ONE bucket is their first visit.
+    assert countries == {"US": n}
+    assert devices["desktop"] == n
+    assert devices.get("mobile", 0) == 0
 
 
 async def test_beacon_path_records_both_funnel_and_visitor_insight():

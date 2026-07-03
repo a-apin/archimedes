@@ -174,9 +174,9 @@ export default function Insights() {
           <section style={card}>
             <h2 style={{ marginTop: 0, fontSize: 16 }}>Who’s visiting — geography &amp; device</h2>
             <p style={{ color: 'var(--text-dim, #8b93a7)', fontSize: 12.5, marginTop: 0, marginBottom: 14 }}>
-              Same JS-gated <strong>landed</strong> population as the funnel (#830) — distinct visitors, so these
-              counts reconcile with the funnel’s <em>Landed</em> number. Country is <code>ZZ</code> until the
-              CloudFront <code>terraform apply</code> (#795) forwards <code>Viewer-Country</code>.
+              Same JS-gated <strong>landed</strong> population as the funnel — distinct visitors, attributed once
+              per visitor, so these counts reconcile with the funnel’s <em>Landed</em> number. Country shows{' '}
+              <code>ZZ</code> (unknown / not provided) until CloudFront forwards the visitor's country.
             </p>
             {loading && !visitors && !visitorsError ? (
               <Empty>Loading visitor insights…</Empty>
