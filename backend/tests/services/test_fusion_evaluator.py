@@ -544,3 +544,34 @@ class TestFusionGateUsesRealTrialCount:
             base.append(base[-1] * (1.003 if i % 2 == 0 else 1.001))
         verdict = apply_rigor_gate(_metrics_from_curve(base), num_trials=7)
         assert verdict.num_trials == 7
+
+    def test_larger_passed_num_trials_is_not_overridden_by_a_small_variant_grid(self):
+        """#820: a small parameter-variant grid must not silently undercut a
+        bigger, correct caller-supplied num_trials (e.g. the society count,
+        library_size + selection_pool_size, threaded from _run_fusion_candidate).
+        Before this fix, any >=2-entry variants_metrics unconditionally replaced
+        num_trials, so a 3-variant grid could under-deflate a strategy that
+        actually needed a much larger society-wide trial count."""
+        base = [100_000.0]
+        for i in range(800):
+            base.append(base[-1] * (1.003 if i % 2 == 0 else 1.001))
+        base_metrics = _metrics_from_curve(base)
+
+        # Only 3 variants (a small parameter sweep), but num_trials=15 reflects a
+        # bigger selection set (e.g. library_size=10 + selection_pool_size=5).
+        variants = {f"v{i}": _metrics_from_curve(base) for i in range(3)}
+        verdict = apply_rigor_gate(base_metrics, num_trials=15, variants_metrics=variants)
+        assert verdict.num_trials == 15
+
+    def test_smaller_passed_num_trials_still_yields_to_a_larger_variant_grid(self):
+        """The max() composition is symmetric: a genuinely larger variant grid
+        still wins over a smaller passed-in num_trials, preserving the original
+        under-deflation fix this class's first test pins."""
+        base = [100_000.0]
+        for i in range(800):
+            base.append(base[-1] * (1.003 if i % 2 == 0 else 1.001))
+        base_metrics = _metrics_from_curve(base)
+
+        variants = {f"v{i}": _metrics_from_curve(base) for i in range(30)}
+        verdict = apply_rigor_gate(base_metrics, num_trials=10, variants_metrics=variants)
+        assert verdict.num_trials == 30

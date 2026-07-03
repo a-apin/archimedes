@@ -891,7 +891,7 @@ async def _run_fusion_candidate(
     emit: _Emitter,
     regime: str = "neutral",
     agent: Any = None,  # noqa: ARG001 — signature parity with _run_live_candidate; fusion path builds its own client
-    selection_pool_size: int = 1,  # noqa: ARG001 — signature parity; fusion candidates skip the static DSR path
+    selection_pool_size: int = 1,
 ) -> _CandidateResult:
     """Drive the existing fusion engine with per-step streaming event emission.
 
@@ -974,12 +974,25 @@ async def _run_fusion_candidate(
         )
         from archimedes.services.fusion_evaluator import evaluate_fusion_spec
         from archimedes.services.fusion_market_data import real_data_enabled
+        from archimedes.services.strategy_provider import default_provider
+
+        # #820: this candidate is one of `selection_pool_size` society candidates
+        # and its winner joins the library, same as the live agent path — so it
+        # needs the same num_trials, not evaluate_fusion_spec's own library-size-
+        # only default (which under-deflates relative to _run_live_candidate).
+        library_size = len(default_provider().list_strategies())
+        num_trials = _society_num_trials(library_size, selection_pool_size)
 
         # Real data (the deployability unlock, #788/#818): a cold yfinance fetch
         # for the spec's universe plus the per-asset variant grid can take a few
         # minutes — 300s bounds it; the panel cache makes warm runs fast again.
         eval_result = await asyncio.wait_for(
-            asyncio.to_thread(evaluate_fusion_spec, proposal.strategy_spec, use_real_data=real_data_enabled()),
+            asyncio.to_thread(
+                evaluate_fusion_spec,
+                proposal.strategy_spec,
+                num_trials=num_trials,
+                use_real_data=real_data_enabled(),
+            ),
             timeout=300.0,
         )
         asset_universe = list(proposal.strategy_spec.get("asset_universe", []) or [])

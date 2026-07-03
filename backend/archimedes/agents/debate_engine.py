@@ -19,11 +19,11 @@ society:
      rebuttal + LLM risk-debate is Phase 2.
   3. **C-rigor** — backtests EVERY survivor for real via ``evaluate_fusion_spec``
      (deterministic Python, 0 tokens), each wrapped in try/except (fix A5
-     backstop), with ``num_trials=pool_size`` so the DSR multiple-testing
-     correction counts the selection-from-pool search. This is the self-contained
-     A1 deflation at the per-candidate evaluator — it coordinates with #770's
-     ``library + N`` additive correction on the generation path rather than the
-     library-grading external route, so it does not fight that PR.
+     backstop), with ``num_trials=_society_num_trials(library_size, pool_size)``
+     (library + N, #770/#820 — not ``pool_size`` alone) so the DSR
+     multiple-testing correction counts both the selection-from-pool search AND
+     the library the winner joins, the same selection set the live agent path
+     deflates for.
   4. **C-null** — a survivor must beat the passive null (buy-and-hold) net of
      cost by ``MIN_COST_BENEFIT``. If none clears it → first-class ABSTAIN.
   5. **Synthesizer** — deterministic rank of the survivors (Phase 1 collapses the
@@ -34,9 +34,11 @@ contract preserving); the full leaderboard is built by ``build_leaderboard``
 (directly unit-tested) and the Considered-Alternatives fan-out is Phase 2.
 
 ⚠️  PHASE-1 BLOCKER: ``ARCHIMEDES_DEBATE_ENABLED`` must stay OFF on the live path
-until A1 (``pool_size`` → the external rigor gate, the OPEN Önder denominator)
-is proven there — else the rigor badge can false-PASS. The flag-OFF additive
-skeleton in this module is safe to merge.
+until this module's rigor badge has been validated end-to-end there (A1's
+denominator now matches the live path's — library + N via
+``_society_num_trials``, #770/#820 — but the flag still needs a real on-flag
+run before it's trusted). The flag-OFF additive skeleton in this module is
+safe to merge.
 """
 
 from __future__ import annotations
@@ -359,10 +361,11 @@ async def _debate_round(pool: list[Any], model: str | None, emit: _Emitter, cand
 async def _critic_rigor(pool: list[Any], num_trials: int) -> list[tuple[Any, Any]]:
     """Backtest every pooled spec for real; return ``[(proposal, eval_result)]``.
 
-    ``num_trials=pool_size`` so the DSR deflation counts the selection-from-pool
-    search (A1). Each ``evaluate_fusion_spec`` is wrapped in try/except so one bad
-    spec (despite the A5 pre-guard) drops with an honest emit, never aborting the
-    cohort.
+    ``num_trials`` is ``_society_num_trials(library_size, pool_size)`` (library + N,
+    #770/#820), so the DSR deflation counts the selection-from-pool search AND the
+    library the winner joins — not ``pool_size`` alone. Each ``evaluate_fusion_spec``
+    is wrapped in try/except so one bad spec (despite the A5 pre-guard) drops with
+    an honest emit, never aborting the cohort.
     """
     from archimedes.services.fusion_evaluator import evaluate_fusion_spec
     from archimedes.services.fusion_market_data import real_data_enabled
@@ -456,7 +459,7 @@ def _rigor_verdict_dict(ev: Any) -> dict[str, Any]:
         "in_sample_sharpe": r.in_sample_sharpe,
         "lookahead_audit_passed": bool(r.look_ahead_clean),
         "look_ahead_label": r.look_ahead_label,
-        "num_trials": int(r.num_trials),  # == pool_size (A1)
+        "num_trials": int(r.num_trials),  # library + pool_size, #770/#820 (A1)
         "passing": bool(r.passing),
         "data_source": r.data_source,
         "admissible": bool(ev.admissible),
