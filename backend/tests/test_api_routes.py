@@ -878,6 +878,69 @@ class TestFusionEvaluatorIntegration:
         else:
             assert record.status == "rejected"
 
+    async def test_fusion_job_num_trials_matches_society_formula(
+        self,
+        client,
+        _no_redis_job_store,
+        _no_redis_agent_state,
+    ):
+        """#820: the direct-fusion job route must deflate for the SAME selection
+        set as the society/live paths — ``_society_num_trials(library, pool=1)``
+        — not ``evaluate_fusion_spec``'s library-size-only default. The spy
+        captures the kwarg then raises; the job's non-fatal eval path tolerates
+        that, so no FusionEvalResult needs fabricating."""
+        from archimedes.agents.generation_pipeline import _society_num_trials
+        from archimedes.agents.strategy_fusion import FusionBrief, FusionProposal
+        from archimedes.api.strategies_routes import _run_fusion_job
+        from archimedes.models.portfolio import RiskProfile
+        from archimedes.services.strategy_dsl import FABER_2007_SPEC
+        from archimedes.services.strategy_provider import default_provider
+
+        mock_proposal = FusionProposal(
+            status="ok",
+            brief=FusionBrief(
+                asset_classes=["SPY"],
+                risk_appetite=RiskProfile.MODERATE,
+                strategic_direction="",
+            ),
+            strategy_name="test_fusion_job_num_trials",
+            thesis="t",
+            source_arxiv_ids=["0706.1497", "1710.00727"],
+            fusion_reasoning="r",
+            novelty_rationale="n",
+            risk_notes="rn",
+            model="canned",
+            requested_model="canned",
+            strategy_spec=FABER_2007_SPEC,
+        )
+        mock_fusion = MagicMock()
+        mock_fusion.propose.return_value = mock_proposal
+
+        captured: dict = {}
+
+        def _spy(spec, *, num_trials=None, use_real_data=False, **kw):
+            captured["num_trials"] = num_trials
+            raise RuntimeError("spy: captured num_trials; eval is non-fatal")
+
+        expected = _society_num_trials(len(default_provider().list_strategies()), 1)
+
+        job_id = "test-job-num-trials"
+        self._seed_job(
+            _no_redis_job_store,
+            job_id,
+            {"asset_classes": ["SPY"], "risk_appetite": "moderate"},
+        )
+        with (
+            patch("archimedes.services.strategy_fusion.default_fusion", return_value=mock_fusion),
+            patch("archimedes.services.fusion_evaluator.evaluate_fusion_spec", side_effect=_spy),
+        ):
+            await _run_fusion_job(job_id)
+
+        assert captured.get("num_trials") == expected, (
+            f"fusion job deflated with num_trials={captured.get('num_trials')}, "
+            f"expected the society formula's {expected}"
+        )
+
     async def test_fusion_without_spec_falls_back_to_candidate(
         self,
         client,

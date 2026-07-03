@@ -1623,11 +1623,22 @@ async def _run_fusion_job(job_id: str) -> None:
         eval_result = None
         if result.strategy_spec is not None:
             try:
+                from archimedes.agents.generation_pipeline import _society_num_trials
                 from archimedes.services.fusion_evaluator import evaluate_fusion_spec
                 from archimedes.services.fusion_market_data import real_data_enabled
+                from archimedes.services.strategy_provider import default_provider
 
+                # #820: same deflation denominator as the society/live paths —
+                # library + pool (pool=1 here: a single direct-fusion candidate).
+                # Without this, evaluate_fusion_spec falls back to its
+                # library-size-only default and this route under-deflates
+                # relative to every other generation path.
+                library_size = len(default_provider().list_strategies())
                 eval_result = await asyncio.to_thread(
-                    evaluate_fusion_spec, result.strategy_spec, use_real_data=real_data_enabled()
+                    evaluate_fusion_spec,
+                    result.strategy_spec,
+                    use_real_data=real_data_enabled(),
+                    num_trials=_society_num_trials(library_size, 1),
                 )
             except Exception as _eval_exc:
                 import logging as _logging
