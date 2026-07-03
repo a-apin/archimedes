@@ -926,16 +926,8 @@ class MarketService:
     ) -> None:
         """Record a charge-succeeded/mirror-failed liability. Best-effort:
         a failure here must not abort the tick or block subsequent subscribers."""
-        unit_price = None
-        try:
-            addr = self.settings.subscription_manager_address
-            if addr:
-                c = self.loader._contract(addr, "SubscriptionManager")
-                unit_price = await c.functions.flat_fee_per_action().call()
-        except Exception:
-            logger.warning("Could not read flat_fee_per_action for liability record on %s", sub.sub_id)
-
-        amount_owed = action_count * unit_price if unit_price is not None else None
+        unit_price = FLAT_FEE_PER_ACTION
+        amount_owed = action_count * unit_price
 
         try:
             with get_session() as session:

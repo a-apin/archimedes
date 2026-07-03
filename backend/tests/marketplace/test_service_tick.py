@@ -355,6 +355,39 @@ async def test_record_liability_best_effort(market: MarketService):
     assert market.state.append_event.await_count == before_count
 
 
+@pytest.mark.asyncio
+async def test_record_liability_uses_env_fee_no_chain_call(market: MarketService):
+    """``_record_liability`` uses FLAT_FEE_PER_ACTION directly (never hits chain)."""
+    from archimedes.marketplace.service import FLAT_FEE_PER_ACTION
+
+    sub = Subscriber(
+        sub_id="0x" + "cc" * 32,
+        pool_id="0x" + "dd" * 32,
+        vault_address="0xsub_vault2",
+        ephemeral_wallet="0xeph2",
+        subscriber_wallet="0xsub2",
+        active=True,
+    )
+
+    inserted = {}
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def add(self, obj):
+            inserted["obj"] = obj
+        def commit(self):
+            pass
+
+    with patch("archimedes.marketplace.service.get_session", return_value=FakeSession()):
+        await market._record_liability(sub, "strat_h", "tick_2", 5)
+
+    assert inserted["obj"].unit_price_usdc == FLAT_FEE_PER_ACTION
+    assert inserted["obj"].amount_owed_usdc == 5 * FLAT_FEE_PER_ACTION
+
+
 # ── TASK 17 — Leader lock: per-strategy isolation + explicit release + renewal ─
 
 
