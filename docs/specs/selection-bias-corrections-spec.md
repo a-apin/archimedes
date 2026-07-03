@@ -265,9 +265,13 @@ column alone, which this trial count can't resolve precisely. Below N = 10,
 gating on an underpowered statistic; PBO is still computed and shown
 alongside as advisory. At or above N = 10, gating is unchanged from today.
 
-**Reproduce:** the simulation script is not checked into the repo (a
-one-off derivation, not a maintained test) — see this PR's description for
-the exact code if you want to re-run or extend it.
+**Reproduce:** the floor's behavioral contract is pinned by the
+`TestPboPowerFloor` cases in `backend/tests/test_rigor_evaluator.py`
+(below `MIN_LIBRARY_N_FOR_PBO_GATING` → criterion 4 reports `NOT_RUN` and
+never gates; at/above → gating unchanged). The N = 10 threshold itself came
+from a one-off power simulation that is not a maintained artifact; the
+structural `1/N <= 10%` argument above is the durable justification, and
+issue #819 records the derivation discussion.
 
 ## 3. Walk-forward Out-of-Sample Sharpe
 
