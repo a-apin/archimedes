@@ -202,6 +202,23 @@ def _parse_validation_json(raw: str) -> dict[str, Any] | None:
         return None
 
 
+def _invalid_brief_message(reason: object) -> str:
+    """Frame a validator rejection as guidance, never as a bare category label.
+
+    Lives in the ORCHESTRATOR (brief validation runs before pipeline dispatch),
+    so the debate-society cutover keeps this path. The validator LLM can return
+    a terse ``reason`` like "gibberish" — surfacing that verbatim reads as an
+    insult with zero direction (a user typing "test" saw ``Error — gibberish``).
+    Keep the honest reason, wrap it in what-to-do-instead.
+    """
+    raw = str(reason or "it did not describe an investment goal").strip().rstrip(".")
+    return (
+        f"We couldn't turn that into an investment brief ({raw}). "
+        "Describe what you want from a portfolio in a sentence — e.g. "
+        '"diversified low-volatility strategy for idle USDC".'
+    )
+
+
 async def _validate_brief(brief: GenerateBrief) -> dict[str, Any]:
     """Call the LLM to validate the brief.
 
@@ -1078,8 +1095,8 @@ async def run_generation(
             # offering a "regenerate" CTA with the reason inline.
             await emit.emit(
                 "error",
-                message=validated.get("reason", "brief did not pass validation"),
-                hint=validated.get("hint", "Try mentioning an asset class or risk appetite."),
+                message=_invalid_brief_message(validated.get("reason")),
+                hint=validated.get("hint") or "Mention an asset class, a goal, or a risk appetite.",
                 recoverable=True,
                 code="BRIEF_INVALID",
             )

@@ -45,6 +45,7 @@ from typing import Any
 from archimedes.agents.strategy_architect import extract_json
 from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
 from archimedes.services.llm_backend import LLMBackend, make_llm_backend
+from archimedes.services.strategy_dsl import DSLError, validate_strategy_spec
 from archimedes.services.strategy_signal_evaluator import GLOBAL_ASSETS
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,79 @@ for _synth, (_yf, _display, _ac, _exch) in GLOBAL_ASSETS.items():
     _UNIVERSE_LOOKUP[_display.casefold()] = _display
     _UNIVERSE_LOOKUP[_synth.casefold()] = _display
     _UNIVERSE_LOOKUP[_yf.casefold()] = _display
+
+
+def _repair_spec(backend: Any, brief: FusionBrief, parsed: dict[str, Any]) -> dict[str, Any] | None:
+    """One bounded retry when the model omitted ``strategy_spec``.
+
+    Sends the already-accepted proposal back and asks for ONLY the spec JSON.
+    Tolerates a ``{"strategy_spec": {...}}`` wrapper. Returns None (text-only
+    fallback, honest pre-backtest verdict) if the retry also fails — never
+    loops, never fabricates.
+    """
+    try:
+        user_msg = json.dumps(
+            {
+                "strategy_name": parsed.get("strategy_name"),
+                "thesis": parsed.get("thesis"),
+                "fusion_reasoning": parsed.get("fusion_reasoning"),
+                "source_arxiv_ids": parsed.get("source_arxiv_ids", []),
+                "user_steer": {"asset_classes": brief.asset_classes},
+            }
+        )
+        raw = backend.complete(_SPEC_REPAIR_SYSTEM, user_msg)
+        repaired = extract_json(raw)
+        if isinstance(repaired, dict) and isinstance(repaired.get("strategy_spec"), dict):
+            repaired = repaired["strategy_spec"]
+        if isinstance(repaired, dict) and repaired.get("entry") and repaired.get("exit"):
+            logger.info("fusion: strategy_spec repaired on retry (model omitted it)")
+            return repaired
+        logger.warning("fusion: spec-repair retry returned no usable spec — falling back to text-only")
+    except Exception as exc:
+        logger.warning("fusion: spec-repair retry failed (%s) — falling back to text-only", exc)
+    return None
+
+
+def _resolve_user_assets(selected_assets: list[str]) -> list[str]:
+    """Resolve user tokens to canonical SSOT display symbols (may be empty)."""
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for token in selected_assets or []:
+        canonical = _UNIVERSE_LOOKUP.get(str(token).strip().casefold())
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            resolved.append(canonical)
+    return resolved
+
+
+_MODEL_UNIVERSE_CAP = 8
+
+
+def _spec_universe(brief: FusionBrief, strategy_spec: dict[str, Any]) -> list[str]:
+    """Pick the spec's asset universe: user steer > model suggestion > full SSOT.
+
+    Fixes #847: the old unconditional ``derive_asset_universe`` override sent
+    every UNSTEERED brief to the full ~300-asset supported universe, so the
+    real-data backtest graded an arbitrary alphabetical basket unrelated to the
+    thesis. Order now: (1) the user's resolved assets always win (their lever);
+    (2) else the MODEL's emitted universe, validated against the SSOT and
+    capped at ``_MODEL_UNIVERSE_CAP`` (the thesis's own instruments); (3) else
+    the full supported universe (preserving #682's "never a hardcoded SPY"
+    floor).
+    """
+    user_assets = _resolve_user_assets(brief.asset_classes)
+    if user_assets:
+        return user_assets
+    model_assets = _resolve_user_assets([str(a) for a in strategy_spec.get("asset_universe") or []])
+    # Parrot defense: a bare single proxy (the classic ["SPY"] default weak
+    # models emit regardless of thesis) is indistinguishable from a non-choice —
+    # only a deliberate MULTI-instrument selection is trusted as the thesis's
+    # own universe. Single-asset intent is still expressible via the user steer.
+    if len(model_assets) >= 2:
+        if len(model_assets) > _MODEL_UNIVERSE_CAP:
+            logger.info("fusion: model universe capped %d → %d", len(model_assets), _MODEL_UNIVERSE_CAP)
+        return model_assets[:_MODEL_UNIVERSE_CAP]
+    return list(SUPPORTED_UNIVERSE)
 
 
 def derive_asset_universe(selected_assets: list[str]) -> list[str]:
@@ -484,7 +558,22 @@ class FusionProposal:
 # ── Prompt construction ─────────────────────────────────────────
 
 
-_SYSTEM_PROMPT = """You are Archimedes Fusion, an AI quant-research synthesizer. \
+_SPEC_CONTRACT = """The strategy_spec field is REQUIRED. It is a machine-readable strategy definition \
+using the Archimedes DSL (closed-enum vocabulary). For asset_universe, list the \
+tickers the mechanism trades from the user's selected assets (in user_steer); the \
+platform overrides this with the user's chosen universe, so do not default to a \
+single broad-market proxy. Valid rebalance_frequency values: \
+daily, weekly, monthly. Valid indicators: sma_N, ema_N, rsi_N, momentum_N (replace \
+N with an integer period). Entry/exit conditions use comparison ops (gt, lt, gte, lte) \
+or logic ops (and, or, not). Position sizing types: full_invested_when_in_market, \
+equal_weight, volatility_target (needs annual_pct). look_ahead_safe MUST be true. \
+parameter_variants is OPTIONAL: a dict mapping indicator aliases to 2-8 numeric \
+values for CSCV overfitting detection (e.g. {"sma_200": [150, 175, 200, 225, 250]}). \
+Keys must reference indicators used in entry/exit conditions."""
+
+
+_SYSTEM_PROMPT = (
+    """You are Archimedes Fusion, an AI quant-research synthesizer. \
 You design a NOVEL trading-strategy hypothesis by FUSING the mechanisms of \
 MULTIPLE peer-reviewed quantitative-finance papers into one combined approach.
 
@@ -528,18 +617,18 @@ literature>",
   }
 }
 
-The strategy_spec field is REQUIRED. It is a machine-readable strategy definition \
-using the Archimedes DSL (closed-enum vocabulary). For asset_universe, list the \
-tickers the mechanism trades from the user's selected assets (in user_steer); the \
-platform overrides this with the user's chosen universe, so do not default to a \
-single broad-market proxy. Valid rebalance_frequency values: \
-daily, weekly, monthly. Valid indicators: sma_N, ema_N, rsi_N, momentum_N (replace \
-N with an integer period). Entry/exit conditions use comparison ops (gt, lt, gte, lte) \
-or logic ops (and, or, not). Position sizing types: full_invested_when_in_market, \
-equal_weight, volatility_target (needs annual_pct). look_ahead_safe MUST be true. \
-parameter_variants is OPTIONAL: a dict mapping indicator aliases to 2-8 numeric \
-values for CSCV overfitting detection (e.g. {"sma_200": [150, 175, 200, 225, 250]}). \
-Keys must reference indicators used in entry/exit conditions."""
+"""
+    + _SPEC_CONTRACT
+)
+
+
+_SPEC_REPAIR_SYSTEM = (
+    "You are the spec compiler for Archimedes. A strategy proposal was produced "
+    "WITHOUT the REQUIRED machine-readable strategy_spec. From the proposal JSON "
+    "the user sends, output STRICT JSON ONLY — a single object that IS the "
+    "strategy_spec (no wrapper key, no prose, no markdown fences).\n\n"
+    "" + _SPEC_CONTRACT
+)
 
 
 def _build_user_prompt(brief: FusionBrief, candidates: list[CorpusPaper]) -> str:
@@ -699,16 +788,30 @@ class StrategyFusion:
                 "single-paper hypothesis is produced.",
             )
 
-        # Extract strategy_spec if present (additive — back-compat if missing)
+        # Extract strategy_spec if present. Weak-JSON models (Nova Micro) often
+        # omit it despite the REQUIRED contract — without a spec there is no
+        # backtest, no rigor verdict, and the strategy is stuck at "pending"
+        # forever (#788); the debate society outright DROPS spec-less proposals
+        # (A5 conformance), so its pool would come up empty. One bounded repair
+        # retry asks for ONLY the spec before we fall back to text-only.
         strategy_spec = parsed.get("strategy_spec")
+        if not isinstance(strategy_spec, dict):
+            strategy_spec = _repair_spec(backend, brief, parsed)
         if not isinstance(strategy_spec, dict):
             strategy_spec = None
         else:
-            # Steer the asset universe from the user's selected assets (falling
-            # back to the SSOT-derived supported universe), overriding whatever
-            # the model emitted. The universe is the user's lever — never a
-            # hardcoded `["SPY"]` default and never silently the model's guess.
-            strategy_spec["asset_universe"] = derive_asset_universe(brief.asset_classes)
+            # Universe steering (#847): user's resolved assets > the model's
+            # SSOT-validated suggestion (capped) > full supported universe.
+            strategy_spec["asset_universe"] = _spec_universe(brief, strategy_spec)
+            # Validate the FINAL dict (post-steering). An invalid spec — a
+            # partial repair that happened to carry entry/exit, or a malformed
+            # model emission — must degrade to honest text-only HERE, not
+            # surface later as a DSLError mid-evaluation/debate.
+            try:
+                validate_strategy_spec(strategy_spec)
+            except DSLError as exc:
+                logger.warning("fusion: strategy_spec failed DSL validation (%s) — falling back to text-only", exc)
+                strategy_spec = None
 
         return FusionProposal(
             status="ok",
