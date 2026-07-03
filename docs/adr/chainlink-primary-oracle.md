@@ -1,9 +1,29 @@
 # ADR: Chainlink-primary price oracles with a thin, bounded admin fallback
 
 > **Audience:** Archimedes team (decision owner: Dan, contract + on-chain-integration owner; preferred contract reviewer: Bogdan `mnemonik-dev`)
-> **Status:** **Proposed.** Surface for the team; ratify in the next sync.
+> **Status:** **Accepted (2026-07-01).** Ratified **Chainlink-only** by Bogdan (`mnemonik-dev`, contract reviewer), accepted by Dan (owner): Chainlink-primary + thin bounded admin fallback — a *single* well-validated feed, **not** a multi-source composition. See the 2026-07-01 update below.
 > **Question being decided:** Where does the on-chain USD price that feeds vault collateral math come from — our admin-set `PriceOracle`, a well-validated external oracle (Chainlink), or some composition of the two?
 > **Related issues/PRs:** [#724](https://github.com/a-apin/archimedes/pull/724) (Chainlink-first read path **+ the #724-review hardening**), [#731](https://github.com/a-apin/archimedes/pull/731) (owner≠agent non-custodial vaults — closed the drain vector). Feed-outage telemetry/alerting is operational follow-up.
+
+> **✅ Update 2026-07-01 — RATIFIED as Chainlink-only.** This ADR is now **Accepted**. We
+> commit to **one well-validated decentralized feed (Chainlink) as primary + the thin,
+> bounded admin fallback** — explicitly **not** a multi-source composition. A multi-source
+> **quorum / medianizer** (on-chain median of Chainlink + Stork + Pyth; explored in **PR
+> [#840](https://github.com/a-apin/archimedes/pull/840)**) and a **standalone Stork
+> `AggregatorV3` adapter** (**PR [#828](https://github.com/a-apin/archimedes/pull/828)**) were
+> both **considered and CLOSED** to reduce complexity — *"we need any one validated feed, not
+> all of them"* (Bogdan). One audited feed per asset is simpler to reason about and review
+> than an N-feed medianizer, and sufficient for our trust model. This settles the "some
+> composition of the two" option in the Question above as **single-feed, not multi-feed**.
+>
+> **Current reality (2026-07-01):** Chainlink's Arc price-feed proxy contracts
+> (**`EACAggregatorProxy`**, one per asset) are **not published yet** — no DON is writing
+> price data to an on-chain feed on Arc, so the *primary* isn't wireable today. In the interim
+> the **bounded admin path is the active on-chain price source**, fed **real market prices**
+> (Pyth Hermes + yfinance, off-chain) relayed on-chain by the `oracle_updater` — **real
+> prices, not hardcoded** (the #1 rule holds). Each asset **promotes to the decentralized feed
+> with a single `setPriceFeed(<EACAggregatorProxy>)` call** the moment Arc publishes it — the
+> #724 read path is already `AggregatorV3`-ready, no consumer change, no migration.
 
 ## TL;DR
 
@@ -110,4 +130,4 @@ Keep shipping the single admin-set price, just better-hardened.
 
 ## Ratification
 
-**Adopt Chainlink-primary with a thin, bounded, loud admin fallback — the PR #724 architecture.** Status **Proposed**; ratify in the next sync. On approval, #724 merges (Dan approves as contract owner; Bogdan reviews), feeds are configured per-asset where they exist on Arc, and #725 lands the fallback-hardening + failover alerting. Assets with no feed run on the bounded fallback until a feed exists, at which point a single `setPriceFeed` call promotes them — no consumer change, no migration.
+**Adopt Chainlink-primary with a thin, bounded, loud admin fallback — the PR #724 architecture.** **Status: Accepted (2026-07-01) — ratified Chainlink-ONLY** by Bogdan (contract reviewer), accepted by Dan (owner); the multi-source quorum (#840) and standalone Stork adapter (#828) were considered and **closed** (see the 2026-07-01 update up top). #724 is merged. Feeds are configured per-asset where they exist on Arc — but Chainlink's Arc `EACAggregatorProxy` addresses are **not published yet**, so today assets run on the bounded admin fallback fed **real** Pyth/yfinance prices via the `oracle_updater`; each promotes to the decentralized feed with a single `setPriceFeed` call the moment Arc publishes it — no consumer change, no migration. #725 lands the fallback-hardening + failover alerting.
