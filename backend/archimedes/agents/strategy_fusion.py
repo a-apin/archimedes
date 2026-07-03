@@ -45,6 +45,7 @@ from typing import Any
 from archimedes.agents.strategy_architect import extract_json
 from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
 from archimedes.services.llm_backend import LLMBackend, make_llm_backend
+from archimedes.services.strategy_dsl import DSLError, validate_strategy_spec
 from archimedes.services.strategy_signal_evaluator import GLOBAL_ASSETS
 
 logger = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ def _repair_spec(backend: Any, brief: FusionBrief, parsed: dict[str, Any]) -> di
                 "thesis": parsed.get("thesis"),
                 "fusion_reasoning": parsed.get("fusion_reasoning"),
                 "source_arxiv_ids": parsed.get("source_arxiv_ids", []),
-                "user_asset_classes": brief.asset_classes,
+                "user_steer": {"asset_classes": brief.asset_classes},
             }
         )
         raw = backend.complete(_SPEC_REPAIR_SYSTEM, user_msg)
@@ -162,9 +163,10 @@ def _spec_universe(brief: FusionBrief, strategy_spec: dict[str, Any]) -> list[st
     real-data backtest graded an arbitrary alphabetical basket unrelated to the
     thesis. Order now: (1) the user's resolved assets always win (their lever);
     (2) else the MODEL's emitted universe, validated against the SSOT and
-    capped at {cap} (the thesis's own instruments); (3) else the full supported
-    universe (preserving #682's "never a hardcoded SPY" floor).
-    """.format(cap=_MODEL_UNIVERSE_CAP)
+    capped at ``_MODEL_UNIVERSE_CAP`` (the thesis's own instruments); (3) else
+    the full supported universe (preserving #682's "never a hardcoded SPY"
+    floor).
+    """
     user_assets = _resolve_user_assets(brief.asset_classes)
     if user_assets:
         return user_assets
@@ -617,7 +619,6 @@ literature>",
 
 """
     + _SPEC_CONTRACT
-    + """"""
 )
 
 
@@ -802,6 +803,15 @@ class StrategyFusion:
             # Universe steering (#847): user's resolved assets > the model's
             # SSOT-validated suggestion (capped) > full supported universe.
             strategy_spec["asset_universe"] = _spec_universe(brief, strategy_spec)
+            # Validate the FINAL dict (post-steering). An invalid spec — a
+            # partial repair that happened to carry entry/exit, or a malformed
+            # model emission — must degrade to honest text-only HERE, not
+            # surface later as a DSLError mid-evaluation/debate.
+            try:
+                validate_strategy_spec(strategy_spec)
+            except DSLError as exc:
+                logger.warning("fusion: strategy_spec failed DSL validation (%s) — falling back to text-only", exc)
+                strategy_spec = None
 
         return FusionProposal(
             status="ok",

@@ -135,6 +135,30 @@ def test_present_spec_needs_no_retry(monkeypatch):
     assert len(backend.calls) == 1
 
 
+def test_partially_repaired_spec_degrades_to_text_only(monkeypatch):
+    """A repair that returns entry/exit but misses required DSL fields must not
+    slip through — the proposal degrades to honest text-only, never a spec that
+    explodes later in evaluation/debate."""
+    partial = {"entry": {"gt": ["close", "sma_200"]}, "exit": {"lt": ["close", "sma_200"]}}
+    backend = _StubBackend([_ok_response(spec=None), json.dumps(partial)])
+    proposal = _propose_with(monkeypatch, backend)
+    assert proposal.status == "ok"
+    assert proposal.strategy_spec is None
+    assert len(backend.calls) == 2  # the one bounded retry, no loop
+
+
+def test_invalid_model_spec_degrades_to_text_only(monkeypatch):
+    """A model-emitted spec that fails DSL validation (look_ahead_safe=false is
+    rejected by the interpreter) degrades to text-only instead of returning a
+    spec the rigor/backtest path would refuse."""
+    spec = dict(_SPEC, source_arxiv_ids=["0700.1497", "0701.1497"], look_ahead_safe=False)
+    backend = _StubBackend([_ok_response(spec=spec)])
+    proposal = _propose_with(monkeypatch, backend)
+    assert proposal.status == "ok"
+    assert proposal.strategy_spec is None
+    assert len(backend.calls) == 1  # invalid ≠ missing: no repair retry burned
+
+
 # ── universe steering (#847) ──────────────────────────────────────────
 
 
