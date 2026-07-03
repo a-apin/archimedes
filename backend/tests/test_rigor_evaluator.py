@@ -38,6 +38,7 @@ from archimedes.services._rigor_helpers import (
     compute_sharpe_ci,
 )
 from archimedes.services.rigor_evaluator import (
+    MIN_LIBRARY_N_FOR_PBO_GATING,
     RigorGateResult,
     _get_func_name,
     align_returns_store,
@@ -1499,6 +1500,161 @@ class TestRigorGateLibraryPbo:
         )
         assert not result.passes_all
         assert result.gate_details["pbo"] == "MISSING (source=cohort)"
+
+
+class TestPboPowerFloor:
+    """#819: below MIN_LIBRARY_N_FOR_PBO_GATING, PBO must NOT_RUN (not gate) —
+    still computed/surfaced, but criterion 4 becomes neutral rather than a
+    hard pass/fail. At or above the floor, behavior is exactly as before."""
+
+    @staticmethod
+    def _returns() -> list[float]:
+        rng = np.random.default_rng(7)
+        return rng.normal(0.001, 0.008, size=500).tolist()
+
+    @staticmethod
+    def _strong_returns() -> list[float]:
+        """Deterministic alternating +0.3%/+0.1% daily returns — clears DSR
+        (excess Sharpe ~1.8/bar) and the OOS/IS cliff (identical stats in both
+        slices) comfortably, so a below-floor test can assert an end-to-end
+        passes_all=True is caused by the PBO fix, not an incidental DSR/OOS
+        pass on a noisy series."""
+        return [0.003 if i % 2 == 0 else 0.001 for i in range(500)]
+
+    def test_below_floor_high_pbo_does_not_fail_criterion_4(self) -> None:
+        """A pbo_score >= 0.5 would normally fail passes_all — below the floor
+        it must not, since the statistic isn't powered enough to gate on."""
+        below = MIN_LIBRARY_N_FOR_PBO_GATING - 1
+        r = RigorGateResult(
+            "s",
+            dsr_p_value=0.97,
+            pbo_score=0.9,
+            pbo_library_size=below,
+            oos_sharpe=1.0,
+            in_sample_sharpe=1.5,
+            look_ahead_passed=True,
+        )
+        assert r.passes_all is True
+        assert r.gate_details["pbo"].startswith("NOT_RUN")
+        assert f"N={below}" in r.gate_details["pbo"]
+        assert f"below the CSCV power floor of {MIN_LIBRARY_N_FOR_PBO_GATING}" in r.gate_details["pbo"]
+        assert "PBO=0.9000" in r.gate_details["pbo"]  # still surfaced, advisory
+
+    def test_below_floor_missing_pbo_does_not_fail_criterion_4(self) -> None:
+        """Same neutrality when there's no PBO number at all below the floor."""
+        below = MIN_LIBRARY_N_FOR_PBO_GATING - 1
+        r = RigorGateResult(
+            "s",
+            dsr_p_value=0.97,
+            pbo_score=None,
+            pbo_library_size=below,
+            oos_sharpe=1.0,
+            in_sample_sharpe=1.5,
+            look_ahead_passed=True,
+        )
+        assert r.passes_all is True
+        assert (
+            r.gate_details["pbo"] == f"NOT_RUN (N={below} below the CSCV power floor of {MIN_LIBRARY_N_FOR_PBO_GATING})"
+        )
+
+    def test_at_floor_high_pbo_still_fails(self) -> None:
+        """Exactly at the floor, gating is unchanged from pre-#819 behavior."""
+        r = RigorGateResult(
+            "s",
+            dsr_p_value=0.97,
+            pbo_score=0.9,
+            pbo_library_size=MIN_LIBRARY_N_FOR_PBO_GATING,
+            oos_sharpe=1.0,
+            in_sample_sharpe=1.5,
+            look_ahead_passed=True,
+        )
+        assert r.passes_all is False
+        assert r.gate_details["pbo"] == "FAIL (PBO=0.9000, need < 0.5, source=cohort)"
+
+    def test_above_floor_low_pbo_still_passes(self) -> None:
+        r = RigorGateResult(
+            "s",
+            dsr_p_value=0.97,
+            pbo_score=0.2,
+            pbo_library_size=MIN_LIBRARY_N_FOR_PBO_GATING + 5,
+            oos_sharpe=1.0,
+            in_sample_sharpe=1.5,
+            look_ahead_passed=True,
+        )
+        assert r.passes_all is True
+        assert r.gate_details["pbo"] == "PASS (PBO=0.2000, source=cohort)"
+
+    def test_pbo_library_size_none_is_pre_819_behavior(self) -> None:
+        """The default (no pbo_library_size given at all) must reproduce the
+        exact pre-#819 gating — a direct RigorGateResult construction that
+        doesn't know about the floor stays on the old hard PASS/FAIL/MISSING."""
+        r = RigorGateResult("s", dsr_p_value=0.97, pbo_score=0.9, oos_sharpe=1.0, look_ahead_passed=True)
+        assert r.passes_all is False
+        assert r.gate_details["pbo"] == "FAIL (PBO=0.9000, need < 0.5, source=cohort)"
+
+    def test_run_rigor_gate_auto_derives_library_size_from_cohort_dict(self) -> None:
+        """The common case needs no caller change: run_rigor_gate derives N from
+        len(pbo_scores) on the cohort path, so an existing small-library caller
+        gets the floor fix automatically."""
+        below = MIN_LIBRARY_N_FOR_PBO_GATING - 1
+        pbo_scores = {f"s{i}": 0.9 for i in range(below)}  # len == below, all "failing" PBO
+        result = run_rigor_gate(
+            strategy_id="s0",
+            daily_returns=self._strong_returns(),
+            num_trials=5,
+            pbo_scores=pbo_scores,
+            look_ahead_audit_passed=True,
+        )
+        assert result.pbo_library_size == below
+        assert result.gate_details["pbo"].startswith("NOT_RUN")
+        assert result.passes_all is True  # would have FAILed on PBO=0.9 pre-#819
+
+    def test_run_rigor_gate_at_floor_cohort_dict_still_gates(self) -> None:
+        pbo_scores = {f"s{i}": 0.9 for i in range(MIN_LIBRARY_N_FOR_PBO_GATING)}
+        result = run_rigor_gate(
+            strategy_id="s0",
+            daily_returns=self._returns(),
+            num_trials=5,
+            pbo_scores=pbo_scores,
+            strategy_code="class S: def next(self): self.buy()",
+        )
+        assert result.pbo_library_size == MIN_LIBRARY_N_FOR_PBO_GATING
+        assert result.passes_all is False
+        assert "FAIL" in result.gate_details["pbo"]
+
+    def test_run_rigor_gate_explicit_pbo_library_size_overrides_auto_derivation(self) -> None:
+        """An explicit pbo_library_size wins over the len(pbo_scores) guess —
+        needed once the library-PBO path (#546) wants to gate on the floor too,
+        since pbo_scores's length isn't that cross-section's N."""
+        result = run_rigor_gate(
+            strategy_id="s",
+            daily_returns=self._returns(),
+            num_trials=5,
+            library_pbo=0.9,
+            pbo_library_size=MIN_LIBRARY_N_FOR_PBO_GATING - 1,
+            strategy_code="class S: def next(self): self.buy()",
+        )
+        assert result.pbo_source == "library"
+        assert result.pbo_library_size == MIN_LIBRARY_N_FOR_PBO_GATING - 1
+        assert result.gate_details["pbo"].startswith("NOT_RUN")
+
+    def test_run_rigor_gate_library_pbo_path_does_not_auto_derive_from_cohort_dict(self) -> None:
+        """When library_pbo is supplied, pbo_scores's length must NOT be used as
+        a stand-in library size — that dict describes a different (cohort)
+        cross-section. Without an explicit pbo_library_size, the floor must not
+        apply here even if pbo_scores happens to be small."""
+        result = run_rigor_gate(
+            strategy_id="s",
+            daily_returns=self._returns(),
+            num_trials=5,
+            pbo_scores={"other": 0.9},  # len 1 — must NOT be read as N=1 for library_pbo
+            library_pbo=0.9,
+            strategy_code="class S: def next(self): self.buy()",
+        )
+        assert result.pbo_source == "library"
+        assert result.pbo_library_size is None
+        assert result.passes_all is False  # gates normally: PBO=0.9 >= 0.5, no floor applies
+        assert result.gate_details["pbo"] == "FAIL (PBO=0.9000, need < 0.5, source=library)"
 
 
 # ─── Daily-returns store loader (#546) ───────────────────────────────
