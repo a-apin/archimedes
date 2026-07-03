@@ -285,7 +285,13 @@ async def test_verify_with_valid_signature():
 
 @pytest.mark.asyncio
 async def test_verify_rejects_wrong_signer():
-    """Signature from wallet A cannot authenticate as wallet B."""
+    """Signature from wallet A cannot authenticate as wallet B.
+
+    Since the smart-wallet path landed (#869), an EOA mismatch falls through
+    to ERC-1271/6492 verification of the CLAIMED wallet instead of hard-401ing
+    on the recovery mismatch — so the RPC boundary is mocked to refuse here
+    (a contract wallet that doesn't accept the signature), keeping the test
+    hermetic and the wrong-signer guarantee pinned end-to-end."""
     from archimedes.main import app
     from eth_account import Account
     from eth_account.messages import encode_defunct
@@ -293,27 +299,28 @@ async def test_verify_rejects_wrong_signer():
     acct_real = Account.create()
     acct_fake = "0x" + "1" * 40  # claimed wallet (not the signer)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        nonce_resp = await client.get("/api/auth/nonce")
-        nonce_data = nonce_resp.json()
+    with patch("archimedes.api._erc6492._eth_call", new=AsyncMock(return_value="0x" + "00" * 32)):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            nonce_resp = await client.get("/api/auth/nonce")
+            nonce_data = nonce_resp.json()
 
-        # Message claims acct_fake but signed by acct_real
-        message = (
-            f"{nonce_data['domain']} wants you to sign in with your Ethereum account:\n"
-            f"{acct_fake}\n\n"
-            f"Chain ID: 5042002\n"
-            f"Nonce: {nonce_data['nonce']}\n"
-            f"Issued At: {_now_iso()}"
-        )
-        signable = encode_defunct(text=message)
-        signed = acct_real.sign_message(signable)
+            # Message claims acct_fake but signed by acct_real
+            message = (
+                f"{nonce_data['domain']} wants you to sign in with your Ethereum account:\n"
+                f"{acct_fake}\n\n"
+                f"Chain ID: 5042002\n"
+                f"Nonce: {nonce_data['nonce']}\n"
+                f"Issued At: {_now_iso()}"
+            )
+            signable = encode_defunct(text=message)
+            signed = acct_real.sign_message(signable)
 
-        verify_resp = await client.post(
-            "/api/auth/verify",
-            json={"message": message, "signature": signed.signature.hex()},
-        )
-        assert verify_resp.status_code == 401
-        assert "does not match" in verify_resp.json()["detail"]
+            verify_resp = await client.post(
+                "/api/auth/verify",
+                json={"message": message, "signature": signed.signature.hex()},
+            )
+            assert verify_resp.status_code == 401
+            assert "Invalid signature" in verify_resp.json()["detail"]
 
 
 @pytest.mark.asyncio

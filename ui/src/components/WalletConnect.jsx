@@ -5,7 +5,6 @@ import {
   getAvailableProviders,
   getConnectedProvider,
   getUsdcBalance,
-  getWalletClient,
   CIRCLE_PROVIDER_ID,
 } from '../config'
 import { sanitizeWalletName } from '../circle-wallet'
@@ -99,11 +98,12 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
     try {
       const result = await connectWallet(providerId, opts)
 
-      // SIWE: prove wallet ownership via signature (EIP-4361)
+      // SIWE: prove wallet ownership via signature (EIP-4361). Provider-aware:
+      // EOA wallets personal_sign; Circle passkey wallets sign via their smart
+      // account (#869) — no getWalletClient() here, it throws for passkeys.
       try {
         const { authenticateWithSIWE } = await import('../siwe')
-        const walletClient = await getWalletClient()
-        await authenticateWithSIWE(walletClient, result.address)
+        await authenticateWithSIWE(result.address)
       } catch (siweErr) {
         // SIWE failure is non-fatal during transition — wallet still connects,
         // but PII endpoints won't return sensitive data without a session.
