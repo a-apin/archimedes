@@ -23,7 +23,8 @@ def _fake_settings() -> SimpleNamespace:
         vault_factory_address="0xVF",
         reasoning_trace_registry_address="0xRTR",
         asset_registry_address="0xAR",
-        stsla_oracle_address="0xORACLE",
+        # representative price_oracle = first value of oracle_addresses (#764)
+        oracle_addresses={"sTSLA": "0xORACLE", "sBTC": "0xORACLEB"},
         synth_addresses={"sTSLA": "0xT", "sBTC": "0xB", "sNULL": ""},
         chain_id=5042002,
         arc_rpc_url="https://rpc.example",
