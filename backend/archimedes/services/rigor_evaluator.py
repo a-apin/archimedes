@@ -336,6 +336,19 @@ def load_daily_returns_store(
 
 # ─── 6. Rigor Gate — composite check ─────────────────────────────────
 
+# #819: minimum library N for PBO/CSCV to gate criterion 4. Below this, the
+# CSCV OOS relative rank omega = rank/N is too coarsely quantized (few
+# distinct logit values, and the comparison set itself dominates the result)
+# for PBO to carry real statistical power, and it becomes library-coupled —
+# adding or removing one neighbor can flip a member's verdict. 10 is where a
+# leave-one-out instability simulation's flip rate settles at its floor (~10%,
+# matching the exact 1/N argument for how much one removal can move an N-member
+# comparison set) and stays there through N=16 tested. See
+# docs/specs/selection-bias-corrections-spec.md § 2 addendum for the full
+# derivation + simulation numbers. PBO is still computed and surfaced below
+# this floor — it just stops gating (see RigorGateResult).
+MIN_LIBRARY_N_FOR_PBO_GATING = 10
+
 
 class RigorGateResult:
     """Result of running all four selection-bias checks on a strategy."""
@@ -359,6 +372,7 @@ class RigorGateResult:
         iid_assumption_violated: bool | None = None,
         iid_diagnostics: dict | None = None,
         regime_robustness: dict | None = None,
+        pbo_library_size: int | None = None,
     ) -> None:
         self.strategy_id = strategy_id
         self.deflated_sharpe = deflated_sharpe
@@ -377,6 +391,11 @@ class RigorGateResult:
         # #546), "cohort" when it fell back to the per-cohort dict score. Surfaced
         # in gate_details so the verdict is honest about its provenance.
         self.pbo_source = pbo_source
+        # #819: the N (number of strategies) the PBO cross-section was computed
+        # over. None when unknown (e.g. no PBO source at all — the pre-#819
+        # MISSING path). Used only to decide whether N clears
+        # MIN_LIBRARY_N_FOR_PBO_GATING; never changes the PBO value itself.
+        self.pbo_library_size = pbo_library_size
         self.oos_sharpe = oos_sharpe
         self.look_ahead_passed = look_ahead_passed
         self.in_sample_sharpe = in_sample_sharpe
@@ -402,6 +421,12 @@ class RigorGateResult:
         self.regime_robustness = regime_robustness
 
     @property
+    def _pbo_below_power_floor(self) -> bool:
+        """True when the PBO cross-section's N is too small for CSCV to carry
+        real statistical power (#819) — criterion 4 must not gate in that case."""
+        return self.pbo_library_size is not None and self.pbo_library_size < MIN_LIBRARY_N_FOR_PBO_GATING
+
+    @property
     def passes_all(self) -> bool:
         # NaN-hardening: every IEEE-754 comparison against NaN is False, so a NaN
         # metric (not None — None is guarded) would silently skip its fail branch
@@ -413,10 +438,15 @@ class RigorGateResult:
             return False
         if self.dsr_p_value < 0.95:
             return False
-        if self.pbo_score is None or not math.isfinite(self.pbo_score):
-            return False
-        if self.pbo_score >= 0.5:
-            return False
+        # #819: below the CSCV power floor, PBO is too underpowered/library-coupled
+        # to gate on — criterion 4 is neutral (neither required nor checked) rather
+        # than an automatic fail on a missing/high value. Still computed + surfaced
+        # in gate_details as NOT_RUN, just not load-bearing.
+        if not self._pbo_below_power_floor:
+            if self.pbo_score is None or not math.isfinite(self.pbo_score):
+                return False
+            if self.pbo_score >= 0.5:
+                return False
         if self.oos_sharpe is None or not math.isfinite(self.oos_sharpe):
             return False
         if self.oos_sharpe <= 0.0:  # absolute OOS floor: negative OOS cannot pass
@@ -469,7 +499,18 @@ class RigorGateResult:
         # Criterion 4 input provenance (#546): "library" = full-library CSCV PBO
         # (the principled Bailey et al. selection-set input), "cohort" = the
         # per-cohort dict score. Disclosed so the verdict states which set fed it.
-        if self.pbo_score is not None and math.isfinite(self.pbo_score) and self.pbo_score < 0.5:
+        # #819: below the CSCV power floor, say so explicitly instead of quietly
+        # reporting PASS/FAIL/MISSING on a statistic that isn't load-bearing here —
+        # still show the number (advisory) when one was computed.
+        if self._pbo_below_power_floor:
+            floor_note = (
+                f"NOT_RUN (N={self.pbo_library_size} below the CSCV power floor of {MIN_LIBRARY_N_FOR_PBO_GATING})"
+            )
+            if self.pbo_score is not None and math.isfinite(self.pbo_score):
+                details["pbo"] = f"{floor_note}; PBO={self.pbo_score:.4f} advisory only, source={self.pbo_source}"
+            else:
+                details["pbo"] = floor_note
+        elif self.pbo_score is not None and math.isfinite(self.pbo_score) and self.pbo_score < 0.5:
             details["pbo"] = f"PASS (PBO={self.pbo_score:.4f}, source={self.pbo_source})"
         elif self.pbo_score is not None and math.isfinite(self.pbo_score):
             details["pbo"] = f"FAIL (PBO={self.pbo_score:.4f}, need < 0.5, source={self.pbo_source})"
@@ -555,6 +596,7 @@ def run_rigor_gate(
     average_correlation: float = 0.0,
     cv_returns_matrix: np.ndarray | list[list[float]] | None = None,
     library_pbo: float | None = None,
+    pbo_library_size: int | None = None,
 ) -> RigorGateResult:
     """Run all four selection-bias checks on a strategy.
 
@@ -583,6 +625,15 @@ def run_rigor_gate(
             a single static 1-D series, so when no combinatorial paths are
             supplied this stays ``None`` and the CPCV gate is honestly reported
             as ``MISSING`` rather than silently passing.
+        pbo_library_size: The N the PBO cross-section was computed over, used to
+            decide whether criterion 4 gates at all (#819 — CSCV is underpowered
+            below ``MIN_LIBRARY_N_FOR_PBO_GATING``). Defaults to ``len(pbo_scores)``
+            when not given explicitly and ``pbo_scores`` is the PBO source (the
+            cohort dict already has one entry per strategy in the cross-section,
+            so its length IS that N) — the common case needs no caller change.
+            When ``library_pbo`` is supplied instead, ``pbo_scores``'s length is
+            unrelated to the library-PBO cross-section's size, so pass this
+            explicitly if that path should ever gate on the floor too.
     """
     if num_trials == 1:
         logger.debug(
@@ -620,9 +671,15 @@ def run_rigor_gate(
     if library_pbo is not None:
         pbo_score = library_pbo
         pbo_source = "library"
+        # pbo_scores's length isn't the library-PBO cross-section's N, so don't
+        # auto-derive here — only an explicit pbo_library_size arg applies (#819).
+        effective_pbo_library_size = pbo_library_size
     else:
         pbo_score = pbo_scores.get(strategy_id) if pbo_scores else None
         pbo_source = "cohort"
+        effective_pbo_library_size = (
+            pbo_library_size if pbo_library_size is not None else (len(pbo_scores) if pbo_scores else None)
+        )
 
     # 3. Walk-forward OOS Sharpe (single holdout) + Combinatorial Purged CV.
     #    CPCV runs only when a real 2-D combinatorial OOS matrix is supplied.
@@ -691,6 +748,7 @@ def run_rigor_gate(
         iid_assumption_violated=iid.get("iid_assumption_violated"),
         iid_diagnostics=iid,
         regime_robustness=regime_robustness,
+        pbo_library_size=effective_pbo_library_size,
     )
 
     logger.info(

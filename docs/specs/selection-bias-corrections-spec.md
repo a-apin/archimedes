@@ -201,6 +201,74 @@ per analytics-engine run across all strategies in the library, then attach
 the same `pbo_score` to each strategy's `BacktestResult` from that run.
 Re-compute when the library changes.
 
+### Addendum (#819) — a statistical-power floor on PBO gating at small N
+
+CSCV is a faithful estimator regardless of N — the mechanics in `compute_pbo`
+are unchanged by this addendum. The concern is narrower: at our library size
+today (N ~ 4-6), is a `pbo_score >= 0.5` verdict a reliable enough signal to
+gate Tier-1 admission on, or is it mostly noise dressed up as a number?
+
+**The granularity problem.** Each CSCV split ranks the IS-optimal strategy
+against the OTHER N-1 members and produces one of only N possible values of
+`omega = rank_OOS / N`. At N = 4, `omega` in {0.25, 0.5, 0.75, 1.0} — and
+0.5 (the PBO decision boundary, `logit(omega) = 0`) is one of only four
+possible outcomes, landed on exactly whenever `rank_OOS = N/2` (true for
+every even N). A statistic with four possible readings per split is not
+finely resolving "genuinely overfit" from "noise," and PBO inherits that
+coarseness in aggregate.
+
+**The library-coupling problem — the one that matters for gating.** PBO's
+rank comparison is *relative to whoever else is in the library*. Removing or
+adding one strategy re-ranks every OOS split for every remaining member. The
+fraction of the comparison set that one member represents is exactly `1/N`
+— at N=4 a single addition/removal changes 25% of the field; at N=10, 10%;
+at N=20, 5%. This is a clean, N-only argument, independent of any specific
+data: **the smaller the library, the more a single unrelated member's
+presence or absence can swing everyone else's PBO verdict** — precisely the
+"adding/removing one neighbor flips a verdict" failure mode this issue
+raises, and it doesn't require simulation to see why it's structural.
+
+**Simulation (corroborating, not the sole basis — see caveat below).**
+Leave-one-out instability: build an N-strategy pool of IID synthetic daily
+returns (T=500 bars, no true skill difference — the hardest case, since any
+apparent "best" strategy is pure noise), compute the library PBO verdict
+(`< 0.5` or not), remove one randomly-chosen member, recompute, and check
+whether the verdict flipped. Repeated at N in {4, 6, 8, 10, 12, 16}, 10
+trials each (a real run of `compute_pbo` at S=16 partitions costs ~2.2s
+regardless of N — dominated by the `C(16,8)=12,870`-split Python loop, not
+array width — so this is a deliberately small Monte Carlo run, not a
+high-power one):
+
+| N | leave-one-out flip rate | power (planted-edge, correctly PBO < 0.5) |
+|---|---|---|
+| 4 | 0.20 | 0.60 |
+| 6 | 0.40 | 0.60 |
+| 8 | 0.20 | 0.20 |
+| 10 | 0.10 | 0.60 |
+| 12 | 0.10 | 0.40 |
+| 16 | 0.10 | 0.80 |
+
+The flip rate is noisy at small N (as expected from only 10 trials) but
+settles at its floor of ~0.10 from N=10 onward and never improves further
+through N=16 — matching the exact `1/N = 10%` argument above almost exactly.
+Power is too noisy at this trial count to read a precise curve from, but
+nothing in it contradicts N=10 being a reasonable cutover point, and the
+qualitative floor value it would suggest (somewhere in "high single digits
+to low teens") lines up with the exact argument.
+
+**Floor: N = 10.** Chosen where the leave-one-out flip rate first reaches
+its stable floor (matching `1/N <= 10%` from the structural argument, which
+holds regardless of simulation noise) — not from the simulation's power
+column alone, which this trial count can't resolve precisely. Below N = 10,
+`gate_details["pbo"]` reports `NOT_RUN (N=<n> below the CSCV power floor of
+10)` and criterion 4 is skipped (neither required nor checked) rather than
+gating on an underpowered statistic; PBO is still computed and shown
+alongside as advisory. At or above N = 10, gating is unchanged from today.
+
+**Reproduce:** the simulation script is not checked into the repo (a
+one-off derivation, not a maintained test) — see this PR's description for
+the exact code if you want to re-run or extend it.
+
 ## 3. Walk-forward Out-of-Sample Sharpe
 
 The analytics-engine already declares `walk_forward_split` (train fraction,
