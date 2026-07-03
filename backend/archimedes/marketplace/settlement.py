@@ -1,10 +1,15 @@
-"""Settlement sweep: Gateway balance → agent wallet → PaymentSplitter.depositToPool.
+"""Settlement sweep: Gateway balance → agent wallet → PaymentSplitter.depositToPool → withdraw.
 
-Two independent cadences, safe to call every tick:
+Three cadences:
   Stage A — Gateway → wallet (threshold-based, ~2.01 USDC fee per withdrawal).
   Stage B — wallet USDC → depositToPool (per tick interval, 1 USDC min).
+  Stage C — PaymentSplitter.withdraw(pool_id, amount) — creator/platform payout.
 
-Neither stage ever raises out of ``sweep_publisher``; failures are logged
+Stage A+B run automatically per tick via ``sweep_publisher``.  Stage C is
+triggered on-demand via the Withdraw button (D3) and may also be called from
+``sweep_publisher`` to auto-disburse.
+
+None of the stages ever raises out of ``sweep_publisher``; failures are logged
 and returned silently so the tick always completes.
 """
 
@@ -155,6 +160,32 @@ class SettlementSweeper:
             )
         except Exception:
             logger.exception("[%s] Stage B (wallet→pool) failed", pub.strategy_id)
+
+    # ── Stage C: PaymentSplitter.withdraw(pool_id, amount) ──────────────────
+
+    async def withdraw_publisher(self, pub, amount_raw: int) -> str | None:
+        """Stage C: PaymentSplitter.withdraw(pool_id, amount) — creator/platform payout.
+
+        Callable regardless of pool.active (D6 §2.5); caller no longer needs to be
+        pool.creator/platform (see PaymentSplitter.vy withdraw docstring, changed 2026-07-03).
+        """
+        try:
+            executor = self._get_executor(pub.agent_wallet_id, pub.gateway_seller_address)
+            splitter = self._settings.payment_splitter_address
+            if not splitter:
+                logger.warning("[%s] Stage C: no payment_splitter_address configured", pub.strategy_id)
+                return None
+            tx = await asyncio.to_thread(
+                executor._submit_and_wait,
+                splitter,
+                "withdraw(bytes32,uint256)",
+                [pub.pool_id, str(amount_raw)],
+            )
+            logger.info("[%s] Stage C: withdraw(pool_id, %d) tx=%s", pub.strategy_id, amount_raw, tx)
+            return tx
+        except Exception:
+            logger.exception("[%s] Stage C (withdraw) failed", pub.strategy_id)
+            return None
 
     def _usdc_balance_of(self, address: str) -> int:
         """Read on-chain USDC balance via direct RPC call.

@@ -75,13 +75,18 @@ def depositToPool(pool_id: bytes32, amount: uint256):
 @external
 @nonreentrant
 def withdraw(pool_id: bytes32, amount: uint256):
-    """Restricted to the pool's creator or its platform address (D6 §2.3).
+    """Permissionless (changed 2026-07-03, was creator/platform-gated — see prior
+    condition below). Payout recipients are fixed at pool creation and are
+    never derived from msg.sender, so opening the trigger to any caller does
+    not allow redirecting funds — only whether/when a payout fires. This lets
+    the backend's per-publisher settlement wallet (which is neither pool.creator
+    nor pool.platform) drive disbursement on the creator's behalf.
+    Prior condition (removed): msg.sender == pool.creator or msg.sender == pool.platform.
     Bounded by held_balance, not the contract's total balance (D6 §2.4).
     Deliberately NOT gated on pool.active — a stopped/retired pool must
     still be able to recover funds already earned (D6 §2.5)."""
     pool: Pool = self.pools[pool_id]
     assert pool.creator != empty(address), "pool does not exist"
-    assert msg.sender == pool.creator or msg.sender == pool.platform, "not authorized"
     assert amount > 0, "amount must be positive"
     assert amount <= pool.held_balance, "amount exceeds held balance"
 
