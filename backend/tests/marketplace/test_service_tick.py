@@ -139,6 +139,8 @@ async def test_tick_produces_trades_and_verifies_payment(market: MarketService):
             pool_id="0x" + "aa" * 32,
             vault_address="0xpublisher_vault",
             creator_wallet="0xpublisher",
+            gateway_seller_address="0xSeller000000000000000000000000000000000001",
+            agent_wallet_id="wallet_pub_a",
         )
         market.publishers["strat_a"].subscribers["sub_1"] = Subscriber(
             sub_id="0x" + "bb" * 32,
@@ -151,9 +153,9 @@ async def test_tick_produces_trades_and_verifies_payment(market: MarketService):
 
         await market.tick("strat_a")
 
-        # _charge_one was called at least once with the subscriber
+        # _charge_one was called at least once with the subscriber (2nd arg)
         charge_calls = [c for c in market._charge_one.await_args_list
-                        if c[0][0].sub_id == "0x" + "bb" * 32]
+                        if c[0][1].sub_id == "0x" + "bb" * 32]
         assert len(charge_calls) >= 13  # 13 pipeline steps
 
         # execute_trades was called for publisher vault

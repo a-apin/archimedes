@@ -150,11 +150,21 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
         for row in publishers:
             subs = subscribers_by_strategy.get(row.strategy_id, {})
+            if not row.gateway_seller_address:
+                _logger.error(
+                    "rehydrate: publisher %s has NULL gateway_seller_address — "
+                    "skipping (fail closed, legacy row). Set a gateway_seller_address "
+                    "on the publisher row before restarting.",
+                    row.strategy_id,
+                )
+                continue
             await market.start_publisher(
                 strategy_id=row.strategy_id,
                 pool_id=row.pool_id,
                 vault_address=row.vault_address,
                 creator_wallet=row.creator_wallet,
+                gateway_seller_address=row.gateway_seller_address,
+                agent_wallet_id=row.agent_wallet_id or "",
                 subscribers=subs,
             )
             _logger.info(

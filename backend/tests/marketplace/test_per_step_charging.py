@@ -232,7 +232,7 @@ async def test_cant_pay_deferral(market: MarketService):
 
     market.record_subscriber_tick = _capture_record
 
-    async def _charge_side_effect(sub, strategy_id, tick_id, step, action_count):
+    async def _charge_side_effect(pub, sub, strategy_id, tick_id, step, action_count):
         if sub.sub_id == "0x" + "bad" * 32 and step == TickStep.REGIME_CLASSIFY:
             return False
         return True
