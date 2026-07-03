@@ -15,6 +15,24 @@ logger = logging.getLogger(__name__)
 papers_router = APIRouter(prefix="/api/papers", tags=["papers"])
 
 
+def _paper_row_to_dict(r) -> dict:
+    """Shared DB-row → API-dict mapping so every read path (processed-only,
+    unfiltered fallback) carries the same fields — notably ``authors``,
+    which was silently dropped when the fallback routed through
+    ``strategy_fusion.load_corpus()``'s reduced ``CorpusPaper`` (no authors
+    field) instead of the real DB row (issue #854 finding #9)."""
+    return {
+        "arxiv_id": r.arxiv_id,
+        "title": r.title,
+        "authors": json.loads(r.authors) if r.authors else [],
+        "primary_category": r.primary_category,
+        "category_label": _category_label(r.primary_category),
+        "categories": json.loads(r.categories) if r.categories else [],
+        "published": r.published,
+        "abstract": r.abstract[:200] + "..." if len(r.abstract) > 200 else r.abstract,
+    }
+
+
 @papers_router.get("/")
 async def list_papers(
     page: int = Query(1, ge=1),
@@ -56,21 +74,33 @@ async def list_papers(
         total = query.count()
         rows = query.order_by(PaperRecord.published.desc()).offset((page - 1) * page_size).limit(page_size).all()
 
-        papers = [
-            {
-                "arxiv_id": r.arxiv_id,
-                "title": r.title,
-                "authors": json.loads(r.authors) if r.authors else [],
-                "primary_category": r.primary_category,
-                "category_label": _category_label(r.primary_category),
-                "categories": json.loads(r.categories) if r.categories else [],
-                "published": r.published,
-                "abstract": r.abstract[:200] + "..." if len(r.abstract) > 200 else r.abstract,
-            }
-            for r in rows
-        ]
+        papers = [_paper_row_to_dict(r) for r in rows]
+
+        # `processed_only=True` (default) can legitimately return zero rows
+        # while the DB still holds the full unprocessed corpus — the KB
+        # pipeline hasn't clustered anything yet (see corpus_routes.py's
+        # `corpus_overview()`). Re-query the DB *unfiltered* first so real
+        # DB fields (authors, category, abstract) survive the fallback,
+        # rather than routing through the file-manifest loader whose
+        # reduced `CorpusPaper` type has no author data at all.
+        if total == 0 and not category and not search:
+            fallback_query = session.query(PaperRecord)
+            total = fallback_query.count()
+            if total:
+                rows = (
+                    fallback_query.order_by(PaperRecord.published.desc())
+                    .offset((page - 1) * page_size)
+                    .limit(page_size)
+                    .all()
+                )
+                papers = [_paper_row_to_dict(r) for r in rows]
 
     if total == 0 and not category and not search:
+        # DB is genuinely empty (e.g. fresh local dev, no seeding yet) —
+        # last-resort file-manifest fallback. This path's `CorpusPaper` has
+        # no `authors` field, so authors render "—" here; that's an honest
+        # reflection of what the manifest fallback actually carries, not a
+        # dropped/fabricated field.
         from archimedes.agents.strategy_fusion import load_corpus
 
         corpus = load_corpus()

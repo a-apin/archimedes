@@ -16,9 +16,13 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 // happens via /library (curated examples) instead.
 
 function timeAgo(iso) {
+  if (!iso) return '—'
   const d = typeof iso === 'string' ? new Date(iso) : new Date(iso * 1000)
+  // A missing timestamp often round-trips as epoch 0 rather than an empty
+  // value — that's not a real multi-decade-old event, it's an absent
+  // timestamp, so render it the same as the no-value case.
+  if (Number.isNaN(d.getTime()) || d.getTime() <= 0) return '—'
   const secs = Math.floor((Date.now() - d.getTime()) / 1000)
-  if (Number.isNaN(secs)) return '—'
   if (secs < 60) return `${secs}s ago`
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`
@@ -330,7 +334,12 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
       {/* Agent activity feed — real traces from /api/traces */}
       <div>
         <div className="label mb-3">Your Traces</div>
-        {tracesLoading && <div className="caption">Loading traces…</div>}
+        {/* Only show the loading label before the FIRST successful load —
+            loadTraces() also re-runs on the 30s poll, and gating this purely
+            on `tracesLoading` meant "Loading traces…" re-appeared above the
+            already-rendered trace list on every background refresh, reading
+            as permanently stuck rather than a live-updating feed. */}
+        {tracesLoading && recentTraces.length === 0 && <div className="caption">Loading traces…</div>}
         {!tracesLoading && recentTraces.length === 0 && (
           <div className="card" style={{ padding: 18 }}>
             <p className="body" style={{ marginBottom: 6 }}>No agent activity yet.</p>

@@ -81,7 +81,7 @@ export default function Landing({ onNavigate }) {
             { name: 'Arc',         desc: 'EVM · Sub-second finality' },
             { name: 'Circle',      desc: 'USDC · Wallets · CCTP' },
             { name: 'Foundry',     desc: '11 deployed contracts' },
-            { name: 'Claude',      desc: 'Strategy extraction · Reasoning' },
+            { name: 'AWS Bedrock', desc: 'Nova Micro · Strategy extraction · Reasoning' },
             { name: 'React + viem',desc: 'Frontend · Wallet UX' },
             { name: 'FastAPI',     desc: 'Backend · Agent runner' },
           ].map(t => (
