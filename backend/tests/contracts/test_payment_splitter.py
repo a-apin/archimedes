@@ -3,7 +3,8 @@ Tests for PaymentSplitter.vy (D6) — per-pool balance isolation + access contro
 
 Contracts changed (contracts/vyper/PaymentSplitter.vy):
   - split()              →  depositToPool() + withdraw()
-  - Access control:       withdraw() gated on pool.creator / pool.platform
+  - Access control:       withdraw() is permissionless; payout recipients are
+                          fixed at pool creation and never derived from msg.sender
   - Balance isolation:    held_balance field, capped disbursement
   - Event argument style: kwargs (vyper ^0.4.1 best-practice)
 """
@@ -177,11 +178,11 @@ class TestDepositToPool:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# withdraw — ACCESS-CONTROLLED DISBURSEMENT
+# withdraw — PERMISSIONLESS DISBURSEMENT
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestWithdraw:
-    """D6 §2.3 + §2.4 — onlyCreatorOrPlatform, bounded by held_balance, 90/10 split."""
+    """D6 §2.3 + §2.4 — permissionless trigger (changed 2026-07-03), fixed payout recipients, 90/10 split."""
 
     def test_creator_can_withdraw(self, splitter, usdc, accounts):
         """Pool creator may call withdraw (D6 §2.3)."""
@@ -226,22 +227,36 @@ class TestWithdraw:
 
         assert splitter.pools(pool_id)[4] == 0  # fully disbursed
 
-    def test_attacker_cannot_withdraw(self, splitter, usdc, accounts):
-        """Unauthorized address cannot withdraw (D6 §2.3 access control)."""
+    def test_third_party_can_trigger_withdraw_but_funds_go_to_pool_addresses(self, splitter, usdc, accounts):
+        """Any caller can trigger withdraw; funds land at pool.creator/pool.platform, not the caller."""
         pool_id = b"pool-wd3".ljust(32, b"\x00")
         with boa.env.prank(accounts["owner"]):
             splitter.createPool(pool_id, accounts["creator"], accounts["platform"])
 
+        deposit = 500 * 10**6
         with boa.env.prank(accounts["funder"]):
-            usdc.approve(splitter.address, 500 * 10**6)
-            splitter.depositToPool(pool_id, 500 * 10**6)
+            usdc.approve(splitter.address, deposit)
+            splitter.depositToPool(pool_id, deposit)
 
+        creator_before = usdc.balanceOf(accounts["creator"])
+        platform_before = usdc.balanceOf(accounts["platform"])
+        caller_before = usdc.balanceOf(accounts["attacker"])
+
+        # Attacker (who is neither creator nor platform) triggers withdraw
         with boa.env.prank(accounts["attacker"]):
-            with pytest.raises(boa.BoaError, match="not authorized"):
-                splitter.withdraw(pool_id, 100 * 10**6)
+            splitter.withdraw(pool_id, deposit)
 
-    def test_bystander_cannot_withdraw(self, splitter, usdc, accounts):
-        """A completely unrelated address cannot withdraw either."""
+        creator_share = deposit * 90 // 100
+        platform_share = deposit - creator_share
+
+        # Funds go to pool creator and platform, NOT to the caller
+        assert usdc.balanceOf(accounts["creator"]) == creator_before + creator_share
+        assert usdc.balanceOf(accounts["platform"]) == platform_before + platform_share
+        assert usdc.balanceOf(accounts["attacker"]) == caller_before  # attacker gets nothing
+        assert splitter.pools(pool_id)[4] == 0  # fully disbursed
+
+    def test_bystander_can_trigger_withdraw_funds_go_to_pool_addresses(self, splitter, usdc, accounts):
+        """A completely unrelated address can also trigger withdraw; funds still go to pool addresses."""
         pool_id = b"pool-wd4".ljust(32, b"\x00")
         with boa.env.prank(accounts["owner"]):
             splitter.createPool(pool_id, accounts["creator"], accounts["platform"])
@@ -250,9 +265,19 @@ class TestWithdraw:
             usdc.approve(splitter.address, 500 * 10**6)
             splitter.depositToPool(pool_id, 500 * 10**6)
 
+        creator_before = usdc.balanceOf(accounts["creator"])
+        platform_before = usdc.balanceOf(accounts["platform"])
+        bystander_before = usdc.balanceOf(accounts["bystander"])
+
         with boa.env.prank(accounts["bystander"]):
-            with pytest.raises(boa.BoaError, match="not authorized"):
-                splitter.withdraw(pool_id, 100 * 10**6)
+            splitter.withdraw(pool_id, 100 * 10**6)
+
+        creator_share = 100 * 10**6 * 90 // 100
+        platform_share = 100 * 10**6 - creator_share
+
+        assert usdc.balanceOf(accounts["creator"]) == creator_before + creator_share
+        assert usdc.balanceOf(accounts["platform"]) == platform_before + platform_share
+        assert usdc.balanceOf(accounts["bystander"]) == bystander_before  # bystander gets nothing
 
     def test_withdraw_bounded_by_held_balance(self, splitter, usdc, accounts):
         """Cannot withdraw more than held_balance (D6 §2.4 — per-pool isolation)."""

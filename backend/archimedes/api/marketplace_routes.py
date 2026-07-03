@@ -6,14 +6,10 @@ pool_id is ALWAYS derived server-side via derive_pool_id (D-POOL).
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
-import os
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 
 from archimedes.api._route_helpers import strategy_provider
@@ -26,39 +22,9 @@ from archimedes.models.marketplace import MarketplaceAgent
 from archimedes.models.strategy_generators import wallet_can_publish
 from archimedes.models.strategy_store import StrategyRecord
 
-# ─── x402 Gateway Models ────────────────────────────────────────────────
-
-
-class PaymentNotification(BaseModel):
-    """Webhook payload from the x402 payment gateway."""
-
-    sub_id: str = Field(..., description="0x-hex subscriber ID (bytes32)")
-    tx_hash: str = Field(default="", description="On-chain transaction hash")
-    amount_usdc_raw: int = Field(default=0, description="Amount paid in USDC raw (6 decimals)")
-    status: str = Field(default="confirmed", description="Payment status: confirmed | failed")
-
-
 logger = logging.getLogger(__name__)
 
 marketplace_router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
-
-_WEBHOOK_SECRET = os.getenv("X402_WEBHOOK_SECRET")
-
-
-def _verify_webhook_signature(raw_body: bytes, signature: str | None) -> None:
-    """Verify the HMAC-SHA256 signature on an x402 webhook request.
-
-    Pattern mirrors ``_verify_session`` in ``auth_siwe.py`` — constant-time
-    comparison via ``hmac.compare_digest``.
-    """
-    if not _WEBHOOK_SECRET:
-        logger.warning("X402_WEBHOOK_SECRET not set; webhook auth disabled")
-        return
-    if not signature:
-        raise HTTPException(status_code=401, detail="Missing X-Webhook-Signature header")
-    expected = hmac.new(_WEBHOOK_SECRET.encode(), raw_body, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
 
 def _get_market(request: Request) -> MarketService:
@@ -82,33 +48,14 @@ async def publish_strategy(
 ):
     """Publish a strategy to the marketplace.
 
-    Body: {strategy_id, vault_address?, platform_wallet?,
-           gateway_seller_address?, agent_wallet_id?}
+    Body: {strategy_id, vault_address?, platform_wallet?}
     pool_id is DERIVED server-side (D-POOL). Never accept it from the client.
+    Publisher settlement wallet is auto-provisioned via Circle DCW (D2).
     """
     market = _get_market(request)
     strategy_id = body.get("strategy_id", "").strip()
     vault_address = body.get("vault_address", "").strip() or ""
     platform_wallet = body.get("platform_wallet", "").strip() or ""
-    gateway_seller_address = body.get("gateway_seller_address", "").strip() or ""
-    agent_wallet_id = body.get("agent_wallet_id", "").strip() or ""
-
-    # Validate gateway_seller_address is a non-zero checksummable address.
-    if gateway_seller_address:
-        from web3 import Web3
-        try:
-            checksummed = Web3.to_checksum_address(gateway_seller_address)
-        except (ValueError, Exception):
-            raise HTTPException(
-                status_code=400,
-                detail="gateway_seller_address is not a valid Ethereum address",
-            ) from None
-        if int(checksummed, 16) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="gateway_seller_address must not be the zero address",
-            )
-        gateway_seller_address = checksummed
 
     if not strategy_id:
         raise HTTPException(status_code=400, detail="strategy_id is required")
@@ -153,6 +100,16 @@ async def publish_strategy(
             agent_assisted=True,
             owner_wallet=wallet,
         )
+
+    # 3a. Auto-provision publisher settlement wallet (Circle DCW).
+    #     Must happen before on-chain createPool so a wallet failure never
+    #     leaves an on-chain pool with no way to be funded.
+    from archimedes.marketplace.wallet_provisioner import provision_publisher_wallet
+    try:
+        agent_wallet_id, gateway_seller_address = await provision_publisher_wallet(pool_id)
+    except Exception as exc:
+        logger.error("Circle wallet provisioning failed for publisher %s: %s", strategy_id, exc)
+        raise HTTPException(status_code=502, detail="Failed to provision publisher settlement wallet") from exc
 
     # 4. Check on-chain pool status, then createPool if needed (owner key only)
     splitter_addr = market.settings.payment_splitter_address
@@ -204,8 +161,8 @@ async def publish_strategy(
                 creator_wallet=wallet.lower(),
                 pool_id=pool_id,
                 vault_address=vault_address,
-                gateway_seller_address=gateway_seller_address or None,
-                agent_wallet_id=agent_wallet_id or None,
+                gateway_seller_address=gateway_seller_address,
+                agent_wallet_id=agent_wallet_id,
             )
             session.add(agent)
             session.commit()
@@ -401,51 +358,6 @@ async def unsubscribe_strategy(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/marketplace/payment-webhook  (x402 gateway callback)
-# ---------------------------------------------------------------------------
-
-
-@marketplace_router.post("/payment-webhook")
-async def payment_webhook(
-    request: Request,
-    body: PaymentNotification,
-    x_webhook_signature: str | None = Header(default=None),
-):
-    """Receive x402 gateway payment confirmation.
-
-    Called by the x402 payment gateway when a subscriber's off-chain
-    payment is confirmed.  Records the payment in Redis so the next
-    tick can verify it without an on-chain ``chargeActions`` call.
-
-    Requires an HMAC-SHA256 signature in the ``X-Webhook-Signature``
-    header, keyed by ``X402_WEBHOOK_SECRET``, over the raw request body.
-    """
-    raw_body = await request.body()
-    _verify_webhook_signature(raw_body, x_webhook_signature)
-
-    market = _get_market(request)
-
-    if body.status != "confirmed":
-        logger.info("x402 payment not confirmed for %s (status=%s)", body.sub_id, body.status)
-        return {"status": "ignored", "sub_id": body.sub_id}
-
-    await market.state.save_payment(
-        body.sub_id,
-        {
-            "paid": True,
-            "amount_usdc_raw": body.amount_usdc_raw,
-            "tx_hash": body.tx_hash,
-            "gateway_status": body.status,
-        },
-    )
-    logger.info(
-        "x402 payment recorded for %s (amount=%d, tx=%s)",
-        body.sub_id, body.amount_usdc_raw, body.tx_hash,
-    )
-    return {"status": "recorded", "sub_id": body.sub_id}
-
-
-# ---------------------------------------------------------------------------
 # DELETE /api/marketplace/publish/{strategy_id}
 # ---------------------------------------------------------------------------
 
@@ -562,6 +474,51 @@ async def list_my_published(
         d["subscriber_count"] = len(subs.subscribers) if subs else 0
         results.append(d)
     return results
+
+
+# ---------------------------------------------------------------------------
+# POST /api/marketplace/publish/{strategy_id}/withdraw
+# ---------------------------------------------------------------------------
+
+
+@marketplace_router.post("/publish/{strategy_id}/withdraw")
+async def withdraw_publisher_earnings(
+    strategy_id: str,
+    request: Request,
+    wallet: str = Depends(require_verified_wallet),
+):
+    """Manual creator-initiated disbursement (M1' fix). Runs Stage A+B+C for the
+    caller's own publisher row, then calls PaymentSplitter.withdraw for the
+    freshly-updated held_balance."""
+    market = _get_market(request)
+    with get_session() as session:
+        pub = (
+            session.query(MarketplaceAgent)
+            .filter(
+                MarketplaceAgent.role == "publisher",
+                MarketplaceAgent.strategy_id == strategy_id,
+                MarketplaceAgent.creator_wallet == wallet.lower(),
+            )
+            .first()
+        )
+    if pub is None:
+        raise HTTPException(status_code=404, detail="No publisher row found for this strategy/wallet")
+
+    sweeper = market._sweeper
+    await sweeper.sweep_publisher(pub)  # Stage A + B, refresh pool state
+
+    splitter_addr = market.settings.payment_splitter_address
+    sp_c = market.loader._contract(splitter_addr, "PaymentSplitter")
+    pool_data = await sp_c.functions.pools(to_bytes32(pub.pool_id)).call()
+    held_balance = pool_data[4]  # (creator, platform, total_collected, total_disbursed, held_balance, active)
+
+    if held_balance <= 0:
+        return {"status": "nothing_to_withdraw", "held_balance": 0}
+
+    tx = await sweeper.withdraw_publisher(pub, held_balance)
+    if tx is None:
+        raise HTTPException(status_code=502, detail="Withdraw failed — check logs")
+    return {"status": "withdrawn", "amount_raw": held_balance, "tx_hash": tx}
 
 
 # ---------------------------------------------------------------------------

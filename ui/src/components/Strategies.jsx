@@ -854,19 +854,37 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               onOpenPassport={openPassport}
               extraActions={(row) =>
                 row.status === 'running' ? (
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-outline-danger"
-                    onClick={async () => {
-                      if (window.confirm(`Stop publishing "` + (row.strategy_name || row.strategy_id) + `"?`)) {
-                        await apiPost(`/api/marketplace/stop-publish/${row.strategy_id}`, {})
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline"
+                      onClick={async () => {
+                        const res = await apiPost(`/api/marketplace/publish/${row.strategy_id}/withdraw`, {})
+                        if (res.status === 'withdrawn') {
+                          alert(`Withdrew ${res.amount_raw / 1e6} USDC`)
+                        } else if (res.status === 'nothing_to_withdraw') {
+                          alert('Nothing to withdraw yet')
+                        }
                         load()
-                      }
-                    }}
-                    style={{ marginLeft: 8 }}
-                  >
-                    Stop
-                  </button>
+                      }}
+                      style={{ marginLeft: 8 }}
+                    >
+                      Withdraw
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-danger"
+                      onClick={async () => {
+                        if (window.confirm(`Stop publishing "` + (row.strategy_name || row.strategy_id) + `"?`)) {
+                          await apiPost(`/api/marketplace/stop-publish/${row.strategy_id}`, {})
+                          load()
+                        }
+                      }}
+                      style={{ marginLeft: 8 }}
+                    >
+                      Stop
+                    </button>
+                  </>
                 ) : null
               }
               emptyState={

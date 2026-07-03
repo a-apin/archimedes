@@ -1,13 +1,14 @@
-"""Circle Developer-Controlled Wallet provisioning for subscribers.
+"""Circle Developer-Controlled Wallet provisioning for subscribers and publishers.
 
 Creates a Circle Developer-Controlled Wallet for each subscriber at
-subscription time. The wallet serves triple duty:
+subscription time and for each publisher at publish time. The wallet serves
+triple duty:
   1. x402 signing (replaces raw private-key signing — kills D2)
   2. Funded balance address (the readiness gate checks it — kills D3)
   3. The monolith signs micropayments in-process via CircleWalletSigner
 
 Uses the same Circle API credentials and encrypt-entity-secret pattern
-as ``chain/circle_signer.py``. Idempotent: passes ``sub_id`` in the
+as ``chain/circle_signer.py``. Idempotent: passes the reference ID in the
 wallet metadata/ref field so a retry does not create a duplicate wallet.
 """
 
@@ -48,11 +49,14 @@ def _encrypt_entity_secret(entity_secret_hex: str, public_key_pem: str) -> str:
     return base64.b64encode(ciphertext).decode()
 
 
-async def provision_subscriber_wallet(sub_id: str) -> tuple[str, str]:
-    """Create a Circle Developer-Controlled Wallet for a subscriber.
+async def _create_circle_wallet(ref_value: str, ref_purpose: str) -> tuple[str, str]:
+    """Shared Circle DCW creation flow used by both subscriber and publisher
+    provisioning.  Fetches the RSA public key, encrypts the entity secret, and
+    creates a wallet with the given metadata reference for idempotency.
 
     Args:
-        sub_id: The 0x-prefixed 32-byte subscriber ID (bytes32 hex).
+        ref_value: Unique reference value (e.g. ``"sub:<sub_id>"`` or ``"pub:<pool_id>"``).
+        ref_purpose: Human-readable purpose string for wallet metadata.
 
     Returns:
         A tuple ``(wallet_id, wallet_address)``.
@@ -85,13 +89,13 @@ async def provision_subscriber_wallet(sub_id: str) -> tuple[str, str]:
 
         ciphertext = _encrypt_entity_secret(entity_secret, public_key)
 
-        # 2. Create the wallet with sub_id in the ref/metadata for idempotency
+        # 2. Create the wallet with ref in the metadata for idempotency
         payload = {
             "idempotencyKey": str(uuid.uuid4()),
             "blockchain": CIRCLE_BLOCKCHAIN,
             "metadata": [
-                {"name": "ref", "value": f"sub:{sub_id}"},
-                {"name": "purpose", "value": "x402_subscriber_signing"},
+                {"name": "ref", "value": ref_value},
+                {"name": "purpose", "value": ref_purpose},
             ],
             "entitySecretCiphertext": ciphertext,
         }
@@ -109,28 +113,64 @@ async def provision_subscriber_wallet(sub_id: str) -> tuple[str, str]:
                 wallet_id: str = body["data"]["wallet"]["id"]
                 wallet_address: str = body["data"]["wallet"]["address"]
                 logger.info(
-                    "Created Circle wallet %s for subscriber %s (address=%s)",
-                    wallet_id, sub_id, wallet_address,
+                    "Created Circle wallet %s for ref=%s (address=%s)",
+                    wallet_id, ref_value, wallet_address,
                 )
                 return wallet_id, wallet_address
             # 409 Conflict means the idempotency key already created a wallet
             if resp.status == 409:
                 logger.warning(
-                    "Wallet creation conflict for sub %s (idempotent retry): %s",
-                    sub_id, body,
+                    "Wallet creation conflict for ref=%s (idempotent retry): %s",
+                    ref_value, body,
                 )
                 # Try to find the existing wallet by listing
-                existing = await _find_wallet_by_ref(session, api_key, f"sub:{sub_id}")
+                existing = await _find_wallet_by_ref(session, api_key, ref_value)
                 if existing:
                     return existing["id"], existing["address"]
                 raise RuntimeError(
                     f"Wallet creation conflict but could not find existing wallet "
-                    f"for sub {sub_id}"
+                    f"for ref={ref_value}"
                 )
 
             raise RuntimeError(
                 f"Circle wallet creation failed ({resp.status}): {body}"
             )
+
+
+async def provision_subscriber_wallet(sub_id: str) -> tuple[str, str]:
+    """Create a Circle Developer-Controlled Wallet for a subscriber.
+
+    Args:
+        sub_id: The 0x-prefixed 32-byte subscriber ID (bytes32 hex).
+
+    Returns:
+        A tuple ``(wallet_id, wallet_address)``.
+
+    Raises:
+        RuntimeError: If Circle credentials are missing or the API call fails.
+    """
+    return await _create_circle_wallet(
+        ref_value=f"sub:{sub_id}",
+        ref_purpose="x402_subscriber_signing",
+    )
+
+
+async def provision_publisher_wallet(pool_id: str) -> tuple[str, str]:
+    """Create a Circle Developer-Controlled Wallet for a publisher.
+
+    Args:
+        pool_id: The pool ID (bytes32 hex string) identifying the publisher's pool.
+
+    Returns:
+        A tuple ``(wallet_id, wallet_address)``.
+
+    Raises:
+        RuntimeError: If Circle credentials are missing or the API call fails.
+    """
+    return await _create_circle_wallet(
+        ref_value=f"pub:{pool_id}",
+        ref_purpose="publisher_settlement",
+    )
 
 
 async def _find_wallet_by_ref(
