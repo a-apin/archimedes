@@ -26,6 +26,7 @@ from archimedes.interfaces.math import IRegimeDetector
 from archimedes.marketplace import payments
 from archimedes.marketplace.encoding import to_bytes32
 from archimedes.marketplace.state import MarketState
+from archimedes.marketplace.settlement import SettlementSweeper
 from archimedes.marketplace.tick_registry import (
     HaltSource, PIPELINE_STEPS, SubscriberTickRecord, TickStep,
 )
@@ -199,6 +200,7 @@ class MarketService:
         self._stop = asyncio.Event()
         # Regime detection (same pattern as agent_runner)
         self.oracle = OracleUpdater()
+        self._sweeper = SettlementSweeper(self.settings)
         self.regime_detector: IRegimeDetector = GmmRegimeDetector(fallback=VixRegimeDetector())
         # Position sizer — throttles raw weights by regime + consensus
         self.portfolio_constructor: PortfolioConstructor = PortfolioConstructor()
@@ -402,6 +404,14 @@ class MarketService:
                     })
                 except Exception:
                     logger.exception("publisher vault rebalance failed for %s", strategy_id)
+
+            # Settlement sweep (P5) — Gateway → wallet → depositToPool.
+            # Runs inside its own try/except so a sweep failure never fails the tick.
+            if not self.dry_run:
+                try:
+                    await self._sweeper.sweep_publisher(pub)
+                except Exception:
+                    logger.exception("[%s] settlement sweep failed", strategy_id)
 
             await self.state.save_subscribers(
                 strategy_id,
