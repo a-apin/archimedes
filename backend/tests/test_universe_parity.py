@@ -47,6 +47,45 @@ BACKTEST_SYNTHS: frozenset[str] = frozenset(GLOBAL_ASSETS.keys())
 ON_CHAIN: frozenset[str] = frozenset(ON_CHAIN_SYNTHS)
 
 
+def test_global_assets_gated_on_data_quality_harness() -> None:
+    """Every admitted universe ticker clears verify_instrument over the backtest
+    window on a clean feed — proving GLOBAL_ASSETS is gated on the #772
+    data-quality harness (the gate excludes poisoned data; it does not lower the
+    DSR/PBO bar). Mocked at the yfinance boundary — no live network."""
+    import numpy as np
+    import pandas as pd
+    from archimedes.services.strategy_signal_evaluator import verify_universe_data_quality
+
+    start, end = "2022-01-03", "2023-12-29"
+
+    def _clean_feed(ticker, s, e):
+        idx = pd.bdate_range(s, e)
+        return pd.Series(100.0 + np.arange(len(idx), dtype=float), index=idx)
+
+    report = verify_universe_data_quality(start, end, _downloader=_clean_feed)
+    # On a clean feed nothing is rejected — the harness admits the full universe
+    # and (by construction) every admitted ticker passed verify_instrument.
+    assert report.rejected == {}, f"clean feed must admit all tickers; rejected={report.rejected}"
+    assert len(report.admitted) > 0
+    assert all(report.verdicts[t].ok for t in report.admitted)
+
+
+def test_data_quality_harness_excludes_bad_ticker() -> None:
+    """The parity gate rejects an un-fetchable ticker rather than admitting it —
+    the universe is not greened on data that cannot be fetched (#772)."""
+    import pandas as pd
+    from archimedes.services.strategy_signal_evaluator import verify_universe_data_quality
+
+    start, end = "2022-01-03", "2023-12-29"
+
+    def _all_empty(ticker, s, e):
+        return pd.Series(dtype=float)
+
+    report = verify_universe_data_quality(start, end, _downloader=_all_empty)
+    assert report.admitted == ()
+    assert len(report.rejected) > 0
+
+
 def test_ssot_loaded_non_empty() -> None:
     # A silent SSOT-load failure (missing/garbled JSON) would make every other
     # parity check pass vacuously on an empty set — guard against it.
