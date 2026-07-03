@@ -571,7 +571,12 @@ class MarketService:
 
     async def _rebalance_phase(self, pub, active, strategy_id, tick_id, trades,
                                target_weights, action_count, addr_map, leader_token):
-        """Per-subscriber REBALANCE with midpoint leader renewal."""
+        """Per-subscriber REBALANCE with midpoint leader renewal.
+
+        Charges are batched into groups of CHARGE_BATCH_SIZE for concurrent
+        Circle signing within each half. Midpoint leader-renewal structure
+        is preserved.
+        """
         if not trades:
             return
         sem = asyncio.Semaphore(5)
@@ -602,17 +607,20 @@ class MarketService:
                     self._defer_subscriber(pub, sub)
                     await self._record_liability(sub, strategy_id, tick_id, action_count)
 
+        async def _charge_half(half):
+            for i in range(0, len(half), CHARGE_BATCH_SIZE):
+                chunk = half[i:i + CHARGE_BATCH_SIZE]
+                for r in await asyncio.gather(*[_one(s) for s in chunk], return_exceptions=True):
+                    if isinstance(r, Exception):
+                        logger.error("Subscriber processing failed: %s", r)
+
         midpoint = len(active) // 2
         first = active[:midpoint] if midpoint else active
         if first:
-            for r in await asyncio.gather(*[_one(s) for s in first], return_exceptions=True):
-                if isinstance(r, Exception):
-                    logger.error("Subscriber processing failed: %s", r)
+            await _charge_half(first)
         await self.state.renew_leader(strategy_id, token=leader_token)
         if midpoint:
-            for r in await asyncio.gather(*[_one(s) for s in active[midpoint:]], return_exceptions=True):
-                if isinstance(r, Exception):
-                    logger.error("Subscriber processing failed: %s", r)
+            await _charge_half(active[midpoint:])
 
     # ---- helpers ---------------------------------------------------------
 
@@ -686,29 +694,37 @@ class MarketService:
         )
 
     # F6.6 — charge all active subscribers for one pipeline step
+    # Batched into groups of CHARGE_BATCH_SIZE for concurrent Circle signing.
     async def _charge_step(self, pub, active, strategy_id, tick_id, step: TickStep):
         survivors = []
-        for sub in active:
-            paid = await self._charge_one(pub, sub, strategy_id, tick_id, step, action_count=1)
-            if paid:
-                await self.record_subscriber_tick(SubscriberTickRecord(
-                    sub_id=sub.sub_id, strategy_id=strategy_id, tick_id=tick_id,
-                    timestamp=datetime.now(UTC), step_reached=step,
-                    halted=False, charged=True, action_count=1,
-                ))
-                survivors.append(sub)
-            else:
-                self._defer_subscriber(pub, sub)
-                await self.record_subscriber_tick(SubscriberTickRecord(
-                    sub_id=sub.sub_id, strategy_id=strategy_id, tick_id=tick_id,
-                    timestamp=datetime.now(UTC), step_reached=step,
-                    halted=True, halt_source=HaltSource.PAYMENT,
-                    halt_reason=f"could not afford {step.value}", charged=False, action_count=1,
-                ))
-                await self.state.append_event(strategy_id, {
-                    "type": "halt", "sub_id": sub.sub_id, "reason": "payment_required",
-                    "step": step.value, "tick_id": tick_id,
-                })
+        for i in range(0, len(active), CHARGE_BATCH_SIZE):
+            chunk = active[i:i + CHARGE_BATCH_SIZE]
+            results = await asyncio.gather(
+                *[self._charge_one(pub, s, strategy_id, tick_id, step, action_count=1) for s in chunk],
+                return_exceptions=True,
+            )
+            for sub, paid in zip(chunk, results):
+                if isinstance(paid, Exception):
+                    paid = False
+                if paid:
+                    await self.record_subscriber_tick(SubscriberTickRecord(
+                        sub_id=sub.sub_id, strategy_id=strategy_id, tick_id=tick_id,
+                        timestamp=datetime.now(UTC), step_reached=step,
+                        halted=False, charged=True, action_count=1,
+                    ))
+                    survivors.append(sub)
+                else:
+                    self._defer_subscriber(pub, sub)
+                    await self.record_subscriber_tick(SubscriberTickRecord(
+                        sub_id=sub.sub_id, strategy_id=strategy_id, tick_id=tick_id,
+                        timestamp=datetime.now(UTC), step_reached=step,
+                        halted=True, halt_source=HaltSource.PAYMENT,
+                        halt_reason=f"could not afford {step.value}", charged=False, action_count=1,
+                    ))
+                    await self.state.append_event(strategy_id, {
+                        "type": "halt", "sub_id": sub.sub_id, "reason": "payment_required",
+                        "step": step.value, "tick_id": tick_id,
+                    })
         return survivors
 
     # F6.7 — halt all still-active subscribers due to publisher pipeline halt
