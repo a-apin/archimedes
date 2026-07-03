@@ -650,15 +650,18 @@ def apply_rigor_gate(
                 (curve[i] - curve[i - 1]) / curve[i - 1] for i in range(1, len(curve)) if curve[i - 1] > 0
             ]
 
-    # num_trials = actual size of the multiple-testing selection set. The
-    # caller-supplied/default value (curated library size — see
-    # _default_num_trials) under-deflates a large variant grid (e.g. a
-    # 50-variant sweep gets only a library-sized penalty) and over-deflates a
-    # small one. When the variant matrix is known, it is a MORE precise
-    # selection-set size, so it takes priority over the library-size fallback.
+    # num_trials = actual size of the multiple-testing selection set. A variant
+    # grid is a second, independent selection layer — a parameter sweep within
+    # this one candidate, on top of whatever selection set the caller already
+    # accounted for (society N + library, #820, or the plain library-size
+    # fallback when the caller passed nothing more precise). Take whichever
+    # count is larger rather than letting a small grid (e.g. 3 variants)
+    # silently override a bigger, correct caller-supplied count — this can
+    # only make the gate at least as strict as either layer alone, never
+    # looser than either (#820).
     effective_trials = num_trials
     if variants_metrics is not None and len(variants_metrics) >= 2:
-        effective_trials = len(variants_metrics)
+        effective_trials = max(num_trials, len(variants_metrics))
 
     # Correlated variants carry fewer independent trials than their nominal
     # count, so the multiple-testing penalty in the DSR is relaxed accordingly.

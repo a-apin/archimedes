@@ -180,6 +180,9 @@ async def evaluate_rigor_gate():
     # library, so the selection set is the library itself — there is no fresh
     # N-candidate society pool to add (that additive correction, N + library_size,
     # applies only on the live society generation path in generation_pipeline.py).
+    # #820 unified the live and fusion generation paths on that additive count;
+    # this route staying on library-size alone is the deliberate exception, not
+    # a fourth convention that slipped through.
     num_trials = max(len(valid_returns), 1)
 
     # The strategy library is the multiple-testing selection set; correlated

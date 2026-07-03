@@ -664,6 +664,118 @@ async def test_fusion_dispatch_end_to_end_persists_fusion_strategy(tmp_path, mon
     )
 
 
+@pytest.mark.asyncio
+async def test_fusion_path_num_trials_matches_society_formula(tmp_path, monkeypatch):
+    """#820: the fusion candidate must deflate for the SAME selection set as the
+    live agent path — library_size + selection_pool_size (_society_num_trials) —
+    not evaluate_fusion_spec's own library-size-only default.
+
+    Before this fix, ``selection_pool_size`` reached ``_run_fusion_candidate`` but
+    was never threaded into ``evaluate_fusion_spec``, so the fusion path silently
+    under-deflated relative to the live path for an identical (pool, library) pair.
+    The mock spec also carries a 3-variant ``parameter_variants`` grid, so this
+    also proves a small variant grid no longer silently overrides a bigger,
+    correct society count (the ``apply_rigor_gate`` composition fix).
+    """
+    import archimedes.db as _db
+    import archimedes.services.fusion_evaluator as fe
+    from archimedes.agents import generation_pipeline as gp
+    from archimedes.agents import strategy_fusion as sf
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    test_engine = create_engine(
+        f"sqlite:///{tmp_path / 'fusion_num_trials.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    monkeypatch.setattr(_db, "engine", test_engine)
+    monkeypatch.setattr(_db, "SessionLocal", sessionmaker(bind=test_engine, autocommit=False, autoflush=False))
+    from archimedes.models import kg, strategy_passport_record  # noqa: F401
+
+    _db.Base.metadata.create_all(bind=test_engine)
+
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    monkeypatch.delenv("GENERATION_PIPELINE_FIXTURE", raising=False)
+    monkeypatch.setenv("GENERATION_PIPELINE_SKIP_BACKTEST", "1")
+    monkeypatch.setattr(gp, "_llm_available", lambda: True)
+
+    async def _permissive_validate(brief):
+        return {
+            "is_valid": True,
+            "intent_summary": brief.intent[:140],
+            "asset_classes_inferred": brief.asset_classes or [],
+            "time_horizon_inferred": "unknown",
+            "risk_appetite_adjusted": brief.risk_appetite,
+        }
+
+    monkeypatch.setattr(gp, "_validate_brief", _permissive_validate)
+
+    corpus = _fixture_corpus(24)
+    monkeypatch.setattr(sf, "load_corpus", lambda *a, **k: corpus)
+    monkeypatch.setattr(
+        sf,
+        "default_fusion",
+        lambda: sf.StrategyFusion(backend=_MockFusionBackend(), corpus=corpus),
+    )
+
+    # Fixed, known library size (4) so the expected num_trials is computable —
+    # decoupled from however many strategies happen to be curated right now.
+    library_size = 4
+
+    class _FakeStrategy:
+        paper_arxiv_id = "1234.5678"
+        paper_title = "Fake Paper"
+
+    class _FakeProvider:
+        def list_strategies(self, *a, **k):
+            return [_FakeStrategy() for _ in range(library_size)]
+
+    import archimedes.services.strategy_provider as sp
+
+    monkeypatch.setattr(sp, "default_provider", lambda *a, **k: _FakeProvider())
+
+    captured_num_trials: list[int | None] = []
+    real_evaluate = fe.evaluate_fusion_spec
+
+    def _spy_evaluate(spec_dict, **kwargs):
+        captured_num_trials.append(kwargs.get("num_trials"))
+        return real_evaluate(spec_dict, **kwargs)
+
+    monkeypatch.setattr(fe, "evaluate_fusion_spec", _spy_evaluate)
+
+    store = _FakeStore()
+    brief = GenerateBrief(
+        intent="equity momentum with a volatility overlay",
+        risk_appetite="moderate",
+        asset_classes=["equities"],
+    )
+    selection_pool_size = 5  # != library_size, so an additive bug can't hide by coincidence
+
+    await run_generation(
+        job_id="job_fusion_num_trials",
+        brief=brief,
+        store=store,
+        dual_regime=False,
+        n_candidates=selection_pool_size,
+    )
+
+    assert captured_num_trials, "evaluate_fusion_spec was never called — fusion path did not run"
+    expected = gp._society_num_trials(library_size, selection_pool_size)
+    assert all(n == expected for n in captured_num_trials), (
+        f"fusion path num_trials {captured_num_trials} != live-path formula {expected} "
+        f"(library_size={library_size}, selection_pool_size={selection_pool_size})"
+    )
+
+    # The verdict actually persisted must carry the same value through the
+    # variant-grid composition in apply_rigor_gate (max(), not a silent replace).
+    persisted = [e for e in store.events if e["event"] == "candidate_evaluated"]
+    assert persisted, "no candidate_evaluated event emitted"
+    for e in persisted:
+        verdict = e["data"].get("rigor_verdict") or {}
+        if verdict.get("num_trials") is not None:
+            assert verdict["num_trials"] == expected
+
+
 class _MockTextOnlyFusionBackend:
     """Deterministic LLM stand-in returning a parseable fusion WITHOUT a
     machine-readable strategy_spec — the *text-only* path (``has_real_rigor``
