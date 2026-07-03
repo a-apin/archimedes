@@ -36,8 +36,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from archimedes.db import get_session, init_db  # noqa: E402
-from archimedes.models.daily_returns_store import StrategyDailyReturn  # noqa: E402
+from archimedes.db import get_session, init_db
+from archimedes.models.daily_returns_store import StrategyDailyReturn
 
 
 def _load_records(store_dir: Path) -> list[dict]:
