@@ -156,6 +156,46 @@ fresh candidate pool, so that route keeps `num_trials = library_size`.
 > statistics call. This addendum records approach **A** as the shipped default pending his
 > review; promoting to B is a follow-up if candidate-pool over-deflation proves material.
 
+#### Addendum (#822) — approach B ships alongside A: real ρ̄ feeds the same `num_trials`
+
+Approach A's additive `num_trials = n_candidates + library_size` stays the trial *count* —
+this addendum does not change it. What it fixes is the `average_correlation` argument A
+shipped with: `0.0`, i.e. treating all `n_candidates` society candidates as mutually
+independent trials. They are generated from the **same user brief over overlapping
+universes**, so in practice they are typically strongly correlated (ρ̄ ≈ 0.5–0.9), and
+feeding ρ̄ = 0 over-deflates `E[max_N]` — over-stating the gate's strictness and risking
+rejection of genuinely-skilled strategies whose correlated siblings get counted as
+independent searches they aren't.
+
+**What ships.** The live society path (`agents/generation_pipeline.py`) estimates ρ̄ from
+the candidate pool's own return series via `compute_average_pairwise_correlation` (no
+change to that function or to `compute_dsr`'s `N_eff` formula — both are reused as-is) and
+feeds it into the same `compute_dsr` call each candidate's DSR was already computed with,
+at the same `num_trials`. `_patch_dsr_with_pool_correlation` runs once every candidate's
+return series is known (mirroring the existing `_patch_pbo` two-pass shape: DSR is first
+computed per-candidate at ρ̄=0 during the generation loop, then re-deflated with the pool's
+real ρ̄ once the full pool exists).
+
+**Fallback stays approach A.** With fewer than two candidate return series available (a
+single-candidate generation, or every series too short to correlate), ρ̄ cannot be
+estimated and the verdict is left exactly as approach A computed it — ρ̄=0, unchanged. The
+same applies to fusion/debate candidates (`has_real_rigor=True`): they carry a real DSR
+from their own CSCV evaluator over a parameter-variant grid, not the buy-and-hold return
+series this correlation estimate is scoped to, and are excluded from the pool the same way
+`_patch_pbo` already excludes them from cross-candidate PBO.
+
+**Why this can only relax, never loosen past the no-correction floor.** `N_eff = N / (1 +
+(N-1)ρ̄)` satisfies `1 ≤ N_eff ≤ N` for any `ρ̄ ∈ [0, 1]`, so the corrected DSR p-value sits
+between the ρ̄=0 (approach A) value and the value at `num_trials=1` (no multiple-testing
+penalty at all) — it never exceeds the latter, so the gate is never made looser than the
+IID-Sharpe baseline. At ρ̄→1 (candidates fully collapse to one effective trial) the
+corrected p-value converges to exactly the `num_trials=1` floor, never past it.
+
+**Scope.** Same as A: this applies to the live society generation path only. The
+`/api/selection-bias/gate` route (grading the persisted library) is untouched by this
+addendum — it already estimates a library-wide ρ̄ via `verdicts_for_strategies` in
+`live_rigor_gate.py`, a separate, pre-existing mechanism this issue doesn't touch.
+
 ## 2. Probability of Backtest Overfitting (PBO)
 
 **Reference:** Bailey, D. H., Borwein, J., López de Prado, M., & Zhu, J.
