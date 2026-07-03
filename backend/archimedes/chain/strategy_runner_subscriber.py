@@ -84,9 +84,9 @@ class SubscriberAgent:
         self.circle_signer = CircleSigner()
         self.redis = AgentStateStore()
 
-        self.subscription_manager_address = (
-            SUBSCRIPTION_MANAGER_ADDRESS or self.settings.subscription_manager_address
-        )
+        # SubscriptionManager is fully detached (P7). The env var is still
+        # read for legacy container-mode runners only.
+        self.subscription_manager_address = SUBSCRIPTION_MANAGER_ADDRESS or ""
 
         # Identity
         self.wallet_address = SUBSCRIBER_WALLET_ADDRESS

@@ -2,10 +2,17 @@
 
 ## Overview
 
-Two Vyper contracts power the publisher/subscriber marketplace:
+**Subscriptions are off-chain (as of P7).** The subscription registry is
+Postgres-only — no on-chain SubscriptionManager contract is deployed or needed.
 
-- **PaymentSplitter** — Receives USDC from subscriptions and splits 90/10 (creator/platform).
-- **SubscriptionManager** — Manages subscriber registrations, ephemeral wallets, and per-action charging.
+The only marketplace contract on-chain is **PaymentSplitter** — receives USDC
+via the settlement sweep and splits 90/10 (creator/platform).
+
+## The Only Contract: PaymentSplitter
+
+| Contract | File | Purpose |
+|---|---|---|
+| PaymentSplitter | `contracts/vyper/PaymentSplitter.vy` | Receives USDC deposits from the settlement sweep, tracks creator/platform balances per pool, supports withdrawal and pool deactivation |
 
 ## Compilation
 
@@ -15,16 +22,14 @@ Install Vyper 0.4.0:
 pip install vyper==0.4.0
 ```
 
-Compile both contracts:
+Compile:
 
 ```bash
 # ABI (for Python backend)
 vyper contracts/vyper/PaymentSplitter.vy -f abi > contracts/abis/PaymentSplitter.json
-vyper contracts/vyper/SubscriptionManager.vy -f abi > contracts/abis/SubscriptionManager.json
 
 # Bytecode (for Foundry deployment)
 vyper contracts/vyper/PaymentSplitter.vy -f bytecode > contracts/abis/PaymentSplitter.bin
-vyper contracts/vyper/SubscriptionManager.vy -f bytecode > contracts/abis/SubscriptionManager.bin
 ```
 
 ## Deployment
@@ -36,13 +41,12 @@ vyper contracts/vyper/SubscriptionManager.vy -f bytecode > contracts/abis/Subscr
 
 # 2. Export bytecode as env vars
 PAYMENT_SPLITTER_CODE=$(cat contracts/abis/PaymentSplitter.bin)
-SUBSCRIPTION_MANAGER_CODE=$(cat contracts/abis/SubscriptionManager.bin)
 
 # 3. Deploy via Forge script
 forge script contracts/script/DeploySubscriptionMarketplace.s.sol \
   --rpc-url https://rpc.testnet.arc.network \
   --broadcast \
-  --env-vars USDC_ADDRESS,PLATFORM_WALLET,FLAT_FEE_PER_ACTION,PAYMENT_SPLITTER_BYTECODE,SUBSCRIPTION_MANAGER_BYTECODE
+  --env-vars USDC_ADDRESS,PLATFORM_WALLET,FLAT_FEE_PER_ACTION,PAYMENT_SPLITTER_BYTECODE
 ```
 
 ### Required Environment Variables
@@ -53,7 +57,6 @@ forge script contracts/script/DeploySubscriptionMarketplace.s.sol \
 | `PLATFORM_WALLET` | Platform fee recipient (10%) | `0x...` |
 | `FLAT_FEE_PER_ACTION` | Flat fee in USDC raw (6 decimals) | `100` (= $0.0001) |
 | `PAYMENT_SPLITTER_BYTECODE` | Init bytecode from `vyper -f bytecode` | `0x60...` |
-| `SUBSCRIPTION_MANAGER_BYTECODE` | Init bytecode from `vyper -f bytecode` | `0x60...` |
 
 ## Operational Instructions
 
@@ -73,82 +76,65 @@ PaymentSplitter(paymentSplitterAddress).createPool(
 );
 ```
 
-This is invoked automatically by the publisher agent container on startup
-(see `strategy_runner_publisher.py`).
+This is invoked automatically by the marketplace monolith on publish.
 
-### When a User Subscribes
+### Subscriptions (Off-Chain)
 
-The user (or subscriber container) calls `SubscriptionManager.subscribe()`:
+Subscriptions are managed entirely in Postgres via the marketplace API:
+`POST /api/marketplace/subscribe`. A Circle Developer-Controlled Wallet is
+provisioned per subscriber for x402 micropayment signing and balance tracking.
 
-```solidity
-// 1. User must first approve USDC spending
-USDC.approve(subscriptionManagerAddress, depositAmount);
+### Settlement Sweep (Publisher Side)
 
-// 2. Subscribe
-bytes32 subId = SubscriptionManager(subscriptionManagerAddress).subscribe(
-    0xPoolId,                   // pool_id from PaymentSplitter.createPool
-    "https://subscriber.example:8081/events",  // webhook_url
-    10_000_000                  // initial_deposit (10 USDC raw, 6 decimals)
-);
+The settlement sweeper runs each tick and handles two cadences:
 
-// 3. Platform backend picks up the Subscribed event
-//    and registers the subscriber webhook with the publisher agent.
-```
+1. **Gateway → agent wallet** (threshold-based): Withdraws available Gateway
+   balance when it exceeds `SWEEP_WITHDRAW_THRESHOLD_USDC` (default 10 USDC).
+2. **Agent wallet → PaymentSplitter.depositToPool** (per tick): Approves and
+   deposits USDC into the pool when the wallet balance exceeds
+   `SWEEP_MIN_DEPOSIT_RAW` (default 1 USDC).
 
-### Charging Actions (Publisher Side)
+See `backend/archimedes/marketplace/settlement.py` for details.
 
-When a publisher broadcasts a rebalance, it charges each subscriber:
+### Withdrawing
 
-```solidity
-// Called by publisher agent before sending rebalance payload
-uint256 actionCount = 3;  // number of trades
-SubscriptionManager(subscriptionManagerAddress).chargeActions(subId, actionCount);
-```
-
-If the subscriber's ephemeral wallet has insufficient balance, the call reverts
-and the publisher marks that subscriber as inactive.
-
-### Unsubscribing
-
-```solidity
-SubscriptionManager(subscriptionManagerAddress).unsubscribe(subId);
-// Remaining ephemeral wallet balance is refunded to subscriber.
-```
+Creators withdraw their share from PaymentSplitter via the standard
+`withdraw(poolId)` call (same selector as `PaymentSplitter.vy`).
 
 ## Contract Architecture
 
 ```
-┌──────────────┐    subscribe()/chargeActions()     ┌──────────────────┐
-│              │ ───────────────────────────────────▶│                  │
-│  Subscriber  │                                     │ SubscriptionMgr │
-│  (User)      │ ◀───────────────────────────────────│                  │
-│              │    unsubscribe()/renewEphemeral()    │    (Vyper)      │
-└──────────────┘                                     └────────┬─────────┘
-                                                              │ split()
-                                                              ▼
-                                                     ┌──────────────────┐
-                                                     │                  │
-                                                     │ PaymentSplitter  │
-                                                     │                  │
-                                                     │    (Vyper)       │
-                                                     │                  │
-                                                     ├────────┬─────────┤
-                                                     │ 90%    │  10%    │
-                                                     │        │         │
-                                                     ▼        ▼         │
-                                                 Creator   Platform     │
-                                                 Wallet     Wallet      │
-                                                     └──────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                        Off-Chain (Postgres)                      │
+│                                                                  │
+│  ┌──────────────┐    ┌────────────────────┐   ┌───────────────┐  │
+│  │  Subscriber   │───▶│ Marketplace Routes │──▶│  Publisher    │  │
+│  │  (Circle Wal) │    │ (FastAPI + Redis)  │   │  Engine       │  │
+│  └──────────────┘    └─────────┬──────────┘   └───────┬───────┘  │
+│                                │                       │          │
+│                                │  settle()             │ sweep    │
+│                                ▼                       ▼          │
+│                        ┌──────────────┐       ┌──────────────┐   │
+│                        │ x402 Gateway │       │ Settlement   │   │
+│                        │  (Circle)    │       │ Sweeper      │   │
+│                        └──────┬───────┘       └──────┬───────┘   │
+│                               │ withdraw()          │ deposit   │
+└───────────────────────────────┼─────────────────────┼───────────┘
+                                ▼                     ▼
+                        ┌──────────────────────────────────┐
+                        │         PaymentSplitter          │
+                        │          (Vyper)                 │
+                        ├────────────────┬─────────────────┤
+                        │     90%        │     10%         │
+                        │   Creator      │   Platform      │
+                        │   Wallet       │   Wallet        │
+                        └────────────────┴─────────────────┘
 ```
 
 ## Event Flow
 
-1. Subscriber calls `subscribe()` → `Subscribed` event emitted
-2. Platform registers subscriber webhook with publisher agent
-3. Publisher evaluates strategy → sends `evaluation_step` events (no charge)
-4. Publisher detects rebalance needed → calls `chargeActions()` for each subscriber
-5. `chargeActions` transfers USDC from ephemeral wallet → `PaymentSplitter.split()`
-6. `split()` sends 90% to creator, 10% to platform
-7. Publisher sends rebalance payload to subscriber webhook
-8. Subscriber executes trades on its vault
-9. Subscriber calls `unsubscribe()` → remaining balance refunded
+1. Subscriber POSTs to `/api/marketplace/subscribe` → Circle wallet provisioned
+2. Publisher tick evaluates the strategy and charges subscribers via x402
+3. Settlement sweeper withdraws Gateway balance → agent wallet (threshold-based)
+4. Settlement sweeper deposits agent wallet USDC → PaymentSplitter.depositToPool
+5. Creators call `PaymentSplitter.withdraw()` to claim their 90% share

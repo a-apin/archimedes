@@ -68,7 +68,6 @@ class ChainSettings(BaseSettings):
     asset_registry_address: str = ""  # ARC_ASSET_REGISTRY_ADDRESS
     strategy_registry_address: str = ""  # ARC_STRATEGY_REGISTRY_ADDRESS
     payment_splitter_address: str = ""  # ARC_PAYMENT_SPLITTER_ADDRESS
-    subscription_manager_address: str = ""  # ARC_SUBSCRIPTION_MANAGER_ADDRESS
 
     # Individual synthetic token addresses — env-overridable via
     # ARC_<SYMBOL>_ADDRESS; defaults = deployed Arc testnet contracts.

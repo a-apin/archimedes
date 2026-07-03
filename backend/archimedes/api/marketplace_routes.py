@@ -20,9 +20,8 @@ from archimedes.api._route_helpers import strategy_provider
 from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.limiter import limiter
 from archimedes.db import get_session
-from archimedes.marketplace.encoding import derive_pool_id, to_bytes32, to_hexstr
+from archimedes.marketplace.encoding import derive_pool_id, to_bytes32
 from archimedes.marketplace.service import MarketService, Subscriber
-from eth_account import Account
 from archimedes.models.marketplace import MarketplaceAgent
 from archimedes.models.strategy_generators import wallet_can_publish
 from archimedes.models.strategy_store import StrategyRecord
@@ -243,18 +242,18 @@ async def subscribe_strategy(
 ):
     """Subscribe to a published strategy.
 
-    Body: {strategy_id, pool_id, sub_id, ephemeral_wallet, initial_deposit_usdc}
-    The browser wallet already called USDC.approve + SubscriptionManager.subscribe
-    on-chain (D-SUB). The backend trusts the sub_id from the on-chain event.
+    Body: {strategy_id, pool_id, sub_id, ephemeral_wallet}
+    The subscription registry is Postgres-only (P7 — SubscriptionManager
+    fully detached). Off-chain checks: publisher exists and is running,
+    wallet not already subscribed, sub_id format valid.
     """
     market = _get_market(request)
     strategy_id = body.get("strategy_id", "").strip()
-    pool_id = body.get("pool_id", "").strip()
     sub_id = body.get("sub_id", "").strip()
     ephemeral_wallet = body.get("ephemeral_wallet", "").strip()
 
-    if not strategy_id or not pool_id or not sub_id:
-        raise HTTPException(status_code=400, detail="strategy_id, pool_id, and sub_id are required")
+    if not strategy_id or not sub_id:
+        raise HTTPException(status_code=400, detail="strategy_id and sub_id are required")
 
     # 0a. Validate sub_id format — must be 0x-prefixed 66-char hex (D-BYTES32)
     if not sub_id.startswith("0x") or len(sub_id) != 66:
@@ -263,7 +262,7 @@ async def subscribe_strategy(
         int(sub_id, 16)
     except ValueError:
         raise HTTPException(status_code=400, detail="sub_id is not valid hex") from None
-    # Reject all-zero sub_id (on-chain will never return this)
+    # Reject all-zero sub_id
     if int(sub_id, 16) == 0:
         raise HTTPException(status_code=400, detail="sub_id cannot be zero")
 
@@ -301,47 +300,10 @@ async def subscribe_strategy(
         if existing is not None:
             raise HTTPException(status_code=409, detail="Already subscribed to this strategy")
 
-    # 3. Validate on-chain (skip in dry-run)
-    if not market.dry_run:
-        try:
-            sm_addr = market.settings.subscription_manager_address
-            c = market.loader._contract(sm_addr, "SubscriptionManager")
-            sub_data = await c.functions.subscriptions(to_bytes32(sub_id)).call()
-            # sub_data: (subscriber, pool_id, ephemeral_wallet, reserved_usdc, webhook_url, active, created_at)
-            if len(sub_data) < 6 or not sub_data[5]:
-                raise HTTPException(status_code=400, detail="Subscription not active on-chain")
-
-            # P0 (H1): on-chain subscriber must match the authenticated caller
-            onchain_subscriber = sub_data[0]
-            if isinstance(onchain_subscriber, bytes):
-                onchain_subscriber = "0x" + onchain_subscriber.hex()
-            onchain_subscriber = onchain_subscriber.lower()
-            if onchain_subscriber != wallet.lower():
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"On-chain subscriber ({onchain_subscriber}) does not match wallet ({wallet})",
-                )
-
-            # P0 (H1): on-chain pool_id must match the derived pool_id for this strategy
-            # A4: Use to_hexstr for unconditional normalization — no silent skip path.
-            onchain_pool_raw = sub_data[1]
-            derived_pool = derive_pool_id(strategy_id, pub_row.creator_wallet)
-            if to_hexstr(onchain_pool_raw) != to_hexstr(to_bytes32(derived_pool)):
-                raise HTTPException(
-                    status_code=400,
-                    detail="On-chain pool_id does not match derived pool_id for this strategy",
-                )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.warning("on-chain subscription validation failed: %s", exc)
-            raise HTTPException(status_code=400, detail="Could not validate subscription on-chain") from exc
-
-    # A5: Use the server-derived pool_id for storage, not the client-supplied one.
-    # Derivation is cheap and safe in dry-run mode too.
+    # 3. Use the server-derived pool_id for storage (D-POOL)
     pool_id = derive_pool_id(strategy_id, pub_row.creator_wallet)
 
-    # 3b. Provision a Circle Developer-Controlled Wallet for this subscriber
+    # 4. Provision a Circle Developer-Controlled Wallet for this subscriber
     # (replaces the old Account.create() + raw-key path — kills D2/D3).
     # If provisioning fails, the subscribe fails closed (no row inserted).
     from archimedes.marketplace.wallet_provisioner import provision_subscriber_wallet
@@ -351,12 +313,12 @@ async def subscribe_strategy(
         logger.warning("Circle wallet provisioning failed for sub %s: %s", sub_id, exc)
         raise HTTPException(status_code=502, detail="Failed to provision subscriber wallet") from exc
 
-    # 3c. The subscriber's Circle wallet address is the funded address and
+    # The subscriber's Circle wallet address is the funded address and
     # the x402 signer address. Store as ephemeral_wallet (existing column
     # name) to limit blast radius.
     ephemeral_wallet = wallet_address
 
-    # 4. Create vault for subscriber if needed
+    # 5. Create vault for subscriber if needed
     vault_address = ""
     try:
         vault_address = await market.executor.create_vault(
@@ -371,7 +333,7 @@ async def subscribe_strategy(
         logger.warning("create_vault for subscriber failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to create subscriber vault") from exc
 
-    # 5. Insert subscriber row
+    # 6. Insert subscriber row
     with get_session() as session:
         agent = MarketplaceAgent(
             role="subscriber",
@@ -387,7 +349,7 @@ async def subscribe_strategy(
         session.commit()
         result = agent.to_dict()
 
-    # 6. Register subscriber with the engine
+    # 7. Register subscriber with the engine
     sub = Subscriber(
         sub_id=sub_id,
         pool_id=pool_id,
