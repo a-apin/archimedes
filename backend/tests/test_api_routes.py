@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from archimedes.db import get_session, init_db
+from archimedes.models.backtest_fixtures_store import FIXTURE_FIELDS, StrategyBacktestFixture
 from archimedes.services.backtest_mapper import (
     AnalyticsArtifactModel,
     canonical_artifact_hash,
@@ -22,6 +23,14 @@ from archimedes.services.backtest_repository import insert_backtest_if_missing
 from fastapi.testclient import TestClient
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "analytics_artifact_buy_hold.json"
+
+# A frozen snapshot of the pre-migration backtest_fixtures.json (all 23
+# curated stems) — seeded into every test's tmp DB so routes that filter on
+# ``Strategy.real_sharpe is not None`` (e.g. the portfolio advisor) see the
+# same strategy population they did when the JSON file was committed and
+# always present. See backend/scripts/import_backtest_fixtures.py for the
+# real (non-test) equivalent of this seed step.
+BACKTEST_FIXTURES_SNAPSHOT_PATH = Path(__file__).parent / "fixtures" / "backtest_fixtures_snapshot.json"
 
 
 def _utcnow():
@@ -37,6 +46,20 @@ def _use_tmp_db(tmp_path, monkeypatch):
     db_path = tmp_path / "test_archimedes.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
     init_db()
+
+    # engine/SessionLocal in archimedes.db are constructed once at import
+    # time from the FIRST DATABASE_URL seen in this process — the
+    # monkeypatch above does not migrate an already-bound engine onto a new
+    # file. In practice that means this "tmp DB" can be shared across tests
+    # in the same run, so the seed below merges by primary key (upsert)
+    # rather than add()-ing, matching the if-missing convention
+    # insert_backtest_if_missing already uses for the same reason.
+    snapshot = json.loads(BACKTEST_FIXTURES_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    with get_session() as session:
+        for stem, rec in snapshot.items():
+            session.merge(StrategyBacktestFixture(stem=stem, **{field: rec[field] for field in FIXTURE_FIELDS}))
+        session.commit()
+
     yield
 
 

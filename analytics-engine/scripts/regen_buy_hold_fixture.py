@@ -244,7 +244,9 @@ def main(write: bool = False) -> None:
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         raise SystemExit(
             f"Cannot read fixture file {_FIXTURE_PATH}: {exc}\n"
-            f"Ensure the fixture file exists at {_FIXTURE_PATH} and contains valid JSON."
+            "backtest_fixtures.json is no longer committed (DB migration) — seed a local "
+            "snapshot first: conda run -n archimedes python "
+            "backend/scripts/export_backtest_fixtures.py"
         ) from exc
     num_trials = len(fixtures)
     existing = fixtures.get("pipeline_buy_hold", {})

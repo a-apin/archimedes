@@ -313,32 +313,87 @@ class TestIdAndHashComputation:
 
 # ── _load_fixtures ────────────────────────────────────────
 
+_FULL_FIXTURE_DEFAULTS: dict = {
+    "n_obs_daily": 5560,
+    "sharpe_ratio": 0.85,
+    "sortino_ratio": 0.9,
+    "max_drawdown": 0.2,
+    "cagr": 0.1,
+    "calmar_ratio": 0.5,
+    "win_rate": 0.4,
+    "profit_factor": 1.5,
+    "total_trades": 50,
+    "avg_holding_period_days": 30.0,
+    "correlation_to_spy": 0.6,
+    "correlation_to_btc": None,
+    "out_of_sample_sharpe": 0.7,
+    "look_ahead_audit_passed": True,
+    "backtest_engine": "backtrader",
+    "transaction_cost_bps": 10,
+    "backtest_start": "2004-01-02T00:00:00",
+    "backtest_end": "2026-04-30T00:00:00",
+    "paper_claimed_sharpe": 0.9,
+    "paper_claimed_cagr": 0.12,
+    "paper_claimed_max_dd": 0.1,
+    "deflated_sharpe_ratio": 0.3,
+    "dsr_p_value": 0.6,
+    "dsr_convention": "raw",
+    "num_trials_in_selection": 5,
+    "pbo_score": 0.3,
+    "passes_rigor_gate": False,
+    "kelly_fraction": 0.5,
+}
+
+
+def _fixture_row(stem: str, **overrides):
+    from archimedes.models.backtest_fixtures_store import StrategyBacktestFixture
+
+    kwargs = {**_FULL_FIXTURE_DEFAULTS, **overrides}
+    return StrategyBacktestFixture(stem=stem, **kwargs)
+
+
+@pytest.fixture()
+def fixtures_session(tmp_path):
+    """An isolated SQLite engine/session with strategy_backtest_fixtures
+    created — independent of the app's module-level engine, so no
+    monkeypatching of shared globals is needed (mirrors the daily-returns
+    store's ``tmp_db_session`` parity-test fixture)."""
+    from archimedes.db import Base
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'fixtures.db'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
+    yield session
+    session.close()
+
 
 class TestLoadFixtures:
-    def test_returns_empty_dict_without_fixture_file(self, tmp_path):
+    def test_returns_empty_dict_without_fixture_rows(self, fixtures_session, monkeypatch):
         from archimedes.services.strategy_provider import _load_fixtures
 
-        result = _load_fixtures(tmp_path)
+        monkeypatch.delenv("ARCHIMEDES_FIXTURES_PATH", raising=False)
+        monkeypatch.delenv("ARCHIMEDES_FIXTURES_URL", raising=False)
+
+        result = _load_fixtures(session=fixtures_session)
         assert result == {}
 
-    def test_loads_fixture_json(self, tmp_path):
-        import json
-
+    def test_loads_fixture_from_db(self, fixtures_session, monkeypatch):
         from archimedes.services.strategy_provider import _load_fixtures
 
-        fixture_data = {
-            "test_strategy": {
-                "sharpe_ratio": 0.85,
-                "cagr": 0.12,
-            }
-        }
-        (tmp_path / "backtest_fixtures.json").write_text(json.dumps(fixture_data))
-        result = _load_fixtures(tmp_path)
+        monkeypatch.delenv("ARCHIMEDES_FIXTURES_PATH", raising=False)
+        monkeypatch.delenv("ARCHIMEDES_FIXTURES_URL", raising=False)
+        fixtures_session.add(_fixture_row("test_strategy", sharpe_ratio=0.85, cagr=0.12))
+        fixtures_session.commit()
+
+        result = _load_fixtures(session=fixtures_session)
         assert "test_strategy" in result
         assert result["test_strategy"]["sharpe_ratio"] == 0.85
+        assert result["test_strategy"]["cagr"] == 0.12
 
 
-# ── _load_fixtures: dynamic source vs bundled fallback (issue #465) ──
+# ── _load_fixtures: dynamic source vs DB fallback (issue #465 overrides) ──
 
 
 class TestDynamicFixtureLoading:
@@ -348,57 +403,57 @@ class TestDynamicFixtureLoading:
     testing conventions (mock at boundaries, not internals).
     """
 
-    def _bundled(self, tmp_path):
-        """Write a bundled fixture file marked so we can tell it apart."""
-        import json
-
-        (tmp_path / "backtest_fixtures.json").write_text(json.dumps({"bundled_strategy": {"sharpe_ratio": 0.1}}))
+    def _seed_db(self, session):
+        """Insert one DB row marked so we can tell it apart from a
+        dynamic-source payload."""
+        session.add(_fixture_row("db_strategy", sharpe_ratio=0.1))
+        session.commit()
 
     # (a) fallback used when no dynamic source is configured
 
-    def test_falls_back_to_bundled_when_nothing_configured(self, tmp_path, monkeypatch):
+    def test_falls_back_to_db_when_nothing_configured(self, fixtures_session, monkeypatch):
         from archimedes.services.strategy_provider import _load_fixtures
 
         monkeypatch.delenv("ARCHIMEDES_FIXTURES_PATH", raising=False)
         monkeypatch.delenv("ARCHIMEDES_FIXTURES_URL", raising=False)
-        self._bundled(tmp_path)
+        self._seed_db(fixtures_session)
 
-        result = _load_fixtures(tmp_path)
-        assert result == {"bundled_strategy": {"sharpe_ratio": 0.1}}
+        result = _load_fixtures(session=fixtures_session)
+        assert result["db_strategy"]["sharpe_ratio"] == 0.1
 
-    def test_empty_when_nothing_configured_and_no_bundle(self, tmp_path, monkeypatch):
+    def test_empty_when_nothing_configured_and_no_rows(self, fixtures_session, monkeypatch):
         from archimedes.services.strategy_provider import _load_fixtures
 
         monkeypatch.delenv("ARCHIMEDES_FIXTURES_PATH", raising=False)
         monkeypatch.delenv("ARCHIMEDES_FIXTURES_URL", raising=False)
 
-        assert _load_fixtures(tmp_path) == {}
+        assert _load_fixtures(session=fixtures_session) == {}
 
     # (b) dynamic source preferred when present — filesystem path override
 
-    def test_dynamic_path_preferred_over_bundle(self, tmp_path, monkeypatch):
+    def test_dynamic_path_preferred_over_db(self, fixtures_session, tmp_path, monkeypatch):
         import json
 
         from archimedes.services.strategy_provider import _load_fixtures
 
-        self._bundled(tmp_path)
+        self._seed_db(fixtures_session)
         dynamic_file = tmp_path / "dynamic_fixtures.json"
         dynamic_file.write_text(json.dumps({"dynamic_strategy": {"sharpe_ratio": 0.99}}))
         monkeypatch.setenv("ARCHIMEDES_FIXTURES_PATH", str(dynamic_file))
         monkeypatch.delenv("ARCHIMEDES_FIXTURES_URL", raising=False)
 
-        result = _load_fixtures(tmp_path)
+        result = _load_fixtures(session=fixtures_session)
         assert result == {"dynamic_strategy": {"sharpe_ratio": 0.99}}
-        assert "bundled_strategy" not in result
+        assert "db_strategy" not in result
 
     # (b) dynamic source preferred when present — URL override (mocked httpx)
 
-    def test_dynamic_url_preferred_over_bundle(self, tmp_path, monkeypatch):
+    def test_dynamic_url_preferred_over_db(self, fixtures_session, monkeypatch):
         from unittest.mock import MagicMock, patch
 
         from archimedes.services.strategy_provider import _load_fixtures
 
-        self._bundled(tmp_path)
+        self._seed_db(fixtures_session)
         monkeypatch.delenv("ARCHIMEDES_FIXTURES_PATH", raising=False)
         monkeypatch.setenv("ARCHIMEDES_FIXTURES_URL", "https://fixtures.example/backtest.json")
 
@@ -406,38 +461,38 @@ class TestDynamicFixtureLoading:
         fake_resp.text = '{"url_strategy": {"sharpe_ratio": 1.23}}'
         fake_resp.raise_for_status = MagicMock()
         with patch("httpx.get", return_value=fake_resp) as mock_get:
-            result = _load_fixtures(tmp_path)
+            result = _load_fixtures(session=fixtures_session)
 
         mock_get.assert_called_once()
         assert result == {"url_strategy": {"sharpe_ratio": 1.23}}
-        assert "bundled_strategy" not in result
+        assert "db_strategy" not in result
 
-    # Resilience: a configured-but-failing dynamic source reverts to bundled
+    # Resilience: a configured-but-failing dynamic source reverts to the DB
 
-    def test_dynamic_path_failure_falls_back_to_bundle(self, tmp_path, monkeypatch):
+    def test_dynamic_path_failure_falls_back_to_db(self, fixtures_session, tmp_path, monkeypatch):
         from archimedes.services.strategy_provider import _load_fixtures
 
-        self._bundled(tmp_path)
+        self._seed_db(fixtures_session)
         monkeypatch.setenv("ARCHIMEDES_FIXTURES_PATH", str(tmp_path / "does_not_exist.json"))
         monkeypatch.delenv("ARCHIMEDES_FIXTURES_URL", raising=False)
 
-        result = _load_fixtures(tmp_path)
-        assert result == {"bundled_strategy": {"sharpe_ratio": 0.1}}
+        result = _load_fixtures(session=fixtures_session)
+        assert result["db_strategy"]["sharpe_ratio"] == 0.1
 
-    def test_dynamic_url_failure_falls_back_to_bundle(self, tmp_path, monkeypatch):
+    def test_dynamic_url_failure_falls_back_to_db(self, fixtures_session, monkeypatch):
         from unittest.mock import patch
 
         from archimedes.services.strategy_provider import _load_fixtures
 
-        self._bundled(tmp_path)
+        self._seed_db(fixtures_session)
         monkeypatch.delenv("ARCHIMEDES_FIXTURES_PATH", raising=False)
         monkeypatch.setenv("ARCHIMEDES_FIXTURES_URL", "https://fixtures.example/backtest.json")
 
         with patch("httpx.get", side_effect=ConnectionError("network down")):
-            result = _load_fixtures(tmp_path)
-        assert result == {"bundled_strategy": {"sharpe_ratio": 0.1}}
+            result = _load_fixtures(session=fixtures_session)
+        assert result["db_strategy"]["sharpe_ratio"] == 0.1
 
-    def test_path_takes_precedence_over_url(self, tmp_path, monkeypatch):
+    def test_path_takes_precedence_over_url(self, fixtures_session, tmp_path, monkeypatch):
         import json
         from unittest.mock import patch
 
@@ -450,20 +505,20 @@ class TestDynamicFixtureLoading:
 
         # URL must never be consulted when the path source succeeds.
         with patch("httpx.get", side_effect=AssertionError("URL should not be fetched")):
-            result = _load_fixtures(tmp_path)
+            result = _load_fixtures(session=fixtures_session)
         assert result == {"path_strategy": {"sharpe_ratio": 0.5}}
 
-    def test_empty_dynamic_payload_falls_back_to_bundle(self, tmp_path, monkeypatch):
+    def test_empty_dynamic_payload_falls_back_to_db(self, fixtures_session, tmp_path, monkeypatch):
         from archimedes.services.strategy_provider import _load_fixtures
 
-        self._bundled(tmp_path)
+        self._seed_db(fixtures_session)
         empty_file = tmp_path / "empty.json"
         empty_file.write_text("   ")  # whitespace-only → no fixtures
         monkeypatch.setenv("ARCHIMEDES_FIXTURES_PATH", str(empty_file))
         monkeypatch.delenv("ARCHIMEDES_FIXTURES_URL", raising=False)
 
-        result = _load_fixtures(tmp_path)
-        assert result == {"bundled_strategy": {"sharpe_ratio": 0.1}}
+        result = _load_fixtures(session=fixtures_session)
+        assert result["db_strategy"]["sharpe_ratio"] == 0.1
 
 
 # ── default_provider resolution ─────────────────────────────
