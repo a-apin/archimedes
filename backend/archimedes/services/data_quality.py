@@ -146,12 +146,24 @@ def verify_instrument(
     series = series.dropna().sort_index()
     n = len(series)
     first, last = pd.Timestamp(series.index[0]), pd.Timestamp(series.index[-1])
+
+    # Reference calendar, inferred from the DATA: continuously-traded markets
+    # (crypto "-USD" pairs — ~71/340 of GLOBAL_ASSETS) print on weekends, so a
+    # Mon-Fri bdate_range under-counts their expected observations and clips
+    # gap_count to zero until ~28% of the history is missing — silently
+    # defeating the 10% gap check for exactly those assets. Any material
+    # weekend presence (≥5% of observations; true 7-day markets sit near 28%,
+    # exchange-listed assets at 0%) switches the reference to calendar days.
+    weekend_frac = float((series.index.dayofweek >= 5).mean()) if n else 0.0
+    continuous = weekend_frac >= 0.05
+    _cal = pd.date_range if continuous else pd.bdate_range
+    expected = max(1, len(_cal(start_ts, end_ts)))
     coverage = n / expected
 
     # Internal gaps: missing trading days strictly within the observed span.
-    span_bdays = max(1, len(pd.bdate_range(first, last)))
-    gap_count = max(0, span_bdays - n)
-    gap_ratio = gap_count / span_bdays
+    span_days = max(1, len(_cal(first, last)))
+    gap_count = max(0, span_days - n)
+    gap_ratio = gap_count / span_days
 
     starts_on_time = first <= start_ts + tol
     sufficient_history = starts_on_time and coverage >= min_window_coverage

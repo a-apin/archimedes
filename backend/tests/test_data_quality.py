@@ -131,3 +131,44 @@ def test_verify_universe_empty_input():
     report = verify_universe([], START, END, _downloader=_empty)
     assert report.admitted == ()
     assert report.rejected == {}
+
+
+# ── Continuously-traded (7-day) markets — the crypto calendar (#856 review) ──
+
+
+def _daily(start: str = START, end: str = END) -> pd.Series:
+    """A 7-day/week series (crypto-style: prints on weekends)."""
+    return _series(pd.date_range(start, end))
+
+
+def test_clean_crypto_series_passes_with_calendar_day_reference():
+    """A gap-free 7-day market must read coverage ≈ 1.0 (not the ~1.26 a
+    Mon-Fri reference inflates it to) and zero gaps."""
+    v = verify_instrument("BTC-USD", START, END, _downloader=_fixed(_daily()))
+    assert v.ok and v.fetchable
+    assert v.gap_ratio == 0.0
+    assert 0.99 <= v.coverage_ratio <= 1.01
+
+
+def test_gappy_crypto_series_fails_gap_check():
+    """The reproduced review bug: a 7-day series missing a genuine ~15% of its
+    calendar days scored gap_ratio=0.0 against the Mon-Fri bdate reference
+    (obs count still exceeded the business-day count), sailing through the 10%
+    gap gate. With the data-inferred calendar it must fail."""
+    full = pd.date_range(START, END)
+    rng = np.random.default_rng(seed=42)
+    keep = np.sort(rng.choice(len(full), size=int(len(full) * 0.85), replace=False))
+    gappy = _series(full[keep])
+    v = verify_instrument("BTC-USD", START, END, _downloader=_fixed(gappy))
+    assert not v.ok
+    assert v.gap_ratio > 0.10
+    assert any("gappy" in r for r in v.reasons)
+
+
+def test_business_day_assets_keep_the_bday_reference():
+    """A Mon-Fri series (zero weekend observations) must still be measured
+    against business days — a clean equity series stays a clean pass."""
+    v = verify_instrument("SPY", START, END, _downloader=_fixed(_clean()))
+    assert v.ok
+    assert v.gap_ratio == 0.0
+    assert v.coverage_ratio >= 0.99

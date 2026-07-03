@@ -59,3 +59,34 @@ def test_gate_window_matches_backtest_fetch():
     report = vet_data_quality(_downloader=_short_feed)
     assert report.admitted == ()
     assert all(any("insufficient history" in r for r in reasons) for reasons in report.rejected.values())
+
+
+def test_print_global_assets_path_is_gated(monkeypatch, capsys):
+    """--print-global-assets runs the same #772 gate as --write: GLOBAL_ASSETS
+    is the runtime universe the backtests fetch against (the printed rows get
+    hand-pasted into strategy_signal_evaluator.py), so an unvetted ticker here
+    reaches production even more directly than one in the SSOT JSON."""
+    import archimedes.scripts.generate_universe as gu
+
+    bad = sorted({a.yf for a in CURATED})[0]
+
+    def _one_dead(ticker, start, end):
+        if ticker == bad:
+            return pd.Series(dtype=float)
+        return _clean_feed(ticker, start, end)
+
+    monkeypatch.setattr(gu, "load_pyth_catalog", lambda path=None: [])
+    monkeypatch.setattr(gu, "build_pyth_index", lambda feeds: {})
+    monkeypatch.setattr(gu, "vet_data_quality", lambda **kw: vet_data_quality(_downloader=_one_dead))
+    printed = []
+    monkeypatch.setattr(gu, "_print_global_assets", lambda: printed.append(True))
+
+    with pytest.raises(SystemExit) as exc:
+        gu.main(["--print-global-assets"])
+    assert bad in str(exc.value)
+    assert not printed, "GLOBAL_ASSETS must not print when the gate refuses"
+
+    # The loud bypass still works for offline runs.
+    gu.main(["--print-global-assets", "--skip-data-quality"])
+    assert printed == [True]
+    assert "skip-data-quality" in capsys.readouterr().out

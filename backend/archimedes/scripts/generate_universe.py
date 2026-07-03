@@ -717,6 +717,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"data-quality gate: all {len(report.admitted)} tickers passed")
         _write_ssot(idx)
     elif "--print-global-assets" in argv:
+        # Same #772 gate as --write: GLOBAL_ASSETS is the runtime universe the
+        # backtests actually fetch against (these printed rows get hand-pasted
+        # into strategy_signal_evaluator.py), so an unvetted ticker here
+        # reaches production more directly than one in the SSOT JSON.
+        if "--skip-data-quality" in argv:
+            print("WARNING: --skip-data-quality set — printing GLOBAL_ASSETS without the #772 harness check")
+        else:
+            report = vet_data_quality()
+            _dq_gate(report)
+            print(f"data-quality gate: all {len(report.admitted)} tickers passed")
         _print_global_assets()
     else:  # default = report
         _report(idx)
