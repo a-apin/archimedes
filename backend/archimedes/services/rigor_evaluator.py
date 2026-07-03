@@ -20,12 +20,11 @@ Spec:  docs/specs/selection-bias-corrections-spec.md
 from __future__ import annotations
 
 import ast
-import json
 import logging
 import math
-from pathlib import Path
 
 import numpy as np
+from sqlalchemy.orm import Session
 
 from archimedes.services._rigor_helpers import (
     _ANNUALIZATION,
@@ -254,84 +253,64 @@ def compute_library_pbo(
     return float(pbo)
 
 
-def _resolve_daily_returns_store_dir() -> Path | None:
-    """Locate ``analytics-engine/strategies/daily_returns/`` from the repo root.
-
-    Walks up from this module's location (``backend/archimedes/services/``)
-    looking for the first ancestor that contains the store directory. Avoids a
-    hardcoded absolute path and avoids depending on ``os.getcwd()`` (which is
-    not the repo root under the test harness). Returns ``None`` when no ancestor
-    carries the tree — a backend deployed without the analytics-engine present
-    degrades gracefully rather than raising.
-    """
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        candidate = parent / "analytics-engine" / "strategies" / "daily_returns"
-        if candidate.is_dir():
-            return candidate
-    return None
-
-
 def load_daily_returns_store(
-    store_dir: Path | None = None,
+    session: Session | None = None,
 ) -> tuple[dict[str, dict[str, list]], str | None]:
     """Load the daily-returns store into the shape ``compute_library_pbo`` wants.
 
-    Reads every ``*.json`` record under ``store_dir`` (default: the repo's
-    ``analytics-engine/strategies/daily_returns/``, resolved by walking up from
-    ``__file__``) and projects each onto the minimal
-    ``{stem: {"dates": [...], "daily_returns": [...]}}`` shape that
-    ``align_returns_store`` / ``compute_library_pbo`` consume.
+    #774: reads the ``strategy_daily_returns`` DB table (one row per
+    (stem, date) observation) instead of scanning
+    ``analytics-engine/strategies/daily_returns/*.json`` — the same shape
+    ``align_returns_store`` / ``compute_library_pbo`` consume, unchanged.
+    ``date`` round-trips to the same ``YYYY-MM-DD`` string the JSON records
+    used (``date.isoformat()``), so callers see byte-identical output.
 
     Also returns the data vintage: the MAX ``data_vintage`` string seen across
-    the loaded records, so the caller can surface "as of <vintage>" provenance.
+    every row, so the caller can surface "as of <vintage>" provenance — the
+    same semantics as before (each stem's rows share one vintage; the overall
+    value is the max across stems).
 
-    **Never raises.** A missing/absent directory, an empty directory, or a
-    malformed/unreadable file all degrade gracefully: a malformed file is
-    skipped, and an absent or empty store returns ``({}, None)``. This mirrors
-    the fail-closed contract of ``compute_library_pbo`` — a backend without the
-    analytics-engine tree present must still serve.
+    **Never raises.** A DB read failure (unreachable DB, table not yet
+    migrated) degrades gracefully to ``({}, None)`` — this mirrors the
+    fail-closed contract of ``compute_library_pbo``, same as the pre-#774 JSON
+    path degrading gracefully when the analytics-engine tree was absent.
 
     Args:
-        store_dir: Directory of ``<stem>.json`` records. When ``None``, resolved
-            to the repo's ``analytics-engine/strategies/daily_returns/``.
+        session: An existing DB session to query on (tests pass an isolated
+            one). When ``None``, opens and closes its own session via
+            ``archimedes.db.get_session``.
 
     Returns:
         ``(store, data_vintage)`` where ``store`` is
-        ``{stem: {"dates": [...], "daily_returns": [...]}}`` (empty when the dir
-        is absent/empty or every file was malformed) and ``data_vintage`` is the
-        max ISO vintage string across records (``None`` when no usable record
-        carried one).
+        ``{stem: {"dates": [...], "daily_returns": [...]}}`` (empty when the
+        table has no rows or the read fails) and ``data_vintage`` is the max
+        vintage string across rows (``None`` when no row carried one).
     """
-    if store_dir is None:
-        store_dir = _resolve_daily_returns_store_dir()
-    if store_dir is None or not Path(store_dir).is_dir():
+    from archimedes.models.daily_returns_store import StrategyDailyReturn
+
+    def _query(sess: Session) -> tuple[dict[str, dict[str, list]], str | None]:
+        rows = sess.query(StrategyDailyReturn).order_by(StrategyDailyReturn.stem, StrategyDailyReturn.date).all()
+        store: dict[str, dict[str, list]] = {}
+        vintages: list[str] = []
+        for row in rows:
+            entry = store.setdefault(row.stem, {"dates": [], "daily_returns": []})
+            entry["dates"].append(row.date.isoformat())
+            entry["daily_returns"].append(row.daily_return)
+            if row.data_vintage:
+                vintages.append(row.data_vintage)
+        data_vintage = max(vintages) if vintages else None
+        return store, data_vintage
+
+    try:
+        if session is not None:
+            return _query(session)
+        from archimedes.db import get_session
+
+        with get_session() as sess:
+            return _query(sess)
+    except Exception:
+        logger.warning("load_daily_returns_store: DB read failed, degrading to empty store", exc_info=True)
         return {}, None
-
-    store: dict[str, dict[str, list]] = {}
-    vintages: list[str] = []
-    for path in sorted(Path(store_dir).glob("*.json")):
-        try:
-            rec = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            # Malformed / unreadable file — skip it; never let one bad file
-            # take down the whole load.
-            logger.warning("load_daily_returns_store: skipping unreadable store file %s", path.name)
-            continue
-        if not isinstance(rec, dict):
-            continue
-        dates = rec.get("dates")
-        daily_returns = rec.get("daily_returns")
-        if not isinstance(dates, list) or not isinstance(daily_returns, list):
-            continue
-        stem = rec.get("stem") or path.stem
-        store[stem] = {"dates": dates, "daily_returns": daily_returns}
-        vintage = rec.get("data_vintage")
-        if isinstance(vintage, str) and vintage:
-            vintages.append(vintage)
-
-    data_vintage = max(vintages) if vintages else None
-    return store, data_vintage
 
 
 # ─── 6. Rigor Gate — composite check ─────────────────────────────────

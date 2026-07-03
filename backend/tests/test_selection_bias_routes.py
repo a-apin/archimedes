@@ -588,49 +588,80 @@ class TestLibraryPboSchema:
 
 class TestCachedLibraryPbo:
     """The module-level cached helper computes a value for a valid tmp store and
-    fails closed gracefully for an absent one — without re-running CSCV per call."""
+    fails closed gracefully for an absent one — without re-running CSCV per call.
 
-    def _write_store(self, directory, n_series: int = 4, n_obs: int = 256, vintage: str = "2026-06-11"):
-        import json
+    #774: the store moved from committed JSON files to the strategy_daily_returns
+    table, so these use a tmp, isolated SQLite session (via a patched
+    archimedes.db.get_session) instead of a tmp directory of JSON files."""
+
+    def _session(self, tmp_path):
+        from archimedes.db import Base
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine(
+            f"sqlite:///{tmp_path / 'cached_pbo_test.db'}", connect_args={"check_same_thread": False}
+        )
+        Base.metadata.create_all(bind=engine)
+        return sessionmaker(bind=engine)()
+
+    def _write_store(
+        self, session, n_series: int = 4, n_obs: int = 256, vintage: str = "2026-06-11", stem_offset: int = 0
+    ):
+        from datetime import date as date_cls
+        from datetime import timedelta
 
         import numpy as np
+        from archimedes.models.daily_returns_store import StrategyDailyReturn
 
         rng = np.random.default_rng(7)
-        dates = [f"2020-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(n_obs)]
-        for k in range(n_series):
-            rec = {
-                "stem": f"strat_{k}",
-                "data_vintage": vintage,
-                "n_obs": n_obs,
-                "dates": dates,
-                "daily_returns": rng.normal(0.0005, 0.01, n_obs).tolist(),
-            }
-            (directory / f"strat_{k}.json").write_text(json.dumps(rec), encoding="utf-8")
+        base_date = date_cls(2020, 1, 1)
+        for k in range(stem_offset, stem_offset + n_series):
+            returns = rng.normal(0.0005, 0.01, n_obs)
+            for i in range(n_obs):
+                session.add(
+                    StrategyDailyReturn(
+                        stem=f"strat_{k}",
+                        date=base_date + timedelta(days=i),
+                        daily_return=float(returns[i]),
+                        data_vintage=vintage,
+                    )
+                )
+        session.commit()
+
+    def _patch_get_session(self, monkeypatch, session):
+        import contextlib
+
+        import archimedes.db as db_module
+
+        @contextlib.contextmanager
+        def _fake_get_session():
+            yield session  # no close() on exit — lifecycle is the test's to manage
+
+        monkeypatch.setattr(db_module, "get_session", _fake_get_session)
 
     def test_returns_value_for_valid_store(self, tmp_path, monkeypatch):
         from archimedes.api import selection_bias_routes as routes
 
-        self._write_store(tmp_path)
-        # Point the resolver at the tmp store and clear any cached value.
+        session = self._session(tmp_path)
+        self._write_store(session)
+        self._patch_get_session(monkeypatch, session)
+        # Clear any cached value from a prior test's signature.
         monkeypatch.setattr(routes, "_LIBRARY_PBO_CACHE", {})
-        monkeypatch.setattr(
-            "archimedes.services.rigor_evaluator._resolve_daily_returns_store_dir",
-            lambda: tmp_path,
-        )
+
         value, vintage, size = routes._cached_library_pbo()
         assert value is not None
         assert 0.0 <= value <= 1.0
         assert vintage == "2026-06-11"
         assert size == 4
 
-    def test_absent_store_fails_closed(self, monkeypatch):
+    def test_absent_store_fails_closed(self, tmp_path, monkeypatch):
         from archimedes.api import selection_bias_routes as routes
 
+        session = self._session(tmp_path)  # empty table, nothing inserted
+        self._patch_get_session(monkeypatch, session)
         monkeypatch.setattr(routes, "_LIBRARY_PBO_CACHE", {})
-        monkeypatch.setattr(
-            "archimedes.services.rigor_evaluator._resolve_daily_returns_store_dir",
-            lambda: None,
-        )
+
         value, vintage, size = routes._cached_library_pbo()
         assert value is None
         assert vintage is None
@@ -648,12 +679,10 @@ class TestCachedLibraryPbo:
         """Second call with an unchanged store does NOT re-run compute_library_pbo."""
         from archimedes.api import selection_bias_routes as routes
 
-        self._write_store(tmp_path)
+        session = self._session(tmp_path)
+        self._write_store(session)
+        self._patch_get_session(monkeypatch, session)
         monkeypatch.setattr(routes, "_LIBRARY_PBO_CACHE", {})
-        monkeypatch.setattr(
-            "archimedes.services.rigor_evaluator._resolve_daily_returns_store_dir",
-            lambda: tmp_path,
-        )
 
         calls = {"n": 0}
         real = routes.compute_library_pbo
@@ -666,7 +695,24 @@ class TestCachedLibraryPbo:
 
         routes._cached_library_pbo()
         routes._cached_library_pbo()
-        assert calls["n"] == 1  # cached on the unchanged file signature
+        assert calls["n"] == 1  # cached on the unchanged DB signature
+
+    def test_cache_recomputes_after_store_changes(self, tmp_path, monkeypatch):
+        """A row added after the first call changes the DB signature — the
+        second call must recompute, not reuse the stale cached value."""
+        from archimedes.api import selection_bias_routes as routes
+
+        session = self._session(tmp_path)
+        self._write_store(session, n_series=4)
+        self._patch_get_session(monkeypatch, session)
+        monkeypatch.setattr(routes, "_LIBRARY_PBO_CACHE", {})
+
+        routes._cached_library_pbo()
+        assert len(routes._LIBRARY_PBO_CACHE) == 1
+
+        self._write_store(session, n_series=1, vintage="2026-07-03", stem_offset=4)  # a 5th, new stem
+        routes._cached_library_pbo()
+        assert len(routes._LIBRARY_PBO_CACHE) == 2  # new signature, not reused
 
 
 # ── Library PBO: endpoint wiring + additivity guarantee (#546) ──────────

@@ -15,13 +15,13 @@ excess kurtosis with the raw-kurtosis coefficient, biasing the DSR denominator.
 | B    | 0.9    | 1260 | -0.2  | 5.0      | 20   | 0.0536    | 0.110  | ~0.5439     |
 | C    | 0.3    |  504 |  0.0  | 3.0      | 1000 | 0.1451    | -2.831 | ~0.0023     |
 
-No network, no database, no on-chain dependencies.
+No network, no on-chain dependencies. TestLoadDailyReturnsStore (#774) uses a
+tmp, isolated SQLite session — never a real network DB.
 """
 
 from __future__ import annotations
 
 import ast
-import json
 import math
 
 import numpy as np
@@ -1662,76 +1662,98 @@ class TestPboPowerFloor:
 
 class TestLoadDailyReturnsStore:
     """load_daily_returns_store: read the store into compute_library_pbo's shape,
-    surface the max data_vintage, and degrade gracefully (never raise)."""
+    surface the max data_vintage, and degrade gracefully (never raise). #774:
+    DB-backed (strategy_daily_returns table) — a tmp, isolated SQLite session
+    stands in for production, passed explicitly so no shared-engine
+    monkeypatching of archimedes.db is needed."""
 
     @staticmethod
-    def _write_record(directory, name: str, *, vintage: str, n: int = 4) -> None:
-        dates = [f"2020-01-{1 + i:02d}" for i in range(n)]
-        rec = {
-            "stem": name,
-            "data_vintage": vintage,
-            "n_obs": n,
-            "dates": dates,
-            "daily_returns": [0.001 * (i + 1) for i in range(n)],
-        }
-        (directory / f"{name}.json").write_text(json.dumps(rec), encoding="utf-8")
+    def _session(tmp_path):
+        from archimedes.db import Base
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine(
+            f"sqlite:///{tmp_path / 'daily_returns_test.db'}", connect_args={"check_same_thread": False}
+        )
+        Base.metadata.create_all(bind=engine)
+        return sessionmaker(bind=engine)()
+
+    @staticmethod
+    def _insert(session, stem: str, *, vintage: str | None, n: int = 4) -> None:
+        from datetime import date as date_cls
+
+        from archimedes.models.daily_returns_store import StrategyDailyReturn
+
+        for i in range(n):
+            session.add(
+                StrategyDailyReturn(
+                    stem=stem,
+                    date=date_cls(2020, 1, 1 + i),
+                    daily_return=0.001 * (i + 1),
+                    data_vintage=vintage,
+                )
+            )
+        session.commit()
 
     def test_loads_shape_and_max_vintage(self, tmp_path) -> None:
-        self._write_record(tmp_path, "alpha", vintage="2026-06-10")
-        self._write_record(tmp_path, "beta", vintage="2026-06-11")
-        self._write_record(tmp_path, "gamma", vintage="2026-06-09")
+        session = self._session(tmp_path)
+        self._insert(session, "alpha", vintage="2026-06-10")
+        self._insert(session, "beta", vintage="2026-06-11")
+        self._insert(session, "gamma", vintage="2026-06-09")
 
-        store, vintage = load_daily_returns_store(tmp_path)
+        store, vintage = load_daily_returns_store(session=session)
 
         assert set(store.keys()) == {"alpha", "beta", "gamma"}
         # Each entry projected onto exactly {dates, daily_returns}.
         for rec in store.values():
             assert set(rec.keys()) == {"dates", "daily_returns"}
             assert len(rec["dates"]) == len(rec["daily_returns"]) == 4
-        # Max ISO vintage across files.
+        # Max vintage across stems.
         assert vintage == "2026-06-11"
 
-    def test_missing_directory_returns_empty_no_raise(self, tmp_path) -> None:
-        absent = tmp_path / "does-not-exist"
-        store, vintage = load_daily_returns_store(absent)
+    def test_empty_table_returns_empty_no_raise(self, tmp_path) -> None:
+        session = self._session(tmp_path)
+        store, vintage = load_daily_returns_store(session=session)
         assert store == {}
         assert vintage is None
 
-    def test_empty_directory_returns_empty(self, tmp_path) -> None:
-        store, vintage = load_daily_returns_store(tmp_path)
+    def test_db_read_failure_degrades_gracefully(self) -> None:
+        """Mirrors the pre-#774 'never raise' contract: a broken session (DB
+        unreachable, table missing) must degrade to ({}, None), not raise."""
+        from unittest.mock import Mock
+
+        broken_session = Mock()
+        broken_session.query.side_effect = RuntimeError("connection lost")
+
+        store, vintage = load_daily_returns_store(session=broken_session)
         assert store == {}
         assert vintage is None
-
-    def test_malformed_file_is_skipped(self, tmp_path) -> None:
-        self._write_record(tmp_path, "good", vintage="2026-06-11")
-        (tmp_path / "broken.json").write_text("{ this is not json", encoding="utf-8")
-
-        store, vintage = load_daily_returns_store(tmp_path)
-
-        # The bad file is skipped; the good one survives.
-        assert set(store.keys()) == {"good"}
-        assert vintage == "2026-06-11"
 
     def test_record_without_vintage_yields_none_vintage(self, tmp_path) -> None:
-        rec = {"stem": "novintage", "dates": ["2020-01-01", "2020-01-02"], "daily_returns": [0.01, 0.02]}
-        (tmp_path / "novintage.json").write_text(json.dumps(rec), encoding="utf-8")
+        session = self._session(tmp_path)
+        self._insert(session, "novintage", vintage=None, n=2)
 
-        store, vintage = load_daily_returns_store(tmp_path)
+        store, vintage = load_daily_returns_store(session=session)
         assert set(store.keys()) == {"novintage"}
         assert vintage is None
 
-    def test_record_missing_returns_field_is_skipped(self, tmp_path) -> None:
-        # dates present but daily_returns absent → not loadable, skip.
-        bad = {"stem": "halfrec", "dates": ["2020-01-01"]}
-        (tmp_path / "halfrec.json").write_text(json.dumps(bad), encoding="utf-8")
-        self._write_record(tmp_path, "good", vintage="2026-06-11")
+    def test_default_session_falls_back_to_get_session(self, tmp_path, monkeypatch) -> None:
+        """No explicit session → uses archimedes.db.get_session() (production
+        default). Verified by patching get_session to return our tmp session."""
+        import contextlib
 
-        store, _ = load_daily_returns_store(tmp_path)
-        assert set(store.keys()) == {"good"}
+        import archimedes.db as db_module
 
-    def test_default_store_dir_loads_repo_store(self) -> None:
-        # No explicit dir → resolve the repo's analytics-engine store. The repo
-        # ships 22 records, so the live store loads non-empty with a vintage.
+        session = self._session(tmp_path)
+        self._insert(session, "solo", vintage="2026-07-03")
+
+        @contextlib.contextmanager
+        def _fake_get_session():
+            yield session
+
+        monkeypatch.setattr(db_module, "get_session", _fake_get_session)
+
         store, vintage = load_daily_returns_store()
-        assert len(store) >= 2
-        assert isinstance(vintage, str) and vintage
+        assert set(store.keys()) == {"solo"}
+        assert vintage == "2026-07-03"
