@@ -101,6 +101,40 @@ def test_new_strategy_files_load_with_metadata(filename: str) -> None:
     assert bundle.metadata.get("methodology_text")
 
 
+def test_load_strategy_resolves_sibling_imports_from_any_cwd(tmp_path: Path, monkeypatch) -> None:
+    """Regression (issue #887 bug 2): variant pair files import their sibling
+    module by bare name (``from gatev_2006_pairs_distance import ...``). That
+    only resolved when CWD happened to be the strategies dir; the loader must
+    inject the strategy file's parent dir onto sys.path so the scheduler /
+    backfill import path works from any CWD."""
+    import sys
+
+    monkeypatch.chdir(tmp_path)  # CWD far away from the strategies dir
+    # Simulate the scheduler/backfill environment: strategies dir absent from
+    # sys.path and no cached sibling module to fall back on.
+    strat_variants = {str(_STRATEGIES_DIR), str(_STRATEGIES_DIR.resolve())}
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if p not in strat_variants])
+    monkeypatch.delitem(sys.modules, "gatev_2006_pairs_distance", raising=False)
+
+    bundle = load_strategy(_STRATEGIES_DIR / "gatev_2006_pairs_ko_pep.py")
+
+    assert bundle.cls.__name__ == "PairsDistanceTrading"
+    assert bundle.metadata["asset_universe"] == ["KO", "PEP"]
+    assert bundle.metadata["required_feeds"] == 2
+
+
+def test_pairs_family_declares_required_feeds() -> None:
+    """All three two-feed strategy classes must carry the REQUIRED_FEEDS=2
+    runner contract so the single-feed runner fails closed (issue #887)."""
+    for filename in (
+        "gatev_2006_pairs_distance.py",
+        "engle_granger_1987_cointegration_pairs.py",
+        "elliott_2005_kalman_pairs.py",
+    ):
+        bundle = load_strategy(_STRATEGIES_DIR / filename)
+        assert bundle.metadata.get("required_feeds") == 2, f"{filename} missing REQUIRED_FEEDS=2"
+
+
 def test_pairs_strategy_declares_two_asset_universe() -> None:
     """The Gatev pairs strategy must declare exactly two assets (it is multi-asset)."""
     import importlib.util

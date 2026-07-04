@@ -111,3 +111,50 @@ def test_run_backtests_is_idempotent(monkeypatch, tmp_path) -> None:
     assert first["failed"] == 0
     assert second["inserted"] == 0
     assert second["skipped"] == 1
+
+
+def test_run_backtests_surfaces_typed_errors_without_traceback(monkeypatch, tmp_path, caplog) -> None:
+    """Typed engine errors (issue #887 FeedArityError) must be counted as
+    failed, carried in summary['errors'] with their explanatory message, and
+    logged as a clean warning — not a stack trace."""
+    import logging
+
+    repo_root = tmp_path
+    strategies_dir = repo_root / "analytics-engine" / "strategies"
+    artifacts_dir = repo_root / "analytics-engine" / "artifacts"
+    strategies_dir.mkdir(parents=True)
+    artifacts_dir.mkdir(parents=True)
+
+    _write_strategy(strategies_dir / "test_strategy.py")
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    class FakeFeedArityError(ValueError):
+        pass
+
+    def fake_run_command(**kwargs):
+        raise FakeFeedArityError("pairs strategy needs >= 2 distinct instruments")
+
+    monkeypatch.setattr(run_backtests_mod, "_repo_root", lambda: repo_root)
+    monkeypatch.setattr(run_backtests_mod, "_load_run_command", lambda _repo: fake_run_command)
+    monkeypatch.setattr(run_backtests_mod, "_typed_error_types", lambda _repo: (FakeFeedArityError,))
+    monkeypatch.setattr(run_backtests_mod, "init_db", lambda: Base.metadata.create_all(bind=engine))
+    monkeypatch.setattr(run_backtests_mod, "get_session", lambda: SessionLocal())
+
+    with caplog.at_level(logging.INFO, logger=run_backtests_mod.logger.name):
+        summary = run_backtests_mod.run_backtests()
+
+    assert summary["inserted"] == 0
+    assert summary["failed"] == 1
+    assert len(summary["errors"]) == 1
+    message = next(iter(summary["errors"].values()))
+    assert "FakeFeedArityError" in message
+    assert ">= 2 distinct instruments" in message
+
+    records = [r for r in caplog.records if r.name == run_backtests_mod.logger.name]
+    warning_lines = [r for r in records if r.levelno == logging.WARNING]
+    assert any(">= 2 distinct instruments" in r.getMessage() for r in warning_lines)
+    # Typed errors are explanatory by construction — no traceback allowed.
+    assert not any(r.exc_info for r in records)

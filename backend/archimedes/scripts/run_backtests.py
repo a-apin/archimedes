@@ -75,6 +75,23 @@ def _load_run_command(repo_root: Path):
     return run_command
 
 
+def _typed_error_types(repo_root: Path) -> tuple[type[BaseException], ...]:
+    """Typed, explanatory strategy-run errors — log the message, not a stack trace.
+
+    ``FeedArityError`` (issue #887) is the analytics engine failing closed with
+    a passport-grade explanation (e.g. "pairs needs >= 2 instruments"); a
+    traceback adds nothing. Returns an empty tuple when the engine is not
+    importable so the caller degrades to generic exception handling.
+    """
+    try:
+        _ensure_analytics_import(repo_root)
+        from archimedes_analytics_engine.engine import FeedArityError
+
+        return (FeedArityError,)
+    except Exception:
+        return ()
+
+
 def _read_config() -> RunConfig:
     operations = [op.strip().upper() for op in os.getenv("BACKTEST_OPERATIONS", "SPY").split(",") if op.strip()]
     # Full curated evidence depth by default (~5,400 daily bars). The old
@@ -96,13 +113,14 @@ def _read_config() -> RunConfig:
     )
 
 
-def run_backtests() -> dict[str, int]:
+def run_backtests() -> dict:
     repo_root = _repo_root()
     strategy_dir = _analytics_strategy_dir(repo_root)
     artifact_dir = _artifact_dir(repo_root)
     cfg = _read_config()
 
     run_command = _load_run_command(repo_root)
+    typed_errors = _typed_error_types(repo_root)
 
     provider = default_provider(repo_root=repo_root)
     strategy_by_path = {
@@ -114,6 +132,7 @@ def run_backtests() -> dict[str, int]:
     inserted = 0
     skipped = 0
     failed = 0
+    errors: dict[str, str] = {}
 
     for strategy_file in sorted(strategy_dir.glob("*.py")):
         if strategy_file.name.startswith("_"):
@@ -168,13 +187,22 @@ def run_backtests() -> dict[str, int]:
 
         except Exception as exc:
             failed += 1
-            logger.exception("backtest failed for %s: %s", strategy_file, exc)
+            if typed_errors and isinstance(exc, typed_errors):
+                # Typed fail-closed error from the engine (e.g. FeedArityError,
+                # issue #887): the message is the explanation — log it clean
+                # and carry it in the summary instead of dumping a stack trace.
+                errors[strategy.id] = f"{type(exc).__name__}: {exc}"
+                logger.warning("backtest failed for %s: %s: %s", strategy_file.name, type(exc).__name__, exc)
+            else:
+                logger.exception("backtest failed for %s: %s", strategy_file, exc)
 
-    summary = {
+    summary: dict = {
         "inserted": inserted,
         "skipped": skipped,
         "failed": failed,
     }
+    if errors:
+        summary["errors"] = errors
     logger.info("backtest run summary: %s", summary)
     return summary
 

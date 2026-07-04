@@ -11,7 +11,7 @@ import math
 import backtrader as bt
 import pandas as pd
 import pytest
-from archimedes_analytics_engine.engine import BacktestResult, run_pairs_backtest
+from archimedes_analytics_engine.engine import BacktestResult, FeedArityError, run_backtest, run_pairs_backtest
 
 
 def _synthetic_prices(periods: int, start: str = "2020-01-01", base: float = 100.0, drift: float = 0.1) -> pd.DataFrame:
@@ -123,6 +123,30 @@ def test_second_wave_pair_files_load_and_run(stem: str) -> None:
     assert isinstance(result, BacktestResult)
     assert result.bars == 300
     assert result.look_ahead_audit_passed is True
+
+
+# Issue #887 bug 1: the single-feed runner used to let two-feed strategies
+# crash mid-run with a bare IndexError on self.datas[1]. It must now fail
+# closed with the typed FeedArityError before the run starts.
+@pytest.mark.parametrize(
+    "stem",
+    [
+        "gatev_2006_pairs_distance",
+        "engle_granger_1987_cointegration_pairs",
+        "elliott_2005_kalman_pairs",
+    ],
+)
+def test_single_feed_runner_fails_closed_for_pairs_classes(stem: str) -> None:
+    import sys
+    from pathlib import Path
+
+    strategies_dir = Path(__file__).parent.parent / "strategies"
+    sys.path.insert(0, str(strategies_dir.parent / "src"))
+    from archimedes_analytics_engine.strategy_loader import load_strategy
+
+    bundle = load_strategy(strategies_dir / f"{stem}.py")
+    with pytest.raises(FeedArityError, match="needs >= 2"):
+        run_backtest(_synthetic_prices(40), strategy_cls=bundle.cls, initial_cash=100_000.0)
 
 
 def _cointegrated_pair(n: int = 600, seed: int = 7, beta: float = 1.2, alpha: float = 4.0, half_life: float = 20.0):
