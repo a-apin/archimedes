@@ -340,23 +340,40 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
         logger.warning("live rigor result batch: cohort-context compute failed (all → stale fallback): %s", exc)
         return {}
 
-    code_by_id = {s.id: _load_strategy_code_safe_local(s) for s in strategies if s.id in valid_returns}
+    # Load code for every strategy that has >= 10 returns — degenerate series
+    # (excluded from valid_returns) still run their own gate (#868) and need the
+    # look-ahead audit input.
+    code_by_id = {
+        s.id: _load_strategy_code_safe_local(s) for s in strategies if len(returns_by_strategy.get(s.id, [])) >= 10
+    }
 
     results: dict[str, RigorGateResult] = {}
     for s in strategies:
-        if s.id not in valid_returns:
-            continue
         daily_returns = returns_by_strategy.get(s.id, [])
+        if len(daily_returns) < 10:
+            continue  # No sufficient returns — caller falls back to stale fields
+        if s.id in valid_returns:
+            # Non-degenerate series: run with the full cohort context so
+            # num_trials / pbo_scores / avg_correlation match the library gate.
+            gate_kwargs: dict = {
+                "num_trials": num_trials,
+                "pbo_scores": pbo_scores,
+                "average_correlation": avg_correlation,
+            }
+        else:
+            # Degenerate (zero-variance) series: excluded from cohort context to
+            # prevent inflating num_trials or diluting avg_correlation (#868), but
+            # the strategy still runs its own gate so the caller gets a live "fail"
+            # verdict rather than falling back to a stale fixture value.
+            gate_kwargs = {"num_trials": 1, "pbo_scores": {}, "average_correlation": 0.0}
         try:
             results[s.id] = run_rigor_gate(
                 strategy_id=s.id,
                 daily_returns=daily_returns,
-                num_trials=num_trials,
-                pbo_scores=pbo_scores,
                 strategy_code=code_by_id.get(s.id),
                 in_sample_sharpe=None,
                 paper_claimed_sharpe=getattr(s, "paper_claimed_sharpe", None),
-                average_correlation=avg_correlation,
+                **gate_kwargs,
             )
         except Exception as exc:
             logger.warning("live rigor gate failed for %s in batch (numbers → stale fallback): %s", s.id, exc)
@@ -382,6 +399,20 @@ def _load_strategy_code_safe_local(strategy: Strategy) -> str | None:
         return None
 
 
+def _verdict_from_result(result: RigorGateResult | None) -> RigorGateVerdict:
+    """Derive a RigorGateVerdict from an already-computed RigorGateResult.
+
+    Used by list_strategies so the badge and the numeric rigor fields always
+    come from the same single live-gate computation — avoids the double DB read and
+    duplicate gate run that verdicts_for_strategies would add, and eliminates
+    the badge/numeric-fields divergence that arose when the two paths used different
+    cohort filtering (#868, Copilot review).
+    """
+    if result is None:
+        return RigorGateVerdict.pending()
+    return RigorGateVerdict.passed() if result.passes_all else RigorGateVerdict.failed()
+
+
 # ── Library listing ─────────────────────────────────────────────
 
 
@@ -393,18 +424,15 @@ async def list_strategies(
 ):
     """List strategies in the library. Backed by LocalStrategyProvider.
 
-    The ``passes_rigor_gate`` badge + CANDIDATE → VALIDATED promotion come from the
-    LIVE gate verdict computed on persisted real returns (#821) — the same machinery
-    the /api/selection-bias/gate route uses — NOT from the stored fixture boolean.
-    Verdicts are computed once for the page window (one DB read + one library-wide
-    PBO/num_trials context) and threaded into each serializer.
-
-    The numeric rigor fields (``dsr_p_value``, ``pbo_score``, ``out_of_sample_sharpe``,
-    ``deflated_sharpe_ratio``) come from the SAME live gate run via
-    ``_live_rigor_results_for_strategies`` (#868), so the leaderboard can never
-    disagree with ``/api/selection-bias/gate`` for a given strategy id — previously
-    only the ``passes_rigor_gate`` boolean read the live verdict while these numbers
-    still read the stale fixture-derived fields.
+    Both the ``passes_rigor_gate`` badge and the numeric rigor fields
+    (``dsr_p_value``, ``pbo_score``, ``out_of_sample_sharpe``,
+    ``deflated_sharpe_ratio``) come from a SINGLE live-gate run via
+    ``_live_rigor_results_for_strategies`` (#868). The badge is derived from the
+    result via ``_verdict_from_result`` — a second DB read + duplicate gate run
+    through ``verdicts_for_strategies`` is not needed, and the inconsistency that
+    arose when the two paths used different cohort filtering (degenerate-series
+    exclusion existed only in ``_live_rigor_results_for_strategies``) is
+    eliminated.
 
     NOTE on the ``status`` filter: it filters on the file-declared status BEFORE the
     live-gate promotion overlay, so a CANDIDATE that the live gate promotes to
@@ -416,10 +444,12 @@ async def list_strategies(
     strats = strategy_provider.list_strategies(status=status_filter)
     total = len(strats)
     window = strats[offset : offset + limit]
-    verdicts = verdicts_for_strategies(window)
     rigor_results = _live_rigor_results_for_strategies(window)
     return StrategyListResponse(
-        strategies=[_to_strategy_response(s, verdicts.get(s.id), rigor_results.get(s.id)) for s in window],
+        strategies=[
+            _to_strategy_response(s, _verdict_from_result(rigor_results.get(s.id)), rigor_results.get(s.id))
+            for s in window
+        ],
         total=total,
     )
 
