@@ -132,8 +132,10 @@ def test_build_funnel_ratios():
     assert by["landed"].step_conversion == 1.0
     assert by["wallet_connected"].pct_of_landed == 0.25
     assert by["wallet_connected"].step_conversion == 0.25  # 25 / 100
+    assert by["generation_started"].pct_of_landed == 0.05
     assert by["generation_started"].step_conversion == 0.2  # 5 / 25
     assert by["vault_deployed"].pct_of_landed == 0.02
+    assert by["vault_deployed"].step_conversion == 0.4  # 2 / 5
 
 
 def test_build_funnel_zero_landed_no_divzero():
