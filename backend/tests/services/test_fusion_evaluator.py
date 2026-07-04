@@ -548,7 +548,7 @@ class TestFusionGateUsesRealTrialCount:
     def test_larger_passed_num_trials_is_not_overridden_by_a_small_variant_grid(self):
         """#820: a small parameter-variant grid must not silently undercut a
         bigger, correct caller-supplied num_trials (e.g. the society count,
-        library_size + selection_pool_size, threaded from _run_fusion_candidate).
+        library_size + selection_pool_size, threaded from the debate C-rigor path).
         Before this fix, any >=2-entry variants_metrics unconditionally replaced
         num_trials, so a 3-variant grid could under-deflate a strategy that
         actually needed a much larger society-wide trial count."""

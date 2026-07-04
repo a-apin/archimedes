@@ -3,12 +3,18 @@
 Forces the fixture path (no LLM credentials needed) and asserts that the
 event sequence matches the spec ordering and that a strategy is persisted
 at the end.
+
+Debate-path tests (test_debate_dispatch_*, test_debate_critic_rigor_*,
+test_debate_text_only_*) stub the debate engine's proposer and evaluator
+seams to run _run_debate_leaderboard hermetically without a live LLM or
+real market-data backtest. Pattern mirrors test_debate_engine.py.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -216,27 +222,21 @@ def test_lookahead_for_candidate_ignores_backtrader_negative_index(tmp_path):
     assert _lookahead_for_candidate([]) is True
 
 
-def test_pick_pipeline_architect_branch_calls_provider_factory(monkeypatch):
-    # `default_provider` is a factory function. The architect-check branch
-    # of _pick_pipeline previously called `default_provider.list_strategies()`
-    # without the `()`, raising AttributeError that the broad `except
-    # Exception` swallowed silently — collapsing the pipeline to "agent" on
-    # every call. This test forces the architect path (fusion disabled) and
-    # asserts it actually selects "architect" — which can only happen if
-    # `.list_strategies()` succeeds.
+def test_pick_pipeline_always_debate_after_cutover(monkeypatch):
+    # T1.1 Phase-3: _pick_pipeline always returns 'debate' regardless of flag
+    # state, fusion enabled/disabled, library size, or mode override.
+    # The legacy fusion/architect/agent decision tree is deleted; no mocking of
+    # fusion_enabled or default_provider is needed or meaningful.
+    #
+    # Equivalent coverage of the old architect-branch regression now lives in
+    # test_debate_engine.py::test_pick_pipeline_is_debate_unconditionally.
     from archimedes.agents import generation_pipeline as gp
-    from archimedes.api.generate_schemas import GenerateBrief
-
-    # Force fusion off so we exit the fusion branch and hit architect.
-    monkeypatch.setattr(
-        "archimedes.agents.strategy_fusion.fusion_enabled",
-        lambda: False,
-    )
 
     brief = GenerateBrief(intent="trend-following", risk_appetite="moderate")
-    pipeline, reason = gp._pick_pipeline(brief)
-    assert pipeline == "architect", f"expected architect, got {pipeline!r} (reason={reason!r})"
-    assert "strategies" in reason
+    for override in (None, "fusion", "architect", "agent", "debate"):
+        name, reason = gp._pick_pipeline(brief, mode_override=override)
+        assert name == "debate", f"override {override!r} routed off the society (got {name!r})"
+        assert "debate" in reason.lower() or "Phase-3" in reason
 
 
 @pytest.mark.asyncio
@@ -328,37 +328,52 @@ async def test_dual_regime_always_emits_both_bull_and_bear():
 
 
 @pytest.mark.asyncio
-async def test_dual_regime_persists_both_with_correct_regime_tags():
-    """Both bull and bear candidates are persisted (both get strategy_id)."""
+async def test_dual_regime_k1_only_winner_persisted():
+    """K=1 persistence (Phase-3 contract): fixture dual-regime run yields 2
+    candidates in the result payload (bull+bear regimes intact) but exactly
+    ONE _persist_candidate call (the winner) and ONE persist_proposal call
+    for the reject (verdict='rejected').
+
+    Replaces test_dual_regime_persists_both_with_correct_regime_tags which
+    tested the retired K=2 pattern (both regimes persisted as StrategyRecords).
+    """
+    import archimedes.services.strategy_memory as sm
+
     store = _FakeStore()
     brief = GenerateBrief(intent="balanced equities", risk_appetite="conservative")
 
-    persist_calls = []
-    call_count = [0]
+    persist_calls: list[dict] = []
 
-    async def mock_persist(c, b, **_kw):  # accepts owner_wallet kwarg
-        call_count[0] += 1
-        sid = f"strat_{c.regime}_{call_count[0]}"
-        persist_calls.append({"regime": c.regime, "strategy_id": sid})
-        return (sid, f"0x{c.regime}")
+    async def mock_persist(c, b, **_kw):
+        persist_calls.append({"regime": c.regime, "candidate_id": c.candidate_id})
+        return (f"strat_{c.regime}", f"0x{c.regime}")
 
-    with patch(
-        "archimedes.agents.generation_pipeline._persist_candidate",
-        new=mock_persist,
+    proposal_calls: list[dict] = []
+
+    def mock_persist_proposal(**kwargs):
+        proposal_calls.append(kwargs)
+
+    with (
+        patch("archimedes.agents.generation_pipeline._persist_candidate", new=mock_persist),
+        patch.object(sm, "persist_proposal", side_effect=mock_persist_proposal),
     ):
-        await run_generation(job_id="job_dual_persist", brief=brief, store=store)
+        await run_generation(job_id="job_k1_persist", brief=brief, store=store)
 
-    # Both candidates persisted
-    assert len(persist_calls) == 2
-    persisted_regimes = {p["regime"] for p in persist_calls}
-    assert persisted_regimes == {"bull", "bear"}
+    # K=1: exactly ONE _persist_candidate call (the winner only)
+    assert len(persist_calls) == 1, f"K=1 must persist exactly 1 winner; got {len(persist_calls)} calls"
 
-    # Done result has both candidates with strategy_ids
+    # The rejected candidate lands in strategy_proposals with verdict='rejected'
+    rejected = [c for c in proposal_calls if c.get("verdict") == "rejected"]
+    assert len(rejected) == 1, f"Expected 1 rejected persist_proposal; got {rejected}"
+    assert rejected[0]["regime_tag"] in ("bull", "bear"), "reject must carry a regime_tag"
+
+    # Both candidates still surface in the result payload (stream visibility preserved)
     last_result = store.status[-1][1]
     assert last_result is not None
-    for c in last_result["candidates"]:
-        assert c["strategy_id"] is not None
-        assert c["regime"] in ("bull", "bear")
+    candidates = last_result["candidates"]
+    assert len(candidates) == 2
+    regimes = {c["regime"] for c in candidates}
+    assert regimes == {"bull", "bear"}
 
 
 @pytest.mark.asyncio
@@ -465,126 +480,128 @@ async def test_best_selected_abstains_when_no_candidate_passes_rigor():
     assert best["data"]["deployable"] is False
 
 
-# ── Fusion dispatch wire — hermetic end-to-end (Stack A) ───────────────────
+# ── Debate dispatch wire — hermetic end-to-end ─────────────────────────────
 #
-# Proves the #1 fix: the "fusion" pipeline choice ACTUALLY drives dispatch.
-# Drives run_generation with fusion_enabled=true + a ≥20-paper fixture corpus +
-# a MOCKED LLM backend (no network, no real Anthropic/Bedrock), and asserts the
-# persisted strategy is generation_method=="fusion", cites ≥2 source_arxiv_ids,
-# and carries a non-null rigor verdict (real DSR/PBO/OOS from the DSL backtest).
+# Re-targets the old "fusion dispatch wire" tests at the debate path. Instead
+# of the retired standalone-fusion dispatch, we stub the debate engine's
+# proposer (_propose_pool) and evaluator (evaluate_fusion_spec) seams so
+# _run_debate_leaderboard runs hermetically through run_generation — no live
+# LLM, no real market-data backtest, no network. Pattern follows the
+# _CannedFusionBackend + monkeypatch seams in test_debate_engine.py.
 
 
-def _fixture_corpus(n: int = 24):
-    """A ≥n-paper fixture corpus the deterministic selector can rank.
+# ── Shared helpers for debate dispatch tests ──────────────────────────────────
 
-    Returns CorpusPaper objects (the type load_corpus yields). Titles/abstracts
-    carry equities+momentum+volatility terms so select_candidates matches them
-    for a generic steer.
+
+def _debate_fake_corpus(n: int = 4):
+    """A small fixture corpus whose arxiv_ids match the fake proposals' citations.
+
+    Kept small (n=4) since we're mocking _propose_pool anyway and just need
+    _critic_prov to pass provenance checks.
     """
     from archimedes.agents.strategy_fusion import CorpusPaper
 
-    papers = []
-    for i in range(n):
-        papers.append(
-            CorpusPaper(
-                arxiv_id=f"24{i:02d}.{1000 + i}",
-                title=f"Cross-sectional equity momentum and volatility timing #{i}",
-                abstract=(
-                    "We study momentum, trend-following and volatility-managed "
-                    "portfolios across equities, with risk-on and defensive regimes."
-                ),
-                primary_category="q-fin.PM",
-                categories=("q-fin.PM", "q-fin.ST"),
-                published=f"2024-01-{(i % 27) + 1:02d}",
-            )
+    return [
+        CorpusPaper(
+            arxiv_id=f"240{r}.0000{i}",
+            title=f"Paper {r}-{i}",
+            abstract="Momentum trend-following equities volatility hedge.",
+            primary_category="q-fin.PM",
+            categories=("q-fin.PM",),
+            published="2024-01-01",
         )
-    return papers
+        for r in (1, 2)
+        for i in range(1, (n // 2) + 1)
+    ]
 
 
-class _MockFusionBackend:
-    """Deterministic LLM stand-in that returns a REAL, parseable fusion.
-
-    Mirrors the live LLMBackend Protocol (model_id / served_model / available /
-    complete). ``available`` is True so the fusion path treats it as a live
-    model. ``complete`` echoes back ≥2 of the candidate arxiv_ids it sees in the
-    user prompt (so the engine's anti-hallucination filter keeps them) and emits
-    a real Archimedes DSL strategy_spec the evaluator can backtest + rigor-gate.
-    """
-
-    model_id = "mock-fusion-model"
-    served_model = "mock-fusion-model-served"
-
-    @property
-    def available(self) -> bool:
-        return True
-
-    def complete(self, system: str, user: str) -> str:
-        import json as _json
-        import re as _re
-
-        ids = _re.findall(r'"arxiv_id"\s*:\s*"([^"]+)"', user)[:3]
-        return _json.dumps(
-            {
-                "strategy_name": "Mock Fused SMA+Vol Strategy",
-                "thesis": "Fuses SMA-200 trend timing with vol-managed sizing (pre-backtest).",
-                "source_arxiv_ids": ids,
-                "fusion_reasoning": "Paper A contributes trend timing; paper B vol scaling.",
-                "novelty_rationale": "Combination not published together.",
-                "risk_notes": "Pre-backtest hypothesis; rigor gate applies.",
-                "strategy_spec": {
-                    "name": "Mock Fused SMA+Vol Strategy",
-                    "asset_universe": ["SPY"],
-                    "rebalance_frequency": "monthly",
-                    "entry": {"gt": ["close", "sma_200"]},
-                    "exit": {"lt": ["close", "sma_200"]},
-                    "position_sizing": {"type": "full_invested_when_in_market"},
-                    "source_arxiv_ids": ids,
-                    "look_ahead_safe": True,
-                    "indicators": ["sma_200"],
-                    "parameter_variants": {"sma_200": [150, 200, 250]},
-                },
-            }
-        )
+# Conformant DSL spec — passes _dsl_conformance_ok and evaluate_fusion_spec.
+_DEBATE_SPEC = {
+    "name": "Debate canned SMA",
+    "asset_universe": ["SPY"],
+    "rebalance_frequency": "monthly",
+    "entry": {"gt": ["sma_50", 0]},
+    "exit": {"lt": ["close", "sma_200"]},
+    "position_sizing": {"type": "full_invested_when_in_market"},
+    "look_ahead_safe": True,
+}
 
 
-@pytest.mark.asyncio
-async def test_fusion_dispatch_end_to_end_persists_fusion_strategy(tmp_path, monkeypatch):
-    """The fusion choice drives dispatch → a fusion strategy is persisted.
-
-    Hermetic: tmp SQLite DB, fixture corpus, mocked LLM backend — no network.
-    """
-    # Real (temp) DB so _persist_candidate's upsert_strategy lands a row. db.py
-    # binds its engine/SessionLocal at IMPORT time, so an env tweak alone won't
-    # rebind them once another test has imported db — rebind the globals here so
-    # get_session() (used by upsert_strategy) writes to OUR isolated sqlite file.
-    import archimedes.db as _db
-    from archimedes.agents import generation_pipeline as gp
-    from archimedes.agents import strategy_fusion as sf
-    from archimedes.models.strategy_store import StrategyRecord
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-
-    test_engine = create_engine(
-        f"sqlite:///{tmp_path / 'fusion_e2e.db'}",
-        connect_args={"check_same_thread": False},
+def _make_fake_proposal(name: str, ids: list[str]) -> SimpleNamespace:
+    return SimpleNamespace(
+        strategy_name=name,
+        thesis=f"Thesis for {name}.",
+        source_arxiv_ids=ids,
+        strategy_spec=dict(_DEBATE_SPEC, name=name),
+        fusion_reasoning="canned reasoning",
+        novelty_rationale="canned novelty",
+        is_actionable=True,
     )
-    monkeypatch.setattr(_db, "engine", test_engine)
-    monkeypatch.setattr(_db, "SessionLocal", sessionmaker(bind=test_engine, autocommit=False, autoflush=False))
-    # Register all ORM tables, then create them on the isolated engine.
-    from archimedes.models import kg, strategy_passport_record  # noqa: F401
 
-    _db.Base.metadata.create_all(bind=test_engine)
 
-    # Enable fusion + take the LIVE path (override the file's fixture autouse).
-    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
-    monkeypatch.delenv("GENERATION_PIPELINE_FIXTURE", raising=False)
-    # Skip the buy-and-hold backtest network round-trip for any agent fallback.
-    monkeypatch.setenv("GENERATION_PIPELINE_SKIP_BACKTEST", "1")
+def _fake_eval_result(*, num_trials: int | None = None) -> SimpleNamespace:
+    """Canned FusionEvalResult that passes all rigor gates + C-null."""
+    rigor = SimpleNamespace(
+        dsr=1.5,
+        dsr_p_value=0.01,
+        pbo_score=0.1,
+        oos_sharpe=1.2,
+        in_sample_sharpe=1.3,
+        look_ahead_clean=True,
+        look_ahead_label="clean",
+        num_trials=num_trials,
+        passing=True,
+        data_source="synthetic",
+        admissible=False,
+    )
+    bt = SimpleNamespace(
+        sharpe_ratio=1.4,
+        sortino_ratio=1.6,
+        max_drawdown=-0.1,
+        cagr=0.2,  # > MIN_COST_BENEFIT (0.05%) → clears C-null
+        calmar_ratio=1.1,
+        win_rate=0.55,
+        total_trades=42,
+        equity_curve=None,  # no return series needed for hermetic tests
+    )
+    return SimpleNamespace(rigor=rigor, backtest=bt, success=True, admissible=False, error=None, spec={})
 
-    # Live LLM available (validator + fusion gating both read this).
+
+def _setup_debate_hermetic(monkeypatch, *, gp, de, sf, fe, fake_proposals, fake_corpus):
+    """Apply the standard debate-path hermetic stubs.
+
+    Monkeypatches:
+    - gp._llm_available → True (live path)
+    - de._debate_can_run → True (bypass flag + corpus size check)
+    - de._propose_pool → returns fake_proposals (no LLM call)
+    - sf.load_corpus → returns fake_corpus (no DB/disk read)
+    - fe.evaluate_fusion_spec → returns _fake_eval_result (no backtest)
+    - de._debate_round → no-op (best-effort transcript, never gates)
+    """
     monkeypatch.setattr(gp, "_llm_available", lambda: True)
+    monkeypatch.setattr(de, "_debate_can_run", lambda brief: True)
 
-    async def _permissive_validate(brief):
+    async def _fake_pool(*a, **k):
+        return list(fake_proposals)
+
+    monkeypatch.setattr(de, "_propose_pool", _fake_pool)
+    monkeypatch.setattr(sf, "load_corpus", lambda *a, **k: list(fake_corpus))
+
+    def _fake_eval(spec, *, num_trials=None, use_real_data=False, **kw):
+        return _fake_eval_result(num_trials=num_trials)
+
+    monkeypatch.setattr(fe, "evaluate_fusion_spec", _fake_eval)
+
+    async def _noop_debate_round(*a, **k):
+        return []
+
+    monkeypatch.setattr(de, "_debate_round", _noop_debate_round)
+
+
+def _permissive_validate(brief):
+    """Permissive brief validator (no LLM call)."""
+
+    async def _inner(brief):
         return {
             "is_valid": True,
             "intent_summary": brief.intent[:140],
@@ -593,21 +610,57 @@ async def test_fusion_dispatch_end_to_end_persists_fusion_strategy(tmp_path, mon
             "risk_appetite_adjusted": brief.risk_appetite,
         }
 
-    monkeypatch.setattr(gp, "_validate_brief", _permissive_validate)
+    return _inner(brief)
 
-    # ≥20-paper fixture corpus, injected at the engine's load_corpus seam (both
-    # the no-LLM precheck and StrategyFusion read through this).
-    corpus = _fixture_corpus(24)
-    monkeypatch.setattr(sf, "load_corpus", lambda *a, **k: corpus)
 
-    # MOCKED LLM backend — inject via a StrategyFusion built with our backend +
-    # corpus so propose() does no network call. Patch on the agents module
-    # (the canonical home; services.strategy_fusion is the same object via
-    # the services/__init__ re-export).
-    monkeypatch.setattr(
-        sf,
-        "default_fusion",
-        lambda: sf.StrategyFusion(backend=_MockFusionBackend(), corpus=corpus),
+# ── Test 3 — debate dispatch end-to-end persists a debate strategy ────────────
+
+
+@pytest.mark.asyncio
+async def test_debate_dispatch_end_to_end_persists_debate_strategy(tmp_path, monkeypatch):
+    """Debate dispatch drives run_generation → a StrategyRecord with
+    generation_method='debate' is persisted.
+
+    Re-targets test_fusion_dispatch_end_to_end_persists_fusion_strategy which
+    tested the retired standalone-fusion dispatch. Hermetic: tmp SQLite, mocked
+    proposer + evaluator — no network, no LLM.
+
+    Asserts: (a) pipeline_selected=debate, (b) candidate_drafted + persisted
+    emitted, (c) StrategyRecord.generation_method == 'debate'.
+    """
+    import archimedes.agents.debate_engine as de
+    from archimedes.agents import strategy_fusion as sf
+    import archimedes.db as _db
+    import archimedes.services.fusion_evaluator as fe
+    from archimedes.agents import generation_pipeline as gp
+    from archimedes.models.strategy_store import StrategyRecord
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    test_engine = create_engine(
+        f"sqlite:///{tmp_path / 'debate_e2e.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    monkeypatch.setattr(_db, "engine", test_engine)
+    monkeypatch.setattr(_db, "SessionLocal", sessionmaker(bind=test_engine, autocommit=False, autoflush=False))
+    from archimedes.models import kg, strategy_passport_record  # noqa: F401
+
+    _db.Base.metadata.create_all(bind=test_engine)
+
+    monkeypatch.delenv("GENERATION_PIPELINE_FIXTURE", raising=False)
+
+    async def _pv(brief):
+        return await _permissive_validate(brief)
+
+    monkeypatch.setattr(gp, "_validate_brief", _pv)
+
+    fake_corpus = _debate_fake_corpus(4)
+    fake_proposals = [
+        _make_fake_proposal("Debate A", ["2401.00001", "2402.00001"]),
+        _make_fake_proposal("Debate B", ["2401.00002", "2402.00002"]),
+    ]
+    _setup_debate_hermetic(
+        monkeypatch, gp=gp, de=de, sf=sf, fe=fe, fake_proposals=fake_proposals, fake_corpus=fake_corpus
     )
 
     store = _FakeStore()
@@ -616,76 +669,57 @@ async def test_fusion_dispatch_end_to_end_persists_fusion_strategy(tmp_path, mon
         risk_appetite="moderate",
         asset_classes=["equities"],
     )
+    await run_generation(job_id="job_debate_e2e", brief=brief, store=store, dual_regime=False, n_candidates=1)
 
-    await run_generation(job_id="job_fusion_e2e", brief=brief, store=store, dual_regime=False, n_candidates=1)
-
-    # ── pipeline_selected announced fusion (and it actually ran) ──
+    # pipeline_selected announced debate
     ps = [e for e in store.events if e["event"] == "pipeline_selected"]
     assert ps, "no pipeline_selected event emitted"
-    assert ps[0]["data"]["pipeline"] == "fusion", (
-        f"fusion was not dispatched; got {ps[0]['data']['pipeline']!r} (reason={ps[0]['data'].get('reason')!r})"
+    assert ps[0]["data"]["pipeline"] == "debate", (
+        f"debate not dispatched; got {ps[0]['data']['pipeline']!r} (reason={ps[0]['data'].get('reason')!r})"
     )
 
-    # ── Same streaming events the agent path emits surfaced the fusion run ──
+    # Required streaming events present
     names = [e["event"] for e in store.events]
     for required in ("candidate_drafted", "candidate_evaluated", "persisted", "done"):
-        assert required in names, f"fusion run did not emit {required!r} (events={names})"
+        assert required in names, f"debate run did not emit {required!r} (events={names})"
 
-    # ── The persisted strategy is a real fusion with provenance + rigor ──
-    # Filter on the mock's exact name (not just generation_method) so a fusion
-    # row left by another test in the same session can't be mistaken for ours.
+    # Persisted as a debate strategy (generation_method='debate')
     with _db.get_session() as session:
-        record = (
-            session.query(StrategyRecord)
-            .filter(
-                StrategyRecord.generation_method == "fusion",
-                StrategyRecord.strategy_name == "Mock Fused SMA+Vol Strategy",
-            )
-            .first()
-        )
+        record = session.query(StrategyRecord).filter(StrategyRecord.generation_method == "debate").first()
+    assert record is not None, "no debate StrategyRecord was persisted"
+    assert record.generation_method == "debate"
 
-    assert record is not None, "no fusion StrategyRecord was persisted"
-    assert record.generation_method == "fusion"
-
-    source_papers = json.loads(record.source_papers)
-    arxiv_ids = [p.get("arxiv_id") for p in source_papers if p.get("arxiv_id")]
-    assert len(arxiv_ids) >= 2, f"fusion must cite ≥2 source_arxiv_ids; got {arxiv_ids}"
-
-    assert record.rigor_verdict is not None, "fusion strategy persisted without a rigor verdict"
+    # Rigor verdict shape present and has required fields
+    assert record.rigor_verdict is not None, "debate strategy persisted without a rigor verdict"
     verdict = json.loads(record.rigor_verdict)
-    # Real DSL backtest verdict: the four admission primitives + a passing bool.
     for key in ("dsr", "pbo", "oos_sharpe", "passing"):
         assert key in verdict, f"rigor verdict missing {key!r}: {verdict}"
     assert isinstance(verdict["passing"], bool)
-    # A non-null rigor verdict (real DSR/PBO/OOS) — at least one numeric metric
-    # populated, proving evaluate_fusion_spec actually ran a backtest.
-    assert any(verdict.get(k) is not None for k in ("dsr", "pbo", "oos_sharpe")), (
-        f"rigor verdict has no populated numeric metric (backtest didn't run?): {verdict}"
-    )
+
+
+# ── Test 4 — debate C-rigor threads _society_num_trials(library, pool) ────────
 
 
 @pytest.mark.asyncio
-async def test_fusion_path_num_trials_matches_society_formula(tmp_path, monkeypatch):
-    """#820: the fusion candidate must deflate for the SAME selection set as the
-    live agent path — library_size + selection_pool_size (_society_num_trials) —
-    not evaluate_fusion_spec's own library-size-only default.
+async def test_debate_critic_rigor_num_trials_matches_society_formula(tmp_path, monkeypatch):
+    """Debate C-rigor passes num_trials = _society_num_trials(library_size, pool_size)
+    to evaluate_fusion_spec — the same formula the live agent path uses.
 
-    Before this fix, ``selection_pool_size`` reached ``_run_fusion_candidate`` but
-    was never threaded into ``evaluate_fusion_spec``, so the fusion path silently
-    under-deflated relative to the live path for an identical (pool, library) pair.
-    The mock spec also carries a 3-variant ``parameter_variants`` grid, so this
-    also proves a small variant grid no longer silently overrides a bigger,
-    correct society count (the ``apply_rigor_gate`` composition fix).
+    Re-targets test_fusion_path_num_trials_matches_society_formula.  pool_size is
+    the society's own internal count of conformant proposals (the real selection
+    set), not n_candidates. The spy asserts evaluate_fusion_spec receives the right
+    value across the full proposal pool.
     """
+    import archimedes.agents.debate_engine as de
+    from archimedes.agents import strategy_fusion as sf
     import archimedes.db as _db
     import archimedes.services.fusion_evaluator as fe
     from archimedes.agents import generation_pipeline as gp
-    from archimedes.agents import strategy_fusion as sf
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
     test_engine = create_engine(
-        f"sqlite:///{tmp_path / 'fusion_num_trials.db'}",
+        f"sqlite:///{tmp_path / 'debate_num_trials.db'}",
         connect_args={"check_same_thread": False},
     )
     monkeypatch.setattr(_db, "engine", test_engine)
@@ -694,32 +728,14 @@ async def test_fusion_path_num_trials_matches_society_formula(tmp_path, monkeypa
 
     _db.Base.metadata.create_all(bind=test_engine)
 
-    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
     monkeypatch.delenv("GENERATION_PIPELINE_FIXTURE", raising=False)
-    monkeypatch.setenv("GENERATION_PIPELINE_SKIP_BACKTEST", "1")
-    monkeypatch.setattr(gp, "_llm_available", lambda: True)
 
-    async def _permissive_validate(brief):
-        return {
-            "is_valid": True,
-            "intent_summary": brief.intent[:140],
-            "asset_classes_inferred": brief.asset_classes or [],
-            "time_horizon_inferred": "unknown",
-            "risk_appetite_adjusted": brief.risk_appetite,
-        }
+    async def _pv(brief):
+        return await _permissive_validate(brief)
 
-    monkeypatch.setattr(gp, "_validate_brief", _permissive_validate)
+    monkeypatch.setattr(gp, "_validate_brief", _pv)
 
-    corpus = _fixture_corpus(24)
-    monkeypatch.setattr(sf, "load_corpus", lambda *a, **k: corpus)
-    monkeypatch.setattr(
-        sf,
-        "default_fusion",
-        lambda: sf.StrategyFusion(backend=_MockFusionBackend(), corpus=corpus),
-    )
-
-    # Fixed, known library size (4) so the expected num_trials is computable —
-    # decoupled from however many strategies happen to be curated right now.
+    # Fixed library_size so _society_num_trials(library, pool) is computable.
     library_size = 4
 
     class _FakeStrategy:
@@ -734,109 +750,98 @@ async def test_fusion_path_num_trials_matches_society_formula(tmp_path, monkeypa
 
     monkeypatch.setattr(sp, "default_provider", lambda *a, **k: _FakeProvider())
 
+    # The pool has 3 proposals → pool_size = 3 inside _run_debate_leaderboard.
+    pool_size = 3
+    fake_corpus = _debate_fake_corpus(pool_size * 2)
+    fake_proposals = [
+        _make_fake_proposal(f"Debate {i}", [f"2401.0000{i}", f"2402.0000{i}"]) for i in range(1, pool_size + 1)
+    ]
+
+    # Spy on evaluate_fusion_spec — capture num_trials for every call.
     captured_num_trials: list[int | None] = []
-    real_evaluate = fe.evaluate_fusion_spec
 
-    def _spy_evaluate(spec_dict, **kwargs):
-        captured_num_trials.append(kwargs.get("num_trials"))
-        return real_evaluate(spec_dict, **kwargs)
+    def _spy_evaluate(spec, *, num_trials=None, use_real_data=False, **kw):
+        captured_num_trials.append(num_trials)
+        return _fake_eval_result(num_trials=num_trials)
 
+    # Setup hermetic stubs but override evaluate_fusion_spec with the spy.
+    monkeypatch.setattr(gp, "_llm_available", lambda: True)
+    monkeypatch.setattr(de, "_debate_can_run", lambda brief: True)
+
+    async def _fake_pool(*a, **k):
+        return list(fake_proposals)
+
+    monkeypatch.setattr(de, "_propose_pool", _fake_pool)
+    monkeypatch.setattr(sf, "load_corpus", lambda *a, **k: list(fake_corpus))
     monkeypatch.setattr(fe, "evaluate_fusion_spec", _spy_evaluate)
+
+    async def _noop_debate_round(*a, **k):
+        return []
+
+    monkeypatch.setattr(de, "_debate_round", _noop_debate_round)
 
     store = _FakeStore()
     brief = GenerateBrief(
-        intent="equity momentum with a volatility overlay",
+        intent="equity momentum with volatility overlay",
         risk_appetite="moderate",
         asset_classes=["equities"],
     )
-    selection_pool_size = 5  # != library_size, so an additive bug can't hide by coincidence
-
     await run_generation(
-        job_id="job_fusion_num_trials",
+        job_id="job_debate_num_trials",
         brief=brief,
         store=store,
         dual_regime=False,
-        n_candidates=selection_pool_size,
+        n_candidates=1,
     )
 
-    assert captured_num_trials, "evaluate_fusion_spec was never called — fusion path did not run"
-    expected = gp._society_num_trials(library_size, selection_pool_size)
+    assert captured_num_trials, "evaluate_fusion_spec was never called — debate C-rigor did not run"
+    expected = gp._society_num_trials(library_size, pool_size)
     assert all(n == expected for n in captured_num_trials), (
-        f"fusion path num_trials {captured_num_trials} != live-path formula {expected} "
-        f"(library_size={library_size}, selection_pool_size={selection_pool_size})"
+        f"debate num_trials {captured_num_trials} != formula {expected} "
+        f"(library_size={library_size}, pool_size={pool_size})"
     )
 
-    # The verdict actually persisted must carry the same value through the
-    # variant-grid composition in apply_rigor_gate (max(), not a silent replace).
-    persisted = [e for e in store.events if e["event"] == "candidate_evaluated"]
-    assert persisted, "no candidate_evaluated event emitted"
-    for e in persisted:
+    # candidate_evaluated event carries the verdict; num_trials should match.
+    evaluated = [e for e in store.events if e["event"] == "candidate_evaluated"]
+    assert evaluated, "no candidate_evaluated event emitted"
+    for e in evaluated:
         verdict = e["data"].get("rigor_verdict") or {}
         if verdict.get("num_trials") is not None:
-            assert verdict["num_trials"] == expected
+            assert verdict["num_trials"] == expected, (
+                f"candidate_evaluated verdict num_trials={verdict['num_trials']} != {expected}"
+            )
 
 
-class _MockTextOnlyFusionBackend:
-    """Deterministic LLM stand-in returning a parseable fusion WITHOUT a
-    machine-readable strategy_spec — the *text-only* path (``has_real_rigor``
-    stays False).
-
-    This is the path that produced the live #784 conversion bug: such a candidate
-    carries ``weights={}`` AND ``has_real_rigor=False``, so before the fix it
-    slipped past the ``if not c.has_real_rigor`` skip-guard into the static-weights
-    backtester and emitted a misleading ``backtest_failed("no weights emitted by
-    agent")`` — making every Generate result look broken.
-    """
-
-    model_id = "mock-textonly-fusion"
-    served_model = "mock-textonly-fusion-served"
-
-    @property
-    def available(self) -> bool:
-        return True
-
-    def complete(self, system: str, user: str) -> str:
-        import json as _json
-        import re as _re
-
-        ids = _re.findall(r'"arxiv_id"\s*:\s*"([^"]+)"', user)[:3]
-        # NOTE: no "strategy_spec" key → proposal.strategy_spec is None → text-only.
-        return _json.dumps(
-            {
-                "strategy_name": "Mock Text-Only Fusion",
-                "thesis": "Fuses two papers as prose; no machine-readable DSL spec emitted.",
-                "source_arxiv_ids": ids,
-                "fusion_reasoning": "Paper A contributes trend timing; paper B vol scaling.",
-                "novelty_rationale": "Combination not published together.",
-                "risk_notes": "Pre-backtest hypothesis; rigor gate applies.",
-            }
-        )
+# ── Test 5 — debate winner with weights={} never causes spurious backtest_failed ─
 
 
 @pytest.mark.asyncio
-async def test_fusion_text_only_does_not_emit_spurious_backtest_failed(tmp_path, monkeypatch):
-    """Regression guard for the live #784 conversion bug.
+async def test_debate_text_only_pool_no_spurious_backtest_failed(tmp_path, monkeypatch):
+    """Regression guard (debate-path re-target of #784 live bug).
 
-    A text-only fusion candidate (no DSL spec → has_real_rigor=False) must NOT
-    emit the misleading ``backtest_failed("no weights emitted by agent")``. Fusion
-    candidates carry ``weights={}`` by design and must never be routed into the
-    static-weights backtester — the skip is keyed on ``generation_method``, not
-    ``has_real_rigor`` (which is False for the text-only path).
+    A debate winner has weights={} by design (it emits a DSL spec scored by
+    C-rigor, not a static weight vector). It must NOT be routed into
+    _backtest_and_persist (the static buy-and-hold backtester), which would
+    emit the misleading backtest_failed("no weights emitted by agent").
 
-    Hermetic: tmp SQLite DB, fixture corpus, mocked LLM backend — no network.
-    Crucially does NOT set GENERATION_PIPELINE_SKIP_BACKTEST: the bug only
-    manifests when ``_backtest_and_persist`` is actually reached (SKIP_BACKTEST
-    returns earlier, masking it).
+    Protection: generation_method='debate' is in _static_skip. Crucially, the
+    test does NOT set GENERATION_PIPELINE_SKIP_BACKTEST — the bug only surfaces
+    when _backtest_and_persist is actually reachable.
+
+    Re-targets test_fusion_text_only_does_not_emit_spurious_backtest_failed which
+    tested the same _static_skip guard on the retired standalone-fusion dispatch.
     """
-    import archimedes.db as _db
-    from archimedes.agents import generation_pipeline as gp
+    import archimedes.agents.debate_engine as de
     from archimedes.agents import strategy_fusion as sf
+    import archimedes.db as _db
+    import archimedes.services.fusion_evaluator as fe
+    from archimedes.agents import generation_pipeline as gp
     from archimedes.models.strategy_store import StrategyRecord
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
     test_engine = create_engine(
-        f"sqlite:///{tmp_path / 'fusion_textonly.db'}",
+        f"sqlite:///{tmp_path / 'debate_textonly.db'}",
         connect_args={"check_same_thread": False},
     )
     monkeypatch.setattr(_db, "engine", test_engine)
@@ -845,97 +850,107 @@ async def test_fusion_text_only_does_not_emit_spurious_backtest_failed(tmp_path,
 
     _db.Base.metadata.create_all(bind=test_engine)
 
-    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
     monkeypatch.delenv("GENERATION_PIPELINE_FIXTURE", raising=False)
-    # Intentionally NOT setting GENERATION_PIPELINE_SKIP_BACKTEST — see docstring.
-    monkeypatch.setattr(gp, "_llm_available", lambda: True)
+    # Intentionally NOT setting GENERATION_PIPELINE_SKIP_BACKTEST — the bug only
+    # manifests when _backtest_and_persist is reachable (SKIP_BACKTEST masks it).
 
-    async def _permissive_validate(brief):
-        return {
-            "is_valid": True,
-            "intent_summary": brief.intent[:140],
-            "asset_classes_inferred": brief.asset_classes or [],
-            "time_horizon_inferred": "unknown",
-            "risk_appetite_adjusted": brief.risk_appetite,
-        }
+    async def _pv(brief):
+        return await _permissive_validate(brief)
 
-    monkeypatch.setattr(gp, "_validate_brief", _permissive_validate)
+    monkeypatch.setattr(gp, "_validate_brief", _pv)
 
-    corpus = _fixture_corpus(24)
-    monkeypatch.setattr(sf, "load_corpus", lambda *a, **k: corpus)
-    monkeypatch.setattr(
-        sf,
-        "default_fusion",
-        lambda: sf.StrategyFusion(backend=_MockTextOnlyFusionBackend(), corpus=corpus),
+    fake_corpus = _debate_fake_corpus(4)
+    fake_proposals = [
+        _make_fake_proposal("Debate Winner", ["2401.00001", "2402.00001"]),
+    ]
+    _setup_debate_hermetic(
+        monkeypatch, gp=gp, de=de, sf=sf, fe=fe, fake_proposals=fake_proposals, fake_corpus=fake_corpus
     )
 
     store = _FakeStore()
     brief = GenerateBrief(
-        intent="equity momentum with a volatility overlay",
+        intent="equity momentum with volatility overlay",
         risk_appetite="moderate",
         asset_classes=["equities"],
     )
+    await run_generation(job_id="job_debate_textonly", brief=brief, store=store, dual_regime=False, n_candidates=1)
 
-    await run_generation(job_id="job_fusion_textonly", brief=brief, store=store, dual_regime=False, n_candidates=1)
-
-    # Fusion was dispatched (the candidate IS a fusion candidate).
+    # Debate was dispatched.
     ps = [e for e in store.events if e["event"] == "pipeline_selected"]
-    assert ps and ps[0]["data"]["pipeline"] == "fusion", f"fusion not dispatched: {ps}"
+    assert ps and ps[0]["data"]["pipeline"] == "debate", f"debate not dispatched: {ps}"
 
-    # The run still produced + persisted a candidate and finished cleanly.
+    # Run completed cleanly.
     names = [e["event"] for e in store.events]
     for required in ("candidate_drafted", "persisted", "done"):
-        assert required in names, f"text-only fusion run did not emit {required!r} (events={names})"
+        assert required in names, f"debate run did not emit {required!r} (events={names})"
 
-    # THE FIX: no spurious "no weights" backtest_failed for the fusion candidate.
+    # THE FIX: no spurious "no weights" backtest_failed for the debate winner.
     backtest_failed = [e for e in store.events if e["event"] == "backtest_failed"]
     spurious = [e for e in backtest_failed if "no weights" in (e["data"].get("error", "") or "")]
-    assert not spurious, f"fusion candidate was wrongly routed into the static backtester: {spurious}"
+    assert not spurious, f"debate winner (weights={{}}) was wrongly routed into the static backtester: {spurious}"
 
-    # Persisted as a fusion strategy (generation_method preserved).
+    # Persisted as a debate strategy.
     with _db.get_session() as session:
-        record = (
-            session.query(StrategyRecord)
-            .filter(
-                StrategyRecord.generation_method == "fusion",
-                StrategyRecord.strategy_name == "Mock Text-Only Fusion",
-            )
-            .first()
-        )
-    assert record is not None, "no text-only fusion StrategyRecord was persisted"
-    assert record.generation_method == "fusion"
+        record = session.query(StrategyRecord).filter(StrategyRecord.generation_method == "debate").first()
+    assert record is not None, "no debate StrategyRecord was persisted"
+    assert record.generation_method == "debate"
+
+
+# ── Test 6 — no-LLM dispatch: fixture path or GENERATION_UNAVAILABLE ──────────
 
 
 @pytest.mark.asyncio
-async def test_fusion_falls_back_to_agent_when_no_llm(monkeypatch):
-    """Fusion selected but no LLM → relabel to agent + run the fixture path.
+async def test_no_llm_testing_mode_selects_fixture_pipeline():
+    """Under TESTING with no LLM, dispatch selects the 'fixture' pipeline.
 
-    Confirms the agent FALLBACK still works when fusion can't run, and that the
-    pipeline_selected event is HONEST (says "agent", not "fusion").
+    The autouse fixture already sets GENERATION_PIPELINE_FIXTURE=1, which forces
+    _llm_available() → False AND sets fixture_mode=True. Asserts pipeline_selected
+    says 'fixture' and the run completes cleanly.
+
+    Replaces test_fusion_falls_back_to_agent_when_no_llm (which tested the
+    retired agent-fallback relabeling; fixture/GENERATION_UNAVAILABLE is now the
+    honest contract).
+    """
+    store = _FakeStore()
+    brief = GenerateBrief(intent="balanced macro", risk_appetite="moderate")
+    # autouse fixture forces GENERATION_PIPELINE_FIXTURE=1 → fixture path.
+    with patch(
+        "archimedes.agents.generation_pipeline._persist_candidate",
+        new=AsyncMock(return_value=("strat_fixture_nollm", "0xfx")),
+    ):
+        await run_generation(job_id="job_nollm_testing", brief=brief, store=store, dual_regime=False, n_candidates=1)
+
+    ps = next(e for e in store.events if e["event"] == "pipeline_selected")
+    assert ps["data"]["pipeline"] == "fixture", (
+        f"no-LLM+fixture-env must select 'fixture', got {ps['data']['pipeline']!r}"
+    )
+    names = [e["event"] for e in store.events]
+    assert "candidate_drafted" in names
+    assert names[-1] == "done"
+
+
+@pytest.mark.asyncio
+async def test_no_llm_prod_shape_emits_generation_unavailable(monkeypatch):
+    """Prod shape (no TESTING, no fixture env, no LLM) → GENERATION_UNAVAILABLE.
+
+    With the retired agent-fallback removed, an LLM-less prod environment emits
+    an honest GENERATION_UNAVAILABLE error code and sets status to 'error'.
+    Completes the new no-LLM contract (both cases of TASK 1 test 6).
     """
     from archimedes.agents import generation_pipeline as gp
 
-    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
-    # Fixture path (no LLM) is forced by the file's autouse fixture; _pick_pipeline
-    # may still select fusion via the flag, but use_live=False must relabel.
-    monkeypatch.setattr(gp, "_pick_pipeline", lambda brief, mode_override=None: ("fusion", "forced fusion for test"))
+    monkeypatch.delenv("GENERATION_PIPELINE_FIXTURE", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+    monkeypatch.setattr(gp, "_llm_available", lambda: False)
 
     store = _FakeStore()
     brief = GenerateBrief(intent="balanced macro", risk_appetite="moderate")
+    await gp.run_generation(job_id="job_nollm_prod", brief=brief, store=store, dual_regime=False, n_candidates=1)
 
-    with patch(
-        "archimedes.agents.generation_pipeline._persist_candidate",
-        new=AsyncMock(return_value=("strat_fallback_001", "0xfb")),
-    ):
-        await run_generation(job_id="job_fusion_fallback", brief=brief, store=store, dual_regime=False, n_candidates=1)
-
-    ps = next(e for e in store.events if e["event"] == "pipeline_selected")
-    # No LLM (fixture path) → fusion is NOT runnable → honest relabel to agent.
-    assert ps["data"]["pipeline"] == "agent", (
-        f"fusion with no LLM must relabel to agent, got {ps['data']['pipeline']!r}"
+    err = next((e for e in store.events if e["event"] == "error"), None)
+    assert err is not None, "prod no-LLM must emit an error event"
+    assert err["data"]["code"] == "GENERATION_UNAVAILABLE", (
+        f"expected GENERATION_UNAVAILABLE, got {err['data']['code']!r}"
     )
-    # And the agent fallback still produced + persisted a candidate.
-    names = [e["event"] for e in store.events]
-    assert "candidate_drafted" in names
-    assert "persisted" in names
-    assert names[-1] == "done"
+    statuses = [s[0] for s in store.status]
+    assert "error" in statuses

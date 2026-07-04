@@ -1,30 +1,38 @@
-"""Streaming strategy generation orchestrator.
+"""Streaming strategy generation orchestrator — T1.1 Phase-3 (debate-only).
 
-Wraps ``portfolio_agent.PortfolioAgent.propose_portfolio_with_tools`` with an
-event-emitting pipeline that powers the Generate page's SSE stream
-(see ``docs/specs/generation-streaming-spec.md``).
+The **debate society** is the sole generation pipeline. The legacy
+fusion/architect/agent decision tree is retired as of Phase-3 (issue #834).
 
-The pipeline lifecycle:
+Pipeline lifecycle (SSE stream):
 
   job_queued
     → brief_validated
-    → candidates_selected (which existing strategies the agent will reason over)
-    → for each candidate: agent_iteration / tool_called / tool_result …
-    → candidate_drafted
-    → candidate_evaluated (rigor verdict — synthesized from agent stress-tests)
+    → pipeline_selected (always "debate" on the live path)
+    → candidates_selected
+    → for each leaderboard entry:
+        candidate_drafted → candidate_evaluated
     → best_selected
     → trace_hashed → persisted → done
 
-Multi-candidate mechanic: ``n_candidates`` ≥ 1 (default 1). Each candidate is
-a full agent run with a different seed prompt suffix. The best by rigor is
-surfaced; the rest persist in the job's event log so the frontend can show
-them under "considered N candidates".
+Dispatch rules:
+
+* **debate** — ``_llm_available()`` AND ``_debate_can_run(brief)`` → runs the
+  full ``_run_debate_leaderboard`` path in ``debate_engine``.
+* **fixture** — deterministic stub for hermetic tests (``GENERATION_PIPELINE_FIXTURE=1``
+  or ``TESTING`` env + no LLM). No LLM call, no network.
+* **error** (``GENERATION_UNAVAILABLE``) — prod environment with no reachable LLM
+  or an empty corpus. No silent fallback.
+
+K=1 persistence: only the leaderboard winner becomes a ``StrategyRecord``;
+alternates are recorded in ``strategy_memory.persist_proposal`` (verdict="rejected")
+and surfaced via the job's candidates payload.
+
+See ``docs/specs/generation-streaming-spec.md`` for the full SSE contract.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import functools
 import hashlib
 import json
@@ -81,79 +89,13 @@ def _pick_pipeline(
        brief's inferred asset classes.
     3. **agent** (SSE streaming portfolio-advisor path) as the fallback.
     """
-    # ── Debate society (flag-gated, additive — T1.1) ──
-    # When ARCHIMEDES_DEBATE_ENABLED is set, the debate society IS the generation
-    # pipeline (staged replacement). While the flag is OFF the legacy decision
-    # tree below runs UNCHANGED — so the flag-OFF live path stays byte-identical
-    # even if a client passes mode="debate". The legacy-runner deletions are
-    # deferred to the Phase-3 cutover PR.
-    from archimedes.agents.debate_engine import debate_enabled
-
-    if debate_enabled():
-        return "debate", "debate society pipeline (ARCHIMEDES_DEBATE_ENABLED)"
-
-    # ── User-selected mode override (#290) ──
-    if mode_override and mode_override in ("fusion", "architect", "agent"):
-        return mode_override, f"user selected {mode_override} mode"
-
-    # ── Fusion check ──
-    try:
-        from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
-
-        if fusion_enabled():
-            corpus = load_corpus()
-            corpus_count = len(corpus) if corpus else 0
-            if corpus_count >= 20 and _llm_available():
-                return "fusion", (f"fusion engine enabled, corpus={corpus_count} papers, LLM backend alive")
-    except Exception:
-        pass  # fall through
-
-    # ── Architect check ──
-    try:
-        from archimedes.services.strategy_provider import default_provider
-
-        lib = default_provider().list_strategies()
-        if len(lib) >= 3:
-            return "architect", (f"curated library has {len(lib)} strategies; fast preview available")
-    except Exception:
-        pass  # fall through
-
-    # ── Agent (fallback) ──
-    return "agent", "streaming agent — general-purpose fallback"
-
-
-def _fusion_can_run(brief: GenerateBrief) -> bool:
-    """No-LLM viability precheck for the fusion path.
-
-    Returns True iff the fusion flag is on AND the deterministic candidate
-    selection yields ≥ ``MIN_PAPERS`` papers for this brief's steer — i.e. the
-    engine would not immediately return ``insufficient_corpus``. Used to keep
-    ``pipeline_selected`` honest: we only announce "fusion" if it can actually
-    produce a ≥2-paper synthesis. Never raises — any failure degrades to False
-    so the caller falls back to the agent path.
-    """
-    try:
-        from archimedes.agents.strategy_fusion import (
-            MIN_PAPERS,
-            FusionBrief,
-            fusion_enabled,
-            load_corpus,
-            select_candidates,
-        )
-
-        if not fusion_enabled():
-            return False
-        fusion_brief = FusionBrief(
-            asset_classes=list(brief.asset_classes or []),
-            risk_appetite=brief.risk_appetite,
-            strategic_direction=brief.intent or "",
-            max_papers=brief.max_papers,
-        )
-        candidates = select_candidates(fusion_brief, load_corpus())
-        return len(candidates) >= MIN_PAPERS
-    except Exception:
-        logger.debug("fusion viability precheck failed; treating as not runnable", exc_info=True)
-        return False
+    # ── T1.1 Phase-3 cutover: the debate society IS the generation pipeline. ──
+    # The legacy fusion/architect/agent decision tree is retired; a client-sent
+    # mode override is accepted for API compatibility but no longer routes —
+    # the society owns candidate generation (spec §Phase-3; #834 flag audit).
+    if mode_override and mode_override != "debate":
+        logger.info("generation: ignoring legacy mode override %r (debate-only cutover)", mode_override)
+    return "debate", "debate society is the generation pipeline (T1.1 Phase-3 cutover)"
 
 
 # ── Brief validation (real LLM step on the live path) ─────────────────────
@@ -587,7 +529,7 @@ async def _run_fixture_candidate(
     brief: GenerateBrief,
     emit: _Emitter,
     regime: str = "neutral",
-    agent: Any = None,  # noqa: ARG001 — signature parity with _run_live_candidate; fixture path ignores it
+    agent: Any = None,  # noqa: ARG001 — signature parity; fixture path ignores it
     selection_pool_size: int = 1,  # noqa: ARG001 — signature parity; fixture path computes no DSR num_trials
 ) -> _CandidateResult:
     """Synthetic generation that exercises every event the live agent emits.
@@ -669,28 +611,6 @@ async def _run_fixture_candidate(
     )
 
 
-# ── Live agent path ───────────────────────────────────────────────────────
-
-
-# Regime-specific prompt suffixes that steer the agent's allocation (Issue #163)
-_REGIME_PROMPT_SUFFIX = {
-    "bull": (
-        "\n\nREGIME CONTEXT: You are constructing a BULL-tilted portfolio. "
-        "Favor momentum, trend-following, carry, and risk-on strategies. "
-        "Overweight assets with strong recent momentum and positive trend signals. "
-        "Allocate more to growth-oriented and higher-beta instruments. "
-        "Still respect the risk envelope, but tilt toward upside capture."
-    ),
-    "bear": (
-        "\n\nREGIME CONTEXT: You are constructing a BEAR-tilted / defensive portfolio. "
-        "Favor volatility-managed, minimum-variance, defensive, and mean-reversion strategies. "
-        "Overweight safe-haven assets (gold, treasuries, USDC/stablecoins). "
-        "Prioritize drawdown protection and tail-risk hedging over return maximization. "
-        "The goal is to survive and preserve capital in adverse market conditions."
-    ),
-}
-
-
 def _society_num_trials(library_size: int, selection_pool_size: int) -> int:
     """Effective DSR multiple-testing trial count on the agentic society path (#770).
 
@@ -702,387 +622,13 @@ def _society_num_trials(library_size: int, selection_pool_size: int) -> int:
     return max(1, library_size + selection_pool_size)
 
 
-async def _run_live_candidate(
-    *,
-    candidate_id: str,
-    brief: GenerateBrief,
-    emit: _Emitter,
-    regime: str = "neutral",
-    agent: Any = None,
-    selection_pool_size: int = 1,
-) -> _CandidateResult:
-    """Drive the real ``portfolio_agent`` with per-iteration event emission.
-
-    The agent's iteration loop is sync and runs in a thread. The thread uses
-    a sync emit shim that schedules the async ``Emitter.emit`` back onto the
-    main event loop — this keeps the agent unchanged while still streaming.
-
-    ``agent`` is an optional pre-built ``PortfolioAgent`` (e.g. bound to the
-    user's free-tier model pick). When ``None`` the shared process singleton is
-    used — the default, unchanged behavior.
-    """
-    from archimedes.agents.portfolio_agent import get_portfolio_agent
-    from archimedes.services.strategy_provider import default_provider
-    from archimedes.services.strategy_signal_evaluator import (
-        DEFAULT_SCAN_UNIVERSE,
-        _fetch_price_histories,
-        strategy_evaluator,
-    )
-
-    loop = asyncio.get_running_loop()
-
-    def _sync_emit(event: str, **payload: Any) -> None:
-        # Bridge from the agent's sync thread into the async event log.
-        fut = asyncio.run_coroutine_threadsafe(
-            emit.emit(event, candidate_id=candidate_id, **payload),
-            loop,
-        )
-        # event emission is best-effort
-        with contextlib.suppress(Exception):
-            fut.result(timeout=2.0)
-
-    price_histories = await asyncio.wait_for(
-        asyncio.to_thread(_fetch_price_histories, DEFAULT_SCAN_UNIVERSE, "1y"),
-        timeout=30.0,
-    )
-    market_ranking = strategy_evaluator.rank_market(price_histories, lookback_days=90, top_n=20)
-    strategies = default_provider().list_strategies()
-
-    # Map regime to agent regime string + confidence
-    agent_regime = {"bull": "expansion", "bear": "contraction"}.get(regime, "transition")
-    agent_confidence = 0.80 if regime in ("bull", "bear") else 0.65
-
-    agent = agent or get_portfolio_agent()
-    # Inject regime suffix into the agent's system prompt via the risk_appetite
-    # string (the agent reads it as context). The suffix is appended to the
-    # user-visible risk profile so the agent sees the regime steer.
-    regime_suffix = _REGIME_PROMPT_SUFFIX.get(regime, "")
-    if regime_suffix:
-        agent._regime_context = regime_suffix  # noqa: SLF001 — deliberate: consumed by _build_tool_user_prompt if available
-
-    portfolio = await asyncio.wait_for(
-        asyncio.to_thread(
-            agent.propose_portfolio_with_tools,
-            agent_regime,  # regime: expansion/contraction/transition
-            agent_confidence,  # regime_confidence
-            brief.risk_appetite,
-            0.30,  # usdc_floor (moderate default)
-            0.70,  # synth_budget
-            market_ranking,
-            strategies,
-            set(DEFAULT_SCAN_UNIVERSE),
-            price_histories,
-        ),
-        timeout=120.0,
-    )
-
-    if portfolio is None:
-        raise RuntimeError("agent returned no portfolio")
-
-    weights = {pick.ticker: pick.weight for pick in (portfolio.picks or [])}
-    # Collect paper anchors — try matching by ID first, then by fuzzy name match
-    referenced = {pick.paper_anchor for pick in (portfolio.picks or []) if pick.paper_anchor}
-    source_papers = []
-    referenced_strategies: list[Any] = []  # matched curated strategies (for look-ahead audit)
-    strat_by_id = {s.id: s for s in strategies}
-    strat_by_name = {s.paper_title.lower(): s for s in strategies if s.paper_title}
-    for anchor in referenced:
-        s = strat_by_id.get(anchor)
-        if not s:
-            # Fuzzy match: the LLM often returns a short name instead of the ID
-            s = strat_by_name.get(anchor.lower())
-        if not s:
-            # Try substring match
-            s = next((st for st in strategies if anchor.lower() in st.paper_title.lower()), None)
-        if s:
-            referenced_strategies.append(s)
-        if s and getattr(s, "paper_arxiv_id", None):
-            source_papers.append({"arxiv_id": s.paper_arxiv_id, "title": s.paper_title})
-    # Defensive fallback: if agent returned no anchors, include strategies
-    # from the curated library as potential sources (honest: they were
-    # available to the agent even if it didn't cite them explicitly).
-    # Include any strategy with a paper_title OR paper_arxiv_id — curated
-    # strategies reference seminal papers (Faber 2007, Moreira-Muir 2017)
-    # that predate arxiv, so paper_arxiv_id is often empty while paper_title
-    # is always populated.
-    if not source_papers and strategies:
-        for s in strategies[:5]:  # cap at 5 to avoid noise
-            title = getattr(s, "paper_title", "") or ""
-            arxiv_id = getattr(s, "paper_arxiv_id", "") or ""
-            if title or arxiv_id:
-                source_papers.append({"arxiv_id": arxiv_id, "title": title})
-        if not source_papers:
-            logger.warning(
-                "agent returned no paper anchors AND fallback couldn't find "
-                "library strategies with paper refs — source_papers will be empty"
-            )
-
-    # Real rigor verdict via Önder's compute_dsr + compute_oos_sharpe on the
-    # buy-and-hold return series of the agent's allocation. PBO is patched
-    # later (after all candidates are in) since it's a library-level metric.
-    # num_trials = library size: the winner was selected from this universe, so
-    # the DSR must be deflated for that multiple-testing count (spec § 1.3), not
-    # the previous hardcoded 1 (which left the DSR undeflated). The look-ahead
-    # primitive is computed from referenced curated source and gates `passing`.
-    return_series = _portfolio_return_series(weights, price_histories)
-    lookahead_passed = _lookahead_for_candidate(referenced_strategies)
-    # num_trials = selection-from-N candidates + library context (#770). The agentic
-    # society generates `selection_pool_size` candidates, backtests all, and keeps the
-    # best — selection-from-N is itself a multiple-testing search, so the DSR must be
-    # deflated for BOTH that pool AND the library the winner joins, not the library
-    # alone (which understated deflation and inflated the survivor's DSR). Additive
-    # N + library_size per the selection-bias-corrections spec § 1.3 (Bailey & López de
-    # Prado 2014); the correction can only make the gate stricter. (Önder's call — A.)
-    num_trials = _society_num_trials(len(strategies), selection_pool_size)
-    verdict = _rigor_verdict_for(return_series, num_trials=num_trials, lookahead_passed=lookahead_passed)
-    # Derive meaningful name + thesis from the brief and agent output (#299)
-    top_picks = sorted(weights.items(), key=lambda x: -x[1])[:3]
-    pick_summary = " / ".join(t for t, _ in top_picks)
-    regime_label = {"bull": "🟢 Bull", "bear": "🔴 Bear"}.get(regime, "")
-    regime_prefix = f"{regime_label} " if regime_label else ""
-    strategy_name = f"{regime_prefix}{brief.risk_appetite.title()} Blend — {brief.intent[:50].strip()}"
-    agent_reasoning = getattr(portfolio, "reasoning_text", "") or ""
-    thesis = (
-        agent_reasoning
-        if len(agent_reasoning) > 20
-        else (
-            f"For brief '{brief.intent[:100]}': allocates {pick_summary} "
-            f"across {len(weights)} assets with {brief.risk_appetite} risk appetite."
-        )
-    )
-
-    return _CandidateResult(
-        candidate_id=candidate_id,
-        strategy_name=strategy_name,
-        thesis=thesis,
-        asset_universe=list(weights.keys()),
-        source_papers=source_papers,
-        weights=weights,
-        reasoning=getattr(portfolio, "reasoning_text", "") or "",
-        rigor_verdict=verdict,
-        passes_rigor=verdict.get("passing", False),
-        regime=regime,
-        return_series=return_series,
-        dsr_num_trials=num_trials,
-    )
-
-
-# ── Fusion path (multi-paper synthesis folded into the live stream) ───────
-#
-# Stack A previously computed a "fusion" LABEL via _pick_pipeline() and emitted
-# a cosmetic pipeline_selected event, then ALWAYS dispatched to the single-agent
-# portfolio path — the choice was thrown away. This runner makes the choice
-# actually drive dispatch: it REUSES the existing, unit-tested fusion engine
-# (StrategyFusion.propose → evaluate_fusion_spec, the same path Stack B's
-# _run_fusion_job wires) and emits the SAME streaming SSE events the agent path
-# emits, so the UI surfaces fusion transparently with real DSR/PBO/OOS.
-
-
 class FusionUnavailable(Exception):
-    """Fusion was selected but couldn't actually run (disabled / <2 papers /
-    LLM declined). The caller falls back to the agent path and relabels the
-    pipeline honestly rather than silently mislabeling an agent run as fusion."""
+    """The debate society could not produce a conformant candidate for this brief.
 
-
-async def _run_fusion_candidate(
-    *,
-    candidate_id: str,
-    brief: GenerateBrief,
-    emit: _Emitter,
-    regime: str = "neutral",
-    agent: Any = None,  # noqa: ARG001 — signature parity with _run_live_candidate; fusion path builds its own client
-    selection_pool_size: int = 1,
-) -> _CandidateResult:
-    """Drive the existing fusion engine with per-step streaming event emission.
-
-    Builds a ``FusionBrief`` from the incoming ``GenerateBrief``, calls the
-    EXISTING engine (``StrategyFusion.propose()`` → ``evaluate_fusion_spec()`` —
-    reuse, no duplication), and returns a ``_CandidateResult`` carrying the real
-    rigor verdict (DSR/PBO/OOS/look-ahead) computed by the DSL backtest.
-
-    Raises ``FusionUnavailable`` when the engine can't produce an actionable,
-    ≥2-paper fusion (disabled, insufficient corpus, unparseable, or fewer than
-    ``MIN_PAPERS`` fused) so the caller can fall back to the agent path and
-    relabel honestly — fusion never silently degrades into a single-paper or
-    mislabeled result.
+    Raised by ``debate_engine.DebateUnavailable`` (a subclass) when no proposal
+    survived the critics. ``run_generation`` catches it and emits
+    ``GENERATION_UNAVAILABLE`` — no silent fallback (T1.1 Phase-3).
     """
-    from archimedes.agents.strategy_fusion import (
-        MIN_PAPERS,
-        FusionBrief,
-        default_fusion,
-    )
-
-    # Surface the same "agent is thinking" cadence the agent path emits so the
-    # SSE stream renders progress rather than dumping the result on connect.
-    await emit.emit("agent_iteration", candidate_id=candidate_id, iteration_n=1, max_iterations=3)
-    await emit.emit(
-        "tool_called",
-        candidate_id=candidate_id,
-        tool_name="select_candidates",
-        args_summary=f"asset_classes={brief.asset_classes or '(any)'}, regime={regime}",
-    )
-
-    # Map the GenerateBrief → FusionBrief (the engine's steer). asset_classes
-    # carries the user's universe steer; strategic_direction carries the intent.
-    fusion_brief = FusionBrief(
-        asset_classes=list(brief.asset_classes or []),
-        risk_appetite=brief.risk_appetite,
-        strategic_direction=brief.intent or "",
-        max_papers=brief.max_papers,
-    )
-
-    fusion = default_fusion()
-    proposal = await asyncio.wait_for(
-        asyncio.to_thread(fusion.propose, fusion_brief),
-        timeout=120.0,
-    )
-
-    await emit.emit(
-        "tool_result",
-        candidate_id=candidate_id,
-        tool_name="select_candidates",
-        result_summary=(f"fusion status={proposal.status}, papers={len(proposal.source_arxiv_ids)}"),
-    )
-
-    if not proposal.is_actionable:
-        # status in {disabled, insufficient_corpus, unparseable} OR <2 papers.
-        # Don't fabricate a fusion — bubble up so the caller falls back honestly.
-        raise FusionUnavailable(
-            f"fusion not actionable (status={proposal.status}, "
-            f"papers={len(proposal.source_arxiv_ids)}): {proposal.thesis[:160]}"
-        )
-
-    # ── Run the fusion evaluator pipeline (validate → backtest → rigor gate) ──
-    # Same call Stack B's _run_fusion_job makes. Produces the real DSR/PBO/OOS
-    # verdict on a DSL-interpreted backtest. Degrade gracefully (text-only
-    # fusion) if no machine-readable strategy_spec was emitted.
-    rigor_verdict: dict[str, Any]
-    has_real_rigor = False
-    asset_universe: list[str] = []
-    # Real DSL-backtest daily returns, captured so run_generation can persist them →
-    # live_rigor_gate reads pass/fail (not "pending") and the strategy is deployable
-    # (#788/#818). Fusion candidates skip the static buy-and-hold backtester (weights={}),
-    # so this is their only returns-persistence path.
-    real_return_series: list[float] = []
-    if proposal.strategy_spec is not None:
-        await emit.emit("agent_iteration", candidate_id=candidate_id, iteration_n=2, max_iterations=3)
-        await emit.emit(
-            "tool_called",
-            candidate_id=candidate_id,
-            tool_name="evaluate_fusion_spec",
-            args_summary="backtest + DSR/PBO/OOS rigor gate",
-        )
-        from archimedes.services.fusion_evaluator import evaluate_fusion_spec
-        from archimedes.services.fusion_market_data import real_data_enabled
-        from archimedes.services.strategy_provider import default_provider
-
-        # #820: this candidate is one of `selection_pool_size` society candidates
-        # and its winner joins the library, same as the live agent path — so it
-        # needs the same num_trials, not evaluate_fusion_spec's own library-size-
-        # only default (which under-deflates relative to _run_live_candidate).
-        library_size = len(default_provider().list_strategies())
-        num_trials = _society_num_trials(library_size, selection_pool_size)
-
-        # Real data (the deployability unlock, #788/#818): a cold yfinance fetch
-        # for the spec's universe plus the per-asset variant grid can take a few
-        # minutes — 300s bounds it; the panel cache makes warm runs fast again.
-        eval_result = await asyncio.wait_for(
-            asyncio.to_thread(
-                evaluate_fusion_spec,
-                proposal.strategy_spec,
-                num_trials=num_trials,
-                use_real_data=real_data_enabled(),
-            ),
-            timeout=300.0,
-        )
-        asset_universe = list(proposal.strategy_spec.get("asset_universe", []) or [])
-        if eval_result.success and eval_result.rigor is not None:
-            r = eval_result.rigor
-            bt = eval_result.backtest
-            rigor_verdict = {
-                "dsr": r.dsr,
-                "dsr_p_value": r.dsr_p_value,
-                "pbo": r.pbo_score,
-                "oos_sharpe": r.oos_sharpe,
-                "in_sample_sharpe": r.in_sample_sharpe,
-                "lookahead_audit_passed": bool(r.look_ahead_clean),
-                "look_ahead_label": r.look_ahead_label,
-                "num_trials": int(r.num_trials),
-                "passing": bool(r.passing),
-                "data_source": r.data_source,
-                "admissible": bool(r.admissible),
-                # Backtest headline metrics — surfaced alongside so the passport
-                # renders without denormalizing from a separate field (parity
-                # with Stack B's rigor_verdict_dict).
-                "sharpe_ratio": bt.sharpe_ratio,
-                "sortino_ratio": bt.sortino_ratio,
-                "max_drawdown": bt.max_drawdown,
-                "cagr": bt.cagr,
-                "calmar_ratio": bt.calmar_ratio,
-                "win_rate": bt.win_rate,
-                "total_trades": bt.total_trades,
-            }
-            has_real_rigor = True
-            # Daily returns from the real DSL backtest's equity curve (for live-gate persistence).
-            _ec = list(getattr(bt, "equity_curve", None) or [])
-            real_return_series = [(_ec[i] - _ec[i - 1]) / _ec[i - 1] for i in range(1, len(_ec)) if _ec[i - 1] > 0]
-            await emit.emit(
-                "tool_result",
-                candidate_id=candidate_id,
-                tool_name="evaluate_fusion_spec",
-                result_summary=(
-                    f"DSR={r.dsr} p={r.dsr_p_value} PBO={r.pbo_score} OOS={r.oos_sharpe} passing={r.passing}"
-                ),
-            )
-        else:
-            rigor_verdict = {
-                "dsr": None,
-                "pbo": None,
-                "oos_sharpe": None,
-                "in_sample_sharpe": None,
-                "lookahead_audit_passed": False,
-                "passing": False,
-                "reason": (eval_result.error or "fusion backtest produced no metrics"),
-            }
-            await emit.emit(
-                "tool_result",
-                candidate_id=candidate_id,
-                tool_name="evaluate_fusion_spec",
-                result_summary=f"evaluation failed: {(eval_result.error or 'no metrics')[:120]}",
-            )
-    else:
-        # Text-only fusion (no DSL spec) — honest pre-backtest verdict, not a
-        # fabricated pass. The proposal is still actionable (≥2 papers fused).
-        rigor_verdict = {
-            "dsr": None,
-            "pbo": None,
-            "oos_sharpe": None,
-            "in_sample_sharpe": None,
-            "lookahead_audit_passed": False,
-            "passing": False,
-            "reason": "fusion produced no machine-readable strategy_spec — rigor gate not run",
-        }
-
-    source_papers = [{"arxiv_id": aid, "title": ""} for aid in proposal.source_arxiv_ids]
-    # Defensive: the engine already guarantees ≥ MIN_PAPERS via is_actionable.
-    assert len(proposal.source_arxiv_ids) >= MIN_PAPERS  # invariant guard (engine guarantees via is_actionable)
-
-    return _CandidateResult(
-        candidate_id=candidate_id,
-        strategy_name=proposal.strategy_name or f"Fusion — {brief.intent[:50].strip()}",
-        thesis=proposal.thesis,
-        asset_universe=asset_universe,
-        source_papers=source_papers,
-        weights={},  # fusion emits a DSL spec, not a static weight vector
-        reasoning=proposal.fusion_reasoning or proposal.novelty_rationale or "",
-        rigor_verdict=rigor_verdict,
-        passes_rigor=bool(rigor_verdict.get("passing", False)),
-        regime=regime,
-        generation_method="fusion",
-        source_arxiv_ids=list(proposal.source_arxiv_ids),
-        has_real_rigor=has_real_rigor,
-        return_series=real_return_series or None,
-    )
 
 
 # ── Pipeline entry point ──────────────────────────────────────────────────
@@ -1092,7 +638,7 @@ def _resolve_name(brief: GenerateBrief, default: str) -> str:
     """Prefer the user's ``brief.name`` over an auto-derived default.
 
     Single choke point for user-chosen strategy names: every runner
-    (fixture / live agent / fusion / debate) auto-derives a ``strategy_name``,
+    (fixture / debate) auto-derives a ``strategy_name``,
     and ``run_generation`` applies the user's name to the WINNER only — right
     before persistence, so the library record, passport, episodic memory, and
     job result all carry it. ``brief.name`` is already sanitized (stripped,
@@ -1207,63 +753,46 @@ async def run_generation(
         # ── Auto-route to the best pipeline ──
         pipeline_name, pipeline_reason = _pick_pipeline(brief, mode_override=mode)
 
-        # Determine regime plan: dual_regime emits both bull + bear (Issue #163).
-        # The debate society owns its OWN internal regime/mechanism split, so its
-        # per-regime loop runs ONCE ("neutral") and the expensive PBO/persist tail
-        # stays a single self-contained unit (spec §5b).
+        # ── T1.1 Phase-3 dispatch: debate is THE runner. ──
+        # No silent fallback to the retired single-agent paths: if the society
+        # cannot run, the job errors HONESTLY. The deterministic fixture runner
+        # survives strictly for hermetic tests (TESTING / explicit fixture env).
+        from archimedes.agents.debate_engine import _debate_can_run, _run_debate_leaderboard
+
+        use_live = _llm_available()
+        fixture_mode = os.getenv("GENERATION_PIPELINE_FIXTURE", "").lower() in ("1", "true") or (
+            not use_live and os.getenv("TESTING")
+        )
+        if use_live and await asyncio.to_thread(_debate_can_run, brief):
+            runner: Callable[..., Awaitable[Any]] = functools.partial(_run_debate_leaderboard, model=model)
+        elif fixture_mode:
+            pipeline_name = "fixture"
+            pipeline_reason = "deterministic fixture runner (tests only — no LLM in the environment)"
+            runner = _run_fixture_candidate
+        else:
+            reason = (
+                "no LLM backend reachable"
+                if not use_live
+                else "the corpus yielded <2 papers for this steer — the society cannot fuse"
+            )
+            await emit.emit(
+                "error",
+                message=f"Generation is unavailable right now: {reason}.",
+                recoverable=True,
+                code="GENERATION_UNAVAILABLE",
+            )
+            await store.update_status(job_id, "error", error=f"generation unavailable: {reason}")
+            return
+
+        # Regime plan AFTER the runner is final: the society owns its own
+        # regime/mechanism split internally (spec §5b) → a single "neutral"
+        # pass; the fixture path keeps the legacy dual-regime shape for tests.
         if pipeline_name == "debate":
             regimes: list[str] = ["neutral"]
         elif dual_regime:
             regimes = ["bull", "bear"]
         else:
             regimes = ["neutral"] * n_candidates
-
-        # ── Resolve the ACTUAL runner that will drive dispatch ──
-        # _pick_pipeline computes a label; before this fix that label was thrown
-        # away and the agent path always ran. Now the choice DRIVES dispatch:
-        # when "fusion" is selected, dispatch to the real (unit-tested) fusion
-        # engine via _run_fusion_candidate. A lightweight, no-LLM viability
-        # precheck (fusion flag on + ≥2 candidate papers for the steer) keeps
-        # pipeline_selected honest — we only announce "fusion" if it can run.
-        # The single-agent path remains the FALLBACK (fusion not selected / no
-        # LLM / corpus <2 papers).
-        use_live = _llm_available()
-        agent_runner: Callable[..., Awaitable[_CandidateResult]] = (
-            _run_live_candidate if use_live else _run_fixture_candidate
-        )
-        runner = agent_runner
-        if pipeline_name == "fusion":
-            if use_live and _fusion_can_run(brief):
-                runner = _run_fusion_candidate
-            else:
-                # Selected fusion but it can't actually run (no LLM, or the steer
-                # yields <2 papers). Relabel honestly rather than mislabeling an
-                # agent run as fusion (claim integrity).
-                pipeline_name = "agent"
-                pipeline_reason = (
-                    "fusion selected but not runnable "
-                    f"({'no LLM backend' if not use_live else 'corpus yielded <2 papers for the steer'})"
-                    " — falling back to streaming agent"
-                )
-                runner = agent_runner
-        elif pipeline_name == "debate":
-            # Flag-gated debate society (T1.1). model is bound now via partial so
-            # the proposer threads the user's pick (A3); the loop calls runner()
-            # with the same kwargs as every other runner (signature parity). A
-            # DebateUnavailable raised at runtime is a FusionUnavailable subclass,
-            # so the existing fallback below relabels it to the agent path.
-            from archimedes.agents.debate_engine import _debate_can_run, _run_debate_candidate
-
-            if use_live and _debate_can_run(brief):
-                runner = functools.partial(_run_debate_candidate, model=model)
-            else:
-                pipeline_name = "agent"
-                pipeline_reason = (
-                    "debate selected but not runnable "
-                    f"({'no LLM backend' if not use_live else 'corpus yielded <2 papers for the steer'})"
-                    " — falling back to streaming agent"
-                )
-                runner = agent_runner
 
         await emit.emit(
             "pipeline_selected",
@@ -1277,11 +806,7 @@ async def run_generation(
         # singleton on the env default (behavior unchanged). Constructed once and
         # shared across both regime candidates so we don't rebuild a client twice.
         #
-        # NOTE: `use_live` and `runner` are already resolved ABOVE, where the
-        # fusion-vs-agent dispatch decision is made. Do NOT redefine `runner`
-        # here — a second `runner = _run_live_candidate ...` would clobber the
-        # fusion runner selected for a "fusion" pipeline and silently revert to
-        # the agent path (the bug this rebase had to reconcile).
+        # NOTE: `runner` is resolved ABOVE in the dispatch block. Do NOT redefine it here.
         job_agent = None
         if use_live and model:
             try:
@@ -1326,36 +851,19 @@ async def run_generation(
                     selection_pool_size=n_candidates,  # #770: DSR deflates for the N-candidate search
                 )
             except FusionUnavailable as exc:
-                # Fusion was selected + precheck passed, but at runtime the
-                # engine declined (e.g. the LLM fused <2 valid papers). Fall
-                # back to the agent path for THIS candidate rather than failing
-                # — and surface the relabel so the stream stays honest.
-                logger.info("fusion declined for %s (%s); falling back to agent: %s", candidate_id, regime, exc)
+                # T1.1 Phase-3: the society declined at runtime (empty pool /
+                # nothing conformant). There is NO fallback pipeline anymore —
+                # surface the honest first-class ABSTAIN and let the
+                # NO_CANDIDATES path below report it if nothing else lands.
+                logger.info("debate society abstained for %s (%s): %s", candidate_id, regime, exc)
                 await emit.emit(
-                    "pipeline_selected",
-                    pipeline="agent",
-                    reason=f"fusion declined at runtime ({exc}); using streaming agent",
-                    regimes=regimes,
+                    "candidate_failed",
+                    candidate_id=candidate_id,
+                    regime=regime,
+                    error=str(exc),
+                    message="The debate society abstained — no proposal survived the critics for this brief.",
                 )
-                try:
-                    cand = await agent_runner(
-                        candidate_id=candidate_id,
-                        brief=brief,
-                        emit=emit,
-                        regime=regime,
-                        agent=job_agent,  # preserve the user's free-tier model pick on fallback (#748)
-                        selection_pool_size=n_candidates,  # #770: DSR deflates for the N-candidate search
-                    )
-                except Exception as exc2:
-                    logger.exception("agent fallback %s (%s) failed: %s", candidate_id, regime, exc2)
-                    await emit.emit(
-                        "candidate_failed",
-                        candidate_id=candidate_id,
-                        regime=regime,
-                        error=str(exc2),
-                        message=f"No {regime} candidate available — your brief may be structurally one-sided.",
-                    )
-                    continue
+                continue
             except Exception as exc:
                 logger.exception("candidate %s (%s) failed: %s", candidate_id, regime, exc)
                 await emit.emit(
@@ -1367,20 +875,26 @@ async def run_generation(
                 )
                 continue
 
-            await emit.emit(
-                "candidate_drafted",
-                candidate_id=cand.candidate_id,
-                strategy_name=cand.strategy_name,
-                weights_preview=cand.weights,
-                regime=regime,
-            )
-            await emit.emit(
-                "candidate_evaluated",
-                candidate_id=cand.candidate_id,
-                rigor_verdict=cand.rigor_verdict,
-                regime=regime,
-            )
-            candidates.append(cand)
+            # Phase-3 fan-out: the debate runner returns the FULL ranked
+            # leaderboard (leader first); legacy/fixture runners return one
+            # candidate. Every entry is surfaced on the stream — the tail IS
+            # the Considered-Alternatives panel's content.
+            entries = cand if isinstance(cand, list) else [cand]
+            for entry in entries:
+                await emit.emit(
+                    "candidate_drafted",
+                    candidate_id=entry.candidate_id,
+                    strategy_name=entry.strategy_name,
+                    weights_preview=entry.weights,
+                    regime=regime,
+                )
+                await emit.emit(
+                    "candidate_evaluated",
+                    candidate_id=entry.candidate_id,
+                    rigor_verdict=entry.rigor_verdict,
+                    regime=regime,
+                )
+            candidates.extend(entries)
 
         if not candidates:
             # Honest code + message (#818): this branch fires only when ZERO candidates
@@ -1418,10 +932,17 @@ async def run_generation(
         # refuses to deploy it — we must not imply it is validated.
         validated = [c for c in candidates if c.passes_rigor]
         pool = validated or candidates
-        best = max(
-            pool,
-            key=lambda c: c.rigor_verdict.get("dsr") or 0.0,
-        )
+        if pipeline_name == "debate":
+            # The society's deterministic synthesizer already ranked the board
+            # (composite of rigor + null-margin + regime fit) — re-ranking by
+            # raw DSR here would silently override the debate outcome. Take the
+            # first pool member in board order.
+            best = next(c for c in candidates if c in pool)
+        else:
+            best = max(
+                pool,
+                key=lambda c: c.rigor_verdict.get("dsr") or 0.0,
+            )
         # User-chosen name (brief.name) applies to the WINNER only, and must land
         # BEFORE the persist loop below so every downstream surface (library
         # record, passport, episodic memory, job result) reads it. Considered-
@@ -1438,26 +959,28 @@ async def run_generation(
             deployable=best.passes_rigor,
         )
 
-        # Persist ALL candidates (both regimes) as StrategyRecords.
-        # Each gets its own strategy_id and trace_hash. The "best" is still
-        # highlighted but both are navigable from the library.
+        # K=1 persistence (Phase-3): only the WINNER becomes a library
+        # strategy (+passport +trace). Considered alternatives are recorded in
+        # the episodic strategy_proposals store (content-hashed, with their
+        # rigor verdicts) and surfaced via the job's candidates payload — they
+        # must NOT accumulate as rejected StrategyRecords (the orphan pattern
+        # the ownership purge removed).
         strategy_ids: dict[str, str] = {}  # candidate_id → strategy_id
-        for c in candidates:
-            sid, thash = await _persist_candidate(c, brief, owner_wallet=owner_wallet)
-            strategy_ids[c.candidate_id] = sid
-            await emit.emit(
-                "trace_hashed",
-                trace_hash=thash,
-                candidate_id=c.candidate_id,
-                regime=c.regime,
-            )
-            await emit.emit(
-                "persisted",
-                strategy_id=sid,
-                candidate_id=c.candidate_id,
-                regime=c.regime,
-                redirect_url=f"/library?highlight={sid}",
-            )
+        sid, thash = await _persist_candidate(best, brief, owner_wallet=owner_wallet)
+        strategy_ids[best.candidate_id] = sid
+        await emit.emit(
+            "trace_hashed",
+            trace_hash=thash,
+            candidate_id=best.candidate_id,
+            regime=best.regime,
+        )
+        await emit.emit(
+            "persisted",
+            strategy_id=sid,
+            candidate_id=best.candidate_id,
+            regime=best.regime,
+            redirect_url=f"/library?highlight={sid}",
+        )
         strategy_id = strategy_ids.get(best.candidate_id, "")
 
         # ── Run real multi-year backtests on every persisted candidate ──
@@ -1490,7 +1013,7 @@ async def run_generation(
                     c, strategy_ids[c.candidate_id], emit, _society_num_trials(library_size, n_candidates)
                 )
                 for c in candidates
-                if c.generation_method not in _static_skip
+                if c.generation_method not in _static_skip and c.candidate_id in strategy_ids
             ]
         )
 
@@ -1505,7 +1028,7 @@ async def run_generation(
                     c, strategy_ids[c.candidate_id], emit, _society_num_trials(library_size, n_candidates)
                 )
                 for c in candidates
-                if c.has_real_rigor and c.return_series
+                if c.has_real_rigor and c.return_series and c.candidate_id in strategy_ids
             ]
         )
 
@@ -1533,9 +1056,23 @@ async def run_generation(
                         "weights": cand.weights,
                         "asset_universe": cand.asset_universe,
                     },
-                    papers=[p.get("arxiv_id", "") for p in cand.source_papers] or list(cand.source_arxiv_ids),
+                    papers=[aid for p in cand.source_papers if (aid := p.get("arxiv_id", ""))]
+                    or list(cand.source_arxiv_ids),
                     rigor_verdict=cand.rigor_verdict,
-                    extra={"candidate_id": cand.candidate_id, "selected": cand is best},
+                    # K=1 (Phase-3): this loop is the SINGLE episodic writer for the
+                    # whole board — winner marked selected, alternates carry the
+                    # honest reject reason. (A second per-alternate writer here
+                    # produced 2N-1 rows per run; verify finding, removed.)
+                    verdict="selected" if cand is best else "rejected",
+                    regime_tag=cand.regime,
+                    extra={
+                        "candidate_id": cand.candidate_id,
+                        "selected": cand is best,
+                        "strategy_name": cand.strategy_name,
+                        "reject_reason": None
+                        if cand is best
+                        else (cand.rigor_verdict or {}).get("reason") or "outranked by the society leader",
+                    },
                 )
         except Exception:
             pass  # Non-blocking per spec
@@ -1556,6 +1093,7 @@ async def run_generation(
                         "passes_rigor": c.passes_rigor,
                         "selected": c is best,
                         "regime": c.regime,
+                        "generation_method": c.generation_method,
                     }
                     for c in candidates
                 ],

@@ -343,24 +343,17 @@ async def test_propose_pool_drops_nonconformant_specs(monkeypatch, corpus):
 # ── Test 8 — flag-OFF byte-identical (fix A2) ─────────────────────────────────
 
 
-def test_pick_pipeline_never_returns_debate_when_flag_off(monkeypatch):
+def test_pick_pipeline_is_debate_unconditionally(monkeypatch):
+    """T1.1 Phase-3 cutover: the society IS the pipeline — no flag, no legacy
+    decision tree, and client mode overrides are accepted-but-ignored."""
     from archimedes.agents.generation_pipeline import _pick_pipeline
 
     monkeypatch.delenv("ARCHIMEDES_DEBATE_ENABLED", raising=False)
     brief = GenerateBrief(intent="momentum equities")
-    name, _reason = _pick_pipeline(brief, mode_override="debate")
-    assert name != "debate"
-    assert name in ("fusion", "architect", "agent")
-
-
-def test_pick_pipeline_returns_debate_when_flag_on(monkeypatch):
-    from archimedes.agents.generation_pipeline import _pick_pipeline
-
-    monkeypatch.setenv("ARCHIMEDES_DEBATE_ENABLED", "1")
-    brief = GenerateBrief(intent="momentum equities")
-    name, reason = _pick_pipeline(brief)
-    assert name == "debate"
-    assert "ARCHIMEDES_DEBATE_ENABLED" in reason
+    for override in (None, "fusion", "architect", "agent", "debate"):
+        name, reason = _pick_pipeline(brief, mode_override=override)
+        assert name == "debate", f"override {override!r} must not route off the society"
+        assert "Phase-3" in reason
 
 
 # ── Test 9 — cited-paper union non-empty; transcript fixed role order ─────────

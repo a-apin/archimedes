@@ -71,7 +71,7 @@ class TestNumTrialsCorrection:
 
 def _candidate(candidate_id: str, return_series: list[float], num_trials: int) -> _CandidateResult:
     """Build a buy-and-hold society candidate with a real DSR verdict already computed
-    at ρ̄=0 (approach A) — the state each candidate is in right after ``_run_live_candidate``,
+    at ρ̄=0 (approach A) — the state each candidate is in after the debate runner,
     before the post-loop pool-correlation patch runs."""
     verdict = _rigor_verdict_for(return_series, num_trials=num_trials, lookahead_passed=True)
     verdict["pbo"] = 0.0  # mirrors _patch_pbo's N<2 default; patch under test runs after PBO
