@@ -26,6 +26,17 @@ COPY . /app
 RUN mkdir -p /app/data/corpus-artifact /srv/corpus-artifact \
     && chown nonroot:nonroot /app/data/corpus-artifact /srv/corpus-artifact
 
+# Bake all-MiniLM-L6-v2 into the image at build time so cold starts never
+# fetch from HuggingFace at runtime (offline / air-gapped containers work).
+# HF_HOME points to the baked cache; HF_HUB_OFFLINE=1 tells huggingface_hub
+# to use only local files at runtime — no metadata re-checks, no network.
+# The download runs as root here; we chown to nonroot before USER nonroot.
+ENV HF_HOME=/app/model_cache
+ENV HF_HUB_OFFLINE=1
+RUN HF_HUB_OFFLINE=0 PYTHONPATH=/deps python -c \
+    "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" \
+    && chown -R nonroot:nonroot /app/model_cache
+
 ENV PYTHONPATH=/deps:/app
 WORKDIR /app
 
