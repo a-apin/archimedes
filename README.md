@@ -13,7 +13,9 @@
 
 ## TL;DR
 
-Describe what you want; Archimedes fuses your intent with live market data and a quantitative-finance research library (1,014 papers ingested into Postgres so far; ~10,000-paper manifest seed target hydrates incrementally) into novel strategies, gates them through selection-bias rigor (Deflated Sharpe, Probability of Backtest Overfitting), and lets you execute them into non-custodial vaults on Arc testnet — every reasoning step traceable to a source paper and anchored on-chain.
+Describe what you want; Archimedes fuses your intent with live market data and a ~10,000-paper quantitative-finance research corpus into novel strategies, gates them through selection-bias rigor (Deflated Sharpe, Probability of Backtest Overfitting), and lets you execute them into non-custodial vaults on Arc testnet — every reasoning step traceable to a source paper and anchored on-chain.
+
+**Research marketplace, not a casino.** Payments are real (USDC on Arc); settlement is stubbed pending mainnet. Single-user MVP — multi-user library and social features are roadmap.
 
 **Hackathon RFB alignment.** Archimedes is built against **[RFB 04 — Adaptive Portfolio Manager](https://luma.com/7i50p2r9)** — the only one of the six Agora Request-For-Builds whose primitives map one-to-one onto what we ship (regime detection, asset allocation by regime, autonomous rebalancing, Kelly + risk-parity sizing, correlation-based diversification, cross-chain-ready execution). **Adjacent fit:** RFB 02 (Prediction Market Trader Intelligence — our +EV / Kelly primitive maps without requiring us to ship prediction markets) and RFB 06 (Social Trading Intelligence — our Tier-1 verified library + paper-anchored passport + DSR/PBO rigor *is* the "AI selects, weights, monitors" leaderboard pattern the RFB describes). RFB 04 is the core claim; the others are bonus surface area.
 
@@ -27,7 +29,7 @@ docker compose up -d --build
 
 Then open <http://localhost>. Full walkthrough: [`SETUP.md`](SETUP.md).
 
-> ⚠️ **`pytest` requires the docker stack to be running.** Before running the test suite,
+> **`pytest` requires the docker stack to be running.** Before running the test suite,
 > always spin up the services first: `docker compose up -d --build` (the `--build` flag
 > rebuilds images after dependency changes). The tests depend on Postgres + Redis being
 > reachable; without the stack you'll see connection errors, not test failures. Full
@@ -52,23 +54,82 @@ make clean      # nuke __pycache__/.pytest_cache/.ruff_cache
 
 Foundry, Circle wallet, and oracle targets (`compile`, `test`, `wallet`, `feed`, …) are also there — see `make help`.
 
-## Status (2026-05-25 — submission day)
+## Status (2026-07-04)
 
-**Live on the Arc public testnet** (chain ID `5042002`): grab faucet USDC at <https://faucet.circle.com/> (20 USDC / 2h — on Arc, USDC *is* gas) and try the full flow with test funds. **No real money at risk, by design.** Arc has no mainnet yet (Circle's docs list mainnet as "upcoming"); mainnet launch, real-funds custody, and the regulatory architecture (off-chain redemptions, preset-strategy / RIA posture) are the **business-plan roadmap**, not hackathon scope — see [`docs/competitor-landscape.md`](docs/competitor-landscape.md).
+**Live on the Arc public testnet** (chain ID `5042002`): grab faucet USDC at <https://faucet.circle.com/> (20 USDC / 2h — on Arc, USDC *is* gas) and try the full flow with test funds. **No real money at risk, by design.** Arc has no mainnet yet; mainnet launch, real-funds custody, and the regulatory architecture are the **business-plan roadmap**, not hackathon scope — see [`docs/competitor-landscape.md`](docs/competitor-landscape.md).
 
-**Built today — visible on the live site right now:**
+**Built and live:**
 
-- **Live HTTPS testnet deploy** at <[https://archimedes-arc.com](https://archimedes-arc.com/)/> behind nginx + Route 53 + ACM. 11 Solidity contracts deployed on Arc testnet (chain ID `5042002`).
-- **SPEC-1 end-to-end evidence on-chain** — submission-day dress-rehearsal walkthrough captured in [`docs/runbooks/arc-testnet-e2e-evidence.md`](docs/runbooks/arc-testnet-e2e-evidence.md). Two vaults deployed by a real user wallet, **8 transactions confirmed** on Arc testnet (`txreceipt_status: 1` for every one), `vault.creator == user wallet` verified on each — the architectural proof that user funds never pass through platform custody. **The wedge held empirically**: of 6 strategies in the library, exactly the 2 that pass DSR ≥ 0.95 + PBO < 0.5 + OOS Sharpe ≥ 0.5 + look-ahead audit were deployed; the other 4 were correctly gate-blocked.
+- **Live HTTPS testnet deploy** at <https://archimedes-arc.com/> behind nginx + Route 53 + ACM. 11 Solidity contracts deployed on Arc testnet (chain ID `5042002`).
+- **SPEC-1 end-to-end evidence on-chain** — two vaults deployed by a real user wallet, **8 transactions confirmed** on Arc testnet (`txreceipt_status: 1` for every one), `vault.creator == user wallet` verified on each — the architectural proof that user funds never pass through platform custody.
 - **Real on-chain rebalance traces in production** — the autonomous agent has been writing rebalance txs against the deployed `Vault` + `ReasoningTraceRegistry` contracts; `curl https://archimedes-arc.com/api/traces/?limit=10` returns `arc_tx_hash` values verifiable on `testnet.arcscan.app`.
 - **End-to-end deposit flow** — `CreateVaultModal` → `DepositFlow` stepper signs 3 wallet txs (USDC.approve → vault.deposit → vault.setTargetAllocations). `StrategyPublisher` anchors the passport's `methodology_hash` on the `StrategyRegistry` contract per vault created.
 - **Verify-on-chain (O(1))** — the Reasoning page's "Verify on-chain" button runs a single `eth_getTransactionReceipt` + log decode and surfaces a `testnet.arcscan.app/tx/...` link on success.
-- **Multi-wallet UX** with EIP-6963 wallet discovery — MetaMask, Coinbase, and Circle Modular Wallets passkey paths all working. Wallet-gated routes (Library / Portfolio / Learnings) render an explicit "Connect Wallet" CTA when logged-out so we never imply personalization the user doesn't have.
-- **Three-mode Generate page** — agentic streaming (LLM portfolio agent with 12-iteration tool-use), fusion (novel multi-paper synthesis), and architect (curated-library selection). All three feed the same selection-bias rigor gate (DSR + PBO + walk-forward OOS + look-ahead audit) before a strategy is admitted as Tier-1.
-- **Regime-conditional Kelly sizing** in the optimizer — effective γ scales with the live regime per Ang & Bekaert 2002, so the same strategy generates regime-appropriate sizing without parallel agents.
-- **Honest Explore page** — `is_stale` reflects the *displayed* price's freshness window per source (on-chain oracle 5min / yfinance fallback 4 days / no source = stale). The page no longer flags every asset STALE; the `price_source` field discloses where each price came from.
-- **Unified `strategy_passports` store on Postgres** — both curated and generated strategies live in one typed table; the Considered-Alternatives panel reads from `strategy_proposals` so judges see what was rejected and why.
+- **Debate-society generation pipeline** — the multi-agent debate society is the sole generation engine (T1.1 Phase-3, PR #880). Legacy fusion/architect/agent modes are retired. Every user brief fans out across a regime × mechanism steer grid, survives deterministic critics (C-rigor, C-null, C-regime GMM, C-prov), and a deterministic synthesizer ranks the survivors into a leaderboard; only the K=1 winner is persisted. Considered-alternatives are recorded in episodic memory and surfaced in the UI.
+- **Honest rigor gate** — every generated strategy passes four admission controls before it is deployable: Deflated Sharpe (dsr_p ≥ 0.95, HAC standard errors, N-trial multiple-testing deflation), PBO < 0.5 (CSCV), positive OOS Sharpe with no in-sample/OOS cliff, and a static look-ahead AST audit. Most briefs honestly FAIL the gate — that is the product working.
+- **Real multi-asset market data** — fusion backtests pull real daily OHLCV via yfinance, resolved through the Chainlink-only universe SSOT, strictly inner-joined across assets (missing data = fail-closed, never synthetic unless the real fetch fails).
+- **Automated backtest refresh** — `backtest_scheduler.py` checks staleness on startup and on a 24h cadence, refreshing any curated strategy that has no persisted backtest or whose latest run is older than 7 days. No operator ritual required.
+- **Paper corpus + MiniLM semantic retrieval** — a ~10,000-paper quant-finance corpus (file-sourced, embedded at ingest) backs `paper_rag.py`, which runs `all-MiniLM-L6-v2` semantic reranking as a second pass over the keyword-pre-filtered candidate set. Scored 60 % embedding cosine + 40 % optional paper-qa QA signal. `FUSION_SEMANTIC_RETRIEVAL=true` default; `/health` reports `paper_rag: live | degraded | disabled`.
+- **SIWE wallet authentication** — generation is wallet-gated (EIP-4361). Humans sign a nonce with their wallet; AI agents do the same via a programmatic EOA (see `scripts/agent_journey.py`). Public read routes (library, explore, corpus) stay open.
+- **Multi-wallet UX** with EIP-6963 wallet discovery — MetaMask, Coinbase, and Circle Modular Wallets passkey paths all working.
+- **Unified `strategy_passports` store on Postgres** — both curated and generated strategies live in one typed table; the Considered-Alternatives panel reads from `strategy_proposals` so visitors see what was rejected and why.
 - **806+ backend tests** + 16 analytics-engine tests green; server-side ruff format guard (`main-format-guard.yml`) auto-heals direct-to-main commits if any land unformatted.
+
+## How generation works
+
+```
+User brief (plain-English intent + risk appetite)
+  │
+  ▼
+Brief validation (LLM, 15 s timeout — permissive fallback on failure)
+  │
+  ▼
+Debate society — the sole generation pipeline (T1.1 Phase-3)
+  │
+  ├─ Proposer pool: fans over regime × mechanism steer grid (up to 10 steers
+  │   from 18 possible: 3 regimes × 6 mechanisms). Each proposer call:
+  │     • selects corpus candidates via keyword filter → MiniLM semantic rerank
+  │     • StrategyFusion(model=…) proposes a DSL strategy spec
+  │     • non-actionable or non-conformant specs are dropped immediately
+  │
+  ├─ Adversarial round: best-effort bull/bear transcript (thin LLM call;
+  │   surfaces topology on the SSE stream but does not gate)
+  │
+  ├─ C-rigor: backtests every survivor via evaluate_fusion_spec
+  │   (deterministic Python, 0 tokens). Real OHLCV data (yfinance panel,
+  │   fail-closed to synthetic). Computes DSR, PBO (CSCV), OOS Sharpe,
+  │   look-ahead audit. num_trials = pool_size + library_size (#770).
+  │
+  ├─ C-null: survivor must beat passive buy-and-hold by ≥ 5 bps.
+  │   If none clears it → first-class ABSTAIN (no silent fallback).
+  │
+  └─ Synthesizer: deterministic rank of survivors →
+       leaderboard (composite: rigor + null-margin + regime fit)
+
+K=1 persistence: winner only → StrategyRecord + passport + on-chain trace hash
+Considered-alternatives → strategy_proposals (episodic memory, surfaced in UI)
+```
+
+The rigor gate is the product's core promise. **Most generated strategies fail it** — strategies that do pass are a small, honest subset. Failing results are surfaced with their DSR/PBO/OOS numbers so the user knows exactly why.
+
+## Dogfooding as an agent
+
+Archimedes is built for the Agora thesis that AI agents are first-class users. The `scripts/agent_journey.py` harness exercises the full human journey — land, read library, authenticate, generate, read rigor verdict — over the public `/api/*` surface with no browser and no manual wallet.
+
+```bash
+# Read-only smoke (no auth needed)
+python scripts/agent_journey.py --base https://archimedes-arc.com --no-auth --read-only
+
+# Full journey with a throwaway wallet
+python scripts/agent_journey.py --base https://archimedes-arc.com --ephemeral
+
+# Full journey with a persistent agent EOA
+AGENT_WALLET_KEY=0x... python scripts/agent_journey.py --base https://archimedes-arc.com
+```
+
+The script signs a SIWE (EIP-4361) nonce to establish the same session cookie a browser gets, then streams a generation job and prints the rigor verdict. It sends an explicit agent `User-Agent` so the telemetry classifier counts it as an external agent. Exit code is nonzero on any hard failure, making it a journey smoke test.
+
+See [`scripts/agent_journey.py`](scripts/agent_journey.py) for the full implementation.
 
 ## Why Archimedes
 
@@ -159,8 +220,11 @@ archimedes/
 | Database          | PostgreSQL 16 + Redis 7                                                                   |
 | LLM               | Provider-agnostic (`LLM_*` env): GLM via z.ai, Anthropic, OpenAI, Ollama                  |
 | Backtesting       | [backtrader](https://github.com/mementum/backtrader) ([ADR](docs/adr/backtrader-vs-vectorbt-decision-memo.md)) |
+| Generation        | Multi-agent debate society (regime × mechanism steer grid, deterministic critics, K=1)    |
+| Semantic retrieval | `all-MiniLM-L6-v2` (sentence-transformers) — paper RAG reranker for corpus selection    |
 | Smart contracts   | Solidity targeting Arc (EVM-compatible) + [Foundry](https://book.getfoundry.sh/)          |
 | On-chain          | Circle SDK (Wallets, Gateway, CCTP) + viem on the UI side                                 |
+| Auth              | SIWE (EIP-4361) — wallet-signature sessions for humans and agents                         |
 | Hackathon CLI     | [arc-canteen](https://github.com/the-canteen-dev/ARC-cli) (RPC proxy + telemetry)         |
 | Deployment        | Docker compose (6-service stack) on EC2; GitHub Actions CI/CD                             |
 
@@ -202,6 +266,8 @@ audit our claims.
 ## Known Limitations (testnet)
 
 - **AMM liquidity:** Only the sTSLA/USDC pool has reserves ($3.97 USDC). The 4 remaining pools (sNVDA, sSPY, sBTC, sGOLD) are deployed but empty — the synthetic token mint authority (`0x0546…`) is a separate Foundry deployer wallet not accessible to the bootstrap script's Circle signer. The autonomous agent's liquidity guard honestly skips swaps into empty pools and logs the reason on-chain. This is the rigor system working as designed: capital is never exposed to doomed trades.
+- **Knowledge graph not yet built:** The corpus graph (`corpus_kg_built=false` in `/health`) is planned — citation-link extraction over the 10k-paper corpus is roadmap, not current. The semantic retrieval layer (MiniLM rerank) is live and does not depend on the KG.
+- **Corpus population in progress:** The ~10,000-paper seed target is the production goal; ingestion is incremental. Generation requires ≥ 2 papers for any given steer to pass the corpus viability precheck.
 
 ## License
 
