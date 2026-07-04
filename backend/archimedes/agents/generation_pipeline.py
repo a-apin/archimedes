@@ -81,45 +81,13 @@ def _pick_pipeline(
        brief's inferred asset classes.
     3. **agent** (SSE streaming portfolio-advisor path) as the fallback.
     """
-    # ── Debate society (flag-gated, additive — T1.1) ──
-    # When ARCHIMEDES_DEBATE_ENABLED is set, the debate society IS the generation
-    # pipeline (staged replacement). While the flag is OFF the legacy decision
-    # tree below runs UNCHANGED — so the flag-OFF live path stays byte-identical
-    # even if a client passes mode="debate". The legacy-runner deletions are
-    # deferred to the Phase-3 cutover PR.
-    from archimedes.agents.debate_engine import debate_enabled
-
-    if debate_enabled():
-        return "debate", "debate society pipeline (ARCHIMEDES_DEBATE_ENABLED)"
-
-    # ── User-selected mode override (#290) ──
-    if mode_override and mode_override in ("fusion", "architect", "agent"):
-        return mode_override, f"user selected {mode_override} mode"
-
-    # ── Fusion check ──
-    try:
-        from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
-
-        if fusion_enabled():
-            corpus = load_corpus()
-            corpus_count = len(corpus) if corpus else 0
-            if corpus_count >= 20 and _llm_available():
-                return "fusion", (f"fusion engine enabled, corpus={corpus_count} papers, LLM backend alive")
-    except Exception:
-        pass  # fall through
-
-    # ── Architect check ──
-    try:
-        from archimedes.services.strategy_provider import default_provider
-
-        lib = default_provider().list_strategies()
-        if len(lib) >= 3:
-            return "architect", (f"curated library has {len(lib)} strategies; fast preview available")
-    except Exception:
-        pass  # fall through
-
-    # ── Agent (fallback) ──
-    return "agent", "streaming agent — general-purpose fallback"
+    # ── T1.1 Phase-3 cutover: the debate society IS the generation pipeline. ──
+    # The legacy fusion/architect/agent decision tree is retired; a client-sent
+    # mode override is accepted for API compatibility but no longer routes —
+    # the society owns candidate generation (spec §Phase-3; #834 flag audit).
+    if mode_override and mode_override != "debate":
+        logger.info("generation: ignoring legacy mode override %r (debate-only cutover)", mode_override)
+    return "debate", "debate society is the generation pipeline (T1.1 Phase-3 cutover)"
 
 
 def _fusion_can_run(brief: GenerateBrief) -> bool:
@@ -1207,63 +1175,46 @@ async def run_generation(
         # ── Auto-route to the best pipeline ──
         pipeline_name, pipeline_reason = _pick_pipeline(brief, mode_override=mode)
 
-        # Determine regime plan: dual_regime emits both bull + bear (Issue #163).
-        # The debate society owns its OWN internal regime/mechanism split, so its
-        # per-regime loop runs ONCE ("neutral") and the expensive PBO/persist tail
-        # stays a single self-contained unit (spec §5b).
+        # ── T1.1 Phase-3 dispatch: debate is THE runner. ──
+        # No silent fallback to the retired single-agent paths: if the society
+        # cannot run, the job errors HONESTLY. The deterministic fixture runner
+        # survives strictly for hermetic tests (TESTING / explicit fixture env).
+        from archimedes.agents.debate_engine import _debate_can_run, _run_debate_leaderboard
+
+        use_live = _llm_available()
+        fixture_mode = os.getenv("GENERATION_PIPELINE_FIXTURE", "").lower() in ("1", "true") or (
+            not use_live and os.getenv("TESTING")
+        )
+        if use_live and _debate_can_run(brief):
+            runner: Callable[..., Awaitable[Any]] = functools.partial(_run_debate_leaderboard, model=model)
+        elif fixture_mode:
+            pipeline_name = "fixture"
+            pipeline_reason = "deterministic fixture runner (tests only — no LLM in the environment)"
+            runner = _run_fixture_candidate
+        else:
+            reason = (
+                "no LLM backend reachable"
+                if not use_live
+                else "the corpus yielded <2 papers for this steer — the society cannot fuse"
+            )
+            await emit.emit(
+                "error",
+                message=f"Generation is unavailable right now: {reason}.",
+                recoverable=True,
+                code="GENERATION_UNAVAILABLE",
+            )
+            await store.update_status(job_id, "error", error=f"generation unavailable: {reason}")
+            return
+
+        # Regime plan AFTER the runner is final: the society owns its own
+        # regime/mechanism split internally (spec §5b) → a single "neutral"
+        # pass; the fixture path keeps the legacy dual-regime shape for tests.
         if pipeline_name == "debate":
             regimes: list[str] = ["neutral"]
         elif dual_regime:
             regimes = ["bull", "bear"]
         else:
             regimes = ["neutral"] * n_candidates
-
-        # ── Resolve the ACTUAL runner that will drive dispatch ──
-        # _pick_pipeline computes a label; before this fix that label was thrown
-        # away and the agent path always ran. Now the choice DRIVES dispatch:
-        # when "fusion" is selected, dispatch to the real (unit-tested) fusion
-        # engine via _run_fusion_candidate. A lightweight, no-LLM viability
-        # precheck (fusion flag on + ≥2 candidate papers for the steer) keeps
-        # pipeline_selected honest — we only announce "fusion" if it can run.
-        # The single-agent path remains the FALLBACK (fusion not selected / no
-        # LLM / corpus <2 papers).
-        use_live = _llm_available()
-        agent_runner: Callable[..., Awaitable[_CandidateResult]] = (
-            _run_live_candidate if use_live else _run_fixture_candidate
-        )
-        runner = agent_runner
-        if pipeline_name == "fusion":
-            if use_live and _fusion_can_run(brief):
-                runner = _run_fusion_candidate
-            else:
-                # Selected fusion but it can't actually run (no LLM, or the steer
-                # yields <2 papers). Relabel honestly rather than mislabeling an
-                # agent run as fusion (claim integrity).
-                pipeline_name = "agent"
-                pipeline_reason = (
-                    "fusion selected but not runnable "
-                    f"({'no LLM backend' if not use_live else 'corpus yielded <2 papers for the steer'})"
-                    " — falling back to streaming agent"
-                )
-                runner = agent_runner
-        elif pipeline_name == "debate":
-            # Flag-gated debate society (T1.1). model is bound now via partial so
-            # the proposer threads the user's pick (A3); the loop calls runner()
-            # with the same kwargs as every other runner (signature parity). A
-            # DebateUnavailable raised at runtime is a FusionUnavailable subclass,
-            # so the existing fallback below relabels it to the agent path.
-            from archimedes.agents.debate_engine import _debate_can_run, _run_debate_candidate
-
-            if use_live and _debate_can_run(brief):
-                runner = functools.partial(_run_debate_candidate, model=model)
-            else:
-                pipeline_name = "agent"
-                pipeline_reason = (
-                    "debate selected but not runnable "
-                    f"({'no LLM backend' if not use_live else 'corpus yielded <2 papers for the steer'})"
-                    " — falling back to streaming agent"
-                )
-                runner = agent_runner
 
         await emit.emit(
             "pipeline_selected",
@@ -1326,36 +1277,19 @@ async def run_generation(
                     selection_pool_size=n_candidates,  # #770: DSR deflates for the N-candidate search
                 )
             except FusionUnavailable as exc:
-                # Fusion was selected + precheck passed, but at runtime the
-                # engine declined (e.g. the LLM fused <2 valid papers). Fall
-                # back to the agent path for THIS candidate rather than failing
-                # — and surface the relabel so the stream stays honest.
-                logger.info("fusion declined for %s (%s); falling back to agent: %s", candidate_id, regime, exc)
+                # T1.1 Phase-3: the society declined at runtime (empty pool /
+                # nothing conformant). There is NO fallback pipeline anymore —
+                # surface the honest first-class ABSTAIN and let the
+                # NO_CANDIDATES path below report it if nothing else lands.
+                logger.info("debate society abstained for %s (%s): %s", candidate_id, regime, exc)
                 await emit.emit(
-                    "pipeline_selected",
-                    pipeline="agent",
-                    reason=f"fusion declined at runtime ({exc}); using streaming agent",
-                    regimes=regimes,
+                    "candidate_failed",
+                    candidate_id=candidate_id,
+                    regime=regime,
+                    error=str(exc),
+                    message="The debate society abstained — no proposal survived the critics for this brief.",
                 )
-                try:
-                    cand = await agent_runner(
-                        candidate_id=candidate_id,
-                        brief=brief,
-                        emit=emit,
-                        regime=regime,
-                        agent=job_agent,  # preserve the user's free-tier model pick on fallback (#748)
-                        selection_pool_size=n_candidates,  # #770: DSR deflates for the N-candidate search
-                    )
-                except Exception as exc2:
-                    logger.exception("agent fallback %s (%s) failed: %s", candidate_id, regime, exc2)
-                    await emit.emit(
-                        "candidate_failed",
-                        candidate_id=candidate_id,
-                        regime=regime,
-                        error=str(exc2),
-                        message=f"No {regime} candidate available — your brief may be structurally one-sided.",
-                    )
-                    continue
+                continue
             except Exception as exc:
                 logger.exception("candidate %s (%s) failed: %s", candidate_id, regime, exc)
                 await emit.emit(
@@ -1367,20 +1301,26 @@ async def run_generation(
                 )
                 continue
 
-            await emit.emit(
-                "candidate_drafted",
-                candidate_id=cand.candidate_id,
-                strategy_name=cand.strategy_name,
-                weights_preview=cand.weights,
-                regime=regime,
-            )
-            await emit.emit(
-                "candidate_evaluated",
-                candidate_id=cand.candidate_id,
-                rigor_verdict=cand.rigor_verdict,
-                regime=regime,
-            )
-            candidates.append(cand)
+            # Phase-3 fan-out: the debate runner returns the FULL ranked
+            # leaderboard (leader first); legacy/fixture runners return one
+            # candidate. Every entry is surfaced on the stream — the tail IS
+            # the Considered-Alternatives panel's content.
+            entries = cand if isinstance(cand, list) else [cand]
+            for entry in entries:
+                await emit.emit(
+                    "candidate_drafted",
+                    candidate_id=entry.candidate_id,
+                    strategy_name=entry.strategy_name,
+                    weights_preview=entry.weights,
+                    regime=regime,
+                )
+                await emit.emit(
+                    "candidate_evaluated",
+                    candidate_id=entry.candidate_id,
+                    rigor_verdict=entry.rigor_verdict,
+                    regime=regime,
+                )
+            candidates.extend(entries)
 
         if not candidates:
             # Honest code + message (#818): this branch fires only when ZERO candidates
@@ -1418,10 +1358,17 @@ async def run_generation(
         # refuses to deploy it — we must not imply it is validated.
         validated = [c for c in candidates if c.passes_rigor]
         pool = validated or candidates
-        best = max(
-            pool,
-            key=lambda c: c.rigor_verdict.get("dsr") or 0.0,
-        )
+        if pipeline_name == "debate":
+            # The society's deterministic synthesizer already ranked the board
+            # (composite of rigor + null-margin + regime fit) — re-ranking by
+            # raw DSR here would silently override the debate outcome. Take the
+            # first pool member in board order.
+            best = next(c for c in candidates if c in pool)
+        else:
+            best = max(
+                pool,
+                key=lambda c: c.rigor_verdict.get("dsr") or 0.0,
+            )
         # User-chosen name (brief.name) applies to the WINNER only, and must land
         # BEFORE the persist loop below so every downstream surface (library
         # record, passport, episodic memory, job result) reads it. Considered-
@@ -1438,25 +1385,48 @@ async def run_generation(
             deployable=best.passes_rigor,
         )
 
-        # Persist ALL candidates (both regimes) as StrategyRecords.
-        # Each gets its own strategy_id and trace_hash. The "best" is still
-        # highlighted but both are navigable from the library.
+        # K=1 persistence (Phase-3): only the WINNER becomes a library
+        # strategy (+passport +trace). Considered alternatives are recorded in
+        # the episodic strategy_proposals store (content-hashed, with their
+        # rigor verdicts) and surfaced via the job's candidates payload — they
+        # must NOT accumulate as rejected StrategyRecords (the orphan pattern
+        # the ownership purge removed).
         strategy_ids: dict[str, str] = {}  # candidate_id → strategy_id
+        sid, thash = await _persist_candidate(best, brief, owner_wallet=owner_wallet)
+        strategy_ids[best.candidate_id] = sid
+        await emit.emit(
+            "trace_hashed",
+            trace_hash=thash,
+            candidate_id=best.candidate_id,
+            regime=best.regime,
+        )
+        await emit.emit(
+            "persisted",
+            strategy_id=sid,
+            candidate_id=best.candidate_id,
+            regime=best.regime,
+            redirect_url=f"/library?highlight={sid}",
+        )
         for c in candidates:
-            sid, thash = await _persist_candidate(c, brief, owner_wallet=owner_wallet)
-            strategy_ids[c.candidate_id] = sid
-            await emit.emit(
-                "trace_hashed",
-                trace_hash=thash,
-                candidate_id=c.candidate_id,
-                regime=c.regime,
-            )
-            await emit.emit(
-                "persisted",
-                strategy_id=sid,
-                candidate_id=c.candidate_id,
-                regime=c.regime,
-                redirect_url=f"/library?highlight={sid}",
+            if c.candidate_id == best.candidate_id:
+                continue
+            from archimedes.services.strategy_memory import persist_proposal
+
+            await asyncio.to_thread(
+                persist_proposal,
+                generation_id=job_id,
+                agent=c.generation_method or "debate",
+                intent=brief.intent,
+                papers=list(c.source_arxiv_ids or []),
+                rigor_verdict=c.rigor_verdict,
+                verdict="rejected",
+                regime_tag=c.regime,
+                extra={
+                    "candidate_id": c.candidate_id,
+                    "strategy_name": c.strategy_name,
+                    "thesis": c.thesis,
+                    "reject_reason": (c.rigor_verdict or {}).get("reason") or "outranked by the society leader",
+                },
             )
         strategy_id = strategy_ids.get(best.candidate_id, "")
 
@@ -1490,7 +1460,7 @@ async def run_generation(
                     c, strategy_ids[c.candidate_id], emit, _society_num_trials(library_size, n_candidates)
                 )
                 for c in candidates
-                if c.generation_method not in _static_skip
+                if c.generation_method not in _static_skip and c.candidate_id in strategy_ids
             ]
         )
 
@@ -1505,7 +1475,7 @@ async def run_generation(
                     c, strategy_ids[c.candidate_id], emit, _society_num_trials(library_size, n_candidates)
                 )
                 for c in candidates
-                if c.has_real_rigor and c.return_series
+                if c.has_real_rigor and c.return_series and c.candidate_id in strategy_ids
             ]
         )
 

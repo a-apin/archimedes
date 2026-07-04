@@ -640,7 +640,7 @@ def build_leaderboard(
 # ── Runner (the dispatch entry point) ─────────────────────────────────────────
 
 
-async def _run_debate_candidate(
+async def _run_debate_leaderboard(
     *,
     candidate_id: str,
     brief: GenerateBrief,
@@ -649,12 +649,12 @@ async def _run_debate_candidate(
     agent: Any = None,  # noqa: ARG001 — signature parity with the other runners
     model: str | None = None,
     selection_pool_size: int = 1,  # noqa: ARG001 — parity with the #770 runner contract; the debate computes its OWN pool_size (the real selection count) internally
-) -> _CandidateResult:
-    """Run the debate society once and return the leader ``_CandidateResult``.
+) -> list[_CandidateResult]:
+    """Run the debate society once and return the FULL ranked leaderboard.
 
-    Carrier-contract preserving: returns a single ``_CandidateResult`` (the
-    leader). The full leaderboard is built by ``build_leaderboard`` (testable);
-    the Considered-Alternatives fan-out is Phase 2. Raises ``DebateUnavailable``
+    Phase-3 fan-out: entry [0] is the society's leader (its deterministic rank
+    is authoritative — the orchestrator must NOT re-rank); the tail entries are
+    the Considered Alternatives. Raises ``DebateUnavailable``
     (a ``FusionUnavailable`` subclass) when no candidate survives, so the existing
     run_generation fallback relabels to the agent path.
 
@@ -750,4 +750,10 @@ async def _run_debate_candidate(
             else f"leader={leader.strategy_name} dsr={leader.rigor_verdict.get('dsr')} of {len(leaderboard)} entries"
         ),
     )
-    return leader
+    return leaderboard
+
+
+async def _run_debate_candidate(**kwargs: Any) -> _CandidateResult:
+    """Back-compat wrapper: the leader only (leaderboard[0])."""
+    board = await _run_debate_leaderboard(**kwargs)
+    return board[0]

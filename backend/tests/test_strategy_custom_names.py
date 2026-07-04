@@ -134,11 +134,11 @@ async def test_winner_gets_user_name_rejects_keep_auto_names(persisted):
     assert rejects[0]["strategy_name"] != "Dan's Custom Alpha"
     assert "—" in rejects[0]["strategy_name"]  # fixture auto-name template
 
-    # The rename landed BEFORE persistence: the persisted record set contains
-    # the user's name exactly once (winner) and the auto name for the reject.
-    persisted_names = sorted(name for _cid, name in persisted)
-    assert persisted_names.count("Dan's Custom Alpha") == 1
-    assert len(persisted_names) == 2
+    # K=1 (Phase-3): ONLY the winner is persisted as a strategy, carrying the
+    # user's name; the reject lives in the candidates payload + episodic
+    # proposals, never as a StrategyRecord.
+    persisted_names = [name for _cid, name in persisted]
+    assert persisted_names == ["Dan's Custom Alpha"]
 
 
 async def test_no_name_keeps_auto_names_for_all(persisted):
@@ -151,5 +151,7 @@ async def test_no_name_keeps_auto_names_for_all(persisted):
     for c in result["candidates"]:
         # Auto-derived fixture names embed the intent snippet + risk appetite.
         assert "dual regime trend following" in c["strategy_name"]
-    # Persisted names match the surfaced names (nothing renamed on the way in).
-    assert sorted(name for _cid, name in persisted) == sorted(c["strategy_name"] for c in result["candidates"])
+    # K=1: exactly the WINNER is persisted, under its auto-derived name.
+    selected = [c for c in result["candidates"] if c["selected"]]
+    assert len(persisted) == 1 and len(selected) == 1
+    assert persisted[0][1] == selected[0]["strategy_name"]
