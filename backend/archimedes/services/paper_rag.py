@@ -119,6 +119,17 @@ def _get_embedding_model():
     try:
         from sentence_transformers import SentenceTransformer
 
+        # CPU guardrail: torch defaults to ALL cores — on the 2-vCPU prod box
+        # that pegs the machine during encodes and starves the uvicorn event
+        # loop (2026-07-04 incident: streams dropped, reads timed out, jobs
+        # starved). One torch thread keeps the app responsive; encodes are
+        # slightly slower but bounded by the cache below.
+        try:
+            import torch
+
+            torch.set_num_threads(1)
+        except Exception:
+            pass
         _embedding_model = SentenceTransformer(_model_name())
         logger.info("paper_rag: loaded embedding model %s", _model_name())
         return _embedding_model
@@ -248,20 +259,46 @@ def semantic_rerank(
     return _rerank_tfidf(query, papers)
 
 
+# Per-process paper-embedding cache. The debate pool makes ~10 rerank calls
+# per generation over heavily-overlapping candidate sets; without this, every
+# call re-encoded EVERY paper text on CPU (the 2026-07-04 incident). Keyed by
+# the exact text; bounded FIFO so a long-lived process can't grow unbounded.
+_paper_emb_cache: dict[str, Any] = {}
+_PAPER_EMB_CACHE_MAX = 20_000
+
+# Encode at most this many candidates per rerank; the keyword pre-filter's
+# tail is noise anyway, and an unbounded steer must not melt the box.
+_RERANK_MAX_TEXTS = 150
+
+
 def _rerank_with_embeddings(
     query: str,
     papers: list[dict[str, Any]],
     model: Any,
 ) -> list[tuple[dict[str, Any], float]]:
-    """Rerank using sentence-transformer embeddings."""
+    """Rerank using sentence-transformer embeddings (cached, capped)."""
+    if len(papers) > _RERANK_MAX_TEXTS:
+        papers = papers[:_RERANK_MAX_TEXTS]
     query_emb = model.encode([query])
     texts = [f"{p.get('title', '')} {p.get('abstract', '')}" for p in papers]
-    paper_embs = model.encode(texts)
+
+    # Score from a batch-local map: the shared cache is a bonus, never a
+    # dependency — eviction must not be able to drop an entry the CURRENT
+    # rerank still needs (caught by test_cache_is_bounded).
+    embs = {t: _paper_emb_cache[t] for t in texts if t in _paper_emb_cache}
+    to_encode = [t for t in texts if t not in embs]
+    if to_encode:
+        fresh = model.encode(to_encode)
+        for t, emb in zip(to_encode, fresh, strict=False):
+            embs[t] = emb
+            if len(_paper_emb_cache) >= _PAPER_EMB_CACHE_MAX:
+                _paper_emb_cache.pop(next(iter(_paper_emb_cache)))
+            _paper_emb_cache[t] = emb
 
     results: list[tuple[dict[str, Any], float]] = []
     for i, paper in enumerate(papers):
         # Cosine similarity (sentence-transformers outputs are normalized)
-        sim = float(query_emb[0] @ paper_embs[i].T)
+        sim = float(query_emb[0] @ embs[texts[i]].T)
         # Clamp to [0, 1]
         score = max(0.0, min(1.0, sim))
         results.append((paper, score))
