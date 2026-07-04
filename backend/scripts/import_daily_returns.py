@@ -41,15 +41,43 @@ from archimedes.models.daily_returns_store import StrategyDailyReturn
 
 
 def _load_records(store_dir: Path) -> list[dict]:
-    records = []
+    """Parse and validate every file's record. Fails fast (non-zero exit) on
+    ANY malformed record rather than silently skipping it — a production
+    backfill script must not partially import and leave the DB in a mixed
+    state without the caller knowing (#882: the same hardening
+    ``import_backtest_fixtures.py`` got for #863's Copilot review finding,
+    applied here to this script's own ``rec.get("stem") or "unknown"``
+    fallback that the #863 review flagged as the actual source of that
+    finding).
+
+    Rejects a missing/blank ``stem`` field outright instead of falling back
+    to the literal string ``"unknown"``: ``stem`` is this table's identity
+    key (see ``import_records`` below, which deletes-then-inserts by
+    ``stem``), and a fallback placeholder key silently collides across every
+    malformed file in the same import run, each overwriting the last one
+    written.
+    """
+    errors: list[str] = []
+    records: list[dict] = []
     for path in sorted(store_dir.glob("*.json")):
         rec = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(rec, dict):
+            errors.append(f"{path.name}: expected a JSON object, got {type(rec).__name__}")
+            continue
+        stem = rec.get("stem")
+        if not isinstance(stem, str) or not stem.strip():
+            errors.append(f"{path.name}: stem field must be a non-empty string, got {stem!r}")
+            continue
         dates = rec.get("dates")
         daily_returns = rec.get("daily_returns")
         if not isinstance(dates, list) or not isinstance(daily_returns, list) or len(dates) != len(daily_returns):
-            print(f"skip {path.name}: missing/mismatched dates or daily_returns")
+            errors.append(f"{path.name}: missing/mismatched dates or daily_returns")
             continue
         records.append(rec)
+
+    if errors:
+        detail = "\n  ".join(errors)
+        raise SystemExit(f"{store_dir}: refusing a partial import — {len(errors)} malformed file(s):\n  {detail}")
     return records
 
 
@@ -65,7 +93,9 @@ def import_records(store_dir: Path) -> int:
     written = 0
     with get_session() as session:
         for rec in records:
-            stem = rec.get("stem") or "unknown"
+            # _load_records already rejected any missing/blank stem, so this
+            # is always a real value here — no "unknown" fallback (#882).
+            stem = rec["stem"]
             vintage = rec.get("data_vintage")
             session.query(StrategyDailyReturn).filter(StrategyDailyReturn.stem == stem).delete()
             for d, r in zip(rec["dates"], rec["daily_returns"], strict=True):
