@@ -166,6 +166,12 @@ class StrategyResponse(BaseModel):
     papers: list[PaperRefResponse] = []
     methodology_summary: str
     asset_universe: list[str]
+    # Provenance of the asset_universe pick (#857): "user" | "model" | "full",
+    # or None for rows written before this field existed (curated strategies,
+    # pre-#857 fusion/architect rows). A model-picked universe is a mild
+    # look-ahead channel (the model can pick names it already "knows" did well
+    # over the window from training data) — surfaced here for audit, not gated.
+    universe_source: str | None = None
     position_sizing: str
     rebalance_frequency: str
     status: str  # "candidate" | "validated" | "live" | "retired" | "rejected"

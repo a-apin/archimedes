@@ -129,6 +129,9 @@ def _ensure_ownership_columns() -> None:
         ],
         "strategy_passports": [
             ("owner_wallet", "VARCHAR(42)"),
+            # universe_source (#857): "user" | "model" | "full" provenance of
+            # the asset_universe pick. NULL on rows that predate this column.
+            ("universe_source", "VARCHAR(16)"),
         ],
     }
     try:

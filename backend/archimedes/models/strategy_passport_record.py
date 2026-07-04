@@ -55,6 +55,10 @@ class StrategyPassportRecord(Base):
     methodology_summary = Column(Text, nullable=False, default="")
     methodology_text = Column(Text, nullable=True)
     asset_universe = Column(Text, nullable=False, default="[]")  # JSON list
+    # Provenance of the asset_universe pick (#857): "user" | "model" | "full".
+    # NULL for rows written before this column existed (curated strategies,
+    # pre-#857 fusion/architect rows) — never backfilled with a guess.
+    universe_source = Column(String(16), nullable=True)
     position_sizing = Column(String(32), nullable=False, default="equal_weight")
     rebalance_frequency = Column(String(32), nullable=False, default="weekly")
     risk_constraints = Column(Text, nullable=True, default="{}")  # JSON dict
@@ -145,6 +149,7 @@ class StrategyPassportRecord(Base):
             methodology_summary=self.methodology_summary or "",
             methodology_text=self.methodology_text,
             asset_universe=json.loads(self.asset_universe) if self.asset_universe else [],
+            universe_source=self.universe_source,
             signals=[],
             position_sizing=PositionSizing(self.position_sizing or "equal_weight"),
             rebalance_frequency=RebalanceFrequency(self.rebalance_frequency or "weekly"),
@@ -193,6 +198,7 @@ class StrategyPassportRecord(Base):
             "generation_method": self.generation_method,
             "methodology_summary": self.methodology_summary,
             "asset_universe": json.loads(self.asset_universe) if self.asset_universe else [],
+            "universe_source": self.universe_source,
             "status": self.status,
             "regime_tag": self.regime_tag,
             "owner_wallet": self.owner_wallet,

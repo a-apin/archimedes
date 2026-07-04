@@ -155,7 +155,7 @@ def _resolve_user_assets(selected_assets: list[str]) -> list[str]:
 _MODEL_UNIVERSE_CAP = 8
 
 
-def _spec_universe(brief: FusionBrief, strategy_spec: dict[str, Any]) -> list[str]:
+def _spec_universe(brief: FusionBrief, strategy_spec: dict[str, Any]) -> tuple[list[str], str]:
     """Pick the spec's asset universe: user steer > model suggestion > full SSOT.
 
     Fixes #847: the old unconditional ``derive_asset_universe`` override sent
@@ -166,10 +166,16 @@ def _spec_universe(brief: FusionBrief, strategy_spec: dict[str, Any]) -> list[st
     capped at ``_MODEL_UNIVERSE_CAP`` (the thesis's own instruments); (3) else
     the full supported universe (preserving #682's "never a hardcoded SPY"
     floor).
+
+    Returns ``(universe, universe_source)`` where ``universe_source`` is one of
+    ``"user" | "model" | "full"`` (#857) — a model-picked universe is a mild
+    look-ahead channel (the model can pick names it already "knows" did well
+    over the window from training data), so which branch fired is recorded for
+    the passport rather than silently collapsed into just the resulting list.
     """
     user_assets = _resolve_user_assets(brief.asset_classes)
     if user_assets:
-        return user_assets
+        return user_assets, "user"
     model_assets = _resolve_user_assets([str(a) for a in strategy_spec.get("asset_universe") or []])
     # Parrot defense: a bare single proxy (the classic ["SPY"] default weak
     # models emit regardless of thesis) is indistinguishable from a non-choice —
@@ -178,8 +184,8 @@ def _spec_universe(brief: FusionBrief, strategy_spec: dict[str, Any]) -> list[st
     if len(model_assets) >= 2:
         if len(model_assets) > _MODEL_UNIVERSE_CAP:
             logger.info("fusion: model universe capped %d → %d", len(model_assets), _MODEL_UNIVERSE_CAP)
-        return model_assets[:_MODEL_UNIVERSE_CAP]
-    return list(SUPPORTED_UNIVERSE)
+        return model_assets[:_MODEL_UNIVERSE_CAP], "model"
+    return list(SUPPORTED_UNIVERSE), "full"
 
 
 def derive_asset_universe(selected_assets: list[str]) -> list[str]:
@@ -547,6 +553,11 @@ class FusionProposal:
     model: str
     requested_model: str
     strategy_spec: dict[str, Any] | None = None
+    # Which branch _spec_universe took to pick strategy_spec["asset_universe"]:
+    # "user" | "model" | "full" (#857). None when no spec was ever produced
+    # (disabled / insufficient_corpus / unparseable) — there is no universe to
+    # attribute a source to.
+    universe_source: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
@@ -797,12 +808,16 @@ class StrategyFusion:
         strategy_spec = parsed.get("strategy_spec")
         if not isinstance(strategy_spec, dict):
             strategy_spec = _repair_spec(backend, brief, parsed)
+        universe_source: str | None = None
         if not isinstance(strategy_spec, dict):
             strategy_spec = None
         else:
             # Universe steering (#847): user's resolved assets > the model's
             # SSOT-validated suggestion (capped) > full supported universe.
-            strategy_spec["asset_universe"] = _spec_universe(brief, strategy_spec)
+            # (#857) the branch taken is recorded as universe_source so the
+            # passport can surface which one fired — a model-picked universe
+            # is a mild look-ahead channel worth being auditable, not blocked.
+            strategy_spec["asset_universe"], universe_source = _spec_universe(brief, strategy_spec)
             # Validate the FINAL dict (post-steering). An invalid spec — a
             # partial repair that happened to carry entry/exit, or a malformed
             # model emission — must degrade to honest text-only HERE, not
@@ -812,6 +827,7 @@ class StrategyFusion:
             except DSLError as exc:
                 logger.warning("fusion: strategy_spec failed DSL validation (%s) — falling back to text-only", exc)
                 strategy_spec = None
+                universe_source = None
 
         return FusionProposal(
             status="ok",
@@ -825,6 +841,7 @@ class StrategyFusion:
             model=backend.served_model,  # TRUE served model — field of record
             requested_model=backend.model_id,  # what we asked for
             strategy_spec=strategy_spec,
+            universe_source=universe_source,
         )
 
 

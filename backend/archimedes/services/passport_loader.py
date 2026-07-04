@@ -124,6 +124,7 @@ def ingest_passport(
         methodology_summary=passport.methodology_summary or "",
         methodology_text=passport.methodology_text,
         asset_universe=json.dumps(passport.asset_universe),
+        universe_source=passport.universe_source,
         position_sizing=passport.position_sizing.value
         if hasattr(passport.position_sizing, "value")
         else str(passport.position_sizing),
@@ -197,6 +198,12 @@ def _update_record(
     record.methodology_text = passport.methodology_text
     record.methodology_hash = passport.methodology_hash or passport.compute_methodology_hash()
     record.asset_universe = json.dumps(passport.asset_universe)
+    # universe_source was following the same missing-propagation shape dsr_p_value
+    # had (#passport-honesty): only write it when the incoming passport actually
+    # carries a value, so a force_update refresh that doesn't know the universe
+    # source (e.g. the post-backtest metrics refresh) never clobbers it with None.
+    if passport.universe_source is not None:
+        record.universe_source = passport.universe_source
     record.status = passport.status.value if hasattr(passport.status, "value") else str(passport.status)
     record.regime_tag = passport.regime_tag or "regime_neutral"
     record.passes_rigor_gate = passport.passes_rigor_gate
