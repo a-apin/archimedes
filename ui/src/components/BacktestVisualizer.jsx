@@ -346,39 +346,64 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
   const [realReturns, setRealReturns] = useState(null)   // float[] | null
   const [returnsNoData, setReturnsNoData] = useState(false)
 
+  // Depend on the minimal inputs (strategyId + the returns array itself), NOT
+  // the whole `result` object — parents recreate `result` on unrelated
+  // re-renders and that identity churn must not trigger refetches.
+  const propReturns = result?.returns ?? null
+
   useEffect(() => {
-    // If the caller passes real returns via result prop, use those directly.
-    if (result?.returns) {
-      setRealReturns(result.returns)
+    // If the caller passes real returns via the result prop, use those directly.
+    // Clear any loading state a prior strategyId's in-flight fetch left behind.
+    if (propReturns) {
+      setRealReturns(propReturns)
       setReturnsNoData(false)
+      setReturnsLoading(false)
       return
     }
     if (!strategyId) {
       setRealReturns(null)
       setReturnsNoData(false)
+      setReturnsLoading(false)
       return
     }
+    // Cancellation guard: abort the in-flight request and drop late setState
+    // when strategyId changes or the component unmounts.
+    const controller = new AbortController()
+    let cancelled = false
     setReturnsLoading(true)
     setRealReturns(null)
     setReturnsNoData(false)
-    fetch(`${API_BASE}/api/strategies/${encodeURIComponent(strategyId)}/returns`)
+    // credentials:'include' sends the SIWE session cookie (same idiom as
+    // ui/src/api.js apiGet) so owners of private strategies get their returns
+    // when VITE_API_BASE is cross-origin instead of always seeing the 404 state.
+    fetch(`${API_BASE}/api/strategies/${encodeURIComponent(strategyId)}/returns`, {
+      credentials: 'include',
+      signal: controller.signal,
+    })
       .then((res) => {
         if (res.status === 404) {
-          setReturnsNoData(true)
+          if (!cancelled) setReturnsNoData(true)
           return null
         }
         if (!res.ok) throw new Error(`Server error ${res.status}`)
         return res.json()
       })
       .then((data) => {
-        if (data?.daily_returns) setRealReturns(data.daily_returns)
+        if (!cancelled && data?.daily_returns) setRealReturns(data.daily_returns)
       })
-      .catch(() => {
-        // Network / unexpected error — treat as no data rather than crashing.
-        setReturnsNoData(true)
+      .catch((err) => {
+        // Abort is not an error state; network/unexpected errors read as no data
+        // rather than crashing — still never a mock fallback.
+        if (!cancelled && err?.name !== 'AbortError') setReturnsNoData(true)
       })
-      .finally(() => setReturnsLoading(false))
-  }, [strategyId, result])
+      .finally(() => {
+        if (!cancelled) setReturnsLoading(false)
+      })
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [strategyId, propReturns])
 
   // Mock scaffold for walk-forward/sweep/trade sections (interactive demos).
   const data = useMemo(() => {

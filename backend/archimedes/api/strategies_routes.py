@@ -33,6 +33,7 @@ from archimedes.api.schemas import (
     SignalResponse,
     StrategyListResponse,
     StrategyResponse,
+    StrategyReturnsResponse,
     StrategySignalResponse,
     StrategySignalsResponse,
 )
@@ -1652,7 +1653,7 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     )
 
 
-@strategies_router.get("/{strategy_id}/returns")
+@strategies_router.get("/{strategy_id}/returns", response_model=StrategyReturnsResponse)
 async def get_strategy_returns(strategy_id: str, request: Request):
     """Return persisted real daily returns for a strategy.
 
@@ -1669,8 +1670,6 @@ async def get_strategy_returns(strategy_id: str, request: Request):
     PII, redacted per the same policy as GET /api/strategies/{id}.
     """
     from fastapi import HTTPException
-
-    from archimedes.api.schemas import StrategyReturnsResponse
 
     # ── 1. Existence + ownership gate (mirrors get_strategy) ────────────────
     # Curated strategies (in LocalStrategyProvider) are always public.
