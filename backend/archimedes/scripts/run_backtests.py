@@ -77,7 +77,11 @@ def _load_run_command(repo_root: Path):
 
 def _read_config() -> RunConfig:
     operations = [op.strip().upper() for op in os.getenv("BACKTEST_OPERATIONS", "SPY").split(",") if op.strip()]
-    start = os.getenv("BACKTEST_START", "2018-01-01")
+    # Full curated evidence depth by default (~5,400 daily bars). The old
+    # 2018 default silently produced 8-year runs with materially weaker DSR
+    # statistics than the seed-time store — the scheduler and the CLI should
+    # both grade on the same evidence window the passports were built on.
+    start = os.getenv("BACKTEST_START", "2004-01-02")
     end = os.getenv("BACKTEST_END", datetime.now(UTC).date().isoformat())
     initial_cash = float(os.getenv("BACKTEST_INITIAL_CASH", "100000"))
     tx_cost_bps = int(os.getenv("BACKTEST_TX_COST_BPS", "10"))

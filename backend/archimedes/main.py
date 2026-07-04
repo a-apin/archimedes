@@ -4,6 +4,7 @@ Minimal bootstrap for the hackathon MVP. All routes are wired to
 chain services that read/write Arc smart contracts.
 """
 
+import asyncio
 import logging
 import os
 
@@ -237,6 +238,27 @@ async def _startup_seed_corpus():
             _logger.info("startup: corpus seed — no new papers to add")
     except Exception as exc:
         _logger.warning("startup: corpus seed failed (non-fatal): %s", exc)
+
+
+@app.on_event("startup")
+async def _startup_backtest_scheduler():
+    """Keep curated backtests fresh IN-APP — no operator-invoked CLI runs.
+
+    The scheduler owns staleness checks + refresh cadence; see
+    services/backtest_scheduler.py. Disabled under TESTING and via
+    BACKTEST_REFRESH_ENABLED=0. Fail-soft: never blocks startup.
+    """
+    _logger = logging.getLogger("archimedes.startup")
+    try:
+        from archimedes.services.backtest_scheduler import backtest_refresh_loop, refresh_enabled
+
+        if refresh_enabled():
+            asyncio.create_task(backtest_refresh_loop())
+            _logger.info("startup: backtest refresh scheduler armed")
+        else:
+            _logger.info("startup: backtest refresh scheduler disabled")
+    except Exception as exc:
+        _logger.warning("startup: backtest scheduler failed to arm (non-fatal): %s", exc)
 
 
 # Wire all routers
