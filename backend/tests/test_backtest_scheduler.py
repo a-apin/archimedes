@@ -140,7 +140,7 @@ async def test_loop_runs_refresh_when_stale(monkeypatch):
     try:
         await task
     except asyncio.CancelledError:
-        pass
+        pass  # expected: cancellation is the loop's normal teardown path
     assert calls, "the loop must invoke the shared run_backtests implementation when stale"
 
 
@@ -169,7 +169,7 @@ async def test_loop_survives_refresh_failure(monkeypatch):
     try:
         await task
     except asyncio.CancelledError:
-        pass
+        pass  # expected: cancellation is the loop's normal teardown path
 
 
 def test_unresolved_missing_backs_off(monkeypatch):
