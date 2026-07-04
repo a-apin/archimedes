@@ -1260,11 +1260,41 @@ async def get_strategy_passport(request: Request, strategy_id: str):
         return _redact_owner_wallet(record.to_dict(), caller)
 
 
-def _passport_to_strategy_response(record) -> StrategyResponse:
+def _enrich_paper_titles_from_corpus(
+    refs: list,
+    session,
+) -> dict[str, str]:
+    """Return a map of arxiv_id → corpus title for refs with empty stored titles.
+
+    Queries the ``papers`` corpus table (PaperRecord) for refs whose stored
+    ``title`` is blank but whose ``arxiv_id`` is known.  Non-fatal — any DB
+    error returns an empty map so the caller falls back to the bare arxiv_id.
+    Only fires when at least one ref needs enrichment.
+    """
+    missing_ids = [r.arxiv_id for r in refs if r.arxiv_id and not (r.title or "").strip()]
+    if not missing_ids:
+        return {}
+    try:
+        from archimedes.models.corpus_store import PaperRecord
+
+        rows = session.query(PaperRecord).filter(PaperRecord.arxiv_id.in_(missing_ids)).all()
+        return {row.arxiv_id: row.title for row in rows if row.title}
+    except Exception:
+        return {}
+
+
+def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     """Reshape a StrategyPassportRecord (fusion/architect output) into the
     StrategyResponse schema that StrategyPassport.jsx expects. Curated
     strategies still flow through LocalStrategyProvider above; this is the
-    fallback that makes generated strategies clickable from Library."""
+    fallback that makes generated strategies clickable from Library.
+
+    ``session`` — optional SQLAlchemy session used to enrich empty paper titles
+    from the corpus ``papers`` table at read time.  When titles are missing
+    (fusion generation stores only arxiv_ids), the corpus join backfills them so
+    the UI can display a human-readable title instead of a bare arxiv id.
+    Falls back to the arxiv_id string when the corpus has no matching row.
+    """
     from archimedes.api.schemas import PaperRefResponse
     from archimedes.services.return_source_classifier import (
         StrategyView,
@@ -1274,10 +1304,21 @@ def _passport_to_strategy_response(record) -> StrategyResponse:
     refs = list(record.paper_refs or [])
     first = refs[0] if refs else None
 
+    # Enrich missing titles from the corpus when a session is available.
+    corpus_titles: dict[str, str] = _enrich_paper_titles_from_corpus(refs, session) if session is not None else {}
+
+    def _resolved_title(r) -> str:
+        """Stored title wins; fall back to corpus; fall back to bare arxiv_id."""
+        if (r.title or "").strip():
+            return r.title
+        if r.arxiv_id and corpus_titles.get(r.arxiv_id):
+            return corpus_titles[r.arxiv_id]
+        return r.arxiv_id or ""
+
     papers_list = [
         PaperRefResponse(
             arxiv_id=r.arxiv_id,
-            title=r.title or "",
+            title=_resolved_title(r),
             authors=json.loads(r.authors) if r.authors else [],
             doi=r.doi,
             venue=r.venue,
@@ -1290,9 +1331,12 @@ def _passport_to_strategy_response(record) -> StrategyResponse:
 
     asset_universe = json.loads(record.asset_universe) if record.asset_universe else []
 
+    # The enriched first-paper title (may have been filled from corpus above).
+    first_title = papers_list[0].title if papers_list else (first.title if first else "")
+
     return_source_enum, return_source_note = classify_return_source(
         StrategyView(
-            paper_title=(first.title if first else "") or "",
+            paper_title=first_title or "",
             methodology_summary=record.methodology_summary or "",
             asset_universe=tuple(asset_universe),
             deflated_sharpe_ratio=record.deflated_sharpe_ratio,
@@ -1305,7 +1349,7 @@ def _passport_to_strategy_response(record) -> StrategyResponse:
         id=record.id,
         papers=papers_list,
         paper_arxiv_id=first.arxiv_id if first else None,
-        paper_title=first.title if first else None,
+        paper_title=first_title or None,
         paper_authors=json.loads(first.authors) if first and first.authors else [],
         paper_venue=first.venue if first else None,
         paper_year=first.year if first else None,
@@ -1386,7 +1430,7 @@ async def get_strategy(strategy_id: str, request: Request):
                 raise HTTPException(status_code=404, detail="Strategy not found")
         record = get_passport(session, strategy_id)
         if record is not None:
-            return _passport_to_strategy_response(record)
+            return _passport_to_strategy_response(record, session=session)
 
     raise HTTPException(status_code=404, detail="Strategy not found")
 

@@ -159,15 +159,22 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
           {s.passes_rigor_gate === false && (
             <span className="tag tag-muted">rigor gate not passed</span>
           )}
-          {s.paper_arxiv_id && (
-            <a
-              href={`https://arxiv.org/abs/${s.paper_arxiv_id}`}
-              target="_blank" rel="noreferrer"
-              className="tag tag-muted"
-              style={{ fontFamily: 'var(--mono, monospace)', fontSize: '0.75rem' }}
-            >
-              arxiv:{s.paper_arxiv_id} ↗
-            </a>
+          {(s.papers || []).length > 1 ? (
+            <span className="tag tag-accent inline-flex items-center gap-1">
+              <span className="i-lucide-layers w-3.5 h-3.5" />
+              {s.papers.length} fused papers
+            </span>
+          ) : (
+            s.paper_arxiv_id && (
+              <a
+                href={`https://arxiv.org/abs/${s.paper_arxiv_id}`}
+                target="_blank" rel="noreferrer"
+                className="tag tag-muted"
+                style={{ fontFamily: 'var(--mono, monospace)', fontSize: '0.75rem' }}
+              >
+                arxiv:{s.paper_arxiv_id} ↗
+              </a>
+            )
           )}
         </div>
       </div>
@@ -205,7 +212,7 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
         </button>
       </div>
 
-      {/* Methodology + source paper */}
+      {/* Methodology + source paper(s) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 fade-up fade-up-3">
         <div className="card p-5">
           <div className="label mb-3">Methodology</div>
@@ -232,26 +239,71 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
           </div>
         </div>
 
-        <div className="card p-5">
-          <div className="label mb-3">Source paper</div>
-          <p className="body leading-snug" style={{ fontStyle: 'italic' }}>"{s.paper_title}"</p>
-          <p className="caption mt-2 leading-relaxed">
-            {s.paper_authors?.slice(0, 4).join(', ')}{s.paper_authors?.length > 4 ? ' et al.' : ''}
-            {s.paper_year ? ` (${s.paper_year})` : ''}
-            {s.paper_venue && <> · {s.paper_venue}</>}
-          </p>
-          {s.paper_doi && (
-            <div className="caption mt-2">DOI: <span className="mono">{s.paper_doi}</span></div>
-          )}
-          {s.paper_citation_count != null && (
-            <div className="caption">Cited by {s.paper_citation_count} other works</div>
-          )}
-          {s.methodology_hash && (
-            <div className="caption mt-3 mono text-[var(--text-4)]">
-              hash: {s.methodology_hash.slice(0, 24)}…
+        {/* Multi-paper (fusion/debate) vs. single-paper (curated) layout */}
+        {(s.papers || []).length > 1 ? (
+          <div className="card p-5">
+            <div className="label mb-1">Fused from {s.papers.length} papers</div>
+            <p className="caption mb-3 text-[var(--text-3)]">
+              This strategy synthesises ideas from multiple research papers into
+              a single investment methodology.
+            </p>
+            <div className="flex flex-col gap-3">
+              {s.papers.map((p, idx) => (
+                <div
+                  key={idx}
+                  className="pb-3"
+                  style={idx < s.papers.length - 1 ? { borderBottom: '1px solid var(--border, rgba(255,255,255,0.08))' } : undefined}
+                >
+                  <p className="body leading-snug" style={{ fontStyle: 'italic', fontWeight: 600 }}>
+                    "{p.title || p.arxiv_id || '—'}"
+                  </p>
+                  {p.arxiv_id && (
+                    <a
+                      href={`https://arxiv.org/abs/${p.arxiv_id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="tag tag-muted"
+                      style={{ fontFamily: 'var(--mono, monospace)', fontSize: '0.72rem', marginTop: 4, display: 'inline-block' }}
+                    >
+                      arxiv:{p.arxiv_id} ↗
+                    </a>
+                  )}
+                  {p.contribution && (
+                    <p className="caption mt-1 leading-relaxed" style={{ fontStyle: 'italic', color: 'var(--text-3)' }}>
+                      {p.contribution}
+                    </p>
+                  )}
+                </div>
+              ))}
             </div>
-          )}
-        </div>
+            {s.methodology_hash && (
+              <div className="caption mt-3 mono text-[var(--text-4)]">
+                hash: {s.methodology_hash.slice(0, 24)}…
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="card p-5">
+            <div className="label mb-3">Source paper</div>
+            <p className="body leading-snug" style={{ fontStyle: 'italic' }}>"{s.paper_title}"</p>
+            <p className="caption mt-2 leading-relaxed">
+              {s.paper_authors?.slice(0, 4).join(', ')}{s.paper_authors?.length > 4 ? ' et al.' : ''}
+              {s.paper_year ? ` (${s.paper_year})` : ''}
+              {s.paper_venue && <> · {s.paper_venue}</>}
+            </p>
+            {s.paper_doi && (
+              <div className="caption mt-2">DOI: <span className="mono">{s.paper_doi}</span></div>
+            )}
+            {s.paper_citation_count != null && (
+              <div className="caption">Cited by {s.paper_citation_count} other works</div>
+            )}
+            {s.methodology_hash && (
+              <div className="caption mt-3 mono text-[var(--text-4)]">
+                hash: {s.methodology_hash.slice(0, 24)}…
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Backtest metrics */}
