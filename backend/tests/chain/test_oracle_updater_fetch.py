@@ -114,7 +114,7 @@ class TestFetchMarketSnapshot:
         equities = [AssetPrice(symbol="sSPY", price_usd=500.0, timestamp=now, source="yfinance")]
         with (
             patch.object(updater, "fetch_prices", AsyncMock(return_value=equities)),
-            patch.object(updater, "_fetch_yfinance_single", AsyncMock(return_value=14.5)),
+            patch.object(updater, "_fetch_yfinance_single", AsyncMock(return_value=(14.5, now))),
             patch.object(updater, "_fetch_sp500_moving_averages", return_value={"ma50": 4900.0, "ma200": 4800.0}),
         ):
             snap = await updater.fetch_market_snapshot()
@@ -125,20 +125,57 @@ class TestFetchMarketSnapshot:
         # VIX + MAs present → the snapshot reports it carries regime signals.
         assert snap.has_regime_signals is True
 
+    async def test_vix_none_when_yfinance_single_fails(self, updater):
+        # _fetch_yfinance_single returns a bare None on failure (not a 2-tuple) —
+        # fetch_market_snapshot must unpack that shape safely.
+        now = datetime.now(UTC)
+        equities = [AssetPrice(symbol="sSPY", price_usd=500.0, timestamp=now, source="yfinance")]
+        with (
+            patch.object(updater, "fetch_prices", AsyncMock(return_value=equities)),
+            patch.object(updater, "_fetch_yfinance_single", AsyncMock(return_value=None)),
+            patch.object(updater, "_fetch_sp500_moving_averages", return_value={}),
+        ):
+            snap = await updater.fetch_market_snapshot()
+        assert snap.vix is None
+
 
 class TestFetchYfinanceSingle:
-    async def test_returns_last_close(self, updater):
+    async def test_returns_last_close_and_bar_timestamp(self, updater):
         import pandas as pd
 
-        close = pd.DataFrame({"^VIX": [13.2, 14.0]})
+        idx = pd.date_range("2026-06-30 00:00", periods=2, freq="min", tz="UTC")
+        close = pd.DataFrame({"^VIX": [13.2, 14.0]}, index=idx)
         frame = MagicMock()
         frame.empty = False
         frame.__getitem__ = MagicMock(side_effect=lambda k: close if k == "Close" else None)
+        frame.index = idx
         fake_yf = MagicMock()
         fake_yf.download = MagicMock(return_value=frame)
         with patch.dict(sys.modules, {"yfinance": fake_yf}):
-            val = await updater._fetch_yfinance_single("^VIX")
-        assert val == 14.0
+            result = await updater._fetch_yfinance_single("^VIX")
+        assert result is not None
+        price, bar_ts = result
+        assert price == 14.0
+        assert bar_ts == idx[-1].to_pydatetime()
+        assert bar_ts.tzinfo is not None
+
+    async def test_naive_bar_timestamp_normalized_to_utc(self, updater):
+        import pandas as pd
+
+        idx = pd.date_range("2026-06-30 00:00", periods=2, freq="min")  # tz-naive
+        close = pd.DataFrame({"^VIX": [13.2, 14.0]}, index=idx)
+        frame = MagicMock()
+        frame.empty = False
+        frame.__getitem__ = MagicMock(side_effect=lambda k: close if k == "Close" else None)
+        frame.index = idx
+        fake_yf = MagicMock()
+        fake_yf.download = MagicMock(return_value=frame)
+        with patch.dict(sys.modules, {"yfinance": fake_yf}):
+            result = await updater._fetch_yfinance_single("^VIX")
+        assert result is not None
+        _, bar_ts = result
+        assert bar_ts.tzinfo is not None
+        assert bar_ts.utcoffset().total_seconds() == 0
 
     async def test_swallows_error_returns_none(self, updater):
         fake_yf = MagicMock()

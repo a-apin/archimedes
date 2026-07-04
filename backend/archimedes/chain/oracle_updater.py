@@ -55,6 +55,15 @@ DEFAULT_MAX_UPSTREAM_STALENESS_SECONDS = 900  # 15 minutes
 # independent yfinance reading before we fail closed. Generous default — both
 # sources lag between updates; Önder owns tuning. 0 disables the cross-check.
 DEFAULT_CROSSCHECK_BAND_BPS = 5000  # 50%
+# Secondary-source staleness window (#775 Phase 2): max age (seconds) of the
+# yfinance secondary's bar timestamp before it's treated as unusable for the
+# cross-check (fail-open, same as a missing secondary). yfinance's
+# interval="1m" intraday bar goes stale over weekends/holidays for equity-like
+# instruments — a Friday-close bar can be up to ~65 hours old by Monday
+# morning before market open, so the threshold needs headroom past a normal
+# 2-day weekend to avoid spurious staleness flags every Monday; 4 days covers
+# a 3-day holiday weekend too.
+DEFAULT_CROSSCHECK_MAX_STALENESS_SECONDS = 345_600  # 4 days
 
 
 def _int_env(name: str, default: int) -> int:
@@ -121,6 +130,10 @@ class OracleUpdater:
 
         # Secondary-source cross-check band (#775).
         self._crosscheck_band_bps: int = _int_env("PRICE_CROSSCHECK_BAND_BPS", DEFAULT_CROSSCHECK_BAND_BPS)
+        # Secondary-source staleness window (#775 Phase 2).
+        self._crosscheck_max_staleness_s: int = _int_env(
+            "PRICE_CROSSCHECK_MAX_STALENESS_SECONDS", DEFAULT_CROSSCHECK_MAX_STALENESS_SECONDS
+        )
 
     # ─── Public API ──────────────────────────────────────────────
 
@@ -295,7 +308,8 @@ class OracleUpdater:
         price_map = {p.symbol: p.price_usd for p in prices}
         now = datetime.now(UTC)
 
-        vix = await self._fetch_yfinance_single("^VIX")
+        vix_result = await self._fetch_yfinance_single("^VIX")
+        vix = vix_result[0] if vix_result is not None else None
         sp500_data = await asyncio.to_thread(self._fetch_sp500_moving_averages)
 
         return MarketSnapshot(
@@ -379,17 +393,19 @@ class OracleUpdater:
 
         Honest claim this earns: *"primary cross-checked against an independent
         yfinance market source, fail-closed on relative-magnitude divergence beyond
-        a band."* NOT "decentralized 2-of-3" (yfinance is centralized + off-chain).
+        a band, with the secondary's own bar timestamp checked for staleness first."*
+        NOT "decentralized 2-of-3" (yfinance is centralized + off-chain).
 
-        **Scope + a known limitation (be precise, #775):** this is a *magnitude*
-        band check only. It does NOT verify the *freshness* of the yfinance secondary
-        — ``_fetch_yfinance_single`` returns a bare price with no observation
-        timestamp, so a stale weekend/off-hours yfinance read could in principle
-        trip a divergence against a healthy primary. The wide default band
-        (``DEFAULT_CROSSCHECK_BAND_BPS`` = 5000 bps / 50%) is what tolerates that for
-        now; a real secondary-freshness check (threading the yfinance bar timestamp
-        through) is follow-up tuning in Önder's lane (#775 Phase 2), NOT implemented
-        here. The check is a no-op when the primary is yfinance (same source), an
+        **Staleness gate (#775 Phase 2).** Before comparing magnitudes, the
+        secondary's bar timestamp is checked against
+        ``PRICE_CROSSCHECK_MAX_STALENESS_SECONDS``. A stale secondary is treated the
+        same as a missing one (fail-open, proceed on primary) — a stale reading was
+        never validly comparable, so no divergence verdict is computed or reported,
+        only a staleness verdict. This closes the previous magnitude-only gap where a
+        stale-but-numerically-close yfinance value could pass silently, or a
+        stale-and-wildly-different one could in principle trip a false divergence.
+
+        The check is a no-op when the primary is yfinance (same source), an
         admin pin (operator last-resort override — must not be second-guessed), or
         when the symbol has no yfinance ticker.
         """
@@ -404,7 +420,7 @@ class OracleUpdater:
         if not yf_ticker:
             return None  # no independent yfinance ticker for this symbol → can't cross-check → proceed
         try:
-            secondary = await self._fetch_yfinance_single(yf_ticker)
+            result = await self._fetch_yfinance_single(yf_ticker)
         except Exception as exc:
             logger.warning(
                 "cross-check: yfinance fetch failed for %s (%s) — proceeding on primary (asymmetric)",
@@ -412,10 +428,28 @@ class OracleUpdater:
                 exc,
             )
             return None
-        if secondary is None or secondary <= 0:
+        if result is None:
             logger.info(
                 "cross-check: no usable yfinance secondary for %s — proceeding on primary (asymmetric)",
                 price.symbol,
+            )
+            return None
+        secondary, bar_ts = result
+        if secondary <= 0:
+            logger.info(
+                "cross-check: no usable yfinance secondary for %s — proceeding on primary (asymmetric)",
+                price.symbol,
+            )
+            return None
+
+        age_s = (datetime.now(UTC) - bar_ts).total_seconds()
+        if age_s > self._crosscheck_max_staleness_s:
+            logger.info(
+                "cross-check: stale yfinance secondary for %s (bar age %.0fs > %ds cap) — "
+                "proceeding on primary (asymmetric)",
+                price.symbol,
+                age_s,
+                self._crosscheck_max_staleness_s,
             )
             return None
 
@@ -565,8 +599,14 @@ class OracleUpdater:
             logger.warning(f"Crypto fetch error: {e}")
         return results
 
-    async def _fetch_yfinance_single(self, symbol: str) -> float | None:
-        """Fetch a single yfinance price (e.g. VIX)."""
+    async def _fetch_yfinance_single(self, symbol: str) -> tuple[float, datetime] | None:
+        """Fetch a single yfinance price + its bar timestamp (e.g. VIX, or the
+        secondary-source cross-check's independent reading, #775).
+
+        Returns ``(price, bar_ts)`` on success with ``bar_ts`` normalized to a
+        tz-aware UTC ``datetime``, or ``None`` on any failure (empty data, missing
+        column, exception).
+        """
         try:
             import yfinance as yf
 
@@ -577,7 +617,14 @@ class OracleUpdater:
                 # downloads; squeeze to a Series before taking the last value.
                 if hasattr(close, "columns"):
                     close = close.iloc[:, 0]
-                return float(close.iloc[-1])
+                bar_ts = data.index[-1]
+                # Normalize to tz-aware UTC. yfinance intraday bars are tz-aware
+                # (exchange-local) in current versions; if a tz-naive Timestamp ever
+                # shows up, assume UTC to match this file's existing convention for
+                # AssetPrice.timestamp (see _validate_for_push / _is_fresh above,
+                # which treat a naive timestamp as already-UTC rather than local).
+                bar_ts = bar_ts.tz_convert("UTC") if bar_ts.tzinfo is not None else bar_ts.tz_localize("UTC")
+                return float(close.iloc[-1]), bar_ts.to_pydatetime()
         except Exception as e:
             logger.warning(f"Failed to fetch {symbol}: {e}")
         return None
