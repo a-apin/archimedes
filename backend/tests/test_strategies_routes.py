@@ -356,7 +356,7 @@ async def test_leaderboard_numeric_fields_equal_live_gate_on_persisted_returns(m
     from archimedes.api import strategies_routes as sr
     from archimedes.main import app
 
-    strategies = sr.strategy_provider.list_strategies()
+    strategies = sr.strategy_provider().list_strategies()
     assert len(strategies) >= 2, "need ≥2 curated strategies for a PBO cohort"
 
     s_pass, s_fail = strategies[0], strategies[1]
@@ -429,7 +429,7 @@ async def test_leaderboard_never_disagrees_with_selection_bias_gate_route(monkey
     from archimedes.api import strategies_routes as sr
     from archimedes.main import app
 
-    strategies = sr.strategy_provider.list_strategies()
+    strategies = sr.strategy_provider().list_strategies()
     assert len(strategies) >= 3, "need ≥3 curated strategies for a shared cohort"
 
     ids = [s.id for s in strategies[:3]]
@@ -525,7 +525,7 @@ async def test_single_strategy_endpoint_numeric_fields_equal_live_gate(monkeypat
     from archimedes.api import strategies_routes as sr
     from archimedes.main import app
 
-    strategies = sr.strategy_provider.list_strategies()
+    strategies = sr.strategy_provider().list_strategies()
     assert strategies, "need at least one curated strategy"
     target = strategies[0]
     series = _passing_series(5)

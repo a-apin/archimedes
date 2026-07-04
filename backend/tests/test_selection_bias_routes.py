@@ -888,7 +888,7 @@ class TestDegenerateSeriesExcludedFromCohort:
         from archimedes.main import app
         from archimedes.services.rigor_evaluator import run_rigor_gate as real_run_rigor_gate
 
-        strategies = routes._provider.list_strategies()
+        strategies = routes._provider().list_strategies()
         assert len(strategies) >= 5, "need >=5 curated strategies to build this cohort"
         ids = [s.id for s in strategies[:5]]
 
@@ -934,7 +934,7 @@ class TestDegenerateSeriesExcludedFromCohort:
             run_rigor_gate as real_run_rigor_gate,
         )
 
-        strategies = routes._provider.list_strategies()
+        strategies = routes._provider().list_strategies()
         assert len(strategies) >= 4
         ids = [s.id for s in strategies[:4]]
 
@@ -977,7 +977,7 @@ class TestDegenerateSeriesExcludedFromCohort:
         from archimedes.main import app
         from archimedes.services.rigor_evaluator import run_rigor_gate as real_run_rigor_gate
 
-        strategies = routes._provider.list_strategies()
+        strategies = routes._provider().list_strategies()
         assert len(strategies) >= 2
         ids = [s.id for s in strategies[:2]]
 
@@ -1015,7 +1015,7 @@ class TestDegenerateSeriesExcludedFromCohort:
         from archimedes.main import app
         from archimedes.services.rigor_evaluator import run_rigor_gate as real_run_rigor_gate
 
-        strategies = routes._provider.list_strategies()
+        strategies = routes._provider().list_strategies()
         assert len(strategies) >= 3
         ids = [s.id for s in strategies[:3]]
 
