@@ -244,13 +244,13 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
           <div className="card p-5">
             <div className="label mb-1">Fused from {s.papers.length} papers</div>
             <p className="caption mb-3 text-[var(--text-3)]">
-              This strategy synthesises ideas from multiple research papers into
+              This strategy synthesizes ideas from multiple research papers into
               a single investment methodology.
             </p>
             <div className="flex flex-col gap-3">
               {s.papers.map((p, idx) => (
                 <div
-                  key={idx}
+                  key={p.arxiv_id || idx}
                   className="pb-3"
                   style={idx < s.papers.length - 1 ? { borderBottom: '1px solid var(--border, rgba(255,255,255,0.08))' } : undefined}
                 >

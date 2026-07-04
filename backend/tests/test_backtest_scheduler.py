@@ -11,9 +11,9 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import archimedes.db as _db
 import archimedes.services.backtest_scheduler as sched
 import pytest
-from archimedes.db import get_session
 
 
 @pytest.fixture(autouse=True)
@@ -50,13 +50,16 @@ def _patch_provider(monkeypatch, ids):
 
 
 def _insert_backtest(sid: str, created_at: datetime):
+    import hashlib
+
     from archimedes.models.backtest_store import BacktestResultRecord
 
-    with get_session() as session:
+    content_hash = hashlib.sha256(sid.encode()).hexdigest()
+    with _db.get_session() as session:
         session.add(
             BacktestResultRecord(
                 strategy_id=sid,
-                content_hash=("0x" + sid).ljust(66, "0"),
+                content_hash=content_hash,
                 artifact_json="{}",
                 created_at=created_at,
             )
@@ -134,6 +137,10 @@ async def test_loop_runs_refresh_when_stale(monkeypatch):
             break
         await asyncio.sleep(0.01)
     task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass  # expected: cancellation is the loop's normal teardown path
     assert calls, "the loop must invoke the shared run_backtests implementation when stale"
 
 
@@ -159,6 +166,10 @@ async def test_loop_survives_refresh_failure(monkeypatch):
     await asyncio.sleep(0.05)  # give the exception path time to run
     assert not task.done(), "a failed refresh must never kill the loop"
     task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass  # expected: cancellation is the loop's normal teardown path
 
 
 def test_unresolved_missing_backs_off(monkeypatch):

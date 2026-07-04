@@ -73,11 +73,15 @@ export default function GenerationStatus({ walletAddr, activeJobId, onDrillIn })
           credentials: 'include',
         })
         if (res.status === 401) {
-          // Stop polling immediately; do not retry until walletAddr changes.
+          // Stop polling immediately.  Clear stale rows so the user does not
+          // see outdated data while unauthenticated, and surface a sign-in
+          // prompt with a manual retry path (in case SIWE happened without
+          // changing the connected wallet address).
           if (!cancelled) {
             stopPoll()
             setBlocked(true)
-            setError('')
+            setJobs([])
+            setError('Session expired — sign in again to view your generations.')
           }
           return
         }
@@ -106,13 +110,23 @@ export default function GenerationStatus({ walletAddr, activeJobId, onDrillIn })
 
   if (loading && !jobs.length) return null
   if (!walletAddr) return null
-  if (!jobs.length && !error) return null
 
   return (
     <div className="card" style={{ padding: 16 }}>
       <div className="label mb-2">Recent generations</div>
       {error && (
-        <div className="caption" style={{ color: 'var(--negative)' }}>{error}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="caption" style={{ color: 'var(--negative)' }}>{error}</span>
+          {blocked && (
+            <button
+              className="btn btn-outline btn-sm"
+              style={{ fontSize: '0.75rem', padding: '2px 8px' }}
+              onClick={() => setBlocked(false)}
+            >
+              Retry
+            </button>
+          )}
+        </div>
       )}
       {jobs.length === 0 && !error && (
         <div className="caption" style={{ color: 'var(--text-3)' }}>

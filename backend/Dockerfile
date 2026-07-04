@@ -31,10 +31,14 @@ RUN mkdir -p /app/data/corpus-artifact /srv/corpus-artifact \
 # HF_HOME points to the baked cache; HF_HUB_OFFLINE=1 tells huggingface_hub
 # to use only local files at runtime — no metadata re-checks, no network.
 # The download runs as root here; we chown to nonroot before USER nonroot.
+# Build-time model selection: override via --build-arg MINILM_MODEL=<hf_id>
+# to bake a different model. Default matches the runtime MINILM_MODEL default.
+ARG MINILM_MODEL=all-MiniLM-L6-v2
+ENV MINILM_MODEL=${MINILM_MODEL}
 ENV HF_HOME=/app/model_cache
 ENV HF_HUB_OFFLINE=1
 RUN HF_HUB_OFFLINE=0 PYTHONPATH=/deps python -c \
-    "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" \
+    "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['MINILM_MODEL'])" \
     && chown -R nonroot:nonroot /app/model_cache
 
 ENV PYTHONPATH=/deps:/app

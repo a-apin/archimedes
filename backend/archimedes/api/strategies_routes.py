@@ -1502,7 +1502,7 @@ def _enrich_paper_titles_from_corpus(
     error returns an empty map so the caller falls back to the bare arxiv_id.
     Only fires when at least one ref needs enrichment.
     """
-    missing_ids = [r.arxiv_id for r in refs if r.arxiv_id and not (r.title or "").strip()]
+    missing_ids = list(dict.fromkeys(r.arxiv_id for r in refs if r.arxiv_id and not (r.title or "").strip()))
     if not missing_ids:
         return {}
     try:
