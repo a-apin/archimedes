@@ -125,6 +125,30 @@ def _is_backtrader_line_access(value_node: ast.expr) -> bool:
     return bool(attrs) and attrs[0] in _BACKTRADER_LINE_NAMES
 
 
+def _is_datas_feed_selection(value_node: ast.expr) -> bool:
+    """True when ``value_node`` (a Subscript's ``.value``) is exactly
+    ``self.datas`` — i.e. the subscript is ``self.datas[N]``, backtrader's
+    convention for selecting which data feed to address in a multi-asset
+    strategy (``self.datas[1]`` = the second asset in a pairs trade), not a
+    time offset (#881).
+
+    This is deliberately narrower than ``_is_backtrader_line_access``: it
+    exempts ONLY a subscript whose subscripted expression is the attribute
+    chain ``self.datas`` (root ``self``, single attribute ``datas``). It does
+    NOT exempt an arbitrary positive index on any other self-rooted chain —
+    e.g. ``self.highest[1]`` or ``self.datas[1].close[1]`` still fall through
+    to the general positive-index warning, since those are not feed-selection
+    and a positive offset there is bar 0 = now / N>0 = a future bar, exactly
+    the violation this audit exists to catch.
+    """
+    return (
+        isinstance(value_node, ast.Attribute)
+        and value_node.attr == "datas"
+        and isinstance(value_node.value, ast.Name)
+        and value_node.value.id == "self"
+    )
+
+
 def look_ahead_audit(strategy_code: str) -> tuple[bool, list[str]]:
     """Static-analysis check for look-ahead bias in strategy code.
 
@@ -142,10 +166,15 @@ def look_ahead_audit(strategy_code: str) -> tuple[bool, list[str]]:
     A negative index on anything else (a plain list/np.ndarray local variable,
     or a pandas ``.iloc``/``.loc``/``.at``/``.iat`` accessor) is still flagged,
     since on those objects ``[-1]`` means "last element", which is future data
-    on a forward-chronological series. A positive constant index is unaffected
-    by this distinction — it is always suspicious on ANY object, backtrader
-    included (bar 0 is "now"; any positive offset is a future bar) — and
-    continues to be flagged exactly as before.
+    on a forward-chronological series. A positive constant index is suspicious
+    on ANY object, backtrader included (bar 0 is "now"; any positive offset is
+    a future bar) — with one narrow exemption: ``self.datas[N]`` is
+    backtrader's convention for selecting which data feed to address in a
+    multi-asset strategy (e.g. ``self.datas[1]`` = the second asset in a pairs
+    trade), not a time offset, so it is excluded from the warning (see
+    ``_is_datas_feed_selection``, #881). Any other positive-constant subscript
+    — including a positive index on ``self.datas[N].close`` or any other
+    self-rooted line/attribute — still flags exactly as before.
 
     Args:
         strategy_code: Python source code of the strategy.
@@ -211,7 +240,19 @@ def look_ahead_audit(strategy_code: str) -> tuple[bool, list[str]]:
                         f"Line {node.lineno}: negative index on a non-backtrader object — "
                         f"verify this is not pandas/list last-row (future) access."
                     )
-            elif isinstance(slice_val, ast.Constant) and isinstance(slice_val.value, int) and slice_val.value > 0:
+            # self.datas[N] is backtrader's convention for selecting which data
+            # feed to address in a multi-asset strategy (e.g. self.datas[1] =
+            # the second asset in a pairs trade) — it is feed selection, not a
+            # time offset, so it is exempted from this warning (#881). Any
+            # other positive-constant subscript (including
+            # self.datas[N].close[1], or a positive index on a plain
+            # array/self-rooted line) still flags exactly as before.
+            elif (
+                isinstance(slice_val, ast.Constant)
+                and isinstance(slice_val.value, int)
+                and slice_val.value > 0
+                and not _is_datas_feed_selection(node.value)
+            ):
                 warnings.append(
                     f"Line {node.lineno}: positive data index [{slice_val.value}] may reference future bars"
                 )
