@@ -390,9 +390,12 @@ class MyStrategy(bt.Strategy):
         assert passed
         assert len(warnings) == 0
 
-    def test_negative_index_emits_warning(self) -> None:
-        # Negative indices are safe in backtrader (bars-ago) but would be
-        # last-row future data in pandas.  The audit flags them for human review.
+    def test_negative_index_on_backtrader_data_no_longer_warns(self) -> None:
+        # #868: self.data.close[-1] is backtrader's standard, CORRECT "1 bar ago"
+        # convention — NOT a look-ahead violation. Previously this false-flagged
+        # (see the old test_negative_index_emits_warning, now superseded), which
+        # meant every strategy using idiomatic backtrader indexing hard-failed
+        # look_ahead_audit (passes_all requires zero warnings).
         code = """
 class MyStrategy(bt.Strategy):
     def next(self):
@@ -400,8 +403,8 @@ class MyStrategy(bt.Strategy):
             self.buy()
 """
         passed, warnings = look_ahead_audit(code)
-        assert not passed
-        assert any("negative index" in w.lower() for w in warnings)
+        assert passed
+        assert len(warnings) == 0
 
     def test_positive_index(self) -> None:
         code = """
@@ -431,6 +434,279 @@ class MyStrategy(bt.Strategy):
         passed, warnings = look_ahead_audit("def broken(:")
         assert not passed
         assert any("parse" in w.lower() for w in warnings)
+
+
+# ─── Look-ahead audit: backtrader bars-ago vs. true look-ahead (#868) ──
+
+
+class TestLookAheadAuditBacktraderVsLookAhead:
+    """#868 fix 2: look_ahead_audit previously flagged ANY negative-index
+    subscript as a violation, but backtrader's Lines/LineBuffer objects
+    (self.data.<line>[-i], self.datas[k].<line>[-i], a self.datas loop-variable
+    alias, or a self-rooted custom bt.Indicator) use negative indices by
+    convention to mean "N bars ago" — backward-looking, not a violation.
+    Because passes_all requires ZERO warnings, this single false positive
+    alone failed an otherwise-clean strategy (concrete failing example:
+    analytics-engine/strategies/moreira_muir_2017_volatility_managed.py:99-100).
+
+    These tests cover every negative-index SHAPE actually present in
+    analytics-engine/strategies/*.py (verified via a full-corpus grep before
+    writing the fix) plus the genuine-look-ahead cases that must still fail.
+    """
+
+    # ── Backtrader bars-ago access: must PASS (no warnings) ──────────────
+
+    def test_moreira_muir_realized_vol_pattern_passes(self) -> None:
+        """The exact concrete failing example from the issue:
+        moreira_muir_2017_volatility_managed.py:99-100 — self.data.close[-i-1]
+        and self.data.close[-i] inside a rolling-volatility loop."""
+        code = """
+class MyStrategy(bt.Strategy):
+    def _realized_vol_annual(self):
+        returns = []
+        for i in range(1, 22):
+            prev = float(self.data.close[-i - 1])
+            curr = float(self.data.close[-i])
+            if prev > 0:
+                returns.append((curr / prev) - 1.0)
+        return returns
+"""
+        passed, warnings = look_ahead_audit(code)
+        assert passed, f"unexpected warnings on the moreira-muir bars-ago pattern: {warnings}"
+        assert len(warnings) == 0
+
+    def test_simple_bars_ago_variable_index(self) -> None:
+        # self.data.close[-i] — the exact pattern named in the issue.
+        code = "def f(self, i):\n    return self.data.close[-i]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert passed
+        assert warnings == []
+
+    def test_bars_ago_constant_index(self) -> None:
+        # self.data.close[-1] — already covered by
+        # test_negative_index_on_backtrader_data_no_longer_warns above; repeated
+        # here for locality with the rest of this class's coverage.
+        code = "def f(self):\n    return self.data.close[-1]\n"
+        passed, _warnings = look_ahead_audit(code)
+        assert passed
+
+    def test_bars_ago_parenthesized_binop_index(self) -> None:
+        # data.close[-(i + 1)] — frazzini_pedersen_2014_bab.py's exact shape
+        # (UnaryOp wrapping a BinOp, not a bare Name/Constant operand).
+        code = "def f(data, i):\n    return data.close[-(i + 1)]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert passed
+        assert warnings == []
+
+    def test_bars_ago_binop_subtraction_index(self) -> None:
+        # self.data.close[-i - 1] (outer node is a BinOp, not a UnaryOp) — the
+        # AST shape the OLD code already silently ignored; confirm the new
+        # code still does not warn on it either.
+        code = "def f(self, i):\n    return self.data.close[-i - 1]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert passed
+        assert warnings == []
+
+    def test_secondary_data_feed_negative_index_is_not_flagged_as_negative(self) -> None:
+        """self.datas[1].close[-i] (gatev_2006_pairs_distance.py's pairs-trading
+        shape) — the NEGATIVE bars-ago index [-i] must not be flagged.
+
+        NOTE (found while writing this test, NOT part of #868's scope): this
+        exact snippet still fails look_ahead_audit overall today, because the
+        POSITIVE-index branch (unconditional, untouched by #868 — see
+        look_ahead_audit's `elif isinstance(slice_val, ast.Constant) ...
+        value > 0` leg) separately and incorrectly flags the `self.datas[1]`
+        data-FEED-selector subscript itself ("positive data index [1] may
+        reference future bars") — conflating "index 1 selects the 2nd data
+        feed" with "index 1 is one bar in the future". This is a real,
+        pre-existing, independent false positive (confirmed present on
+        unmodified main before this fix) affecting every multi-leg/pairs
+        strategy that writes `self.datas[N]` directly rather than through a
+        pre-bound variable: gatev_2006_pairs_distance.py,
+        elliott_2005_kalman_pairs.py, and engle_granger_1987_cointegration_pairs.py
+        all still fail look_ahead_audit after this fix, dominated by this
+        secondary bug rather than the bars-ago issue #868 asked me to fix.
+        Out of scope here per the issue's explicit instruction to preserve the
+        positive-index ("genuine look-ahead") detector as-is; flagged in the
+        PR/report rather than silently widened.
+        """
+        code = "def f(self, i):\n    return self.datas[1].close[-i]\n"
+        _passed, warnings = look_ahead_audit(code)
+        assert not any("negative index" in w.lower() for w in warnings), (
+            f"the bars-ago [-i] access must not be flagged as a negative-index violation: {warnings}"
+        )
+        # Documents the known, separate, out-of-scope positive-index false
+        # positive on the self.datas[N] feed-selector subscript (see docstring).
+        # If this assertion ever starts failing, that pre-existing bug has been
+        # fixed elsewhere — which would be a welcome surprise, not a regression.
+        assert any("positive" in w.lower() for w in warnings), (
+            "expected the known pre-existing self.datas[N] positive-index false "
+            "positive to still be present (tracked separately, out of #868's scope)"
+        )
+
+    def test_loop_variable_alias_over_datas(self) -> None:
+        # d.close[-i] where `d` is a loop variable bound to a self.datas element
+        # (avellaneda_lee_2010_pca_statarb.py's exact shape: `for d in
+        # self.datas: ... d.close[-i]`). The root is `d`, not `self`/`data` — the
+        # fix must key off the backtrader OHLCV line name (`close`), not the
+        # root variable's literal spelling, to catch this.
+        code = """
+class MyStrategy(bt.Strategy):
+    def next(self):
+        for d in self.datas:
+            prev = float(d.close[-2])
+            curr = float(d.close[-1])
+"""
+        passed, warnings = look_ahead_audit(code)
+        assert passed, f"loop-variable alias over self.datas incorrectly flagged: {warnings}"
+        assert len(warnings) == 0
+
+    def test_self_rooted_custom_indicator(self) -> None:
+        # self.highest[-1] (donchian_breakout.py) — a custom bt.Indicator stored
+        # on self, not an OHLCV line name. Root == "self" is the fallback signal
+        # that whitelists this even though "highest" isn't in the OHLCV name set.
+        code = "def f(self):\n    return self.highest[-1]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert passed
+        assert warnings == []
+
+    def test_high_low_open_volume_lines_all_pass(self) -> None:
+        for line in ("high", "low", "open", "volume", "openinterest", "datetime"):
+            code = f"def f(self, i):\n    return self.data.{line}[-i]\n"
+            passed, warnings = look_ahead_audit(code)
+            assert passed, f"self.data.{line}[-i] incorrectly flagged: {warnings}"
+
+    # ── Genuine look-ahead: must still FAIL ───────────────────────────────
+
+    def test_plain_list_negative_index_still_warns(self) -> None:
+        # spread[-1] where `spread` is a bare local variable (a plain Python
+        # list/np.ndarray, e.g. engle_granger_1987_cointegration_pairs.py's
+        # spread series) — NOT a backtrader line object. [-1] on a plain
+        # sequence means "last element", which is future data on a
+        # forward-chronological series if used incorrectly, so this must still
+        # be flagged for human review exactly as before.
+        code = "def f(spread):\n    return spread[-1]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("negative index" in w.lower() for w in warnings)
+
+    def test_plain_variable_negative_index_still_warns(self) -> None:
+        code = "def f(x):\n    return x[-1]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("negative index" in w.lower() for w in warnings)
+
+    def test_pandas_iloc_negative_index_still_warns(self) -> None:
+        # df.iloc[-1] — pandas last-row access. Structurally similar to a
+        # self-rooted backtrader indicator (both are Attribute-chain subscripts)
+        # but must NOT be whitelisted: the .iloc accessor is the exact false
+        # negative the original docstring worried about ("df.iloc[-1],
+        # df['col'][-1]"), so it stays flagged even under a self-rooted chain.
+        code = "def f(df):\n    return df.iloc[-1]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("negative index" in w.lower() for w in warnings)
+
+    def test_self_rooted_pandas_iloc_still_warns(self) -> None:
+        # self.df.iloc[-1] — pandas accessor stored on self. The `self` root
+        # alone must not whitelist it; the .iloc blocklist must win.
+        code = "def f(self):\n    return self.df.iloc[-1]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("negative index" in w.lower() for w in warnings)
+
+    def test_pandas_bracket_column_negative_index_still_warns(self) -> None:
+        # df["col"][-1] — pandas last-row access via bracket column selection.
+        code = 'def f(df):\n    return df["col"][-1]\n'
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("negative index" in w.lower() for w in warnings)
+
+    def test_synthetic_true_look_ahead_positive_future_index_still_fails(self) -> None:
+        """ACCEPTANCE CRITERION: a synthetic true-look-ahead fixture (positive
+        future index) still FAILS after the fix — the bars-ago whitelist must
+        not weaken genuine look-ahead detection. Positive indices are suspicious
+        on ANY object (backtrader included: bar 0 is "now", any positive offset
+        is a future bar), so this behavior is intentionally UNCHANGED by #868."""
+        code = """
+class MyStrategy(bt.Strategy):
+    def next(self):
+        future_price = self.data.close[5]
+        if future_price > self.data.close[0]:
+            self.buy()
+"""
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("positive" in w.lower() for w in warnings)
+
+    def test_synthetic_true_look_ahead_on_plain_array_still_fails(self) -> None:
+        # A positive future index into a plain array is equally suspicious and
+        # was already covered by test_positive_index above for self.data; this
+        # confirms the same holds for a non-backtrader object too (the positive-
+        # index branch is unconditional — it doesn't consult
+        # _is_backtrader_line_access at all).
+        code = "def f(prices):\n    return prices[5]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("positive" in w.lower() for w in warnings)
+
+    def test_mixed_clean_bars_ago_and_genuine_violation_still_fails_overall(self) -> None:
+        """A strategy with BOTH legitimate bars-ago access AND one genuine
+        look-ahead violation must still fail overall (passes_all requires zero
+        warnings) — the fix narrows false positives, it does not turn off
+        detection for a strategy that also happens to use clean backtrader
+        indexing elsewhere."""
+        code = """
+class MyStrategy(bt.Strategy):
+    def next(self):
+        safe = self.data.close[-1]          # legitimate bars-ago — no warning
+        future_price = self.data.close[5]   # genuine look-ahead — must warn
+        if future_price > safe:
+            self.buy()
+"""
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("positive" in w.lower() for w in warnings)
+        assert not any("negative index" in w.lower() for w in warnings), (
+            "the legitimate self.data.close[-1] access must not also warn"
+        )
+
+
+class TestLookAheadAuditRealMoreiraMuirFile:
+    """ACCEPTANCE CRITERION (end-to-end, real file — not a synthetic snippet):
+    moreira_muir_2017_volatility_managed no longer fails look-ahead on
+    close[-i]. Loads the actual strategy source from disk via the session-scoped
+    ``strategies_dir`` fixture (conftest.py) so this is a faithful reproduction
+    of what run_rigor_gate sees for this strategy on the live path, not just an
+    isolated code snippet."""
+
+    def test_moreira_muir_file_passes_look_ahead_audit(self, strategies_dir) -> None:
+        path = strategies_dir / "moreira_muir_2017_volatility_managed.py"
+        assert path.is_file(), f"expected strategy file at {path}"
+        code = path.read_text()
+
+        passed, warnings = look_ahead_audit(code)
+        assert passed, f"moreira_muir_2017_volatility_managed.py still fails look-ahead audit: {warnings}"
+        assert warnings == []
+
+    def test_moreira_muir_file_passes_full_rigor_gate_look_ahead_leg(self, strategies_dir) -> None:
+        """The look_ahead leg of the composite run_rigor_gate result (not just
+        the standalone look_ahead_audit call) reports PASS for this file — the
+        exact leg that previously hard-failed passes_all regardless of DSR/PBO/
+        OOS, since passes_all requires look_ahead_passed to be True."""
+        path = strategies_dir / "moreira_muir_2017_volatility_managed.py"
+        code = path.read_text()
+
+        rng = np.random.default_rng(42)
+        returns = rng.normal(0.001, 0.008, size=300).tolist()
+        result = run_rigor_gate(
+            strategy_id="moreira_muir_2017_volatility_managed",
+            daily_returns=returns,
+            num_trials=1,
+            strategy_code=code,
+        )
+        assert result.look_ahead_passed is True
+        assert result.gate_details["look_ahead"] == "PASS"
 
 
 # ─── Rigor gate composite (migrated from selection_bias.py) ──────────

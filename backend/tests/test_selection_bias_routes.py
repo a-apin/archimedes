@@ -839,3 +839,199 @@ async def test_run_rigor_gate_called_without_library_pbo_kwarg(monkeypatch):
     assert captured_kwargs, "run_rigor_gate was never called — the full branch did not execute"
     for kwargs in captured_kwargs:
         assert "library_pbo" not in kwargs, "run_rigor_gate must NOT receive library_pbo (option-3 guard)"
+
+
+# ── Degenerate (zero-variance) series excluded from num_trials/avg_corr (#868) ──
+
+
+class TestDegenerateSeriesExcludedFromCohort:
+    """#868 fix 1: a zero-variance daily_returns series (a flat placeholder row
+    that was never replaced with a real backtest — 11/31 in the live library at
+    filing time) must not count toward num_trials or feed avg_correlation/PBO,
+    since that unfairly stiffens the DSR multiple-testing correction applied to
+    every REAL strategy in the cohort. Mirrors the exact degeneracy test
+    _rigor_helpers._sharpe_dsr_inputs already uses (np.ptp(arr) == 0) rather than
+    inventing a new heuristic (per the issue's explicit instruction).
+
+    These tests inject a KNOWN mixed cohort at the get_all_daily_returns DB
+    boundary — some real (non-degenerate) series, some flat (degenerate) ones —
+    and spy on run_rigor_gate's num_trials/average_correlation kwargs to assert
+    only the real series were counted.
+    """
+
+    @staticmethod
+    def _real_series(seed: int, n: int = 300) -> list[float]:
+        return np.random.default_rng(seed).normal(0.001, 0.01, n).tolist()
+
+    @staticmethod
+    def _flat_series(value: float = 0.0, n: int = 300) -> list[float]:
+        # A zero-variance placeholder row: every observation identical.
+        # len >= 10 so it clears the pre-existing length filter and would have
+        # counted toward num_trials before this fix.
+        return [value] * n
+
+    def _patch_returns(self, monkeypatch, returns_by_strategy: dict[str, list[float]]):
+        monkeypatch.setattr(
+            "archimedes.services.backtest_repository.get_all_daily_returns",
+            lambda session, ids: dict(returns_by_strategy),
+        )
+
+    @pytest.mark.asyncio
+    async def test_num_trials_excludes_degenerate_series(self, monkeypatch):
+        """3 real + 2 degenerate (flat) series in the cohort → num_trials == 3,
+        not 5. Before the fix, num_trials counted len(valid_returns) == 5."""
+        from archimedes.api import selection_bias_routes as routes
+        from archimedes.main import app
+        from archimedes.services.rigor_evaluator import run_rigor_gate as real_run_rigor_gate
+
+        strategies = routes._provider.list_strategies()
+        assert len(strategies) >= 5, "need >=5 curated strategies to build this cohort"
+        ids = [s.id for s in strategies[:5]]
+
+        returns = {
+            ids[0]: self._real_series(0),
+            ids[1]: self._real_series(1),
+            ids[2]: self._real_series(2),
+            ids[3]: self._flat_series(0.0),  # degenerate: constant zero
+            ids[4]: self._flat_series(0.0007),  # degenerate: constant nonzero
+        }
+        self._patch_returns(monkeypatch, returns)
+
+        captured_kwargs = []
+
+        def _spy(*args, **kwargs):
+            captured_kwargs.append(kwargs)
+            return real_run_rigor_gate(*args, **kwargs)
+
+        monkeypatch.setattr(routes, "run_rigor_gate", _spy)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/selection-bias/gate")
+        assert resp.status_code == 200
+        assert captured_kwargs, "run_rigor_gate was never called"
+
+        # Every call in this run shares the same library-wide num_trials context.
+        num_trials_seen = {kwargs["num_trials"] for kwargs in captured_kwargs}
+        assert num_trials_seen == {3}, (
+            f"num_trials should count only the 3 non-degenerate series, got {num_trials_seen}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_avg_correlation_excludes_degenerate_series(self, monkeypatch):
+        """The average_correlation fed to run_rigor_gate is computed only over
+        the non-degenerate cohort — a degenerate (zero-variance) series has an
+        undefined correlation with anything and must not dilute the average."""
+        from archimedes.api import selection_bias_routes as routes
+        from archimedes.main import app
+        from archimedes.services.rigor_evaluator import (
+            compute_average_pairwise_correlation,
+        )
+        from archimedes.services.rigor_evaluator import (
+            run_rigor_gate as real_run_rigor_gate,
+        )
+
+        strategies = routes._provider.list_strategies()
+        assert len(strategies) >= 4
+        ids = [s.id for s in strategies[:4]]
+
+        real_a, real_b, real_c = self._real_series(10), self._real_series(11), self._real_series(12)
+        returns = {
+            ids[0]: real_a,
+            ids[1]: real_b,
+            ids[2]: real_c,
+            ids[3]: self._flat_series(0.0),  # degenerate
+        }
+        self._patch_returns(monkeypatch, returns)
+
+        expected_avg_corr = compute_average_pairwise_correlation({"a": real_a, "b": real_b, "c": real_c})
+
+        captured_kwargs = []
+
+        def _spy(*args, **kwargs):
+            captured_kwargs.append(kwargs)
+            return real_run_rigor_gate(*args, **kwargs)
+
+        monkeypatch.setattr(routes, "run_rigor_gate", _spy)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/selection-bias/gate")
+        assert resp.status_code == 200
+        assert captured_kwargs
+
+        for kwargs in captured_kwargs:
+            assert kwargs["average_correlation"] == pytest.approx(expected_avg_corr), (
+                "average_correlation must be computed over the non-degenerate cohort only "
+                f"(expected {expected_avg_corr}, got {kwargs['average_correlation']})"
+            )
+
+    @pytest.mark.asyncio
+    async def test_all_degenerate_cohort_yields_num_trials_floor_of_one(self, monkeypatch):
+        """If EVERY persisted series in the cohort is degenerate, valid_returns is
+        empty and num_trials floors to 1 (max(len(valid_returns), 1)) — matching
+        the pre-existing floor semantics for an empty/near-empty cohort."""
+        from archimedes.api import selection_bias_routes as routes
+        from archimedes.main import app
+        from archimedes.services.rigor_evaluator import run_rigor_gate as real_run_rigor_gate
+
+        strategies = routes._provider.list_strategies()
+        assert len(strategies) >= 2
+        ids = [s.id for s in strategies[:2]]
+
+        returns = {
+            ids[0]: self._flat_series(0.0),
+            ids[1]: self._flat_series(0.001),
+        }
+        self._patch_returns(monkeypatch, returns)
+
+        captured_kwargs = []
+
+        def _spy(*args, **kwargs):
+            captured_kwargs.append(kwargs)
+            return real_run_rigor_gate(*args, **kwargs)
+
+        monkeypatch.setattr(routes, "run_rigor_gate", _spy)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/selection-bias/gate")
+        assert resp.status_code == 200
+        # Both strategies still have len(daily_returns) >= 10 individually, so
+        # BOTH still go through the per-strategy run_rigor_gate call (each reports
+        # its own honest MISSING/FAIL from _rigor_helpers's own degeneracy guard)
+        # — only the cohort-level num_trials context floors to 1.
+        assert captured_kwargs, "degenerate-but-len>=10 strategies must still run their own gate"
+        num_trials_seen = {kwargs["num_trials"] for kwargs in captured_kwargs}
+        assert num_trials_seen == {1}
+
+    @pytest.mark.asyncio
+    async def test_short_series_still_excluded_alongside_degenerate(self, monkeypatch):
+        """Pre-existing len>=10 filter and the new variance filter compose
+        correctly: a too-short series and a flat series are both excluded,
+        leaving only the real series in num_trials."""
+        from archimedes.api import selection_bias_routes as routes
+        from archimedes.main import app
+        from archimedes.services.rigor_evaluator import run_rigor_gate as real_run_rigor_gate
+
+        strategies = routes._provider.list_strategies()
+        assert len(strategies) >= 3
+        ids = [s.id for s in strategies[:3]]
+
+        returns = {
+            ids[0]: self._real_series(20),
+            ids[1]: [0.001] * 5,  # too short (< 10) — pre-existing filter
+            ids[2]: self._flat_series(0.002),  # long enough but degenerate
+        }
+        self._patch_returns(monkeypatch, returns)
+
+        captured_kwargs = []
+
+        def _spy(*args, **kwargs):
+            captured_kwargs.append(kwargs)
+            return real_run_rigor_gate(*args, **kwargs)
+
+        monkeypatch.setattr(routes, "run_rigor_gate", _spy)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/selection-bias/gate")
+        assert resp.status_code == 200
+        num_trials_seen = {kwargs["num_trials"] for kwargs in captured_kwargs}
+        assert num_trials_seen == {1}, "only 1 real series survives both filters"

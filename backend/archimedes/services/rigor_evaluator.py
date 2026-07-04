@@ -61,6 +61,69 @@ _LOOK_AHEAD_FUNCTIONS = {
     "look_ahead",
 }
 
+# backtrader's Lines/LineBuffer objects (self.data.<line>, self.datas[i].<line>,
+# a loop variable bound to a self.datas element, or a custom bt.Indicator stored
+# on self) use NEGATIVE subscripts by convention to mean "N bars ago" — the
+# opposite of a plain Python list/np.ndarray, where a negative index means "from
+# the end" and would silently read into the future on a forward-chronological
+# array (#868). These are the standard OHLCV/line attribute names backtrader
+# feeds expose; any subscript chain ending in one of these is bars-ago access
+# regardless of the root variable's name (covers `self.data.close[-i]` AND a
+# loop-var alias like `for d in self.datas: ... d.close[-i]`).
+_BACKTRADER_LINE_NAMES = {"close", "open", "high", "low", "volume", "openinterest", "datetime"}
+
+# pandas accessor attributes that index by POSITION/label on a DataFrame/Series —
+# `df.iloc[-1]` is last-row (future-leaking) access, structurally identical to
+# `self.highest[-1]` (self-rooted) at the AST level. Checked first so a
+# self-rooted pandas accessor (e.g. `self.df.iloc[-1]`) is never whitelisted
+# just because its root happens to be `self`.
+_PANDAS_ACCESSOR_ATTRS = {"iloc", "loc", "at", "iat"}
+
+
+def _is_backtrader_line_access(value_node: ast.expr) -> bool:
+    """True when ``value_node`` (a Subscript's ``.value``) is backtrader
+    bars-ago-indexed line access rather than a plain list/array/pandas object.
+
+    A bare local variable subscript (``spread[-1]``, ``scored[-n:]``) is never
+    whitelisted — only a dotted attribute chain is a candidate, since every
+    backtrader line access in this codebase is reached via attribute access
+    (``self.data.close``, ``self.highest``, ``d.close`` for a ``self.datas``
+    loop variable) while plain return/price arrays are always bare names.
+    Whitelists when either:
+      - the chain's ultimate root is ``self`` (covers ``self.data.close[-i]``,
+        ``self.datas[1].close[-i]``, and a custom indicator like
+        ``self.highest[-1]``), or
+      - the chain ends in a standard backtrader OHLCV/line name (covers a
+        ``self.datas`` loop-variable alias, e.g. ``d.close[-i]``, whose root is
+        not literally ``self``).
+    A pandas positional/label accessor (``.iloc``/``.loc``/``.at``/``.iat``)
+    anywhere in the chain always disqualifies the whitelist, even under a
+    ``self``-rooted chain, since that access pattern reads the DataFrame's
+    last row (future data), not a backtrader line.
+    """
+    if not isinstance(value_node, ast.Attribute):
+        return False
+
+    attrs: list[str] = []
+    node: ast.expr = value_node
+    while isinstance(node, (ast.Attribute, ast.Subscript)):
+        if isinstance(node, ast.Attribute):
+            attrs.append(node.attr)
+            node = node.value
+        else:
+            node = node.value
+    root = node.id if isinstance(node, ast.Name) else None
+
+    if any(a in _PANDAS_ACCESSOR_ATTRS for a in attrs):
+        return False
+    if root == "self":
+        return True
+    # attrs[0] is the innermost-collected == outermost/subscripted attribute
+    # (e.g. for `d.close`, attrs == ["close"]; for `self.data.close`,
+    # attrs == ["close", "data"]) — either way the subscripted attribute is
+    # attrs[0].
+    return bool(attrs) and attrs[0] in _BACKTRADER_LINE_NAMES
+
 
 def look_ahead_audit(strategy_code: str) -> tuple[bool, list[str]]:
     """Static-analysis check for look-ahead bias in strategy code.
@@ -70,6 +133,19 @@ def look_ahead_audit(strategy_code: str) -> tuple[bool, list[str]]:
     2. Calls to functions with look-ahead-suggestive names
     3. Direct indexing into data feeds beyond current bar
     4. Negative shifts (e.g., pandas df.shift(-1)) which leak future data.
+
+    Negative-index subscripts on a backtrader line-buffer object
+    (``self.data.close[-i]``, ``self.datas[k].close[-i]``, a ``self.datas``
+    loop-variable alias, or a ``self``-rooted custom indicator) are backtrader's
+    standard, correct "N bars ago" convention — NOT a look-ahead violation — and
+    are excluded from the warning (see ``_is_backtrader_line_access``, #868).
+    A negative index on anything else (a plain list/np.ndarray local variable,
+    or a pandas ``.iloc``/``.loc``/``.at``/``.iat`` accessor) is still flagged,
+    since on those objects ``[-1]`` means "last element", which is future data
+    on a forward-chronological series. A positive constant index is unaffected
+    by this distinction — it is always suspicious on ANY object, backtrader
+    included (bar 0 is "now"; any positive offset is a future bar) — and
+    continues to be flagged exactly as before.
 
     Args:
         strategy_code: Python source code of the strategy.
@@ -122,14 +198,19 @@ def look_ahead_audit(strategy_code: str) -> tuple[bool, list[str]]:
         if isinstance(node, ast.Subscript):
             slice_val = node.slice
             if isinstance(slice_val, ast.UnaryOp) and isinstance(slice_val.op, ast.USub):
-                # Negative indices are safe in backtrader ([-N] = N bars ago) but
-                # would reference the last row of future data in a pandas DataFrame
-                # (df.iloc[-1], df["col"][-1]).  Flag so reviewers can verify the
-                # calling context before promotion to Tier-1.
-                warnings.append(
-                    f"Line {node.lineno}: negative index — verify this is backtrader "
-                    f"(bars-ago) not pandas (last-row) access."
-                )
+                # Negative indices are backtrader's standard, correct "N bars ago"
+                # convention on a Lines/LineBuffer object (self.data.close[-i],
+                # self.highest[-1], a self.datas loop-variable alias) — NOT a
+                # look-ahead violation, so skip the warning there (#868). Still
+                # flag a negative index on anything else (a plain list/np.ndarray
+                # local variable, or a pandas .iloc/.loc/.at/.iat accessor), where
+                # [-1] means "last element" and would silently read future data on
+                # a forward-chronological series.
+                if not _is_backtrader_line_access(node.value):
+                    warnings.append(
+                        f"Line {node.lineno}: negative index on a non-backtrader object — "
+                        f"verify this is not pandas/list last-row (future) access."
+                    )
             elif isinstance(slice_val, ast.Constant) and isinstance(slice_val.value, int) and slice_val.value > 0:
                 warnings.append(
                     f"Line {node.lineno}: positive data index [{slice_val.value}] may reference future bars"
