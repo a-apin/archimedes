@@ -158,6 +158,7 @@ export default function Generate({ onNavigate, walletAddr }) {
           onReset={handleBackToTable}
           onPipelineSelected={() => {}}
           onNavigate={onNavigate}
+          hideReset
         />
       </div>
     )

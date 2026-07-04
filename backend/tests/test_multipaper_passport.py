@@ -213,8 +213,8 @@ class TestPassportToStrategyResponse:
 
         assert resp.papers[0].title == "2301.99999"
 
-    def test_no_session_leaves_empty_title(self, session: Session):
-        """Without a session, enrichment is skipped (session=None path)."""
+    def test_no_session_falls_back_to_arxiv_id(self, session: Session):
+        """Without a session, enrichment is skipped and title falls back to arxiv_id."""
         _add_corpus_paper(session, "2301.00004", "Would be enriched")
 
         _make_passport_record(
@@ -258,7 +258,7 @@ class TestPassportToStrategyResponse:
         resp = _passport_to_strategy_response(record, session=session)
 
         assert len(resp.papers) == 3
-        assert resp.paper_title in ("Paper Alpha", "2301.00010", "")  # legacy field = first paper
+        assert resp.paper_title == "Paper Alpha"  # legacy field = enriched first paper title
 
     def test_single_paper_curated_strategy_unaffected(self, session: Session):
         """Single-paper curated strategies render correctly — no regression."""

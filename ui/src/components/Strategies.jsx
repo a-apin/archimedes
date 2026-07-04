@@ -474,7 +474,7 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport })
                     </div>
                     <div className="flex flex-col gap-2">
                       {s.papers.map((p, idx) => (
-                        <div key={idx}>
+                        <div key={p.arxiv_id || idx}>
                           <div className="body" style={{ fontStyle: 'italic' }}>
                             "{p.title || p.arxiv_id || '—'}"
                           </div>

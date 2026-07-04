@@ -91,6 +91,23 @@ def _compute_monthly_returns(equity_curve: list[float]) -> list[float]:
     return returns
 
 
+def equity_curve_to_daily_returns(equity_curve: list[float]) -> list[float]:
+    """Convert an equity curve to a per-bar return series.
+
+    Shared helper used by both debate_engine and fusion_evaluator to ensure
+    identical denominator-guard logic (divides only when the previous bar is
+    strictly positive) across every code path that persists return_series for
+    the live gate.
+
+    Returns an empty list when the curve has fewer than two bars.
+    """
+    return [
+        (equity_curve[i] - equity_curve[i - 1]) / equity_curve[i - 1]
+        for i in range(1, len(equity_curve))
+        if equity_curve[i - 1] > 0
+    ]
+
+
 # ── Risk metrics ──────────────────────────────────────────────────────
 
 

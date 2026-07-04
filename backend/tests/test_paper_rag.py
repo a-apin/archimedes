@@ -23,13 +23,14 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 import archimedes.services.paper_rag as rag_module
-from archimedes.services.paper_rag import (
-    _rerank_tfidf,
-    _rerank_with_embeddings,
-    augment_candidate_scores,
-    paper_rag_health,
-    semantic_rerank,
-)
+
+# Access all symbols via the module alias so monkeypatching the module-level
+# globals (e.g. rag_module._embedding_model) is always reflected in calls.
+_rerank_tfidf = rag_module._rerank_tfidf
+_rerank_with_embeddings = rag_module._rerank_with_embeddings
+augment_candidate_scores = rag_module.augment_candidate_scores
+paper_rag_health = rag_module.paper_rag_health
+semantic_rerank = rag_module.semantic_rerank
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -154,15 +155,35 @@ class TestGetEmbeddingModelCaching:
         assert result is None
 
     def test_caches_successful_load(self, monkeypatch):
-        """Second call returns the cached instance without re-loading."""
+        """Second call returns the cached instance without calling SentenceTransformer again."""
         _reset_model_cache()
         stub = _fake_model()
-        with patch.object(rag_module, "_get_embedding_model", return_value=stub) as mock_fn:
-            r1 = rag_module._get_embedding_model()
-            r2 = rag_module._get_embedding_model()
-        # Both should be the same stub
+        call_count = [0]
+
+        import types as _types
+
+        fake_st = _types.ModuleType("sentence_transformers")
+
+        # Use a plain function on a ModuleType (not a class attribute) so it is
+        # never treated as a bound method and receives exactly the one positional
+        # arg that _get_embedding_model passes.
+        def _fake_constructor(name):
+            call_count[0] += 1
+            return stub
+
+        fake_st.SentenceTransformer = _fake_constructor
+        with patch.dict("sys.modules", {"sentence_transformers": fake_st}):
+            r1 = rag_module._get_embedding_model()  # triggers real load path
+            r2 = rag_module._get_embedding_model()  # must hit the cache
+        # Both calls must return the same cached stub.
         assert r1 is stub
         assert r2 is stub
+        # The constructor must have been called exactly once; the second call
+        # must have short-circuited at the "is not None" guard.
+        assert call_count[0] == 1
+        # A third call with the cache warm must also return the stub.
+        r3 = rag_module._get_embedding_model()
+        assert r3 is stub
 
     def test_attempted_flag_prevents_retry_after_failure(self, monkeypatch):
         """After a failed load, _embedding_load_attempted=True blocks re-tries."""

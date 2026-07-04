@@ -55,6 +55,7 @@ from archimedes.agents.generation_pipeline import (
     _CandidateResult,
     _society_num_trials,
 )
+from archimedes.services._fusion_helpers import equity_curve_to_daily_returns
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from archimedes.agents.generation_pipeline import _Emitter
@@ -486,7 +487,7 @@ def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _C
     # the passport reads "pending" forever even though C-rigor just ran a real
     # backtest (first prod debate run surfaced exactly this).
     _ec = list(getattr(ev.backtest, "equity_curve", None) or [])
-    real_returns = [(_ec[i] - _ec[i - 1]) / _ec[i - 1] for i in range(1, len(_ec)) if _ec[i - 1] > 0]
+    real_returns = equity_curve_to_daily_returns(_ec)
     return _CandidateResult(
         candidate_id=candidate_id,
         strategy_name=proposal.strategy_name or "Debate candidate",

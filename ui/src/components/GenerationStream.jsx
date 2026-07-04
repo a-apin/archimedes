@@ -95,7 +95,7 @@ function summarizeEvent(name, data) {
   }
 }
 
-export default function GenerationStream({ jobId, onDone, onReset, onPipelineSelected, onNavigate }) {
+export default function GenerationStream({ jobId, onDone, onReset, onPipelineSelected, onNavigate, hideReset = false }) {
   const [events, setEvents] = useState([])
   const [terminal, setTerminal] = useState(null)  // 'done' | 'error' | null
   const [strategyId, setStrategyId] = useState(null)
@@ -220,9 +220,11 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
               Considered {consideredCount} candidates
             </button>
           )}
-          <button className="btn btn-outline btn-sm" onClick={onReset}>
-            {terminal ? 'New generation' : 'Cancel'}
-          </button>
+          {!hideReset && (
+            <button className="btn btn-outline btn-sm" onClick={onReset}>
+              {terminal ? 'New generation' : 'Cancel'}
+            </button>
+          )}
         </div>
       </div>
 

@@ -27,6 +27,7 @@ from archimedes.services._fusion_helpers import (
     _max_drawdown,
     _synthetic_data,
     _TradeStatsAnalyzer,
+    equity_curve_to_daily_returns,
     generate_fusion_report,  # noqa: F401 - re-exported for test_fusion_quality_scorer
     score_correlation_stability,  # noqa: F401 - re-exported for test_fusion_quality_scorer
     score_diversification_benefit,  # noqa: F401 - re-exported for test_fusion_quality_scorer
@@ -239,11 +240,7 @@ def run_dsl_backtest(
     years = max(n_bars / 252, 0.01)
     cagr = (1 + total_return) ** (1 / years) - 1 if total_return > -1 else -1.0
 
-    daily_returns = [
-        (equity_curve[i] - equity_curve[i - 1]) / equity_curve[i - 1]
-        for i in range(1, len(equity_curve))
-        if equity_curve[i - 1] > 0
-    ]
+    daily_returns = equity_curve_to_daily_returns(equity_curve)
     # rf-convention (deliberate split — do NOT "reconcile" to one rate):
     #   DISPLAY (here) = raw Sharpe/Sortino with rf=0. This is the passport
     #   headline and matches how backtrader's analyzer / practitioners quote it.
@@ -397,11 +394,7 @@ def _run_variant_backtest(
     years = max(n_bars / 252, 0.01)
     cagr = (1 + total_return) ** (1 / years) - 1 if total_return > -1 else -1.0
 
-    daily_returns = [
-        (equity_curve[i] - equity_curve[i - 1]) / equity_curve[i - 1]
-        for i in range(1, len(equity_curve))
-        if equity_curve[i - 1] > 0
-    ]
+    daily_returns = equity_curve_to_daily_returns(equity_curve)
     # rf-convention (deliberate split — do NOT "reconcile" to one rate):
     #   DISPLAY (here) = raw Sharpe/Sortino with rf=0. This is the passport
     #   headline and matches how backtrader's analyzer / practitioners quote it.
