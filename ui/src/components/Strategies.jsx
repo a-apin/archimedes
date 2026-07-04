@@ -403,6 +403,15 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport })
         <td className="font-semibold">
           <span className={`${open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'} w-3 h-3 mr-1.5 text-[var(--text-4)] flex-shrink-0 inline-block`} />
           {s.paper_title}
+          {(s.papers || []).length > 1 && (
+            <span
+              className="tag tag-accent"
+              style={{ fontSize: '0.68rem', marginLeft: 6, verticalAlign: 'middle', padding: '1px 5px' }}
+              title={`Fused from ${s.papers.length} papers`}
+            >
+              {s.papers.length} papers
+            </span>
+          )}
         </td>
         <td className="caption">{paperCite || (s.paper_year ? `(${s.paper_year})` : '—')}</td>
         <td>
@@ -458,22 +467,51 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport })
                 <div className="body">{s.methodology_summary || '—'}</div>
               </div>
               <div>
-                <div className="label mb-2">Source paper</div>
-                <div className="body">"{s.paper_title}"</div>
-                <div className="caption mt-2">
-                  {s.paper_authors?.slice(0, 3).join(', ')}{s.paper_authors?.length > 3 ? ' et al.' : ''}
-                  {s.paper_year ? ` (${s.paper_year})` : ''}
-                  {s.paper_venue ? ` · ${s.paper_venue}` : ''}
-                </div>
-                {s.paper_arxiv_id && (
-                  <a
-                    href={`https://arxiv.org/abs/${s.paper_arxiv_id}`}
-                    target="_blank" rel="noreferrer"
-                    style={{ color: 'var(--accent)', fontSize: '0.78rem', marginTop: 6, display: 'inline-block' }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    arxiv:{s.paper_arxiv_id} ↗
-                  </a>
+                {(s.papers || []).length > 1 ? (
+                  <>
+                    <div className="label mb-2">
+                      Fused from {s.papers.length} papers
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {s.papers.map((p, idx) => (
+                        <div key={idx}>
+                          <div className="body" style={{ fontStyle: 'italic' }}>
+                            "{p.title || p.arxiv_id || '—'}"
+                          </div>
+                          {p.arxiv_id && (
+                            <a
+                              href={`https://arxiv.org/abs/${p.arxiv_id}`}
+                              target="_blank" rel="noreferrer"
+                              style={{ color: 'var(--accent)', fontSize: '0.75rem', marginTop: 3, display: 'inline-block' }}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              arxiv:{p.arxiv_id} ↗
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="label mb-2">Source paper</div>
+                    <div className="body">"{s.paper_title}"</div>
+                    <div className="caption mt-2">
+                      {s.paper_authors?.slice(0, 3).join(', ')}{s.paper_authors?.length > 3 ? ' et al.' : ''}
+                      {s.paper_year ? ` (${s.paper_year})` : ''}
+                      {s.paper_venue ? ` · ${s.paper_venue}` : ''}
+                    </div>
+                    {s.paper_arxiv_id && (
+                      <a
+                        href={`https://arxiv.org/abs/${s.paper_arxiv_id}`}
+                        target="_blank" rel="noreferrer"
+                        style={{ color: 'var(--accent)', fontSize: '0.78rem', marginTop: 6, display: 'inline-block' }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        arxiv:{s.paper_arxiv_id} ↗
+                      </a>
+                    )}
+                  </>
                 )}
               </div>
               <div>
