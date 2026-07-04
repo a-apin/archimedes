@@ -628,9 +628,9 @@ async def test_debate_dispatch_end_to_end_persists_debate_strategy(tmp_path, mon
     Asserts: (a) pipeline_selected=debate, (b) candidate_drafted + persisted
     emitted, (c) StrategyRecord.generation_method == 'debate'.
     """
-    import archimedes.db as _db
     import archimedes.agents.debate_engine as de
     import archimedes.agents.strategy_fusion as sf
+    import archimedes.db as _db
     import archimedes.services.fusion_evaluator as fe
     from archimedes.agents import generation_pipeline as gp
     from archimedes.models.strategy_store import StrategyRecord
@@ -710,9 +710,9 @@ async def test_debate_critic_rigor_num_trials_matches_society_formula(tmp_path, 
     set), not n_candidates. The spy asserts evaluate_fusion_spec receives the right
     value across the full proposal pool.
     """
-    import archimedes.db as _db
     import archimedes.agents.debate_engine as de
     import archimedes.agents.strategy_fusion as sf
+    import archimedes.db as _db
     import archimedes.services.fusion_evaluator as fe
     from archimedes.agents import generation_pipeline as gp
     from sqlalchemy import create_engine
@@ -831,9 +831,9 @@ async def test_debate_text_only_pool_no_spurious_backtest_failed(tmp_path, monke
     Re-targets test_fusion_text_only_does_not_emit_spurious_backtest_failed which
     tested the same _static_skip guard on the retired standalone-fusion dispatch.
     """
-    import archimedes.db as _db
     import archimedes.agents.debate_engine as de
     import archimedes.agents.strategy_fusion as sf
+    import archimedes.db as _db
     import archimedes.services.fusion_evaluator as fe
     from archimedes.agents import generation_pipeline as gp
     from archimedes.models.strategy_store import StrategyRecord

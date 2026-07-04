@@ -65,7 +65,7 @@ class GenerateStartRequest(BaseModel):
         default=None,
         description=(
             "Optional pipeline override (API compatibility; ignored as of T1.1 Phase-3 cutover). "
-            "The debate society is the sole generation pipeline — any override is logged and discarded."
+            "The debate society is the sole generation pipeline — non-debate overrides are logged and discarded."
         ),
     )
     model: str | None = Field(

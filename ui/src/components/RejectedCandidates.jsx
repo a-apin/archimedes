@@ -118,7 +118,7 @@ export default function RejectedCandidates({ jobId, onClose, onNavigate }) {
             <h3 style={{ marginBottom: 4 }}>Considered alternatives</h3>
             <p className="caption" style={{ marginBottom: 0 }}>
               The debate society ranked {candidates.length} candidate{candidates.length !== 1 ? 's' : ''};
-              the winner passed the rigor gate and was persisted to the library.
+              the top-ranked candidate was persisted to the library (see its tag for rigor status).
               Alternates are episodic proposals — no library entry.
             </p>
           </div>

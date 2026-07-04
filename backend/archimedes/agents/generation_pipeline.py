@@ -763,7 +763,7 @@ async def run_generation(
         fixture_mode = os.getenv("GENERATION_PIPELINE_FIXTURE", "").lower() in ("1", "true") or (
             not use_live and os.getenv("TESTING")
         )
-        if use_live and _debate_can_run(brief):
+        if use_live and await asyncio.to_thread(_debate_can_run, brief):
             runner: Callable[..., Awaitable[Any]] = functools.partial(_run_debate_leaderboard, model=model)
         elif fixture_mode:
             pipeline_name = "fixture"
@@ -1056,7 +1056,8 @@ async def run_generation(
                         "weights": cand.weights,
                         "asset_universe": cand.asset_universe,
                     },
-                    papers=[p.get("arxiv_id", "") for p in cand.source_papers] or list(cand.source_arxiv_ids),
+                    papers=[aid for p in cand.source_papers if (aid := p.get("arxiv_id", ""))]
+                    or list(cand.source_arxiv_ids),
                     rigor_verdict=cand.rigor_verdict,
                     # K=1 (Phase-3): this loop is the SINGLE episodic writer for the
                     # whole board — winner marked selected, alternates carry the
