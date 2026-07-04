@@ -49,6 +49,14 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _EMBEDDING_WEIGHT = 0.6
 _QA_WEIGHT = 0.4
 
+# Default model — override via MINILM_MODEL env var if needed.
+_DEFAULT_MODEL = "all-MiniLM-L6-v2"
+
+
+def _model_name() -> str:
+    """Return the sentence-transformers model identifier (env-configurable)."""
+    return os.getenv("MINILM_MODEL", _DEFAULT_MODEL)
+
 
 # ── Health states ────────────────────────────────────────────────
 
@@ -64,17 +72,17 @@ class PaperRAGHealth:
 def paper_rag_health() -> PaperRAGHealth:
     """Report the current health of the paper RAG subsystem.
 
-    - ``live``: semantic retrieval enabled, dependencies available.
-    - ``degraded``: enabled but core dependencies missing (falls back to
-      TF-IDF).
+    - ``live``: semantic retrieval enabled, model loaded successfully.
+    - ``degraded``: enabled but sentence-transformers import failed or model
+      could not be loaded (falls back to TF-IDF).
     - ``disabled``: ``FUSION_SEMANTIC_RETRIEVAL`` is off.
     """
     if not _semantic_enabled():
         return PaperRAGHealth(status="disabled", reason="FUSION_SEMANTIC_RETRIEVAL not set")
 
-    has_embeddings = _embedding_available()
-    if has_embeddings:
-        return PaperRAGHealth(status="live", reason="semantic retrieval active")
+    model = _get_embedding_model()
+    if model is not None:
+        return PaperRAGHealth(status="live", reason=f"model={_model_name()}")
     return PaperRAGHealth(status="degraded", reason="embedding model unavailable, TF-IDF fallback")
 
 
@@ -88,33 +96,37 @@ def _semantic_enabled() -> bool:
 
 # Lazy-loaded embedding model (sentence-transformers).
 _embedding_model: Any = None
-
-
-def _embedding_available() -> bool:
-    """True if sentence-transformers is importable and a model is loadable."""
-    try:
-        from sentence_transformers import SentenceTransformer  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
+# Sentinel: True once a load attempt has been made and failed, so repeated
+# health checks don't retry indefinitely (the result is cached after first try).
+_embedding_load_attempted: bool = False
 
 
 def _get_embedding_model():
-    """Lazy-load the sentence-transformers model."""
-    global _embedding_model
+    """Lazy-load the sentence-transformers model (cached after first attempt).
+
+    Returns the loaded model on success, or ``None`` if the import is missing
+    or the model files cannot be found (preserves TF-IDF fallback path).
+    ``HF_HOME`` controls the HuggingFace cache directory; the Docker image
+    bakes the model into ``/app/model_cache`` at build time so no network
+    access is needed at runtime.
+    """
+    global _embedding_model, _embedding_load_attempted
     if _embedding_model is not None:
         return _embedding_model
+    if _embedding_load_attempted:
+        return None
+    _embedding_load_attempted = True
     try:
         from sentence_transformers import SentenceTransformer
 
-        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        _embedding_model = SentenceTransformer(_model_name())
+        logger.info("paper_rag: loaded embedding model %s", _model_name())
         return _embedding_model
     except ImportError:
-        logger.debug("paper_rag: sentence-transformers not available, using TF-IDF")
+        logger.debug("paper_rag: sentence-transformers not installed, using TF-IDF")
         return None
     except Exception as exc:
-        logger.warning("paper_rag: embedding model load failed: %s", exc)
+        logger.warning("paper_rag: embedding model load failed (%s), using TF-IDF: %s", _model_name(), exc)
         return None
 
 

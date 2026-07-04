@@ -67,9 +67,14 @@ arxiv>=4.0.0
 # Floor raised to 6.13.3 to close 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25).
 pypdf>=6.13.3
 
-# Semantic retrieval (optional — TF-IDF fallback when absent)
-# paper-qa>=0.70  # Apache 2.0, sentence-transformer embeddings
-# sentence-transformers>=2.7  # required by paper-qa for embeddings
+# Semantic retrieval — MiniLM embeddings for paper_rag.py (issue #874).
+# CPU-only torch wheel: the extra-index-url below resolves torch to the
+# lightweight CPU variant (~250 MB) rather than the CUDA build (~2.5 GB).
+# sentence-transformers brings torch transitively; pinning torch here forces
+# the CPU wheel so the Docker image stays within budget.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0,<3.0  # CPU-only wheel via pytorch whl index (see extra-index-url above)
+sentence-transformers>=2.7  # all-MiniLM-L6-v2 semantic retrieval; baked at Docker build time
 
 # AWS / S3
 boto3>=1.35

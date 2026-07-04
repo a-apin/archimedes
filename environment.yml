@@ -74,6 +74,10 @@ dependencies:
       - arxiv>=2.1                    # arxiv API client
       - pypdf>=6.13.3                 # PDF text extraction. Floor raised to 6.13.3 to close 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25). Aligned with backend/requirements.txt.
 
+      # --- Semantic retrieval (paper_rag MiniLM embeddings, issue #874) ---
+      - torch>=2.0,<3.0               # PyTorch CPU (local dev: pip picks the native/MPS wheel; Docker uses the CPU-only wheel via --extra-index-url in requirements.txt)
+      - sentence-transformers>=2.7    # all-MiniLM-L6-v2 zero-cost semantic retrieval for paper_rag.py; aligned with backend/requirements.txt
+
       # --- Quality + tests ---
       - ruff>=0.6                     # Linter + formatter; configured at line length 120
       - pytest>=8.3
