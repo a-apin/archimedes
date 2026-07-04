@@ -39,6 +39,14 @@ logger = logging.getLogger(__name__)
 
 _FALSY = {"0", "false", "no", "off"}
 
+# Backoff memory: if a refresh ran and the SAME strategies are still missing
+# afterwards, they are permanently failing (e.g. the pairs family needs code
+# fixes, not re-runs) — re-triggering on every startup/tick just burns the
+# box's 2 vCPUs for ~15 min right when users are generating. Missing-driven
+# refreshes only fire again once the missing SET changes; age-driven
+# refreshes keep their normal cadence.
+_last_unresolved_missing: set[str] = set()
+
 
 def refresh_enabled() -> bool:
     """On by default; off under TESTING (hermetic) or via the env kill switch."""
@@ -75,7 +83,13 @@ def needs_refresh() -> tuple[bool, str]:
             latest = latest_backtests_by_strategy(session, ids)
         missing = [sid for sid in ids if sid not in latest]
         if missing:
-            return True, f"{len(missing)}/{len(ids)} strategies have no persisted backtest"
+            if set(missing) == _last_unresolved_missing:
+                # A previous refresh already failed to produce rows for exactly
+                # this set — they need code fixes, not compute. Fall through to
+                # the age check instead of thrashing.
+                pass
+            else:
+                return True, f"{len(missing)}/{len(ids)} strategies have no persisted backtest"
         now = datetime.now(UTC)
         oldest = None
         for row in latest.values():
@@ -99,6 +113,28 @@ def _run_refresh() -> dict:
     return run_backtests()
 
 
+def _remember_unresolved_missing() -> None:
+    """After a refresh, record which strategies STILL have no rows (backoff set)."""
+    global _last_unresolved_missing
+    try:
+        from archimedes.db import get_session
+        from archimedes.services.backtest_repository import latest_backtests_by_strategy
+        from archimedes.services.strategy_provider import default_provider
+
+        ids = [st.id for st in default_provider().list_strategies()]
+        with get_session() as session:
+            latest = latest_backtests_by_strategy(session, ids)
+        _last_unresolved_missing = {sid for sid in ids if sid not in latest}
+        if _last_unresolved_missing:
+            logger.warning(
+                "backtest refresh: %d strategies still have no rows after a refresh "
+                "(likely need code fixes, e.g. the pairs family) — backing off to the age cadence",
+                len(_last_unresolved_missing),
+            )
+    except Exception:
+        _last_unresolved_missing = set()
+
+
 async def backtest_refresh_loop() -> None:
     """Long-lived task: settle → check staleness → refresh when needed → sleep."""
     delay = _hours("BACKTEST_REFRESH_STARTUP_DELAY_S", 180.0, 0.0, 3600.0)
@@ -111,6 +147,7 @@ async def backtest_refresh_loop() -> None:
                 logger.info("backtest refresh: starting (%s)", reason)
                 summary = await asyncio.to_thread(_run_refresh)
                 logger.info("backtest refresh: done — %s", summary)
+                _remember_unresolved_missing()
             else:
                 logger.info("backtest refresh: skipped (%s)", reason)
         except Exception as exc:

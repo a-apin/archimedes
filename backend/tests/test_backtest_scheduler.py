@@ -151,3 +151,26 @@ async def test_loop_survives_refresh_failure(monkeypatch):
     await asyncio.sleep(0.05)  # give the exception path time to run
     assert not task.done(), "a failed refresh must never kill the loop"
     task.cancel()
+
+
+def test_unresolved_missing_backs_off(monkeypatch):
+    """Strategies that STILL have no rows after a refresh (permanently failing,
+    e.g. the pairs family) must not re-trigger a missing-driven refresh every
+    startup — that burned ~15 min of a 2-vCPU box per deploy, starving live
+    generations. Once remembered, only the age cadence (or a CHANGED missing
+    set) refreshes again."""
+    _patch_provider(monkeypatch, ["ok1", "dead1"])
+    _insert_backtest("ok1", datetime.now(UTC))
+
+    should, reason = sched.needs_refresh()
+    assert should is True  # first sighting → refresh attempt is correct
+
+    sched._remember_unresolved_missing()  # refresh "ran"; dead1 still rowless
+    should, reason = sched.needs_refresh()
+    assert should is False, "identical unresolved-missing set must back off"
+    assert "fresh" in reason
+
+    # A NEW missing strategy (set changed) re-arms the missing trigger.
+    _patch_provider(monkeypatch, ["ok1", "dead1", "new1"])
+    should, _ = sched.needs_refresh()
+    assert should is True
