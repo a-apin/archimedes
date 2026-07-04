@@ -1192,6 +1192,11 @@ async def _persist_candidate(
                     regime_tag=_regime_tag,
                     passes_rigor_gate=bool(c.rigor_verdict.get("passing", False)) if c.rigor_verdict else False,
                     deflated_sharpe_ratio=c.rigor_verdict.get("dsr") if c.rigor_verdict else None,
+                    # dsr_p_value was missing from the initial passport persist (#passport-honesty):
+                    # the rigor verdict carries it under "dsr_p_value" but earlier code only wrote
+                    # "dsr", "pbo", and "oos_sharpe" — leaving the passport column NULL even when
+                    # the generation leaderboard had the correct value.
+                    dsr_p_value=c.rigor_verdict.get("dsr_p_value") if c.rigor_verdict else None,
                     pbo_score=c.rigor_verdict.get("pbo") if c.rigor_verdict else None,
                     out_of_sample_sharpe=c.rigor_verdict.get("oos_sharpe") if c.rigor_verdict else None,
                 )

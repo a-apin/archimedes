@@ -247,6 +247,7 @@ class TestRootAndHealth:
 
 class TestStrategyRoutes:
     def test_list_strategies(self, client, seeded_db):
+        # Verify the first page returns a well-formed response.
         resp = client.get("/api/strategies/")
         assert resp.status_code == 200
         data = resp.json()
@@ -256,12 +257,17 @@ class TestStrategyRoutes:
         assert "id" in s
         assert "paper_title" in s
         assert "sharpe_ratio" in s
-        # A strategy with a real backtest fixture must surface as non-placeholder.
-        # Don't assume index[0] is fixtured: candidate strategies added without a
-        # backtest fixture can legitimately sort first alphabetically and read as
-        # placeholders, so assert the non-placeholder path is exercised somewhere
-        # in the listing rather than at a brittle fixed position.
-        assert any(st["is_backtest_placeholder"] is False for st in data["strategies"])
+        # A strategy with a real BacktestResultRecord must surface as
+        # non-placeholder across the full catalogue.  ``seeded_db`` inserts one
+        # row (Buy-and-Hold, pipeline_buy_hold.py) into ``backtest_results``.
+        # That file sorts alphabetically after the default page size (20), so we
+        # must paginate to find it — ``_list_all_strategies`` does that.
+        # Don't assume index[0] is the seeded strategy: candidate strategies
+        # added without a BacktestResultRecord legitimately sort first and read
+        # as placeholders, so assert the non-placeholder path is exercised
+        # somewhere across the full listing rather than at a brittle fixed position.
+        all_strategies = _list_all_strategies(client)
+        assert any(st["is_backtest_placeholder"] is False for st in all_strategies)
 
     def test_get_strategy_signals(self, client):
         resp = client.get("/api/strategies/signals")

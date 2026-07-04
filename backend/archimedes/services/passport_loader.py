@@ -205,6 +205,11 @@ def _update_record(
     record.max_drawdown = passport.real_max_dd
     record.cagr = passport.real_cagr
     record.deflated_sharpe_ratio = passport.deflated_sharpe_ratio
+    # dsr_p_value was not updated by _update_record (#passport-honesty): the
+    # _refresh_passport_real_metrics call from _persist_real_returns sets it on
+    # the StrategyPassport but _update_record never wrote it to the DB row,
+    # so strategy_passports.dsr_p_value stayed NULL even after the backtest ran.
+    record.dsr_p_value = passport.dsr_p_value
     record.pbo_score = passport.pbo_score
     record.out_of_sample_sharpe = passport.out_of_sample_sharpe
     record.kelly_fraction = passport.kelly_fraction

@@ -580,3 +580,19 @@ class AMMHealthResponse(BaseModel):
     pools: list[AMMPoolHealth]
     healthy_count: int = 0
     total_pools: int = 0
+
+
+class StrategyReturnsResponse(BaseModel):
+    """Persisted real daily returns for a strategy.
+
+    Returned by GET /api/strategies/{id}/returns. Only present when the
+    strategy has a real BacktestResultRecord row — never synthesized from
+    fixture metrics (#passport-honesty).
+    """
+
+    strategy_id: str
+    source: str = "persisted_backtest"
+    start: str | None = None
+    end: str | None = None
+    n: int
+    daily_returns: list[float]
