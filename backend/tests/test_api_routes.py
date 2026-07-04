@@ -60,6 +60,18 @@ def _use_tmp_db(tmp_path, monkeypatch):
             session.merge(StrategyBacktestFixture(stem=stem, **{field: rec[field] for field in FIXTURE_FIELDS}))
         session.commit()
 
+    # The strategy_provider() accessor in _route_helpers is @lru_cache'd and
+    # is built once per pytest process from the DB state at first call.  If any
+    # earlier test (in another file) triggered that first call before this
+    # fixture had a chance to seed strategy_backtest_fixtures, the cached
+    # provider has real_sharpe=None for every strategy — causing the advisor
+    # and list endpoints to report "no strategies with real backtest data".
+    # Clearing the cache after each seed forces the next call to re-read the
+    # now-seeded DB so every test in this file sees real fixture data.
+    from archimedes.api._route_helpers import strategy_provider
+
+    strategy_provider.cache_clear()
+
     yield
 
 
