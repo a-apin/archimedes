@@ -261,7 +261,15 @@ def _build_entry(result, *, metadata: dict, num_trials: int, corr_spy: float | N
 
 
 def main(write: bool = False) -> None:
-    fixtures = json.loads(_FIXTURE_PATH.read_text(encoding="utf-8"))
+    try:
+        fixtures = json.loads(_FIXTURE_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f"Cannot read fixture file {_FIXTURE_PATH}: {exc}\n"
+            "backtest_fixtures.json is no longer committed (DB migration) — seed a local "
+            "snapshot first: conda run -n archimedes python "
+            "backend/scripts/export_backtest_fixtures.py"
+        ) from exc
 
     # Add-only + idempotent: the spec lists are a cumulative catalog of how every
     # fixture entry was generated, but a given run only (re)backtests the stems not

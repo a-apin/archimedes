@@ -28,8 +28,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from archimedes.db import get_session
 from archimedes.models.backtest import BacktestResult
+from archimedes.models.backtest_fixtures_store import FIXTURE_FIELDS, StrategyBacktestFixture
 from archimedes.models.paper_ref import PaperRef
 from archimedes.models.strategy import (
     PositionSizing,
@@ -218,39 +221,69 @@ def _load_dynamic_fixtures() -> dict[str, Any] | None:
     return None
 
 
-def _load_bundled_fixtures(strategies_dir: Path) -> dict[str, Any]:
-    """Load the bundled backtest_fixtures.json from the strategies directory.
+def _fixture_row_to_dict(row: StrategyBacktestFixture) -> dict[str, Any]:
+    """Project one ORM row into the exact dict shape the JSON records used —
+    same keys, same native Python types (SQLAlchemy Float/Integer/Boolean/
+    String round-trip to float/int/bool/str, matching ``json.loads``)."""
+    return {field: getattr(row, field) for field in FIXTURE_FIELDS}
 
-    This is the fallback (and the historical default). Identical behavior to
-    the original loader: missing/invalid file → ``{}``.
+
+def _load_fixtures_from_db(session: Session | None = None) -> dict[str, Any]:
+    """Load backtest fixtures from the ``strategy_backtest_fixtures`` table.
+
+    Replaces the committed ``backtest_fixtures.json`` as the terminal
+    (non-override) fixture source. Same ``{stem: {...}}`` output shape the
+    bundled-file loader always produced, so ``_to_strategy``'s ``fx.get(...)``
+    calls are unchanged.
+
+    **Never raises.** A DB read failure (unreachable DB, table not yet
+    migrated) degrades gracefully to ``{}`` — identical fail-open-to-empty
+    contract the bundled-file loader had for a missing/invalid file. A
+    strategy just serves without real backtest numbers layered in; it does
+    not take down strategy listing.
+
+    Args:
+        session: An existing DB session to query on (tests pass an isolated
+            one). When ``None``, opens and closes its own session via
+            ``archimedes.db.get_session``.
     """
-    fixture_path = strategies_dir / "backtest_fixtures.json"
-    if not fixture_path.exists():
-        return {}
+
+    def _query(sess: Session) -> dict[str, Any]:
+        rows = sess.query(StrategyBacktestFixture).all()
+        return {row.stem: _fixture_row_to_dict(row) for row in rows}
+
     try:
-        return _load_fixtures_from_path(fixture_path)
+        if session is not None:
+            return _query(session)
+        with get_session() as sess:
+            return _query(sess)
     except Exception as exc:
-        logger.warning("could not load backtest_fixtures.json: %s", exc)
+        logger.warning("could not load backtest fixtures from DB: %s", exc)
         return {}
 
 
-def _load_fixtures(strategies_dir: Path) -> dict[str, Any]:
-    """Load backtest fixtures, preferring a dynamic source over the bundle.
+def _load_fixtures(session: Session | None = None) -> dict[str, Any]:
+    """Load backtest fixtures, preferring a dynamic source over the DB.
 
-    Resolution order (issue #465):
+    Resolution order (issue #465 dynamic overrides; DB migration):
       1. ``ARCHIMEDES_FIXTURES_PATH`` — a filesystem path override.
       2. ``ARCHIMEDES_FIXTURES_URL`` — an http(s) source.
-      3. The bundled ``backtest_fixtures.json`` in ``strategies_dir``.
+      3. The ``strategy_backtest_fixtures`` DB table (replaces the committed
+         ``backtest_fixtures.json``).
 
     The dynamic source is *preferred* only when configured and it loads
-    successfully with non-empty content; otherwise the bundled file is used.
-    When neither env var is set the behavior is byte-identical to the original
-    loader, so served gate-sensitive metrics do not move.
+    successfully with non-empty content; otherwise the DB is queried. When
+    neither env var is set, behavior is unchanged from before the DB
+    migration except for the storage medium of the terminal source.
+
+    Args:
+        session: passed through to ``_load_fixtures_from_db`` (tests only;
+            production callers use the default and let it open its own).
     """
     dynamic = _load_dynamic_fixtures()
     if dynamic is not None:
         return dynamic
-    return _load_bundled_fixtures(strategies_dir)
+    return _load_fixtures_from_db(session)
 
 
 def _to_strategy(
@@ -454,7 +487,7 @@ class LocalStrategyProvider:
             self._strategies = {}
             return 0
 
-        self._fixtures = _load_fixtures(self._strategies_dir)
+        self._fixtures = _load_fixtures()
 
         loaded: dict[str, Strategy] = {}
         for path in sorted(self._strategies_dir.glob("*.py")):

@@ -13,6 +13,7 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from archimedes.models.backtest_fixtures_store import StrategyBacktestFixture  # noqa: F401
 from archimedes.models.backtest_store import BacktestResultRecord  # noqa: F401
 from archimedes.models.chat import Base
 from archimedes.models.corpus_store import CorpusMetaRecord, PaperRecord  # noqa: F401

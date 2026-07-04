@@ -7,6 +7,8 @@ page (shows full gate breakdown).
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 from fastapi import APIRouter, Request, Response
 
@@ -18,11 +20,16 @@ from archimedes.services.rigor_evaluator import (
     load_daily_returns_store,
     run_rigor_gate,
 )
-from archimedes.services.strategy_provider import default_provider
+from archimedes.services.strategy_provider import LocalStrategyProvider, default_provider
 
 selection_bias_router = APIRouter(prefix="/api/selection-bias", tags=["selection-bias"])
 
-_provider = default_provider()
+
+@lru_cache(maxsize=1)
+def _provider() -> LocalStrategyProvider:
+    """Lazily-constructed, cached strategy provider (see _route_helpers.py's
+    strategy_provider() for the full rationale). Call sites: ``_provider().foo()``."""
+    return default_provider()
 
 
 # ── Schemas ──────────────────────────────────────────────────
@@ -135,7 +142,7 @@ async def evaluate_rigor_gate():
     no number (#771).  Wire it once the analytics-engine supports combinatorial
     window output.
     """
-    strategies = _provider.list_strategies()
+    strategies = _provider().list_strategies()
 
     # Library-level CSCV PBO (#546, option 2): a display-only selection-set
     # property attached to the response and to each per-strategy result. It is
@@ -304,7 +311,7 @@ async def evaluate_rigor_gate():
 @selection_bias_router.get("/gate/{strategy_id}", response_model=StrategyRigorResult)
 async def evaluate_strategy_rigor(strategy_id: str):
     """Evaluate rigor gate for a single strategy."""
-    strategy = _provider.get_strategy(strategy_id)
+    strategy = _provider().get_strategy(strategy_id)
     if strategy is None:
         from fastapi import HTTPException
 

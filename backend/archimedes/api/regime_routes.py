@@ -52,7 +52,7 @@ async def get_current_regime():
             "risk_off": ["volatility", "managed", "t-bill"],
             "crisis": ["t-bill", "preservation", "capital"],
         }
-        all_strats = strategy_provider.list_strategies()
+        all_strats = strategy_provider().list_strategies()
         regime_keywords = regime_to_keywords.get(regime_value, [])
         recommended_ids: list[str] = []
         recommended_titles: list[str] = []

@@ -48,12 +48,16 @@ class _Strat:
 
 
 def test_status_curated_passing():
-    with patch(f"{V}.strategy_provider.get_strategy", return_value=_Strat(True)):
+    # strategy_provider is now a lazily-cached accessor (strategy_provider());
+    # patch the name wholesale and configure the mocked callable's return_value.
+    with patch(f"{V}.strategy_provider") as mock_provider:
+        mock_provider.return_value.get_strategy.return_value = _Strat(True)
         assert _strategy_rigor_status("s1") == (True, True)
 
 
 def test_status_curated_failing():
-    with patch(f"{V}.strategy_provider.get_strategy", return_value=_Strat(False)):
+    with patch(f"{V}.strategy_provider") as mock_provider:
+        mock_provider.return_value.get_strategy.return_value = _Strat(False)
         assert _strategy_rigor_status("s1") == (True, False)
 
 
@@ -61,9 +65,10 @@ def test_status_fails_closed_on_db_error():
     # Not curated → falls to the DB; if the session raises, we must report not-found
     # (False, False) so the caller blocks the deploy rather than waving it through.
     with (
-        patch(f"{V}.strategy_provider.get_strategy", return_value=None),
+        patch(f"{V}.strategy_provider") as mock_provider,
         patch("archimedes.db.get_session", side_effect=RuntimeError("db down")),
     ):
+        mock_provider.return_value.get_strategy.return_value = None
         assert _strategy_rigor_status("missing") == (False, False)
 
 

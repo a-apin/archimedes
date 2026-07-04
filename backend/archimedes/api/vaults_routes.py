@@ -42,7 +42,7 @@ async def _anchor_strategies_async(strategy_ids: list[str]) -> None:
     """
     for sid in strategy_ids:
         try:
-            passport = strategy_provider.get_strategy(sid)
+            passport = strategy_provider().get_strategy(sid)
             if passport is None:
                 logger.debug("anchor: strategy %s not found in provider — skipping", sanitize_log_value(sid))
                 continue
@@ -75,7 +75,7 @@ def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
     strategy is reported as not-found so the caller refuses the deploy rather than
     waving through an unverifiable one.
     """
-    strat = strategy_provider.get_strategy(strategy_id)
+    strat = strategy_provider().get_strategy(strategy_id)
     if strat is not None:
         return True, bool(getattr(strat, "passes_rigor_gate", False))
 
@@ -282,7 +282,7 @@ async def derive_vault_allocations(address: str, req: SetAllocationsRequest, req
     from archimedes.chain.client import chain_client
     from archimedes.services.strategy_signal_evaluator import strategy_evaluator
 
-    strategies = strategy_provider.list_strategies()
+    strategies = strategy_provider().list_strategies()
 
     if req.strategy_ids:
         strategies = [s for s in strategies if s.id in req.strategy_ids]
