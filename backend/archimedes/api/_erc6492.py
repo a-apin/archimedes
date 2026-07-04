@@ -89,5 +89,19 @@ async def verify_smart_wallet_signature(wallet: str, message_text: str, signatur
         # Fail closed: an unreachable RPC, a revert (e.g. undeployed account +
         # unwrapped sig), or a malformed signature must never authenticate. An
         # exception here is a DIFFERENT failure class than a clean 0x00 above.
-        logger.warning("smart-wallet SIWE ERRORED (fail-closed, %s): %s", type(exc).__name__, str(exc)[:300])
+        # Mirror the INVALID branch's correlation metadata (wallet + sig length)
+        # so the two log lines can be joined. Compute byte length via fromhex so
+        # the value is accurate; fall back to -1 when the string is non-hex or
+        # not a string at all (hex-decode failure may itself be what raised).
+        try:
+            sig_len = len(bytes.fromhex(signature.removeprefix("0x"))) if isinstance(signature, str) else -1
+        except (ValueError, AttributeError):
+            sig_len = -1
+        logger.warning(
+            "smart-wallet SIWE ERRORED (fail-closed, %s) wallet=%s sig_len=%d: %s",
+            type(exc).__name__,
+            wallet[:12],
+            sig_len,
+            str(exc)[:300],
+        )
         return False
