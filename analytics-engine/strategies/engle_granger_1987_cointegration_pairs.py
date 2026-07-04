@@ -111,6 +111,10 @@ class CointegrationPairsTrading(bt.Strategy):
     ``self.datas[1]`` (leg B). Driven by ``engine.run_pairs_backtest``.
     """
 
+    # Runner contract (issue #887): this class hard-indexes self.datas[1], so a
+    # single-feed run must fail closed with a typed error, not an IndexError.
+    REQUIRED_FEEDS = 2
+
     params = (
         ("lookback", 252),  # formation window for OLS hedge ratio + spread stats
         ("entry_z", 2.0),

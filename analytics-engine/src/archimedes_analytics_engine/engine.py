@@ -16,6 +16,30 @@ RF_DAILY = RF_ANNUAL / ANNUALIZATION
 BACKTEST_ENGINE_TAG = "backtrader"
 
 
+class FeedArityError(ValueError):
+    """A strategy that hard-requires N aligned data feeds was given fewer.
+
+    Raised fail-closed at the runner boundary (issue #887) instead of letting
+    a pairs strategy crash mid-run with a bare ``IndexError`` on
+    ``self.datas[1]``. The message is passport-grade: it says what the
+    strategy needs ("pairs needs >= 2 instruments") rather than where a list
+    index went out of range.
+    """
+
+
+def required_feeds(strategy_cls: type[bt.Strategy]) -> int:
+    """How many aligned data feeds ``strategy_cls`` declares it hard-requires.
+
+    Strategies that index ``self.datas[1]`` (the pairs family) declare
+    ``REQUIRED_FEEDS = 2`` as a class attribute; anything undeclared or
+    malformed is treated as the single-feed default of 1.
+    """
+    try:
+        return max(1, int(getattr(strategy_cls, "REQUIRED_FEEDS", 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 @dataclass
 class BacktestResult:
     """Container for every metric a single backtest run produces.
@@ -318,7 +342,23 @@ def run_backtest(
     -------
     BacktestResult
         Full metric record for the run.
+
+    Raises
+    ------
+    FeedArityError
+        If ``strategy_cls`` declares ``REQUIRED_FEEDS > 1`` — a pairs /
+        multi-feed strategy cannot run on a single feed and must go through
+        :func:`run_pairs_backtest` or :func:`run_multi_backtest`.
     """
+    required = required_feeds(strategy_cls)
+    if required > 1:
+        raise FeedArityError(
+            f"strategy {strategy_cls.__name__} requires {required} aligned data feeds "
+            "but the single-feed runner provides 1 — a pairs strategy needs >= 2 "
+            "instruments; run it via run_pairs_backtest/run_multi_backtest with its "
+            "declared asset universe"
+        )
+
     cerebro = bt.Cerebro(stdstats=False)
     transaction_cost_bps, slippage_bps = _configure_broker(
         cerebro,

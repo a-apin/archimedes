@@ -104,6 +104,10 @@ class KalmanPairsTrading(bt.Strategy):
     ``engine.run_pairs_backtest``.
     """
 
+    # Runner contract (issue #887): this class hard-indexes self.datas[1], so a
+    # single-feed run must fail closed with a typed error, not an IndexError.
+    REQUIRED_FEEDS = 2
+
     params = (
         ("delta", 1e-4),  # state-drift scale; W = delta/(1-delta) * I (small => slow hedge drift)
         ("ve", 1e-3),  # observation-noise variance

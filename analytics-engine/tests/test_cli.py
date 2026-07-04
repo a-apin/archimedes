@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from archimedes_analytics_engine.cli import run_command
+from archimedes_analytics_engine.engine import FeedArityError
 
 
 def _fake_fetch(symbol: str, start: str, end: str) -> pd.DataFrame:
@@ -180,3 +182,64 @@ def test_artifact_results_carry_metrics_block(tmp_path: Path) -> None:
         assert key in metrics, f"missing metric key: {key}"
     assert metrics["backtest_engine"] == "backtrader"
     assert metrics["look_ahead_audit_passed"] is True
+
+
+# Issue #887: run_command must route two-feed (pairs) strategies through the
+# two-feed runner on their declared universe legs, and fail closed with a
+# typed error when the universe collapses to a single instrument.
+
+
+def _write_pairs_strategy(path: Path, universe: str = "['GLD', 'GDX']") -> None:
+    path.write_text(
+        "import backtrader as bt\n\n"
+        f"ASSET_UNIVERSE = {universe}\n\n"
+        "class PairsProbe(bt.Strategy):\n"
+        "    REQUIRED_FEEDS = 2\n\n"
+        "    def next(self):\n"
+        "        float(self.datas[1].close[0])  # hard two-feed dependency\n"
+    )
+
+
+def test_run_command_routes_pairs_strategy_through_two_feed_runner(tmp_path: Path) -> None:
+    strategy_file = tmp_path / "pairs_probe.py"
+    _write_pairs_strategy(strategy_file)
+
+    output = run_command(
+        operations=["SPY"],  # benchmark ops are ignored for pairs — the universe legs win
+        start="2024-01-01",
+        end="2024-01-10",
+        initial_cash=10000.0,
+        tx_cost_bps=10,
+        slippage_bps=5,
+        artifact_dir=tmp_path,
+        strategy_path=strategy_file,
+        fetcher=_fake_fetch,
+    )
+
+    payload = json.loads(Path(output["artifact_path"]).read_text())
+    assert payload["operations"] == ["GLD", "GDX"]
+    assert len(payload["results"]) == 1
+    result = payload["results"][0]
+    assert result["operation"] == "GLD/GDX"
+    assert result["symbol"] == "GLD/GDX"
+    assert result["metrics"]["bars"] == 5
+    assert result["metrics"]["look_ahead_audit_passed"] is True
+    assert len(payload["data_hashes"]) == 2  # one per leg
+
+
+def test_run_command_fails_closed_on_single_symbol_pairs_universe(tmp_path: Path) -> None:
+    strategy_file = tmp_path / "degenerate_pairs.py"
+    _write_pairs_strategy(strategy_file, universe="['GLD', 'GLD']")
+
+    with pytest.raises(FeedArityError, match="needs >= 2 distinct instruments"):
+        run_command(
+            operations=["SPY"],
+            start="2024-01-01",
+            end="2024-01-10",
+            initial_cash=10000.0,
+            tx_cost_bps=10,
+            slippage_bps=5,
+            artifact_dir=tmp_path,
+            strategy_path=strategy_file,
+            fetcher=_fake_fetch,
+        )

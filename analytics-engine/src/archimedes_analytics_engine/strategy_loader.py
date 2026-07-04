@@ -21,6 +21,11 @@ METADATA_KEYS: tuple[str, ...] = (
     "PAPER_CLAIMED_SHARPE",
     "PAPER_CLAIMED_CAGR",
     "PAPER_CLAIMED_MAX_DD",
+    # Feed-universe declarations: which instruments the strategy trades and how
+    # many aligned data feeds it hard-requires (pairs strategies declare 2 so
+    # the runner can pick run_pairs_backtest instead of the single-feed path).
+    "ASSET_UNIVERSE",
+    "REQUIRED_FEEDS",
 )
 
 
@@ -36,6 +41,17 @@ def _load_module(path: Path) -> ModuleType:
         raise ValueError(f"Strategy file not found: {path}")
     if path.suffix != ".py":
         raise ValueError(f"Strategy file must be .py: {path}")
+
+    # Sibling-import support (issue #887): strategy modules may import a
+    # neighbour by bare name (the gatev pair variants import
+    # gatev_2006_pairs_distance). That resolved only when CWD happened to be
+    # the strategies dir; under the scheduler/backfill import path it is not,
+    # so exec_module raised ModuleNotFoundError. Injecting the file's parent
+    # dir onto sys.path at the loader boundary makes siblings resolvable
+    # regardless of CWD for every current and future strategy file.
+    parent_dir = str(path.resolve().parent)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
 
     module_name = f"archimedes_strategy_{path.stem}_{abs(hash(path))}"
     spec = importlib.util.spec_from_file_location(module_name, path)

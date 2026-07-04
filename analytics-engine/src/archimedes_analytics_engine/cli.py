@@ -9,10 +9,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import backtrader as bt
 import pandas as pd
 
 from .data import fetch_ohlcv
-from .engine import BACKTEST_ENGINE_TAG, run_backtest
+from .engine import BACKTEST_ENGINE_TAG, FeedArityError, required_feeds, run_backtest, run_pairs_backtest
 from .instruments import OPERATION_TO_SYMBOL, resolve_operations
 from .strategy_loader import load_strategy
 
@@ -51,6 +52,34 @@ def _merge_metadata(
     return merged
 
 
+def _pair_legs(
+    strategy_cls: type[bt.Strategy],
+    metadata: dict[str, Any],
+    strategy_path: Path,
+) -> list[str]:
+    """Resolve the two thesis-true legs of a pairs strategy from its declared universe.
+
+    The pairs family declares its traded pair as ``ASSET_UNIVERSE`` (e.g.
+    ``["GLD", "GDX"]``), which is exactly the leg mapping the fixture
+    regenerator uses. Dedupes case-insensitively and fails closed with a typed
+    :class:`FeedArityError` when fewer than two distinct instruments survive —
+    never lets the strategy reach ``self.datas[1]`` on a single feed.
+    """
+    universe = metadata.get("asset_universe") or []
+    legs: list[str] = []
+    for symbol in universe:
+        normalized = str(symbol).upper()
+        if normalized and normalized not in legs:
+            legs.append(normalized)
+    if len(legs) < 2:
+        raise FeedArityError(
+            f"pairs strategy {strategy_cls.__name__} ({strategy_path.name}) needs >= 2 "
+            f"distinct instruments, but its declared ASSET_UNIVERSE {universe!r} resolves "
+            f"to {len(legs)} — failing closed instead of crashing on the missing second leg"
+        )
+    return resolve_operations(legs[:2])
+
+
 def run_command(
     *,
     operations: list[str],
@@ -71,7 +100,6 @@ def run_command(
     walk_forward_split: float | None = None,
     fetcher: Callable[[str, str, str], pd.DataFrame] = fetch_ohlcv,
 ) -> dict:
-    ops = resolve_operations(operations)
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     bundle = load_strategy(strategy_path, strategy_class)
 
@@ -91,26 +119,64 @@ def run_command(
     results: list[dict] = []
     data_hashes: list[str] = []
 
-    for op in ops:
-        symbol = OPERATION_TO_SYMBOL[op]
-        prices = fetcher(symbol, start, end)
-        data_hashes.append(_hash_frame(prices))
+    feeds_needed = required_feeds(bundle.cls)
+    if feeds_needed > 2:
+        raise FeedArityError(
+            f"strategy {bundle.cls.__name__} declares REQUIRED_FEEDS={feeds_needed}, "
+            "but this runner supports 1 (single-feed) or 2 (pairs) feeds today"
+        )
 
-        bt_result = run_backtest(
-            prices,
+    if feeds_needed == 2:
+        # Pairs strategies trade their declared two-leg universe, not the
+        # requested benchmark operations — a single benchmark feed would crash
+        # on self.datas[1] (issue #887). Same leg mapping as regen_fixtures.py.
+        ops = _pair_legs(bundle.cls, metadata, strategy_path)
+        symbol_a, symbol_b = OPERATION_TO_SYMBOL[ops[0]], OPERATION_TO_SYMBOL[ops[1]]
+        prices_a = fetcher(symbol_a, start, end)
+        prices_b = fetcher(symbol_b, start, end)
+        data_hashes.append(_hash_frame(prices_a))
+        data_hashes.append(_hash_frame(prices_b))
+
+        bt_result = run_pairs_backtest(
+            prices_a,
+            prices_b,
             strategy_cls=bundle.cls,
             initial_cash=initial_cash,
+            name_a=ops[0],
+            name_b=ops[1],
             transaction_cost_bps=tx_cost_bps,
             slippage_bps=slippage_bps,
         )
 
         results.append(
             {
-                "operation": op,
-                "symbol": symbol,
+                "operation": f"{ops[0]}/{ops[1]}",
+                "symbol": f"{symbol_a}/{symbol_b}",
                 "metrics": asdict(bt_result),
             }
         )
+    else:
+        ops = resolve_operations(operations)
+        for op in ops:
+            symbol = OPERATION_TO_SYMBOL[op]
+            prices = fetcher(symbol, start, end)
+            data_hashes.append(_hash_frame(prices))
+
+            bt_result = run_backtest(
+                prices,
+                strategy_cls=bundle.cls,
+                initial_cash=initial_cash,
+                transaction_cost_bps=tx_cost_bps,
+                slippage_bps=slippage_bps,
+            )
+
+            results.append(
+                {
+                    "operation": op,
+                    "symbol": symbol,
+                    "metrics": asdict(bt_result),
+                }
+            )
 
     lookahead_passed = all(r["metrics"]["look_ahead_audit_passed"] for r in results) if results else False
     paper_claim_applied = metadata.get("paper_claimed_sharpe") is not None
