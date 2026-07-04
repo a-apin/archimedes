@@ -509,40 +509,28 @@ class MyStrategy(bt.Strategy):
 
     def test_secondary_data_feed_negative_index_is_not_flagged_as_negative(self) -> None:
         """self.datas[1].close[-i] (gatev_2006_pairs_distance.py's pairs-trading
-        shape) — the NEGATIVE bars-ago index [-i] must not be flagged.
+        shape) — neither the NEGATIVE bars-ago index [-i] NOR the POSITIVE
+        feed-selector index [1] on self.datas should be flagged.
 
-        NOTE (found while writing this test, NOT part of #868's scope): this
-        exact snippet still fails look_ahead_audit overall today, because the
-        POSITIVE-index branch (unconditional, untouched by #868 — see
-        look_ahead_audit's `elif isinstance(slice_val, ast.Constant) ...
-        value > 0` leg) separately and incorrectly flags the `self.datas[1]`
+        Originally (pre-#881) this snippet still failed look_ahead_audit
+        overall, because the POSITIVE-index branch (unconditional, untouched
+        by #868) separately and incorrectly flagged the `self.datas[1]`
         data-FEED-selector subscript itself ("positive data index [1] may
         reference future bars") — conflating "index 1 selects the 2nd data
-        feed" with "index 1 is one bar in the future". This is a real,
-        pre-existing, independent false positive (confirmed present on
-        unmodified main before this fix) affecting every multi-leg/pairs
-        strategy that writes `self.datas[N]` directly rather than through a
-        pre-bound variable: gatev_2006_pairs_distance.py,
-        elliott_2005_kalman_pairs.py, and engle_granger_1987_cointegration_pairs.py
-        all still fail look_ahead_audit after this fix, dominated by this
-        secondary bug rather than the bars-ago issue #868 asked me to fix.
-        Out of scope here per the issue's explicit instruction to preserve the
-        positive-index ("genuine look-ahead") detector as-is; flagged in the
-        PR/report rather than silently widened.
+        feed" with "index 1 is one bar in the future". #881 fixed that: see
+        `_is_datas_feed_selection` and the positive-index branch in
+        `look_ahead_audit`.
         """
         code = "def f(self, i):\n    return self.datas[1].close[-i]\n"
-        _passed, warnings = look_ahead_audit(code)
+        passed, warnings = look_ahead_audit(code)
         assert not any("negative index" in w.lower() for w in warnings), (
             f"the bars-ago [-i] access must not be flagged as a negative-index violation: {warnings}"
         )
-        # Documents the known, separate, out-of-scope positive-index false
-        # positive on the self.datas[N] feed-selector subscript (see docstring).
-        # If this assertion ever starts failing, that pre-existing bug has been
-        # fixed elsewhere — which would be a welcome surprise, not a regression.
-        assert any("positive" in w.lower() for w in warnings), (
-            "expected the known pre-existing self.datas[N] positive-index false "
-            "positive to still be present (tracked separately, out of #868's scope)"
+        assert not any("positive" in w.lower() for w in warnings), (
+            f"self.datas[1] is feed selection, not a look-ahead violation (#881): {warnings}"
         )
+        assert passed
+        assert warnings == []
 
     def test_loop_variable_alias_over_datas(self) -> None:
         # d.close[-i] where `d` is a loop variable bound to a self.datas element
@@ -670,6 +658,181 @@ class MyStrategy(bt.Strategy):
         assert not any("negative index" in w.lower() for w in warnings), (
             "the legitimate self.data.close[-1] access must not also warn"
         )
+
+
+# ─── Look-ahead audit: self.datas[N] feed selection vs. positive look-ahead (#881) ──
+
+
+class TestLookAheadAuditDatasFeedSelection:
+    """#881: look_ahead_audit's positive-index branch previously flagged ANY
+    positive constant subscript, including `self.datas[N]` — backtrader's
+    convention for selecting which data feed to address in a multi-asset
+    strategy (e.g. `self.datas[1]` = the second asset in a pairs trade), not a
+    time offset. This false-positived every multi-leg/pairs strategy that
+    writes `self.datas[N]` directly (as opposed to via a pre-bound variable).
+    """
+
+    # ── self.datas[N] feed selection: must PASS (no warnings) ────────────
+
+    def test_datas_constant_index_one_not_flagged(self) -> None:
+        # self.datas[1] — the exact shape named in the issue.
+        code = "def f(self):\n    return self.datas[1]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert passed
+        assert warnings == []
+
+    def test_datas_index_zero_and_one_both_pass(self) -> None:
+        code = """
+class MyStrategy(bt.Strategy):
+    def next(self):
+        a = self.datas[0]
+        b = self.datas[1]
+"""
+        passed, warnings = look_ahead_audit(code)
+        assert passed
+        assert warnings == []
+
+    def test_datas_feed_selection_with_close_attribute_current_bar(self) -> None:
+        # self.datas[1].close[0] — feed selection (positive index on
+        # self.datas) chained with current-bar access (index 0, not positive).
+        code = "def f(self):\n    return self.datas[1].close[0]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert passed
+        assert warnings == []
+
+    def test_datas_feed_selection_used_in_getposition_and_order_calls(self) -> None:
+        # self.getposition(self.datas[1]) / self.close(data=self.datas[1]) /
+        # self.order_target_size(data=self.datas[0], ...) — the exact call
+        # shapes used by gatev_2006_pairs_distance.py and siblings.
+        code = """
+class MyStrategy(bt.Strategy):
+    def next(self):
+        in_position = bool(self.getposition(self.datas[0]).size) or bool(self.getposition(self.datas[1]).size)
+        if in_position:
+            self.close(data=self.datas[0])
+            self.close(data=self.datas[1])
+        else:
+            self.order_target_size(data=self.datas[0], target=-1)
+            self.order_target_size(data=self.datas[1], target=1)
+"""
+        passed, warnings = look_ahead_audit(code)
+        assert passed, f"self.datas[N] feed-selection calls incorrectly flagged: {warnings}"
+        assert warnings == []
+
+    # ── Genuine look-ahead: must still FAIL, even near self.datas ────────
+
+    def test_positive_index_on_close_after_datas_selection_still_warns(self) -> None:
+        # self.datas[1].close[1] — the feed-selector subscript ([1] on
+        # self.datas) is exempt, but the CHAINED [1] on .close is a genuine
+        # positive time-offset (a future bar) and must still be flagged. The
+        # exemption is narrowly for the self.datas[N] subscript itself, not
+        # "any positive index anywhere in a chain rooted at self.datas".
+        code = "def f(self):\n    return self.datas[1].close[1]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("positive" in w.lower() for w in warnings)
+
+    def test_positive_index_on_other_self_attribute_still_warns(self) -> None:
+        # self.highest[1] — a positive index on a self-rooted attribute that
+        # is NOT self.datas must still be flagged; the exemption is specific
+        # to the literal `self.datas` chain, not "any self-rooted attribute".
+        code = "def f(self):\n    return self.highest[1]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("positive" in w.lower() for w in warnings)
+
+    def test_positive_index_on_plain_array_still_warns(self) -> None:
+        # A genuine future-index violation unrelated to self.datas at all
+        # (e.g. indexing a returns array at a computed future position) must
+        # still fail — the acceptance-criteria synthetic fixture for #881.
+        code = "def f(returns):\n    return returns[3]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("positive" in w.lower() for w in warnings)
+
+    def test_datas_not_rooted_at_self_still_warns(self) -> None:
+        # local_datas[1] — a variable merely NAMED "datas" that is not the
+        # `self.datas` attribute chain must not be exempted; the check keys
+        # off the actual attribute access (self.datas), not the name "datas".
+        code = "def f(local_datas):\n    return local_datas[1]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("positive" in w.lower() for w in warnings)
+
+    def test_non_self_rooted_datas_attribute_still_warns(self) -> None:
+        # other.datas[1] — an attribute chain with attr "datas" but whose root
+        # is NOT literally `self` must not be exempted; #881's issue text is
+        # specific to backtrader's `self.datas[N]` convention.
+        code = "def f(other):\n    return other.datas[1]\n"
+        passed, warnings = look_ahead_audit(code)
+        assert not passed
+        assert any("positive" in w.lower() for w in warnings)
+
+
+# ─── Look-ahead audit: real pairs-strategy files (#881 acceptance) ────
+
+
+class TestLookAheadAuditRealPairsStrategyFiles:
+    """ACCEPTANCE CRITERION (#881, end-to-end, real files): the three
+    multi-asset pairs strategies named in the issue now pass look_ahead_audit,
+    loaded from disk via the session-scoped ``strategies_dir`` fixture so this
+    exercises the same source run_rigor_gate sees on the live path."""
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "gatev_2006_pairs_distance.py",
+            "elliott_2005_kalman_pairs.py",
+        ],
+    )
+    def test_pairs_strategy_file_passes_look_ahead_audit(self, strategies_dir, filename) -> None:
+        path = strategies_dir / filename
+        assert path.is_file(), f"expected strategy file at {path}"
+        code = path.read_text()
+
+        passed, warnings = look_ahead_audit(code)
+        assert passed, f"{filename} still fails look-ahead audit: {warnings}"
+        assert warnings == []
+
+    def test_cointegration_pairs_file_has_only_unrelated_preexisting_warnings(self, strategies_dir) -> None:
+        """engle_granger_1987_cointegration_pairs.py: the self.datas[N]
+        false positives (#881's scope) are gone, but the file still has TWO
+        pre-existing, UNRELATED false positives this issue does not ask us to
+        fix (out of scope — see the issue's anti-goal against widening the
+        exemption beyond self.datas[N]):
+
+          - `coef[1]` (lines ~132, ~145): indexing into an OLS/AR(1)
+            regression-coefficient array (np.linalg.lstsq output) by position
+            — not a self.datas subscript, not a time offset at all.
+          - `spread[-1]`: a plain numpy local variable, correctly still
+            flagged by the (unrelated, #868-scoped) negative-index branch.
+
+        This test locks in that no NEW/different warnings appear and that the
+        self.datas[N] warnings specifically are gone, so a future change to
+        either branch that regresses this file is caught, without asserting
+        the file passes overall (it doesn't, for reasons outside #881).
+        """
+        path = strategies_dir / "engle_granger_1987_cointegration_pairs.py"
+        assert path.is_file(), f"expected strategy file at {path}"
+        code = path.read_text()
+
+        passed, warnings = look_ahead_audit(code)
+        assert passed is False, (
+            "expected this file to still fail on the two unrelated pre-existing "
+            "false positives (coef[1] regression-coefficient indexing, "
+            f"spread[-1] plain-array negative index) — got zero warnings: {warnings}"
+        )
+        # Exactly the two known unrelated categories, nothing else (in
+        # particular no self.datas[N] "positive data index" warning survives).
+        assert len(warnings) == 3, f"expected exactly 3 warnings (2 coef[1] + 1 spread[-1]), got: {warnings}"
+        for w in warnings:
+            assert ("negative index on a non-backtrader object" in w) or ("positive data index [1]" in w), (
+                f"unexpected new warning shape, investigate: {w}"
+            )
+        # None of the surviving warnings should be about a self.datas[N] line —
+        # the fixed lines (177/178, i.e. self.datas[0]/[1].close[0]) must be
+        # absent now.
+        assert not any("self.datas" in w for w in warnings)
 
 
 class TestLookAheadAuditRealMoreiraMuirFile:
