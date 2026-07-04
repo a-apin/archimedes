@@ -1,6 +1,7 @@
 // BacktestVisualizer — equity+drawdown dual chart, chronological IS/OOS bands,
 // parameter-sweep heatmap, filterable trade log, and rolling-stat confidence
-// band. Renders standalone with mock defaults; accepts real props.
+// band. Accepts real props; fetches daily returns from the API when strategyId
+// is set (#passport-honesty: never falls back to mock data for the equity curve).
 //
 // Suggested integration: import into the StrategyPassport / backtest detail
 // surface, e.g.
@@ -10,12 +11,11 @@
 // All inline SVG (no chart lib). Styling reuses shared App.css classes plus a
 // small colocated BacktestVisualizer.css.
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import {
   equityFromReturns,
   drawdownSeries,
   rollingSharpe,
-  mockReturns,
   seededRng,
 } from '../utils/riskMath'
 import './BacktestVisualizer.css'
@@ -278,9 +278,9 @@ function RollingStatBand({ returns, window }) {
   )
 }
 
-// ─── mock defaults ──────────────────────────────────────────
-function buildMockResult() {
-  const returns = mockReturns(252, { seed: 21, drift: 0.0006 })
+// ─── mock scaffolding for walk-forward/sweep/trade sections ─
+// Returns (equity curve) are fetched from the real API — no mock data for those.
+function buildMockScaffold() {
   const rng = seededRng(5)
   const folds = Array.from({ length: 6 }, (_, i) => ({
     isSharpe: 1.0 + rng() * 0.8,
@@ -317,7 +317,7 @@ function buildMockResult() {
       price: 50 + rng() * 400,
     }
   })
-  return { returns, folds, sweep, trades }
+  return { folds, sweep, trades }
 }
 
 const METRIC_OPTIONS = [
@@ -339,10 +339,76 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
     metric: 'sharpe_ratio',
   })
 
+  // ── Real returns state (#passport-honesty) ───────────────────────────────
+  // Fetched from GET /api/strategies/{id}/returns. Never falls back to mock
+  // data: on 404 ("no persisted returns") we render an honest empty state.
+  const [returnsLoading, setReturnsLoading] = useState(false)
+  const [realReturns, setRealReturns] = useState(null)   // float[] | null
+  const [returnsNoData, setReturnsNoData] = useState(false)
+
+  // Depend on the minimal inputs (strategyId + the returns array itself), NOT
+  // the whole `result` object — parents recreate `result` on unrelated
+  // re-renders and that identity churn must not trigger refetches.
+  const propReturns = result?.returns ?? null
+
+  useEffect(() => {
+    // If the caller passes real returns via the result prop, use those directly.
+    // Clear any loading state a prior strategyId's in-flight fetch left behind.
+    if (propReturns) {
+      setRealReturns(propReturns)
+      setReturnsNoData(false)
+      setReturnsLoading(false)
+      return
+    }
+    if (!strategyId) {
+      setRealReturns(null)
+      setReturnsNoData(false)
+      setReturnsLoading(false)
+      return
+    }
+    // Cancellation guard: abort the in-flight request and drop late setState
+    // when strategyId changes or the component unmounts.
+    const controller = new AbortController()
+    let cancelled = false
+    setReturnsLoading(true)
+    setRealReturns(null)
+    setReturnsNoData(false)
+    // credentials:'include' sends the SIWE session cookie (same idiom as
+    // ui/src/api.js apiGet) so owners of private strategies get their returns
+    // when VITE_API_BASE is cross-origin instead of always seeing the 404 state.
+    fetch(`${API_BASE}/api/strategies/${encodeURIComponent(strategyId)}/returns`, {
+      credentials: 'include',
+      signal: controller.signal,
+    })
+      .then((res) => {
+        if (res.status === 404) {
+          if (!cancelled) setReturnsNoData(true)
+          return null
+        }
+        if (!res.ok) throw new Error(`Server error ${res.status}`)
+        return res.json()
+      })
+      .then((data) => {
+        if (!cancelled && data?.daily_returns) setRealReturns(data.daily_returns)
+      })
+      .catch((err) => {
+        // Abort is not an error state; network/unexpected errors read as no data
+        // rather than crashing — still never a mock fallback.
+        if (!cancelled && err?.name !== 'AbortError') setReturnsNoData(true)
+      })
+      .finally(() => {
+        if (!cancelled) setReturnsLoading(false)
+      })
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [strategyId, propReturns])
+
+  // Mock scaffold for walk-forward/sweep/trade sections (interactive demos).
   const data = useMemo(() => {
-    const mock = buildMockResult()
+    const mock = buildMockScaffold()
     return {
-      returns: result?.returns ?? mock.returns,
       folds: result?.folds ?? mock.folds,
       sweep: result?.sweep ?? mock.sweep,
       trades: result?.trades ?? mock.trades,
@@ -410,7 +476,23 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
         </p>
       </div>
 
-      <EquityDrawdownChart returns={data.returns} oosStartFrac={0.7} />
+      {/* ── Equity curve: real returns from API or honest empty state ── */}
+      {returnsLoading && (
+        <div className="card-elevated" style={{ padding: 24, marginBottom: 20, textAlign: 'center', color: 'var(--text-3)' }}>
+          Loading backtest returns…
+        </div>
+      )}
+      {!returnsLoading && realReturns && (
+        <EquityDrawdownChart returns={realReturns} oosStartFrac={0.7} />
+      )}
+      {!returnsLoading && returnsNoData && (
+        <div className="card-elevated" style={{ padding: 24, marginBottom: 20 }}>
+          <div className="label mb-2">Equity Curve &amp; Drawdown</div>
+          <p className="body" style={{ color: 'var(--text-3)', fontStyle: 'italic' }}>
+            No real backtest returns persisted yet — this strategy has not completed a real-data backtest.
+          </p>
+        </div>
+      )}
       <WalkForwardBands folds={data.folds} />
 
       {/* Parameter sweep section */}
@@ -499,7 +581,7 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
       </div>
 
       <TradeLog trades={data.trades} />
-      <RollingStatBand returns={data.returns} window={60} />
+      {realReturns && <RollingStatBand returns={realReturns} window={60} />}
     </div>
   )
 }

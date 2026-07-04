@@ -33,6 +33,7 @@ from archimedes.api.schemas import (
     SignalResponse,
     StrategyListResponse,
     StrategyResponse,
+    StrategyReturnsResponse,
     StrategySignalResponse,
     StrategySignalsResponse,
 )
@@ -85,7 +86,13 @@ def _to_strategy_response(
         rigor_result = _live_rigor_result_for_one(s)
 
     bt = strategy_provider().get_backtest_result(s.id)
-    has_real = s.real_sharpe is not None
+    # has_real: a BacktestResultRecord (persisted daily-returns row) exists.
+    # Previously derived from ``s.real_sharpe is not None`` (a metric field that can
+    # be populated from fixture stubs without a real returns row — a false positive).
+    # Now strictly tied to the persisted backtest/daily-returns row so that
+    # ``is_backtest_placeholder`` is honest: it is False ONLY when we have actual
+    # persisted run data the rigor gate can re-grade (#passport-honesty).
+    has_real = bt is not None
     return_source, return_source_note = classify_strategy(s)
 
     # Served status overlays the LIVE gate verdict on the file-declared status:
@@ -134,40 +141,53 @@ def _to_strategy_response(
         on_chain_registration_tx=s.on_chain_registration_tx,
         paper_claimed_sharpe=bt.paper_claimed_sharpe if bt else s.paper_claimed_sharpe,
         paper_claim_blended_sharpe=s.paper_claim_blended_sharpe,
-        sharpe_ratio=s.real_sharpe if has_real else (bt.sharpe_ratio if bt else s.stub_sharpe),
-        sortino_ratio=s.real_sortino if has_real else (bt.sortino_ratio if bt else None),
-        cagr=s.real_cagr if has_real else (bt.cagr if bt else s.stub_cagr),
-        max_drawdown=s.real_max_dd if has_real else (bt.max_drawdown if bt else s.stub_max_dd),
-        win_rate=s.real_win_rate if has_real else (bt.win_rate if bt else s.stub_win_rate),
-        calmar_ratio=s.real_calmar if has_real else (bt.calmar_ratio if bt else s.stub_calmar),
-        correlation_to_spy=s.real_corr_spy if has_real else (bt.correlation_to_spy if bt else s.stub_corr_spy),
-        total_trades=s.real_total_trades if has_real else (bt.total_trades if bt else None),
+        # Metric display: use s.real_* (fixture data) when available, fall through
+        # to the persisted backtest row, then the stub placeholder.  This is
+        # independent of ``has_real`` so curated strategies retain their fixture
+        # metrics even when no BacktestResultRecord row exists yet.
+        sharpe_ratio=s.real_sharpe if s.real_sharpe is not None else (bt.sharpe_ratio if bt else s.stub_sharpe),
+        sortino_ratio=s.real_sortino if s.real_sortino is not None else (bt.sortino_ratio if bt else None),
+        cagr=s.real_cagr if s.real_cagr is not None else (bt.cagr if bt else s.stub_cagr),
+        max_drawdown=s.real_max_dd if s.real_max_dd is not None else (bt.max_drawdown if bt else s.stub_max_dd),
+        win_rate=s.real_win_rate if s.real_win_rate is not None else (bt.win_rate if bt else s.stub_win_rate),
+        calmar_ratio=s.real_calmar if s.real_calmar is not None else (bt.calmar_ratio if bt else s.stub_calmar),
+        correlation_to_spy=s.real_corr_spy
+        if s.real_corr_spy is not None
+        else (bt.correlation_to_spy if bt else s.stub_corr_spy),
+        total_trades=s.real_total_trades if s.real_total_trades is not None else (bt.total_trades if bt else None),
         # Numeric rigor fields (#868): prefer the LIVE gate result — the SAME
         # run_rigor_gate call that produced `verdict` above — so the leaderboard
         # can never disagree with GET /api/selection-bias/gate for this id.
         # rigor_result is None when the live gate could not run (no/insufficient
-        # persisted returns, or a batch failure); fall back to the stale
-        # s.<field>/bt.<field> fixture values exactly as before in that case —
-        # only the preferred source changed, the fallback chain is unchanged.
+        # persisted returns, or a batch failure); fall back to the best stored
+        # value (s.<field> fixture first, then bt.<field> from the backtest row).
         deflated_sharpe_ratio=(
             rigor_result.deflated_sharpe
             if rigor_result is not None
-            else (s.deflated_sharpe_ratio if has_real else (bt.deflated_sharpe_ratio if bt else None))
+            else (
+                s.deflated_sharpe_ratio
+                if s.deflated_sharpe_ratio is not None
+                else (bt.deflated_sharpe_ratio if bt else None)
+            )
         ),
         dsr_p_value=(
             rigor_result.dsr_p_value
             if rigor_result is not None
-            else (s.dsr_p_value if has_real else (bt.dsr_p_value if bt else None))
+            else (s.dsr_p_value if s.dsr_p_value is not None else (bt.dsr_p_value if bt else None))
         ),
         pbo_score=(
             rigor_result.pbo_score
             if rigor_result is not None
-            else (s.pbo_score if has_real else (bt.pbo_score if bt else None))
+            else (s.pbo_score if s.pbo_score is not None else (bt.pbo_score if bt else None))
         ),
         out_of_sample_sharpe=(
             rigor_result.oos_sharpe
             if rigor_result is not None
-            else (s.out_of_sample_sharpe if has_real else (bt.out_of_sample_sharpe if bt else None))
+            else (
+                s.out_of_sample_sharpe
+                if s.out_of_sample_sharpe is not None
+                else (bt.out_of_sample_sharpe if bt else None)
+            )
         ),
         kelly_fraction=s.kelly_fraction,
         # Badge from the LIVE gate verdict (#821) — never the fixture boolean.
@@ -175,17 +195,19 @@ def _to_strategy_response(
         # rigor_gate_status carries the honest tri-state ("pass"|"fail"|"pending").
         passes_rigor_gate=verdict.passes,
         rigor_gate_status=verdict.status,
+        # is_backtest_placeholder: True when no BacktestResultRecord row exists.
+        # ``has_real`` is now bt is not None so this is the honest gate.
         is_backtest_placeholder=not has_real,
         sharpe_ci_lower=s.sharpe_ci_lower,
         sharpe_ci_upper=s.sharpe_ci_upper,
         backtest_start=(
             s.real_backtest_start
-            if has_real and s.real_backtest_start
+            if s.real_backtest_start
             else (bt.backtest_start.isoformat() if bt and bt.backtest_start else None)
         ),
         backtest_end=(
             s.real_backtest_end
-            if has_real and s.real_backtest_end
+            if s.real_backtest_end
             else (bt.backtest_end.isoformat() if bt and bt.backtest_end else None)
         ),
         regime_tag=s.regime_tag,
@@ -1628,6 +1650,79 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         regime_tag=record.regime_tag,
         return_source=return_source_enum.value,
         return_source_note=return_source_note,
+    )
+
+
+@strategies_router.get("/{strategy_id}/returns", response_model=StrategyReturnsResponse)
+async def get_strategy_returns(strategy_id: str, request: Request):
+    """Return persisted real daily returns for a strategy.
+
+    Response schema: {strategy_id, source: "persisted_backtest", start, end,
+    n, daily_returns: [...]}
+
+    404 when the strategy does not exist (or is private and the caller is not
+    the owner — 404-hides-existence per the #850 ownership gating contract).
+    404 with body ``{"detail": "no persisted returns"}`` when the strategy
+    exists but has no BacktestResultRecord row. Never synthesizes data from
+    fixture metrics; only real persisted run data is returned (#passport-honesty).
+
+    ``owner_wallet`` is intentionally absent from the response — pseudonymous
+    PII, redacted per the same policy as GET /api/strategies/{id}.
+    """
+    from fastapi import HTTPException
+
+    # ── 1. Existence + ownership gate (mirrors get_strategy) ────────────────
+    # Curated strategies (in LocalStrategyProvider) are always public.
+    strat = strategy_provider().get_strategy(strategy_id)
+    is_curated = strat is not None
+
+    if not is_curated:
+        from archimedes.db import get_session
+        from archimedes.models.strategy_store import StrategyRecord
+
+        with get_session() as session:
+            row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Strategy not found")
+            if not row.is_example and not row.is_published:
+                caller = get_verified_wallet(request)
+                is_owner = bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
+                if not is_owner:
+                    raise HTTPException(status_code=404, detail="Strategy not found")
+
+    # ── 2. Load persisted daily returns from backtest_results ────────────────
+    try:
+        from archimedes.db import get_session, init_db
+        from archimedes.services.backtest_repository import get_daily_returns, latest_backtests_by_strategy
+
+        init_db()
+        with get_session() as session:
+            daily_returns = get_daily_returns(session, strategy_id)
+            rows = latest_backtests_by_strategy(session, [strategy_id])
+            latest_row = rows.get(strategy_id)
+    except Exception as exc:
+        logger.warning("returns endpoint DB read failed for %s: %s", strategy_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to load returns")
+
+    if not daily_returns:
+        raise HTTPException(status_code=404, detail="no persisted returns")
+
+    # ── 3. Build date window from the backtest row (best-effort) ─────────────
+    start: str | None = None
+    end: str | None = None
+    if latest_row is not None:
+        if latest_row.backtest_start:
+            start = str(latest_row.backtest_start)
+        if latest_row.backtest_end:
+            end = str(latest_row.backtest_end)
+
+    return StrategyReturnsResponse(
+        strategy_id=strategy_id,
+        source="persisted_backtest",
+        start=start,
+        end=end,
+        n=len(daily_returns),
+        daily_returns=daily_returns,
     )
 
 
