@@ -84,7 +84,7 @@ def _to_strategy_response(
         verdict = _live_verdict_for_one(s)
         rigor_result = _live_rigor_result_for_one(s)
 
-    bt = strategy_provider.get_backtest_result(s.id)
+    bt = strategy_provider().get_backtest_result(s.id)
     has_real = s.real_sharpe is not None
     return_source, return_source_note = classify_strategy(s)
 
@@ -441,7 +441,7 @@ async def list_strategies(
     stable filter key; the served status reflects the live verdict.
     """
     status_filter = StrategyStatus(status) if status else None
-    strats = strategy_provider.list_strategies(status=status_filter)
+    strats = strategy_provider().list_strategies(status=status_filter)
     total = len(strats)
     window = strats[offset : offset + limit]
     rigor_results = _live_rigor_results_for_strategies(window)
@@ -505,7 +505,7 @@ async def get_strategy_signals():
 
     from archimedes.services.strategy_signal_evaluator import strategy_evaluator
 
-    strategies = strategy_provider.list_strategies()
+    strategies = strategy_provider().list_strategies()
     from archimedes.chain.client import chain_client
 
     synth_assets = [sym for sym, addr in chain_client.settings.synth_addresses.items() if addr]
@@ -622,7 +622,7 @@ async def get_portfolio_advisor(
     usdc_floor = min(usdc_floor_base * deleverage, 0.95)
     synth_budget = max(0.0, 1.0 - usdc_floor)
 
-    all_strategies = [s for s in strategy_provider.list_strategies() if s.real_sharpe is not None]
+    all_strategies = [s for s in strategy_provider().list_strategies() if s.real_sharpe is not None]
 
     # Apply regime-aware tilt to strategy ordering
     from archimedes.services.regime_weight_schedule import apply_regime_tilt
@@ -1644,7 +1644,7 @@ async def get_strategy(strategy_id: str, request: Request):
     """
     from fastapi import HTTPException
 
-    strat = strategy_provider.get_strategy(strategy_id)
+    strat = strategy_provider().get_strategy(strategy_id)
     if strat is not None:
         return _to_strategy_response(strat)
 
@@ -1738,7 +1738,7 @@ async def generate_strategy(
     if mode == "fast":
         try:
             proposal = await asyncio.to_thread(
-                architect.propose,
+                architect().propose,
                 strategic_direction or "Generate a strategy",
                 risk_appetite,
                 10000.0,
@@ -2127,7 +2127,7 @@ async def construct_strategy(
 
     try:
         proposal = await asyncio.to_thread(
-            architect.propose,
+            architect().propose,
             req.intent,
             req.risk_profile,
             req.capital_usdc,
@@ -2169,7 +2169,7 @@ async def construct_strategy(
     selected = []
     for sid, weight in sorted(guardrail.strategy_weights.items()):
         sel = by_id.get(sid)
-        strat = strategy_provider.get_strategy(sid)
+        strat = strategy_provider().get_strategy(sid)
         selected.append(
             ConstructionSelectionResponse(
                 strategy_id=sid,

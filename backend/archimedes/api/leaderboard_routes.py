@@ -49,7 +49,7 @@ async def get_leaderboard(
     from archimedes.api.strategies_routes import _to_strategy_response
 
     try:
-        strategies = strategy_provider.list_strategies()
+        strategies = strategy_provider().list_strategies()
         responses = [_to_strategy_response(s) for s in strategies]
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("leaderboard: strategy provider unavailable: %s", exc)

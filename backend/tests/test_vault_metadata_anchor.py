@@ -41,7 +41,9 @@ class TestVaultMetadataAnchor:
     @patch("archimedes.api.vaults_routes.strategy_publisher")
     @patch("archimedes.api.vaults_routes.strategy_provider")
     def test_metadata_post_calls_anchor_once_per_strategy_id(self, mock_provider, mock_publisher):
-        mock_provider.get_strategy.side_effect = _make_passport
+        # strategy_provider is now a lazily-cached accessor (strategy_provider()),
+        # so the mocked callable's return_value stands in for the provider instance.
+        mock_provider.return_value.get_strategy.side_effect = _make_passport
         mock_publisher.anchor = AsyncMock()
 
         resp = client.post(
@@ -69,7 +71,7 @@ class TestVaultMetadataAnchor:
                 return _make_passport(sid, methodology_hash=None)
             return _make_passport(sid)
 
-        mock_provider.get_strategy.side_effect = get_strat
+        mock_provider.return_value.get_strategy.side_effect = get_strat
         mock_publisher.anchor = AsyncMock()
 
         resp = client.post(
@@ -91,7 +93,7 @@ class TestVaultMetadataAnchor:
     @patch("archimedes.api.vaults_routes.strategy_publisher")
     @patch("archimedes.api.vaults_routes.strategy_provider")
     def test_metadata_post_succeeds_when_anchor_raises(self, mock_provider, mock_publisher):
-        mock_provider.get_strategy.side_effect = _make_passport
+        mock_provider.return_value.get_strategy.side_effect = _make_passport
         mock_publisher.anchor = AsyncMock(side_effect=RuntimeError("simulated chain failure"))
 
         resp = client.post(
@@ -110,7 +112,7 @@ class TestVaultMetadataAnchor:
     @patch("archimedes.api.vaults_routes.strategy_publisher")
     @patch("archimedes.api.vaults_routes.strategy_provider")
     def test_metadata_post_with_unknown_strategy_id_does_not_crash(self, mock_provider, mock_publisher):
-        mock_provider.get_strategy.return_value = None
+        mock_provider.return_value.get_strategy.return_value = None
         mock_publisher.anchor = AsyncMock()
 
         resp = client.post(

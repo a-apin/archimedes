@@ -37,16 +37,46 @@ from archimedes.models.backtest_fixtures_store import FIXTURE_FIELDS, StrategyBa
 
 
 def _load_records(fixture_path: Path) -> dict[str, dict]:
+    """Parse and validate every stem's record. Fails fast (non-zero exit) on
+    ANY malformed stem rather than silently skipping it — a production
+    backfill script must not partially import and leave the DB in a mixed
+    state without the caller knowing (Copilot review finding on PR #863:
+    ``_load_records()`` previously skipped stems with missing fields via
+    ``print(...); continue`` and never validated a record was a JSON object
+    before doing ``field not in rec``, which raises a confusing ``TypeError``
+    for a non-dict value, e.g. a list or string, instead of a clear error).
+
+    Also rejects a blank/whitespace-only stem key outright: ``stem`` is the
+    ``strategy_backtest_fixtures`` primary key (see
+    ``backend/archimedes/models/backtest_fixtures_store.py``), and a
+    generic/placeholder-shaped key would silently collide across multiple
+    records within the same import, each overwriting the last one written —
+    the exact ``'unknown'``-stem clobbering failure mode flagged (in the
+    sibling ``import_daily_returns.py``'s ``rec.get("stem") or "unknown"``
+    fallback) alongside this finding.
+    """
     data = json.loads(fixture_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise SystemExit(f"{fixture_path}: expected a JSON object, got {type(data).__name__}")
-    records = {}
+
+    errors: list[str] = []
+    records: dict[str, dict] = {}
     for stem, rec in data.items():
+        if not isinstance(stem, str) or not stem.strip():
+            errors.append(f"{stem!r}: stem key must be a non-empty string")
+            continue
+        if not isinstance(rec, dict):
+            errors.append(f"{stem}: expected a JSON object for the record, got {type(rec).__name__}")
+            continue
         missing = [f for f in FIXTURE_FIELDS if f not in rec]
         if missing:
-            print(f"skip {stem}: missing field(s) {missing}")
+            errors.append(f"{stem}: missing field(s) {missing}")
             continue
         records[stem] = rec
+
+    if errors:
+        detail = "\n  ".join(errors)
+        raise SystemExit(f"{fixture_path}: refusing a partial import — {len(errors)} malformed stem(s):\n  {detail}")
     return records
 
 

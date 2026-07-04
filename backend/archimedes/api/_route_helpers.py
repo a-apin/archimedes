@@ -7,12 +7,13 @@ route modules live here so that each router stays self-contained.
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 
-from archimedes.agents.strategy_architect import default_architect
+from archimedes.agents.strategy_architect import StrategyArchitect, default_architect
 from archimedes.chain.oracle_updater import OracleUpdater
 from archimedes.services.asset_service import AssetService
 from archimedes.services.config_service import ConfigService
-from archimedes.services.strategy_provider import default_provider
+from archimedes.services.strategy_provider import LocalStrategyProvider, default_provider
 from archimedes.services.vault_service import VaultService
 
 _logger = logging.getLogger(__name__)
@@ -22,8 +23,41 @@ asset_svc = AssetService()
 vault_svc = VaultService()
 config_svc = ConfigService()
 oracle = OracleUpdater()
-strategy_provider = default_provider()
-architect = default_architect()
+
+
+@lru_cache(maxsize=1)
+def strategy_provider() -> LocalStrategyProvider:
+    """Lazily-constructed, cached strategy provider.
+
+    Deliberately NOT built at module-import time. ``default_provider()``
+    eagerly queries the ``strategy_backtest_fixtures`` table on
+    construction (via ``LocalStrategyProvider.refresh()``); building it at
+    import time races ``main.py``'s ``init_db()``, which only runs after
+    all router modules (this one included) have already been imported.
+    Deferring construction to first call means it happens after startup's
+    ``init_db()`` has run — and, in prod, after a backfill script has
+    populated the table and the process has restarted, so a single restart
+    is sufficient rather than two. Call sites: ``strategy_provider().foo()``.
+    """
+    return default_provider()
+
+
+@lru_cache(maxsize=1)
+def architect() -> StrategyArchitect:
+    """Lazily-constructed, cached strategy architect.
+
+    Same import-time-construction hazard as ``strategy_provider()`` above,
+    one layer removed: ``default_architect()`` builds a ``StrategyArchitect``
+    with no explicit ``provider``, which falls back to its own eager
+    ``default_provider()`` call in ``StrategyArchitect.__init__``
+    (``archimedes/agents/strategy_architect.py``) — the same DB read that
+    races ``init_db()``. Fixing ``strategy_provider()`` alone would leave
+    this second, independently-cached ``LocalStrategyProvider`` instance
+    (reachable via ``architect().propose`` in the interactive "design me a
+    portfolio" flow) stale after a backfill + restart. Call sites:
+    ``architect().foo()``.
+    """
+    return default_architect()
 
 
 async def persist_trace_off_chain(trace) -> None:

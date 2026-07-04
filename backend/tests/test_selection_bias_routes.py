@@ -472,7 +472,9 @@ async def test_gate_endpoint_empty_provider(monkeypatch):
     from archimedes.api import selection_bias_routes
     from archimedes.main import app
 
-    monkeypatch.setattr(selection_bias_routes._provider, "list_strategies", list)
+    # _provider is now a lazily-cached accessor (_provider()); patch the attribute
+    # on the resolved (cached) instance rather than on the accessor function itself.
+    monkeypatch.setattr(selection_bias_routes._provider(), "list_strategies", list)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/selection-bias/gate")
@@ -490,7 +492,9 @@ async def test_gate_endpoint_empty_provider_404_for_strategy(monkeypatch):
     from archimedes.api import selection_bias_routes
     from archimedes.main import app
 
-    monkeypatch.setattr(selection_bias_routes._provider, "get_strategy", lambda sid: None)
+    # _provider is now a lazily-cached accessor (_provider()); patch the attribute
+    # on the resolved (cached) instance rather than on the accessor function itself.
+    monkeypatch.setattr(selection_bias_routes._provider(), "get_strategy", lambda sid: None)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/selection-bias/gate/any-id-at-all")
@@ -742,7 +746,7 @@ async def test_single_strategy_result_includes_library_pbo():
     from archimedes.main import app
 
     # Pick a real strategy id from the provider so the route resolves it.
-    strategies = selection_bias_routes._provider.list_strategies()
+    strategies = selection_bias_routes._provider().list_strategies()
     if not strategies:
         pytest.skip("no strategies in provider")
     sid = strategies[0].id
@@ -806,7 +810,7 @@ async def test_run_rigor_gate_called_without_library_pbo_kwarg(monkeypatch):
     from archimedes.main import app
     from archimedes.services.rigor_evaluator import run_rigor_gate as real_run_rigor_gate
 
-    strategies = routes._provider.list_strategies()
+    strategies = routes._provider().list_strategies()
     if not strategies:
         pytest.skip("no strategies in provider")
 

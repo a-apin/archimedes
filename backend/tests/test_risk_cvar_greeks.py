@@ -63,7 +63,9 @@ async def test_cvar_returns_200_with_empty_strategies():
     mock_provider = MagicMock()
     mock_provider.list_strategies.return_value = []
 
-    with patch("archimedes.api.risk_routes._strategy_provider", mock_provider):
+    # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
+    # patch it with a callable returning the pre-configured mock instance.
+    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/cvar")
 
@@ -94,7 +96,9 @@ async def test_cvar_levels_have_correct_confidence_values():
     mock_provider.list_strategies.return_value = [s1, s2]
     mock_provider.get_backtest_result.side_effect = lambda sid: bt1 if sid == "s1" else bt2
 
-    with patch("archimedes.api.risk_routes._strategy_provider", mock_provider):
+    # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
+    # patch it with a callable returning the pre-configured mock instance.
+    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/cvar")
 
@@ -122,7 +126,9 @@ async def test_cvar_cvar_exceeds_var():
     mock_provider.list_strategies.return_value = [s1]
     mock_provider.get_backtest_result.return_value = bt1
 
-    with patch("archimedes.api.risk_routes._strategy_provider", mock_provider):
+    # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
+    # patch it with a callable returning the pre-configured mock instance.
+    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/cvar")
 
@@ -143,7 +149,9 @@ async def test_greeks_returns_200_with_empty_strategies():
     mock_provider = MagicMock()
     mock_provider.list_strategies.return_value = []
 
-    with patch("archimedes.api.risk_routes._strategy_provider", mock_provider):
+    # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
+    # patch it with a callable returning the pre-configured mock instance.
+    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/greeks")
 
@@ -168,7 +176,9 @@ async def test_greeks_delta_in_valid_range():
     mock_provider.list_strategies.return_value = [s1]
     mock_provider.get_backtest_result.return_value = bt1
 
-    with patch("archimedes.api.risk_routes._strategy_provider", mock_provider):
+    # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
+    # patch it with a callable returning the pre-configured mock instance.
+    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/greeks")
 
@@ -194,7 +204,9 @@ async def test_greeks_portfolio_aggregate_matches_weighted_sum():
     mock_provider.list_strategies.return_value = [s1, s2]
     mock_provider.get_backtest_result.side_effect = lambda sid: bt1 if sid == "s1" else bt2
 
-    with patch("archimedes.api.risk_routes._strategy_provider", mock_provider):
+    # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
+    # patch it with a callable returning the pre-configured mock instance.
+    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/greeks")
 

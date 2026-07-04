@@ -148,7 +148,7 @@ async def test_library_badge_equals_live_gate_verdict_on_persisted_returns(monke
     from archimedes.api import strategies_routes as sr
     from archimedes.main import app
 
-    strategies = sr.strategy_provider.list_strategies()
+    strategies = sr.strategy_provider().list_strategies()
     assert len(strategies) >= 2, "need ≥2 curated strategies for a PBO cohort"
 
     # Give the first two real strategies persisted returns: one engineered to
@@ -244,7 +244,7 @@ async def test_fixture_true_strategies_do_not_read_true_without_live_returns(mon
 
     # Resolve the deterministic strategy ids for the two fixture-True stems.
     by_path = {}
-    for s in sr.strategy_provider.list_strategies():
+    for s in sr.strategy_provider().list_strategies():
         by_path[s.strategy_code_path or ""] = s
     fixture_true_stems = ("moreira_muir_2017_volatility_managed", "moskowitz_ooi_pedersen_2012_tsmom")
     targets = [s for path, s in by_path.items() if any(stem in path for stem in fixture_true_stems)]
@@ -293,7 +293,7 @@ async def test_validated_promotion_fires_on_live_pass(monkeypatch):
     from archimedes.main import app
     from archimedes.models.strategy import StrategyStatus
 
-    strategies = sr.strategy_provider.list_strategies()
+    strategies = sr.strategy_provider().list_strategies()
     candidates = [s for s in strategies if s.status == StrategyStatus.CANDIDATE]
     assert len(candidates) >= 2, "need ≥2 CANDIDATE strategies"
     s_pass = candidates[0]

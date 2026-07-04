@@ -134,7 +134,9 @@ class TestRiskMockTelemetry:
     def test_no_equity_curves_reports_mock(self, caplog: pytest.LogCaptureFixture) -> None:
         provider = _provider_with([[], [1.0]])  # both too short (< 2 points)
         with (
-            patch.object(risk_routes, "_strategy_provider", provider),
+            # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
+            # patch it with a callable returning the pre-configured mock instance.
+            patch.object(risk_routes, "_strategy_provider", lambda: provider),
             caplog.at_level(logging.WARNING, logger=risk_routes.__name__),
         ):
             diag = risk_routes.risk_data_health()
@@ -146,7 +148,9 @@ class TestRiskMockTelemetry:
     def test_live_equity_curves_report_live_no_warn(self, caplog: pytest.LogCaptureFixture) -> None:
         provider = _provider_with([[1.0, 1.1, 1.2]])  # a real curve (>= 2 points)
         with (
-            patch.object(risk_routes, "_strategy_provider", provider),
+            # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
+            # patch it with a callable returning the pre-configured mock instance.
+            patch.object(risk_routes, "_strategy_provider", lambda: provider),
             caplog.at_level(logging.WARNING, logger=risk_routes.__name__),
         ):
             diag = risk_routes.risk_data_health()
@@ -157,7 +161,9 @@ class TestRiskMockTelemetry:
         provider = MagicMock()
         provider.list_strategies.side_effect = RuntimeError("db down")
         with (
-            patch.object(risk_routes, "_strategy_provider", provider),
+            # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
+            # patch it with a callable returning the pre-configured mock instance.
+            patch.object(risk_routes, "_strategy_provider", lambda: provider),
             caplog.at_level(logging.WARNING, logger=risk_routes.__name__),
         ):
             diag = risk_routes.risk_data_health()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import scipy.stats
@@ -24,13 +25,20 @@ from archimedes.api.risk_schemas import (
     StrategyGreeks,
     StrategyRiskSummary,
 )
-from archimedes.services.strategy_provider import default_provider
+from archimedes.services.strategy_provider import LocalStrategyProvider, default_provider
 
 logger = logging.getLogger(__name__)
 
 risk_router = APIRouter(prefix="/api/risk", tags=["risk"])
 
-_strategy_provider = default_provider()
+
+@lru_cache(maxsize=1)
+def _strategy_provider() -> LocalStrategyProvider:
+    """Lazily-constructed, cached strategy provider (see _route_helpers.py's
+    strategy_provider() for the full rationale — this module has its own
+    copy of the singleton rather than importing the shared one, so it gets
+    its own lazy accessor). Call sites: ``_strategy_provider().foo()``."""
+    return default_provider()
 
 
 # ── Loud-fallback telemetry (T0.5) ───────────────────────────
@@ -63,11 +71,11 @@ def risk_data_health() -> RiskDataHealth:
     conservative default) with the exception surfaced in the reason.
     """
     try:
-        strategies = _strategy_provider.list_strategies()
+        strategies = _strategy_provider().list_strategies()
         live_curves = sum(
             1
             for s in strategies
-            if (bt := _strategy_provider.get_backtest_result(s.id)) is not None and len(bt.equity_curve) >= 2
+            if (bt := _strategy_provider().get_backtest_result(s.id)) is not None and len(bt.equity_curve) >= 2
         )
     except Exception as exc:  # provider/DB unavailable → honest mock fallback
         logger.warning(
@@ -194,7 +202,7 @@ async def get_portfolio_risk():
       - Concentration HHI from on-chain vault holdings (if available)
       - Actual risk profile classification based on worst max DD
     """
-    strategies = _strategy_provider.list_strategies()
+    strategies = _strategy_provider().list_strategies()
 
     # ── Per-strategy summaries ───────────────────────────────
     summaries: list[StrategyRiskSummary] = []
@@ -205,7 +213,7 @@ async def get_portfolio_risk():
     vol_vals: list[float] = []
 
     for s in strategies:
-        bt = _strategy_provider.get_backtest_result(s.id)
+        bt = _strategy_provider().get_backtest_result(s.id)
 
         sharpe = bt.sharpe_ratio if bt else None
         max_dd = bt.max_drawdown if bt else None
@@ -316,11 +324,11 @@ async def get_portfolio_cvar():
     Daily returns are derived from equity_curve via pct_change. Strategies are
     equally weighted. Returns 200 with empty levels if no equity data is available.
     """
-    strategies = _strategy_provider.list_strategies()
+    strategies = _strategy_provider().list_strategies()
 
     all_returns: list[np.ndarray] = []
     for s in strategies:
-        bt = _strategy_provider.get_backtest_result(s.id)
+        bt = _strategy_provider().get_backtest_result(s.id)
         if bt is None or len(bt.equity_curve) < 2:
             continue
         curve = np.array(bt.equity_curve, dtype=float)
@@ -425,11 +433,11 @@ async def get_portfolio_greeks():
     _TAU = 30 / 365
     _FALLBACK_VOL = 0.20
 
-    strategies = _strategy_provider.list_strategies()
+    strategies = _strategy_provider().list_strategies()
 
     strategy_greeks: list[StrategyGreeks] = []
     for s in strategies:
-        bt = _strategy_provider.get_backtest_result(s.id)
+        bt = _strategy_provider().get_backtest_result(s.id)
         sharpe = bt.sharpe_ratio if bt else None
         cagr = bt.cagr if bt else None
 

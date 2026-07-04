@@ -180,7 +180,9 @@ async def test_derive_allocations_sizes_passers_and_excludes_candidates(tmp_path
     from archimedes.services.strategy_signal_evaluator import strategy_evaluator
 
     with (
-        patch.object(vaults_routes.strategy_provider, "list_strategies", return_value=[validated, candidate]),
+        # strategy_provider is now a lazily-cached accessor (strategy_provider());
+        # patch the name wholesale and configure the mocked callable's return_value.
+        patch.object(vaults_routes, "strategy_provider") as mock_provider,
         patch("archimedes.chain.client.chain_client") as mock_chain,
         patch.object(
             strategy_evaluator,
@@ -191,6 +193,7 @@ async def test_derive_allocations_sizes_passers_and_excludes_candidates(tmp_path
             ],
         ),
     ):
+        mock_provider.return_value.list_strategies.return_value = [validated, candidate]
         mock_chain.settings = mock_settings
         req = SetAllocationsRequest(strategy_ids=["val", "cand"], usdc_floor_pct=20.0, risk_profile="moderate")
         resp = await vaults_routes.derive_vault_allocations.__wrapped__("0x" + "3" * 40, req, MagicMock(), MagicMock())
