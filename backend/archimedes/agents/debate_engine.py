@@ -1,44 +1,31 @@
-"""T1.1 — Multi-agent debate society (Phase 1 skeleton: additive + flag-gated).
+"""T1.1 — Multi-agent debate society (Phase 3: debate is the sole pipeline).
 
-Design of record: ``docs/specs/multi-agent-debate-spec.md`` (v2, staged
-replacement). This is the strictly **additive** Phase-1 increment — a
-``pipeline_name="debate"`` generation runner gated behind
-``ARCHIMEDES_DEBATE_ENABLED`` (default OFF). While the flag is OFF the legacy
-live path is byte-identical (the dispatch never reaches this module). The
-society:
+Design of record: ``docs/specs/multi-agent-debate-spec.md`` (v2).
+
+The society is unconditional as of Phase-3 (T1.1 flag audit, issue #834).
+The ``ARCHIMEDES_DEBATE_ENABLED`` flag is retired; ``_debate_can_run`` only
+checks corpus size. The pipeline:
 
   1. **Proposer pool** — fans ``StrategyFusion(model=...).propose`` across
      ``select_candidates(regime_bias=R)`` evidence sets (the A3 model seam
-     threads the user's Generate-page model pick; the steered selection is the
-     cheap diversity axis). Drops non-actionable
+     threads the user's Generate-page model pick). Drops non-actionable
      (``FusionProposal.is_actionable``) and non-conformant (``_dsl_conformance_ok``,
      fix A5) specs. ``pool_size = len(POOL)``.
-  2. **Adversarial round** — a thin, best-effort bull/bear transcript (Phase 1).
-     It surfaces the adversarial topology on the SSE stream but never gates;
-     the deterministic critics do the real culling (the budget trick). The full
-     rebuttal + LLM risk-debate is Phase 2.
-  3. **C-rigor** — backtests EVERY survivor for real via ``evaluate_fusion_spec``
+  2. **Adversarial round** — a thin, best-effort bull/bear transcript.
+     Surfaces adversarial topology on the SSE stream but never gates;
+     deterministic critics do the real culling (the budget trick).
+  3. **C-rigor** — backtests EVERY survivor via ``evaluate_fusion_spec``
      (deterministic Python, 0 tokens), each wrapped in try/except (fix A5
      backstop), with ``num_trials=_society_num_trials(library_size, pool_size)``
-     (library + N, #770/#820 — not ``pool_size`` alone) so the DSR
-     multiple-testing correction counts both the selection-from-pool search AND
-     the library the winner joins, the same selection set the live agent path
-     deflates for.
+     (#770/#820) so the DSR multiple-testing correction counts both the
+     selection-from-pool search AND the library the winner joins.
   4. **C-null** — a survivor must beat the passive null (buy-and-hold) net of
      cost by ``MIN_COST_BENEFIT``. If none clears it → first-class ABSTAIN.
-  5. **Synthesizer** — deterministic rank of the survivors (Phase 1 collapses the
-     synthesizer to 0 LLM calls per spec §8) → top-N leaderboard; the user picks.
+  5. **Synthesizer** — deterministic rank of the survivors → top-N leaderboard.
 
-``_run_debate_candidate`` returns the **leader** ``_CandidateResult`` (carrier
-contract preserving); the full leaderboard is built by ``build_leaderboard``
-(directly unit-tested) and the Considered-Alternatives fan-out is Phase 2.
-
-⚠️  PHASE-1 BLOCKER: ``ARCHIMEDES_DEBATE_ENABLED`` must stay OFF on the live path
-until this module's rigor badge has been validated end-to-end there (A1's
-denominator now matches the live path's — library + N via
-``_society_num_trials``, #770/#820 — but the flag still needs a real on-flag
-run before it's trusted). The flag-OFF additive skeleton in this module is
-safe to merge.
+``_run_debate_candidate`` returns the **leader** ``_CandidateResult`` (for
+back-compat callers); ``_run_debate_leaderboard`` returns the FULL ranked board
+(the Phase-3 fan-out path used by ``run_generation``).
 """
 
 from __future__ import annotations
@@ -61,9 +48,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from archimedes.api.generate_schemas import GenerateBrief
 
 logger = logging.getLogger(__name__)
-
-# ── Env knobs ───────────────────────────────────────────────────────────────
-_TRUE = {"1", "true", "yes", "on"}
 
 # Steer grid = regime × mechanism. Each (regime_bias, mechanism) pair gives the
 # proposer a distinct evidence ranking (regime_bias → select_candidates) AND a
@@ -98,11 +82,6 @@ _PRICE_OPERANDS = {"close", "open", "high", "low", "volume"}
 # backtest's own annualized edge (cagr); the explicit buy-and-hold differential
 # is Phase 2.
 MIN_COST_BENEFIT = 0.0005  # 5 bps
-
-
-def debate_enabled() -> bool:
-    """True iff ``ARCHIMEDES_DEBATE_ENABLED`` is set truthy (default OFF)."""
-    return os.getenv("ARCHIMEDES_DEBATE_ENABLED", "").strip().lower() in _TRUE
 
 
 def _pool_max() -> int:
@@ -141,9 +120,9 @@ def _library_size() -> int:
 class DebateUnavailable(FusionUnavailable):
     """The society produced no actionable + conformant + backtestable candidate.
 
-    Subclasses ``FusionUnavailable`` so the existing ``run_generation`` fallback
-    (``except FusionUnavailable``) relabels honestly to the agent path — no
-    dispatch except-clause change is needed.
+    Subclasses ``FusionUnavailable`` so ``run_generation``'s
+    ``except FusionUnavailable`` clause catches it and emits
+    ``GENERATION_UNAVAILABLE`` — no silent fallback (T1.1 Phase-3).
     """
 
 
@@ -192,28 +171,26 @@ def _dsl_conformance_ok(spec: dict[str, Any] | None) -> bool:
     return all(stem in _CONFORMANT_INDICATORS for stem in _indicator_alias_stems(spec))
 
 
-# ── Viability precheck (mirrors generation_pipeline._fusion_can_run) ──────────
+# ── Viability precheck ────────────────────────────────────────────────────────
 
 
 def _debate_can_run(brief: GenerateBrief) -> bool:
-    """No-LLM viability precheck: flag on AND ≥ MIN_PAPERS for the steer.
+    """No-LLM corpus viability precheck: ≥ MIN_PAPERS available for the steer.
 
-    Never raises — any failure degrades to ``False`` so the caller falls back to
-    the agent path. (Mirrors ``generation_pipeline._fusion_can_run``.)
+    Phase-3: the ``ARCHIMEDES_DEBATE_ENABLED`` flag is retired — the society is
+    unconditional. This precheck only guards against an empty/insufficient corpus
+    (which would cause every proposer call to return ``insufficient_corpus``).
+    Never raises — any failure degrades to ``False`` so ``run_generation`` emits
+    ``GENERATION_UNAVAILABLE`` honestly rather than crashing.
     """
-    if not debate_enabled():
-        return False
     try:
         from archimedes.agents.strategy_fusion import (
             MIN_PAPERS,
             FusionBrief,
-            fusion_enabled,
             load_corpus,
             select_candidates,
         )
 
-        if not fusion_enabled():
-            return False
         fb = FusionBrief(
             asset_classes=list(brief.asset_classes or []),
             risk_appetite=brief.risk_appetite,
@@ -446,8 +423,7 @@ def _score(ev: Any) -> tuple[int, float, float]:
 def _rigor_verdict_dict(ev: Any) -> dict[str, Any]:
     """Build the passport ``rigor_verdict`` from a FusionEvalResult.
 
-    Mirrors ``generation_pipeline._run_fusion_candidate``'s verdict shape so the
-    passport renders identically for debate and fusion candidates.
+    Canonical rigor_verdict shape consumed by the passport renderer.
     """
     r = ev.rigor
     bt = ev.backtest
@@ -655,8 +631,8 @@ async def _run_debate_leaderboard(
     Phase-3 fan-out: entry [0] is the society's leader (its deterministic rank
     is authoritative — the orchestrator must NOT re-rank); the tail entries are
     the Considered Alternatives. Raises ``DebateUnavailable``
-    (a ``FusionUnavailable`` subclass) when no candidate survives, so the existing
-    run_generation fallback relabels to the agent path.
+    (a ``FusionUnavailable`` subclass) when no candidate survives, so
+    ``run_generation`` emits ``GENERATION_UNAVAILABLE`` (T1.1 Phase-3).
 
     ``selection_pool_size`` is accepted for parity with the #770 runner contract
     (the dispatch threads it to every runner), but the society ignores the passed

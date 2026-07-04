@@ -64,10 +64,8 @@ class GenerateStartRequest(BaseModel):
     mode: str | None = Field(
         default=None,
         description=(
-            "Optional pipeline override: 'fusion', 'architect', or 'agent'. When set, bypasses "
-            "auto-routing. The 'debate' society pipeline (T1.1) is selected by the "
-            "ARCHIMEDES_DEBATE_ENABLED flag rather than this override, so flag-OFF stays "
-            "byte-identical; the deletions of the legacy runners are deferred to the Phase-3 cutover."
+            "Optional pipeline override (API compatibility; ignored as of T1.1 Phase-3 cutover). "
+            "The debate society is the sole generation pipeline — any override is logged and discarded."
         ),
     )
     model: str | None = Field(
