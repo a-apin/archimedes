@@ -31,6 +31,14 @@ def _use_tmp_db(tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_backoff_state():
+    """Reset module-level backoff state before each test to prevent order-dependence."""
+    sched._last_unresolved_missing = set()
+    yield
+    sched._last_unresolved_missing = set()
+
+
 class _Strat:
     def __init__(self, sid):
         self.id = sid
@@ -168,7 +176,7 @@ def test_unresolved_missing_backs_off(monkeypatch):
     sched._remember_unresolved_missing()  # refresh "ran"; dead1 still rowless
     should, reason = sched.needs_refresh()
     assert should is False, "identical unresolved-missing set must back off"
-    assert "fresh" in reason
+    assert "backing off" in reason, f"expected explicit backoff reason, got: {reason!r}"
 
     # A NEW missing strategy (set changed) re-arms the missing trigger.
     _patch_provider(monkeypatch, ["ok1", "dead1", "new1"])

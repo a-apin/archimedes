@@ -85,9 +85,13 @@ def needs_refresh() -> tuple[bool, str]:
         if missing:
             if set(missing) == _last_unresolved_missing:
                 # A previous refresh already failed to produce rows for exactly
-                # this set — they need code fixes, not compute. Fall through to
-                # the age check instead of thrashing.
-                pass
+                # this set — they need code fixes, not compute. Return an
+                # explicit backoff reason so the skipped log is unambiguous.
+                return (
+                    False,
+                    f"backing off: {len(missing)} strategies still missing and unchanged"
+                    " since last refresh (likely need code fixes, not re-runs)",
+                )
             else:
                 return True, f"{len(missing)}/{len(ids)} strategies have no persisted backtest"
         now = datetime.now(UTC)
@@ -131,8 +135,15 @@ def _remember_unresolved_missing() -> None:
                 "(likely need code fixes, e.g. the pairs family) — backing off to the age cadence",
                 len(_last_unresolved_missing),
             )
-    except Exception:
-        _last_unresolved_missing = set()
+    except Exception as exc:
+        # Leave _last_unresolved_missing unchanged so the existing backoff is
+        # preserved.  Resetting to empty would re-arm the missing trigger and
+        # potentially cause thrashing if the DB is consistently unavailable.
+        logger.warning(
+            "backtest refresh: could not update unresolved-missing set (%s: %s) — backoff state is unchanged",
+            type(exc).__name__,
+            exc,
+        )
 
 
 async def backtest_refresh_loop() -> None:
