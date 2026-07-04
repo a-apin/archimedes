@@ -481,6 +481,12 @@ def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _C
     ``has_real_rigor``), preserving the CSCV PBO from ``evaluate_fusion_spec``.
     """
     spec = proposal.strategy_spec or {}
+    # Real per-bar returns for the live gate (#788/#818, mirrors the fusion
+    # path): without return_series, _persist_real_returns SKIPS the winner and
+    # the passport reads "pending" forever even though C-rigor just ran a real
+    # backtest (first prod debate run surfaced exactly this).
+    _ec = list(getattr(ev.backtest, "equity_curve", None) or [])
+    real_returns = [(_ec[i] - _ec[i - 1]) / _ec[i - 1] for i in range(1, len(_ec)) if _ec[i - 1] > 0]
     return _CandidateResult(
         candidate_id=candidate_id,
         strategy_name=proposal.strategy_name or "Debate candidate",
@@ -495,6 +501,7 @@ def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _C
         generation_method="debate",
         source_arxiv_ids=list(proposal.source_arxiv_ids),
         has_real_rigor=True,
+        return_series=real_returns or None,
     )
 
 
