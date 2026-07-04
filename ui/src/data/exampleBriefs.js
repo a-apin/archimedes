@@ -5,10 +5,10 @@
 //   b) steer concrete assets/mechanisms so the universe is thesis-true
 //   c) reliably produce a machine-readable spec + real backtest
 //
-// The first entry is the dogfood-PROVEN winner (real data, thesis-true universe,
-// DSR pass). The remaining two are shape-derived placeholders following the same
-// pattern: assets/classes + mechanism + goal. Replace placeholders with new
-// dogfood-verified winners as they are validated.
+// All three entries are dogfood-PROVEN on the live debate pipeline
+// (5-brief bake-off, 2026-07-04 — see PR #875): each produced a real-data,
+// thesis-true backtest. Replace entries only with new dogfood-verified
+// winners as they are validated.
 //
 // Shape of a good brief: name concrete assets or classes, a mechanism
 // (momentum / vol-managed / hedge / mean-reversion), and a goal.
@@ -24,23 +24,23 @@ export const EXAMPLE_BRIEFS = [
     brief:
       'blend momentum, quality and a gold hedge across major ETFs with volatility-managed sizing for idle USDC',
     suggestedAssets: ['SPY', 'QQQ', 'GLD', 'IWM', 'VTV'],
-    // Status: DOGFOOD PROVEN — real data, thesis-true universe, DSR pass.
+    // Status: DOGFOOD PROVEN — dsr_p 0.999; strongest alpha signal of the bake-off.
   },
   {
-    id: 'trend-vol-target-bonds',
-    label: 'Trend-following equities + bonds with vol target',
+    id: 'crypto-trend-treasury-rotation',
+    label: 'BTC/ETH trend with defensive treasury rotation',
     brief:
-      'trend-following across major equity and bond ETFs with a volatility target that shrinks position size when realized vol spikes',
-    suggestedAssets: ['SPY', 'TLT', 'IEF', 'QQQ'],
-    // Status: shape-derived placeholder — same pattern: assets + mechanism + goal.
+      'trend-following on BTC and ETH with a defensive rotation into treasuries when volatility spikes',
+    suggestedAssets: ['BTC', 'ETH', 'IEF', 'SHY'],
+    // Status: DOGFOOD PROVEN — dsr_p 0.938, PBO 0.19; best-balanced of the bake-off.
   },
   {
-    id: 'mean-reversion-sector-hedge',
-    label: 'Sector mean-reversion with momentum filter + cash hedge',
+    id: 'low-vol-income-preservation',
+    label: 'Low-volatility income, capital preservation',
     brief:
-      'mean-reversion entry on lagging US sectors filtered by 3-month momentum, with a cash hedge when the broad market is below its 200-day average',
-    suggestedAssets: ['XLK', 'XLE', 'XLF', 'XLV', 'XLI'],
-    // Status: shape-derived placeholder — same pattern: assets + mechanism + goal.
+      'low-volatility income portfolio from SPY TLT and SCHD focused on capital preservation',
+    suggestedAssets: ['SPY', 'TLT', 'SCHD'],
+    // Status: DOGFOOD PROVEN — cleanest overfitting profile (PBO 0.27) of the bake-off.
   },
 ]
 
