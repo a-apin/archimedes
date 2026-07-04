@@ -246,6 +246,12 @@ class _CandidateResult:
     # changes, never the deflation count itself. 0 on the fixture/fusion paths,
     # which don't run the buy-and-hold DSR patch.
     dsr_num_trials: int = 0
+    # Which branch strategy_fusion._spec_universe took to pick asset_universe:
+    # "user" | "model" | "full" (#857, follow-up to #847). "full" is the honest
+    # default for paths that never went through fusion's universe steering (the
+    # buy-and-hold agent/fixture path derives its universe from the user's
+    # portfolio weights directly, not from a model suggestion).
+    universe_source: str = "full"
 
 
 # ── Rigor adapter (Önder's rigor_evaluator on agent output) ───────────────
@@ -1188,6 +1194,7 @@ async def _persist_candidate(
                     papers=papers,
                     methodology_summary=c.thesis or "",
                     asset_universe=c.asset_universe or [],
+                    universe_source=c.universe_source,
                     status=StrategyStatus(record.status) if record.status else StrategyStatus.CANDIDATE,
                     regime_tag=_regime_tag,
                     passes_rigor_gate=bool(c.rigor_verdict.get("passing", False)) if c.rigor_verdict else False,
@@ -1249,6 +1256,7 @@ def _refresh_passport_real_metrics(
         papers=papers,
         methodology_summary=c.thesis or "",
         asset_universe=c.asset_universe or [],
+        universe_source=c.universe_source,
         status=status_val,
         regime_tag=regime_tag,
         real_sharpe=result.sharpe_ratio,

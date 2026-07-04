@@ -344,6 +344,170 @@ class TestDsrPValuePlumbing:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# universe_source plumbing (#857, follow-up to #855/#847)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestUniverseSourcePlumbing:
+    """universe_source ("user" | "model" | "full") reaches the passport API.
+
+    Mirrors TestDsrPValuePlumbing's shape: the fusion backtest universe can
+    come from three places (#855), and the passport must say which one was
+    used so a model-picked universe (a mild look-ahead channel) is auditable.
+    """
+
+    def _make_session(self, tmp_path):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from archimedes.models.chat import Base
+
+        engine = create_engine(f"sqlite:///{tmp_path}/universe_source_test.db")
+        Base.metadata.create_all(engine)
+        return sessionmaker(bind=engine)()
+
+    def test_ingest_passport_with_universe_source(self, tmp_path):
+        """A passport with universe_source persisted correctly on first insert."""
+        from archimedes.models.paper_ref import PaperRef
+        from archimedes.models.strategy import (
+            PositionSizing,
+            RebalanceFrequency,
+            StrategyPassport,
+            StrategyStatus,
+        )
+        from archimedes.services.passport_loader import ingest_passport
+
+        session = self._make_session(tmp_path)
+        passport = StrategyPassport(
+            id="universe-source-test-001",
+            papers=[PaperRef(arxiv_id="2301.00003", title="Universe Source Test", authors=[])],
+            methodology_summary="universe_source plumbing test",
+            asset_universe=["QQQ", "TLT"],
+            universe_source="model",
+            position_sizing=PositionSizing.EQUAL_WEIGHT,
+            rebalance_frequency=RebalanceFrequency.WEEKLY,
+            status=StrategyStatus.CANDIDATE,
+            regime_tag="regime_neutral",
+        )
+        record = ingest_passport(session, passport, generation_method="fusion")
+        session.flush()
+
+        assert record.universe_source == "model", (
+            f"Expected universe_source='model' after first ingest; got {record.universe_source!r}"
+        )
+
+    def test_update_record_propagates_universe_source(self, tmp_path):
+        """force_update=True must propagate universe_source without clobbering
+        it with None on a later refresh that doesn't carry the field (mirrors
+        the dsr_p_value force_update regression)."""
+        from archimedes.models.paper_ref import PaperRef
+        from archimedes.models.strategy import (
+            PositionSizing,
+            RebalanceFrequency,
+            StrategyPassport,
+            StrategyStatus,
+        )
+        from archimedes.services.passport_loader import ingest_passport
+
+        session = self._make_session(tmp_path)
+
+        passport_v1 = StrategyPassport(
+            id="universe-source-test-002",
+            papers=[PaperRef(arxiv_id="2301.00004", title="Universe Source Refresh Test", authors=[])],
+            methodology_summary="universe_source update test",
+            asset_universe=["SPY", "IWM"],
+            universe_source="user",
+            position_sizing=PositionSizing.EQUAL_WEIGHT,
+            rebalance_frequency=RebalanceFrequency.WEEKLY,
+            status=StrategyStatus.CANDIDATE,
+            regime_tag="regime_neutral",
+        )
+        r1 = ingest_passport(session, passport_v1, generation_method="fusion", force_update=True)
+        session.flush()
+        assert r1.universe_source == "user"
+
+        # A later refresh (mimics _refresh_passport_real_metrics, which does not
+        # thread universe_source through StrategyPassport's real_* backtest-only
+        # update) must not clobber the already-stored value with None.
+        passport_v2 = StrategyPassport(
+            id="universe-source-test-002",
+            papers=[PaperRef(arxiv_id="2301.00004", title="Universe Source Refresh Test", authors=[])],
+            methodology_summary="universe_source update test",
+            asset_universe=["SPY", "IWM"],
+            universe_source=None,
+            deflated_sharpe_ratio=0.451103,
+            position_sizing=PositionSizing.EQUAL_WEIGHT,
+            rebalance_frequency=RebalanceFrequency.WEEKLY,
+            status=StrategyStatus.CANDIDATE,
+            regime_tag="regime_neutral",
+        )
+        r2 = ingest_passport(session, passport_v2, generation_method="fusion", force_update=True)
+        session.flush()
+
+        assert r2.universe_source == "user", (
+            f"Expected universe_source to survive a refresh that doesn't carry it; got {r2.universe_source!r}"
+        )
+        assert r2.id == r1.id, "force_update must update the existing row, not insert a new one"
+
+    @pytest.mark.asyncio
+    async def test_api_returns_universe_source_from_persisted_record(self, tmp_path, monkeypatch):
+        """GET /api/strategies/{id} returns universe_source with one of the
+        three provenance values (#857 acceptance criterion 2)."""
+        from archimedes.db import get_session, init_db
+        from archimedes.main import app
+        from archimedes.models.paper_ref import PaperRef
+        from archimedes.models.strategy import (
+            PositionSizing,
+            RebalanceFrequency,
+            StrategyPassport,
+            StrategyStatus,
+        )
+        from archimedes.models.strategy_store import upsert_strategy
+        from archimedes.services.passport_loader import ingest_passport
+
+        db_path = tmp_path / "universe_source_api.db"
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+        init_db()
+
+        with get_session() as session:
+            row = upsert_strategy(
+                session,
+                generation_method="fusion",
+                strategy_name="Universe Source Test Strategy",
+                thesis="Test",
+                source_papers=[{"arxiv_id": "2301.00005"}],
+                asset_universe=["QQQ", "GLD"],
+                is_example=True,
+            )
+            session.flush()
+            sid = row.id
+
+            passport = StrategyPassport(
+                id=sid,
+                papers=[PaperRef(arxiv_id="2301.00005", title="Universe Source API Test", authors=[])],
+                methodology_summary="universe_source API test",
+                asset_universe=["QQQ", "GLD"],
+                universe_source="model",
+                position_sizing=PositionSizing.EQUAL_WEIGHT,
+                rebalance_frequency=RebalanceFrequency.WEEKLY,
+                status=StrategyStatus.CANDIDATE,
+                regime_tag="regime_neutral",
+            )
+            ingest_passport(session, passport, generation_method="fusion")
+            session.commit()
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get(f"/api/strategies/{sid}")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["universe_source"] in ("user", "model", "full"), (
+            f"Expected universe_source in ('user','model','full'); got {body.get('universe_source')!r}"
+        )
+        assert body["universe_source"] == "model"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Fix 3 — GET /api/strategies/{id}/returns endpoint
 # ═══════════════════════════════════════════════════════════════════════════
 

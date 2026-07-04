@@ -478,3 +478,76 @@ def test_supported_universe_is_ssot_derived_and_nontrivial():
     assert "QQQ" in SUPPORTED_UNIVERSE
     assert len(SUPPORTED_UNIVERSE) > 50  # the expanded multi-asset universe
     assert tuple(sorted(SUPPORTED_UNIVERSE)) == SUPPORTED_UNIVERSE  # stable order
+
+
+# ── universe_source provenance (#857, follow-up to #847) ─────────
+
+
+class _MultiAssetModelUniverseBackend:
+    """A mock whose strategy_spec emits a deliberate MULTI-instrument universe.
+
+    Distinct from ``_SpecBackend`` (which parrots a bare ``["SPY"]"`` — the
+    weak-model default that's treated as a non-choice and falls to "full").
+    A genuine multi-instrument pick is trusted as the thesis's own universe,
+    so with no user steer this should resolve to universe_source == "model".
+    """
+
+    model_id = "claude-sonnet-4-20250514"
+    served_model = "glm-4.7"
+
+    def complete(self, system: str, user: str) -> str:
+        payload = json.loads(user)
+        ids = [p["arxiv_id"] for p in payload["candidate_papers"][:2]]
+        return json.dumps(
+            {
+                "strategy_name": "Model-picked universe fusion",
+                "thesis": "Pre-backtest hypothesis.",
+                "source_arxiv_ids": ids,
+                "fusion_reasoning": "Paper A + paper B.",
+                "novelty_rationale": "Joint combination unpublished.",
+                "risk_notes": "Pre-backtest; rigor gate pending.",
+                "strategy_spec": {
+                    "name": "Model-picked universe fusion",
+                    "asset_universe": ["QQQ", "TLT", "GLD"],  # deliberate multi-instrument pick
+                    "rebalance_frequency": "monthly",
+                    "entry": {"gt": ["close", "sma_200"]},
+                    "exit": {"lt": ["close", "sma_200"]},
+                    "position_sizing": {"type": "full_invested_when_in_market"},
+                    "source_arxiv_ids": ids,
+                    "look_ahead_safe": True,
+                    "indicators": ["sma_200"],
+                },
+            }
+        )
+
+
+def test_universe_source_is_user_when_steer_given(monkeypatch, corpus):
+    """A user asset-instrument steer wins over the model's spec universe;
+    universe_source records "user" (#857)."""
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    svc = StrategyFusion(backend=_SpecBackend(), corpus=corpus)
+    proposal = svc.propose(FusionBrief(asset_classes=["equities", "QQQ", "IWM"]))
+    assert proposal.status == "ok"
+    assert proposal.strategy_spec["asset_universe"] == ["QQQ", "IWM"]
+    assert proposal.universe_source == "user"
+
+
+def test_universe_source_is_model_when_spec_emits_valid_universe(monkeypatch, corpus):
+    """No user steer + a genuine multi-instrument model spec → "model" (#857)."""
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    svc = StrategyFusion(backend=_MultiAssetModelUniverseBackend(), corpus=corpus)
+    proposal = svc.propose(FusionBrief(asset_classes=["equities", "rates"]))
+    assert proposal.status == "ok"
+    assert proposal.strategy_spec["asset_universe"] == ["QQQ", "TLT", "GLD"]
+    assert proposal.universe_source == "model"
+
+
+def test_universe_source_is_full_on_fallback(monkeypatch, corpus):
+    """No user steer + the model's spec collapses to the parrot default →
+    the full SSOT universe with universe_source == "full" (#857)."""
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    svc = StrategyFusion(backend=_SpecBackend(), corpus=corpus)
+    proposal = svc.propose(FusionBrief(asset_classes=["equities", "rates"]))
+    assert proposal.status == "ok"
+    assert proposal.strategy_spec["asset_universe"] == list(SUPPORTED_UNIVERSE)
+    assert proposal.universe_source == "full"

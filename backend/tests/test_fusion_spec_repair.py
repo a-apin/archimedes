@@ -164,26 +164,30 @@ def test_invalid_model_spec_degrades_to_text_only(monkeypatch):
 
 def test_user_assets_win_over_model_universe():
     spec = {"asset_universe": ["TSLA", "NVDA"]}
-    out = sf._spec_universe(_brief(asset_classes=["SPY", "gld"]), spec)
+    out, source = sf._spec_universe(_brief(asset_classes=["SPY", "gld"]), spec)
     assert out == ["SPY", "GLD"]  # canonical, order-preserving
+    assert source == "user"
 
 
 def test_unsteered_brief_uses_models_validated_universe():
     spec = {"asset_universe": ["SPY", "GLD", "NOT_A_REAL_TICKER_XYZ"]}
-    out = sf._spec_universe(_brief(), spec)
+    out, source = sf._spec_universe(_brief(), spec)
     assert out == ["SPY", "GLD"]  # SSOT-validated; garbage dropped
     assert "NOT_A_REAL_TICKER_XYZ" not in out
+    assert source == "model"
 
 
 def test_model_universe_is_capped():
     many = list(sf.SUPPORTED_UNIVERSE)[: sf._MODEL_UNIVERSE_CAP + 5]
-    out = sf._spec_universe(_brief(), {"asset_universe": many})
+    out, source = sf._spec_universe(_brief(), {"asset_universe": many})
     assert len(out) == sf._MODEL_UNIVERSE_CAP
+    assert source == "model"
 
 
 def test_no_user_no_model_falls_back_to_full_universe():
-    out = sf._spec_universe(_brief(), {"asset_universe": []})
+    out, source = sf._spec_universe(_brief(), {"asset_universe": []})
     assert out == list(sf.SUPPORTED_UNIVERSE)  # #682's floor preserved
+    assert source == "full"
 
 
 def test_propose_threads_model_universe_when_unsteered(monkeypatch):
@@ -192,6 +196,7 @@ def test_propose_threads_model_universe_when_unsteered(monkeypatch):
     proposal = _propose_with(monkeypatch, backend, brief=_brief())
     # The thesis's own instruments survive — not the full ~300-asset SSOT dump.
     assert proposal.strategy_spec["asset_universe"] == ["SPY", "GLD"]
+    assert proposal.universe_source == "model"
 
 
 # ── friendly brief-validation errors ──────────────────────────────────
@@ -209,5 +214,6 @@ def test_invalid_brief_message_guides_instead_of_insults(reason):
 def test_single_proxy_model_universe_is_treated_as_parroted_default():
     # A weak model emitting the classic bare ["SPY"] regardless of thesis is a
     # non-choice — fall back to the full universe (never trust the parrot).
-    out = sf._spec_universe(_brief(), {"asset_universe": ["SPY"]})
+    out, source = sf._spec_universe(_brief(), {"asset_universe": ["SPY"]})
     assert out == list(sf.SUPPORTED_UNIVERSE)
+    assert source == "full"

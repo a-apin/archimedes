@@ -479,6 +479,10 @@ def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _C
         source_arxiv_ids=list(proposal.source_arxiv_ids),
         has_real_rigor=True,
         return_series=real_returns or None,
+        # #857: which branch _spec_universe took for this proposal's universe
+        # (user steer / model suggestion / full SSOT fallback). Falls back to
+        # "full" for the rare case a proposal predates the field.
+        universe_source=getattr(proposal, "universe_source", None) or "full",
     )
 
 

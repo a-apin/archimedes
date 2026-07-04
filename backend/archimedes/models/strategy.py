@@ -92,6 +92,12 @@ class StrategyPassport:
     papers: list[PaperRef] = field(default_factory=list)
     methodology_summary: str = ""  # 2-3 sentence plain English
     asset_universe: list[str] = field(default_factory=list)  # Ticker symbols
+    # Provenance of the asset_universe pick (#857, follow-up to #847's
+    # user > model > full precedence): "user" | "model" | "full". A
+    # model-picked universe is a mild look-ahead channel (the model can pick
+    # names it already "knows" did well over the window from training data);
+    # this makes the choice auditable on the passport without gating on it.
+    universe_source: str | None = None
     signals: list[SignalDefinition] = field(default_factory=list)
     position_sizing: PositionSizing = PositionSizing.EQUAL_WEIGHT
     rebalance_frequency: RebalanceFrequency = RebalanceFrequency.WEEKLY
