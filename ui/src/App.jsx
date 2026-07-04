@@ -236,7 +236,7 @@ export default function App() {
           description="Generate uses an LLM-powered multi-agent pipeline against a 1,014-paper q-fin corpus. Connect a wallet — sign in with a passkey, no extension needed — to run the agent and persist your generated strategies in your library."
           onConnect={openConnectModal}
         >
-          <Generate onNavigate={navigateToPage} />
+          <Generate onNavigate={navigateToPage} walletAddr={walletAddr} />
         </WalletGate>
       )
       case 'architecture': return <Architecture onNavigate={navigateToPage} />
