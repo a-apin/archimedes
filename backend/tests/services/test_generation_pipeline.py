@@ -629,7 +629,7 @@ async def test_debate_dispatch_end_to_end_persists_debate_strategy(tmp_path, mon
     emitted, (c) StrategyRecord.generation_method == 'debate'.
     """
     import archimedes.agents.debate_engine as de
-    import archimedes.agents.strategy_fusion as sf
+    from archimedes.agents import strategy_fusion as sf
     import archimedes.db as _db
     import archimedes.services.fusion_evaluator as fe
     from archimedes.agents import generation_pipeline as gp
@@ -711,7 +711,7 @@ async def test_debate_critic_rigor_num_trials_matches_society_formula(tmp_path, 
     value across the full proposal pool.
     """
     import archimedes.agents.debate_engine as de
-    import archimedes.agents.strategy_fusion as sf
+    from archimedes.agents import strategy_fusion as sf
     import archimedes.db as _db
     import archimedes.services.fusion_evaluator as fe
     from archimedes.agents import generation_pipeline as gp
@@ -832,7 +832,7 @@ async def test_debate_text_only_pool_no_spurious_backtest_failed(tmp_path, monke
     tested the same _static_skip guard on the retired standalone-fusion dispatch.
     """
     import archimedes.agents.debate_engine as de
-    import archimedes.agents.strategy_fusion as sf
+    from archimedes.agents import strategy_fusion as sf
     import archimedes.db as _db
     import archimedes.services.fusion_evaluator as fe
     from archimedes.agents import generation_pipeline as gp
