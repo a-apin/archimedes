@@ -554,3 +554,28 @@ def test_critic_prov_robust_to_missing_citations(corpus):
     kept, dropped = de._critic_prov([none_cited, no_attr, good], corpus)
     assert [p.strategy_name for p in kept] == ["good"]
     assert {p.strategy_name for p in dropped} == {"none", "noattr"}
+
+
+# ── Live-gate persistence seam (#788): entries carry real return_series ──────
+
+
+def test_leaderboard_entries_carry_return_series_for_live_gate():
+    """Without return_series, _persist_real_returns SKIPS debate winners and the
+    passport reads 'pending' forever despite C-rigor's real backtest (first prod
+    debate run, 2026-07-04). Entries must derive per-bar returns from the
+    evaluator's equity curve — and stay None when no curve exists (never fabricate)."""
+    ev = _fake_ev(cagr=0.2, dsr=2.0)
+    ev.backtest.equity_curve = [100.0, 101.0, 99.99, 102.0]
+    board = de.build_leaderboard(
+        [(_fake_proposal("A", ["2401.00001", "2402.00001"]), ev)], regime="neutral", base_id="c1"
+    )
+    rs = board[0].return_series
+    assert rs is not None and len(rs) == 3
+    assert abs(rs[0] - 0.01) < 1e-9
+
+    board2 = de.build_leaderboard(
+        [(_fake_proposal("B", ["2401.00001", "2402.00001"]), _fake_ev(cagr=0.1, dsr=1.0))],
+        regime="neutral",
+        base_id="c2",
+    )
+    assert board2[0].return_series is None
