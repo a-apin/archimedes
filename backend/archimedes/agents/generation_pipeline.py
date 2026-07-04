@@ -981,27 +981,6 @@ async def run_generation(
             regime=best.regime,
             redirect_url=f"/library?highlight={sid}",
         )
-        for c in candidates:
-            if c.candidate_id == best.candidate_id:
-                continue
-            from archimedes.services.strategy_memory import persist_proposal
-
-            await asyncio.to_thread(
-                persist_proposal,
-                generation_id=job_id,
-                agent=c.generation_method or "debate",
-                intent=brief.intent,
-                papers=list(c.source_arxiv_ids or []),
-                rigor_verdict=c.rigor_verdict,
-                verdict="rejected",
-                regime_tag=c.regime,
-                extra={
-                    "candidate_id": c.candidate_id,
-                    "strategy_name": c.strategy_name,
-                    "thesis": c.thesis,
-                    "reject_reason": (c.rigor_verdict or {}).get("reason") or "outranked by the society leader",
-                },
-            )
         strategy_id = strategy_ids.get(best.candidate_id, "")
 
         # ── Run real multi-year backtests on every persisted candidate ──
@@ -1079,7 +1058,20 @@ async def run_generation(
                     },
                     papers=[p.get("arxiv_id", "") for p in cand.source_papers] or list(cand.source_arxiv_ids),
                     rigor_verdict=cand.rigor_verdict,
-                    extra={"candidate_id": cand.candidate_id, "selected": cand is best},
+                    # K=1 (Phase-3): this loop is the SINGLE episodic writer for the
+                    # whole board — winner marked selected, alternates carry the
+                    # honest reject reason. (A second per-alternate writer here
+                    # produced 2N-1 rows per run; verify finding, removed.)
+                    verdict="selected" if cand is best else "rejected",
+                    regime_tag=cand.regime,
+                    extra={
+                        "candidate_id": cand.candidate_id,
+                        "selected": cand is best,
+                        "strategy_name": cand.strategy_name,
+                        "reject_reason": None
+                        if cand is best
+                        else (cand.rigor_verdict or {}).get("reason") or "outranked by the society leader",
+                    },
                 )
         except Exception:
             pass  # Non-blocking per spec

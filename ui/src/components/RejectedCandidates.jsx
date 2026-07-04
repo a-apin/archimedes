@@ -150,7 +150,7 @@ export default function RejectedCandidates({ jobId, onClose, onNavigate }) {
             {/* Alternates (up to 10, society order) */}
             {alternates.length > 0 && (
               <>
-                {alternates.length > 0 && candidates.length > 1 && (
+                {candidates.length > 1 && (
                   <div className="label" style={{ marginTop: 4, marginBottom: 2, color: 'var(--text-4)', fontSize: '0.75rem' }}>
                     ALTERNATES
                   </div>
