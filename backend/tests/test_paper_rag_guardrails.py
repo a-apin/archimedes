@@ -61,6 +61,6 @@ def test_cache_is_bounded():
     try:
         pr._PAPER_EMB_CACHE_MAX = 5
         pr._rerank_with_embeddings("q", _papers(10), model)
-        assert len(pr._paper_emb_cache) <= 10  # bounded eviction ran, no unbounded growth
+        assert len(pr._paper_emb_cache) <= pr._PAPER_EMB_CACHE_MAX  # eviction kept cache at configured max
     finally:
         pr._PAPER_EMB_CACHE_MAX = old_max

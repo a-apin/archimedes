@@ -37,6 +37,7 @@ import logging
 import math
 import os
 import re
+import threading
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
@@ -128,8 +129,10 @@ def _get_embedding_model():
             import torch
 
             torch.set_num_threads(1)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Log at WARNING so prod observability catches when the guardrail
+            # is not applied — without it the 2026-07-04 starvation can recur.
+            logger.warning("paper_rag: torch.set_num_threads(1) failed — CPU guardrail not applied: %s", exc)
         _embedding_model = SentenceTransformer(_model_name())
         logger.info("paper_rag: loaded embedding model %s", _model_name())
         return _embedding_model
@@ -263,7 +266,10 @@ def semantic_rerank(
 # per generation over heavily-overlapping candidate sets; without this, every
 # call re-encoded EVERY paper text on CPU (the 2026-07-04 incident). Keyed by
 # the exact text; bounded FIFO so a long-lived process can't grow unbounded.
+# select_candidates() is invoked via asyncio.to_thread(), i.e. real OS threads;
+# protect all cache mutations with a threading.Lock.
 _paper_emb_cache: dict[str, Any] = {}
+_paper_emb_cache_lock = threading.Lock()
 _PAPER_EMB_CACHE_MAX = 20_000
 
 # Encode at most this many candidates per rerank; the keyword pre-filter's
@@ -285,15 +291,19 @@ def _rerank_with_embeddings(
     # Score from a batch-local map: the shared cache is a bonus, never a
     # dependency — eviction must not be able to drop an entry the CURRENT
     # rerank still needs (caught by test_cache_is_bounded).
-    embs = {t: _paper_emb_cache[t] for t in texts if t in _paper_emb_cache}
+    # Hold the lock only for the dict reads/writes; model.encode() runs outside
+    # the lock so other threads aren't blocked during the CPU-intensive encode.
+    with _paper_emb_cache_lock:
+        embs = {t: _paper_emb_cache[t] for t in texts if t in _paper_emb_cache}
     to_encode = [t for t in texts if t not in embs]
     if to_encode:
         fresh = model.encode(to_encode)
-        for t, emb in zip(to_encode, fresh, strict=False):
-            embs[t] = emb
-            if len(_paper_emb_cache) >= _PAPER_EMB_CACHE_MAX:
-                _paper_emb_cache.pop(next(iter(_paper_emb_cache)))
-            _paper_emb_cache[t] = emb
+        with _paper_emb_cache_lock:
+            for t, emb in zip(to_encode, fresh, strict=False):
+                embs[t] = emb
+                if len(_paper_emb_cache) >= _PAPER_EMB_CACHE_MAX:
+                    _paper_emb_cache.pop(next(iter(_paper_emb_cache)))
+                _paper_emb_cache[t] = emb
 
     results: list[tuple[dict[str, Any], float]] = []
     for i, paper in enumerate(papers):
@@ -351,9 +361,16 @@ def augment_candidate_scores(
     if not _semantic_enabled() or not candidates:
         return [(c, 1.0) for c in candidates]
 
+    # Cap before the rerank call so that tail candidates beyond _RERANK_MAX_TEXTS
+    # are never given the 0.5 default score (which could incorrectly promote them
+    # above semantically-scored head candidates). Tail is appended at 0.0 so it
+    # sorts below all scored head candidates while preserving keyword order.
+    head = candidates[:_RERANK_MAX_TEXTS]
+    tail = candidates[_RERANK_MAX_TEXTS:]
+
     # Convert CorpusPaper-like objects to dicts for the reranker
     paper_dicts = []
-    for c in candidates:
+    for c in head:
         paper_dicts.append(
             {
                 "arxiv_id": getattr(c, "arxiv_id", ""),
@@ -371,10 +388,13 @@ def augment_candidate_scores(
     # Map back to original objects, preserving score
     arxiv_to_score = {s[0]["arxiv_id"]: s[1] for s in scored}
     result = []
-    for c in candidates:
+    for c in head:
         aid = getattr(c, "arxiv_id", "")
         score = arxiv_to_score.get(aid, 0.5)
         result.append((c, score))
+    # Tail candidates were not semantically scored; rank them below the head.
+    for c in tail:
+        result.append((c, 0.0))
 
     # Sort by descending semantic score
     result.sort(key=lambda x: x[1], reverse=True)
