@@ -1100,6 +1100,7 @@ async def run_generation(
                         "passes_rigor": c.passes_rigor,
                         "selected": c is best,
                         "regime": c.regime,
+                        "generation_method": c.generation_method,
                     }
                     for c in candidates
                 ],

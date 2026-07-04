@@ -2,11 +2,68 @@ import { useEffect, useState } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
-// Modal-ish overlay showing all candidates the agent produced for a job.
-// The 'best' one was surfaced in the main flow; this view lets the user see
-// the others and why they weren't picked.
+// Considered-Alternatives panel — upgraded for the T1.1 Phase-3 fan-out.
+//
+// Data shape (GET /api/generate/jobs/{job_id}/candidates):
+//   candidates: ranked leaderboard (entry order = society rank); one entry has
+//   selected=true (the winner); alternates carry strategy_id=null (episodic
+//   proposals, not library strategies — no dead links); every entry has a
+//   rigor_verdict with dsr, dsr_p_value, pbo, oos_sharpe, or a 'reason' for
+//   abstain/text-only entries; generation_method="debate_abstain" entries get
+//   the abstain framing.
 
-export default function RejectedCandidates({ jobId, onClose }) {
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+function fmt(val, digits = 3) {
+  if (val == null || (typeof val === 'number' && !isFinite(val))) return '—'
+  return Number(val).toFixed(digits)
+}
+
+// Compact rigor chip: coloured label + value
+function RigorChip({ label, value, bad }) {
+  const color = value === '—'
+    ? 'var(--text-4)'
+    : bad
+      ? 'var(--negative, #ef4444)'
+      : 'var(--positive, #22c55e)'
+  return (
+    <span style={{ marginRight: 10, whiteSpace: 'nowrap' }}>
+      <span style={{ color: 'var(--text-4)' }}>{label}</span>
+      {' '}
+      <strong style={{ color }}>{value}</strong>
+    </span>
+  )
+}
+
+// Regime tag: bull / bear / neutral
+function RegimeTag({ regime }) {
+  if (!regime || regime === 'neutral') return null
+  const bull = regime === 'bull'
+  return (
+    <span className="tag" style={{
+      background: bull ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+      color: bull ? 'var(--positive, #22c55e)' : 'var(--negative, #ef4444)',
+      marginLeft: 6,
+    }}>
+      <span className={bull ? 'i-lucide-trending-up w-3.5 h-3.5' : 'i-lucide-trending-down w-3.5 h-3.5'} />
+      {' '}{bull ? 'Bull' : 'Bear'}
+    </span>
+  )
+}
+
+function isAbstain(c) {
+  return c.generation_method === 'debate_abstain'
+}
+
+function rejectReason(c) {
+  if (isAbstain(c)) return c.rigor_verdict?.reason || 'Debate abstain — hold current weights'
+  if (c.rigor_verdict?.reason) return c.rigor_verdict.reason
+  return 'Outranked by the society leader'
+}
+
+// ── Component ────────────────────────────────────────────────────────────
+
+export default function RejectedCandidates({ jobId, onClose, onNavigate }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -21,14 +78,25 @@ export default function RejectedCandidates({ jobId, onClose }) {
     return () => { cancelled = true }
   }, [jobId])
 
+  // Partition: winner first, then up to 10 alternates (society order preserved)
+  const candidates = data?.candidates ?? []
+  const winner = candidates.find(c => c.selected)
+  const alternates = candidates.filter(c => !c.selected).slice(0, 10)
+
+  const goToStrategy = (strategyId) => {
+    if (!strategyId) return
+    if (onNavigate) {
+      onNavigate('strategy', { strategyId })
+    } else {
+      window.location.hash = `#/strategy/${encodeURIComponent(strategyId)}`
+    }
+    onClose?.()
+  }
+
   return (
     <div
       onClick={onClose}
       style={{
-        // Bumped backdrop opacity 0.6 → 0.85 so the modal body pops; the
-        // inner card also gets a solid background + border + drop-shadow so
-        // the page's glass-blur 'card' class doesn't render translucent
-        // over the dimmed backdrop (which had been leaving text semi-readable).
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         zIndex: 1000, padding: 20,
@@ -44,83 +112,153 @@ export default function RejectedCandidates({ jobId, onClose }) {
           boxShadow: '0 24px 48px rgba(0,0,0,0.5)',
         }}
       >
+        {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
           <div>
-            <h3 style={{ marginBottom: 4 }}>Candidates considered</h3>
+            <h3 style={{ marginBottom: 4 }}>Considered alternatives</h3>
             <p className="caption" style={{ marginBottom: 0 }}>
-              The agent generated multiple candidates and picked the best by rigor verdict.
-              The others are shown here for inspection.
+              The debate society ranked {candidates.length} candidate{candidates.length !== 1 ? 's' : ''};
+              the winner passed the rigor gate and was persisted to the library.
+              Alternates are episodic proposals — no library entry.
             </p>
           </div>
-          <button className="btn btn-outline btn-sm" onClick={onClose}>Close</button>
+          <button className="btn btn-outline btn-sm" onClick={onClose} style={{ flexShrink: 0, marginLeft: 12 }}>
+            Close
+          </button>
         </div>
 
         {loading && <div className="caption">Loading…</div>}
         {error && <div className="info-box warning">{error}</div>}
 
-        {data && data.candidates?.length === 0 && (
+        {!loading && !error && candidates.length === 0 && (
           <div className="caption">No candidate data on file for this job.</div>
         )}
 
-        {data && data.candidates?.length > 0 && (
+        {!loading && !error && candidates.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {data.candidates.map(c => (
-              <div
-                key={c.candidate_id}
-                className="card-flat"
-                style={{
-                  padding: 12,
-                  border: c.selected ? '1px solid var(--accent)' : '1px solid var(--glass-border)',
-                  background: c.selected ? 'rgba(255,209,102,0.06)' : 'transparent',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <div>
-                    <strong>{c.strategy_name || c.candidate_id}</strong>
-                    <span className="caption" style={{ marginLeft: 8 }}>({c.candidate_id})</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    {c.regime && c.regime !== 'neutral' && (
-                      <span className="tag" style={{
-                        background: c.regime === 'bull' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
-                        color: c.regime === 'bull' ? 'var(--positive, #22c55e)' : 'var(--negative, #ef4444)',
-                      }}>
-                        {c.regime === 'bull'
-                          ? <><span className="i-lucide-trending-up w-3.5 h-3.5" /> Bull</>
-                          : <><span className="i-lucide-trending-down w-3.5 h-3.5" /> Bear</>}
-                      </span>
-                    )}
-                    {c.selected && <span className="tag tag-accent">Selected</span>}
-                    {c.passes_rigor
-                      ? <span className="tag tag-positive">Passes rigor</span>
-                      : <span className="tag tag-negative">Failed rigor</span>}
-                  </div>
-                </div>
-                {c.rigor_verdict && (
-                  <div className="caption" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                    <span>DSR: <strong style={{ color: c.rigor_verdict.dsr != null && c.rigor_verdict.dsr < 0.5 ? 'var(--negative)' : undefined }}>
-                      {c.rigor_verdict.dsr != null ? c.rigor_verdict.dsr.toFixed(3) : '—'}
-                    </strong></span>
-                    <span>PBO: <strong style={{ color: c.rigor_verdict.pbo != null && c.rigor_verdict.pbo > 0.5 ? 'var(--negative)' : undefined }}>
-                      {c.rigor_verdict.pbo != null ? c.rigor_verdict.pbo.toFixed(3) : '—'}
-                    </strong></span>
-                    <span>OOS Sharpe: <strong>
-                      {c.rigor_verdict.oos_sharpe != null ? c.rigor_verdict.oos_sharpe.toFixed(3) : '—'}
-                    </strong></span>
-                    <span>Lookahead: {c.rigor_verdict.lookahead_audit_passed !== false
-                      ? <span style={{ color: 'var(--positive)' }}>✓</span>
-                      : <span style={{ color: 'var(--negative)' }}>✗</span>}
-                    </span>
-                    {c.rigor_verdict.reason && (
-                      <span style={{ color: 'var(--text-4)', fontStyle: 'italic' }}>{c.rigor_verdict.reason}</span>
-                    )}
+
+            {/* Winner — pinned first with trophy treatment */}
+            {winner && (
+              <CandidateRow
+                c={winner}
+                rank={1}
+                isWinner
+                onNavigate={winner.strategy_id ? goToStrategy : null}
+              />
+            )}
+
+            {/* Alternates (up to 10, society order) */}
+            {alternates.length > 0 && (
+              <>
+                {alternates.length > 0 && candidates.length > 1 && (
+                  <div className="label" style={{ marginTop: 4, marginBottom: 2, color: 'var(--text-4)', fontSize: '0.75rem' }}>
+                    ALTERNATES
                   </div>
                 )}
+                {alternates.map((c, i) => (
+                  <CandidateRow key={c.candidate_id} c={c} rank={i + 2} isWinner={false} onNavigate={null} />
+                ))}
+              </>
+            )}
+
+            {/* Edge case: exactly 1 candidate, no alternates */}
+            {candidates.length === 1 && (
+              <div className="caption" style={{ color: 'var(--text-4)', marginTop: 4 }}>
+                The society produced a single candidate this run.
               </div>
-            ))}
+            )}
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── CandidateRow ─────────────────────────────────────────────────────────
+
+function CandidateRow({ c, rank, isWinner, onNavigate }) {
+  const rv = c.rigor_verdict || {}
+  const abstain = isAbstain(c)
+
+  // Rigor chip values
+  const dsrP = rv.dsr_p_value != null ? fmt(rv.dsr_p_value) : '—'
+  const pbo   = rv.pbo != null ? fmt(rv.pbo) : '—'
+  const oos   = rv.oos_sharpe != null ? fmt(rv.oos_sharpe) : '—'
+
+  // Colour guidance
+  const dsrBad = rv.dsr_p_value != null && rv.dsr_p_value < 0.95
+  const pboBad  = rv.pbo != null && rv.pbo >= 0.5
+  const oosBad  = rv.oos_sharpe != null && rv.oos_sharpe <= 0
+
+  return (
+    <div
+      className="card-flat"
+      style={{
+        padding: 12,
+        border: isWinner ? '1px solid var(--accent)' : '1px solid var(--glass-border)',
+        background: isWinner ? 'rgba(255,209,102,0.06)' : 'transparent',
+      }}
+    >
+      {/* Row header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          {/* Rank / trophy */}
+          {isWinner
+            ? <span style={{ fontSize: '1rem' }}>&#x1F3C6;</span>
+            : <span className="caption" style={{ color: 'var(--text-4)', minWidth: 20 }}>#{rank}</span>}
+          <strong style={{ fontSize: '0.9rem' }}>{c.strategy_name || c.candidate_id}</strong>
+          <RegimeTag regime={c.regime} />
+          {abstain && (
+            <span className="tag" style={{ background: 'rgba(255,209,102,0.15)', color: 'var(--accent)' }}>
+              Abstain
+            </span>
+          )}
+        </div>
+
+        {/* Tags: selected / rigor pass */}
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0, marginLeft: 8 }}>
+          {isWinner && <span className="tag tag-accent">Selected</span>}
+          {!abstain && (
+            c.passes_rigor
+              ? <span className="tag tag-positive">Passes rigor</span>
+              : <span className="tag tag-negative">Failed rigor</span>
+          )}
+        </div>
+      </div>
+
+      {/* Rigor chips (skip for abstain — those have no real stats) */}
+      {!abstain && (
+        <div className="caption" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', marginBottom: 4 }}>
+          <RigorChip label="DSR p" value={dsrP} bad={dsrBad} />
+          <RigorChip label="PBO" value={pbo} bad={pboBad} />
+          <RigorChip label="OOS" value={oos} bad={oosBad} />
+        </div>
+      )}
+
+      {/* Abstain body */}
+      {abstain && rv.reason && (
+        <div className="caption" style={{ color: 'var(--text-3)', fontStyle: 'italic', marginBottom: 4 }}>
+          {rv.reason}
+        </div>
+      )}
+
+      {/* Reject reason (alternates only) */}
+      {!isWinner && !abstain && (
+        <div className="caption" style={{ color: 'var(--text-4)', marginTop: 2 }}>
+          {rejectReason(c)}
+        </div>
+      )}
+
+      {/* Winner link — only when strategy_id is present */}
+      {isWinner && onNavigate && c.strategy_id && (
+        <button
+          className="btn btn-outline btn-sm"
+          style={{ marginTop: 8 }}
+          onClick={() => onNavigate(c.strategy_id)}
+        >
+          View strategy passport →
+        </button>
+      )}
     </div>
   )
 }

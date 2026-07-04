@@ -342,7 +342,7 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
       )}
 
       {showRejected && (
-        <RejectedCandidates jobId={jobId} onClose={() => setShowRejected(false)} />
+        <RejectedCandidates jobId={jobId} onClose={() => setShowRejected(false)} onNavigate={onNavigate} />
       )}
     </div>
   )

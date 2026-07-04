@@ -153,6 +153,7 @@ class CandidateSummary(BaseModel):
     passes_rigor: bool
     selected: bool
     regime: str | None = None  # "bull", "bear", or "neutral" (Issue #163)
+    generation_method: str | None = None  # "debate" | "debate_abstain" | "fusion" | …
 
 
 class CandidatesListResponse(BaseModel):
