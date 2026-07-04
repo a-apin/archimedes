@@ -90,8 +90,8 @@ async def test_get_totals_reads_pfcount_in_stage_order():
 
     assert counts == {
         "landed": 10,
-        "generation_started": 4,
-        "wallet_connected": 2,
+        "wallet_connected": 4,
+        "generation_started": 2,
         "vault_deployed": 1,
     }
     assert pipe.pfcount.call_count == len(STAGES)
@@ -122,17 +122,20 @@ async def test_get_totals_failsafe_returns_zeros():
 
 
 def test_build_funnel_ratios():
-    counts = {"landed": 100, "generation_started": 25, "wallet_connected": 5, "vault_deployed": 2}
+    # Post-#851 journey: wallet_connected precedes generation_started.
+    counts = {"landed": 100, "wallet_connected": 25, "generation_started": 5, "vault_deployed": 2}
     resp = _build_funnel(counts, "all-time")
     by = {s.stage: s for s in resp.stages}
 
     assert resp.window == "all-time"
     assert by["landed"].pct_of_landed == 1.0
     assert by["landed"].step_conversion == 1.0
-    assert by["generation_started"].pct_of_landed == 0.25
-    assert by["generation_started"].step_conversion == 0.25
-    assert by["wallet_connected"].step_conversion == 0.2  # 5 / 25
+    assert by["wallet_connected"].pct_of_landed == 0.25
+    assert by["wallet_connected"].step_conversion == 0.25  # 25 / 100
+    assert by["generation_started"].pct_of_landed == 0.05
+    assert by["generation_started"].step_conversion == 0.2  # 5 / 25
     assert by["vault_deployed"].pct_of_landed == 0.02
+    assert by["vault_deployed"].step_conversion == 0.4  # 2 / 5
 
 
 def test_build_funnel_zero_landed_no_divzero():

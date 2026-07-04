@@ -5,7 +5,7 @@ Backs the conversion-funnel instrument. We have a zero-conversion problem
 visitors drop. This records the distinct visitors that reach each stage of the
 journey:
 
-    landed → generation_started → wallet_connected → vault_deployed
+    landed → wallet_connected → generation_started → vault_deployed
 
 using Redis HyperLogLog (``PFADD`` / ``PFCOUNT``) so the counts are *distinct
 visitors* without retaining any raw identifier — privacy-friendly (no tracking
@@ -46,8 +46,8 @@ _PREFIX = "archimedes:funnel"
 # first stage (``landed``) and against the immediately preceding stage.
 STAGES: tuple[str, ...] = (
     "landed",
-    "generation_started",
     "wallet_connected",
+    "generation_started",
     "vault_deployed",
 )
 

@@ -99,7 +99,7 @@ async def get_funnel(
 ) -> FunnelResponse:
     """Return the distinct-visitor conversion funnel (issue #787).
 
-    Stages: ``landed -> generation_started -> wallet_connected -> vault_deployed``.
+    Stages: ``landed -> wallet_connected -> generation_started -> vault_deployed``.
     Fail-safe: ``FunnelStore`` returns zeros when Redis is unreachable, so this
     endpoint always responds 200 with a well-formed funnel.
     """

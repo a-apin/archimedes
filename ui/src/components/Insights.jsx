@@ -9,8 +9,8 @@ import { checkSession } from '../siwe'
 //   - Traction: human vs agent REQUEST counts (honestly labelled — these are
 //     cumulative request tallies, bot-inflated, NOT unique users) + the honest
 //     distinct real-users (wallet) count alongside them.
-//   - Conversion funnel: distinct visitors through landed → generation_started →
-//     wallet_connected → vault_deployed, with step-conversion %.
+//   - Conversion funnel: distinct visitors through landed → wallet_connected →
+//     generation_started → vault_deployed, with step-conversion %.
 //   - Visitor insights: distinct visitors by country + device, drawn from the
 //     SAME JS-gated `landed` beacon population as the funnel (#830) — geo/device
 //     count agrees with the funnel `landed` count by construction. Geography is
