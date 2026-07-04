@@ -7,6 +7,7 @@ page (shows full gate breakdown).
 
 from __future__ import annotations
 
+import numpy as np
 from fastapi import APIRouter, Request, Response
 
 from archimedes.api.limiter import limiter
@@ -172,8 +173,22 @@ async def evaluate_rigor_gate():
     # meaningless. The stubs remain available for UI display (portfolio page)
     # but must not feed into the rigor gate.
 
-    # Compute PBO across all strategies that have returns
-    valid_returns = {k: v for k, v in returns_by_strategy.items() if len(v) >= 10}
+    # Compute PBO across all strategies that have returns. Exclude zero-variance
+    # (degenerate/placeholder-flat) series BEFORE they can inflate num_trials or
+    # dilute avg_correlation (#868): a flat daily_returns series (e.g. a stub row
+    # that was never replaced with a real backtest) has no informational content,
+    # but counting it toward the multiple-testing correction still stiffens DSR
+    # for every REAL strategy in the cohort. Mirrors the exact degeneracy test
+    # _rigor_helpers._sharpe_dsr_inputs already uses (np.ptp(arr) == 0 — peak-to-
+    # peak range zero) so "degenerate" means the same thing everywhere in the
+    # gate. This only trims the cohort-level context (num_trials/avg_correlation/
+    # pbo_scores below); the per-strategy gate loop still runs every strategy
+    # (including degenerate ones) against its own returns via
+    # returns_by_strategy.get(s.id, []) so a degenerate strategy still correctly
+    # reports MISSING/FAIL on its own row instead of silently disappearing.
+    valid_returns = {
+        k: v for k, v in returns_by_strategy.items() if len(v) >= 10 and float(np.ptp(np.asarray(v, dtype=float))) > 0.0
+    }
     pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
 
     # num_trials = library size here (#770). This route grades the EXISTING persisted
