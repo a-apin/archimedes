@@ -469,23 +469,36 @@ export async function getWalletClient() {
 export async function signSiweMessage(message) {
   if (_providerId === CIRCLE_PROVIDER_ID && _smartAccount) {
     const signature = await _smartAccount.signMessage({ message })
-    try {
-      const deployed = typeof _smartAccount.isDeployed === 'function'
-        ? await _smartAccount.isDeployed()
-        : true
-      if (!deployed && typeof _smartAccount.getFactoryArgs === 'function') {
-        const { factory, factoryData } = await _smartAccount.getFactoryArgs()
-        if (factory && factoryData) {
-          const { serializeErc6492Signature } = await import('viem')
-          return serializeErc6492Signature({ address: factory, data: factoryData, signature })
-        }
-      }
-    } catch (wrapErr) {
-      // Wrapping is an optimization for counterfactual accounts — a deployed
-      // account's plain ERC-1271 signature verifies fine without it.
-      console.warn('ERC-6492 wrap skipped:', wrapErr.message)
+    // A Circle passkey account is *counterfactual*: it has on-chain code only
+    // after its first user-op deploys it — receiving USDC does NOT deploy it.
+    // Until then a bare ERC-1271 signature has no contract to validate against,
+    // so it must be ERC-6492-wrapped with the account's factory args (the
+    // backend's universal validator deploy-and-checks it). Circle's account
+    // object has no isDeployed(), so detect via on-chain bytecode.
+    const wrapWithFactory = async () => {
+      if (typeof _smartAccount.getFactoryArgs !== 'function') return signature
+      const { factory, factoryData } = await _smartAccount.getFactoryArgs()
+      if (!factory || !factoryData) return signature
+      const { serializeErc6492Signature } = await import('viem')
+      return serializeErc6492Signature({ address: factory, data: factoryData, signature })
     }
-    return signature
+    try {
+      const code = await publicClient.getCode({ address: _smartAccount.address })
+      const isDeployed = !!code && code !== '0x'
+      return isDeployed ? signature : await wrapWithFactory()
+    } catch (checkErr) {
+      // Deploy-check failed (RPC hiccup): a brand-new user is the case we most
+      // need to get right, and they're undeployed — wrap defensively. ERC-6492's
+      // magic suffix is safely handled by the validator for a deployed account
+      // too, so wrapping is the safer default when deployment is unknown.
+      console.warn('ERC-6492 deploy-check failed, wrapping defensively:', checkErr.message)
+      try {
+        return await wrapWithFactory()
+      } catch (wrapErr) {
+        console.warn('ERC-6492 defensive wrap failed, sending bare 1271 sig:', wrapErr.message)
+        return signature
+      }
+    }
   }
   const walletClient = await getWalletClient()
   return walletClient.signMessage({ message })

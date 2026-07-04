@@ -66,18 +66,28 @@ async def verify_smart_wallet_signature(wallet: str, message_text: str, signatur
 
     try:
         sig_bytes = bytes.fromhex(signature.removeprefix("0x"))
-        args = abi_encode(
-            ["address", "bytes32", "bytes"],
-            [wallet, _eip191_hash(message_text), sig_bytes],
-        )
+        msg_hash = _eip191_hash(message_text)
+        args = abi_encode(["address", "bytes32", "bytes"], [wallet, msg_hash, sig_bytes])
         data = ERC6492_VALIDATOR_BYTECODE + args.hex()
         result = await asyncio.wait_for(_eth_call(rpc_url, data), timeout=_RPC_TIMEOUT_SECONDS + 2)
         valid = int(result, 16) == 1
         if not valid:
-            logger.info("smart-wallet SIWE verification returned invalid for %s…", wallet[:10])
+            # A CLEAN 0x00 (validator ran, rejected) — distinct from an
+            # exception (RPC/revert). Signals a hash- or signature-format
+            # mismatch, not connectivity. Log enough to debug without leaking
+            # the signature: hash + sig length + 6492-wrapped detection.
+            is_6492 = sig_bytes[-32:].hex() == "6492" * 16 if len(sig_bytes) >= 32 else False
+            logger.warning(
+                "smart-wallet SIWE INVALID (validator ran, rejected) wallet=%s hash=%s sig_len=%d erc6492_wrapped=%s",
+                wallet[:12],
+                "0x" + msg_hash.hex(),
+                len(sig_bytes),
+                is_6492,
+            )
         return valid
     except Exception as exc:
-        # Fail closed: an unreachable RPC or malformed signature must never
-        # authenticate. The caller surfaces a 401; we log the WHY.
-        logger.warning("smart-wallet SIWE verification errored (fail-closed): %s", exc)
+        # Fail closed: an unreachable RPC, a revert (e.g. undeployed account +
+        # unwrapped sig), or a malformed signature must never authenticate. An
+        # exception here is a DIFFERENT failure class than a clean 0x00 above.
+        logger.warning("smart-wallet SIWE ERRORED (fail-closed, %s): %s", type(exc).__name__, str(exc)[:300])
         return False
