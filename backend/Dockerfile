@@ -62,4 +62,9 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
 
-CMD ["python", "-m", "uvicorn", "archimedes.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --proxy-headers + --forwarded-allow-ips="*" so request.client.host reflects the
+# real client behind nginx. The container port is never bound to the host — nginx
+# is the sole ingress (docker-compose backend is `expose`-only) — so trusting the
+# proxy peer is safe here. The rate limiter reads X-Real-IP directly, but this
+# keeps request.client.host correct for any other consumer too.
+CMD ["python", "-m", "uvicorn", "archimedes.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
