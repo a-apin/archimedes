@@ -18,6 +18,7 @@ _EVENTS_PREFIX = "archimedes:market:events:"  # + strategy_id  (capped list)
 _SUBS_PREFIX = "archimedes:market:subs:"  # + strategy_id  (JSON dict cache)
 _LEADER_PREFIX = "archimedes:market:leader:"  # + strategy_id
 _SUBTICK_PREFIX = "archimedes:market:subtick:"  # + sub_id  (capped list, last 200)
+_PAYMENT_PREFIX = "archimedes:market:payment:"  # + sub_id  (JSON payment record)
 _KEY_REGIME_LOCK = "archimedes:regime:lock"  # global regime-classification lock
 
 LEADER_LOCK_TTL_SECONDS = 60
@@ -48,7 +49,7 @@ class MarketState:
     def __init__(self, store: AgentStateStore | None = None) -> None:
         self.store = store or AgentStateStore()
         self._cas_del = None  # lazy-register compare-and-delete script
-        self._cas_exp = None   # lazy-register compare-and-expire script
+        self._cas_exp = None  # lazy-register compare-and-expire script
 
     async def append_event(self, strategy_id: str, event: dict) -> None:
         r = await self.store._get_redis()
@@ -81,7 +82,9 @@ class MarketState:
         acquired = await r.set(f"{_LEADER_PREFIX}{strategy_id}", token, nx=True, ex=ttl_seconds)
         return token if acquired else None
 
-    async def renew_leader(self, strategy_id: str, token: str | None = None, ttl_seconds: int = LEADER_LOCK_TTL_SECONDS) -> None:
+    async def renew_leader(
+        self, strategy_id: str, token: str | None = None, ttl_seconds: int = LEADER_LOCK_TTL_SECONDS
+    ) -> None:
         """Extend the leader lock TTL — no-op if *token* does not match."""
         if token is None:
             return
@@ -125,3 +128,30 @@ class MarketState:
         r = await self.store._get_redis()
         raw = await r.lrange(f"{_SUBTICK_PREFIX}{sub_id}", 0, count - 1)
         return [json.loads(e) for e in raw]  # already str
+
+    # ---- x402 payment record ------------------------------------------------
+
+    async def save_payment(self, sub_id: str, record: dict) -> None:
+        """Persist a payment record for *sub_id*. Auto-stamps recorded_at."""
+        import datetime
+
+        r = await self.store._get_redis()
+        payload = dict(record)
+        payload.setdefault("recorded_at", datetime.datetime.now(datetime.UTC).isoformat())
+        await r.set(f"{_PAYMENT_PREFIX}{sub_id}", json.dumps(payload))
+
+    async def get_payment(self, sub_id: str) -> dict | None:
+        """Return the most recent payment record for *sub_id*, or None."""
+        r = await self.store._get_redis()
+        raw = await r.get(f"{_PAYMENT_PREFIX}{sub_id}")
+        return json.loads(raw) if raw else None
+
+    async def has_active_payment(self, sub_id: str) -> bool:
+        """Return True iff a payment record exists and its ``paid`` field is True."""
+        payment = await self.get_payment(sub_id)
+        return bool(payment and payment.get("paid"))
+
+    async def delete_payment(self, sub_id: str) -> None:
+        """Remove the payment record for *sub_id* (call after successful settlement)."""
+        r = await self.store._get_redis()
+        await r.delete(f"{_PAYMENT_PREFIX}{sub_id}")
