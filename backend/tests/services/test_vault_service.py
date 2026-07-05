@@ -211,6 +211,46 @@ class TestComputeReturnsFallback:
         assert abs(result["return_30d"]) >= abs(result["return_24h"])
 
 
+class TestComputeReturnsAsyncRedis:
+    @pytest.mark.asyncio
+    async def test_uses_async_redis_and_awaits_snapshot(self) -> None:
+        """Regression for #914: the Redis snapshot path must use the asyncio
+        client and await ping/get so it never blocks the event loop. We mock
+        redis.asyncio.Redis with a valid snapshot plus a mocked oracle; the
+        returns must come from the Redis price path (not the deterministic
+        fallback), which only happens if the awaits land. A revert to the sync
+        redis.Redis would miss this patch and fall through to the fallback."""
+        import json
+
+        alloc = VaultHolding(symbol="sSPY", token_address="0xT", amount=1.0, value_usdc=1.0, weight_pct=100.0)
+
+        fake_redis = MagicMock()
+        fake_redis.ping = AsyncMock(return_value=True)
+        fake_redis.get = AsyncMock(return_value=json.dumps({"0xT": 1.0}))
+        fake_redis.aclose = AsyncMock()
+
+        # Oracle reports $2.0 (raw 2_000_000 / 1e6) → +100% vs the $1.0 creation
+        # price stored in the snapshot.
+        oracle = MagicMock()
+        oracle.functions.price.return_value.call = AsyncMock(return_value=2_000_000)
+        loader = MagicMock()
+        loader.oracle_for.return_value = oracle
+
+        svc = VaultService()
+        with (
+            patch("redis.asyncio.Redis", return_value=fake_redis),
+            patch("archimedes.chain.contracts.get_contract_loader", return_value=loader),
+        ):
+            result = await svc._compute_returns("0xVault", [alloc])
+
+        fake_redis.ping.assert_awaited_once()
+        fake_redis.get.assert_awaited_once()
+        fake_redis.aclose.assert_awaited_once()
+        # 100% weighted return → return_30d == 1.0, return_24h == 1.0 * 0.033.
+        assert result["return_30d"] == pytest.approx(1.0)
+        assert result["return_24h"] == pytest.approx(0.033)
+
+
 class TestRecentTracesSwallowFailures:
     @pytest.mark.asyncio
     async def test_chain_failure_returns_empty_list(self) -> None:

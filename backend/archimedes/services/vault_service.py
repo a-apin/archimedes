@@ -245,22 +245,26 @@ class VaultService:
         """
         import os
 
-        import redis as _redis
+        import redis.asyncio as _aioredis
 
         logger = logging.getLogger(__name__)
 
-        # Try Redis-based real returns first
+        # Try Redis-based real returns first. This runs inside an async request
+        # handler, so the client MUST be the asyncio one and every call awaited
+        # — a blocking sync client here freezes the whole uvicorn event loop
+        # (every concurrent request on the worker stalls) if Redis is slow.
+        r = None
         try:
-            r = _redis.Redis(
+            r = _aioredis.Redis(
                 host=os.getenv("REDIS_HOST", "localhost"),
                 port=int(os.getenv("REDIS_PORT", "6379")),
                 decode_responses=True,
             )
-            r.ping()
+            await r.ping()
 
             # Check if we have a price snapshot for this vault
             snapshot_key = f"vault:prices:{vault_address}"
-            snapshot = r.get(snapshot_key)
+            snapshot = await r.get(snapshot_key)
 
             if snapshot:
                 prices_at_creation = json.loads(snapshot)
@@ -307,6 +311,12 @@ class VaultService:
                     }
         except Exception as e:
             logger.debug("Redis price snapshot not available for %s: %s", sanitize_log_value(vault_address), e)
+        finally:
+            if r is not None:
+                try:
+                    await r.aclose()
+                except Exception:
+                    pass
 
         # Fallback: compute simulated returns from allocation weights
         # This gives realistic numbers until real price history accumulates
