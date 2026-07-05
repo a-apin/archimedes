@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from decimal import Decimal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
@@ -14,6 +15,18 @@ from archimedes.services.log_scrubber import sanitize_log_value
 logger = logging.getLogger(__name__)
 
 swap_router = APIRouter(prefix="/api/swap", tags=["swap"])
+
+
+def _to_token_raw(amount: float, decimals: int) -> int:
+    """Convert a human amount to integer base units without float64 precision loss.
+
+    ``int(amount * 10**decimals)`` runs the multiply in float64 (~15–16 significant
+    digits), so it loses integer precision for large amounts (e.g. 1e9 tokens at 18
+    decimals lands ~2e13 off) and can truncate sub-unit amounts to 0. Route through
+    ``Decimal`` on the float's shortest round-trip string so the multiply is exact
+    and only the final ``int()`` truncates to whole base units (#922).
+    """
+    return int(Decimal(str(amount)) * (Decimal(10) ** decimals))
 
 
 def _known_token_meta(address: str) -> tuple[str, int]:
@@ -60,7 +73,7 @@ async def get_swap_quote(
         router = loader.amm_router
         decimals_in = await _token_decimals(token_in)
         decimals_out = await _token_decimals(token_out)
-        amount_in_raw = int(amount_in * 10**decimals_in)
+        amount_in_raw = _to_token_raw(amount_in, decimals_in)
 
         amount_out_raw = await router.functions.getAmountOut(
             chain_client.to_checksum(token_in),
