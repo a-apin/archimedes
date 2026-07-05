@@ -105,3 +105,8 @@ htmlcov/
 # Terraform local provider cache / lock in ANY (incl. nested) module dir
 **/.terraform/
 **/.terraform.lock.hcl
+
+
+#
+.agents/
+.AGENTS.md

@@ -521,6 +521,12 @@ h4, .h4 { font-family: var(--sans); font-size: 0.8rem; font-weight: 600; text-tr
   color: var(--text-2);
 }
 .btn-outline:hover { border-color: var(--text-3); color: var(--text-1); }
+.btn-outline-danger {
+  background: transparent;
+  border: 1px solid var(--danger, #e74c3c);
+  color: var(--danger, #e74c3c);
+}
+.btn-outline-danger:hover { background: var(--danger, #e74c3c); color: #fff; }
 
 .btn-sm { padding: 6px 14px; font-size: 0.78rem; }
 .btn-lg { padding: 14px 28px; font-size: 0.95rem; }

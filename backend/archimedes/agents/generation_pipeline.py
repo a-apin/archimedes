@@ -684,6 +684,7 @@ async def run_generation(
     store: JobStore | None = None,
     mode: str | None = None,
     model: str | None = None,
+    owner_wallet: str | None = None,
     dual_regime: bool = True,
     owner_wallet: str | None = None,
 ) -> None:
@@ -1173,7 +1174,6 @@ async def _persist_candidate(
                 rigor_verdict=c.rigor_verdict,
                 provenance_hash=trace_hash,
                 is_example=False,
-                owner_wallet=owner_wallet,
             )
             session.commit()
 

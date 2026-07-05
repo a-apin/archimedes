@@ -1,4 +1,13 @@
 {
+  "../submodules/KnowledgeBase": {
+    "rev": "f8703a167240cf56ed42d81422276397422f4756"
+  },
+  "../submodules/Linus": {
+    "rev": "f42e48437577f55f30dee617274b0e394f318966"
+  },
+  "../submodules/context-arc": {
+    "rev": "df3c6cc40c7e31a809caa2c6b6a30b2a24b9e401"
+  },
   "lib/forge-std": {
     "tag": {
       "name": "v1.16.1",
