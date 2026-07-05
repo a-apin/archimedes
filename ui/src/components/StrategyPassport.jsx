@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import CreateVaultModal from './CreateVaultModal'
+import RigorStrictnessControl, { levelLabel } from './RigorStrictnessControl'
+import { useRigorStrictness, BADGE_LEVEL } from '../hooks/useRigorStrictness'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -85,6 +87,13 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [deployOpen, setDeployOpen] = useState(false)
+  // Per-user deploy strictness (localStorage-backed, tab-synced). Gates the
+  // Deploy CTA and is passed to the deploy flow so the server enforces it too.
+  const [level, setLevel] = useRigorStrictness()
+  // The strategy's rigor-ladder verdict: min_passing_level + blocked_by_floor,
+  // computed live over the whole-library cohort. Curated strategies resolve here;
+  // generated strategies 404 → we fall back to the badge boolean.
+  const [gate, setGate] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -98,6 +107,20 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
       .then(data => { if (!cancelled) setStrategy(data) })
       .catch(e => { if (!cancelled) setError(e.message || 'Failed to load strategy') })
       .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [strategyId])
+
+  useEffect(() => {
+    let cancelled = false
+    setGate(null)
+    if (!strategyId) return
+    // min_passing_level is strictness-independent, so one call (default level)
+    // gives the whole ladder. 404 (generated strategy not in the curated cohort)
+    // is expected — we fall back to the badge boolean below.
+    fetch(`${API_BASE}/api/selection-bias/gate/${encodeURIComponent(strategyId)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (!cancelled && data) setGate(data) })
+      .catch(() => { /* fall back to badge */ })
     return () => { cancelled = true }
   }, [strategyId])
 
@@ -118,6 +141,19 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
 
   const s = strategy
   const passingRigor = s.passes_rigor_gate === true
+  // ── Deploy gating at the user's chosen strictness ──
+  const badgePass = s.passes_rigor_gate === true
+  // Lowest level (1..5) at which this strategy is deployable — from the live
+  // ladder when loaded, else the level-1 badge boolean (curated strategies load
+  // the ladder; generated strategies fall back to the badge). null = deployable
+  // at no level; undefined = unknown yet (pending backtest).
+  const minLevel = gate
+    ? gate.min_passing_level
+    : (badgePass ? BADGE_LEVEL : (s.passes_rigor_gate === false ? null : undefined))
+  const blockedByFloor = gate ? gate.blocked_by_floor === true : false
+  const deployable = minLevel != null && minLevel <= level && !blockedByFloor
+  const needsHigherLevel = minLevel != null && minLevel > level && !blockedByFloor
+  const belowBadge = deployable && minLevel > BADGE_LEVEL
   const paperCite = [
     s.paper_authors?.[0]?.split(' ').pop(),
     s.paper_year && `(${s.paper_year})`,
@@ -179,37 +215,61 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
         </div>
       </div>
 
-      {/* Deploy CTA — top, gated on rigor + wallet */}
-      <div className="card p-5 mb-6 fade-up fade-up-2 flex items-start justify-between gap-4 flex-wrap">
+      {/* Deploy CTA — top, gated on rigor-at-your-level + wallet */}
+      <div className="card p-5 mb-4 fade-up fade-up-2 flex items-start justify-between gap-4 flex-wrap">
         <div className="flex-1 min-w-[240px]">
           <div className="label mb-1">Deploy as a vault</div>
           <p className="caption leading-relaxed">
             Time-bound, non-custodial execution. Funds stay in an ERC-4626 vault
             you control; the agent has rebalance authority only, no withdraw.
             {!walletAddr && <> Connect a wallet (top right) to enable deployment.</>}
-            {s.passes_rigor_gate === false && (
-              <> This strategy did not pass the rigor gate — deployment is disabled.
-              Generate a strategy that passes DSR / PBO / OOS / look-ahead to deploy.</>
+            {blockedByFloor && (
+              <> This strategy fails an always-on correctness floor (look-ahead / positive
+              OOS / DSR ≥ 0.50) — it cannot be deployed at any strictness level.</>
+            )}
+            {needsHigherLevel && (
+              <> This strategy passes only at <strong>{levelLabel(null, minLevel)}</strong> (level {minLevel})
+              or riskier. Raise your strictness to deploy it.</>
+            )}
+            {belowBadge && !needsHigherLevel && (
+              <> Deploying below the Archimedes Verified bar, at <strong>{levelLabel(null, level)}</strong> risk.</>
             )}
           </p>
         </div>
-        <button
-          className="btn btn-primary"
-          onClick={() => setDeployOpen(true)}
-          disabled={!walletAddr || s.passes_rigor_gate === false}
-          style={
-            !walletAddr || s.passes_rigor_gate === false
-              ? { opacity: 0.45, cursor: 'not-allowed', filter: 'grayscale(0.6)' }
-              : undefined
-          }
-          title={
-            !walletAddr ? 'Connect wallet to deploy' :
-            s.passes_rigor_gate === false ? 'Strategy did not pass the rigor gate — cannot deploy' :
-            'Open deploy modal'
-          }
-        >
-          Deploy as Vault →
-        </button>
+        <div className="flex flex-col items-end gap-2">
+          <button
+            className="btn btn-primary"
+            onClick={() => setDeployOpen(true)}
+            disabled={!walletAddr || !deployable}
+            style={
+              !walletAddr || !deployable
+                ? { opacity: 0.45, cursor: 'not-allowed', filter: 'grayscale(0.6)' }
+                : undefined
+            }
+            title={
+              !walletAddr ? 'Connect wallet to deploy' :
+              blockedByFloor ? 'Fails an always-on rigor floor — cannot deploy at any level' :
+              needsHigherLevel ? `Raise strictness to level ${minLevel} to deploy` :
+              'Open deploy modal'
+            }
+          >
+            Deploy as Vault →
+          </button>
+          {needsHigherLevel && (
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={() => setLevel(minLevel)}
+              title={`Set your strictness to ${levelLabel(null, minLevel)}`}
+            >
+              Raise to {levelLabel(null, minLevel)} →
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Per-user strictness slider — the deploy gate above reads from this. */}
+      <div className="mb-6 fade-up fade-up-2">
+        <RigorStrictnessControl level={level} onChange={setLevel} />
       </div>
 
       {/* Methodology + source paper(s) */}
@@ -350,9 +410,16 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
       <div className="card p-5 mb-6 fade-up fade-up-5">
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
           <div className="label">Rigor verdict — selection-bias controls</div>
-          <span className={`tag inline-flex items-center gap-1 ${passingRigor ? 'tag-positive' : 'tag-muted'}`}>
-            {passingRigor ? <><span className="i-lucide-check w-3.5 h-3.5" /> passed</> : 'not passed'}
-          </span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`tag inline-flex items-center gap-1 ${passingRigor ? 'tag-positive' : 'tag-muted'}`}>
+              {passingRigor ? <><span className="i-lucide-check w-3.5 h-3.5" /> Verified (Conservative)</> : 'not Verified'}
+            </span>
+            {blockedByFloor ? (
+              <span className="tag tag-negative">blocked — correctness floor</span>
+            ) : minLevel != null && minLevel > BADGE_LEVEL ? (
+              <span className="tag tag-accent">deployable at {levelLabel(null, minLevel)}+</span>
+            ) : null}
+          </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Metric
@@ -445,6 +512,7 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
         <CreateVaultModal
           strategy={s}
           walletAddr={walletAddr}
+          strictnessLevel={level}
           onClose={() => setDeployOpen(false)}
           onDeployed={(vaultAddress) => {
             setDeployOpen(false)

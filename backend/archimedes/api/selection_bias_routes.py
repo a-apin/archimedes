@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 import numpy as np
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 
 from archimedes.api.limiter import limiter
 from archimedes.services.rigor_evaluator import (
@@ -19,6 +19,15 @@ from archimedes.services.rigor_evaluator import (
     compute_pbo,
     load_daily_returns_store,
     run_rigor_gate,
+)
+from archimedes.services.rigor_profiles import (
+    CPCV_MIN_POSITIVE_FRACTION,
+    DEFAULT_LEVEL,
+    DSR_P_FLOOR,
+    LOOSEST_LEVEL,
+    OOS_ABS_FLOOR,
+    STRICTEST_LEVEL,
+    all_profiles,
 )
 from archimedes.services.strategy_provider import LocalStrategyProvider, default_provider
 
@@ -96,6 +105,15 @@ class StrategyRigorResult(BaseModel):
     oos_sharpe: float | None = None
     in_sample_sharpe: float | None = None
     library_pbo: LibraryPbo = LibraryPbo()
+    # Strictness ladder (rigor_profiles). ``passes_all`` above is the verdict at
+    # ``strictness_level``; these carry the whole ladder from one computation so
+    # the passport can render "passes at your level" + the deploy gate can enforce
+    # it. ``min_passing_level`` is the lowest level (1..5) the strategy passes at
+    # (None = fails even the loosest, or blocked_by_floor). A user at level L can
+    # deploy iff ``min_passing_level is not None and min_passing_level <= L``.
+    strictness_level: int = 1
+    min_passing_level: int | None = None
+    blocked_by_floor: bool = False
 
 
 class RigorGateResponse(BaseModel):
@@ -106,6 +124,32 @@ class RigorGateResponse(BaseModel):
     passing: int
     failing: int
     library_pbo: LibraryPbo = LibraryPbo()
+    # The strictness level the ``passing``/``failing`` counts + each
+    # ``passes_all`` were evaluated at (1 = strictest/badge … 5 = loosest).
+    strictness_level: int = 1
+
+
+class StrictnessLevelInfo(BaseModel):
+    """One rung of the strictness ladder — disclosed so the UI renders labels and
+    thresholds from the backend's single source of truth (rigor_profiles)."""
+
+    level: int
+    label: str
+    dsr_p_min: float
+    pbo_max: float
+    oos_is_ratio_min: float
+    description: str
+
+
+class StrictnessLadderResponse(BaseModel):
+    """The whole 1–5 ladder + the always-on floors + which level is the badge."""
+
+    levels: list[StrictnessLevelInfo]
+    strictest_level: int
+    loosest_level: int
+    badge_level: int
+    default_level: int
+    floors: dict[str, float]
 
 
 class PBORequest(BaseModel):
@@ -126,11 +170,27 @@ class PBOResponse(BaseModel):
 
 
 @selection_bias_router.get("/gate", response_model=RigorGateResponse)
-async def evaluate_rigor_gate():
+async def evaluate_rigor_gate(
+    strictness: int = Query(
+        DEFAULT_LEVEL,
+        ge=STRICTEST_LEVEL,
+        le=LOOSEST_LEVEL,
+        description="Strictness level 1 (Conservative/badge) … 5 (Speculative). "
+        "Sets which level each passes_all + the passing/failing counts report at. "
+        "min_passing_level is always returned regardless, so the caller can reason "
+        "about the whole ladder.",
+    ),
+):
     """Evaluate the rigor gate for all strategies in the library.
 
     Runs three statistical primitives (DSR, PBO, chronological OOS Sharpe)
     plus the look-ahead static audit for each strategy.
+
+    ``strictness`` sets the reporting level: ``passes_all`` per strategy and the
+    ``passing``/``failing`` counts reflect that level's thresholds. The badge
+    (``passes_rigor_gate`` on the strategy object) is unaffected — it is always
+    the strictest level. Each result also carries ``min_passing_level`` so a
+    caller can render the whole ladder from one call.
 
     CPCV (Combinatorial Purged Cross-Validation) is implemented in
     rigor_evaluator.run_rigor_gate() but requires a 2-D (S, T) matrix of
@@ -151,7 +211,9 @@ async def evaluate_rigor_gate():
     library_pbo = _library_pbo_payload()
 
     if not strategies:
-        return RigorGateResponse(strategies=[], total=0, passing=0, failing=0, library_pbo=library_pbo)
+        return RigorGateResponse(
+            strategies=[], total=0, passing=0, failing=0, library_pbo=library_pbo, strictness_level=strictness
+        )
 
     # ── Collect real daily returns from persisted backtest results ──
     from archimedes.db import get_session, init_db
@@ -230,6 +292,9 @@ async def evaluate_rigor_gate():
                         look_ahead="MISSING (no code)",
                     ),
                     library_pbo=library_pbo,
+                    strictness_level=strictness,
+                    min_passing_level=None,
+                    blocked_by_floor=False,
                 )
             )
             continue
@@ -257,6 +322,7 @@ async def evaluate_rigor_gate():
             in_sample_sharpe=in_sample_sharpe,
             paper_claimed_sharpe=s.paper_claimed_sharpe,
             average_correlation=avg_correlation,
+            strictness_level=strictness,
         )
 
         # Persist rigor gate results to DB
@@ -295,6 +361,9 @@ async def evaluate_rigor_gate():
                 oos_sharpe=gate_result.oos_sharpe,
                 in_sample_sharpe=gate_result.in_sample_sharpe,
                 library_pbo=library_pbo,
+                strictness_level=strictness,
+                min_passing_level=gate_result.min_passing_level,
+                blocked_by_floor=gate_result.blocked_by_floor,
             )
         )
 
@@ -305,20 +374,28 @@ async def evaluate_rigor_gate():
         passing=passing,
         failing=len(results) - passing,
         library_pbo=library_pbo,
+        strictness_level=strictness,
     )
 
 
 @selection_bias_router.get("/gate/{strategy_id}", response_model=StrategyRigorResult)
-async def evaluate_strategy_rigor(strategy_id: str):
-    """Evaluate rigor gate for a single strategy."""
+async def evaluate_strategy_rigor(
+    strategy_id: str,
+    strictness: int = Query(DEFAULT_LEVEL, ge=STRICTEST_LEVEL, le=LOOSEST_LEVEL),
+):
+    """Evaluate rigor gate for a single strategy at ``strictness`` (default = badge).
+
+    The response's ``passes_all`` reflects ``strictness``; ``min_passing_level``
+    tells the passport the lowest level at which the strategy is deployable.
+    """
     strategy = _provider().get_strategy(strategy_id)
     if strategy is None:
         from fastapi import HTTPException
 
         raise HTTPException(status_code=404, detail="Strategy not found")
 
-    # Run the full gate and extract the matching strategy result
-    full_response = await evaluate_rigor_gate()
+    # Run the full gate (cohort context matters) and extract the matching strategy.
+    full_response = await evaluate_rigor_gate(strictness=strictness)
     for result in full_response.strategies:
         if result.strategy_id == strategy_id:
             return result
@@ -326,6 +403,40 @@ async def evaluate_strategy_rigor(strategy_id: str):
     from fastapi import HTTPException
 
     raise HTTPException(status_code=404, detail="Strategy not found in gate results")
+
+
+@selection_bias_router.get("/strictness-ladder", response_model=StrictnessLadderResponse)
+async def get_strictness_ladder():
+    """Disclose the full 1–5 strictness ladder + always-on floors.
+
+    Single source of truth for the frontend slider: labels, per-level thresholds,
+    which level is the Archimedes Verified badge bar, and the correctness floors
+    that no level bypasses (so the UI can honestly say "even the riskiest level
+    still enforces X").
+    """
+    levels = [
+        StrictnessLevelInfo(
+            level=p.level,
+            label=p.label,
+            dsr_p_min=p.dsr_p_min,
+            pbo_max=p.pbo_max,
+            oos_is_ratio_min=p.oos_is_ratio_min,
+            description=p.description,
+        )
+        for p in all_profiles()
+    ]
+    return StrictnessLadderResponse(
+        levels=levels,
+        strictest_level=STRICTEST_LEVEL,
+        loosest_level=LOOSEST_LEVEL,
+        badge_level=STRICTEST_LEVEL,
+        default_level=DEFAULT_LEVEL,
+        floors={
+            "dsr_p_floor": DSR_P_FLOOR,
+            "oos_abs_floor": OOS_ABS_FLOOR,
+            "cpcv_min_positive_fraction": CPCV_MIN_POSITIVE_FRACTION,
+        },
+    )
 
 
 @selection_bias_router.post("/pbo", response_model=PBOResponse)

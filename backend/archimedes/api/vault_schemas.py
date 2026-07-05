@@ -12,6 +12,12 @@ class VaultCreateRequest(BaseModel):
     # Off-chain metadata only — not passed to the contract.
     # Stored in response for caller reference; persistence is a v2 hook.
     strategy_ids: list[str] = Field(default_factory=list)
+    # Per-user rigor strictness (1 = Conservative/badge … 5 = Speculative). The
+    # server re-evaluates each strategy at this level and refuses deploy unless it
+    # passes — always-on correctness floors (look-ahead, positive OOS, DSR ≥ 0.50)
+    # hold at every level, so no strictness value bypasses the gate. Defaults to
+    # the strictest level (fail-safe).
+    strictness_level: int = Field(1, ge=1, le=5)
 
 
 class VaultCreateResponse(BaseModel):
@@ -25,6 +31,11 @@ class VaultMetadataRequest(BaseModel):
     symbol: str = Field("", max_length=16)
     creator_address: str = Field("", pattern=r"^(0x[a-fA-F0-9]{40})?$")
     strategy_ids: list[str] = Field(default_factory=list)
+    # Per-user rigor strictness (1..5) at which the linked strategies must pass.
+    # This is the choke point for the client-signed deploy path (the UI creates
+    # the vault on-chain from the user's wallet, then links strategies here), so
+    # the server enforces the gate at this level before persisting the link.
+    strictness_level: int = Field(1, ge=1, le=5)
 
 
 class VaultMetadataResponse(BaseModel):
@@ -58,6 +69,11 @@ class SetAllocationsRequest(BaseModel):
         pattern="^(fixed_income|conservative|moderate|aggressive|hyper_risky)$",
         description="Maps to the Kelly γ table (RISK_AVERSION) for strategy-level sizing",
     )
+    # Rigor strictness (1..5) that decides which selected strategies are sizeable:
+    # a strategy sizes to a non-zero fraction only if it passes at this level, so a
+    # strategy the user deployed at level L still receives capital (rather than
+    # being silently zeroed by the level-1 badge check).
+    strictness_level: int = Field(1, ge=1, le=5)
 
 
 class SetAllocationsResponse(BaseModel):

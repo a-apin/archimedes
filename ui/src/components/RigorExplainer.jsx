@@ -15,11 +15,22 @@ export default function RigorExplainer() {
         <h1 style={{ fontSize: '1.6rem', marginBottom: 8, fontFamily: 'var(--serif)' }}>
           The Rigor Gate
         </h1>
-        <p className="body" style={{ color: 'var(--text-2)', marginBottom: 32, lineHeight: 1.65 }}>
+        <p className="body" style={{ color: 'var(--text-2)', marginBottom: 20, lineHeight: 1.65 }}>
           Every Tier-1 strategy in the Archimedes library must pass four independent
-          selection-bias controls before we would trust it with real capital.
-          Here is what each test measures — and why it matters.
+          selection-bias controls before it earns the{' '}
+          <span className="tag tag-positive" style={{ fontSize: '0.7rem' }}>Archimedes Verified</span>{' '}
+          badge. Here is what each test measures — and why it matters.
         </p>
+        <div className="info-box" style={{ marginBottom: 32, fontSize: '0.86rem', lineHeight: 1.6 }}>
+          <strong>You choose how strict the gate is for your own deploys</strong> with a 1–5
+          strictness slider (1 = Conservative, the Verified bar; 5 = Speculative). A higher
+          level lets you deploy statistically weaker strategies into <em>your own</em> vaults —
+          it never changes the global Verified badge, which always stays at the strictest level.
+          Three checks are <strong>always enforced at every level</strong> and can never be bypassed:
+          the look-ahead audit must pass, the out-of-sample Sharpe must be positive, and the
+          deflated-Sharpe p-value must be ≥ 0.50. You can trade confidence for breadth — you can
+          never fully bypass the gate.
+        </div>
       </div>
 
       {/* Primitive 1 — DSR */}
@@ -34,7 +45,7 @@ export default function RigorExplainer() {
             <div className="label">Deflated Sharpe Ratio (DSR)</div>
             <div className="caption" style={{ color: 'var(--text-4)' }}>Bailey & López de Prado (2014)</div>
           </div>
-          <span className="tag tag-positive" style={{ marginLeft: 'auto' }}>p-value &gt; 0.95</span>
+          <span className="tag tag-positive" style={{ marginLeft: 'auto' }}>p-value ≥ 0.90 (badge)</span>
         </div>
 
         <p className="body" style={{ marginBottom: 16, lineHeight: 1.65 }}>
@@ -61,9 +72,11 @@ export default function RigorExplainer() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div className="card-flat" style={{ padding: 12 }}>
             <div className="caption" style={{ color: 'var(--text-4)', marginBottom: 4 }}>Our threshold</div>
-            <div className="body" style={{ fontWeight: 600 }}>p-value &gt; 0.95</div>
+            <div className="body" style={{ fontWeight: 600 }}>p-value ≥ 0.90 → 0.50</div>
             <div className="caption" style={{ color: 'var(--text-3)' }}>
-              We need &gt;95% confidence the Sharpe is genuine, not a lucky pick from many trials.
+              The Verified badge needs ≥90% confidence the Sharpe is genuine. The strictness
+              slider relaxes this down to a hard floor of 0.50 (never a coin flip) at the
+              riskiest level.
             </div>
           </div>
           <div className="card-flat" style={{ padding: 12 }}>
@@ -297,9 +310,10 @@ export default function RigorExplainer() {
           </table>
         </div>
         <div className="caption" style={{ marginTop: 10, color: 'var(--text-4)', fontSize: '0.72rem' }}>
-          DSR threshold: p &gt; 0.95 · PBO threshold: &lt; 50% · OOS threshold: ≥ 50% of in-sample Sharpe ·
-          Numbers above are a snapshot from the most recent seed backtest run; the verdict (Tier 1 vs Candidate)
-          is recomputed by the gate every time a strategy is admitted to the Library.
+          Badge (Conservative/level-1) thresholds: DSR p ≥ 0.90 · PBO &lt; 50% · OOS ≥ 50% of in-sample Sharpe.
+          The strictness slider relaxes these toward the always-on floors (look-ahead pass · OOS &gt; 0 · DSR p ≥ 0.50).
+          Numbers above are a snapshot from the most recent seed backtest run; the verdict is recomputed by the
+          gate at the chosen strictness every time.
         </div>
       </div>
 
