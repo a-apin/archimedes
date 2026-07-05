@@ -394,13 +394,26 @@ async def unsubscribe_strategy(
             raise HTTPException(status_code=404, detail="Active subscription not found")
         sub_row.status = "stopped"
         session.commit()
+        # Capture the DCW handles before the session closes (detached-ORM safety).
         sub_id = sub_row.sub_id
+        circle_wallet_id = sub_row.circle_wallet_id
+        dcw_address = sub_row.ephemeral_wallet
 
     await market.remove_subscriber(strategy_id, sub_id)
 
-    # Ephemeral key cleanup is no longer needed — Circle wallet is the
-    # signer (P3) and lives on independent of this unsubscribe lifecycle.
-    return {"status": "unsubscribed", "strategy_id": strategy_id}
+    # Auto-withdraw: return any remaining prepaid-fee balance from the custodial
+    # Circle DCW back to the subscriber's own wallet — their exit from the
+    # interim custodial fee model (issue #975). Best-effort + no-op under
+    # PAYMENTS_DRY_RUN; a failed sweep never blocks the unsubscribe (balance
+    # stays recoverable). The subscriber's SIWE-verified wallet is the caller.
+    refund_tx = await market.refund_subscriber(
+        circle_wallet_id=circle_wallet_id,
+        dcw_address=dcw_address,
+        to_wallet=wallet,
+        sub_id=sub_id,
+    )
+
+    return {"status": "unsubscribed", "strategy_id": strategy_id, "refund_tx": refund_tx}
 
 
 # ---------------------------------------------------------------------------

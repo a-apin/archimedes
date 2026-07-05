@@ -695,63 +695,6 @@ export const NEW_CONTRACTS = {
   vaultFactory:    '0x32A3e0D0a8215D77e3B92fa6d9b4Dbe19f255671',
   traceRegistry:   '0x44bD55c0DdF757e584a41fb7F3B6a47b4C5982ba',
   assetRegistry:   '0x79fc95A10E8240116006084439B650BA9e72F3cA',
-  // Zero address = not yet deployed; the UI zero-address guard keeps the
-  // on-chain Subscribe path disabled until a real address is set here.
-  // paymentSplitter: source is contracts/src/PaymentSplitter.sol (deployed at
-  // T3.2). subscriptionManager: the on-chain subscribe path is NOT yet wired —
-  // there is no in-repo SubscriptionManager source, and the backend
-  // /api/marketplace/subscribe route settles off-chain via Circle DCW. Whether
-  // subscribe stays off-chain or an on-chain SubscriptionManager is authored +
-  // deployed is an open decision (PR #958 review); the guard is safe either way.
-  subscriptionManager: '0x0000000000000000000000000000000000000000',
+  // paymentSplitter: source is contracts/src/PaymentSplitter.sol (deployed at T3.2).
   paymentSplitter:     '0x0000000000000000000000000000000000000000',
 }
-
-// Minimal inline ABI for SubscriptionManager.subscribe + Subscribed event —
-// used by the marketplace subscribe flow (StrategyDetailPage). There is no
-// contracts/abis/SubscriptionManager.json yet; regenerate alongside the T3.2
-// deploy once the contract source exists.
-export const SUBSCRIPTION_MANAGER_ABI = [
-  {
-    inputs: [
-      { name: 'pool_id', type: 'bytes32' },
-      { name: 'webhook_url', type: 'string' },
-      { name: 'initial_deposit', type: 'uint256' },
-    ],
-    name: 'subscribe',
-    outputs: [{ name: '', type: 'bytes32' }],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-  {
-    inputs: [
-      { name: 'sub_id', type: 'bytes32' },
-      { name: 'top_up_amount', type: 'uint256' },
-    ],
-    name: 'renewEphemeralWallet',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-  {
-    anonymous: false,
-    inputs: [
-      { indexed: true, name: 'sub_id', type: 'bytes32' },
-      { indexed: true, name: 'subscriber', type: 'address' },
-      { indexed: true, name: 'pool_id', type: 'bytes32' },
-      { indexed: false, name: 'webhook_url', type: 'string' },
-    ],
-    name: 'Subscribed',
-    type: 'event',
-  },
-  {
-    anonymous: false,
-    inputs: [
-      { indexed: true, name: 'sub_id', type: 'bytes32' },
-      { indexed: true, name: 'wallet_address', type: 'address' },
-      { indexed: true, name: 'subscriber', type: 'address' },
-    ],
-    name: 'EphemeralWalletCreated',
-    type: 'event',
-  },
-]

@@ -204,6 +204,48 @@ class SettlementSweeper:
             logger.exception("[%s] Stage C (withdraw) failed", pub.strategy_id)
             return None
 
+    async def withdraw_subscriber(
+        self, *, circle_wallet_id: str, dcw_address: str, to_wallet: str, sub_id: str
+    ) -> str | None:
+        """Sweep a subscriber's remaining prepaid-fee USDC out of their custodial
+        Circle DCW back to their own wallet.
+
+        This is the subscriber's exit from the interim custodial fee model
+        (issue #975): on unsubscribe we return whatever prepaid fee balance
+        remains in the platform-controlled DCW to the subscriber's SIWE wallet.
+        ERC-20 ``transfer`` executed FROM the DCW (its wallet_id + the platform
+        entity secret sign it) — the same executor path as the Stage-B deposit.
+
+        Best-effort: returns None (never raises) so the unsubscribe itself
+        always completes; a failed sweep leaves the balance recoverable by a
+        later retry.
+        """
+        if not circle_wallet_id or not dcw_address or not to_wallet:
+            return None
+        try:
+            balance = await asyncio.to_thread(self._usdc_balance_of, dcw_address)
+            if balance <= 0:
+                logger.info("withdraw_subscriber: sub %s DCW empty — nothing to return", sub_id)
+                return None
+            executor = self._get_executor(circle_wallet_id, dcw_address)
+            tx = await asyncio.to_thread(
+                executor._submit_and_wait,
+                self._settings.usdc_address,
+                "transfer(address,uint256)",
+                [to_wallet, str(balance)],
+            )
+            logger.info(
+                "withdraw_subscriber: returned %d raw USDC from DCW %s → %s tx=%s",
+                balance,
+                dcw_address[:10],
+                to_wallet[:10],
+                tx,
+            )
+            return tx
+        except Exception:
+            logger.exception("withdraw_subscriber failed for sub %s (balance left recoverable)", sub_id)
+            return None
+
     def _usdc_balance_of(self, address: str) -> int:
         """Read on-chain USDC balance via direct RPC call.
 

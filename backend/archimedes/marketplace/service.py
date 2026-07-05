@@ -16,6 +16,8 @@ import time
 from datetime import UTC, datetime
 from dataclasses import asdict, dataclass, field
 
+from sqlalchemy.exc import IntegrityError
+
 from archimedes.chain.circle_signer import circle_signer
 from archimedes.chain.client import chain_client
 from archimedes.chain.executor import chain_executor
@@ -32,7 +34,7 @@ from archimedes.marketplace.tick_registry import (
     SubscriberTickRecord,
     TickStep,
 )
-from archimedes.models.marketplace import MarketplaceAgent, SubscriberLiability, SubscriberTickLog
+from archimedes.models.marketplace import MarketplaceAgent, SettlementIntent, SubscriberLiability, SubscriberTickLog
 from archimedes.models.portfolio import Portfolio, RiskProfile, TargetAllocation, TradeDirection, TradeOrder
 from archimedes.models.regime import EnsembleConsensus, RegimeClassification
 from archimedes.services.gmm_regime_detector import GmmRegimeDetector
@@ -674,6 +676,24 @@ class MarketService:
 
     # ---- helpers ---------------------------------------------------------
 
+    async def refund_subscriber(
+        self, *, circle_wallet_id: str | None, dcw_address: str | None, to_wallet: str, sub_id: str
+    ) -> str | None:
+        """Return a subscriber's remaining prepaid-fee balance to their own wallet.
+
+        Called on unsubscribe (the exit from the interim custodial fee model,
+        issue #975). No-op under payments_dry_run — there is no real DCW balance
+        to move. Delegates to the settlement sweeper; best-effort (never raises).
+        """
+        if self.payments_dry_run:
+            return None
+        return await self._sweeper.withdraw_subscriber(
+            circle_wallet_id=circle_wallet_id or "",
+            dcw_address=dcw_address or "",
+            to_wallet=to_wallet,
+            sub_id=sub_id,
+        )
+
     # F6.1 — record subscriber tick log (SQL + Redis mirror, best-effort)
     async def record_subscriber_tick(self, rec: SubscriberTickRecord) -> None:
         """Persist one subscriber tick record. Best-effort: never aborts the tick."""
@@ -741,6 +761,63 @@ class MarketService:
         self._persist_halt_state(pub.strategy_id, sub.sub_id)
 
     # F6.5 — single charge, reused by pipeline + REBALANCE
+    def _claim_settlement_intent(self, strategy_id: str, tick_id: str, sub_id: str, step: str) -> str:
+        """Atomically claim the idempotency slot for one logical charge.
+
+        Returns:
+          "claimed"         — a fresh pending intent was inserted; proceed to settle.
+          "already_settled" — this exact charge already settled; caller returns paid.
+          "in_flight"       — a pending/failed row exists (concurrent or crashed
+                              attempt owns this key); caller must NOT re-charge.
+
+        The unique index on (strategy_id, tick_id, sub_id, step) makes the insert
+        the authoritative claim under concurrency — a racing insert raises
+        IntegrityError and is reported as in_flight.
+        """
+        try:
+            with get_session() as session:
+                existing = (
+                    session.query(SettlementIntent)
+                    .filter_by(strategy_id=strategy_id, tick_id=tick_id, sub_id=sub_id, step=step)
+                    .first()
+                )
+                if existing is not None:
+                    return "already_settled" if existing.status == "settled" else "in_flight"
+                session.add(
+                    SettlementIntent(
+                        strategy_id=strategy_id,
+                        tick_id=tick_id,
+                        sub_id=sub_id,
+                        step=step,
+                        status="pending",
+                    )
+                )
+                session.commit()
+                return "claimed"
+        except IntegrityError:
+            # A concurrent claim won the unique index — do not double-charge.
+            return "in_flight"
+
+    def _finalize_settlement_intent(
+        self, strategy_id: str, tick_id: str, sub_id: str, step: str, *, settled: bool
+    ) -> None:
+        """Mark a claimed intent settled (with timestamp) or failed. Best-effort."""
+        try:
+            with get_session() as session:
+                row = (
+                    session.query(SettlementIntent)
+                    .filter_by(strategy_id=strategy_id, tick_id=tick_id, sub_id=sub_id, step=step)
+                    .first()
+                )
+                if row is None:
+                    return
+                row.status = "settled" if settled else "failed"
+                if settled:
+                    row.settled_at = datetime.now(UTC)
+                session.commit()
+        except Exception:
+            logger.exception("Failed to finalize settlement intent %s / %s / %s", strategy_id, tick_id, sub_id)
+
     async def _charge_one(self, pub, sub, strategy_id, tick_id, step: TickStep, action_count: int) -> bool:
         if self.payments_dry_run:
             return True
@@ -750,7 +827,23 @@ class MarketService:
         if not sub.circle_wallet_id:
             logger.warning("[%s] no circle_wallet_id for sub %s — unpaid", tick_id, sub.sub_id)
             return False
-        return await payments.charge(
+
+        # Idempotency guard (x402 is NOT crash-retry-idempotent — a retry signs a
+        # fresh EIP-3009 nonce that settles as a new payment). Claim the logical
+        # charge BEFORE settling so a crash/retry cannot double-charge.
+        claim = self._claim_settlement_intent(strategy_id, tick_id, sub.sub_id, step.value)
+        if claim == "already_settled":
+            return True  # this exact (strategy, tick, sub, step) already paid
+        if claim == "in_flight":
+            logger.warning(
+                "[%s] settlement intent already in-flight for sub %s step %s — skipping to avoid double-charge",
+                tick_id,
+                sub.sub_id,
+                step.value,
+            )
+            return False
+
+        paid = await payments.charge(
             sub_id=sub.sub_id,
             wallet_id=sub.circle_wallet_id,
             wallet_address=sub.ephemeral_wallet,
@@ -761,6 +854,8 @@ class MarketService:
             flat_fee_raw=FLAT_FEE_PER_ACTION,
             step=step.value,
         )
+        self._finalize_settlement_intent(strategy_id, tick_id, sub.sub_id, step.value, settled=paid)
+        return paid
 
     # F6.6 — charge all active subscribers for one pipeline step
     # Batched into groups of CHARGE_BATCH_SIZE for concurrent Circle signing.

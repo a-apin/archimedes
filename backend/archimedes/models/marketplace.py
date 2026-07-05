@@ -182,3 +182,46 @@ class SubscriberTickLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
+
+
+class SettlementIntent(Base):
+    """Per-charge idempotency guard for x402 settlement (PR #958, review #7).
+
+    x402 / Circle Gateway only prevents replay of the SAME signed authorization
+    (the EIP-3009 nonce is single-use on-chain). A crash-and-retry issues a
+    FRESH nonce for the same logical charge, which the facilitator settles as a
+    brand-new payment → the subscriber is double-charged. There is no
+    protocol-level concept of a logical-charge key, so the application MUST
+    supply one.
+
+    This row is written ``pending`` BEFORE calling settle and marked
+    ``settled`` after. The unique index on (strategy_id, tick_id, sub_id, step)
+    makes the claim atomic: a pre-existing row for the same logical charge
+    blocks a second settle attempt (``settled`` → return already-paid;
+    ``pending`` → a concurrent/crashed attempt owns it, do NOT re-charge).
+    """
+
+    __tablename__ = "settlement_intents"
+
+    __table_args__ = (
+        Index(
+            "uq_settlement_intent_logical_charge",
+            "strategy_id",
+            "tick_id",
+            "sub_id",
+            "step",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    tick_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    sub_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    step: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending | settled | failed
+    amount_usdc: Mapped[float | None] = mapped_column(Numeric(20, 6), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

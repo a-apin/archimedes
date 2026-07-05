@@ -52,7 +52,7 @@ def _seed_strategy_records(_setup_db):
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
 
-    _STRATEGY_IDS = ["test_strat", "dup_strat", "check_pool", "dup_sid_strat", "redact_strat"]
+    _STRATEGY_IDS = ["test_strat", "dup_strat", "check_pool", "dup_sid_strat", "redact_strat", "refund_strat"]
     with get_session() as session:
         for i, sid in enumerate(_STRATEGY_IDS):
             if session.query(StrategyRecord).filter_by(id=sid).first() is None:
@@ -113,6 +113,7 @@ def app():
     market.start_publisher = AsyncMock()
     market.add_subscriber = AsyncMock()
     market.remove_subscriber = AsyncMock()
+    market.refund_subscriber = AsyncMock(return_value=None)
     market.stop_publisher = AsyncMock()
     market.state = MagicMock()
     market.state.save_subscribers = AsyncMock()
@@ -333,3 +334,31 @@ def test_published_detail_public_surface_count_only(client, app):
     assert other_wallet.lower() not in body
     assert ("0x" + "dd" * 32) not in body
     assert "0x0000000000000000000000000000000000000ee3" not in body
+
+
+def test_unsubscribe_triggers_refund_and_returns_tx(client, app):
+    """Unsubscribe auto-withdraws the subscriber's remaining DCW balance back to
+    their wallet (issue #975 exit) and surfaces the tx in the response."""
+    resp = client.post("/api/marketplace/publish", json={"strategy_id": "refund_strat", "vault_address": "0xv"})
+    assert resp.status_code == 200
+
+    with patch(
+        "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+        new=AsyncMock(return_value=("w-9", "0x0000000000000000000000000000000000000ee9")),
+    ):
+        r = client.post(
+            "/api/marketplace/subscribe",
+            json={"strategy_id": "refund_strat", "sub_id": "0x" + "ee" * 32, "ephemeral_wallet": "0xeph"},
+        )
+    assert r.status_code == 200, r.text
+
+    # Live refund returns a tx hash; the route surfaces it.
+    app.state.market.refund_subscriber = AsyncMock(return_value="0xrefundtx")
+    un = client.request("DELETE", "/api/marketplace/subscribe/refund_strat")
+    assert un.status_code == 200, un.text
+    body = un.json()
+    assert body["status"] == "unsubscribed"
+    assert body["refund_tx"] == "0xrefundtx"
+    # The subscriber's own SIWE wallet is the withdrawal recipient.
+    kwargs = app.state.market.refund_subscriber.await_args.kwargs
+    assert kwargs["to_wallet"] == TEST_WALLET

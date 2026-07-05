@@ -1,44 +1,19 @@
 import { useEffect, useState } from 'react'
-import { toEventSelector } from 'viem'
 import { apiGet, apiPost } from '../api'
 import {
   getAddress,
-  getConnectedProvider,
-  getWalletClient,
-  publicClient,
-  USDC,
-  USDC_DECIMALS,
-  USDC_ABI,
-  NEW_CONTRACTS,
-  SUBSCRIPTION_MANAGER_ABI,
 } from '../config'
-import { parseUnits } from 'viem'
 
 function shortAddr(a) {
   return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '—'
 }
 
-const SUBSCRIPTION_MANAGER = NEW_CONTRACTS.subscriptionManager
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
-
-// Pre-compute event topic hashes for the SubscriptionManager contract.
-const SUBSCRIBED_TOPIC = toEventSelector('Subscribed(bytes32,address,bytes32,string)')
-const EWC_TOPIC = toEventSelector('EphemeralWalletCreated(bytes32,address,address)')
-
-// Step indicator component
-function Step({ num, label, status }) {
-  const dot = status === 'done' ? '✓' : status === 'active' ? num : num
-  const cls = status === 'done' ? 'bg-[var(--color-primary)] text-white'
-    : status === 'active' ? 'bg-[var(--color-accent)] text-white'
-    : 'bg-[var(--color-surface)] text-[var(--color-muted)]'
-  return (
-    <div className="flex items-center gap-2 text-sm">
-      <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${cls}`}>
-        {dot}
-      </span>
-      <span className={status === 'done' ? '' : 'text-[var(--color-muted)]'}>{label}</span>
-    </div>
-  )
+// Generate a client-side 0x-prefixed 32-random-byte hex string.
+// The backend validates: startswith("0x"), len==66, valid hex, non-zero.
+function makeSubId() {
+  const b = new Uint8Array(32)
+  crypto.getRandomValues(b)
+  return '0x' + [...b].map(x => x.toString(16).padStart(2, '0')).join('')
 }
 
 export default function StrategyDetailPage({ strategyId, onNavigate }) {
@@ -47,8 +22,6 @@ export default function StrategyDetailPage({ strategyId, onNavigate }) {
   const [error, setError] = useState('')
 
   // Subscribe flow state
-  const [initialDeposit, setInitialDeposit] = useState('100')
-  const [stepStatus, setStepStatus] = useState({ 1: 'idle', 2: 'idle', 3: 'idle' })
   const [subError, setSubError] = useState('')
   const [subSuccess, setSubSuccess] = useState('')
   const [busy, setBusy] = useState(false)
@@ -71,83 +44,20 @@ export default function StrategyDetailPage({ strategyId, onNavigate }) {
   }, [strategyId])
 
   const walletAddr = getAddress()
-  const isCircle = getConnectedProvider() === 'circle-passkey'
-  // Guard against zero-address placeholder — contracts not deployed until T3.2 redeploy
-  const isContractDeployed = SUBSCRIPTION_MANAGER !== ZERO_ADDRESS
 
   const handleSubscribe = async () => {
     setSubError('')
     setSubSuccess('')
     setBusy(true)
-
     try {
-      // USDC on Arc uses 6 decimals (USDC_DECIMALS = 6).
-      // parseUnits throws on empty / non-numeric input — must be inside try so
-      // the finally { setBusy(false) } fires and the button re-enables.
-      const depositAmount = parseUnits(initialDeposit, USDC_DECIMALS)
-
-      // Step 1: USDC.approve(SUBSCRIPTION_MANAGER, amount)
-      setStepStatus({ 1: 'active', 2: 'idle', 3: 'idle' })
-      const walletClient = await getWalletClient()
-      await walletClient.writeContract({
-        address: USDC,
-        abi: USDC_ABI,
-        functionName: 'approve',
-        args: [SUBSCRIPTION_MANAGER, depositAmount],
-      })
-      setStepStatus({ 1: 'verifying', 2: 'idle', 3: 'idle' })
-      // No need to await receipt — the subscribe call will fail if not approved
-
-      // Step 2: SubscriptionManager.subscribe(pool_id, webhookPlaceholder, initialDeposit)
-      // webhookPlaceholder must be non-empty (contract requires it), but the monolith
-      // doesn't use webhooks (D-FANOUT).
-      const webhookPlaceholder = 'archimedes-monolith-v1'
-      setStepStatus({ 1: 'done', 2: 'active', 3: 'idle' })
-      const subscribeHash = await walletClient.writeContract({
-        address: SUBSCRIPTION_MANAGER,
-        abi: SUBSCRIPTION_MANAGER_ABI,
-        functionName: 'subscribe',
-        args: [strategy.pool_id, webhookPlaceholder, depositAmount],
-      })
-
-      // Wait for receipt and parse the Subscribed event
-      const receipt = await publicClient.waitForTransactionReceipt({ hash: subscribeHash })
-
-      // Parse Subscribed event for sub_id (indexed bytes32 → topics[1])
-      const subscribedLog = receipt.logs.find(log => log.topics[0] === SUBSCRIBED_TOPIC)
-      if (!subscribedLog) {
-        throw new Error('Subscribe succeeded but could not find Subscribed event. Refresh the page and check your subscriptions.')
-      }
-      const subId = subscribedLog.topics[1]
-
-      // Parse EphemeralWalletCreated event for ephemeral_wallet address
-      // address is indexed and left-padded to 32 bytes in topics[2]
-      const ewcLog = receipt.logs.find(log => log.topics[0] === EWC_TOPIC)
-      const ephemeralWallet = ewcLog
-        ? '0x' + ewcLog.topics[2].slice(26)
-        : ''
-
-      setStepStatus({ 1: 'done', 2: 'done', 3: 'active' })
-
-      // Step 3: POST /api/marketplace/subscribe
+      const subId = makeSubId()
       await apiPost('/api/marketplace/subscribe', {
         strategy_id: strategyId,
-        pool_id: strategy.pool_id,
         sub_id: subId,
-        ephemeral_wallet: ephemeralWallet,
-        initial_deposit_usdc: initialDeposit,
       })
-
-      setStepStatus({ 1: 'done', 2: 'done', 3: 'done' })
       setSubSuccess(`Successfully subscribed to "${strategyId}". Sub ID: ${shortAddr(subId)}`)
     } catch (err) {
       setSubError(err.message || 'Subscribe failed')
-      // Mark only failed steps
-      setStepStatus(prev => ({
-        1: prev[1] === 'done' ? 'done' : 'idle',
-        2: prev[2] === 'done' ? 'done' : (prev[2] === 'active' ? 'idle' : prev[2]),
-        3: prev[3] === 'active' ? 'idle' : prev[3],
-      }))
     } finally {
       setBusy(false)
     }
@@ -245,54 +155,16 @@ export default function StrategyDetailPage({ strategyId, onNavigate }) {
 
             {!walletAddr && (
               <p className="text-sm text-[var(--color-muted)]">
-                Connect your wallet to subscribe. You will need USDC on Arc Testnet for the initial deposit.
+                Connect your wallet to subscribe.
               </p>
             )}
 
             {walletAddr && !subSuccess && (
               <>
-                {isCircle && (
-                  <p className="text-xs text-[var(--color-warning)] mb-2">
-                    Passkey wallet detected. For the subscribe flow, please use an EOA wallet (MetaMask, Coinbase Wallet, etc.) or perform the contract calls manually.
-                  </p>
-                )}
-
-                <div className="mb-3">
-                  <label className="text-xs text-[var(--color-muted)] block mb-1">Initial Deposit (USDC)</label>
-                  <input
-                    type="number"
-                    className="input w-full"
-                    value={initialDeposit}
-                    onChange={(e) => setInitialDeposit(e.target.value)}
-                    min="0"
-                    step="1"
-                    disabled={busy}
-                  />
-                </div>
-
-                {/* Step indicator */}
-                <div className="flex items-center gap-4 mb-4">
-                  <Step num={1} label="Approve USDC" status={
-                    stepStatus[1] === 'done' ? 'done' : stepStatus[1] === 'verifying' || stepStatus[1] === 'active' ? 'active' : 'idle'
-                  } />
-                  <Step num={2} label="Subscribe on-chain" status={
-                    stepStatus[2] === 'done' ? 'done' : stepStatus[2] === 'active' ? 'active' : 'idle'
-                  } />
-                  <Step num={3} label="Register with API" status={
-                    stepStatus[3] === 'done' ? 'done' : stepStatus[3] === 'active' ? 'active' : 'idle'
-                  } />
-                </div>
-
-                {!isContractDeployed && (
-                  <p className="text-xs text-[var(--color-warning)] mb-2">
-                    Subscription contract not yet deployed. Subscribe will be available after the T3.2 contract deployment.
-                  </p>
-                )}
-
                 <button
                   className="btn btn-primary"
                   onClick={handleSubscribe}
-                  disabled={busy || isCircle || !isContractDeployed}
+                  disabled={busy}
                 >
                   {busy ? 'Processing…' : 'Subscribe'}
                 </button>
