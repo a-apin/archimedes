@@ -2,8 +2,12 @@
 # Nothing from this stage except the installed packages reaches the runtime image.
 FROM python:3.12-slim AS builder
 
+# git is required by pip to clone the circle-titanoboa-sdk (circlekit) VCS
+# dependency (git+https://…) added for the marketplace x402 payments (PR #958).
+# CI runners already have git; this slim builder does not, so the first deploy
+# carrying that dependency failed at `pip install` until git was added here.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libpq-dev \
+    && apt-get install -y --no-install-recommends gcc libpq-dev git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
