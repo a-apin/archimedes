@@ -146,7 +146,13 @@ class TestGetIntegrationStatus:
         # Was 10; updated to 11 after StrategyRegistry was added to the Arc-testnet
         # contract list (Issue #380 — Pi's `908cce9` bundle commit). Keep the assertion
         # explicit + commented so any future contract-count drift is caught here.
-        assert result["tools"]["smart_contracts"]["count"] == 11
+        sc = result["tools"]["smart_contracts"]
+        assert sc["count"] == 11
+        # count, the contract list length, and the number stated in the human-readable
+        # description must all agree — no hardcoded "10 contracts" beside a count of 11
+        # (#951). Deriving all three from one list is what keeps them in lock-step.
+        assert sc["count"] == len(sc["contracts"])
+        assert sc["description"] == f"{sc['count']} contracts deployed on Arc testnet via Circle wallet"
         assert result["tools"]["usdc_settlement"]["usdc_address"] == "0xUSDC"
         assert result["wallet"]["balance_usdc"] == "100"
         # `next_tools` + `rubric_score_estimate` were intentionally removed by Pi's
