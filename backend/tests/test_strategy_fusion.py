@@ -294,6 +294,31 @@ def test_propose_fuses_and_records_provenance(monkeypatch, corpus):
     assert proposal.requested_model == "claude-sonnet-4-20250514"
 
 
+def test_propose_survives_array_wrapped_object(monkeypatch, corpus):
+    """Regression for #911: a model that wraps its object in a JSON array
+    (``[{...}]``) must not crash the ``parsed.get(...)`` calls in propose.
+    extract_json recovers the embedded object instead of returning a list."""
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+
+    class _ArrayWrappingBackend(_MockBackend):
+        def complete(self, system: str, user: str) -> str:
+            return "[" + super().complete(system, user) + "]"
+
+    backend = _ArrayWrappingBackend()
+    svc = StrategyFusion(backend=backend, corpus=corpus)
+    brief = FusionBrief(
+        asset_classes=["equities", "rates"],
+        risk_appetite=RiskProfile.MODERATE,
+        strategic_direction="regime conditioning",
+        max_papers=4,
+    )
+    # Before the fix this raised AttributeError inside propose.
+    proposal = svc.propose(brief)
+    assert proposal.status == "ok"
+    assert proposal.is_actionable is True
+    assert len(proposal.source_arxiv_ids) >= MIN_PAPERS
+
+
 def test_prompt_demands_at_least_two_papers(monkeypatch, corpus):
     monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
     backend = _MockBackend()

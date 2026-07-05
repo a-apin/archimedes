@@ -211,9 +211,12 @@ def _build_user_prompt(
 def extract_json(text: str) -> dict:
     """Pull the first balanced JSON object out of an LLM response.
 
-    Tolerates ```json fences and surrounding prose. Raises ValueError if no
-    parseable object is found so the caller can degrade explicitly rather
-    than silently shipping an empty portfolio.
+    Tolerates ```json fences and surrounding prose, and always returns a
+    dict. When the top-level value is a JSON array or scalar (models
+    sometimes wrap the object in a one-element array, e.g. ``[{...}]``), the
+    brace scan below recovers the first embedded ``{...}`` object. Raises
+    ValueError if no object can be recovered so the caller can degrade
+    explicitly rather than calling ``.get()`` on a non-dict and crashing.
     """
     cleaned = text.strip()
     fence = re.search(r"```(?:json)?\s*(.+?)```", cleaned, re.DOTALL)
@@ -221,7 +224,12 @@ def extract_json(text: str) -> dict:
         cleaned = fence.group(1).strip()
 
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
+        # Only a top-level object is returned directly; a bare array/string/
+        # number falls through to the brace scan (which yields the first
+        # embedded object) so callers always receive a dict.
+        if isinstance(parsed, dict):
+            return parsed
     except json.JSONDecodeError:
         pass
 
