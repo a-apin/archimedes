@@ -609,4 +609,154 @@ contract SyntheticVaultTest is Test {
 
         assertEq(usdc.balanceOf(address(vault)), vaultBalBefore + amount);
     }
+
+    // ─── Mint/Burn Staleness Guard Tests (issue #910) ─────────────
+
+    /// @dev Default guard window is 1 hour, well under the oracle's 24h MAX_STALENESS.
+    function test_mintBurn_staleness_default_is_one_hour() public view {
+        assertEq(vault.mintBurnMaxStaleness(), 1 hours);
+    }
+
+    /// @dev A price fresh within the 1h window mints fine (regression guard: the new check
+    ///      must not break the healthy path).
+    function test_mint_succeeds_when_price_fresh() public {
+        // 59 minutes old — still inside the 1h window.
+        vm.warp(block.timestamp + 59 minutes);
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        uint256 out = vault.mint(usdcAmount);
+        vm.stopPrank();
+        assertGt(out, 0);
+    }
+
+    /// @dev The core arbitrage guard: once the admin price is older than the 1h window,
+    ///      mint reverts instead of settling at a stale price — even though the oracle's
+    ///      own 24h MAX_STALENESS would still accept it.
+    function test_revert_mint_when_price_stale_past_window() public {
+        uint256 lastUpdated = oracle.lastUpdated();
+        vm.warp(block.timestamp + 1 hours + 1); // just past the 1h window, far under 24h
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SyntheticVault.StaleOraclePrice.selector, lastUpdated, uint256(1 hours), block.timestamp
+            )
+        );
+        vault.mint(usdcAmount);
+        vm.stopPrank();
+    }
+
+    /// @dev The oracle would still serve this price (getPrice does not revert under 24h),
+    ///      proving the mint revert comes from the vault's tighter guard, not the oracle.
+    function test_oracle_still_serves_price_that_mint_rejects() public {
+        vm.warp(block.timestamp + 2 hours); // stale for mint/burn, fresh for the oracle
+        assertEq(oracle.getPrice(), INITIAL_PRICE); // no revert — 2h < 24h
+    }
+
+    /// @dev burn is guarded on the same window. Mint while fresh, warp past the window,
+    ///      then burn must revert.
+    function test_revert_burn_when_price_stale_past_window() public {
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        uint256 synthOut = vault.mint(usdcAmount);
+        vm.stopPrank();
+
+        uint256 lastUpdated = oracle.lastUpdated();
+        vm.warp(block.timestamp + 1 hours + 1);
+
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SyntheticVault.StaleOraclePrice.selector, lastUpdated, uint256(1 hours), block.timestamp
+            )
+        );
+        vault.burn(synthOut);
+    }
+
+    /// @dev previewMint mirrors mint's staleness revert so callers can detect it pre-submit.
+    function test_revert_previewMint_when_stale() public {
+        uint256 lastUpdated = oracle.lastUpdated();
+        vm.warp(block.timestamp + 1 hours + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SyntheticVault.StaleOraclePrice.selector, lastUpdated, uint256(1 hours), block.timestamp
+            )
+        );
+        vault.previewMint(10_000 * 10**6);
+    }
+
+    /// @dev previewBurn mirrors burn's staleness revert.
+    function test_revert_previewBurn_when_stale() public {
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        uint256 synthOut = vault.mint(usdcAmount);
+        vm.stopPrank();
+
+        uint256 lastUpdated = oracle.lastUpdated();
+        vm.warp(block.timestamp + 1 hours + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SyntheticVault.StaleOraclePrice.selector, lastUpdated, uint256(1 hours), block.timestamp
+            )
+        );
+        vault.previewBurn(synthOut);
+    }
+
+    /// @dev A fresh admin push re-opens mint/burn after a stale gap: warp past the window,
+    ///      confirm the revert, push a new price, then the same mint succeeds.
+    function test_fresh_push_reopens_mint_after_stale_gap() public {
+        vm.warp(block.timestamp + 3 hours); // stale
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        vm.expectRevert(); // stale
+        vault.mint(usdcAmount);
+        vm.stopPrank();
+
+        // Oracle runner pushes a fresh price (within the 20% deviation bound).
+        vm.prank(owner);
+        oracle.setPrice(INITIAL_PRICE);
+
+        vm.startPrank(alice);
+        uint256 out = vault.mint(usdcAmount);
+        vm.stopPrank();
+        assertGt(out, 0);
+    }
+
+    /// @dev Owner can widen the window; after widening to 4h a 2h-old price mints again.
+    function test_setMintBurnMaxStaleness_widens_window() public {
+        vm.prank(owner);
+        vault.setMintBurnMaxStaleness(4 hours);
+        assertEq(vault.mintBurnMaxStaleness(), 4 hours);
+
+        vm.warp(block.timestamp + 2 hours); // stale under 1h, fresh under 4h
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        uint256 out = vault.mint(usdcAmount);
+        vm.stopPrank();
+        assertGt(out, 0);
+    }
+
+    function test_revert_setMintBurnMaxStaleness_invalid() public {
+        // Read the oracle constant BEFORE arming expectRevert so the view call doesn't
+        // consume the expectation (same gotcha as test_revert_forceSetPrice_exceeds_hard_cap).
+        uint256 aboveMax = oracle.MAX_STALENESS() + 1;
+        vm.startPrank(owner);
+        vm.expectRevert(SyntheticVault.InvalidStalenessWindow.selector);
+        vault.setMintBurnMaxStaleness(0);
+        vm.expectRevert(SyntheticVault.InvalidStalenessWindow.selector);
+        vault.setMintBurnMaxStaleness(aboveMax);
+        vm.stopPrank();
+    }
+
+    function test_revert_setMintBurnMaxStaleness_non_owner() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.setMintBurnMaxStaleness(2 hours);
+    }
 }

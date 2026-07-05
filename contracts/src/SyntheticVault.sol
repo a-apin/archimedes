@@ -24,6 +24,26 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     /// @notice Collateralization ratio in basis points. 12000 = 120%
     uint256 public collateralRatio = 12000;
 
+    /// @notice Max age (seconds) the oracle price may be on the mint/burn value-transfer
+    ///         paths. Default 1 hour — deliberately far tighter than PriceOracle's 24h
+    ///         MAX_STALENESS admin fallback (issue #910).
+    ///
+    ///         Why a mint/burn-specific window: getPrice()'s 24h admin fallback exists so a
+    ///         degraded feed can't brick NAV reads / deposits / withdrawals / rebalances —
+    ///         those paths want "return the last known price, don't revert". Mint and burn
+    ///         are different: they exchange USDC for synth (and back) AT the oracle price, so
+    ///         a price the market has already moved away from is a direct arbitrage — mint
+    ///         cheap when the real price is higher, or burn rich when it's lower, at the
+    ///         expense of the collateral pool. On the value-transfer path we want the
+    ///         opposite of degrade: revert rather than settle at a known-stale price.
+    ///
+    ///         Feed-aware: when a Chainlink feed is configured, getPrice() already enforces
+    ///         the feed's own (≤1h) heartbeat before returning a feed price, so this guard
+    ///         only applies to the admin-fed path (the live testnet source, which has no feed
+    ///         wired). Owner-tunable via setMintBurnMaxStaleness, bounded by the oracle's
+    ///         MAX_STALENESS.
+    uint256 public mintBurnMaxStaleness = 1 hours;
+
     /// @notice Protocol fee in basis points on mint. 50 = 0.5%
     uint256 public mintFeeBps = 50;
 
@@ -41,6 +61,7 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     event Minted(address indexed user, uint256 usdcIn, uint256 synthOut, uint256 fee);
     event Burned(address indexed user, uint256 synthIn, uint256 usdcOut, uint256 fee);
     event CollateralRatioUpdated(uint256 oldRatio, uint256 newRatio);
+    event MintBurnMaxStalenessUpdated(uint256 oldSeconds, uint256 newSeconds);
     event FeesCollected(uint256 amount);
     /// @notice Emitted when a redemption is scaled down by the pro-rata solvency cap
     ///         (collateral C < liability L). `grossValue` is the uncapped current-price
@@ -51,6 +72,9 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
 
     error ZeroAmount();
     error InsufficientCollateral();
+    /// @notice Oracle price is older than mintBurnMaxStaleness on a mint/burn path (issue #910).
+    error StaleOraclePrice(uint256 lastUpdated, uint256 maxStaleness, uint256 nowTs);
+    error InvalidStalenessWindow();
 
     // ─── Constructor ─────────────────────────────────────────────────
 
@@ -67,10 +91,25 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
 
     // ─── User Actions ────────────────────────────────────────────────
 
+    /// @dev Reject the mint/burn value-transfer paths when the oracle price is staler than
+    ///      mintBurnMaxStaleness (issue #910). Only enforced on the admin-fed path: when a
+    ///      Chainlink feed is configured, getPrice() already applies the feed's own ≤1h
+    ///      heartbeat before returning a feed price, and consulting the admin push timestamp
+    ///      would wrongly reject a fresh-feed asset whose admin reference happens to lag.
+    ///      Testnet has no feed wired, so this is the live guard there.
+    function _requireFreshForValueTransfer() internal view {
+        if (address(oracle.priceFeed()) != address(0)) return; // feed path self-guards in getPrice()
+        uint256 updatedAt = oracle.lastUpdated();
+        if (block.timestamp > updatedAt + mintBurnMaxStaleness) {
+            revert StaleOraclePrice(updatedAt, mintBurnMaxStaleness, block.timestamp);
+        }
+    }
+
     /// @notice Mint synth tokens by depositing USDC.
     function mint(uint256 amountUsdc) external nonReentrant returns (uint256) {
         if (amountUsdc == 0) revert ZeroAmount();
 
+        _requireFreshForValueTransfer();
         uint256 assetPrice = oracle.getPrice();
         uint256 fee = (amountUsdc * mintFeeBps) / BPS;
         uint256 netUsdc = amountUsdc - fee;
@@ -124,6 +163,7 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     function burn(uint256 synthAmount) external nonReentrant returns (uint256) {
         if (synthAmount == 0) revert ZeroAmount();
 
+        _requireFreshForValueTransfer();
         uint256 assetPrice = oracle.getPrice();
         uint256 usdcValue = (synthAmount * assetPrice) / (10 ** SYNTH_DECIMALS);
 
@@ -180,6 +220,7 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     ///         previewMint to detect inputs that would revert before submitting a tx.
     function previewMint(uint256 amountUsdc) external view returns (uint256 synthAmount) {
         if (amountUsdc == 0) revert ZeroAmount();
+        _requireFreshForValueTransfer();
         uint256 assetPrice = oracle.getPrice();
         uint256 fee = (amountUsdc * mintFeeBps) / BPS;
         uint256 netUsdc = amountUsdc - fee;
@@ -188,6 +229,7 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     }
 
     function previewBurn(uint256 synthAmount) external view returns (uint256) {
+        _requireFreshForValueTransfer();
         uint256 assetPrice = oracle.getPrice();
         uint256 usdcValue = (synthAmount * assetPrice) / (10 ** SYNTH_DECIMALS);
 
@@ -219,6 +261,15 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
         require(newRatio >= BPS, "ratio must be >= 100%");
         emit CollateralRatioUpdated(collateralRatio, newRatio);
         collateralRatio = newRatio;
+    }
+
+    /// @notice Tune the mint/burn oracle-staleness window (issue #910). Must be in
+    ///         (0, oracle.MAX_STALENESS()] — 0 would brick mint/burn entirely, and a value
+    ///         above the oracle's own 24h ceiling can never bind. Default 1h.
+    function setMintBurnMaxStaleness(uint256 newSeconds) external onlyOwner {
+        if (newSeconds == 0 || newSeconds > oracle.MAX_STALENESS()) revert InvalidStalenessWindow();
+        emit MintBurnMaxStalenessUpdated(mintBurnMaxStaleness, newSeconds);
+        mintBurnMaxStaleness = newSeconds;
     }
 
     function collectFees() external onlyOwner {

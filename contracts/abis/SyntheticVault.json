@@ -137,6 +137,19 @@
   },
   {
     "type": "function",
+    "name": "mintBurnMaxStaleness",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "mintFeeBps",
     "inputs": [],
     "outputs": [
@@ -205,7 +218,7 @@
     ],
     "outputs": [
       {
-        "name": "",
+        "name": "synthAmount",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -238,6 +251,19 @@
     "inputs": [
       {
         "name": "newRatio",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setMintBurnMaxStaleness",
+    "inputs": [
+      {
+        "name": "newSeconds",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -375,6 +401,25 @@
   },
   {
     "type": "event",
+    "name": "MintBurnMaxStalenessUpdated",
+    "inputs": [
+      {
+        "name": "oldSeconds",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "newSeconds",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Minted",
     "inputs": [
       {
@@ -424,8 +469,38 @@
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "RedemptionHaircut",
+    "inputs": [
+      {
+        "name": "user",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "grossValue",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "cappedValue",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "InsufficientCollateral",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidStalenessWindow",
     "inputs": []
   },
   {
@@ -463,6 +538,27 @@
         "name": "token",
         "type": "address",
         "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "StaleOraclePrice",
+    "inputs": [
+      {
+        "name": "lastUpdated",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxStaleness",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "nowTs",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },

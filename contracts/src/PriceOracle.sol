@@ -60,7 +60,17 @@ contract PriceOracle is Ownable {
     /// @notice Timestamp of the last price update
     uint256 public lastUpdated;
 
-    /// @notice Maximum age before stale (24 hours — hackathon testnet, Circle daily limit)
+    /// @notice Maximum age before the admin-fed `price` reads as stale (24 hours).
+    /// @dev    ⚠️ TESTNET/HACKATHON TRADEOFF — MUST be tightened before mainnet. 24h is a
+    ///         deliberately loose fallback so a missed oracle push (or a degraded feed) can't
+    ///         brick NAV reads / deposits / withdrawals / rebalances — those paths degrade to
+    ///         "last known price" rather than reverting. It is FAR too loose for the mint/burn
+    ///         value-transfer paths, where settling at a price the market has already moved
+    ///         away from is a direct stale-price arbitrage (issue #910). Those paths therefore
+    ///         do NOT rely on this window: SyntheticVault enforces its own tight
+    ///         `mintBurnMaxStaleness` (default 1h) on mint/burn/previewMint/previewBurn. For
+    ///         mainnet, reduce this constant (and the feed heartbeat) to the asset's real
+    ///         update cadence.
     uint256 public constant MAX_STALENESS = 24 hours;
 
     /// @notice Address allowed to push price updates (e.g. Circle wallet)
