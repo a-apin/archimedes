@@ -38,13 +38,15 @@ def _make_passport(sid: str, methodology_hash: str | None = "abcd1234" * 8):
 
 
 class TestVaultMetadataAnchor:
+    @patch("archimedes.api.vaults_routes.chain_executor.get_vault_owner", new_callable=AsyncMock)
     @patch("archimedes.api.vaults_routes.strategy_publisher")
     @patch("archimedes.api.vaults_routes.strategy_provider")
-    def test_metadata_post_calls_anchor_once_per_strategy_id(self, mock_provider, mock_publisher):
+    def test_metadata_post_calls_anchor_once_per_strategy_id(self, mock_provider, mock_publisher, mock_owner):
         # strategy_provider is now a lazily-cached accessor (strategy_provider()),
         # so the mocked callable's return_value stands in for the provider instance.
         mock_provider.return_value.get_strategy.side_effect = _make_passport
         mock_publisher.anchor = AsyncMock()
+        mock_owner.return_value = _WALLET  # caller is the on-chain owner
 
         resp = client.post(
             "/api/vaults/metadata",
@@ -63,9 +65,10 @@ class TestVaultMetadataAnchor:
 
         assert mock_publisher.anchor.call_count == 3
 
+    @patch("archimedes.api.vaults_routes.chain_executor.get_vault_owner", new_callable=AsyncMock)
     @patch("archimedes.api.vaults_routes.strategy_publisher")
     @patch("archimedes.api.vaults_routes.strategy_provider")
-    def test_metadata_post_skips_passports_without_methodology_hash(self, mock_provider, mock_publisher):
+    def test_metadata_post_skips_passports_without_methodology_hash(self, mock_provider, mock_publisher, mock_owner):
         def get_strat(sid):
             if sid == "s2":
                 return _make_passport(sid, methodology_hash=None)
@@ -73,6 +76,7 @@ class TestVaultMetadataAnchor:
 
         mock_provider.return_value.get_strategy.side_effect = get_strat
         mock_publisher.anchor = AsyncMock()
+        mock_owner.return_value = _WALLET
 
         resp = client.post(
             "/api/vaults/metadata",
@@ -90,11 +94,13 @@ class TestVaultMetadataAnchor:
         # s2 skipped due to no methodology_hash
         assert mock_publisher.anchor.call_count == 2
 
+    @patch("archimedes.api.vaults_routes.chain_executor.get_vault_owner", new_callable=AsyncMock)
     @patch("archimedes.api.vaults_routes.strategy_publisher")
     @patch("archimedes.api.vaults_routes.strategy_provider")
-    def test_metadata_post_succeeds_when_anchor_raises(self, mock_provider, mock_publisher):
+    def test_metadata_post_succeeds_when_anchor_raises(self, mock_provider, mock_publisher, mock_owner):
         mock_provider.return_value.get_strategy.side_effect = _make_passport
         mock_publisher.anchor = AsyncMock(side_effect=RuntimeError("simulated chain failure"))
+        mock_owner.return_value = _WALLET
 
         resp = client.post(
             "/api/vaults/metadata",
@@ -109,15 +115,17 @@ class TestVaultMetadataAnchor:
         # Handler still returns 200 — anchor failure is non-fatal
         assert resp.status_code == 200
 
+    @patch("archimedes.api.vaults_routes.chain_executor.get_vault_owner", new_callable=AsyncMock)
     @patch("archimedes.api.vaults_routes.strategy_publisher")
     @patch("archimedes.api.vaults_routes.strategy_provider")
-    def test_metadata_post_with_unknown_strategy_id_is_refused(self, mock_provider, mock_publisher):
+    def test_metadata_post_with_unknown_strategy_id_is_refused(self, mock_provider, mock_publisher, mock_owner):
         # The metadata route is the client-signed deploy path's rigor choke point:
         # an unknown/unverified strategy id can no longer be bound to a vault. It is
         # cleanly refused with 422 (not a crash) BEFORE any anchoring is attempted —
         # this is the server-side "you can never fully bypass the rigor gate" guarantee.
         mock_provider.return_value.get_strategy.return_value = None
         mock_publisher.anchor = AsyncMock()
+        mock_owner.return_value = _WALLET
 
         resp = client.post(
             "/api/vaults/metadata",
@@ -152,10 +160,12 @@ class TestVaultMetadataAuth:
         )
         assert resp.status_code == 401
 
-    def test_metadata_post_rejects_non_owner_overwrite(self):
+    @patch("archimedes.api.vaults_routes.chain_executor.get_vault_owner", new_callable=AsyncMock)
+    def test_metadata_post_rejects_non_owner_overwrite(self, mock_owner):
         vault = "0x" + "33" * 20
         owner = "0x" + "aa" * 20
         attacker = "0x" + "bb" * 20
+        mock_owner.return_value = owner  # the vault's on-chain owner
 
         # Owner claims the vault metadata first.
         first = client.post(
@@ -180,6 +190,43 @@ class TestVaultMetadataAuth:
             cookies=_siwe_cookies(owner),
         )
         assert again.status_code == 200
+
+    @patch("archimedes.api.vaults_routes.chain_executor.get_vault_owner", new_callable=AsyncMock)
+    def test_metadata_post_rejects_non_onchain_owner_on_first_write(self, mock_owner):
+        """#916 IDOR: a vault created directly on-chain (no metadata row yet)
+        must not have its metadata claimed by a wallet that isn't its on-chain
+        owner. Before the fix, the first authenticated writer won."""
+        vault = "0x" + "44" * 20
+        real_owner = "0x" + "cc" * 20
+        attacker = "0x" + "dd" * 20
+        mock_owner.return_value = real_owner
+
+        resp = client.post(
+            "/api/vaults/metadata",
+            json={"vault_address": vault, "name": "Claimed", "symbol": "tCLM", "strategy_ids": []},
+            cookies=_siwe_cookies(attacker),
+        )
+        assert resp.status_code == 403
+
+        # The real on-chain owner can claim it.
+        ok = client.post(
+            "/api/vaults/metadata",
+            json={"vault_address": vault, "name": "Mine", "symbol": "tMIN", "strategy_ids": []},
+            cookies=_siwe_cookies(real_owner),
+        )
+        assert ok.status_code == 200
+
+    @patch("archimedes.api.vaults_routes.chain_executor.get_vault_owner", new_callable=AsyncMock)
+    def test_metadata_post_fails_closed_when_owner_unreadable(self, mock_owner):
+        """If the on-chain owner can't be read, refuse (503) rather than let an
+        unverifiable caller write — never fail open on the ownership gate."""
+        mock_owner.return_value = None
+        resp = client.post(
+            "/api/vaults/metadata",
+            json={"vault_address": "0x" + "55" * 20, "name": "X", "symbol": "tX", "strategy_ids": []},
+            cookies=_siwe_cookies("0x" + "ee" * 20),
+        )
+        assert resp.status_code == 503
 
 
 def test_create_vault_requires_auth():
