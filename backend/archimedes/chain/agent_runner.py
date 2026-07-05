@@ -681,7 +681,7 @@ class StrategyRunner:
         # Build + commit the canonical trace ONCE. The same trace object is revealed
         # after settlement so the on-chain keccak256 binding holds. In dry-run we still
         # build it (no on-chain commit) so the reveal/persist path has a trace to use.
-        committed_trace, commit_trace_id, commit_tx, commit_block = await self._commit_trace(
+        committed_trace, commit_trace_id, commit_tx, commit_block, claimed_execution_time = await self._commit_trace(
             vault_address,
             trades,
             all_signals,
@@ -690,6 +690,7 @@ class StrategyRunner:
             tick_id,
             reasoning,
             portfolio,
+            targets,
         )
 
         # Phase 2: TRADE — execute the rebalance
@@ -772,6 +773,7 @@ class StrategyRunner:
             commit_tx=commit_tx,
             commit_block=commit_block,
             trade_block=trade_block,
+            claimed_execution_time=claimed_execution_time,
         )
 
     # ─── Signal → target allocation ───────────────────────────────
@@ -843,10 +845,20 @@ class StrategyRunner:
     # ─── Commit-Reveal Trace ────────────────────────────────────
 
     # How far in the future the committed execution is claimed to land. The
-    # contract requires claimedExecutionTime > commit-block timestamp, so the
-    # reveal can only succeed once this lead window has elapsed — proving the
-    # trade landed strictly after the commit (causal ordering).
-    _COMMIT_EXECUTION_LEAD_S = 60
+    # contract requires claimedExecutionTime > commit-block timestamp AND
+    # reveal-block timestamp >= claimedExecutionTime, so the lead is the
+    # minimum commit->reveal separation: bigger lead = stronger "content was
+    # fixed well before reveal" proof, but the reveal phase must wait the
+    # remainder of this window out (see _reveal_trace) — raising it stalls the
+    # tick longer, it does NOT make reveals safer (#903). Must stay well under
+    # AGENT_INTERVAL_SECONDS. Trades settle in seconds on Arc, so 60s already
+    # upper-bounds real execution latency; override via env if that changes.
+    _COMMIT_EXECUTION_LEAD_S = int(os.getenv("TRACE_COMMIT_EXECUTION_LEAD_S", "60"))
+
+    # Clock-skew allowance added on top of claimedExecutionTime before the
+    # reveal is submitted, so the reveal block's timestamp cannot land behind
+    # the local clock and trip "Reveal before claimed execution".
+    _REVEAL_SKEW_BUFFER_S = 3
 
     async def _commit_trace(
         self,
@@ -858,7 +870,8 @@ class StrategyRunner:
         tick_id: str,
         reasoning: str,
         portfolio: Portfolio,
-    ) -> tuple[ReasoningTrace, int | None, str | None, int | None]:
+        targets: list[TargetAllocation],
+    ) -> tuple[ReasoningTrace, int | None, str | None, int | None, int | None]:
         """Commit phase: anchor the trace hash on-chain BEFORE the trade executes.
 
         Builds the canonical trace ONCE and commits its keccak256 via the registry's
@@ -866,9 +879,18 @@ class StrategyRunner:
         after settlement and the on-chain hash binding holds. Falls back to the v1
         ``publishTrace`` anchor when the deployed registry is pre-v1.5 (#588 redeploy).
 
-        Returns (trace, on_chain_trace_id, commit_tx_hash, commit_block_number).
-        The trace is always returned so reveal() can submit the identical content;
-        trace_id is None when commit-reveal is unavailable (publishTrace fallback).
+        Every hashed field — including ``portfolio_after`` — is FINAL here: mutating
+        any of them after this point changes ``canonical_json()`` and the on-chain
+        ``keccak256(fullTraceContent) == contentHash`` reveal check reverts with
+        "Hash mismatch" (#903). ``portfolio_after`` therefore records the *intended*
+        post-trade allocation (deterministic, known pre-trade); actual settlement tx
+        hashes live in non-hashed fields and the off-chain record only.
+
+        Returns (trace, on_chain_trace_id, commit_tx_hash, commit_block_number,
+        claimed_execution_time). The trace is always returned so reveal() can submit
+        the identical content; trace_id is None when commit-reveal is unavailable
+        (publishTrace fallback); claimed_execution_time is non-None only on the real
+        commit-reveal path so the reveal phase knows how long to wait.
         """
         trace = ReasoningTrace(
             id=str(uuid.uuid4()),
@@ -889,6 +911,13 @@ class StrategyRunner:
                     h.symbol: {"weight": f"{h.weight:.1%}", "value_usdc": h.value_usdc} for h in portfolio.holdings
                 },
             },
+            # Hashed field, so it must be knowable pre-trade: the target
+            # allocation this rebalance intends to reach. Settlement tx hashes
+            # are recorded post-trade in non-hashed fields (#903).
+            portfolio_after={
+                "intended": True,
+                "target_weights": {t.symbol: round(t.weight, 6) for t in targets},
+            },
             reasoning=reasoning,
             confidence=_compute_confidence(all_signals),
             trades_executed=[{"symbol": t.symbol, "direction": t.direction.value, "amount": t.amount} for t in trades],
@@ -901,7 +930,7 @@ class StrategyRunner:
 
         if DRY_RUN:
             logger.info("[tick %s] DRY RUN — skipping on-chain commit", tick_id)
-            return trace, None, None, None
+            return trace, None, None, None, None
 
         claimed_execution_time = int(datetime.now(UTC).timestamp()) + self._COMMIT_EXECUTION_LEAD_S
         intent_summary = f"{trace.decision_type.value}:{len(trades)}".encode()
@@ -919,7 +948,7 @@ class StrategyRunner:
                         commit_tx[:16],
                         commit_block,
                     )
-                return trace, trace_id, commit_tx, commit_block
+                return trace, trace_id, commit_tx, commit_block, claimed_execution_time
 
             # Fallback: v1 publishTrace anchor (no temporal binding).
             arc_tx = await trace_publisher.publish(trace)
@@ -938,10 +967,10 @@ class StrategyRunner:
                     arc_tx[:16],
                     commit_block,
                 )
-            return trace, None, arc_tx, commit_block
+            return trace, None, arc_tx, commit_block, None
         except Exception as e:
             logger.error("[tick %s] COMMIT FAILED: %s", tick_id, e)
-            return trace, None, None, None
+            return trace, None, None, None, None
 
     async def _reveal_trace(
         self,
@@ -952,21 +981,26 @@ class StrategyRunner:
         commit_tx: str | None = None,
         commit_block: int | None = None,
         trade_block: int | None = None,
+        claimed_execution_time: int | None = None,
     ) -> None:
         """Reveal phase: pin public provenance to IPFS, then reveal the SAME trace.
 
         ``trace`` is the exact object committed in the commit phase — we do NOT rebuild
-        it, so the canonical bytes revealed on-chain match the committed hash. Steps:
+        it, and we must NOT touch any field in ``_HASH_FIELDS`` (``portfolio_after``
+        included: mutating it here was the #903 "Hash mismatch" revert). Only the
+        non-hashed settlement annotations below are safe to set. Steps:
           1. Pin the PUBLIC provenance layer (papers/methodology/rigor — not executable
              params) to IPFS → CID. Degrades loudly to hash-only if PINATA_JWT is unset.
-          2. reveal(trace_id, cid, canonicalBytes) — contract recomputes keccak256 and
+          2. Wait out the remainder of the claimedExecutionTime window — the contract
+             requires reveal-block timestamp >= claimedExecutionTime, and trades settle
+             in seconds on Arc, so an immediate reveal is structurally too early (#903).
+          3. reveal(trace_id, cid, canonicalBytes) — contract recomputes keccak256 and
              enforces commit block < execution < reveal block.
-          3. Fall back to publishTrace if the deployed registry is pre-v1.5 (#588).
+          4. Fall back to publishTrace if the deployed registry is pre-v1.5 (#588).
         """
         # Annotate the (already-committed) trace with trade settlement data. These
         # fields are NOT in the hashed canonical set (_HASH_FIELDS), so adding them
         # does not change trace_hash — the commit binding stays intact.
-        trace.portfolio_after = {"tx_hashes": tx_hashes or []}
         trace.commit_tx_hash = commit_tx
         trace.commit_block_number = commit_block
         trace.trade_tx_hash = tx_hashes[0] if tx_hashes else None
@@ -989,6 +1023,15 @@ class StrategyRunner:
             # ── 2. Reveal on-chain, anchoring the CID as the storage pointer ──
             try:
                 if trace_id is not None and trace_publisher.supports_commit_reveal():
+                    if claimed_execution_time is not None:
+                        wait_s = claimed_execution_time + self._REVEAL_SKEW_BUFFER_S - datetime.now(UTC).timestamp()
+                        if wait_s > 0:
+                            logger.info(
+                                "[tick %s] REVEAL waiting %.0fs for claimedExecutionTime window",
+                                tick_id,
+                                wait_s,
+                            )
+                            await asyncio.sleep(wait_s)
                     reveal_tx, reveal_block = await trace_publisher.reveal(
                         trace_id, trace, storage_pointer=ipfs_cid or ""
                     )
@@ -1029,6 +1072,12 @@ class StrategyRunner:
                 "confidence": trace.confidence,
                 "trades_executed": trace.trades_executed,
                 "strategies_referenced": trace.strategies_referenced,
+                # Hashed field — persist it so /traces/{id}/canonical can rebuild
+                # the exact committed bytes for external re-verification (#903).
+                "consulted_paper_hashes": trace.consulted_paper_hashes,
+                # Settlement txs live OUTSIDE the hashed set: they are only known
+                # post-trade, and the committed canonical bytes are immutable (#903).
+                "settlement_tx_hashes": tx_hashes or [],
                 "trace_hash": trace.trace_hash,
                 "arc_tx_hash": reveal_tx,
                 "is_verified": reveal_tx is not None,
