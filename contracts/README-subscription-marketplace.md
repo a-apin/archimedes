@@ -12,41 +12,34 @@ via the settlement sweep and splits 90/10 (creator/platform).
 
 | Contract | File | Purpose |
 |---|---|---|
-| PaymentSplitter | `contracts/vyper/PaymentSplitter.vy` | Receives USDC deposits from the settlement sweep, tracks creator/platform balances per pool, supports withdrawal and pool deactivation |
+| PaymentSplitter | `contracts/src/PaymentSplitter.sol` | Receives USDC deposits from the settlement sweep, tracks creator/platform balances per pool, supports withdrawal and pool deactivation |
 
 ## Compilation
 
-Install Vyper 0.4.0:
+Requires [Foundry](https://getfoundry.sh/) (`forge`):
 
 ```bash
-pip install vyper==0.4.0
+cd contracts
+forge build --match-contract PaymentSplitter
 ```
 
-Compile:
+The compiled ABI is regenerated with:
 
 ```bash
-# ABI (for Python backend)
-vyper contracts/vyper/PaymentSplitter.vy -f abi > contracts/abis/PaymentSplitter.json
-
-# Bytecode (for Foundry deployment)
-vyper contracts/vyper/PaymentSplitter.vy -f bytecode > contracts/abis/PaymentSplitter.bin
+cd contracts
+forge inspect src/PaymentSplitter.sol:PaymentSplitter abi --json > abis/PaymentSplitter.json
 ```
 
 ## Deployment
 
-### Using Foundry + Vyper Bytecode
+### Using Foundry
 
 ```bash
-# 1. Compile bytecode (see above)
-
-# 2. Export bytecode as env vars
-PAYMENT_SPLITTER_CODE=$(cat contracts/abis/PaymentSplitter.bin)
-
-# 3. Deploy via Forge script
+# Deploy via Forge script (USDC_ADDRESS is the only required env var)
 forge script contracts/script/DeployPaymentSplitter.s.sol \
   --rpc-url https://rpc.testnet.arc.network \
   --broadcast \
-  --env-vars USDC_ADDRESS,PLATFORM_WALLET,FLAT_FEE_PER_ACTION,PAYMENT_SPLITTER_BYTECODE
+  --env-vars USDC_ADDRESS
 ```
 
 ### Required Environment Variables
@@ -54,9 +47,10 @@ forge script contracts/script/DeployPaymentSplitter.s.sol \
 | Variable | Description | Example |
 |---|---|---|
 | `USDC_ADDRESS` | USDC token contract address | `0x3600000000000000000000000000000000000000` |
-| `PLATFORM_WALLET` | Platform fee recipient (10%) | `0x...` |
-| `FLAT_FEE_PER_ACTION` | Flat fee in USDC raw (6 decimals) | `100` (= $0.0001) |
-| `PAYMENT_SPLITTER_BYTECODE` | Init bytecode from `vyper -f bytecode` | `0x60...` |
+
+> **Note**: `PLATFORM_WALLET` and `FLAT_FEE_PER_ACTION` are NOT constructor
+> parameters. The platform wallet is configured **per pool** via
+> `createPool(poolId, creatorAddress, platformWalletAddress)` at publish time.
 
 ## Operational Instructions
 
@@ -98,8 +92,7 @@ See `backend/archimedes/marketplace/settlement.py` for details.
 
 ### Withdrawing
 
-Creators withdraw their share from PaymentSplitter via the standard
-`withdraw(poolId)` call (same selector as `PaymentSplitter.vy`).
+Creators withdraw their share from PaymentSplitter via `withdraw(poolId, amount)`.
 
 ## Contract Architecture
 
@@ -123,7 +116,7 @@ Creators withdraw their share from PaymentSplitter via the standard
                                 ▼                     ▼
                         ┌──────────────────────────────────┐
                         │         PaymentSplitter          │
-                        │          (Vyper)                 │
+                        │          (Solidity)               │
                         ├────────────────┬─────────────────┤
                         │     90%        │     10%         │
                         │   Creator      │   Platform      │

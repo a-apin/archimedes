@@ -15,15 +15,14 @@ import {PaymentSplitter} from "../src/PaymentSplitter.sol";
 contract DeployPaymentSplitter is Script {
     function run() external {
         address usdc = vm.envAddress("USDC_ADDRESS");
-        address platformWallet = vm.envAddress("PLATFORM_WALLET");
-        uint256 flatFee = vm.envUint("FLAT_FEE_PER_ACTION");
+        // Note: PLATFORM_WALLET and FLAT_FEE_PER_ACTION are NOT constructor
+        // parameters. The platform wallet is set per-pool via createPool() at
+        // publish time — there is no global contract-level config for it.
 
         vm.startBroadcast();
 
         console.log("=== Deploying PaymentSplitter ===");
         console.log("USDC:", usdc);
-        console.log("Platform Wallet:", platformWallet);
-        console.log("Flat Fee Per Action:", flatFee);
 
         // Deploy PaymentSplitter via native Solidity constructor.
         PaymentSplitter splitter = new PaymentSplitter(usdc);
