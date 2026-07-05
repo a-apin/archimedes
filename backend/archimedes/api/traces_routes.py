@@ -371,6 +371,9 @@ async def get_trace_canonical(trace_id: str):
             confidence=off_chain.get("confidence", 0.0),
             trades_executed=off_chain.get("trades_executed", []),
             strategies_referenced=off_chain.get("strategies_referenced", []),
+            # Hashed field (#903): without it the rebuilt canonical bytes can
+            # never match the committed hash for paper-grounded decisions.
+            consulted_paper_hashes=off_chain.get("consulted_paper_hashes", []),
         )
         return PlainTextResponse(trace.canonical_json(), media_type="application/json")
     finally:

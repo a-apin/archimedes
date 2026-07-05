@@ -42,7 +42,11 @@ class ReasoningTrace:
     # Context at decision time
     market_context: dict = field(default_factory=dict)  # Regime, key prices, VIX, etc.
     portfolio_before: dict = field(default_factory=dict)  # Holdings before action
-    portfolio_after: dict = field(default_factory=dict)  # Holdings after action
+    # Holdings after action. HASHED field: on the commit-reveal path this is the
+    # *intended* post-trade allocation, set before compute_hash() and immutable
+    # afterwards — mutating it post-commit breaks the on-chain reveal (#903).
+    # Settlement tx hashes belong in the non-hashed fields below.
+    portfolio_after: dict = field(default_factory=dict)
 
     # The reasoning
     reasoning: str = ""  # LLM-generated explanation of the decision

@@ -145,6 +145,126 @@ class TestTemporalBindingPersistence:
         assert not saved["temporal_binding_valid"]
 
 
+class TestHashBindingIntegrity:
+    """#903: the reveal phase must submit byte-identical canonical content.
+
+    Pre-fix, ``_reveal_trace`` overwrote ``portfolio_after`` (a hashed field) with
+    settlement tx hashes, so the revealed ``canonical_json()`` no longer matched the
+    committed keccak256 and the contract reverted "Hash mismatch" on every rebalance.
+    """
+
+    def test_reveal_does_not_mutate_hashed_fields(self, runner_env):
+        runner, mock_tp = runner_env
+        mock_tp.supports_commit_reveal = MagicMock(return_value=True)
+        mock_tp.reveal = AsyncMock(return_value=("0xREVEAL", 102))
+        mock_tp.publish = AsyncMock(return_value=None)
+
+        trace = _make_trace()
+        trace.portfolio_after = {"intended": True, "target_weights": {"sSPY": 0.6}}
+        committed_hash = trace.compute_hash()
+        committed_bytes = trace.canonical_json()
+
+        asyncio.run(
+            runner._reveal_trace(
+                trace,
+                trace_id=42,
+                tick_id="t1",
+                tx_hashes=["0xtrade"],
+                commit_tx="0xcommit",
+                commit_block=100,
+                trade_block=101,
+            )
+        )
+
+        # The exact committed bytes are what got revealed — no hashed field moved.
+        assert trace.portfolio_after == {"intended": True, "target_weights": {"sSPY": 0.6}}
+        assert trace.canonical_json() == committed_bytes
+        assert trace.compute_hash() == committed_hash
+        revealed_trace = mock_tp.reveal.call_args.args[1]
+        assert revealed_trace.canonical_json() == committed_bytes
+
+    def test_settlement_tx_hashes_persisted_outside_hashed_set(self, runner_env):
+        runner, mock_tp = runner_env
+        mock_tp.supports_commit_reveal = MagicMock(return_value=True)
+        mock_tp.reveal = AsyncMock(return_value=("0xREVEAL", 102))
+
+        trace = _make_trace()
+        trace.consulted_paper_hashes = ["1706.03762:abc123"]
+        trace.compute_hash()
+
+        asyncio.run(
+            runner._reveal_trace(
+                trace,
+                trace_id=42,
+                tick_id="t1",
+                tx_hashes=["0xtrade1", "0xtrade2"],
+                commit_tx="0xcommit",
+                commit_block=100,
+                trade_block=101,
+            )
+        )
+
+        saved = _saved(runner)
+        assert saved["settlement_tx_hashes"] == ["0xtrade1", "0xtrade2"]
+        # Hashed fields round-trip so /traces/{id}/canonical can rebuild the
+        # exact committed bytes for external verification.
+        assert saved["consulted_paper_hashes"] == ["1706.03762:abc123"]
+        assert saved["portfolio_after"] == trace.portfolio_after
+
+
+class TestRevealTimingWindow:
+    """#903: reveal must not fire before claimedExecutionTime.
+
+    The contract requires reveal-block timestamp >= claimedExecutionTime; trades
+    settle in seconds on Arc, so an immediate intra-tick reveal always reverted
+    "Reveal before claimed execution". The reveal now waits the window out.
+    """
+
+    def _run_reveal(self, runner, mock_tp, claimed_execution_time):
+        mock_tp.supports_commit_reveal = MagicMock(return_value=True)
+        mock_tp.reveal = AsyncMock(return_value=("0xREVEAL", 102))
+        with patch("archimedes.chain.agent_runner.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            asyncio.run(
+                runner._reveal_trace(
+                    _make_trace(),
+                    trace_id=42,
+                    tick_id="t1",
+                    tx_hashes=["0xtrade"],
+                    commit_tx="0xcommit",
+                    commit_block=100,
+                    trade_block=101,
+                    claimed_execution_time=claimed_execution_time,
+                )
+            )
+        return mock_sleep, mock_tp.reveal
+
+    def test_reveal_waits_out_remaining_claimed_window(self, runner_env):
+        runner, mock_tp = runner_env
+        claimed = int(datetime.now(UTC).timestamp()) + 30
+        mock_sleep, mock_reveal = self._run_reveal(runner, mock_tp, claimed)
+
+        mock_sleep.assert_awaited_once()
+        waited = mock_sleep.await_args.args[0]
+        # Remaining window (~30s) plus the skew buffer, minus test overhead.
+        assert 25 <= waited <= 30 + runner._REVEAL_SKEW_BUFFER_S
+        mock_reveal.assert_awaited_once()
+
+    def test_reveal_does_not_wait_when_window_already_passed(self, runner_env):
+        runner, mock_tp = runner_env
+        claimed = int(datetime.now(UTC).timestamp()) - 120
+        mock_sleep, mock_reveal = self._run_reveal(runner, mock_tp, claimed)
+
+        mock_sleep.assert_not_awaited()
+        mock_reveal.assert_awaited_once()
+
+    def test_reveal_does_not_wait_without_claimed_time(self, runner_env):
+        runner, mock_tp = runner_env
+        mock_sleep, mock_reveal = self._run_reveal(runner, mock_tp, None)
+
+        mock_sleep.assert_not_awaited()
+        mock_reveal.assert_awaited_once()
+
+
 class TestTraceResponseClaimGuard:
     """The schema is the last line of defense against a stale Redis True binding."""
 

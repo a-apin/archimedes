@@ -251,7 +251,7 @@ class TestCommitRevealDryRun:
 
     async def test_commit_trace_dry_run_builds_and_hashes(self, runner_env):
         runner, _ = runner_env
-        trace, trace_id, commit_tx, commit_block = await runner._commit_trace(
+        trace, trace_id, commit_tx, commit_block, claimed_time = await runner._commit_trace(
             "0xVault",
             [self._trade()],
             [_signals()],
@@ -260,17 +260,29 @@ class TestCommitRevealDryRun:
             "tick-1",
             "reasoning text",
             _portfolio(),
+            _allocs(sSPY=0.6, USDC=0.4),
         )
         # DRY_RUN → no on-chain ids, but the canonical trace IS built + hashed.
-        assert trace_id is None and commit_tx is None and commit_block is None
+        assert trace_id is None and commit_tx is None and commit_block is None and claimed_time is None
         assert trace.trace_hash and len(trace.trace_hash.removeprefix("0x")) == 64
         assert trace.decision_type.value == "rebalance"
+        # portfolio_after is hashed, so it carries the pre-trade INTENDED targets (#903).
+        assert trace.portfolio_after["intended"] is True
+        assert trace.portfolio_after["target_weights"] == {"sSPY": 0.6, "USDC": 0.4}
 
     async def test_reveal_trace_dry_run_persists_off_chain(self, runner_env):
         runner, m = runner_env
         # Build a trace via commit, then reveal it (DRY_RUN → no IPFS/chain).
         trace, trace_id, *_ = await runner._commit_trace(
-            "0xVault", [self._trade()], [_signals()], "risk_on", _consensus(), "t", "r", _portfolio()
+            "0xVault",
+            [self._trade()],
+            [_signals()],
+            "risk_on",
+            _consensus(),
+            "t",
+            "r",
+            _portfolio(),
+            _allocs(sSPY=0.6, USDC=0.4),
         )
         await runner._reveal_trace(trace, trace_id, "tick-1", tx_hashes=[])
         # Off-chain persist happened with temporal_binding_source = "none" (dry-run).
