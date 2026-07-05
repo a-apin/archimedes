@@ -51,14 +51,16 @@ class SettlementSweeper:
     def _get_signer(self, wallet_id: str, wallet_address: str) -> CircleWalletSigner:
         if wallet_id not in self._signers:
             self._signers[wallet_id] = CircleWalletSigner(
-                wallet_id=wallet_id, wallet_address=wallet_address,
+                wallet_id=wallet_id,
+                wallet_address=wallet_address,
             )
         return self._signers[wallet_id]
 
     def _get_executor(self, wallet_id: str, wallet_address: str) -> CircleTxExecutor:
         if wallet_id not in self._executors:
             self._executors[wallet_id] = CircleTxExecutor(
-                wallet_id=wallet_id, wallet_address=wallet_address,
+                wallet_id=wallet_id,
+                wallet_address=wallet_address,
             )
         return self._executors[wallet_id]
 
@@ -106,7 +108,9 @@ class SettlementSweeper:
             result = await client.withdraw(amount=amount)
             logger.info(
                 "[%s] Stage A: withdrew %s USDC from Gateway → wallet; tx=%s",
-                pub.strategy_id, amount, result.mint_tx_hash,
+                pub.strategy_id,
+                amount,
+                result.mint_tx_hash,
             )
         except Exception:
             logger.exception("[%s] Stage A (Gateway→wallet) failed", pub.strategy_id)
@@ -124,13 +128,16 @@ class SettlementSweeper:
             # CircleTxExecutor only provides execute_* methods.  Delegate
             # to an ethers-style RPC call via asyncio.to_thread.
             balance = await asyncio.to_thread(
-                self._usdc_balance_of, pub.gateway_seller_address,
+                self._usdc_balance_of,
+                pub.gateway_seller_address,
             )
 
             if balance < SWEEP_MIN_DEPOSIT_RAW:
                 logger.info(
                     "[%s] Stage B: wallet USDC balance %d below min deposit %d — skip",
-                    pub.strategy_id, balance, SWEEP_MIN_DEPOSIT_RAW,
+                    pub.strategy_id,
+                    balance,
+                    SWEEP_MIN_DEPOSIT_RAW,
                 )
                 return
 
@@ -142,11 +149,17 @@ class SettlementSweeper:
             # Approve PaymentSplitter to spend USDC from the agent wallet.
             approve_tx = await asyncio.to_thread(
                 executor.execute_approve,
-                GATEWAY_CHAIN, pub.gateway_seller_address, splitter, balance,
+                GATEWAY_CHAIN,
+                pub.gateway_seller_address,
+                splitter,
+                balance,
             )
             logger.info(
                 "[%s] Stage B: approve(%s, %d) tx=%s",
-                pub.strategy_id, splitter, balance, approve_tx,
+                pub.strategy_id,
+                splitter,
+                balance,
+                approve_tx,
             )
 
             # depositToPool(pool_id, amount) via generic contract execution.
@@ -158,7 +171,9 @@ class SettlementSweeper:
             )
             logger.info(
                 "[%s] Stage B: depositToPool(pool_id, %d) tx=%s",
-                pub.strategy_id, balance, deposit_tx,
+                pub.strategy_id,
+                balance,
+                deposit_tx,
             )
         except Exception:
             logger.exception("[%s] Stage B (wallet→pool) failed", pub.strategy_id)
@@ -202,8 +217,14 @@ class SettlementSweeper:
         addr = Web3.to_checksum_address(address)
 
         # Minimal ERC-20 ABI for balanceOf
-        abi = [{"constant": True, "inputs": [{"name": "_owner", "type": "address"}],
-                "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}],
-                "type": "function"}]
+        abi = [
+            {
+                "constant": True,
+                "inputs": [{"name": "_owner", "type": "address"}],
+                "name": "balanceOf",
+                "outputs": [{"name": "balance", "type": "uint256"}],
+                "type": "function",
+            }
+        ]
         contract = w3.eth.contract(address=usdc_addr, abi=abi)
         return contract.functions.balanceOf(addr).call()

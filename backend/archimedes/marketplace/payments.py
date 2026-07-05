@@ -43,7 +43,8 @@ def _get_signer(wallet_id: str, wallet_address: str) -> CircleWalletSigner:
     """Return a cached CircleWalletSigner for *wallet_id*."""
     if wallet_id not in _signer_cache:
         _signer_cache[wallet_id] = CircleWalletSigner(
-            wallet_id=wallet_id, wallet_address=wallet_address,
+            wallet_id=wallet_id,
+            wallet_address=wallet_address,
         )
     return _signer_cache[wallet_id]
 
@@ -59,9 +60,7 @@ def get_gateway_middleware(seller_address: str) -> GatewayMiddleware:
         return _middleware_cache[key]
 
     if not seller_address or int(seller_address, 16) == 0:
-        raise RuntimeError(
-            f"refusing to charge into zero address ({seller_address})"
-        )
+        raise RuntimeError(f"refusing to charge into zero address ({seller_address})")
 
     chain = os.getenv("GATEWAY_CHAIN", DEFAULT_GATEWAY_CHAIN).strip()
     mw = create_gateway_middleware(
@@ -131,7 +130,9 @@ async def charge(
         # create_payment_header make blocking HTTPS calls.
         signer = _get_signer(wallet_id, wallet_address)
         header = await asyncio.to_thread(
-            create_payment_header, signer=signer, requirements=requirements,
+            create_payment_header,
+            signer=signer,
+            requirements=requirements,
         )
 
         # 3. Verify + settle via Circle's facilitator.
@@ -139,7 +140,9 @@ async def charge(
         if not verify_result.is_valid:
             logger.warning(
                 "[%s] payment verify failed for sub %s: %s",
-                tick_id, sub_id, getattr(verify_result, "invalid_reason", "unknown"),
+                tick_id,
+                sub_id,
+                getattr(verify_result, "invalid_reason", "unknown"),
             )
             return False
 

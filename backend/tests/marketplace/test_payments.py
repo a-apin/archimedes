@@ -35,10 +35,14 @@ def test_fee_to_price_negative_raises():
 async def test_charge_zero_amount_is_paid_without_network():
     with patch.object(payments, "get_gateway_middleware") as mw:
         ok = await payments.charge(
-            sub_id="0x" + "11" * 32, wallet_id=WALLET_ID,
+            sub_id="0x" + "11" * 32,
+            wallet_id=WALLET_ID,
             wallet_address=WALLET_ADDR,
             seller_address=SELLER_ADDR,
-            strategy_id="s", tick_id="t", action_count=0, flat_fee_raw=100,
+            strategy_id="s",
+            tick_id="t",
+            action_count=0,
+            flat_fee_raw=100,
         )
     assert ok is True
 
@@ -59,10 +63,14 @@ async def test_charge_success_path():
         patch.object(payments, "create_payment_header", return_value="hdr"),
     ):
         ok = await payments.charge(
-            sub_id="0x" + "11" * 32, wallet_id=WALLET_ID,
+            sub_id="0x" + "11" * 32,
+            wallet_id=WALLET_ID,
             wallet_address=WALLET_ADDR,
             seller_address=SELLER_ADDR,
-            strategy_id="s", tick_id="t", action_count=2, flat_fee_raw=100,
+            strategy_id="s",
+            tick_id="t",
+            action_count=2,
+            flat_fee_raw=100,
         )
     assert ok is True
     middleware.settle.assert_awaited_once()
@@ -72,9 +80,7 @@ async def test_charge_success_path():
 async def test_charge_verify_invalid_returns_false():
     middleware = MagicMock()
     middleware.require.return_value = {"status": 402, "headers": {}, "body": {}}
-    middleware.verify = AsyncMock(
-        return_value=MagicMock(is_valid=False, invalid_reason="insufficient")
-    )
+    middleware.verify = AsyncMock(return_value=MagicMock(is_valid=False, invalid_reason="insufficient"))
     middleware.settle = AsyncMock()
     fake_x402 = MagicMock()
     fake_x402.get_gateway_option.return_value = MagicMock()
@@ -85,10 +91,14 @@ async def test_charge_verify_invalid_returns_false():
         patch.object(payments, "create_payment_header", return_value="hdr"),
     ):
         ok = await payments.charge(
-            sub_id="0x" + "11" * 32, wallet_id=WALLET_ID,
+            sub_id="0x" + "11" * 32,
+            wallet_id=WALLET_ID,
             wallet_address=WALLET_ADDR,
             seller_address=SELLER_ADDR,
-            strategy_id="s", tick_id="t", action_count=2, flat_fee_raw=100,
+            strategy_id="s",
+            tick_id="t",
+            action_count=2,
+            flat_fee_raw=100,
         )
     assert ok is False
     middleware.settle.assert_not_awaited()
@@ -96,14 +106,16 @@ async def test_charge_verify_invalid_returns_false():
 
 @pytest.mark.asyncio
 async def test_charge_exception_returns_false():
-    with patch.object(
-        payments, "get_gateway_middleware", side_effect=RuntimeError("no seller")
-    ):
+    with patch.object(payments, "get_gateway_middleware", side_effect=RuntimeError("no seller")):
         ok = await payments.charge(
-            sub_id="0x" + "11" * 32, wallet_id=WALLET_ID,
+            sub_id="0x" + "11" * 32,
+            wallet_id=WALLET_ID,
             wallet_address=WALLET_ADDR,
             seller_address=SELLER_ADDR,
-            strategy_id="s", tick_id="t", action_count=2, flat_fee_raw=100,
+            strategy_id="s",
+            tick_id="t",
+            action_count=2,
+            flat_fee_raw=100,
         )
     assert ok is False
 
@@ -128,7 +140,8 @@ def test_get_signer_caches_per_wallet_id():
     payments._signer_cache.clear()
     with patch.object(payments, "CircleWalletSigner") as mock_cls:
         mock_cls.side_effect = lambda wallet_id, wallet_address: MagicMock(
-            wallet_id=wallet_id, wallet_address=wallet_address,
+            wallet_id=wallet_id,
+            wallet_address=wallet_address,
         )
         s1 = payments._get_signer("wid-1", WALLET_ADDR)
         s2 = payments._get_signer("wid-1", "0xOther")

@@ -1,4 +1,5 @@
 """Tests for MarketState Redis persistence (real fakeredis)."""
+
 from __future__ import annotations
 
 import pytest

@@ -76,6 +76,7 @@ else:
     _docs_url = "/docs"
     _openapi_url = "/openapi.json"
 
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """FastAPI lifespan context manager — startup before yield, shutdown after."""
@@ -110,7 +111,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     paper_trading = os.getenv("PAPER_TRADING", "true").lower() in ("1", "true", "yes")
     market = MarketService(interval_seconds=interval, payments_dry_run=payments_dry_run, paper_trading=paper_trading)
     _app.state.market = market
-    _logger.info("marketplace engine started (interval=%ds, payments_dry_run=%s, paper_trading=%s)", interval, payments_dry_run, paper_trading)
+    _logger.info(
+        "marketplace engine started (interval=%ds, payments_dry_run=%s, paper_trading=%s)",
+        interval,
+        payments_dry_run,
+        paper_trading,
+    )
 
     # 3a. Rehydrate running publishers from Postgres
     try:
@@ -142,8 +148,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         for srow in subscriber_rows:
             if not srow.circle_wallet_id:
                 _logger.warning(
-                    "rehydrate: subscriber %s has NULL circle_wallet_id — "
-                    "marking inactive (fail closed, legacy row)",
+                    "rehydrate: subscriber %s has NULL circle_wallet_id — marking inactive (fail closed, legacy row)",
                     srow.sub_id,
                 )
                 subscriber_active = False
@@ -180,7 +185,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             )
             _logger.info(
                 "rehydrated publisher %s (vault=%s, %d subscribers from Postgres)",
-                row.strategy_id, row.vault_address, len(subs),
+                row.strategy_id,
+                row.vault_address,
+                len(subs),
             )
     except Exception as exc:
         _logger.warning("startup: publisher rehydration failed (non-fatal): %s", exc)

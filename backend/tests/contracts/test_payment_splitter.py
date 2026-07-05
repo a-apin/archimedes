@@ -17,6 +17,7 @@ import boa
 # DEPLOYMENT
 # ═══════════════════════════════════════════════════════════════════════
 
+
 class TestDeployment:
     """D6 §2.1 — Contract construction and initial state."""
 
@@ -37,6 +38,7 @@ class TestDeployment:
 # ═══════════════════════════════════════════════════════════════════════
 # POOL CREATION
 # ═══════════════════════════════════════════════════════════════════════
+
 
 class TestCreatePool:
     """D6 §2.2 — Pool creation gated on owner."""
@@ -79,16 +81,14 @@ class TestCreatePool:
 
         # The event log is accessible via _computation — filter by our address
         addr_bytes = bytes.fromhex(splitter.address[2:])
-        logs = [
-            log for log in splitter._computation.get_log_entries()
-            if log[0] == addr_bytes
-        ]
+        logs = [log for log in splitter._computation.get_log_entries() if log[0] == addr_bytes]
         assert len(logs) == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # depositToPool — FUNDING
 # ═══════════════════════════════════════════════════════════════════════
+
 
 class TestDepositToPool:
     """D6 §2.4 — Permissionless funding, capped by pool activity, balance tracking."""
@@ -170,16 +170,14 @@ class TestDepositToPool:
 
         # Filter for splitter-emitted logs only (USDC emits Transfer/Approval logs too)
         addr_bytes = bytes.fromhex(splitter.address[2:])
-        logs = [
-            log for log in splitter._computation.get_log_entries()
-            if log[0] == addr_bytes
-        ]
+        logs = [log for log in splitter._computation.get_log_entries() if log[0] == addr_bytes]
         assert len(logs) == 1  # PoolFunded
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # withdraw — PERMISSIONLESS DISBURSEMENT
 # ═══════════════════════════════════════════════════════════════════════
+
 
 class TestWithdraw:
     """D6 §2.3 + §2.4 — permissionless trigger (changed 2026-07-03), fixed payout recipients, 90/10 split."""
@@ -331,10 +329,7 @@ class TestWithdraw:
 
         # Filter for splitter-emitted logs only (USDC emits Transfer logs during withdraw too)
         addr_bytes = bytes.fromhex(splitter.address[2:])
-        logs = [
-            log for log in splitter._computation.get_log_entries()
-            if log[0] == addr_bytes
-        ]
+        logs = [log for log in splitter._computation.get_log_entries() if log[0] == addr_bytes]
         assert len(logs) == 1  # PaymentSplit
 
     def test_withdraw_partial_amount(self, splitter, usdc, accounts):
@@ -416,6 +411,7 @@ class TestWithdraw:
 # deactivatePool — OWNER-GATED
 # ═══════════════════════════════════════════════════════════════════════
 
+
 class TestDeactivatePool:
     """D6 §2.5 — Owner-only deactivation, still allows withdrawals."""
 
@@ -442,6 +438,7 @@ class TestDeactivatePool:
 # ═══════════════════════════════════════════════════════════════════════
 # GUARD: split() MUST NOT EXIST
 # ═══════════════════════════════════════════════════════════════════════
+
 
 class TestSplitFunctionRemoved:
     """D6 §2.3 — Old split() is replaced by depositToPool + withdraw."""

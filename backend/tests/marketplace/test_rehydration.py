@@ -3,6 +3,7 @@
 Verifies that MarketService.start_publisher treats Postgres as truth when
 subscribers are provided, and Redis as a rebuildable cache.
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, call
@@ -220,10 +221,12 @@ async def test_two_strategies_independent_subscribers(market: MarketService):
         "0x" + "ll" * 32: vars(subs_b["0x" + "ll" * 32]),
         "0x" + "mm" * 32: vars(subs_b["0x" + "mm" * 32]),
     }
-    market.state.save_subscribers.assert_has_awaits([
-        call("strat_f", expected_a),
-        call("strat_g", expected_b),
-    ])
+    market.state.save_subscribers.assert_has_awaits(
+        [
+            call("strat_f", expected_a),
+            call("strat_g", expected_b),
+        ]
+    )
 
 
 # ─── halt-state rehydration (C-5) ────────────────────────────────────────

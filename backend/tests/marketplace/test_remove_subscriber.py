@@ -4,6 +4,7 @@ Verifies the _deactivate_subscriber_db helper is correctly wired so
 unsubscribe does not raise AttributeError and the DB row is flipped to
 "stopped".
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock

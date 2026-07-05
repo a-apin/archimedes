@@ -38,9 +38,7 @@ def record_generator(session: Session, *, strategy_id: str, wallet_address: str)
     """Insert-if-not-exists. Idempotent — safe to call on every persist."""
     wallet_address = wallet_address.lower()
     existing = (
-        session.query(StrategyGenerator)
-        .filter_by(strategy_id=strategy_id, wallet_address=wallet_address)
-        .first()
+        session.query(StrategyGenerator).filter_by(strategy_id=strategy_id, wallet_address=wallet_address).first()
     )
     if existing is None:
         session.add(StrategyGenerator(strategy_id=strategy_id, wallet_address=wallet_address))
@@ -58,9 +56,5 @@ def wallet_can_publish(session: Session, *, strategy_id: str, wallet_address: st
         }
         if wallet_address in admin_wallets:
             return True
-    row = (
-        session.query(StrategyGenerator)
-        .filter_by(strategy_id=strategy_id, wallet_address=wallet_address)
-        .first()
-    )
+    row = session.query(StrategyGenerator).filter_by(strategy_id=strategy_id, wallet_address=wallet_address).first()
     return row is not None

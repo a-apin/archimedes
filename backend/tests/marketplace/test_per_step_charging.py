@@ -3,6 +3,7 @@
 Verifies the 13 + REBALANCE charge-boundary model (F7) against the
 behavioural invariants in the spec §9 acceptance criteria.
 """
+
 from __future__ import annotations
 
 from contextlib import ExitStack
@@ -17,6 +18,7 @@ from archimedes.services.strategy_signal_evaluator import StrategySignals
 
 # ── helpers ─────────────────────────────────────────────────────────────
 
+
 def _dummy_strategy():
     return MagicMock(spec=["id"], id="test_strat")
 
@@ -27,8 +29,12 @@ def _dummy_signals():
     ss = MagicMock(spec=StrategySignals)
     ss.signals = [
         AssetSignal(
-            asset="ETH", signal=Signal.LONG, weight=0.5, reason="test",
-            strategy_id="test_strat", strategy_name="test",
+            asset="ETH",
+            signal=Signal.LONG,
+            weight=0.5,
+            reason="test",
+            strategy_id="test_strat",
+            strategy_name="test",
         ),
     ]
     ss.paper_title = "test"
@@ -47,10 +53,14 @@ def _dummy_targets():
 
 def _dummy_trades():
     from archimedes.models.portfolio import TradeDirection, TradeOrder
+
     return [
         TradeOrder(
-            symbol="ETH", token_address="", direction=TradeDirection.BUY,
-            amount=100.0, estimated_usdc_value=100.0,
+            symbol="ETH",
+            token_address="",
+            direction=TradeDirection.BUY,
+            amount=100.0,
+            estimated_usdc_value=100.0,
         ),
     ]
 
@@ -58,24 +68,21 @@ def _dummy_trades():
 def _patch_evaluator(stack: ExitStack, weights: dict | None = None):
     w = weights if weights is not None else {"ETH": 0.5}
     stack.enter_context(
-        patch("archimedes.marketplace.service.strategy_evaluator.evaluate_strategies",
-              return_value=_dummy_signals()),
+        patch("archimedes.marketplace.service.strategy_evaluator.evaluate_strategies", return_value=_dummy_signals()),
     )
     stack.enter_context(
-        patch("archimedes.marketplace.service.strategy_evaluator.aggregate_signals",
-              return_value=w),
+        patch("archimedes.marketplace.service.strategy_evaluator.aggregate_signals", return_value=w),
     )
 
 
 # ── fixture ─────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def market():
     svc = MarketService(interval_seconds=9999, payments_dry_run=True, paper_trading=True)
     svc.executor = MagicMock()
-    svc.executor.read_portfolio = AsyncMock(
-        return_value=MagicMock(total_value_usdc=10000, weights_dict={})
-    )
+    svc.executor.read_portfolio = AsyncMock(return_value=MagicMock(total_value_usdc=10000, weights_dict={}))
     svc.executor.execute_trades = AsyncMock()
     svc.executor.set_token_oracles = AsyncMock()
     svc.executor.set_target_allocations = AsyncMock()
@@ -94,10 +101,12 @@ def market():
     svc.state.store.load_regime = AsyncMock(return_value=None)
     svc.state.store.save_last_rebalance = AsyncMock()
     svc.portfolio_constructor = MagicMock()
-    svc.portfolio_constructor.construct = MagicMock(return_value=[
-        MagicMock(symbol="ETH", weight=0.5, token_address="0x" + "ee" * 20),
-        MagicMock(symbol="USDC", weight=0.5, token_address="0x" + "ff" * 20),
-    ])
+    svc.portfolio_constructor.construct = MagicMock(
+        return_value=[
+            MagicMock(symbol="ETH", weight=0.5, token_address="0x" + "ee" * 20),
+            MagicMock(symbol="USDC", weight=0.5, token_address="0x" + "ff" * 20),
+        ]
+    )
     svc._weights_to_targets = MagicMock(return_value=_dummy_targets())
     svc._save_publisher_consensus = AsyncMock()
     svc.provider = MagicMock()
@@ -108,8 +117,10 @@ def market():
 
 def _add_publisher(market, sid="strat_a"):
     pub = Publisher(
-        strategy_id=sid, pool_id="0x" + "aa" * 32,
-        vault_address="0xpublisher_vault", creator_wallet="0xpublisher",
+        strategy_id=sid,
+        pool_id="0x" + "aa" * 32,
+        vault_address="0xpublisher_vault",
+        creator_wallet="0xpublisher",
         gateway_seller_address="0xgateway_seller",
     )
     market.publishers[sid] = pub
@@ -118,9 +129,12 @@ def _add_publisher(market, sid="strat_a"):
 
 def _add_sub(pub, sub_id="sub_1", active=True):
     sub = Subscriber(
-        sub_id="0x" + sub_id * 32, pool_id="0x" + "bb" * 32,
-        vault_address="0xsub_vault", ephemeral_wallet="0xephemeral",
-        subscriber_wallet="0xsubscriber", active=active,
+        sub_id="0x" + sub_id * 32,
+        pool_id="0x" + "bb" * 32,
+        vault_address="0xsub_vault",
+        ephemeral_wallet="0xephemeral",
+        subscriber_wallet="0xsubscriber",
+        active=active,
         circle_wallet_id="wallet_circle_id",
     )
     pub.subscribers[sub_id] = sub
@@ -128,6 +142,7 @@ def _add_sub(pub, sub_id="sub_1", active=True):
 
 
 # ── Tests ───────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_payments_dry_run_happy_path(market: MarketService):
@@ -142,8 +157,7 @@ async def test_payments_dry_run_happy_path(market: MarketService):
 
     with ExitStack() as stack:
         _patch_evaluator(stack)
-        stack.enter_context(
-            patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
+        stack.enter_context(patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
 
         pub = _add_publisher(market)
         _add_sub(pub)
@@ -169,11 +183,13 @@ async def test_publisher_halt_at_vcheck(market: MarketService):
 
     with ExitStack() as stack:
         _patch_evaluator(stack)
+        stack.enter_context(patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
         stack.enter_context(
-            patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
-        stack.enter_context(
-            patch("archimedes.marketplace.service.VCheck.run",
-                  return_value=MagicMock(passed=False, failures=["bad_weight"])))
+            patch(
+                "archimedes.marketplace.service.VCheck.run",
+                return_value=MagicMock(passed=False, failures=["bad_weight"]),
+            )
+        )
 
         pub = _add_publisher(market)
         _add_sub(pub)
@@ -203,8 +219,7 @@ async def test_no_drift_halt(market: MarketService):
 
     with ExitStack() as stack:
         _patch_evaluator(stack)
-        stack.enter_context(
-            patch("archimedes.marketplace.service.compute_trades", return_value=[]))
+        stack.enter_context(patch("archimedes.marketplace.service.compute_trades", return_value=[]))
 
         pub = _add_publisher(market)
         _add_sub(pub)
@@ -240,8 +255,7 @@ async def test_cant_pay_deferral(market: MarketService):
 
     with ExitStack() as stack:
         _patch_evaluator(stack)
-        stack.enter_context(
-            patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
+        stack.enter_context(patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
         stack.enter_context(patch.object(market, "_charge_one", _charge_side_effect))
 
         pub = _add_publisher(market)
@@ -250,23 +264,29 @@ async def test_cant_pay_deferral(market: MarketService):
         await market.tick("strat_a")
 
     # Bad sub should have PAYMENT halt at REGIME_CLASSIFY
-    bad_halt = [r for r in records
-                if r.sub_id == "0x" + "bad" * 32 and r.step_reached == TickStep.REGIME_CLASSIFY
-                and r.halted and r.halt_source == HaltSource.PAYMENT]
+    bad_halt = [
+        r
+        for r in records
+        if r.sub_id == "0x" + "bad" * 32
+        and r.step_reached == TickStep.REGIME_CLASSIFY
+        and r.halted
+        and r.halt_source == HaltSource.PAYMENT
+    ]
     assert len(bad_halt) >= 1, (
         f"expected bad-sub halt at REGIME_CLASSIFY, "
         f"got {[(r.sub_id, r.step_reached, r.halt_source) for r in records if r.halted]}"
     )
 
     # Bad sub should NOT be in any records after REGIME_CLASSIFY
-    bad_after = [r for r in records
-                 if r.sub_id == "0x" + "bad" * 32 and r.step_reached in (
-                     TickStep.THROTTLE_WEIGHTS, TickStep.REBALANCE)]
+    bad_after = [
+        r
+        for r in records
+        if r.sub_id == "0x" + "bad" * 32 and r.step_reached in (TickStep.THROTTLE_WEIGHTS, TickStep.REBALANCE)
+    ]
     assert len(bad_after) == 0
 
     # Good sub should reach REBALANCE
-    good_rebalance = [r for r in records
-                      if r.sub_id == "0x" + "good" * 32 and r.step_reached == TickStep.REBALANCE]
+    good_rebalance = [r for r in records if r.sub_id == "0x" + "good" * 32 and r.step_reached == TickStep.REBALANCE]
     assert len(good_rebalance) >= 1
 
     # Bad sub should be inactive
@@ -288,14 +308,14 @@ async def test_mirror_failure(market: MarketService):
 
     with ExitStack() as stack:
         _patch_evaluator(stack)
-        stack.enter_context(
-            patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
+        stack.enter_context(patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
         stack.enter_context(patch.object(market, "_charge_one", AsyncMock(return_value=True)))
-        mock_liability = stack.enter_context(
-            patch.object(market, "_record_liability", AsyncMock()))
+        mock_liability = stack.enter_context(patch.object(market, "_record_liability", AsyncMock()))
         stack.enter_context(
-            patch.object(market, "_apply_to_subscriber",
-                         AsyncMock(return_value=(False, RuntimeError("execution failed")))))
+            patch.object(
+                market, "_apply_to_subscriber", AsyncMock(return_value=(False, RuntimeError("execution failed")))
+            )
+        )
 
         pub = _add_publisher(market)
         _add_sub(pub)
@@ -324,10 +344,8 @@ async def test_underfunded_sub_excluded(market: MarketService):
 
     with ExitStack() as stack:
         _patch_evaluator(stack)
-        stack.enter_context(
-            patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
-        stack.enter_context(
-            patch.object(market, "_subscriber_is_ready", AsyncMock(return_value=False)))
+        stack.enter_context(patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
+        stack.enter_context(patch.object(market, "_subscriber_is_ready", AsyncMock(return_value=False)))
 
         pub = _add_publisher(market)
         _add_sub(pub)
@@ -351,10 +369,8 @@ async def test_empty_active_set(market: MarketService):
 
     with ExitStack() as stack:
         _patch_evaluator(stack)
-        stack.enter_context(
-            patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
-        stack.enter_context(
-            patch.object(market, "_subscriber_is_ready", AsyncMock(return_value=False)))
+        stack.enter_context(patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
+        stack.enter_context(patch.object(market, "_subscriber_is_ready", AsyncMock(return_value=False)))
 
         pub = _add_publisher(market)
         _add_sub(pub)

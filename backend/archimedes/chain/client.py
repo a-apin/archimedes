@@ -102,8 +102,8 @@ class ChainSettings(BaseSettings):
     agent_address: str = ""  # Will be derived from private key if empty
 
     # Marketplace subscription readiness thresholds
-    min_vault_usdc: float = 10.0          # ARC_MIN_VAULT_USDC
-    min_active_action_buffer: int = 20    # ARC_MIN_ACTIVE_ACTION_BUFFER — in action-fees
+    min_vault_usdc: float = 10.0  # ARC_MIN_VAULT_USDC
+    min_active_action_buffer: int = 20  # ARC_MIN_ACTIVE_ACTION_BUFFER — in action-fees
 
     # Owner account (for admin operations like oracle price updates)
     owner_private_key: str = ""

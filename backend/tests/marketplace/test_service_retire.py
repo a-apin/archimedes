@@ -5,6 +5,7 @@ Covers:
 - stop_publisher does NOT cancel mid-tick (sets retired flag instead).
 - to_dict() surfaces the advisory notice only for retired subscribers.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -222,4 +223,3 @@ async def test_run_loop_exits_when_publisher_retired():
     # tick may or may not run (depends on timing), but the loop exits
     # cleanly without sleeping or error
     assert svc._stop.is_set() is False  # global stop NOT set
-
