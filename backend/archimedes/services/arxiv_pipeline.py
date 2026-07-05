@@ -190,6 +190,23 @@ _ALLOWED_FREQ = {"daily", "weekly", "monthly"}
 _ALLOWED_PROFILES = {"conservative", "moderate", "aggressive", "hyper_risky"}
 
 
+def _doc_safe(v: object) -> str:
+    """Escape a value for safe *literal* inclusion in a docstring or ``"..."`` string.
+
+    The rendered module is ``exec_module``'d downstream (analytics-engine
+    ``strategy_loader``), so unescaped quotes/backslashes/newlines in
+    attacker-controlled arXiv metadata (a paper ``title`` / ``arxiv_id``) could
+    break out of the enclosing string and execute arbitrary code (#920). Escape
+    backslashes first, then every double-quote (so no run can form or terminate
+    a ``\"\"\"`` docstring), and collapse CR/LF to spaces (a raw newline would
+    break the single-line ``CURATOR_NOTE`` literal). Legit metadata — which has
+    none of these — passes through unchanged. The repr()-based ``lit()`` path
+    for the PAPER_* constants is already injection-safe; this guards only the
+    human-readable prose that is interpolated as raw text.
+    """
+    return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\r", " ").replace("\n", " ")
+
+
 def render_strategy_module(meta: PaperMeta, synth: dict, *, extraction_llm: str) -> str:
     """Emit Python the LocalStrategyProvider AST reader can parse.
 
@@ -209,9 +226,13 @@ def render_strategy_module(meta: PaperMeta, synth: dict, *, extraction_llm: str)
     def lit(v: object) -> str:
         return repr(v)
 
-    return f'''"""LLM-extracted strategy — {meta.title}
+    title = _doc_safe(meta.title)
+    arxiv_id = _doc_safe(meta.arxiv_id)
+    extraction_llm_s = _doc_safe(extraction_llm)
 
-AUTO-GENERATED from arXiv:{meta.arxiv_id} by {extraction_llm}.
+    return f'''"""LLM-extracted strategy — {title}
+
+AUTO-GENERATED from arXiv:{arxiv_id} by {extraction_llm_s}.
 This is a CANDIDATE passport, NOT validated alpha. A human curator must
 review it and it must pass the selection-bias gate (DSR / PBO / walk-forward
 OOS / look-ahead) before promotion to VALIDATED. The strategy body below is
@@ -244,7 +265,7 @@ PAPER_CLAIMED_MAX_DD = {lit(synth.get("paper_claimed_max_dd"))}
 EXTRACTION_LLM = {lit(extraction_llm)}
 CURATOR_WALLET = None
 CURATOR_NOTE = (
-    "LLM-extracted from arXiv:{meta.arxiv_id}. Passport only — requires human "
+    "LLM-extracted from arXiv:{arxiv_id}. Passport only — requires human "
     "curation and the selection-bias admission gate before it can go LIVE."
 )
 
