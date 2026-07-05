@@ -228,6 +228,36 @@ class TestListAssets:
         assert spy.is_stale is False  # displayed price is fresh; only the unused oracle slot is empty
 
     @pytest.mark.asyncio
+    async def test_list_assets_survives_none_in_price_series(self):
+        """A None in a raw (object-dtype) price series must not abort the whole
+        /explore/assets response — the bad element is dropped, the card still
+        renders (#928). Uses dtype=object so the None stays a None (a float64
+        series would coerce it to NaN, which math.isnan handles fine and would
+        not reproduce the TypeError this guards against)."""
+        import pandas as pd
+
+        service = AssetMarketService()
+        bad_series = pd.Series([540.0, None, 548.0], dtype=object)
+
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch.object(
+                service,
+                "_fetch_histories_budgeted",
+                AsyncMock(return_value={"sSPY": bad_series}),
+            ),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sSPY"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")},
+            ),
+        ):
+            resp = await service.list_assets()  # must not raise TypeError
+
+        spy = next((a for a in resp.assets if a.symbol == "sSPY"), None)
+        assert spy is not None  # card served, not dropped by a single bad element
+
+    @pytest.mark.asyncio
     async def test_cache_ttl(self):
         """Second call within TTL returns cached result."""
         service = AssetMarketService()
