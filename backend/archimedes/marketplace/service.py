@@ -24,11 +24,13 @@ from archimedes.chain.v_check import VCheck
 from archimedes.db import get_session
 from archimedes.interfaces.math import IRegimeDetector
 from archimedes.marketplace import payments
-from archimedes.marketplace.encoding import to_bytes32
 from archimedes.marketplace.state import MarketState
 from archimedes.marketplace.settlement import SettlementSweeper
 from archimedes.marketplace.tick_registry import (
-    HaltSource, PIPELINE_STEPS, SubscriberTickRecord, TickStep,
+    HaltSource,
+    PIPELINE_STEPS,
+    SubscriberTickRecord,
+    TickStep,
 )
 from archimedes.models.marketplace import MarketplaceAgent, SubscriberLiability, SubscriberTickLog
 from archimedes.models.portfolio import Portfolio, RiskProfile, TargetAllocation, TradeDirection, TradeOrder
@@ -234,9 +236,7 @@ class MarketService:
         if subscribers is not None:
             # Postgres is truth (D4) — overwrite the Redis cache unconditionally,
             # including with an empty dict if Postgres shows zero active subs.
-            await self.state.save_subscribers(
-                strategy_id, {sid: vars(s) for sid, s in subscribers.items()}
-            )
+            await self.state.save_subscribers(strategy_id, {sid: vars(s) for sid, s in subscribers.items()})
         else:
             raw = await self.state.load_subscribers(strategy_id)
             subscribers = {sid: Subscriber(**data) for sid, data in raw.items()}
@@ -390,8 +390,15 @@ class MarketService:
 
             # REBALANCE — per surviving subscriber (no-op when active is empty)
             await self._rebalance_phase(
-                pub, active, strategy_id, tick_id, trades, ctx.target_weights,
-                action_count, addr_map, leader_token,
+                pub,
+                active,
+                strategy_id,
+                tick_id,
+                trades,
+                ctx.target_weights,
+                action_count,
+                addr_map,
+                leader_token,
             )
 
             # Publisher's own vault ALWAYS trades if the pipeline cleared.
@@ -399,10 +406,15 @@ class MarketService:
                 try:
                     await self.executor.execute_trades(pub.vault_address, trades)
                     await self.state.store.save_last_rebalance(pub.vault_address)
-                    await self.state.append_event(strategy_id, {
-                        "type": "rebalance", "tick_id": tick_id,
-                        "action_count": action_count, "target_weights": ctx.target_weights,
-                    })
+                    await self.state.append_event(
+                        strategy_id,
+                        {
+                            "type": "rebalance",
+                            "tick_id": tick_id,
+                            "action_count": action_count,
+                            "target_weights": ctx.target_weights,
+                        },
+                    )
                 except Exception:
                     logger.exception("publisher vault rebalance failed for %s", strategy_id)
 
@@ -434,7 +446,9 @@ class MarketService:
 
     async def _step_evaluate_signals(self, ctx: _TickCtx) -> _StepResult:
         ctx.all_signals = await asyncio.to_thread(
-            strategy_evaluator.evaluate_strategies, [ctx.strategy], ctx.synth_assets,
+            strategy_evaluator.evaluate_strategies,
+            [ctx.strategy],
+            ctx.synth_assets,
         )
         if not ctx.all_signals:
             logger.warning("No signals produced")
@@ -445,9 +459,14 @@ class MarketService:
         ctx.target_weights = strategy_evaluator.aggregate_signals(ctx.all_signals, usdc_floor=_USDC_FLOOR)
         if not ctx.target_weights:
             return _StepResult(halted=True, reason="no target weights")
-        await self.state.append_event(strategy_id, {
-            "type": "evaluation_step", "tick_id": tick_id, "target_weights": ctx.target_weights,
-        })
+        await self.state.append_event(
+            strategy_id,
+            {
+                "type": "evaluation_step",
+                "tick_id": tick_id,
+                "target_weights": ctx.target_weights,
+            },
+        )
         return _StepResult()
 
     async def _step_ensemble(self, ctx: _TickCtx) -> _StepResult:
@@ -468,8 +487,7 @@ class MarketService:
             if cached:
                 ctx.regime_classification = _regime_classification_from_cache(cached)
                 ctx.market_regime = (
-                    ctx.regime_classification.regime.value
-                    if ctx.regime_classification else _MARKET_REGIME_UNKNOWN
+                    ctx.regime_classification.regime.value if ctx.regime_classification else _MARKET_REGIME_UNKNOWN
                 )
             else:
                 ctx.regime_classification = None
@@ -499,9 +517,7 @@ class MarketService:
         return _StepResult()
 
     async def _step_targets(self, ctx: _TickCtx) -> _StepResult:
-        ctx.targets = self._weights_to_targets(
-            {a.symbol: a.weight for a in ctx.allocations}, ctx.all_signals
-        )
+        ctx.targets = self._weights_to_targets({a.symbol: a.weight for a in ctx.allocations}, ctx.all_signals)
         return _StepResult()
 
     async def _step_read_portfolio(self, ctx: _TickCtx, pub) -> _StepResult:
@@ -524,7 +540,9 @@ class MarketService:
                         oracle_addrs.append(oracle_addr)
             if oracle_tokens:
                 await self.executor.set_token_oracles(pub.vault_address, oracle_tokens, oracle_addrs)
-                logger.info("[%s] Set %d token oracles on vault %s", tick_id, len(oracle_tokens), pub.vault_address[:10])
+                logger.info(
+                    "[%s] Set %d token oracles on vault %s", tick_id, len(oracle_tokens), pub.vault_address[:10]
+                )
         except Exception as e:
             logger.warning("[%s] Failed to set token oracles on %s: %s", tick_id, pub.vault_address[:10], e)
 
@@ -574,15 +592,21 @@ class MarketService:
         v_result = v_check.run()
         if not v_result.passed:
             logger.warning("[%s] V_check FAILED: %s — skipping tick", tick_id, "; ".join(v_result.failures))
-            await self.state.append_event(strategy_id, {
-                "type": "skip", "reason": "v_check_failed",
-                "tick_id": tick_id, "failures": v_result.failures,
-            })
+            await self.state.append_event(
+                strategy_id,
+                {
+                    "type": "skip",
+                    "reason": "v_check_failed",
+                    "tick_id": tick_id,
+                    "failures": v_result.failures,
+                },
+            )
             return _StepResult(halted=True, reason="v_check: " + "; ".join(v_result.failures))
         return _StepResult()
 
-    async def _rebalance_phase(self, pub, active, strategy_id, tick_id, trades,
-                               target_weights, action_count, addr_map, leader_token):
+    async def _rebalance_phase(
+        self, pub, active, strategy_id, tick_id, trades, target_weights, action_count, addr_map, leader_token
+    ):
         """Per-subscriber REBALANCE with midpoint leader renewal.
 
         Charges are batched into groups of CHARGE_BATCH_SIZE for concurrent
@@ -598,30 +622,44 @@ class MarketService:
                 paid = await self._charge_one(pub, sub, strategy_id, tick_id, TickStep.REBALANCE, action_count)
                 if not paid:
                     self._defer_subscriber(pub, sub)
-                    await self.record_subscriber_tick(SubscriberTickRecord(
-                        sub_id=sub.sub_id, strategy_id=strategy_id, tick_id=tick_id,
-                        timestamp=datetime.now(UTC), step_reached=TickStep.REBALANCE,
-                        halted=True, halt_source=HaltSource.PAYMENT,
-                        halt_reason="could not afford rebalance", charged=False, action_count=action_count,
-                    ))
+                    await self.record_subscriber_tick(
+                        SubscriberTickRecord(
+                            sub_id=sub.sub_id,
+                            strategy_id=strategy_id,
+                            tick_id=tick_id,
+                            timestamp=datetime.now(UTC),
+                            step_reached=TickStep.REBALANCE,
+                            halted=True,
+                            halt_source=HaltSource.PAYMENT,
+                            halt_reason="could not afford rebalance",
+                            charged=False,
+                            action_count=action_count,
+                        )
+                    )
                     return
                 mirrored, trades_or_exc = await self._apply_to_subscriber(sub, target_weights, addr_map)
-                await self.record_subscriber_tick(SubscriberTickRecord(
-                    sub_id=sub.sub_id, strategy_id=strategy_id, tick_id=tick_id,
-                    timestamp=datetime.now(UTC), step_reached=TickStep.REBALANCE,
-                    halted=not mirrored,
-                    halt_source=None if mirrored else HaltSource.EXECUTION,
-                    halt_reason=None if mirrored else str(trades_or_exc),
-                    charged=True, action_count=action_count,
-                    trade_orders=[asdict(t) for t in trades_or_exc] if mirrored else None,
-                ))
+                await self.record_subscriber_tick(
+                    SubscriberTickRecord(
+                        sub_id=sub.sub_id,
+                        strategy_id=strategy_id,
+                        tick_id=tick_id,
+                        timestamp=datetime.now(UTC),
+                        step_reached=TickStep.REBALANCE,
+                        halted=not mirrored,
+                        halt_source=None if mirrored else HaltSource.EXECUTION,
+                        halt_reason=None if mirrored else str(trades_or_exc),
+                        charged=True,
+                        action_count=action_count,
+                        trade_orders=[asdict(t) for t in trades_or_exc] if mirrored else None,
+                    )
+                )
                 if not mirrored:
                     self._defer_subscriber(pub, sub)
                     await self._record_liability(sub, strategy_id, tick_id, action_count)
 
         async def _charge_half(half):
             for i in range(0, len(half), CHARGE_BATCH_SIZE):
-                chunk = half[i:i + CHARGE_BATCH_SIZE]
+                chunk = half[i : i + CHARGE_BATCH_SIZE]
                 for r in await asyncio.gather(*[_one(s) for s in chunk], return_exceptions=True):
                     if isinstance(r, Exception):
                         logger.error("Subscriber processing failed: %s", r)
@@ -641,24 +679,39 @@ class MarketService:
         """Persist one subscriber tick record. Best-effort: never aborts the tick."""
         try:
             with get_session() as session:
-                session.add(SubscriberTickLog(
-                    sub_id=rec.sub_id, strategy_id=rec.strategy_id, tick_id=rec.tick_id,
-                    step_reached=rec.step_reached.value, halted=rec.halted,
-                    halt_source=rec.halt_source.value if rec.halt_source else None,
-                    halt_reason=rec.halt_reason, charged=rec.charged, action_count=rec.action_count,
-                ))
+                session.add(
+                    SubscriberTickLog(
+                        sub_id=rec.sub_id,
+                        strategy_id=rec.strategy_id,
+                        tick_id=rec.tick_id,
+                        step_reached=rec.step_reached.value,
+                        halted=rec.halted,
+                        halt_source=rec.halt_source.value if rec.halt_source else None,
+                        halt_reason=rec.halt_reason,
+                        charged=rec.charged,
+                        action_count=rec.action_count,
+                    )
+                )
                 session.commit()
         except Exception:
             logger.exception("Failed to persist tick log for %s / %s", rec.sub_id, rec.tick_id)
         try:
-            await self.state.push_subscriber_tick(rec.sub_id, {
-                "sub_id": rec.sub_id, "strategy_id": rec.strategy_id, "tick_id": rec.tick_id,
-                "timestamp": rec.timestamp.isoformat(), "step_reached": rec.step_reached.value,
-                "halted": rec.halted,
-                "halt_source": rec.halt_source.value if rec.halt_source else None,
-                "halt_reason": rec.halt_reason, "charged": rec.charged,
-                "action_count": rec.action_count, "trade_orders": rec.trade_orders,
-            })
+            await self.state.push_subscriber_tick(
+                rec.sub_id,
+                {
+                    "sub_id": rec.sub_id,
+                    "strategy_id": rec.strategy_id,
+                    "tick_id": rec.tick_id,
+                    "timestamp": rec.timestamp.isoformat(),
+                    "step_reached": rec.step_reached.value,
+                    "halted": rec.halted,
+                    "halt_source": rec.halt_source.value if rec.halt_source else None,
+                    "halt_reason": rec.halt_reason,
+                    "charged": rec.charged,
+                    "action_count": rec.action_count,
+                    "trade_orders": rec.trade_orders,
+                },
+            )
         except Exception:
             logger.exception("Failed to mirror tick log to Redis for %s", rec.sub_id)
 
@@ -698,11 +751,15 @@ class MarketService:
             logger.warning("[%s] no circle_wallet_id for sub %s — unpaid", tick_id, sub.sub_id)
             return False
         return await payments.charge(
-            sub_id=sub.sub_id, wallet_id=sub.circle_wallet_id,
+            sub_id=sub.sub_id,
+            wallet_id=sub.circle_wallet_id,
             wallet_address=sub.ephemeral_wallet,
             seller_address=pub.gateway_seller_address,
-            strategy_id=strategy_id, tick_id=tick_id,
-            action_count=action_count, flat_fee_raw=FLAT_FEE_PER_ACTION, step=step.value,
+            strategy_id=strategy_id,
+            tick_id=tick_id,
+            action_count=action_count,
+            flat_fee_raw=FLAT_FEE_PER_ACTION,
+            step=step.value,
         )
 
     # F6.6 — charge all active subscribers for one pipeline step
@@ -710,7 +767,7 @@ class MarketService:
     async def _charge_step(self, pub, active, strategy_id, tick_id, step: TickStep):
         survivors = []
         for i in range(0, len(active), CHARGE_BATCH_SIZE):
-            chunk = active[i:i + CHARGE_BATCH_SIZE]
+            chunk = active[i : i + CHARGE_BATCH_SIZE]
             results = await asyncio.gather(
                 *[self._charge_one(pub, s, strategy_id, tick_id, step, action_count=1) for s in chunk],
                 return_exceptions=True,
@@ -719,38 +776,73 @@ class MarketService:
                 if isinstance(paid, Exception):
                     paid = False
                 if paid:
-                    await self.record_subscriber_tick(SubscriberTickRecord(
-                        sub_id=sub.sub_id, strategy_id=strategy_id, tick_id=tick_id,
-                        timestamp=datetime.now(UTC), step_reached=step,
-                        halted=False, charged=True, action_count=1,
-                    ))
+                    await self.record_subscriber_tick(
+                        SubscriberTickRecord(
+                            sub_id=sub.sub_id,
+                            strategy_id=strategy_id,
+                            tick_id=tick_id,
+                            timestamp=datetime.now(UTC),
+                            step_reached=step,
+                            halted=False,
+                            charged=True,
+                            action_count=1,
+                        )
+                    )
                     survivors.append(sub)
                 else:
                     self._defer_subscriber(pub, sub)
-                    await self.record_subscriber_tick(SubscriberTickRecord(
-                        sub_id=sub.sub_id, strategy_id=strategy_id, tick_id=tick_id,
-                        timestamp=datetime.now(UTC), step_reached=step,
-                        halted=True, halt_source=HaltSource.PAYMENT,
-                        halt_reason=f"could not afford {step.value}", charged=False, action_count=1,
-                    ))
-                    await self.state.append_event(strategy_id, {
-                        "type": "halt", "sub_id": sub.sub_id, "reason": "payment_required",
-                        "step": step.value, "tick_id": tick_id,
-                    })
+                    await self.record_subscriber_tick(
+                        SubscriberTickRecord(
+                            sub_id=sub.sub_id,
+                            strategy_id=strategy_id,
+                            tick_id=tick_id,
+                            timestamp=datetime.now(UTC),
+                            step_reached=step,
+                            halted=True,
+                            halt_source=HaltSource.PAYMENT,
+                            halt_reason=f"could not afford {step.value}",
+                            charged=False,
+                            action_count=1,
+                        )
+                    )
+                    await self.state.append_event(
+                        strategy_id,
+                        {
+                            "type": "halt",
+                            "sub_id": sub.sub_id,
+                            "reason": "payment_required",
+                            "step": step.value,
+                            "tick_id": tick_id,
+                        },
+                    )
         return survivors
 
     # F6.7 — halt all still-active subscribers due to publisher pipeline halt
     async def _halt_publisher(self, active, strategy_id, tick_id, step: TickStep, reason: str):
         for sub in active:
-            await self.record_subscriber_tick(SubscriberTickRecord(
-                sub_id=sub.sub_id, strategy_id=strategy_id, tick_id=tick_id,
-                timestamp=datetime.now(UTC), step_reached=step,
-                halted=True, halt_source=HaltSource.PUBLISHER, halt_reason=reason,
-                charged=True, action_count=1,
-            ))
-        await self.state.append_event(strategy_id, {
-            "type": "publisher_halt", "tick_id": tick_id, "step": step.value, "reason": reason,
-        })
+            await self.record_subscriber_tick(
+                SubscriberTickRecord(
+                    sub_id=sub.sub_id,
+                    strategy_id=strategy_id,
+                    tick_id=tick_id,
+                    timestamp=datetime.now(UTC),
+                    step_reached=step,
+                    halted=True,
+                    halt_source=HaltSource.PUBLISHER,
+                    halt_reason=reason,
+                    charged=True,
+                    action_count=1,
+                )
+            )
+        await self.state.append_event(
+            strategy_id,
+            {
+                "type": "publisher_halt",
+                "tick_id": tick_id,
+                "step": step.value,
+                "reason": reason,
+            },
+        )
 
     # F6.8 — apply publisher trades to subscriber (frozen TradeOrder → asdict)
     async def _apply_to_subscriber(self, sub, target_weights, addr_map=None) -> tuple[bool, object]:
@@ -809,7 +901,8 @@ class MarketService:
         except Exception as e:
             logger.warning(
                 "[tick %s] Market snapshot fetch failed (%s) — regime=unknown",
-                tick_id, e,
+                tick_id,
+                e,
             )
             return None, _MARKET_REGIME_UNKNOWN
 
@@ -825,7 +918,8 @@ class MarketService:
         except Exception as e:
             logger.warning(
                 "[tick %s] Regime classification failed (%s) — regime=unknown",
-                tick_id, e,
+                tick_id,
+                e,
             )
             return None, _MARKET_REGIME_UNKNOWN
 
@@ -923,9 +1017,7 @@ class MarketService:
         """Legacy delegate — replaced by _charge_one.  Kept for test compat."""
         return await self._charge_one(pub, sub, strategy_id, tick_id, TickStep.LOAD_STRATEGY, action_count)
 
-    async def _record_liability(
-        self, sub: Subscriber, strategy_id: str, tick_id: str, action_count: int
-    ) -> None:
+    async def _record_liability(self, sub: Subscriber, strategy_id: str, tick_id: str, action_count: int) -> None:
         """Record a charge-succeeded/mirror-failed liability. Best-effort:
         a failure here must not abort the tick or block subsequent subscribers."""
         unit_price = FLAT_FEE_PER_ACTION
@@ -956,7 +1048,10 @@ class MarketService:
             )
             logger.warning(
                 "Liability recorded: sub=%s tick=%s action_count=%d amount_owed=%s",
-                sub.sub_id, tick_id, action_count, amount_owed,
+                sub.sub_id,
+                tick_id,
+                action_count,
+                amount_owed,
             )
         except Exception:
             logger.exception("Failed to record liability for %s / %s", sub.sub_id, tick_id)
@@ -1000,5 +1095,3 @@ class MarketService:
                     session.commit()
         except Exception:
             logger.exception("Failed to persist halt state for %s/%s", strategy_id, sub_id)
-
-

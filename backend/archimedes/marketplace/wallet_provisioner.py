@@ -17,7 +17,6 @@ the existing wallet instead of provisioning a duplicate.
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import os
 import uuid
@@ -70,9 +69,7 @@ async def _create_circle_wallet(ref_value: str, ref_purpose: str) -> tuple[str, 
     entity_secret = os.getenv("CIRCLE_ENTITY_SECRET", "")
 
     if not api_key or not entity_secret:
-        raise RuntimeError(
-            "Circle credentials not configured (CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET)"
-        )
+        raise RuntimeError("Circle credentials not configured (CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET)")
 
     async with aiohttp.ClientSession() as session:
         # 1. Fetch Circle's RSA public key
@@ -85,9 +82,7 @@ async def _create_circle_wallet(ref_value: str, ref_purpose: str) -> tuple[str, 
                 body = await resp.json()
                 public_key = body["data"]["publicKey"]
             else:
-                raise RuntimeError(
-                    f"Failed to fetch Circle public key: {resp.status}"
-                )
+                raise RuntimeError(f"Failed to fetch Circle public key: {resp.status}")
 
         ciphertext = _encrypt_entity_secret(entity_secret, public_key)
 
@@ -118,27 +113,25 @@ async def _create_circle_wallet(ref_value: str, ref_purpose: str) -> tuple[str, 
                 wallet_address: str = body["data"]["wallet"]["address"]
                 logger.info(
                     "Created Circle wallet %s for ref=%s (address=%s)",
-                    wallet_id, ref_value, wallet_address,
+                    wallet_id,
+                    ref_value,
+                    wallet_address,
                 )
                 return wallet_id, wallet_address
             # 409 Conflict means the idempotency key already created a wallet
             if resp.status == 409:
                 logger.warning(
                     "Wallet creation conflict for ref=%s (idempotent retry): %s",
-                    ref_value, body,
+                    ref_value,
+                    body,
                 )
                 # Try to find the existing wallet by listing
                 existing = await _find_wallet_by_ref(session, api_key, ref_value)
                 if existing:
                     return existing["id"], existing["address"]
-                raise RuntimeError(
-                    f"Wallet creation conflict but could not find existing wallet "
-                    f"for ref={ref_value}"
-                )
+                raise RuntimeError(f"Wallet creation conflict but could not find existing wallet for ref={ref_value}")
 
-            raise RuntimeError(
-                f"Circle wallet creation failed ({resp.status}): {body}"
-            )
+            raise RuntimeError(f"Circle wallet creation failed ({resp.status}): {body}")
 
 
 async def provision_subscriber_wallet(sub_id: str) -> tuple[str, str]:

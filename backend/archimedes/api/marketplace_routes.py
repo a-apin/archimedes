@@ -84,7 +84,9 @@ async def publish_strategy(
         record = session.query(StrategyRecord).filter_by(id=strategy_id).first()
         if record is None:
             raise HTTPException(status_code=404, detail=f"Strategy '{strategy_id}' not found")
-        if not wallet_can_publish(session, strategy_id=strategy_id, wallet_address=wallet, is_example=record.is_example):
+        if not wallet_can_publish(
+            session, strategy_id=strategy_id, wallet_address=wallet, is_example=record.is_example
+        ):
             raise HTTPException(status_code=403, detail="You did not generate this strategy and cannot publish it")
 
     # 2. Derive pool_id (D-POOL) — NEVER from client
@@ -105,6 +107,7 @@ async def publish_strategy(
     #     Must happen before on-chain createPool so a wallet failure never
     #     leaves an on-chain pool with no way to be funded.
     from archimedes.marketplace.wallet_provisioner import provision_publisher_wallet
+
     try:
         agent_wallet_id, gateway_seller_address = await provision_publisher_wallet(pool_id)
     except Exception as exc:
@@ -176,7 +179,10 @@ async def publish_strategy(
 
     # 6. Start the publisher loop
     await market.start_publisher(
-        strategy_id, pool_id, vault_address, wallet,
+        strategy_id,
+        pool_id,
+        vault_address,
+        wallet,
         gateway_seller_address=gateway_seller_address,
         agent_wallet_id=agent_wallet_id,
     )
@@ -207,7 +213,6 @@ async def subscribe_strategy(
     market = _get_market(request)
     strategy_id = body.get("strategy_id", "").strip()
     sub_id = body.get("sub_id", "").strip()
-    ephemeral_wallet = body.get("ephemeral_wallet", "").strip()
 
     if not strategy_id or not sub_id:
         raise HTTPException(status_code=400, detail="strategy_id and sub_id are required")
@@ -264,6 +269,7 @@ async def subscribe_strategy(
     # (replaces the old Account.create() + raw-key path — kills D2/D3).
     # If provisioning fails, the subscribe fails closed (no row inserted).
     from archimedes.marketplace.wallet_provisioner import provision_subscriber_wallet
+
     try:
         wallet_id, wallet_address = await provision_subscriber_wallet(sub_id)
     except Exception as exc:
@@ -313,6 +319,7 @@ async def subscribe_strategy(
         vault_address=vault_address,
         ephemeral_wallet=ephemeral_wallet,
         subscriber_wallet=wallet.lower(),
+        circle_wallet_id=wallet_id,
     )
     await market.add_subscriber(strategy_id, sub)
 
@@ -383,6 +390,7 @@ async def stop_publish(
                 MarketplaceAgent.role == "publisher",
                 MarketplaceAgent.creator_wallet == wallet.lower(),
                 MarketplaceAgent.strategy_id == strategy_id,
+                MarketplaceAgent.status == "running",
             )
             .first()
         )
@@ -411,7 +419,9 @@ async def stop_publish(
     if retired_sub_ids:
         logger.info(
             "Retired %d subscriber(s) for strategy %s: %s",
-            len(retired_sub_ids), strategy_id, retired_sub_ids,
+            len(retired_sub_ids),
+            strategy_id,
+            retired_sub_ids,
         )
 
     await market.stop_publisher(strategy_id)
