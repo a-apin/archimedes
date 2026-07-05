@@ -211,9 +211,8 @@ async def test_derive_allocations_sizes_passers_and_excludes_candidates(tmp_path
 @pytest.mark.asyncio
 async def test_derive_allocations_requires_siwe_session():
     """#917: derive-allocations is behind the SIWE gate — 401 without a session."""
-    from httpx import ASGITransport, AsyncClient
-
     from archimedes.main import app
+    from httpx import ASGITransport, AsyncClient
 
     body = {"strategy_ids": ["val"], "usdc_floor_pct": 20.0, "risk_profile": "moderate"}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

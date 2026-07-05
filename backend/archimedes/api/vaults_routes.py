@@ -375,9 +375,9 @@ async def get_vault_metadata(address: str):
 @vaults_router.post("/{address}/derive-allocations", response_model=SetAllocationsResponse)
 @limiter.limit("20/minute")
 async def derive_vault_allocations(
-    address: str,
+    address: str,  # noqa: ARG001 — path param routes the request; not referenced in body
     req: SetAllocationsRequest,
-    request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name; path param routes the request
+    request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     response: Response,  # noqa: ARG001 — reserved for slowapi rate-limit headers
     wallet: str = Depends(require_verified_wallet),  # noqa: ARG001 — SIWE gate (#917): auth required, wallet unused in body
 ):
