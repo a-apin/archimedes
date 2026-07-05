@@ -36,6 +36,23 @@ class MarketplaceAgent(Base):
             unique=True,
             postgresql_where=text("role = 'subscriber' AND status = 'running'"),
         ),
+        # sub_id is client-supplied and keys the in-process engine
+        # (pub.subscribers[sub_id]) — a reused sub_id would silently overwrite
+        # another subscriber's engine entry (hijack). Globally unique among
+        # subscriptions regardless of status (a retired sub_id must not be
+        # reusable). This MUST be a PARTIAL index excluding publishers on BOTH
+        # backends: publishers all carry the default sub_id="" (unlike the
+        # running-subscriber index above, strategy_id does NOT disambiguate
+        # them here), so a plain (role, sub_id) unique would reject the 2nd
+        # publisher on SQLite. sqlite_where + postgresql_where scope it to
+        # subscribers on each backend.
+        Index(
+            "uq_marketplace_agents_sub_id",
+            "sub_id",
+            unique=True,
+            postgresql_where=text("role = 'subscriber'"),
+            sqlite_where=text("role = 'subscriber'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

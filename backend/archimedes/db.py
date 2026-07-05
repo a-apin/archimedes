@@ -96,19 +96,6 @@ def init_db() -> None:
             # chat_messages.verified — SIWE-bound chat identity (issue #524).
             # Pre-existing rows default to FALSE: they were body-supplied, never verified.
             "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE",
-            # Marketplace race/hijack guards (PR #958): sub_id is client-supplied
-            # and keys the in-process engine, so it must be globally unique among
-            # subscriptions; one RUNNING subscription per (strategy, wallet)
-            # closes the check-then-insert race in POST /subscribe.
-            (
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_marketplace_sub_id "
-                "ON marketplace_agents (sub_id) WHERE role = 'subscriber'"
-            ),
-            (
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_marketplace_running_subscription "
-                "ON marketplace_agents (strategy_id, subscriber_wallet) "
-                "WHERE role = 'subscriber' AND status = 'running'"
-            ),
         ]
         try:
             with engine.begin() as conn:

@@ -266,7 +266,8 @@ async def subscribe_strategy(
         # client-supplied and keys the in-process engine
         # (pub.subscribers[sub_id]) — a duplicate would silently overwrite
         # another subscriber's engine entry. The partial unique index
-        # uq_marketplace_sub_id (db.py) backs this check against races.
+        # uq_marketplace_agents_sub_id (models/marketplace.py) backs this
+        # check against races.
         sub_id_taken = (
             session.query(MarketplaceAgent)
             .filter(MarketplaceAgent.role == "subscriber", MarketplaceAgent.sub_id == sub_id)
@@ -311,9 +312,10 @@ async def subscribe_strategy(
 
     # 6. Insert subscriber row. The pre-checks in step 2/2b are racy across
     # concurrent requests (wallet provisioning + vault creation await in
-    # between) — the partial unique indexes (db.py: uq_marketplace_sub_id,
-    # uq_marketplace_running_subscription) make the insert the authoritative
-    # gate; IntegrityError maps to the same 409 the pre-checks give.
+    # between) — the ORM partial unique indexes (models/marketplace.py:
+    # uq_marketplace_agents_sub_id, uq_marketplace_agents_running_subscriber)
+    # make the insert the authoritative gate; IntegrityError maps to the same
+    # 409 the pre-checks give.
     with get_session() as session:
         agent = MarketplaceAgent(
             role="subscriber",
