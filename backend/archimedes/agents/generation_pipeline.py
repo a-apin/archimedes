@@ -254,6 +254,24 @@ class _CandidateResult:
     universe_source: str = "full"
 
 
+def _is_deployable(c: _CandidateResult) -> bool:
+    """Whether a winning candidate is safe to advertise as deployable (issue #937).
+
+    ``passes_rigor`` alone is not enough: a candidate graded on the synthetic
+    fallback series (``evaluate_fusion_spec`` defaults to a random walk when no
+    ``data_feed`` is wired) can have ``passing=True`` yet is NOT admissible — its
+    verdict is not grounded in real data. Require BOTH the rigor pass AND
+    real-data grading, the same condition that gates real-returns persistence
+    (``_persist_real_returns``): ``has_real_rigor`` and a non-synthetic
+    ``data_source``. Otherwise the SSE ``deployable`` flag misrepresents rigor
+    status even though the server-side vault gate still fail-closes on deploy.
+    """
+    if not c.passes_rigor:
+        return False
+    rv = c.rigor_verdict or {}
+    return bool(c.has_real_rigor) and str(rv.get("data_source") or "synthetic") != "synthetic"
+
+
 # ── Rigor adapter (Önder's rigor_evaluator on agent output) ───────────────
 
 
@@ -960,9 +978,11 @@ async def run_generation(
             best_candidate_id=best.candidate_id,
             considered_count=len(candidates),
             validated_count=len(validated),
-            # deployable=False ⇒ no candidate cleared the rigor gate; the surfaced best is
-            # a considered alternative (ABSTAIN), not a validated, deployable winner.
-            deployable=best.passes_rigor,
+            # deployable=False ⇒ the surfaced best is a considered alternative (ABSTAIN),
+            # not a validated, deployable winner. This requires BOTH a rigor pass AND
+            # real-data grading — a synthetic-data-graded candidate can pass the gate but
+            # is not admissible, so it must not be advertised deployable (issue #937).
+            deployable=_is_deployable(best),
         )
 
         # K=1 persistence (Phase-3): only the WINNER becomes a library
