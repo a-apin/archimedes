@@ -24,6 +24,13 @@ def _setup_db():
 
 
 @pytest.fixture(autouse=True)
+def _treasury_wallet(monkeypatch):
+    """publish requires a server-side ARCHIMEDES_TREASURY_WALLET (the platform
+    revenue address); set a test value so publish does not 503."""
+    monkeypatch.setenv("ARCHIMEDES_TREASURY_WALLET", "0x" + "11" * 20)
+
+
+@pytest.fixture(autouse=True)
 def _mock_strategy_provider():
     """Patch strategy_provider.get_strategy to return a truthy value for test IDs."""
     with patch("archimedes.api.marketplace_routes.strategy_provider") as mock:
@@ -282,12 +289,13 @@ def test_subscribe_rejects_duplicate_sub_id_from_other_wallet(client, app):
         app.dependency_overrides[require_verified_wallet] = lambda: TEST_WALLET
 
 
-def test_published_detail_redacts_subscriber_internals(client, app):
-    """GET /published/{id} is public: no payment plumbing, no full subscriber wallets.
+def test_published_detail_public_surface_count_only(client, app):
+    """GET /published/{id} is public: subscriber_count only, ZERO subscriber identity.
 
-    The payload must expose only what the detail page renders — shortened
-    wallet + status per subscriber — and never gateway_seller_address,
-    agent_wallet_id, ephemeral_wallet, or a full (reusable) sub_id.
+    Data-arch decision (PR #958 review): subscribers are consumers, not authors,
+    so the public detail exposes only a count — never subscriber addresses,
+    sub_ids, ephemeral wallets, or publisher payment plumbing
+    (gateway_seller_address / agent_wallet_id).
     """
     resp = client.post(
         "/api/marketplace/publish",
@@ -314,17 +322,13 @@ def test_published_detail_redacts_subscriber_internals(client, app):
     assert detail.status_code == 200
     data = detail.json()
 
-    # Publisher payment plumbing must not appear on the public surface.
-    assert "gateway_seller_address" not in data
-    assert "agent_wallet_id" not in data
+    # subscriber_count present; the subscriber LIST is entirely absent.
+    assert data["subscriber_count"] == 1
+    assert "subscribers" not in data
 
-    subs = data["subscribers"]
-    assert len(subs) == 1
-    s = subs[0]
-    assert set(s) == {"sub_id", "subscriber_wallet", "status"}
-    # Shortened forms only; the full values never appear anywhere in the payload.
-    assert s["sub_id"].endswith("…")
-    assert "…" in s["subscriber_wallet"]
+    # No payment plumbing, no subscriber identity anywhere in the payload.
+    for leaked in ("gateway_seller_address", "agent_wallet_id"):
+        assert leaked not in data
     body = detail.text
     assert other_wallet.lower() not in body
     assert ("0x" + "dd" * 32) not in body

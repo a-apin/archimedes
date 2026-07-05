@@ -6,7 +6,6 @@ export default function PublishPage({ onNavigate }) {
   const walletAddr = getAddress()
   const [strategyId, setStrategyId] = useState('')
   const [vaultAddress, setVaultAddress] = useState('')
-  const [platformWallet, setPlatformWallet] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
@@ -20,7 +19,6 @@ export default function PublishPage({ onNavigate }) {
     try {
       const body = { strategy_id: strategyId.trim() }
       if (vaultAddress.trim()) body.vault_address = vaultAddress.trim()
-      if (platformWallet.trim()) body.platform_wallet = platformWallet.trim()
 
       const res = await apiPost('/api/marketplace/publish', body)
       setResult(res)
@@ -112,20 +110,6 @@ export default function PublishPage({ onNavigate }) {
             />
           </div>
 
-          <div>
-            <label className="text-xs text-[var(--color-muted)] block mb-1">Platform Wallet (optional)</label>
-            <input
-              type="text"
-              className="input w-full font-mono text-sm"
-              value={platformWallet}
-              onChange={(e) => setPlatformWallet(e.target.value)}
-              placeholder="0x... (defaults to your wallet)"
-              disabled={busy}
-            />
-            <p className="text-xs text-[var(--color-muted)] mt-1">
-              Receives the platform fee share (10%) from subscription charges.
-            </p>
-          </div>
 
           {error && (
             <p className="text-sm text-[var(--color-danger)]">{error}</p>

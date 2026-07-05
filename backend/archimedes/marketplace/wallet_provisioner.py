@@ -26,7 +26,10 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 CIRCLE_API_BASE = "https://api.circle.com/v1/w3s"
-CIRCLE_BLOCKCHAIN = "ARC-TESTNET"
+# Circle blockchain identifier for provisioned wallets. Env-overridable so
+# moving to mainnet or another testnet is a config change, not a code change
+# (a hardcoded mismatch surfaces only as opaque 502s at provision time).
+CIRCLE_BLOCKCHAIN = os.getenv("CIRCLE_BLOCKCHAIN", "ARC-TESTNET")
 
 
 def _encrypt_entity_secret(entity_secret_hex: str, public_key_pem: str) -> str:

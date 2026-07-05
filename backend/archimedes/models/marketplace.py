@@ -14,20 +14,24 @@ class MarketplaceAgent(Base):
     __tablename__ = "marketplace_agents"
 
     __table_args__ = (
-        # In PostgreSQL: partial unique on strategy_id where publisher+running (one active publisher).
-        # In SQLite (tests): unique on (role, strategy_id) — allows publisher+subscriber for same
-        # strategy_id while still preventing duplicate running publishers.
+        # One active publisher per strategy. Partial unique index — MUST carry
+        # the same WHERE on BOTH backends (sqlite_where + postgresql_where):
+        # without sqlite_where the index degrades to an unconditional unique on
+        # (role, strategy_id) in SQLite, which would reject a SECOND subscriber
+        # to the same strategy (all subscriber rows share role='subscriber') and
+        # forbid re-publishing after a stop. The WHERE scopes it to running
+        # publishers so neither of those is constrained.
         Index(
             "uq_marketplace_agents_running_publisher",
             "role",
             "strategy_id",
             unique=True,
             postgresql_where=text("role = 'publisher' AND status = 'running'"),
+            sqlite_where=text("role = 'publisher' AND status = 'running'"),
         ),
-        # Prevent duplicate active subscriptions: same wallet cannot subscribe
-        # to the same strategy twice (TOCTOU race closes via unique index).
-        # In PostgreSQL: partial unique on (subscriber_wallet, strategy_id) where subscriber+running.
-        # In SQLite (tests): unique on (role, subscriber_wallet, strategy_id).
+        # One RUNNING subscription per (wallet, strategy) — closes the
+        # check-then-insert TOCTOU race. Partial on both backends (see above):
+        # scoping to running lets a wallet re-subscribe after a stop/retire.
         Index(
             "uq_marketplace_agents_running_subscriber",
             "role",
@@ -35,6 +39,7 @@ class MarketplaceAgent(Base):
             "strategy_id",
             unique=True,
             postgresql_where=text("role = 'subscriber' AND status = 'running'"),
+            sqlite_where=text("role = 'subscriber' AND status = 'running'"),
         ),
         # sub_id is client-supplied and keys the in-process engine
         # (pub.subscribers[sub_id]) — a reused sub_id would silently overwrite
@@ -105,6 +110,26 @@ class MarketplaceAgent(Base):
                 "reserved on-chain — call unsubscribe() from your wallet to reclaim it."
             )
         return d
+
+    def public_dict(self) -> dict:
+        """Attribution-only projection for UNAUTHENTICATED surfaces.
+
+        Redaction by construction: never expose payment plumbing
+        (gateway_seller_address, agent_wallet_id, circle_wallet_id,
+        ephemeral_wallet) or the client-supplied engine key (sub_id). Every
+        public GET (browse list + strategy detail) MUST render from this, not
+        ``to_dict``. Subscriber identity is deliberately absent — the public
+        surface gets a ``subscriber_count`` only (see marketplace_routes).
+        """
+        return {
+            "role": self.role,
+            "strategy_id": self.strategy_id,
+            "creator_wallet": self.creator_wallet,
+            "pool_id": self.pool_id,
+            "vault_address": self.vault_address,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 class SubscriberLiability(Base):

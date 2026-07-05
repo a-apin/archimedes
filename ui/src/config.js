@@ -695,10 +695,14 @@ export const NEW_CONTRACTS = {
   vaultFactory:    '0x32A3e0D0a8215D77e3B92fa6d9b4Dbe19f255671',
   traceRegistry:   '0x44bD55c0DdF757e584a41fb7F3B6a47b4C5982ba',
   assetRegistry:   '0x79fc95A10E8240116006084439B650BA9e72F3cA',
-  // Zero address = not yet deployed. Both are set as part of the T3.2
-  // contract redeploy (PaymentSplitter source: contracts/src/PaymentSplitter.sol;
-  // SubscriptionManager has NO in-repo source yet — it must land before or with
-  // T3.2). The UI zero-address guard disables Subscribe until these are real.
+  // Zero address = not yet deployed; the UI zero-address guard keeps the
+  // on-chain Subscribe path disabled until a real address is set here.
+  // paymentSplitter: source is contracts/src/PaymentSplitter.sol (deployed at
+  // T3.2). subscriptionManager: the on-chain subscribe path is NOT yet wired —
+  // there is no in-repo SubscriptionManager source, and the backend
+  // /api/marketplace/subscribe route settles off-chain via Circle DCW. Whether
+  // subscribe stays off-chain or an on-chain SubscriptionManager is authored +
+  // deployed is an open decision (PR #958 review); the guard is safe either way.
   subscriptionManager: '0x0000000000000000000000000000000000000000',
   paymentSplitter:     '0x0000000000000000000000000000000000000000',
 }

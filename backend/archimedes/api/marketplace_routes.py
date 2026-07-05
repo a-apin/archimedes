@@ -7,6 +7,7 @@ pool_id is ALWAYS derived server-side via derive_pool_id (D-POOL).
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -48,17 +49,31 @@ async def publish_strategy(
 ):
     """Publish a strategy to the marketplace.
 
-    Body: {strategy_id, vault_address?, platform_wallet?}
+    Body: {strategy_id, vault_address?}
     pool_id is DERIVED server-side (D-POOL). Never accept it from the client.
-    Publisher settlement wallet is auto-provisioned via Circle DCW (D2).
+    The platform revenue wallet is a server-side constant (ARCHIMEDES_TREASURY_WALLET),
+    never client-supplied. Publisher settlement wallet is auto-provisioned via Circle DCW (D2).
     """
     market = _get_market(request)
     strategy_id = body.get("strategy_id", "").strip()
     vault_address = body.get("vault_address", "").strip() or ""
-    platform_wallet = body.get("platform_wallet", "").strip() or ""
 
     if not strategy_id:
         raise HTTPException(status_code=400, detail="strategy_id is required")
+
+    # The platform's revenue share is the product's business model — it MUST be
+    # a server-side constant, never client-supplied. A client-set value (empty →
+    # publisher keeps 100%; arbitrary → funds to any address) would let a
+    # publisher opt out of the split. Pools are immutable once createPool runs,
+    # so the wrong value would be baked in permanently. Fail closed: if the
+    # treasury wallet is not configured, refuse to publish rather than create a
+    # pool with a bad split.
+    platform_wallet = os.getenv("ARCHIMEDES_TREASURY_WALLET", "").strip()
+    if not platform_wallet:
+        raise HTTPException(
+            status_code=503,
+            detail="Marketplace not configured: ARCHIMEDES_TREASURY_WALLET is unset",
+        )
 
     # 0. Validate strategy exists in the provider
     if strategy_provider().get_strategy(strategy_id) is None:
@@ -131,13 +146,11 @@ async def publish_strategy(
                 await market.signer.execute_contract(
                     splitter_addr,
                     "createPool(bytes32,address,address)",
-                    [to_bytes32(pool_id), wallet, platform_wallet or wallet],
+                    [to_bytes32(pool_id), wallet, platform_wallet],
                 )
             else:
                 c = market.loader._contract(splitter_addr, "PaymentSplitter")
-                tx = await c.functions.createPool(
-                    to_bytes32(pool_id), wallet, platform_wallet or wallet
-                ).build_transaction(
+                tx = await c.functions.createPool(to_bytes32(pool_id), wallet, platform_wallet).build_transaction(
                     {
                         "from": market.settings.agent_account.address,
                         "nonce": await market.loader.client.w3.eth.get_transaction_count(
@@ -357,6 +370,7 @@ async def subscribe_strategy(
 
 
 @marketplace_router.delete("/subscribe/{strategy_id}")
+@limiter.limit("10/minute")
 async def unsubscribe_strategy(
     request: Request,
     strategy_id: str,
@@ -395,6 +409,7 @@ async def unsubscribe_strategy(
 
 
 @marketplace_router.delete("/publish/{strategy_id}")
+@limiter.limit("10/minute")
 async def stop_publish(
     request: Request,
     strategy_id: str,
@@ -459,6 +474,7 @@ async def stop_publish(
 
 
 @marketplace_router.get("/published")
+@limiter.limit("30/minute")
 async def list_published(request: Request):
     """List all running publishers with subscriber counts."""
     market = _get_market(request)
@@ -472,10 +488,11 @@ async def list_published(request: Request):
 
     results = []
     for row in rows:
-        d = row.to_dict()
-        subs = market.publishers.get(d["strategy_id"], None)
+        # PUBLIC surface — attribution only (redaction by construction).
+        d = row.public_dict()
+        subs = market.publishers.get(row.strategy_id, None)
         d["subscriber_count"] = len(subs.subscribers) if subs else 0
-        d["events"] = await market.state.get_events(d["strategy_id"], count=5)
+        d["events"] = await market.state.get_events(row.strategy_id, count=5)
         results.append(d)
 
     return results
@@ -562,6 +579,7 @@ async def withdraw_publisher_earnings(
 
 
 @marketplace_router.get("/published/{strategy_id}")
+@limiter.limit("30/minute")
 async def get_strategy_detail(request: Request, strategy_id: str):
     """Get one published strategy + subscriber summaries + recent events."""
     market = _get_market(request)
@@ -579,44 +597,29 @@ async def get_strategy_detail(request: Request, strategy_id: str):
         if row is None:
             raise HTTPException(status_code=404, detail=f"Publisher '{strategy_id}' not found")
 
-        subscriber_rows = (
+        subscriber_count_db = (
             session.query(MarketplaceAgent)
             .filter(
                 MarketplaceAgent.role == "subscriber",
                 MarketplaceAgent.strategy_id == strategy_id,
+                MarketplaceAgent.status == "running",
             )
-            .all()
+            .count()
         )
 
-    # PUBLIC endpoint — redact operational internals. The full publisher row
-    # carries gateway_seller_address / agent_wallet_id (payment plumbing) and
-    # each subscriber row carries sub_id / ephemeral_wallet (the funded Circle
-    # address) — none of that belongs on an unauthenticated surface. sub_id is
-    # especially sensitive: it is the client-supplied engine key, so leaking it
-    # invites deliberate collisions. Follows the strategies-library precedent
-    # (_redact_owner_wallet, #850): expose only what the page renders.
-    d = {
-        "strategy_id": row.strategy_id,
-        "creator_wallet": row.creator_wallet,
-        "pool_id": row.pool_id,
-        "vault_address": row.vault_address,
-        "status": row.status,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-    }
-    d["subscribers"] = [
-        {
-            # Opaque, shortened forms only — enough for the UI's list row
-            # (shortened wallet + status) and a stable React key.
-            "sub_id": f"{s.sub_id[:10]}…" if s.sub_id else "",
-            "subscriber_wallet": f"{s.subscriber_wallet[:6]}…{s.subscriber_wallet[-4:]}" if s.subscriber_wallet else "",
-            "status": s.status,
-        }
-        for s in subscriber_rows
-    ]
+    # PUBLIC endpoint (attribution only, redaction by construction — public_dict).
+    # Subscriber IDENTITY is deliberately absent: subscribers are consumers, not
+    # authors, so the public surface exposes only subscriber_count (data-arch
+    # decision, PR #958 review). The full subscriber list is a separate,
+    # authenticated view for the publisher + each subscriber's own row (tracked
+    # follow-up). Never leak sub_id / ephemeral_wallet / payment plumbing here.
+    d = row.public_dict()
     d["events"] = await market.state.get_events(strategy_id, count=50)
 
     pub = market.publishers.get(strategy_id)
-    d["subscriber_count"] = len(pub.subscribers) if pub else 0
+    # Prefer the live engine count; fall back to the DB count if the publisher
+    # has not been rehydrated into the in-process engine yet.
+    d["subscriber_count"] = len(pub.subscribers) if pub else subscriber_count_db
     d["is_running"] = pub is not None
 
     return d

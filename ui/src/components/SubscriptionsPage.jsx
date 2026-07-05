@@ -36,7 +36,14 @@ export default function SubscriptionsPage({ onNavigate }) {
   }, [walletAddr])
 
   const handleUnsubscribe = async (strategyId) => {
-    if (!window.confirm(`Unsubscribe from "${strategyId}"? Remaining balance will be refunded to your wallet.`)) return
+    if (
+      !window.confirm(
+        `Unsubscribe from "${strategyId}"? This stops future charges immediately. ` +
+          `It does NOT move funds — any USDC remaining in your subscription wallet ` +
+          `stays there; self-service withdrawal is coming soon.`,
+      )
+    )
+      return
     setUnsubscribing(strategyId)
     setError('')
     try {

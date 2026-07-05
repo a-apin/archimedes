@@ -129,7 +129,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     from archimedes.marketplace.service import MarketService
 
     interval = int(os.getenv("AGENT_INTERVAL_SECONDS", "300"))
-    payments_dry_run = os.getenv("PAYMENTS_DRY_RUN", "false").lower() in ("1", "true", "yes")
+    # Both money-affecting switches FAIL SAFE (default to dry) and must be
+    # turned on together and deliberately. Previously PAYMENTS_DRY_RUN
+    # defaulted to "false" while PAPER_TRADING defaulted to "true", so an
+    # out-of-the-box deploy mirrored no real trades yet charged real USDC —
+    # the worst possible asymmetry. Charging real money now requires an
+    # explicit PAYMENTS_DRY_RUN=false.
+    payments_dry_run = os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")
     paper_trading = os.getenv("PAPER_TRADING", "true").lower() in ("1", "true", "yes")
     market = MarketService(interval_seconds=interval, payments_dry_run=payments_dry_run, paper_trading=paper_trading)
     _app.state.market = market
