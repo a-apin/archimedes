@@ -205,7 +205,7 @@
     ],
     "outputs": [
       {
-        "name": "",
+        "name": "synthAmount",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -419,6 +419,31 @@
         "type": "address",
         "indexed": true,
         "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RedemptionHaircut",
+    "inputs": [
+      {
+        "name": "user",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "grossValue",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "cappedValue",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false

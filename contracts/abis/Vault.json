@@ -13,6 +13,11 @@
         "internalType": "address"
       },
       {
+        "name": "_traceRegistry",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
         "name": "_creator",
         "type": "address",
         "internalType": "address"
@@ -58,6 +63,45 @@
   {
     "type": "function",
     "name": "BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "DEAD_SHARES_SINK",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_SLIPPAGE_CAP_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_LIQUIDITY",
     "inputs": [],
     "outputs": [
       {
@@ -190,6 +234,19 @@
         "name": "",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "assetRegistry",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IAssetRegistry"
       }
     ],
     "stateMutability": "view"
@@ -391,6 +448,19 @@
   },
   {
     "type": "function",
+    "name": "maxSlippageBps",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "name",
     "inputs": [],
     "outputs": [
@@ -578,6 +648,32 @@
   },
   {
     "type": "function",
+    "name": "setAssetRegistry",
+    "inputs": [
+      {
+        "name": "_registry",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setMaxSlippageBps",
+    "inputs": [
+      {
+        "name": "_maxSlippageBps",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setPlatformFeeRecipient",
     "inputs": [
       {
@@ -618,6 +714,19 @@
       },
       {
         "name": "oracles",
+        "type": "address[]",
+        "internalType": "address[]"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setTokenOraclesFromRegistry",
+    "inputs": [
+      {
+        "name": "tokens",
         "type": "address[]",
         "internalType": "address[]"
       }
@@ -736,6 +845,19 @@
   },
   {
     "type": "function",
+    "name": "traceRegistry",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IReasoningTraceRegistry"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "transfer",
     "inputs": [
       {
@@ -838,6 +960,25 @@
   },
   {
     "type": "event",
+    "name": "AgentSet",
+    "inputs": [
+      {
+        "name": "oldAgent",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "newAgent",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Approval",
     "inputs": [
       {
@@ -857,6 +998,19 @@
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "AssetRegistrySet",
+    "inputs": [
+      {
+        "name": "registry",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -913,6 +1067,25 @@
   },
   {
     "type": "event",
+    "name": "MaxSlippageBpsSet",
+    "inputs": [
+      {
+        "name": "oldBps",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "newBps",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "OwnershipTransferred",
     "inputs": [
       {
@@ -939,6 +1112,44 @@
         "type": "address",
         "indexed": false,
         "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PlatformFeeRecipientSet",
+    "inputs": [
+      {
+        "name": "oldRecipient",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "newRecipient",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RebalanceTrace",
+    "inputs": [
+      {
+        "name": "tradeId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "traceId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -993,6 +1204,19 @@
     "inputs": [
       {
         "name": "tokensCount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "TokenOraclesSetFromRegistry",
+    "inputs": [
+      {
+        "name": "count",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -1074,6 +1298,11 @@
       }
     ],
     "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AssetRegistryNotSet",
+    "inputs": []
   },
   {
     "type": "error",
@@ -1188,6 +1417,27 @@
   },
   {
     "type": "error",
+    "name": "InvalidOraclePrice",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OracleNotRegistered",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "OracleNotSet",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "OwnableInvalidOwner",
     "inputs": [
       {
@@ -1223,6 +1473,16 @@
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "SlippageBpsTooHigh",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TraceRegistryNotSet",
+    "inputs": []
   },
   {
     "type": "error",

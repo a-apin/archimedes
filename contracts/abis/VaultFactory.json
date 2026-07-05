@@ -18,6 +18,11 @@
         "internalType": "address"
       },
       {
+        "name": "_traceRegistry",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
         "name": "_platformFeeRecipient",
         "type": "address",
         "internalType": "address"
@@ -172,6 +177,19 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "traceRegistry",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
