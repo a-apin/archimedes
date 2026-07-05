@@ -695,13 +695,18 @@ export const NEW_CONTRACTS = {
   vaultFactory:    '0x32A3e0D0a8215D77e3B92fa6d9b4Dbe19f255671',
   traceRegistry:   '0x44bD55c0DdF757e584a41fb7F3B6a47b4C5982ba',
   assetRegistry:   '0x79fc95A10E8240116006084439B650BA9e72F3cA',
-  subscriptionManager: '0x0000000000000000000000000000000000000000', // Set after deploying SubscriptionManager.vy
-  paymentSplitter:     '0x0000000000000000000000000000000000000000', // Set after deploying PaymentSplitter.vy
+  // Zero address = not yet deployed. Both are set as part of the T3.2
+  // contract redeploy (PaymentSplitter source: contracts/src/PaymentSplitter.sol;
+  // SubscriptionManager has NO in-repo source yet — it must land before or with
+  // T3.2). The UI zero-address guard disables Subscribe until these are real.
+  subscriptionManager: '0x0000000000000000000000000000000000000000',
+  paymentSplitter:     '0x0000000000000000000000000000000000000000',
 }
 
-// Minimal ABI for SubscriptionManager.subscribe + Subscribed event — used
-// by the marketplace subscribe flow (StrategyDetailPage). Full ABI lives in
-// contracts/abis/SubscriptionManager.json.
+// Minimal inline ABI for SubscriptionManager.subscribe + Subscribed event —
+// used by the marketplace subscribe flow (StrategyDetailPage). There is no
+// contracts/abis/SubscriptionManager.json yet; regenerate alongside the T3.2
+// deploy once the contract source exists.
 export const SUBSCRIPTION_MANAGER_ABI = [
   {
     inputs: [

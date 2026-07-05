@@ -61,7 +61,7 @@ async def publish_strategy(
         raise HTTPException(status_code=400, detail="strategy_id is required")
 
     # 0. Validate strategy exists in the provider
-    if strategy_provider.get_strategy(strategy_id) is None:
+    if strategy_provider().get_strategy(strategy_id) is None:
         raise HTTPException(status_code=404, detail=f"Strategy not found: {strategy_id}")
 
     # 1. Reject if publisher already running for this strategy
@@ -229,7 +229,7 @@ async def subscribe_strategy(
         raise HTTPException(status_code=400, detail="sub_id cannot be zero")
 
     # 0b. Validate strategy exists in the provider (M2)
-    if strategy_provider.get_strategy(strategy_id) is None:
+    if strategy_provider().get_strategy(strategy_id) is None:
         raise HTTPException(status_code=404, detail=f"Strategy not found: {strategy_id}")
 
     # 1. Find the publisher
@@ -261,6 +261,19 @@ async def subscribe_strategy(
         )
         if existing is not None:
             raise HTTPException(status_code=409, detail="Already subscribed to this strategy")
+
+        # 2b. Reject a sub_id already registered to ANY subscription. sub_id is
+        # client-supplied and keys the in-process engine
+        # (pub.subscribers[sub_id]) — a duplicate would silently overwrite
+        # another subscriber's engine entry. The partial unique index
+        # uq_marketplace_sub_id (db.py) backs this check against races.
+        sub_id_taken = (
+            session.query(MarketplaceAgent)
+            .filter(MarketplaceAgent.role == "subscriber", MarketplaceAgent.sub_id == sub_id)
+            .first()
+        )
+        if sub_id_taken is not None:
+            raise HTTPException(status_code=409, detail="sub_id already in use")
 
     # 3. Use the server-derived pool_id for storage (D-POOL)
     pool_id = derive_pool_id(strategy_id, pub_row.creator_wallet)
@@ -296,7 +309,11 @@ async def subscribe_strategy(
         logger.warning("create_vault for subscriber failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to create subscriber vault") from exc
 
-    # 6. Insert subscriber row
+    # 6. Insert subscriber row. The pre-checks in step 2/2b are racy across
+    # concurrent requests (wallet provisioning + vault creation await in
+    # between) — the partial unique indexes (db.py: uq_marketplace_sub_id,
+    # uq_marketplace_running_subscription) make the insert the authoritative
+    # gate; IntegrityError maps to the same 409 the pre-checks give.
     with get_session() as session:
         agent = MarketplaceAgent(
             role="subscriber",
@@ -309,7 +326,13 @@ async def subscribe_strategy(
             circle_wallet_id=wallet_id,
         )
         session.add(agent)
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=409, detail="Already subscribed to this strategy (concurrent request)"
+            ) from exc
         result = agent.to_dict()
 
     # 7. Register subscriber with the engine
@@ -563,8 +586,31 @@ async def get_strategy_detail(request: Request, strategy_id: str):
             .all()
         )
 
-    d = row.to_dict()
-    d["subscribers"] = [s.to_dict() for s in subscriber_rows]
+    # PUBLIC endpoint — redact operational internals. The full publisher row
+    # carries gateway_seller_address / agent_wallet_id (payment plumbing) and
+    # each subscriber row carries sub_id / ephemeral_wallet (the funded Circle
+    # address) — none of that belongs on an unauthenticated surface. sub_id is
+    # especially sensitive: it is the client-supplied engine key, so leaking it
+    # invites deliberate collisions. Follows the strategies-library precedent
+    # (_redact_owner_wallet, #850): expose only what the page renders.
+    d = {
+        "strategy_id": row.strategy_id,
+        "creator_wallet": row.creator_wallet,
+        "pool_id": row.pool_id,
+        "vault_address": row.vault_address,
+        "status": row.status,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+    d["subscribers"] = [
+        {
+            # Opaque, shortened forms only — enough for the UI's list row
+            # (shortened wallet + status) and a stable React key.
+            "sub_id": f"{s.sub_id[:10]}…" if s.sub_id else "",
+            "subscriber_wallet": f"{s.subscriber_wallet[:6]}…{s.subscriber_wallet[-4:]}" if s.subscriber_wallet else "",
+            "status": s.status,
+        }
+        for s in subscriber_rows
+    ]
     d["events"] = await market.state.get_events(strategy_id, count=50)
 
     pub = market.publishers.get(strategy_id)

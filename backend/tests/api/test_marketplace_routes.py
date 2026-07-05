@@ -27,8 +27,11 @@ def _setup_db():
 def _mock_strategy_provider():
     """Patch strategy_provider.get_strategy to return a truthy value for test IDs."""
     with patch("archimedes.api.marketplace_routes.strategy_provider") as mock:
-        mock.get_strategy.return_value = MagicMock(id="test_strat")
-        yield mock
+        # strategy_provider is the lru_cache'd FACTORY (post-#863 lazy
+        # singleton) — routes call strategy_provider().get_strategy(...).
+        # Yield the inner provider so tests configure .get_strategy directly.
+        mock.return_value.get_strategy.return_value = MagicMock(id="test_strat")
+        yield mock.return_value
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +45,7 @@ def _seed_strategy_records(_setup_db):
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
 
-    _STRATEGY_IDS = ["test_strat", "dup_strat", "check_pool"]
+    _STRATEGY_IDS = ["test_strat", "dup_strat", "check_pool", "dup_sid_strat", "redact_strat"]
     with get_session() as session:
         for i, sid in enumerate(_STRATEGY_IDS):
             if session.query(StrategyRecord).filter_by(id=sid).first() is None:
@@ -236,3 +239,93 @@ def test_subscribe_succeeds_live_mode_no_chain_calls(client, app):
 
 # x402 payment-webhook route and _WEBHOOK_SECRET are not yet implemented
 # in production code — tests deferred to the follow-up issue.
+
+
+def test_subscribe_rejects_duplicate_sub_id_from_other_wallet(client, app):
+    """A sub_id registered by one wallet cannot be reused by another.
+
+    sub_id is client-supplied and keys the in-process engine
+    (pub.subscribers[sub_id]) — reuse would silently overwrite the first
+    subscriber's engine entry (hijack). The route must 409 on any reuse.
+    """
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "dup_sid_strat", "vault_address": "0xvault"},
+    )
+    assert resp.status_code == 200
+
+    sid = "0x" + "cc" * 32
+    with patch(
+        "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+        new=AsyncMock(return_value=("w-1", "0x0000000000000000000000000000000000000ee1")),
+    ):
+        r1 = client.post(
+            "/api/marketplace/subscribe",
+            json={"strategy_id": "dup_sid_strat", "sub_id": sid, "ephemeral_wallet": "0xeph"},
+        )
+    assert r1.status_code == 200, r1.text
+
+    # A different verified wallet tries to register the SAME sub_id.
+    app.dependency_overrides[require_verified_wallet] = lambda: "0x" + "77" * 20
+    try:
+        with patch(
+            "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+            new=AsyncMock(return_value=("w-2", "0x0000000000000000000000000000000000000ee2")),
+        ):
+            r2 = client.post(
+                "/api/marketplace/subscribe",
+                json={"strategy_id": "dup_sid_strat", "sub_id": sid, "ephemeral_wallet": "0xeph"},
+            )
+        assert r2.status_code == 409, r2.text
+        assert "sub_id" in r2.json()["detail"]
+    finally:
+        app.dependency_overrides[require_verified_wallet] = lambda: TEST_WALLET
+
+
+def test_published_detail_redacts_subscriber_internals(client, app):
+    """GET /published/{id} is public: no payment plumbing, no full subscriber wallets.
+
+    The payload must expose only what the detail page renders — shortened
+    wallet + status per subscriber — and never gateway_seller_address,
+    agent_wallet_id, ephemeral_wallet, or a full (reusable) sub_id.
+    """
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "redact_strat", "vault_address": "0xvault"},
+    )
+    assert resp.status_code == 200
+
+    other_wallet = "0x" + "ab" * 20
+    app.dependency_overrides[require_verified_wallet] = lambda: other_wallet
+    try:
+        with patch(
+            "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+            new=AsyncMock(return_value=("w-3", "0x0000000000000000000000000000000000000ee3")),
+        ):
+            r = client.post(
+                "/api/marketplace/subscribe",
+                json={"strategy_id": "redact_strat", "sub_id": "0x" + "dd" * 32, "ephemeral_wallet": "0xeph"},
+            )
+        assert r.status_code == 200, r.text
+    finally:
+        app.dependency_overrides[require_verified_wallet] = lambda: TEST_WALLET
+
+    detail = client.get("/api/marketplace/published/redact_strat")
+    assert detail.status_code == 200
+    data = detail.json()
+
+    # Publisher payment plumbing must not appear on the public surface.
+    assert "gateway_seller_address" not in data
+    assert "agent_wallet_id" not in data
+
+    subs = data["subscribers"]
+    assert len(subs) == 1
+    s = subs[0]
+    assert set(s) == {"sub_id", "subscriber_wallet", "status"}
+    # Shortened forms only; the full values never appear anywhere in the payload.
+    assert s["sub_id"].endswith("…")
+    assert "…" in s["subscriber_wallet"]
+    body = detail.text
+    assert other_wallet.lower() not in body
+    assert ("0x" + "dd" * 32) not in body
+    assert "0x0000000000000000000000000000000000000ee3" not in body
