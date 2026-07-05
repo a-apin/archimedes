@@ -264,7 +264,17 @@ def _annualized_metrics(daily_returns: list[float], equity_curve: list[float]) -
     sharpe = ((mu - RF_DAILY) / sigma) * np.sqrt(ANNUALIZATION) if sigma > 0 else 0.0
 
     downside = arr[arr < 0]
-    # RMS of negative returns (consistent with analytics-engine/engine.py Sortino)
+    # Sortino denominator = RMS of the NEGATIVE returns only, i.e. the divisor is
+    # the COUNT of downside observations, not the total N. This is a deliberate,
+    # non-standard convention ("downside-frequency-weighted"): the textbook
+    # Sortino & Price (1994) target-downside-deviation divides by total N (treating
+    # non-negative returns as zero deviation), which gives a larger denominator and
+    # a smaller ratio when downside days are sparse. We keep the count-of-negatives
+    # form so the metric matches analytics-engine/engine.py::_compute_sortino exactly
+    # (pinned there by test_sortino_rms_of_negatives_convention, and here by
+    # test_sortino_uses_rms_of_negatives_convention). Sortino is a reported metric
+    # only — it does NOT feed the rigor gate — so the convention has no bearing on
+    # strategy admission (#952).
     down_rms = float(np.sqrt(np.mean(downside**2))) if len(downside) > 0 else 0.0
     sortino = ((mu - RF_DAILY) / down_rms) * np.sqrt(ANNUALIZATION) if down_rms > 0 else 0.0
 
