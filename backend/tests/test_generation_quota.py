@@ -1,7 +1,7 @@
 """Tests for the wallet-less generation quota (anti-abuse per-IP daily cap).
 
 Hermetic — mocks at the Redis boundary; tests the cap logic, the real-IP
-resolver, the 429 steering response, the authenticated bypass, and fail-open.
+resolver, the 429 steering response, the authenticated bypass, and fail-closed.
 """
 
 from __future__ import annotations
@@ -81,11 +81,12 @@ async def test_expire_failure_does_not_discard_count():
     assert allowed is False  # 6 > 5 still enforced
 
 
-async def test_check_fails_open_on_redis_error():
+async def test_check_fails_closed_on_redis_error():
+    # A Redis outage must NOT silently disable the wallet-less spend cap (#929).
     q = GenerationQuota()
     q._get_redis = AsyncMock(side_effect=ConnectionError("redis down"))
     allowed, used = await q.check_and_increment("1.2.3.4", 5)
-    assert allowed is True  # fail OPEN — never block on a cache outage
+    assert allowed is False  # fail CLOSED — cap held, not bypassed
     assert used == 0
 
 
@@ -193,6 +194,31 @@ async def test_enforce_raises_429_over_cap(monkeypatch):
     assert ei.value.detail["reason"] == "wallet_less_generation_cap"
     assert ei.value.detail["cap"] == 5
     assert "Connect a wallet" in ei.value.detail["message"]
+
+
+async def test_enforce_rejects_wallet_less_when_redis_down(monkeypatch):
+    # End-to-end fail-closed: a real GenerationQuota whose Redis is unreachable
+    # rejects the wallet-less caller with a 429 (the cap is not bypassed, #929).
+    monkeypatch.setenv("WALLET_LESS_GENERATION_DAILY_CAP", "5")
+    monkeypatch.setattr(
+        "archimedes.services.generation_quota.GenerationQuota._get_redis",
+        AsyncMock(side_effect=ConnectionError("redis down")),
+    )
+    with pytest.raises(HTTPException) as ei:
+        await enforce_generation_quota(_req({"x-real-ip": "1.1.1.1"}), wallet=None)
+    assert ei.value.status_code == 429
+
+
+async def test_enforce_still_allows_authenticated_wallet_when_redis_down(monkeypatch):
+    # The fail-closed cap must NOT affect a SIWE-authenticated caller — they
+    # bypass the cap before any Redis call, so a cache outage can't block them.
+    monkeypatch.setenv("WALLET_LESS_GENERATION_DAILY_CAP", "5")
+    monkeypatch.setattr(
+        "archimedes.services.generation_quota.GenerationQuota._get_redis",
+        AsyncMock(side_effect=ConnectionError("redis down")),
+    )
+    # No exception — wallet-connected user sails through.
+    await enforce_generation_quota(_req({"x-real-ip": "1.1.1.1"}), wallet="0x" + "a" * 40)
 
 
 # ─── daily_cap config ────────────────────────────────────────────────────
