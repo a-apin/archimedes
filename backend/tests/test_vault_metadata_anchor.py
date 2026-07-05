@@ -111,7 +111,11 @@ class TestVaultMetadataAnchor:
 
     @patch("archimedes.api.vaults_routes.strategy_publisher")
     @patch("archimedes.api.vaults_routes.strategy_provider")
-    def test_metadata_post_with_unknown_strategy_id_does_not_crash(self, mock_provider, mock_publisher):
+    def test_metadata_post_with_unknown_strategy_id_is_refused(self, mock_provider, mock_publisher):
+        # The metadata route is the client-signed deploy path's rigor choke point:
+        # an unknown/unverified strategy id can no longer be bound to a vault. It is
+        # cleanly refused with 422 (not a crash) BEFORE any anchoring is attempted —
+        # this is the server-side "you can never fully bypass the rigor gate" guarantee.
         mock_provider.return_value.get_strategy.return_value = None
         mock_publisher.anchor = AsyncMock()
 
@@ -125,10 +129,10 @@ class TestVaultMetadataAnchor:
             },
             cookies=_siwe_cookies(),
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 422
 
         asyncio.run(asyncio.sleep(0.1))
-        # anchor should NOT have been called for unknown strategy
+        # Refused before persisting/anchoring — the unknown strategy is never anchored.
         mock_publisher.anchor.assert_not_called()
 
 

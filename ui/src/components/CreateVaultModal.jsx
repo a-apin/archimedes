@@ -27,7 +27,7 @@ function nowPlusDays(days) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-export default function CreateVaultModal({ strategy, walletAddr, onClose, onDeployed }) {
+export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel = 1, onClose, onDeployed }) {
   // Esc closes modal (Issue #338)
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && onClose) onClose() }
@@ -137,6 +137,9 @@ export default function CreateVaultModal({ strategy, walletAddr, onClose, onDepl
             symbol,
             creator_address: walletAddr || '',
             strategy_ids: strategy?.id ? [strategy.id] : [],
+            // The server re-checks the strategy passes at this strictness before
+            // persisting the link — the client-signed deploy path's rigor choke point.
+            strictness_level: strictnessLevel,
           }),
         })
       } catch (_metaErr) {

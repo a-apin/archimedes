@@ -341,6 +341,80 @@ backtrader-level look-ahead vector; if you add additional static checks
 (e.g. AST analysis of the strategy file for forward-bar references) wire
 the result into the same field.
 
+## 5. Strictness ladder (per-user deploy levels)
+
+The four controls above define **one** verdict, but not every reader wants the
+same bar. A user with a high risk tolerance may want to deploy a strategy whose
+edge is *probable but not highly certain*; a conservative user wants only the
+statistically strongest. We expose this as a **per-user strictness level 1–5**
+(1 = Conservative, 5 = Speculative) implemented in
+[`backend/archimedes/services/rigor_profiles.py`](../../backend/archimedes/services/rigor_profiles.py).
+
+The critical distinction: only some checks are risk-tolerance knobs.
+
+**Strictness-adjustable thresholds** (the slider moves these):
+
+| Level | Label | DSR p ≥ | PBO < | OOS/IS ≥ |
+| ----- | ----------- | ------- | ----- | -------- |
+| 1 | Conservative | 0.90 | 0.50 | 0.50 |
+| 2 | Balanced | 0.80 | 0.55 | 0.45 |
+| 3 | Moderate | 0.70 | 0.60 | 0.40 |
+| 4 | Aggressive | 0.60 | 0.65 | 0.35 |
+| 5 | Speculative | 0.50 | 0.70 | 0.30 |
+
+> The level-1 DSR bar is **0.90** (recalibrated from the historical 0.95 on
+> 2026-07-05, a deliberate team decision). Thresholds relax monotonically with
+> level, so "passes at level L" is monotonic in L and a well-defined
+> `min_passing_level` exists (`RigorGateResult.min_passing_level`).
+
+**Always-on floors** (identical at *every* level — never bypassable):
+
+- the **look-ahead audit must pass** — a look-ahead-biased backtest is a lie
+  about the past, not a bolder bet on the future; it is a *correctness* failure,
+  not a risk preference;
+- the **out-of-sample Sharpe must be > 0** — a strategy that loses money
+  out-of-sample is broken, not "riskier";
+- the **DSR p-value must be ≥ 0.50** (`DSR_P_FLOOR`) — below this the deflated
+  Sharpe is worse than a coin flip; at level 5 the adjustable DSR bar collapses
+  onto this floor by design;
+- when a CPCV combinatorial matrix exists, the edge must hold on a **majority of
+  held-out paths**.
+
+This is what makes *"you can never fully bypass the rigor gate"* literally true:
+even at level 5 a look-ahead-biased / OOS-negative / worse-than-coin-flip
+strategy is refused. `RigorGateResult.blocked_by_floor` distinguishes "blocked
+by a floor" (never deployable) from "too statistically weak for the loosest
+adjustable thresholds" (`min_passing_level is None and not blocked_by_floor`).
+
+**Badge integrity.** The global **Archimedes Verified 🏆** badge and the
+persisted `passes_rigor_gate` boolean are **always evaluated at level 1** and
+never move with a user's slider — otherwise one user's risk appetite would
+rewrite a claim every other visitor sees, violating the #1 "claims must be true"
+rule. The badge is a stable global claim; the slider is a private deploy
+preference.
+
+**Enforcement.** The strictness is enforced server-side, re-evaluated live from
+persisted returns over the whole-library cohort — a non-UI caller cannot route
+around it:
+
+- `POST /api/vaults/create` and `POST /api/vaults/metadata` (the client-signed
+  path's choke point) both call `_assert_strategies_pass_rigor(ids, level)`;
+- allocation sizing (`derive_vault_allocations` → `size_strategies`) only sizes a
+  strategy that passes at the user's level, so a strategy deployed at level L is
+  not silently zeroed by the stricter level-1 badge check.
+
+The whole ladder + floors are disclosed at `GET /api/selection-bias/strictness-ladder`
+so the frontend renders labels/thresholds from one source of truth. The
+`GET /api/selection-bias/gate?strictness=L` route reports each strategy's verdict
+at level L plus its `min_passing_level`.
+
+**Scope note (v1).** Curated library strategies (real returns + source) are
+re-graded live at any level. *Generated* strategies remain badge-gated for
+deployment in v1 — their look-ahead provenance is a closed-DSL self-attestation
+rather than the AST audit the live re-grade runs, so re-grading them at a looser
+level would be apples-to-oranges; wiring generated strategies into the live
+per-level path is a follow-up.
+
 ## API surface
 
 Önder's `IBacktestEvaluator.evaluate` signature already takes the strategy

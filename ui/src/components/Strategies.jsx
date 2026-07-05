@@ -3,8 +3,28 @@ import { createPortal } from 'react-dom'
 import CustomSelect from './CustomSelect'
 // EfficientFrontier + CorrelationMatrix deleted (Issue #383) — synthetic RNG data
 import RigorExplainer from './RigorExplainer'
+import RigorStrictnessControl, { levelLabel } from './RigorStrictnessControl'
+import { useRigorStrictness, BADGE_LEVEL } from '../hooks/useRigorStrictness'
 
 import { apiGet, apiPost } from '../api'
+
+// A compact "deployable at your level" chip for a library row, driven by the
+// strategy's min_passing_level (from the live gate) and the user's strictness.
+function DeployabilityChip({ deploy, level }) {
+  if (!deploy) return null
+  if (deploy.blocked_by_floor) {
+    return <span className="tag tag-negative" style={{ fontSize: '0.66rem' }} title="Fails an always-on correctness floor — cannot deploy at any level">blocked</span>
+  }
+  const min = deploy.min_passing_level
+  if (min == null) {
+    return <span className="tag tag-muted" style={{ fontSize: '0.66rem' }} title="Does not pass the rigor gate even at the most permissive level">not deployable</span>
+  }
+  if (min <= level) {
+    const label = min > BADGE_LEVEL ? `deployable @ ${levelLabel(null, min)}+` : 'deployable'
+    return <span className="tag tag-positive" style={{ fontSize: '0.66rem' }} title={`Passes at your strictness (level ${level})`}>{label}</span>
+  }
+  return <span className="tag tag-accent" style={{ fontSize: '0.66rem' }} title={`Raise your strictness to level ${min} to deploy`}>needs {levelLabel(null, min)}</span>
+}
 
 const RISK_PROFILES = [
   { id: 'fixed_income', label: 'Fixed Income' },
@@ -371,7 +391,7 @@ export function StrategyArchitect({ strategies }) {
 // + rigor metrics). One row per strategy; no visual hierarchy by status (the
 // STATUS column does that job).
 
-function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport }) {
+function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, deploy, level }) {
   const [open, setOpen] = useState(isHighlighted)
   const rowRef = useRef(null)
   const years = periodInYears(s.backtest_start, s.backtest_end)
@@ -431,6 +451,7 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport })
             {driftFlag && (
               <span className="i-lucide-alert-triangle w-3.5 h-3.5 text-[#f59e0b]" title="Drift detected" />
             )}
+            <DeployabilityChip deploy={deploy} level={level} />
           </div>
         </td>
         <td className="mono" style={{ textAlign: 'right' }}>
@@ -583,7 +604,7 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport })
   )
 }
 
-function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigorExplainer, onOpenPassport }) {
+function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigorExplainer, onOpenPassport, deployMap, level }) {
   if (!strategies.length) return emptyState
   return (
     <>
@@ -614,6 +635,8 @@ function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigo
                 isHighlighted={highlightStrategyId && s.id === highlightStrategyId}
                 onOpenRigorExplainer={onOpenRigorExplainer}
                 onOpenPassport={onOpenPassport}
+                deploy={deployMap?.[s.id]}
+                level={level}
               />
             ))}
           </tbody>
@@ -677,6 +700,13 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
   const [generated, setGenerated] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
+  // Per-user rigor strictness (shared with the Passport slider via localStorage).
+  const [level, setLevel] = useRigorStrictness()
+  // {strategy_id: {min_passing_level, blocked_by_floor}} from the live gate —
+  // strictness-independent, so we fetch once and re-annotate rows client-side as
+  // the slider moves. Curated strategies resolve here; generated ones fall back
+  // to their badge boolean (no chip).
+  const [deployMap, setDeployMap] = useState({})
   // 'generated' is the first-class tab per product feedback — pushes user
   // toward Generate when empty.
   const [activeTab, setActiveTab] = useState(() => defaultTab || 'generated')
@@ -704,9 +734,10 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
     setLoading(true)
     setLoadError('')
     try {
-      const [seedRes, genRes] = await Promise.allSettled([
+      const [seedRes, genRes, gateRes] = await Promise.allSettled([
         apiGet('/api/strategies/'),
         apiGet('/api/strategies/generated'),
+        apiGet('/api/selection-bias/gate'),
       ])
       if (seedRes.status === 'fulfilled') {
         const sorted = [...(seedRes.value.strategies || [])].sort(
@@ -719,7 +750,14 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
       if (genRes.status === 'fulfilled') {
         setGenerated((genRes.value.strategies || []).map(coerceGenerated))
       }
-      // Generated tab failing is non-fatal — empty state is the honest fallback.
+      if (gateRes.status === 'fulfilled') {
+        const map = {}
+        for (const r of gateRes.value.strategies || []) {
+          map[r.strategy_id] = { min_passing_level: r.min_passing_level, blocked_by_floor: r.blocked_by_floor }
+        }
+        setDeployMap(map)
+      }
+      // Generated tab + gate failing are non-fatal — empty state / no chip is the honest fallback.
     } finally {
       setLoading(false)
     }
@@ -735,6 +773,10 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
           Your strategies, plus a clearly-separated set of example strategies
           drawn from published research so you can learn the metric format.
         </p>
+      </div>
+
+      <div className="mb-5">
+        <RigorStrictnessControl level={level} onChange={setLevel} />
       </div>
 
       <div className="strat-filter-bar mb-4">
@@ -775,6 +817,8 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               highlightStrategyId={highlightStrategyId}
               onOpenRigorExplainer={openRigorExplainer}
               onOpenPassport={openPassport}
+              deployMap={deployMap}
+              level={level}
               emptyState={
                 rejected.length > 0 ? (
                   <div className="card" style={{ padding: 22 }}>
@@ -834,6 +878,8 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                     highlightStrategyId={highlightStrategyId}
                     onOpenRigorExplainer={openRigorExplainer}
                     onOpenPassport={openPassport}
+                    deployMap={deployMap}
+                    level={level}
                     emptyState={<p className="caption">No rejected strategies.</p>}
                   />
                 </div>
@@ -859,6 +905,8 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               highlightStrategyId={highlightStrategyId}
               onOpenRigorExplainer={openRigorExplainer}
               onOpenPassport={openPassport}
+              deployMap={deployMap}
+              level={level}
               emptyState={<p className="caption">No example strategies loaded.</p>}
             />
           )}

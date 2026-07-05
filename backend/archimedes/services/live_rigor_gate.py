@@ -48,7 +48,17 @@ class RigorGateVerdict:
     """A live rigor-gate verdict for one strategy.
 
     ``status`` is the tri-state label ("pass" | "fail" | "pending"). ``passes``
-    is the fail-closed boolean for legacy consumers: only "pass" is truthy.
+    is the fail-closed boolean for legacy consumers: only "pass" is truthy — and
+    it is the BADGE verdict, always evaluated at the strictest level (the
+    Archimedes Verified bar), never a user's slider level.
+
+    ``min_passing_level`` and ``blocked_by_floor`` carry the strictness-ladder
+    info (rigor_profiles) derived from the SAME single gate computation, so a
+    per-user deploy gate and the passport can answer "does this pass at level L?"
+    without recomputing: deployable at level L iff ``min_passing_level is not None
+    and min_passing_level <= L``. ``blocked_by_floor`` means an always-on
+    correctness floor failed — the strategy can never deploy at any level.
+
     ``source`` records provenance — always "live_gate" or "pending" here, NEVER
     "fixture" (that is the whole point of #821).
     """
@@ -56,18 +66,38 @@ class RigorGateVerdict:
     status: str
     passes: bool
     source: str
+    min_passing_level: int | None = None
+    blocked_by_floor: bool = False
 
     @classmethod
     def pending(cls) -> RigorGateVerdict:
-        return cls(status=PENDING, passes=False, source="pending")
+        return cls(status=PENDING, passes=False, source="pending", min_passing_level=None, blocked_by_floor=False)
 
     @classmethod
     def passed(cls) -> RigorGateVerdict:
-        return cls(status=PASS, passes=True, source="live_gate")
+        # Badge pass ⟹ passes at the strictest level ⟹ min_passing_level == 1.
+        return cls(status=PASS, passes=True, source="live_gate", min_passing_level=1, blocked_by_floor=False)
 
     @classmethod
     def failed(cls) -> RigorGateVerdict:
-        return cls(status=FAIL, passes=False, source="live_gate")
+        return cls(status=FAIL, passes=False, source="live_gate", min_passing_level=None, blocked_by_floor=False)
+
+    @classmethod
+    def from_result(cls, result) -> RigorGateVerdict:
+        """Build the badge verdict from a computed ``RigorGateResult``.
+
+        ``passes`` is the badge (strictest-level) verdict; ``min_passing_level``
+        and ``blocked_by_floor`` are read off the same result so the whole
+        strictness ladder is available from one computation.
+        """
+        passes = result.passes_all  # run_rigor_gate defaults to the strictest profile
+        return cls(
+            status=PASS if passes else FAIL,
+            passes=passes,
+            source="live_gate",
+            min_passing_level=result.min_passing_level,
+            blocked_by_floor=result.blocked_by_floor,
+        )
 
 
 def verdict_from_returns(
@@ -113,7 +143,9 @@ def verdict_from_returns(
         logger.warning("live rigor gate failed for %s (badge → pending): %s", strategy_id, exc)
         return RigorGateVerdict.pending()
 
-    return RigorGateVerdict.passed() if result.passes_all else RigorGateVerdict.failed()
+    # from_result carries the badge pass AND the strictness-ladder info
+    # (min_passing_level / blocked_by_floor) from one computation.
+    return RigorGateVerdict.from_result(result)
 
 
 def verdicts_for_strategies(strategies: list) -> dict[str, RigorGateVerdict]:

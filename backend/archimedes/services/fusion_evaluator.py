@@ -44,6 +44,7 @@ from archimedes.services.rigor_evaluator import (
     compute_oos_sharpe,
     compute_pbo,
 )
+from archimedes.services.rigor_profiles import STRICTEST_LEVEL, get_profile
 from archimedes.services.strategy_dsl import (
     DSLError,
     StrategySpec,
@@ -682,14 +683,18 @@ def apply_rigor_gate(
     look_ahead_clean = True
     look_ahead_label = "N/A (closed-DSL, self-attested, not source-audited)"
 
-    # DSR gate: require p-value >= 0.95 (same threshold enforced by the curated
-    # path in run_rigor_gate). Using dsr > 0.0 was too permissive — a z-score of
+    # DSR gate: Tier-1 fusion certification is a BADGE decision, so it uses the
+    # strictest (Archimedes Verified) profile's DSR bar — one source of truth with
+    # the curated path in run_rigor_gate (rigor_profiles.get_profile(STRICTEST_LEVEL)).
+    # The per-user strictness slider never loosens this: the badge is a global claim,
+    # not a personal risk knob. Using dsr > 0.0 was too permissive — a z-score of
     # 0.5 (p ≈ 0.69) would pass here while the same strategy fails the API gate,
     # creating an inconsistency that could admit under-credentialed Tier-1 strategies
     # through the fusion path.
     # NaN-harden every numeric comparison: a NaN metric makes `>=`/`<` False,
     # which would silently skip a fail branch. Treat non-finite as fail.
-    dsr_pass = dsr_p is not None and math.isfinite(dsr_p) and dsr_p >= 0.95
+    _badge = get_profile(STRICTEST_LEVEL)
+    dsr_pass = dsr_p is not None and math.isfinite(dsr_p) and dsr_p >= _badge.dsr_p_min
 
     # Walk-forward OOS Sharpe is the fourth admission primitive (DSL look-ahead
     # safety, DSR, PBO, walk-forward OOS). Mirror the curated path's
@@ -704,7 +709,7 @@ def apply_rigor_gate(
         and in_sample_sharpe is not None
         and math.isfinite(in_sample_sharpe)
         and in_sample_sharpe > 0
-        and oos_sharpe / in_sample_sharpe < 0.5
+        and oos_sharpe / in_sample_sharpe < _badge.oos_is_ratio_min
     ):
         oos_pass = False
 
@@ -713,7 +718,7 @@ def apply_rigor_gate(
     # strategy passed the overfitting check. Mirrors RigorGateResult.passes_all
     # (rigor_evaluator.py), where pbo_score is None fails the overall gate
     # rather than vacuously passing it.
-    pbo_pass = pbo_score is not None and math.isfinite(pbo_score) and pbo_score < 0.5
+    pbo_pass = pbo_score is not None and math.isfinite(pbo_score) and pbo_score < _badge.pbo_max
     passing = dsr_pass and oos_pass and look_ahead_clean and pbo_pass
 
     # Provenance gate: a strategy is only admissible for Tier-1 if it passes

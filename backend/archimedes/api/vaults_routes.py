@@ -29,6 +29,8 @@ from archimedes.api.vault_schemas import (
 )
 from archimedes.chain.executor import chain_executor
 from archimedes.models.chat import VaultMetadata
+from archimedes.services.live_rigor_gate import verdicts_for_strategies
+from archimedes.services.rigor_profiles import STRICTEST_LEVEL, clamp_level
 from archimedes.services.strategy_sizer import kelly_weighted_allocations, scale_to_budget, size_strategies
 
 vaults_router = APIRouter(prefix="/api/vaults", tags=["vaults"])
@@ -93,24 +95,109 @@ def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
     return False, False
 
 
-def _assert_strategies_pass_rigor(strategy_ids: list[str]) -> None:
+def _deployable_levels(strategy_ids: list[str]) -> dict[str, tuple[bool, int | None, bool]]:
+    """``{id: (found, min_passing_level, blocked_by_floor)}`` at the chosen level.
+
+    Curated strategies get a LIVE per-level verdict computed over the whole-library
+    cohort (``verdicts_for_strategies``), so the multiple-testing correction is
+    the same one the badge uses — the strictness slider genuinely re-grades them.
+    Generated strategies fall back to their persisted level-1 badge (min level 1
+    if the badge holds, else ``None``): the slider does not loosen generated
+    deploys in this version, because a generated strategy's look-ahead provenance
+    is a closed-DSL self-attestation, not the AST audit the live re-grade runs, so
+    re-grading it here would be apples-to-oranges. This is fail-safe (a generated
+    strategy that fails its badge simply can't be deployed at a looser level yet).
+
+    Never raises: any resolution failure degrades an id to not-deployable.
+    """
+    ids = list(dict.fromkeys(strategy_ids))  # de-dup, preserve order
+    try:
+        provider_strats = strategy_provider().list_strategies()
+    except Exception:
+        logger.exception("deploy gate: provider list failed — failing closed")
+        provider_strats = []
+    provider_by_id = {s.id: s for s in provider_strats}
+
+    curated_verdicts: dict = {}
+    if any(sid in provider_by_id for sid in ids):
+        try:
+            curated_verdicts = verdicts_for_strategies(provider_strats)
+        except Exception:
+            logger.exception("deploy gate: curated verdict batch failed — failing closed")
+            curated_verdicts = {}
+
+    out: dict[str, tuple[bool, int | None, bool]] = {}
+    for sid in ids:
+        verdict = curated_verdicts.get(sid)
+        if verdict is not None:
+            out[sid] = (True, verdict.min_passing_level, verdict.blocked_by_floor)
+        elif sid in provider_by_id:
+            # Curated but the verdict batch failed — fail closed (found, not deployable).
+            out[sid] = (True, None, False)
+        else:
+            # Generated (or unknown): badge-gated fallback.
+            found, passes_badge = _strategy_rigor_status(sid)
+            out[sid] = (found, (STRICTEST_LEVEL if passes_badge else None), False)
+    return out
+
+
+def _assert_strategies_pass_rigor(strategy_ids: list[str], strictness_level: int = STRICTEST_LEVEL) -> None:
     """Fail-closed deploy precondition (#818): every strategy bound to a vault must
-    resolve and carry a passing rigor verdict. Raises 422 otherwise. The frontend
-    Deploy gate (#782) is defense-in-depth; THIS is the guarantee a non-UI caller
-    cannot route around. A strategy with no computed verdict (placeholder) has
-    ``passes_rigor_gate == False`` and is correctly refused."""
+    resolve and pass the rigor gate at the caller's chosen ``strictness_level``.
+    Raises 422 otherwise. The frontend Deploy gate (#782) is defense-in-depth;
+    THIS is the guarantee a non-UI caller cannot route around.
+
+    The always-on correctness floors (look-ahead, positive OOS, DSR ≥ 0.50) hold
+    at every level, so no ``strictness_level`` bypasses the gate — a user can only
+    trade statistical confidence for breadth, never admit a broken/curve-fit
+    strategy. A strategy with no computed verdict (placeholder) is correctly
+    refused.
+    """
+    level = clamp_level(strictness_level)
+
+    # Fast, exact badge path at the strictest level: a badge-fail can never pass
+    # level 1, so no live per-level ladder computation is needed. This also keeps
+    # the default deploy path unchanged for callers that don't opt into strictness.
+    if level <= STRICTEST_LEVEL:
+        for sid in strategy_ids:
+            found, passes = _strategy_rigor_status(sid)
+            if not found:
+                raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
+            if not passes:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Strategy '{sid}' has not passed the rigor gate — refusing to deploy "
+                        "(server-side rigor enforcement)."
+                    ),
+                )
+        return
+
+    # Looser-than-badge level: consult the live per-level ladder.
+    levels = _deployable_levels(strategy_ids)
     for sid in strategy_ids:
-        found, passes = _strategy_rigor_status(sid)
+        found, min_level, blocked = levels.get(sid, (False, None, False))
         if not found:
             raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
-        if not passes:
+        if min_level is not None and min_level <= level:
+            continue
+        if blocked:
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"Strategy '{sid}' has not passed the rigor gate — refusing to deploy "
-                    "(server-side rigor enforcement)."
+                    f"Strategy '{sid}' fails an always-on rigor floor (look-ahead / positive OOS / "
+                    "DSR ≥ 0.50) — it cannot be deployed at any strictness level."
                 ),
             )
+        if min_level is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Strategy '{sid}' does not pass the rigor gate even at the most permissive level.",
+            )
+        raise HTTPException(
+            status_code=422,
+            detail=f"Strategy '{sid}' requires strictness level ≥ {min_level}; level {level} was selected.",
+        )
 
 
 @vaults_router.get("/", response_model=VaultListResponse)
@@ -148,9 +235,10 @@ async def create_vault(
     of reverted PR #646 without changing the live 5-arg createVault selector.
     """
     # Server-side rigor gate (#818): refuse to deploy any strategy that hasn't
-    # passed the rigor gate, BEFORE spending gas. The #782 frontend Deploy gate is
-    # defense-in-depth; this is the guarantee a direct/non-UI API call can't bypass.
-    _assert_strategies_pass_rigor(req.strategy_ids)
+    # passed the rigor gate AT THE REQUESTED STRICTNESS, BEFORE spending gas. The
+    # #782 frontend Deploy gate is defense-in-depth; this is the guarantee a
+    # direct/non-UI API call can't bypass. Always-on floors hold at every level.
+    _assert_strategies_pass_rigor(req.strategy_ids, req.strictness_level)
 
     try:
         vault_address = await chain_executor.create_vault(
@@ -216,6 +304,15 @@ async def store_vault_metadata(
     metadata owner on first write, and subsequent writes require the caller to
     be that owner.
     """
+    # Server-side rigor enforcement on the client-signed deploy path — the real
+    # choke point. The UI creates the vault on-chain from the user's own wallet
+    # (bypassing POST /create), then links strategies here, so THIS is where a
+    # strategy↔vault link is refused unless the strategy passes at the requested
+    # strictness. Always-on floors hold at every level, so the link can never
+    # bind a look-ahead-biased / OOS-negative / worse-than-coin-flip strategy.
+    if req.strategy_ids:
+        _assert_strategies_pass_rigor(req.strategy_ids, req.strictness_level)
+
     from archimedes.db import get_session
 
     session = get_session()
@@ -320,7 +417,19 @@ async def derive_vault_allocations(address: str, req: SetAllocationsRequest, req
     # strategy receives passport-half-Kelly × risk-profile multiplier of the
     # capital; CANDIDATEs and gate-failers size to zero (the gate is not
     # bypassable via deployment); unclaimed budget stays in USDC.
-    sized_fractions = size_strategies(strategies, req.risk_profile)
+    #
+    # Honour the user's deploy strictness: a strategy the user is allowed to
+    # deploy at level L should also RECEIVE capital, not be silently zeroed by the
+    # stricter level-1 badge check. At the badge level the fast badge path is
+    # exact, so keep the default (deployable_ids=None → passes_rigor_gate).
+    deployable_ids: set[str] | None = None
+    lvl = clamp_level(req.strictness_level)
+    if lvl > STRICTEST_LEVEL:
+        levels = _deployable_levels([s.id for s in strategies])
+        deployable_ids = {
+            sid for sid, (found, ml, _blocked) in levels.items() if found and ml is not None and ml <= lvl
+        }
+    sized_fractions = size_strategies(strategies, req.risk_profile, deployable_ids=deployable_ids)
     sized_fractions = scale_to_budget(sized_fractions, 1.0 - usdc_floor)
     excluded = sorted(sid for sid, frac in sized_fractions.items() if frac <= 0.0)
     target_weights = kelly_weighted_allocations(all_signals, sized_fractions, usdc_floor=usdc_floor)

@@ -46,6 +46,15 @@ from archimedes.services._rigor_helpers import (
     regime_robustness_score,  # used by run_rigor_gate (regime-robustness) + re-exported for test_rigor_regime
 )
 from archimedes.services.return_diagnostics import diagnose
+from archimedes.services.rigor_profiles import (
+    CPCV_MIN_POSITIVE_FRACTION,
+    DEFAULT_LEVEL,
+    DSR_P_FLOOR,
+    OOS_ABS_FLOOR,
+    STRICTNESS_LEVELS,
+    RigorProfile,
+    get_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -474,8 +483,16 @@ class RigorGateResult:
         iid_diagnostics: dict | None = None,
         regime_robustness: dict | None = None,
         pbo_library_size: int | None = None,
+        profile: RigorProfile | None = None,
     ) -> None:
         self.strategy_id = strategy_id
+        # The strictness profile whose thresholds ``passes_all`` / ``gate_details``
+        # report against. Defaults to the strictest level (the badge bar), so an
+        # unspecified profile is fail-safe. The strictness-adjustable thresholds
+        # (DSR p, PBO ceiling, OOS/IS ratio) come from here; the always-on
+        # correctness floors (look-ahead, OOS>0, DSR≥floor, CPCV) do NOT and hold
+        # at every level. See rigor_profiles for the ladder + floor rationale.
+        self.profile = profile or get_profile(DEFAULT_LEVEL)
         self.deflated_sharpe = deflated_sharpe
         self.dsr_p_value = dsr_p_value
         # The gating dsr_p_value uses a serial-correlation-robust (Newey–West
@@ -528,55 +545,105 @@ class RigorGateResult:
         return self.pbo_library_size is not None and self.pbo_library_size < MIN_LIBRARY_N_FOR_PBO_GATING
 
     @property
-    def passes_all(self) -> bool:
-        # NaN-hardening: every IEEE-754 comparison against NaN is False, so a NaN
-        # metric (not None — None is guarded) would silently skip its fail branch
-        # and let an under-credentialed strategy pass. Treat any non-finite metric
-        # as an automatic fail. pbo_score is sourced either from the full-library
-        # CSCV PBO (#546, the principled input) or — fallback — an external cohort
-        # dict; oos/IS Sharpe can carry NaN if upstream returns contain NaN.
-        if self.dsr_p_value is None or not math.isfinite(self.dsr_p_value):
+    def blocked_by_floor(self) -> bool:
+        """True when an always-on correctness floor fails — the strategy can NEVER
+        be admitted, at any strictness level.
+
+        The floors are level-independent (see rigor_profiles): look-ahead audit
+        PASS, a finite OOS Sharpe strictly above ``OOS_ABS_FLOOR``, a finite DSR
+        p-value ≥ ``DSR_P_FLOOR``, and — when a combinatorial matrix was supplied —
+        a finite CPCV positive fraction ≥ ``CPCV_MIN_POSITIVE_FRACTION``. A
+        strategy tripping any of these is broken/curve-fit, not merely "riskier,"
+        so no slider level lets it through. This is distinct from a strategy that
+        merely fails the loosest *adjustable* thresholds (statistically too weak),
+        which is ``min_passing_level is None and not blocked_by_floor``.
+        """
+        if not self.look_ahead_passed:
+            return True
+        if self.oos_sharpe is None or not math.isfinite(self.oos_sharpe) or self.oos_sharpe <= OOS_ABS_FLOOR:
+            return True
+        if self.dsr_p_value is None or not math.isfinite(self.dsr_p_value) or self.dsr_p_value < DSR_P_FLOOR:
+            return True
+        if self.cpcv_positive_fraction is not None and (
+            not math.isfinite(self.cpcv_positive_fraction) or self.cpcv_positive_fraction < CPCV_MIN_POSITIVE_FRACTION
+        ):
+            return True
+        return False
+
+    def _passes_profile(self, profile: RigorProfile) -> bool:
+        """Every criterion clears ``profile``'s adjustable thresholds AND every
+        always-on floor holds. Single evaluator behind ``passes_all`` and
+        ``passes_at_level`` so the badge and the ladder share one definition.
+
+        NaN-hardening: every IEEE-754 comparison against NaN is False, so a NaN
+        metric (not None — None is guarded) would silently skip its fail branch
+        and let an under-credentialed strategy pass. ``blocked_by_floor`` already
+        rejects NaN dsr_p_value / oos_sharpe; the remaining metric (PBO, sourced
+        from the library CSCV PBO #546 or a cohort dict) is guarded below.
+        """
+        # Correctness floors first — level-independent, never bypassable.
+        if self.blocked_by_floor:
             return False
-        if self.dsr_p_value < 0.95:
+        # ── Adjustable: DSR p-value ──
+        if self.dsr_p_value < profile.dsr_p_min:
             return False
-        # #819: below the CSCV power floor, PBO is too underpowered/library-coupled
-        # to gate on — criterion 4 is neutral (neither required nor checked) rather
-        # than an automatic fail on a missing/high value. Still computed + surfaced
-        # in gate_details as NOT_RUN, just not load-bearing.
+        # ── Adjustable: PBO ceiling ── (#819: neutral below the CSCV power floor,
+        # where PBO is too underpowered/library-coupled to gate — still surfaced
+        # in gate_details as NOT_RUN, just not load-bearing.)
         if not self._pbo_below_power_floor:
             if self.pbo_score is None or not math.isfinite(self.pbo_score):
                 return False
-            if self.pbo_score >= 0.5:
+            if self.pbo_score >= profile.pbo_max:
                 return False
-        if self.oos_sharpe is None or not math.isfinite(self.oos_sharpe):
-            return False
-        if self.oos_sharpe <= 0.0:  # absolute OOS floor: negative OOS cannot pass
-            return False
+        # ── Adjustable: OOS/IS cliff ratio (the absolute OOS>0 floor is enforced
+        # by blocked_by_floor above; this guards against a performance *cliff*). ──
         if (
             self.in_sample_sharpe is not None
             and math.isfinite(self.in_sample_sharpe)
             and self.in_sample_sharpe > 0
-            and self.oos_sharpe / self.in_sample_sharpe < 0.5
-        ):
-            return False
-        # Combinatorial Purged CV: when computed, the edge must hold OOS across a
-        # majority of held-out paths (not just the single 70/30 tail above).
-        if self.cpcv_positive_fraction is not None and (
-            not math.isfinite(self.cpcv_positive_fraction) or self.cpcv_positive_fraction < 0.5
+            and self.oos_sharpe / self.in_sample_sharpe < profile.oos_is_ratio_min
         ):
             return False
         # NOTE: the IID (#621) and regime-robustness diagnostics are deliberately NOT
-        # pass/fail criteria. They are surfaced via gate_details as advisories — see __init__.
-        return self.look_ahead_passed
+        # pass/fail criteria at any level. Surfaced via gate_details as advisories.
+        return True
+
+    @property
+    def passes_all(self) -> bool:
+        """Verdict at this result's own ``profile`` (the strictest/badge bar by
+        default). Consumers that need a specific strictness call
+        ``passes_at_level`` instead."""
+        return self._passes_profile(self.profile)
+
+    def passes_at_level(self, level: int) -> bool:
+        """Verdict at an arbitrary strictness level (1 = strictest … 5 = loosest)."""
+        return self._passes_profile(get_profile(level))
+
+    @property
+    def min_passing_level(self) -> int | None:
+        """Lowest strictness level (1..5) at which the strategy passes, or ``None``.
+
+        Because thresholds relax monotonically with level, ``passes_at_level`` is
+        monotonic in level, so this minimum is well-defined. ``None`` means the
+        strategy fails even the loosest level — either ``blocked_by_floor`` (a
+        correctness floor) or too statistically weak for the loosest thresholds.
+        A user at level L can deploy iff ``min_passing_level is not None and
+        min_passing_level <= L`` — the rule the deploy gate enforces server-side.
+        """
+        for level in STRICTNESS_LEVELS:
+            if self._passes_profile(get_profile(level)):
+                return level
+        return None
 
     @property
     def gate_details(self) -> dict[str, str]:
         details: dict[str, str] = {}
 
-        if self.dsr_p_value is not None and self.dsr_p_value >= 0.95:
+        dsr_min = self.profile.dsr_p_min
+        if self.dsr_p_value is not None and self.dsr_p_value >= dsr_min:
             details["dsr"] = f"PASS (p={self.dsr_p_value:.4f})"
         elif self.dsr_p_value is not None:
-            details["dsr"] = f"FAIL (p={self.dsr_p_value:.4f}, need ≥ 0.95)"
+            details["dsr"] = f"FAIL (p={self.dsr_p_value:.4f}, need ≥ {dsr_min:.2f})"
         else:
             details["dsr"] = "MISSING"
         # Disclose the Sharpe convention behind the DSR (#547). The backend gate
@@ -611,19 +678,21 @@ class RigorGateResult:
                 details["pbo"] = f"{floor_note}; PBO={self.pbo_score:.4f} advisory only, source={self.pbo_source}"
             else:
                 details["pbo"] = floor_note
-        elif self.pbo_score is not None and math.isfinite(self.pbo_score) and self.pbo_score < 0.5:
+        elif self.pbo_score is not None and math.isfinite(self.pbo_score) and self.pbo_score < self.profile.pbo_max:
             details["pbo"] = f"PASS (PBO={self.pbo_score:.4f}, source={self.pbo_source})"
         elif self.pbo_score is not None and math.isfinite(self.pbo_score):
-            details["pbo"] = f"FAIL (PBO={self.pbo_score:.4f}, need < 0.5, source={self.pbo_source})"
+            details["pbo"] = (
+                f"FAIL (PBO={self.pbo_score:.4f}, need < {self.profile.pbo_max:.2f}, source={self.pbo_source})"
+            )
         else:
             details["pbo"] = f"MISSING (source={self.pbo_source})"
 
         if self.oos_sharpe is not None and self.in_sample_sharpe and self.in_sample_sharpe > 0:
             ratio = self.oos_sharpe / self.in_sample_sharpe
-            if ratio >= 0.5:
+            if ratio >= self.profile.oos_is_ratio_min:
                 details["oos_sharpe"] = f"PASS (OOS/IS={ratio:.2f})"
             else:
-                details["oos_sharpe"] = f"FAIL (OOS/IS={ratio:.2f}, need ≥ 0.50)"
+                details["oos_sharpe"] = f"FAIL (OOS/IS={ratio:.2f}, need ≥ {self.profile.oos_is_ratio_min:.2f})"
         elif self.oos_sharpe is not None:
             details["oos_sharpe"] = f"SET (OOS={self.oos_sharpe:.4f}, no IS reference)"
         else:
@@ -698,12 +767,21 @@ def run_rigor_gate(
     cv_returns_matrix: np.ndarray | list[list[float]] | None = None,
     library_pbo: float | None = None,
     pbo_library_size: int | None = None,
+    strictness_level: int = DEFAULT_LEVEL,
 ) -> RigorGateResult:
     """Run all four selection-bias checks on a strategy.
 
     Main entry point called by the orchestrator and API routes.
 
     Args:
+        strictness_level: The strictness level (1 = Conservative/strictest =
+            the Archimedes Verified badge bar … 5 = Speculative/loosest) whose
+            thresholds ``result.passes_all`` / ``gate_details`` report against.
+            Defaults to the strictest level, so an unspecified strictness is
+            fail-safe (the badge). The returned :class:`RigorGateResult` also
+            exposes ``passes_at_level`` / ``min_passing_level`` for querying the
+            whole ladder from a single computation — the metrics themselves are
+            strictness-independent, only the thresholds differ.
         library_pbo: The single full-library CSCV PBO (Bailey et al. 2014) for
             the *current selection set* — the principled criterion-4 input
             (#546). PBO is a property of the whole library, not of one strategy,
@@ -850,6 +928,7 @@ def run_rigor_gate(
         iid_diagnostics=iid,
         regime_robustness=regime_robustness,
         pbo_library_size=effective_pbo_library_size,
+        profile=get_profile(strictness_level),
     )
 
     logger.info(

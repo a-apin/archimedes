@@ -173,7 +173,9 @@ def compute_dsr(
             expected best-of-N null. Positive means the strategy clears
             the multiple-testing bar.
           - dsr_p_value: P(true SR > 0 | observed SR, N trials, T bars).
-            Gate threshold is 0.95 per passes_rigor_gate.
+            The badge (level-1/Conservative) gate threshold is 0.90 per
+            rigor_profiles; looser levels accept down to the 0.50 always-on
+            floor. See RigorGateResult.passes_at_level / min_passing_level.
         Both are None if data is insufficient (T < 4) or degenerate.
     """
     if num_trials < 1:

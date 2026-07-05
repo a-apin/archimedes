@@ -59,17 +59,33 @@ def kelly_multiplier(risk_profile: str) -> float:
     return min(_HALF_KELLY_GAMMA / gamma, 1.0)
 
 
-def size_strategies(strategies: list[Strategy], risk_profile: str) -> dict[str, float]:
+def size_strategies(
+    strategies: list[Strategy],
+    risk_profile: str,
+    deployable_ids: set[str] | None = None,
+) -> dict[str, float]:
     """Per-strategy capital fractions: passport half-Kelly × profile multiplier.
 
-    Gate-failing strategies (``passes_rigor_gate`` falsy) and strategies with
-    no stored ``kelly_fraction`` size to 0.0 — no gate pass, no capital; no
-    measured edge, no capital.
+    Gate-failing strategies and strategies with no stored ``kelly_fraction`` size
+    to 0.0 — no gate pass, no capital; no measured edge, no capital.
+
+    ``deployable_ids`` decides the "gate pass" test:
+      * ``None`` (default) — a strategy is sizeable iff its level-1 ``passes_rigor_gate``
+        badge is truthy (backward-compatible behaviour).
+      * a set — a strategy is sizeable iff its id is in the set. The caller computes
+        this from the user's chosen strictness level (via the live gate), so a
+        strategy the user is allowed to deploy at level L is not silently zeroed by
+        the stricter level-1 badge. Sizing still cannot become a side-door past the
+        gate: the set only ever contains strategies that pass at the user's level,
+        and the always-on correctness floors hold at every level.
     """
     mult = kelly_multiplier(risk_profile)
     sized: dict[str, float] = {}
     for s in strategies:
-        if not getattr(s, "passes_rigor_gate", False):
+        deployable = (
+            (s.id in deployable_ids) if deployable_ids is not None else bool(getattr(s, "passes_rigor_gate", False))
+        )
+        if not deployable:
             sized[s.id] = 0.0
             continue
         kelly = getattr(s, "kelly_fraction", None)

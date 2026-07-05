@@ -950,7 +950,8 @@ class TestRigorGate:
 # ─── Additional coverage: gate_details branches + run_rigor_gate paths ──────
 
 # Deterministic return series (no np.random to avoid VoidDType issue).
-# _RETURNS_50: DSR p=0.917 (below 0.95 gate) — used for structural tests.
+# _RETURNS_50: DSR p=0.917 (above the recalibrated 0.90 badge bar; was below the
+# pre-recalibration 0.95) — used for structural tests that don't hinge on the DSR verdict.
 # _RETURNS_80: DSR p=1.0 (clears gate) — used where a strong series is needed.
 _RETURNS_50 = [0.01 * ((-1) ** i) * 0.5 + 0.001 for i in range(50)]
 _RETURNS_80 = [0.01, -0.005, 0.008, 0.003] * 20
@@ -1220,10 +1221,11 @@ class TestGateDetailsBranches:
         assert r.gate_details["dsr"] == "PASS (p=0.9700)"
 
     def test_dsr_fail_branch(self):
-        """dsr_p_value < 0.95 but not None renders 'FAIL (p=..., need >= 0.95)'
-        using the Unicode greater-than-or-equal sign (U+2265) as in the source."""
+        """dsr_p_value < the badge bar (0.90, level 1) but not None renders
+        'FAIL (p=..., need >= 0.90)' using the Unicode greater-than-or-equal sign
+        (U+2265) as in the source. 0.90 is the recalibrated Conservative bar."""
         r = RigorGateResult("s", dsr_p_value=0.8000)
-        assert r.gate_details["dsr"] == "FAIL (p=0.8000, need ≥ 0.95)"
+        assert r.gate_details["dsr"] == "FAIL (p=0.8000, need ≥ 0.90)"
 
     def test_dsr_missing_branch(self):
         """dsr_p_value is None renders 'MISSING'."""
@@ -1238,7 +1240,7 @@ class TestGateDetailsBranches:
     def test_pbo_fail_branch(self):
         """pbo_score >= 0.5 but not None renders 'FAIL (..., source=...)' (#546)."""
         r = RigorGateResult("s", pbo_score=0.6000)
-        assert r.gate_details["pbo"] == "FAIL (PBO=0.6000, need < 0.5, source=cohort)"
+        assert r.gate_details["pbo"] == "FAIL (PBO=0.6000, need < 0.50, source=cohort)"
 
     def test_pbo_missing_branch(self):
         """pbo_score is None renders 'MISSING (source=...)' (#546)."""
@@ -2008,7 +2010,7 @@ class TestPboPowerFloor:
             look_ahead_passed=True,
         )
         assert r.passes_all is False
-        assert r.gate_details["pbo"] == "FAIL (PBO=0.9000, need < 0.5, source=cohort)"
+        assert r.gate_details["pbo"] == "FAIL (PBO=0.9000, need < 0.50, source=cohort)"
 
     def test_above_floor_low_pbo_still_passes(self) -> None:
         r = RigorGateResult(
@@ -2029,7 +2031,7 @@ class TestPboPowerFloor:
         doesn't know about the floor stays on the old hard PASS/FAIL/MISSING."""
         r = RigorGateResult("s", dsr_p_value=0.97, pbo_score=0.9, oos_sharpe=1.0, look_ahead_passed=True)
         assert r.passes_all is False
-        assert r.gate_details["pbo"] == "FAIL (PBO=0.9000, need < 0.5, source=cohort)"
+        assert r.gate_details["pbo"] == "FAIL (PBO=0.9000, need < 0.50, source=cohort)"
 
     def test_run_rigor_gate_auto_derives_library_size_from_cohort_dict(self) -> None:
         """The common case needs no caller change: run_rigor_gate derives N from
@@ -2093,7 +2095,7 @@ class TestPboPowerFloor:
         assert result.pbo_source == "library"
         assert result.pbo_library_size is None
         assert result.passes_all is False  # gates normally: PBO=0.9 >= 0.5, no floor applies
-        assert result.gate_details["pbo"] == "FAIL (PBO=0.9000, need < 0.5, source=library)"
+        assert result.gate_details["pbo"] == "FAIL (PBO=0.9000, need < 0.50, source=library)"
 
 
 # ─── Daily-returns store loader (#546) ───────────────────────────────
