@@ -80,6 +80,8 @@ class TestOraclePriceFormatting:
             ),
             # First push for this symbol → reference confirmed absent → allowed.
             patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(None, True))),
+            # Confirmation phase (#905): the tx lands COMPLETE on-chain.
+            patch.object(updater, "_poll_circle_tx", AsyncMock(return_value="COMPLETE")),
         ):
             result = await updater.push_prices_on_chain([_price(usd=185.50)])
 
@@ -111,6 +113,7 @@ class TestOraclePriceFormatting:
                 return_value=_TEST_ORACLE_ADDRS,
             ),
             patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(None, True))),
+            patch.object(updater, "_poll_circle_tx", AsyncMock(return_value="COMPLETE")),
         ):
             await updater.push_prices_on_chain([_price(symbol="sNVDA", usd=1.0000005)])
 

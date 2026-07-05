@@ -41,6 +41,15 @@ CRYPTO_MAP = {
 CIRCLE_API_BASE = "https://api.circle.com/v1/w3s"
 CIRCLE_BLOCKCHAIN = "ARC-TESTNET"
 
+# ─── Push-confirmation polling (#905) ───
+# A 201 from Circle's contractExecution endpoint means "submission accepted",
+# NOT "landed on-chain" — the tx can still FAIL/revert later. Every push is
+# polled to a terminal state before the price is treated as pushed; mirrors
+# circle_signer._poll_transaction's states/cadence.
+_TX_TERMINAL_STATES = {"COMPLETE", "FAILED", "DENIED", "CANCELLED"}
+_TX_POLL_INTERVAL_S = 2.0
+_TX_MAX_POLLS = 60  # 2 minutes max per tx
+
 # ─── Sanity bounds for on-chain pushes (audit #13 / issue #508) ───
 # Max allowed move vs the last known good price, in basis points.
 # Default mirrors PriceOracle.sol's maxDeviationBps (2000 bps = 20%) so the
@@ -227,7 +236,16 @@ class OracleUpdater:
         return prices
 
     async def push_prices_on_chain(self, prices: list[AssetPrice]) -> str | None:
-        """Call PriceOracle.setPrice() for each asset via Circle Wallets API."""
+        """Call PriceOracle.setPrice() for each asset via Circle Wallets API.
+
+        Two phases (#905): submit every price, then poll each Circle tx to a
+        terminal state. ``_last_pushed_price_int`` — the deviation guard's
+        fallback reference — is updated ONLY for txs that reach ``COMPLETE``.
+        Recording it on HTTP 201 (submission accepted) treated a later on-chain
+        revert as success: the next tick's deviation guard then compared against
+        a price that was never written, silently defeating the guard and masking
+        a stuck oracle.
+        """
         if not self._api_key or not self._entity_secret or not self._wallet_id:
             logger.warning(
                 "Circle credentials not configured "
@@ -239,7 +257,10 @@ class OracleUpdater:
         from archimedes.chain.client import chain_client
 
         oracle_addresses = chain_client.settings.oracle_addresses
-        tx_ids: list[str] = []
+        # (symbol, human price, 6-dec int, Circle tx id) per accepted submission,
+        # pending on-chain confirmation.
+        submitted: list[tuple[str, float, int, str]] = []
+        confirmed_tx_ids: list[str] = []
 
         async with aiohttp.ClientSession() as session:
             public_key = await self._get_circle_public_key(session)
@@ -292,15 +313,63 @@ class OracleUpdater:
                         body = await resp.json()
                         if resp.status == 201:
                             tx_id = body["data"]["id"]
-                            tx_ids.append(tx_id)
-                            self._last_pushed_price_int[price.symbol] = price_int
-                            logger.info(f"Pushed {price.symbol} price {price.price_usd:.2f} → Circle tx {tx_id}")
+                            submitted.append((price.symbol, price.price_usd, price_int, tx_id))
+                            logger.info(f"Submitted {price.symbol} price {price.price_usd:.2f} → Circle tx {tx_id}")
                         else:
                             logger.error(f"Circle API error for {price.symbol} ({resp.status}): {body}")
                 except Exception:
                     logger.exception(f"Failed to push price for {price.symbol}")
 
-        return tx_ids[0] if tx_ids else None
+            # ── Confirmation phase (#905): poll each submission to a terminal
+            # state. Only a COMPLETE tx counts as pushed; anything else leaves
+            # the cached deviation reference untouched and is logged loudly so
+            # a stuck oracle is visible to operators, never masked.
+            for symbol, price_usd, price_int, tx_id in submitted:
+                state = await self._poll_circle_tx(session, tx_id)
+                if state == "COMPLETE":
+                    self._last_pushed_price_int[symbol] = price_int
+                    confirmed_tx_ids.append(tx_id)
+                    logger.info(f"Pushed {symbol} price {price_usd:.2f} on-chain (Circle tx {tx_id} COMPLETE)")
+                else:
+                    logger.error(
+                        "Oracle push for %s (price %.2f, Circle tx %s) ended %s — "
+                        "on-chain price NOT updated; deviation-guard reference unchanged",
+                        symbol,
+                        price_usd,
+                        tx_id,
+                        state,
+                    )
+
+        return confirmed_tx_ids[0] if confirmed_tx_ids else None
+
+    async def _poll_circle_tx(self, session: aiohttp.ClientSession, circle_tx_id: str) -> str:
+        """Poll a Circle tx to a terminal state (#905).
+
+        Same states/cadence as ``circle_signer._poll_transaction``, but returns
+        the terminal state string (``"TIMEOUT"`` after ``_TX_MAX_POLLS``) instead
+        of raising, so one failed price push cannot abort the confirmation of
+        the other symbols in the same batch. Poll errors are treated as
+        still-processing — only an explicit terminal state or the timeout ends
+        the loop, and only ``COMPLETE`` is ever treated as success.
+        """
+        for _ in range(_TX_MAX_POLLS):
+            try:
+                async with session.get(
+                    f"{CIRCLE_API_BASE}/transactions?pageSize=50",
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                ) as resp:
+                    if resp.status == 200:
+                        body = await resp.json()
+                        for tx in body.get("data", {}).get("transactions", []):
+                            if tx.get("id") == circle_tx_id:
+                                state = tx.get("state", "UNKNOWN")
+                                if state in _TX_TERMINAL_STATES:
+                                    return state
+                                break  # found but still processing
+            except Exception:
+                logger.warning("Circle tx %s poll attempt failed — retrying", circle_tx_id, exc_info=True)
+            await asyncio.sleep(_TX_POLL_INTERVAL_S)
+        return "TIMEOUT"
 
     async def fetch_market_snapshot(self) -> MarketSnapshot:
         """Fetch a full market snapshot with prices + regime signals."""
