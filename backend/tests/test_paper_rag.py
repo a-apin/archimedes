@@ -360,3 +360,42 @@ class TestAugmentCandidateScores:
             with patch.object(rag_module, "_get_embedding_model", return_value=_fake_model()):
                 results = augment_candidate_scores("direction", candidates)
         assert all(s == 1.0 for _, s in results)
+
+    def test_empty_arxiv_ids_get_zero_not_default_promotion(self, monkeypatch):
+        """Candidates with empty arxiv_id must not ride the old 0.5 default above a
+        genuinely-scored paper — they get 0.0 and rank below it (#938)."""
+        monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
+        c_real = self._make_candidate("2401.v1", "Volatility Portfolio")
+        c_empty1 = self._make_candidate("", "Mystery Paper A")
+        c_empty2 = self._make_candidate("", "Mystery Paper B")
+
+        # Every paper scores 0.3 — below the OLD 0.5 default that empty ids used to get.
+        def fake_rerank(query, papers, **kw):
+            return [(p, 0.3) for p in papers]
+
+        with patch.object(rag_module, "semantic_rerank", side_effect=fake_rerank):
+            results = augment_candidate_scores("volatility", [c_real, c_empty1, c_empty2])
+
+        empty_scores = [s for c, s in results if not c.arxiv_id]
+        assert empty_scores == [0.0, 0.0]  # not 0.5
+        real_score = next(s for c, s in results if c.arxiv_id == "2401.v1")
+        assert real_score == 0.3
+        assert results[0][0].arxiv_id == "2401.v1"  # real paper ranks first
+
+    def test_duplicate_arxiv_ids_each_keep_their_own_score(self, monkeypatch):
+        """Two candidates sharing an arxiv_id must not collapse to one score in the
+        map — each keeps its own semantic score (#938)."""
+        monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
+        c1 = self._make_candidate("dup", "Paper One about momentum")
+        c2 = self._make_candidate("dup", "Paper Two about value")
+
+        # papers preserve head order, so papers[0] is c1's dict, papers[1] is c2's.
+        def fake_rerank(query, papers, **kw):
+            return [(papers[0], 0.9), (papers[1], 0.2)]
+
+        with patch.object(rag_module, "semantic_rerank", side_effect=fake_rerank):
+            results = augment_candidate_scores("x", [c1, c2])
+
+        by_title = {c.title: s for c, s in results}
+        assert by_title["Paper One about momentum"] == 0.9  # not collapsed to 0.2
+        assert by_title["Paper Two about value"] == 0.2
