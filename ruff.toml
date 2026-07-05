@@ -66,7 +66,7 @@ ignore = [
 # importing any service that reads env vars at import time. That forces the
 # downstream imports below the load_dotenv() call, which trips E402. The pattern
 # is intentional; the alternative (import-time-deferred env reads) is uglier.
-"backend/archimedes/main.py" = ["E402"]
+"backend/archimedes/main.py" = ["E402", "SLF001"]
 "backend/archimedes/scripts/*.py" = ["E402"]
 "analytics-engine/scripts/*.py" = ["E402"]
 "backend/archimedes/api/selection_bias_routes.py" = ["E402"]
@@ -84,3 +84,8 @@ ignore = [
 "tests/**" = ["ARG", "SLF"]
 "backend/archimedes/scripts/**" = ["ARG"]
 "backend/archimedes/evaluation/stockbench/__main__.py" = ["ARG"]
+# marketplace uses ContractLoader._contract (well-known codebase pattern) and
+# AgentStateStore._get_redis (spec-mandated, see D-BYTES32/D-FANOUT) — both are
+# intentional private-member accesses.
+"backend/archimedes/marketplace/**" = ["SLF"]
+"backend/archimedes/api/marketplace_routes.py" = ["SLF"]

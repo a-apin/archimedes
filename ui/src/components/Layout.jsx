@@ -35,6 +35,11 @@ const NAV = [
     { id: 'reasoning', label: 'Reasoning', icon: 'i-lucide-brain' },
     { id: 'learnings', label: 'Learnings', icon: 'i-lucide-graduation-cap' },
   ]},
+  { group: 'Market', items: [
+    { id: 'marketplace',   label: 'Marketplace',   icon: 'i-lucide-shopping-bag' },
+    { id: 'publish',       label: 'Publish',       icon: 'i-lucide-megaphone' },
+    { id: 'subscriptions', label: 'Subscriptions', icon: 'i-lucide-bell' },
+  ]},
   { group: 'Ops', items: [
     { id: 'insights', label: 'Insights', icon: 'i-lucide-bar-chart-3' },
   ]},
@@ -56,6 +61,10 @@ export const PAGE_LABELS = {
   'vault-detail': 'Vault Details',
   about: 'About',
   imprint: 'Imprint',
+  marketplace: 'Marketplace',
+  'market-strategy': 'Strategy Detail',
+  publish: 'Publish',
+  subscriptions: 'Subscriptions',
 }
 
 export default function Layout({ page, setPage, walletAddr, onConnect, onDisconnect, onOpenTour, children }) {

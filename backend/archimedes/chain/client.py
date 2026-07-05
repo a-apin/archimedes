@@ -101,6 +101,10 @@ class ChainSettings(BaseSettings):
     agent_private_key: str = ""
     agent_address: str = ""  # Will be derived from private key if empty
 
+    # Marketplace subscription readiness thresholds
+    min_vault_usdc: float = 10.0  # ARC_MIN_VAULT_USDC
+    min_active_action_buffer: int = 20  # ARC_MIN_ACTIVE_ACTION_BUFFER — in action-fees
+
     # Owner account (for admin operations like oracle price updates)
     owner_private_key: str = ""
 
@@ -115,6 +119,7 @@ class ChainSettings(BaseSettings):
     reasoning_trace_registry_address: str = ""  # ARC_REASONING_TRACE_REGISTRY_ADDRESS
     asset_registry_address: str = ""  # ARC_ASSET_REGISTRY_ADDRESS
     strategy_registry_address: str = ""  # ARC_STRATEGY_REGISTRY_ADDRESS
+    payment_splitter_address: str = ""  # ARC_PAYMENT_SPLITTER_ADDRESS
 
     # NOTE: per-synth token + oracle addresses are NO LONGER individual fields. They
     # are resolved SSOT-driven over universe.ON_CHAIN_SYNTHS in synth_addresses /

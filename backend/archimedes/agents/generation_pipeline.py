@@ -684,8 +684,8 @@ async def run_generation(
     store: JobStore | None = None,
     mode: str | None = None,
     model: str | None = None,
-    dual_regime: bool = True,
     owner_wallet: str | None = None,
+    dual_regime: bool = True,
 ) -> None:
     """Run the full streaming generation pipeline for one job.
 
@@ -1175,6 +1175,12 @@ async def _persist_candidate(
                 is_example=False,
                 owner_wallet=owner_wallet,
             )
+            # Stamp the generating wallet so wallet_can_publish() returns True
+            # for this wallet/strategy pair (D5 publish gate).
+            if owner_wallet:
+                from archimedes.models.strategy_generators import record_generator
+
+                record_generator(session, strategy_id=record.id, wallet_address=owner_wallet)
             session.commit()
 
             # Also write to the unified strategy_passports table (Issue #160)

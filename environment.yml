@@ -54,6 +54,13 @@ dependencies:
       # --- Backtesting (per backtrader-vs-vectorbt decision memo) ---
       - backtrader>=1.9.78.123        # Decision: v1 default. See docs/specs/backtrader-vs-vectorbt-decision-memo.md. Floor aligned with backend/requirements.txt via dependabot PR #249.
 
+      # --- x402 micropayments / Circle marketplace ---
+      # circle-titanoboa-sdk provides circlekit — imported by marketplace_routes.py,
+      # wallet_provisioner.py, and settlement.py. Pinned to the same commit as
+      # backend/requirements.txt; pinned to a forked commit (not on PyPI) so the
+      # git URL form is required. Evaluate vendoring if the upstream fork disappears.
+      - "circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355"
+
       # --- LLM ---
       - anthropic>=0.104.1            # Claude / GLM-compatible client for strategy extraction + reasoning trace generation + chat. Floor aligned with backend/requirements.txt via dependabot PR #251; locally smoke-tested at 0.104.1 against llm_backend.py + chat_service.py (full 784-test backend suite green).
 
@@ -83,6 +90,7 @@ dependencies:
       - pytest>=8.3
       - pytest-asyncio>=0.24
       - pytest-cov>=5.0
+      - "fakeredis[lua]>=2.26.0"         # Test double for Redis in marketplace unit tests (test_state.py); dev-only, not in prod requirements.txt
       - mypy>=1.11
       - "pip-audit>=2.7"              # Supply-chain CVE scanner — run `pip-audit` to check installed deps against the PyPI vulnerability DB. Not yet a CI gate; advisory only.
 

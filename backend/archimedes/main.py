@@ -10,6 +10,9 @@ import os
 
 # Load .env into os.environ at import time for modules that use os.getenv()
 # (circle_signer, oracle_updater) — pydantic ChainSettings handles ARC_ vars itself.
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +39,7 @@ from archimedes.api.explore_routes import explore_router
 from archimedes.api.generate_routes import generate_router
 from archimedes.api.leaderboard_routes import leaderboard_router
 from archimedes.api.limiter import limiter
+from archimedes.api.marketplace_routes import marketplace_router
 
 # (the marketplace route registration was removed — hardcoded fees + invented math, Issue #381)
 from archimedes.api.metrics_private_routes import metrics_private_router
@@ -72,12 +76,188 @@ else:
     _docs_url = "/docs"
     _openapi_url = "/openapi.json"
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+    """FastAPI lifespan context manager — startup before yield, shutdown after."""
+    _logger = logging.getLogger("archimedes.startup")
+
+    # ── STARTUP ──────────────────────────────────────────────────────────
+    # 1. Populate selection-bias rigor gate fields (idempotent). Only runs
+    # the full computation when some backtest row is missing DSR/PBO, and
+    # refreshes the provider cache afterwards so /api/strategies serves the
+    # new values immediately (mirrors the pre-lifespan startup handler).
+    try:
+        from archimedes.db import get_session
+        from archimedes.models.backtest_store import BacktestResultRecord
+        from archimedes.services.strategy_provider import default_provider
+
+        provider = default_provider()
+        strategies = provider.list_strategies()
+        if strategies:
+            strategy_ids = [s.id for s in strategies]
+            with get_session() as session:
+                rows = (
+                    session.query(BacktestResultRecord).filter(BacktestResultRecord.strategy_id.in_(strategy_ids)).all()
+                )
+                needs_rigor = [r for r in rows if r.deflated_sharpe_ratio is None]
+            if needs_rigor:
+                _logger.info("startup: computing rigor gate for %d strategies...", len(needs_rigor))
+                from archimedes.api.selection_bias_routes import evaluate_rigor_gate
+
+                result = await evaluate_rigor_gate()
+                _logger.info("startup: rigor gate computed — %d/%d passing", result.passing, result.total)
+                # Refresh provider's backtest cache so /api/strategies serves
+                # the new DSR/PBO values without waiting for a cache cycle.
+                provider.refresh()
+            else:
+                _logger.info("startup: all %d backtest rows have rigor gate fields", len(rows))
+    except Exception as exc:
+        _logger.warning("startup: rigor gate population failed (non-fatal): %s", exc)
+
+    # 2. Seed papers table from manifest.jsonl (idempotent)
+    try:
+        from archimedes.services.corpus_service import seed_from_manifest
+
+        inserted = seed_from_manifest()
+        if inserted > 0:
+            _logger.info("startup: seeded %d new papers from manifest", inserted)
+    except Exception as exc:
+        _logger.warning("startup: corpus seed failed (non-fatal): %s", exc)
+
+    # 3. Start the in-process marketplace engine (MarketService)
+    from archimedes.marketplace.service import MarketService
+
+    interval = int(os.getenv("AGENT_INTERVAL_SECONDS", "300"))
+    # Both money-affecting switches FAIL SAFE (default to dry) and must be
+    # turned on together and deliberately. Previously PAYMENTS_DRY_RUN
+    # defaulted to "false" while PAPER_TRADING defaulted to "true", so an
+    # out-of-the-box deploy mirrored no real trades yet charged real USDC —
+    # the worst possible asymmetry. Charging real money now requires an
+    # explicit PAYMENTS_DRY_RUN=false.
+    payments_dry_run = os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")
+    paper_trading = os.getenv("PAPER_TRADING", "true").lower() in ("1", "true", "yes")
+    market = MarketService(interval_seconds=interval, payments_dry_run=payments_dry_run, paper_trading=paper_trading)
+    _app.state.market = market
+    _logger.info(
+        "marketplace engine started (interval=%ds, payments_dry_run=%s, paper_trading=%s)",
+        interval,
+        payments_dry_run,
+        paper_trading,
+    )
+
+    # 3a. Rehydrate running publishers from Postgres
+    try:
+        from archimedes.db import get_session
+        from archimedes.marketplace.service import Subscriber
+        from archimedes.models.marketplace import MarketplaceAgent
+
+        with get_session() as session:
+            publishers = (
+                session.query(MarketplaceAgent)
+                .filter(MarketplaceAgent.role == "publisher", MarketplaceAgent.status == "running")
+                .all()
+            )
+            strategy_ids = [row.strategy_id for row in publishers]
+            subscriber_rows = (
+                session.query(MarketplaceAgent)
+                .filter(
+                    MarketplaceAgent.role == "subscriber",
+                    MarketplaceAgent.status == "running",
+                    MarketplaceAgent.strategy_id.in_(strategy_ids),
+                )
+                .all()
+                if strategy_ids
+                else []
+            )
+
+        # Group subscriber rows by strategy_id
+        subscribers_by_strategy: dict[str, dict[str, Subscriber]] = {}
+        for srow in subscriber_rows:
+            if not srow.circle_wallet_id:
+                _logger.warning(
+                    "rehydrate: subscriber %s has NULL circle_wallet_id — marking inactive (fail closed, legacy row)",
+                    srow.sub_id,
+                )
+                subscriber_active = False
+            else:
+                subscriber_active = not srow.halted
+            subscribers_by_strategy.setdefault(srow.strategy_id, {})[srow.sub_id] = Subscriber(
+                sub_id=srow.sub_id,
+                pool_id=srow.pool_id,
+                vault_address=srow.vault_address,
+                ephemeral_wallet=srow.ephemeral_wallet,
+                subscriber_wallet=srow.subscriber_wallet,
+                active=subscriber_active,
+                circle_wallet_id=srow.circle_wallet_id or "",
+            )
+
+        for row in publishers:
+            subs = subscribers_by_strategy.get(row.strategy_id, {})
+            if not row.gateway_seller_address:
+                _logger.error(
+                    "rehydrate: publisher %s has NULL gateway_seller_address — "
+                    "skipping (fail closed, legacy row). Set a gateway_seller_address "
+                    "on the publisher row before restarting.",
+                    row.strategy_id,
+                )
+                continue
+            await market.start_publisher(
+                strategy_id=row.strategy_id,
+                pool_id=row.pool_id,
+                vault_address=row.vault_address,
+                creator_wallet=row.creator_wallet,
+                gateway_seller_address=row.gateway_seller_address,
+                agent_wallet_id=row.agent_wallet_id or "",
+                subscribers=subs,
+            )
+            _logger.info(
+                "rehydrated publisher %s (vault=%s, %d subscribers from Postgres)",
+                row.strategy_id,
+                row.vault_address,
+                len(subs),
+            )
+    except Exception as exc:
+        _logger.warning("startup: publisher rehydration failed (non-fatal): %s", exc)
+
+    # 4. Arm the in-app backtest refresh scheduler (no operator-invoked CLI
+    # runs — see services/backtest_scheduler.py). MUST live in this lifespan:
+    # passing a custom lifespan= makes Starlette silently skip any
+    # @app.on_event("startup") handlers, so anything not started here does
+    # not start at all. Disabled under TESTING / BACKTEST_REFRESH_ENABLED=0;
+    # fail-soft: never blocks startup.
+    try:
+        from archimedes.services.backtest_scheduler import backtest_refresh_loop, refresh_enabled
+
+        if refresh_enabled():
+            asyncio.create_task(backtest_refresh_loop())
+            _logger.info("startup: backtest refresh scheduler armed")
+        else:
+            _logger.info("startup: backtest refresh scheduler disabled")
+    except Exception as exc:
+        _logger.warning("startup: backtest scheduler failed to arm (non-fatal): %s", exc)
+
+    yield  # ── app is now running ────────────────────────────────────────
+
+    # ── SHUTDOWN ─────────────────────────────────────────────────────────
+    market = getattr(_app.state, "market", None)
+    if market is not None:
+        market._stop.set()
+        strategy_ids = list(market.publishers.keys())
+        if strategy_ids:
+            await asyncio.gather(
+                *(market.stop_publisher(sid) for sid in strategy_ids),
+            )
+        _logger.info("marketplace engine stopped")
+
+
 app = FastAPI(
     title="Archimedes",
     description="Agentic trading, grounded in research — settled on Arc.",
     version="0.1.0",
     docs_url=_docs_url,
     openapi_url=_openapi_url,
+    lifespan=lifespan,
 )
 
 # Wire rate limiter into the app state
@@ -177,88 +357,10 @@ app.middleware("http")(ensure_visitor_id_middleware)
 init_db()
 
 
-@app.on_event("startup")
-async def _startup_populate_rigor_gate():
-    """On first startup, compute and persist selection-bias rigor gate fields.
-
-    Idempotent: only populates strategies that don't yet have DSR/PBO values.
-    Skips entirely if the backtest_results table is empty.
-    """
-    _logger = logging.getLogger("archimedes.startup")
-    try:
-        from archimedes.db import get_session
-        from archimedes.models.backtest_store import BacktestResultRecord
-        from archimedes.services.strategy_provider import default_provider
-
-        provider = default_provider()
-        strategies = provider.list_strategies()
-        if not strategies:
-            return
-
-        strategy_ids = [s.id for s in strategies]
-        with get_session() as session:
-            rows = session.query(BacktestResultRecord).filter(BacktestResultRecord.strategy_id.in_(strategy_ids)).all()
-
-            # Check if any need rigor gate computation
-            needs_rigor = [r for r in rows if r.deflated_sharpe_ratio is None]
-            if not needs_rigor:
-                _logger.info("startup: all %d backtest rows have rigor gate fields", len(rows))
-                return
-
-        _logger.info("startup: computing rigor gate for %d strategies...", len(needs_rigor))
-
-        # Call the rigor gate endpoint logic (triggers full computation + persist)
-
-        from archimedes.api.selection_bias_routes import evaluate_rigor_gate
-
-        result = await evaluate_rigor_gate()
-        _logger.info(
-            "startup: rigor gate computed — %d/%d passing",
-            result.passing,
-            result.total,
-        )
-
-        # Refresh provider's backtest cache so /api/strategies serves the new DSR/PBO values
-        provider.refresh()
-    except Exception as exc:
-        _logger.warning("startup: rigor gate population failed (non-fatal): %s", exc)
-
-
-@app.on_event("startup")
-async def _startup_seed_corpus():
-    """Seed papers table from manifest.jsonl (idempotent — adds new papers only)."""
-    _logger = logging.getLogger("archimedes.startup")
-    try:
-        from archimedes.services.corpus_service import seed_from_manifest
-
-        inserted = seed_from_manifest()
-        if inserted > 0:
-            _logger.info("startup: seeded %d new papers from manifest", inserted)
-        else:
-            _logger.info("startup: corpus seed — no new papers to add")
-    except Exception as exc:
-        _logger.warning("startup: corpus seed failed (non-fatal): %s", exc)
-
-
-@app.on_event("startup")
-async def _startup_backtest_scheduler():
-    """Keep curated backtests fresh IN-APP — no operator-invoked CLI runs.
-
-    The scheduler owns staleness checks + refresh cadence; see
-    services/backtest_scheduler.py. Disabled under TESTING and via
-    BACKTEST_REFRESH_ENABLED=0. Fail-soft: never blocks startup.
-    """
-    _logger = logging.getLogger("archimedes.startup")
-    try:
-        from archimedes.services.backtest_scheduler import backtest_refresh_loop, refresh_enabled
-
-        if refresh_enabled():
-            asyncio.create_task(backtest_refresh_loop())
-            _logger.info("startup: backtest refresh scheduler armed")
-        else:
-            _logger.info("startup: backtest refresh scheduler disabled")
-    except Exception as exc:
-        _logger.warning("startup: backtest scheduler failed to arm (non-fatal): %s", exc)
+# NOTE: startup work lives in lifespan() above. Do NOT add
+# @app.on_event("startup") handlers here — with a custom lifespan= passed to
+# FastAPI, Starlette silently skips them (verified on fastapi 0.138.1), so
+# they would be dead code that LOOKS like it runs.
 
 
 # Wire all routers
@@ -274,7 +376,7 @@ app.include_router(chat_router)
 app.include_router(corpus_router)
 app.include_router(explore_router)
 app.include_router(generate_router)
-# marketplace_router removed (Issue #381)
+app.include_router(marketplace_router)
 app.include_router(risk_router)
 app.include_router(portfolio_router)
 app.include_router(selection_bias_router)

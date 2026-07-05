@@ -12,3 +12,7 @@ from archimedes.agents import generation_pipeline as generation_pipeline
 from archimedes.agents import portfolio_agent as portfolio_agent
 from archimedes.agents import strategy_architect as strategy_architect
 from archimedes.agents import strategy_fusion as strategy_fusion
+
+# Re-export so MarketplaceState's dynamic import via
+# ``getattr(archimedes.services, "redis_state")`` works.
+from archimedes.services import redis_state as redis_state  # noqa: F401

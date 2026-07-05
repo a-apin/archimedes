@@ -50,6 +50,9 @@ urllib3>=2.7.0
 # Backtesting
 backtrader>=1.9.78.123
 
+# x402 micropayments via Circle Gateway (D1)
+circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355
+
 # LLM
 anthropic>=0.112.0
 
@@ -58,6 +61,8 @@ web3>=7.16.0
 eth-account>=0.13.7
 eth-utils>=6.0.0
 cryptography>=49.0.0
+# direct import in marketplace/encoding.py (derive_pool_id); do not rely on web3 transitive
+eth-abi>=5.0.0
 
 ## Rate limiting
 slowapi>=0.1.10

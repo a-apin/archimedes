@@ -695,4 +695,6 @@ export const NEW_CONTRACTS = {
   vaultFactory:    '0x32A3e0D0a8215D77e3B92fa6d9b4Dbe19f255671',
   traceRegistry:   '0x44bD55c0DdF757e584a41fb7F3B6a47b4C5982ba',
   assetRegistry:   '0x79fc95A10E8240116006084439B650BA9e72F3cA',
+  // paymentSplitter: source is contracts/src/PaymentSplitter.sol (deployed at T3.2).
+  paymentSplitter:     '0x0000000000000000000000000000000000000000',
 }
