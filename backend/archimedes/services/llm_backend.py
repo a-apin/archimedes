@@ -69,6 +69,21 @@ def is_allowed_model(model: str | None) -> bool:
     return bool(model) and model in FREE_TIER_MODELS
 
 
+def _first_text_block(content) -> str:
+    """Return the first text block's text from an Anthropic-style content list.
+
+    The first block is not always text: with extended thinking or tool use the
+    response leads with a ``thinking``/``tool_use`` block that has no ``.text``
+    attribute, so ``content[0].text`` raises ``AttributeError`` (issue #930).
+    Iterate to the first block that actually carries text; return "" if none does.
+    """
+    for block in content or []:
+        text = getattr(block, "text", None)
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return ""
+
+
 class LLMBackend(Protocol):
     """Minimal text-completion seam consumed by architect + fusion."""
 
@@ -127,7 +142,7 @@ class AnthropicBackend:
         served = getattr(resp, "model", None)
         if served:
             self._served = str(served)
-        return resp.content[0].text.strip() if resp.content else ""
+        return _first_text_block(resp.content)
 
 
 # ── Anthropic-compatible (auth_token + base_url, e.g. GLM via z.ai) ──
@@ -178,7 +193,7 @@ class AnthropicCompatibleBackend:
         served = getattr(resp, "model", None)
         if served:
             self._served = str(served)
-        return resp.content[0].text.strip() if resp.content else ""
+        return _first_text_block(resp.content)
 
 
 # ── AWS Bedrock (IAM auth, no API key) ───────────────────────────────
@@ -244,7 +259,7 @@ class BedrockBackend:
         served = getattr(resp, "model", None)
         if served:
             self._served = str(served)
-        return resp.content[0].text.strip() if resp.content else ""
+        return _first_text_block(resp.content)
 
 
 # ── AWS Bedrock via the Converse API (uniform across ALL providers, IAM auth) ──

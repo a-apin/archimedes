@@ -263,6 +263,46 @@ def test_bedrock_backend_available_and_completes_with_mocked_client(monkeypatch)
         assert client.messages.create.call_args.kwargs["model"] == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
+class _ThinkingBlock:
+    """A leading response block with no ``.text`` (thinking/tool_use shape)."""
+
+    def __init__(self, thinking: str) -> None:
+        self.thinking = thinking
+
+
+class _TextBlock:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+def test_first_text_block_skips_non_text_and_handles_empty():
+    """_first_text_block returns the first block carrying real text, else "" (#930)."""
+    from archimedes.services.llm_backend import _first_text_block
+
+    assert _first_text_block([_ThinkingBlock("pondering"), _TextBlock("  hi  ")]) == "hi"
+    assert _first_text_block([_ThinkingBlock("only thinking")]) == ""  # no text block at all
+    assert _first_text_block([]) == ""
+    assert _first_text_block(None) == ""
+
+
+def test_bedrock_backend_skips_leading_thinking_block(monkeypatch):
+    """When the SDK response leads with a thinking block (no ``.text``), the backend
+    must iterate to the first real text block instead of AttributeError-ing on
+    ``content[0].text`` (#930)."""
+    monkeypatch.setenv("LLM_BEDROCK_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+    response = MagicMock()
+    response.content = [_ThinkingBlock("let me think"), _TextBlock("  ANSWER  ")]
+    response.model = "claude-haiku-4-5-20251001"
+    client = MagicMock()
+    client.messages.create.return_value = response
+
+    with patch.dict(sys.modules, {"boto3": _fake_boto3(object()), "anthropic": _fake_anthropic(client)}):
+        from archimedes.services.llm_backend import BedrockBackend
+
+        backend = BedrockBackend()
+        assert backend.complete("sys", "user") == "ANSWER"
+
+
 def test_make_llm_backend_selects_bedrock(monkeypatch):
     """LLM_PROVIDER=bedrock routes the factory to BedrockBackend (creds present)."""
     monkeypatch.setenv("LLM_PROVIDER", "bedrock")
