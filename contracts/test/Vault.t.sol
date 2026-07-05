@@ -1561,4 +1561,121 @@ contract VaultTest is Test {
             assertTrue(logs[i].topics[0] != sig, "no charge event when USDC covers the redemption");
         }
     }
+
+    // ─── Rebalance Toward-Target / Anti-Churn (issue #915) ───────────
+
+    /// @dev Set a 50/50 USDC/sTSLA target allocation (as the manager).
+    function _setTarget5050() internal {
+        address[] memory tokens = new address[](2);
+        tokens[0] = address(usdc);
+        tokens[1] = address(sTSLA);
+        uint256[] memory weights = new uint256[](2);
+        weights[0] = 5000;
+        weights[1] = 5000;
+        vm.prank(agent);
+        vault.setTargetAllocations(tokens, weights);
+    }
+
+    /// @dev Put the vault at ~98% sTSLA (buy before any target exists, so the buy is
+    ///      unconstrained), then arm the 50/50 target.
+    function _vaultMostlySynthWithTarget() internal {
+        _depositAsAlice(50_000 * 10**6);
+        _rebalanceBuyTsla(49_000 * 10**6); // ~98% synth, no target set yet → unconstrained
+        _setTarget5050();
+    }
+
+    /// @dev A rebalance that buys MORE of an already-over-target token is rejected — this is
+    ///      the churn vector: the manager can't push the vault further from target.
+    function test_revert_rebalance_buy_away_from_target() public {
+        _vaultMostlySynthWithTarget();
+
+        address[] memory tIn = _singleton(address(sTSLA));
+        uint256[] memory aIn = _singletonUint(500 * 10**6);
+        address[] memory tOut = new address[](0);
+        uint256[] memory aOut = new uint256[](0);
+        _commitFor(tIn, aIn, tOut, aOut);
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(Vault.RebalanceNotTowardTarget.selector, address(sTSLA)));
+        vault.rebalance(tIn, aIn, tOut, aOut);
+    }
+
+    /// @dev A rebalance that sells an over-target token toward its target is allowed, and the
+    ///      token's weight moves down toward 50%.
+    function test_rebalance_sell_toward_target_succeeds() public {
+        _vaultMostlySynthWithTarget();
+
+        uint256 nav = vault.totalAssets();
+        uint256 synthWeightBefore = (_synthValue() * 10000) / nav;
+
+        // 10k tokens = ~20k USDC of synth, comfortably under the ~24k that would reach target.
+        _rebalanceSellTsla(10_000 * 1e18);
+
+        uint256 synthWeightAfter = (_synthValue() * 10000) / vault.totalAssets();
+        assertLt(synthWeightAfter, synthWeightBefore, "sell moved synth weight toward target");
+        assertGt(synthWeightAfter, 5000, "did not overshoot below target");
+    }
+
+    /// @dev Selling far more than needed to reach target overshoots below it and is rejected.
+    function test_revert_rebalance_sell_overshoots_target() public {
+        _vaultMostlySynthWithTarget();
+
+        // The vault holds ~24.3k sTSLA tokens (~48.7k USDC). Selling 20k tokens (~40k USDC)
+        // blows well past the ~24k that reaches the 50% target.
+        address[] memory tIn = new address[](0);
+        uint256[] memory aIn = new uint256[](0);
+        address[] memory tOut = _singleton(address(sTSLA));
+        uint256[] memory aOut = _singletonUint(20_000 * 1e18);
+        _commitFor(tIn, aIn, tOut, aOut);
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(Vault.RebalanceOvershootsTarget.selector, address(sTSLA)));
+        vault.rebalance(tIn, aIn, tOut, aOut);
+    }
+
+    /// @dev Acceptance scenario (#915): a single rebalance that sells synth toward target and
+    ///      then buys it back (the wash) reverts — the buy-back is evaluated against the
+    ///      post-sell weight, which is still above target, so it is rejected as away-from-target.
+    function test_revert_rebalance_churn_in_one_call() public {
+        _vaultMostlySynthWithTarget();
+
+        address[] memory tIn = _singleton(address(sTSLA)); // buy back
+        uint256[] memory aIn = _singletonUint(5_000 * 10**6);
+        address[] memory tOut = _singleton(address(sTSLA)); // sell first
+        uint256[] memory aOut = _singletonUint(5_000 * 1e18);
+        _commitFor(tIn, aIn, tOut, aOut);
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(Vault.RebalanceNotTowardTarget.selector, address(sTSLA)));
+        vault.rebalance(tIn, aIn, tOut, aOut);
+    }
+
+    /// @dev Regression: with no target allocation set, rebalance stays unconstrained (the
+    ///      guard only arms once a policy exists) — a plain buy still works.
+    function test_rebalance_unconstrained_without_target() public {
+        _depositAsAlice(50_000 * 10**6);
+        _rebalanceBuyTsla(10_000 * 10**6); // no target set → allowed
+        assertGt(sTSLA.balanceOf(address(vault)), 0, "buy executed with no target policy");
+    }
+
+    function test_setRebalanceBandBps() public {
+        vm.prank(agent);
+        vault.setRebalanceBandBps(300);
+        assertEq(vault.rebalanceBandBps(), 300);
+    }
+
+    function test_revert_setRebalanceBandBps_above_max() public {
+        uint256 aboveMax = vault.MAX_REBALANCE_BAND_BPS() + 1;
+        vm.prank(agent);
+        vm.expectRevert(Vault.InvalidRebalanceBand.selector);
+        vault.setRebalanceBandBps(aboveMax);
+    }
+
+    function test_revert_setRebalanceBandBps_non_owner() public {
+        vm.prank(bob);
+        vm.expectRevert();
+        vault.setRebalanceBandBps(300);
+    }
+
+    /// @dev sTSLA's USDC value held by the vault (18-dec balance * 6-dec price / 1e18).
+    function _synthValue() internal view returns (uint256) {
+        return (sTSLA.balanceOf(address(vault)) * tslaOracle.getPrice()) / 1e18;
+    }
 }
