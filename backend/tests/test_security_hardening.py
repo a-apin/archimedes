@@ -225,6 +225,41 @@ async def test_strategies_stress_run_has_rate_limit():
 
 
 @pytest.mark.asyncio
+async def test_stress_run_missing_symbol_is_422():
+    """POST /stress/run with an allocation missing `symbol` → 422, not 500 (#926)."""
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/strategies/stress/run", json={"allocations": [{"weight": 0.1}]})
+    assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+    assert "symbol" in resp.json().get("detail", "")
+
+
+@pytest.mark.asyncio
+async def test_stress_run_non_numeric_weight_is_422():
+    """A non-numeric `weight` is a client error (422), not a server 500 (#926)."""
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/strategies/stress/run",
+            json={"allocations": [{"symbol": "sTSLA", "weight": "not-a-number"}]},
+        )
+    assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+    assert "weight" in resp.json().get("detail", "")
+
+
+@pytest.mark.asyncio
+async def test_stress_run_non_dict_allocation_is_422():
+    """A non-object allocation element → 422, not 500 (#926)."""
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/strategies/stress/run", json={"allocations": ["sTSLA"]})
+    assert resp.status_code == 422, f"Expected 422, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
 async def test_swap_quote_has_rate_limit():
     """GET /api/swap/quote has rate limiting decorator."""
     from archimedes.api.swap_routes import get_swap_quote
