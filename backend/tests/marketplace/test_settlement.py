@@ -9,7 +9,6 @@ import pytest
 
 from archimedes.marketplace.settlement import (
     SettlementSweeper,
-    SWEEP_WITHDRAW_THRESHOLD_USDC,
     SWEEP_MIN_DEPOSIT_RAW,
     GATEWAY_CHAIN,
     _THRESHOLD_RAW,
@@ -46,6 +45,7 @@ def splitter_addr():
 
 # ── Stage A: Gateway balance below threshold → no withdraw ──────────────
 
+
 @pytest.mark.asyncio
 async def test_stage_a_below_threshold_does_not_withdraw(sweeper, pub):
     """Available balance below threshold => no withdraw call."""
@@ -67,6 +67,7 @@ async def test_stage_a_below_threshold_does_not_withdraw(sweeper, pub):
 
 
 # ── Stage A: Gateway balance above threshold → withdraw called ──────────
+
 
 @pytest.mark.asyncio
 async def test_stage_a_above_threshold_withdraws(sweeper, pub):
@@ -94,6 +95,7 @@ async def test_stage_a_above_threshold_withdraws(sweeper, pub):
 
 # ── Stage B: wallet balance below min deposit → no action ───────────────
 
+
 @pytest.mark.asyncio
 async def test_stage_b_below_min_deposit_skips(sweeper, pub):
     """Wallet USDC below SWEEP_MIN_DEPOSIT_RAW => no approve/deposit."""
@@ -115,6 +117,7 @@ async def test_stage_b_below_min_deposit_skips(sweeper, pub):
 
 # ── Stage B: wallet balance above min → approve then depositToPool ──────
 
+
 @pytest.mark.asyncio
 async def test_stage_b_approve_then_deposit(sweeper, pub, splitter_addr):
     """Wallet USDC above min => approve then depositToPool in order."""
@@ -134,8 +137,10 @@ async def test_stage_b_approve_then_deposit(sweeper, pub, splitter_addr):
 
         # approve called first with correct params
         exec_instance.execute_approve.assert_called_once_with(
-            GATEWAY_CHAIN, pub.gateway_seller_address,
-            splitter_addr, amount,
+            GATEWAY_CHAIN,
+            pub.gateway_seller_address,
+            splitter_addr,
+            amount,
         )
         # then depositToPool
         exec_instance._submit_and_wait.assert_called_once_with(
@@ -146,6 +151,7 @@ async def test_stage_b_approve_then_deposit(sweeper, pub, splitter_addr):
 
 
 # ── Stage A raises => Stage B still runs ─────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_stage_a_failure_does_not_block_stage_b(sweeper, pub):
@@ -173,6 +179,7 @@ async def test_stage_a_failure_does_not_block_stage_b(sweeper, pub):
 
 # ── sweep_publisher runs both stages ────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_sweep_publisher_runs_both_stages(sweeper, pub):
     """sweep_publisher calls both Stage A and Stage B."""
@@ -190,6 +197,7 @@ async def test_sweep_publisher_runs_both_stages(sweeper, pub):
 
 
 # ── sweep_publisher skips when missing wallet info ──────────────────────
+
 
 @pytest.mark.asyncio
 async def test_sweep_skips_missing_wallet_info(sweeper, pub):
