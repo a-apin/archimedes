@@ -379,7 +379,9 @@ async def evaluate_rigor_gate(
 
 
 @selection_bias_router.get("/gate/{strategy_id}", response_model=StrategyRigorResult)
+@limiter.limit("10/minute")
 async def evaluate_strategy_rigor(
+    request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     strategy_id: str,
     strictness: int = Query(DEFAULT_LEVEL, ge=STRICTEST_LEVEL, le=LOOSEST_LEVEL),
 ):
