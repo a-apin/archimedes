@@ -18,6 +18,8 @@ from archimedes.models.backtest_store import BacktestResultRecord  # noqa: F401
 from archimedes.models.chat import Base
 from archimedes.models.corpus_store import CorpusMetaRecord, PaperRecord  # noqa: F401
 from archimedes.models.daily_returns_store import StrategyDailyReturn  # noqa: F401
+from archimedes.models.marketplace import MarketplaceAgent, SubscriberLiability, SubscriberTickLog  # noqa: F401
+from archimedes.models.strategy_generators import StrategyGenerator  # noqa: F401
 from archimedes.models.strategy_proposal import StrategyProposal  # noqa: F401
 from archimedes.models.strategy_store import StrategyRecord  # noqa: F401
 from archimedes.models.user_profile import UserProfile  # noqa: F401

@@ -9,7 +9,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from archimedes.api.auth_siwe import require_verified_wallet
-from archimedes.api import marketplace_routes as mr
 from archimedes.api.marketplace_routes import marketplace_router
 from archimedes.db import Base, engine
 
@@ -196,7 +195,6 @@ def test_list_published_empty(client):
 
 def test_subscribe_succeeds_live_mode_no_chain_calls(client, app):
     """Subscribe succeeds in live mode (payments_dry_run=False) with no SubscriptionManager calls."""
-    from archimedes.marketplace.wallet_provisioner import provision_subscriber_wallet
 
     # Create publisher first
     resp = client.post(

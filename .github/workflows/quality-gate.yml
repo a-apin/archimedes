@@ -37,7 +37,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install --quiet -r backend/requirements.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0"
+        run: pip install --quiet -r backend/requirements.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0" "fakeredis[lua]>=2.26.0"
       - name: Test
         run: pytest -m "not integration" --tb=short -q
 

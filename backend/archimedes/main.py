@@ -83,13 +83,35 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     _logger = logging.getLogger("archimedes.startup")
 
     # ── STARTUP ──────────────────────────────────────────────────────────
-    # 1. Populate selection-bias rigor gate fields (idempotent)
+    # 1. Populate selection-bias rigor gate fields (idempotent). Only runs
+    # the full computation when some backtest row is missing DSR/PBO, and
+    # refreshes the provider cache afterwards so /api/strategies serves the
+    # new values immediately (mirrors the pre-lifespan startup handler).
     try:
-        from archimedes.api.selection_bias_routes import evaluate_rigor_gate
+        from archimedes.db import get_session
+        from archimedes.models.backtest_store import BacktestResultRecord
+        from archimedes.services.strategy_provider import default_provider
 
-        result = await evaluate_rigor_gate()
-        if result.total > 0:
-            _logger.info("startup: rigor gate computed — %d/%d passing", result.passing, result.total)
+        provider = default_provider()
+        strategies = provider.list_strategies()
+        if strategies:
+            strategy_ids = [s.id for s in strategies]
+            with get_session() as session:
+                rows = (
+                    session.query(BacktestResultRecord).filter(BacktestResultRecord.strategy_id.in_(strategy_ids)).all()
+                )
+                needs_rigor = [r for r in rows if r.deflated_sharpe_ratio is None]
+            if needs_rigor:
+                _logger.info("startup: computing rigor gate for %d strategies...", len(needs_rigor))
+                from archimedes.api.selection_bias_routes import evaluate_rigor_gate
+
+                result = await evaluate_rigor_gate()
+                _logger.info("startup: rigor gate computed — %d/%d passing", result.passing, result.total)
+                # Refresh provider's backtest cache so /api/strategies serves
+                # the new DSR/PBO values without waiting for a cache cycle.
+                provider.refresh()
+            else:
+                _logger.info("startup: all %d backtest rows have rigor gate fields", len(rows))
     except Exception as exc:
         _logger.warning("startup: rigor gate population failed (non-fatal): %s", exc)
 
@@ -191,6 +213,23 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             )
     except Exception as exc:
         _logger.warning("startup: publisher rehydration failed (non-fatal): %s", exc)
+
+    # 4. Arm the in-app backtest refresh scheduler (no operator-invoked CLI
+    # runs — see services/backtest_scheduler.py). MUST live in this lifespan:
+    # passing a custom lifespan= makes Starlette silently skip any
+    # @app.on_event("startup") handlers, so anything not started here does
+    # not start at all. Disabled under TESTING / BACKTEST_REFRESH_ENABLED=0;
+    # fail-soft: never blocks startup.
+    try:
+        from archimedes.services.backtest_scheduler import backtest_refresh_loop, refresh_enabled
+
+        if refresh_enabled():
+            asyncio.create_task(backtest_refresh_loop())
+            _logger.info("startup: backtest refresh scheduler armed")
+        else:
+            _logger.info("startup: backtest refresh scheduler disabled")
+    except Exception as exc:
+        _logger.warning("startup: backtest scheduler failed to arm (non-fatal): %s", exc)
 
     yield  # ── app is now running ────────────────────────────────────────
 
@@ -312,88 +351,10 @@ app.middleware("http")(ensure_visitor_id_middleware)
 init_db()
 
 
-@app.on_event("startup")
-async def _startup_populate_rigor_gate():
-    """On first startup, compute and persist selection-bias rigor gate fields.
-
-    Idempotent: only populates strategies that don't yet have DSR/PBO values.
-    Skips entirely if the backtest_results table is empty.
-    """
-    _logger = logging.getLogger("archimedes.startup")
-    try:
-        from archimedes.db import get_session
-        from archimedes.models.backtest_store import BacktestResultRecord
-        from archimedes.services.strategy_provider import default_provider
-
-        provider = default_provider()
-        strategies = provider.list_strategies()
-        if not strategies:
-            return
-
-        strategy_ids = [s.id for s in strategies]
-        with get_session() as session:
-            rows = session.query(BacktestResultRecord).filter(BacktestResultRecord.strategy_id.in_(strategy_ids)).all()
-
-            # Check if any need rigor gate computation
-            needs_rigor = [r for r in rows if r.deflated_sharpe_ratio is None]
-            if not needs_rigor:
-                _logger.info("startup: all %d backtest rows have rigor gate fields", len(rows))
-                return
-
-        _logger.info("startup: computing rigor gate for %d strategies...", len(needs_rigor))
-
-        # Call the rigor gate endpoint logic (triggers full computation + persist)
-
-        from archimedes.api.selection_bias_routes import evaluate_rigor_gate
-
-        result = await evaluate_rigor_gate()
-        _logger.info(
-            "startup: rigor gate computed — %d/%d passing",
-            result.passing,
-            result.total,
-        )
-
-        # Refresh provider's backtest cache so /api/strategies serves the new DSR/PBO values
-        provider.refresh()
-    except Exception as exc:
-        _logger.warning("startup: rigor gate population failed (non-fatal): %s", exc)
-
-
-@app.on_event("startup")
-async def _startup_seed_corpus():
-    """Seed papers table from manifest.jsonl (idempotent — adds new papers only)."""
-    _logger = logging.getLogger("archimedes.startup")
-    try:
-        from archimedes.services.corpus_service import seed_from_manifest
-
-        inserted = seed_from_manifest()
-        if inserted > 0:
-            _logger.info("startup: seeded %d new papers from manifest", inserted)
-        else:
-            _logger.info("startup: corpus seed — no new papers to add")
-    except Exception as exc:
-        _logger.warning("startup: corpus seed failed (non-fatal): %s", exc)
-
-
-@app.on_event("startup")
-async def _startup_backtest_scheduler():
-    """Keep curated backtests fresh IN-APP — no operator-invoked CLI runs.
-
-    The scheduler owns staleness checks + refresh cadence; see
-    services/backtest_scheduler.py. Disabled under TESTING and via
-    BACKTEST_REFRESH_ENABLED=0. Fail-soft: never blocks startup.
-    """
-    _logger = logging.getLogger("archimedes.startup")
-    try:
-        from archimedes.services.backtest_scheduler import backtest_refresh_loop, refresh_enabled
-
-        if refresh_enabled():
-            asyncio.create_task(backtest_refresh_loop())
-            _logger.info("startup: backtest refresh scheduler armed")
-        else:
-            _logger.info("startup: backtest refresh scheduler disabled")
-    except Exception as exc:
-        _logger.warning("startup: backtest scheduler failed to arm (non-fatal): %s", exc)
+# NOTE: startup work lives in lifespan() above. Do NOT add
+# @app.on_event("startup") handlers here — with a custom lifespan= passed to
+# FastAPI, Starlette silently skips them (verified on fastapi 0.138.1), so
+# they would be dead code that LOOKS like it runs.
 
 
 # Wire all routers
