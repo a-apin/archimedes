@@ -41,7 +41,6 @@ from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.services.construction_trace import build_construction_trace
 from archimedes.services.live_rigor_gate import (
     RigorGateVerdict,
-    verdict_from_returns,
     verdicts_for_strategies,
 )
 from archimedes.services.rigor_evaluator import RigorGateResult
@@ -220,37 +219,37 @@ def _to_strategy_response(
 def _live_verdict_for_one(s: Strategy) -> RigorGateVerdict:
     """Live rigor-gate verdict for a single strategy (#821).
 
-    Used by the single-strategy fetch path (``get_strategy``) where there is no
-    batch to amortize over. Loads this strategy's persisted real returns and runs
-    ``run_rigor_gate`` (num_trials=1 — single-strategy context, same as the gate's
-    own no-cohort fallback). No real returns → ``pending``, never a fixture value.
-    Never raises: any failure degrades to ``pending`` (fail-closed badge).
+    Used by the single-strategy fetch path (``get_strategy``). Delegates to
+    ``verdicts_for_strategies`` over the FULL library so the verdict is computed
+    with the library-wide cohort context — num_trials = library size, cohort PBO,
+    avg correlation (#902). The old per-strategy path ran ``num_trials=1``, which
+    zeroes the DSR multiple-testing deflation and let the detail view disagree
+    with the (properly deflated) list badge for the same strategy. No real
+    returns → ``pending``, never a fixture value. Never raises: any failure
+    degrades to ``pending`` (fail-closed badge).
     """
     try:
-        from archimedes.db import get_session, init_db
-        from archimedes.services.backtest_repository import get_daily_returns
-
-        init_db()
-        with get_session() as session:
-            daily_returns = get_daily_returns(session, s.id)
+        cohort = _library_cohort_including(s)
+        return verdicts_for_strategies(cohort).get(s.id, RigorGateVerdict.pending())
     except Exception as exc:
-        logger.warning("live verdict DB read failed for %s (badge → pending): %s", s.id, exc)
+        logger.warning("live verdict failed for %s (badge → pending): %s", s.id, exc)
         return RigorGateVerdict.pending()
 
-    code = None
-    if s.strategy_code_path:
-        from archimedes.api.selection_bias_routes import _load_strategy_code
 
-        with contextlib.suppress(Exception):
-            code = _load_strategy_code(s.strategy_code_path)
+def _library_cohort_including(s: Strategy) -> list[Strategy]:
+    """The full library selection set, guaranteed to contain ``s``.
 
-    return verdict_from_returns(
-        s.id,
-        daily_returns,
-        num_trials=1,
-        strategy_code=code,
-        paper_claimed_sharpe=s.paper_claimed_sharpe,
-    )
+    The library IS the multiple-testing cohort for a single-strategy grade
+    (#902); ``s`` is appended only if the provider list somehow misses it
+    (e.g. a just-generated strategy not yet listed).
+    """
+    try:
+        cohort = list(strategy_provider().list_strategies())
+    except Exception:
+        cohort = []
+    if not any(x.id == s.id for x in cohort):
+        cohort.append(s)
+    return cohort
 
 
 def _live_rigor_result_for_one(s: Strategy) -> RigorGateResult | None:
@@ -263,44 +262,18 @@ def _live_rigor_result_for_one(s: Strategy) -> RigorGateResult | None:
     also come from the SAME live gate run, not the stale ``s.dsr_p_value`` /
     ``bt.dsr_p_value`` fixture fields — otherwise the leaderboard can show
     numbers that disagree with what ``GET /api/selection-bias/gate`` computes
-    for the same strategy right now. Mirrors ``_live_verdict_for_one``'s DB
-    read + code load exactly (num_trials=1, single-strategy context, no
-    cohort). Returns ``None`` on no/insufficient persisted returns or any
-    failure — the caller must fall back to the stale fixture fields rather
-    than fabricate a number, matching the fail-closed badge contract.
+    for the same strategy right now. Delegates to
+    ``_live_rigor_results_for_strategies`` over the FULL library (#902) so the
+    single fetch carries the same cohort context (num_trials = library size,
+    cohort PBO, avg correlation) as the list — the old per-strategy path ran
+    ``num_trials=1``, zeroing the DSR multiple-testing deflation. Returns
+    ``None`` on no/insufficient persisted returns or any failure — the caller
+    must fall back to the stale fixture fields rather than fabricate a number,
+    matching the fail-closed badge contract.
     """
     try:
-        from archimedes.db import get_session, init_db
-        from archimedes.services.backtest_repository import get_daily_returns
-
-        init_db()
-        with get_session() as session:
-            daily_returns = get_daily_returns(session, s.id)
-    except Exception as exc:
-        logger.warning("live rigor result DB read failed for %s (numbers → stale fallback): %s", s.id, exc)
-        return None
-
-    if not daily_returns or len(daily_returns) < 10:
-        return None
-
-    code = None
-    if s.strategy_code_path:
-        from archimedes.api.selection_bias_routes import _load_strategy_code
-
-        with contextlib.suppress(Exception):
-            code = _load_strategy_code(s.strategy_code_path)
-
-    from archimedes.services.rigor_evaluator import run_rigor_gate
-
-    try:
-        return run_rigor_gate(
-            strategy_id=s.id,
-            daily_returns=daily_returns,
-            num_trials=1,
-            strategy_code=code,
-            in_sample_sharpe=None,
-            paper_claimed_sharpe=s.paper_claimed_sharpe,
-        )
+        cohort = _library_cohort_including(s)
+        return _live_rigor_results_for_strategies(cohort).get(s.id)
     except Exception as exc:
         logger.warning("live rigor gate failed for %s (numbers → stale fallback): %s", s.id, exc)
         return None
