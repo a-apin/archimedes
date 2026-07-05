@@ -13,8 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import archimedes.db as archimedes_db
-from archimedes.db import Base, get_session
+from archimedes.db import Base, engine, get_session
 from archimedes.marketplace.service import MarketService, Publisher, Subscriber
 from archimedes.marketplace.tick_registry import TickStep
 from archimedes.models.marketplace import SettlementIntent
@@ -22,9 +21,9 @@ from archimedes.models.marketplace import SettlementIntent
 
 @pytest.fixture(autouse=True)
 def _db():
-    Base.metadata.create_all(bind=archimedes_db.engine)
+    Base.metadata.create_all(bind=engine)
     yield
-    Base.metadata.drop_all(bind=archimedes_db.engine)
+    Base.metadata.drop_all(bind=engine)
 
 
 def _svc(dry_run: bool = False) -> MarketService:
