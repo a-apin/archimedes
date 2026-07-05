@@ -279,3 +279,32 @@ async def test_leaderboard_rejects_bad_sort_param():
         resp = await client.get("/api/leaderboard?sort_by=DROP_TABLE")
     # Query pattern guard → 422, never a 500.
     assert resp.status_code == 422
+
+
+async def test_leaderboard_batches_rigor_gate_once(monkeypatch):
+    """Regression for #912: the public leaderboard must run the rigor gate ONCE
+    over the whole cohort (batch), not recompute it per strategy. The per-
+    strategy path (_live_verdict_for_one + _live_rigor_result_for_one, 2 DB reads
+    + 2 gate runs each) on an unauth, unratelimited endpoint is a trivial DoS."""
+    from unittest.mock import MagicMock
+
+    import archimedes.api.strategies_routes as sr
+    from archimedes.main import app
+    from httpx import ASGITransport, AsyncClient
+
+    batch = MagicMock(return_value={})
+    per_verdict = MagicMock()
+    per_result = MagicMock()
+    monkeypatch.setattr(sr, "_live_rigor_results_for_strategies", batch)
+    monkeypatch.setattr(sr, "_live_verdict_for_one", per_verdict)
+    monkeypatch.setattr(sr, "_live_rigor_result_for_one", per_result)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/leaderboard")
+
+    assert resp.status_code == 200
+    # Exactly one batched gate run for the whole board ...
+    assert batch.call_count == 1
+    # ... and never the per-strategy recompute.
+    assert per_verdict.call_count == 0
+    assert per_result.call_count == 0

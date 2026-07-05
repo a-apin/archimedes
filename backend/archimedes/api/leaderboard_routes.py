@@ -46,11 +46,24 @@ async def get_leaderboard(
     """
     # Imported lazily to avoid import-time coupling with the heavy strategies
     # module (and any future cycle).
-    from archimedes.api.strategies_routes import _to_strategy_response
+    from archimedes.api.strategies_routes import (
+        _live_rigor_results_for_strategies,
+        _to_strategy_response,
+        _verdict_from_result,
+    )
 
     try:
         strategies = strategy_provider().list_strategies()
-        responses = [_to_strategy_response(s) for s in strategies]
+        # One batched live-gate run over the whole cohort (single DB session),
+        # then derive the badge from each result. Calling _to_strategy_response
+        # with no verdict recomputes the full gate per strategy (2 DB reads +
+        # 2 gate runs each) — an unauthenticated DoS on a public endpoint.
+        # Mirrors GET /api/strategies/ (#868).
+        rigor_results = _live_rigor_results_for_strategies(strategies)
+        responses = [
+            _to_strategy_response(s, _verdict_from_result(rigor_results.get(s.id)), rigor_results.get(s.id))
+            for s in strategies
+        ]
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("leaderboard: strategy provider unavailable: %s", exc)
         responses = []
