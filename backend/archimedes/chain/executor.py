@@ -657,7 +657,11 @@ class ChainExecutor:
             raise RuntimeError("No agent account configured")
 
         vault = self.loader.vault(vault_address)
-        nonce = await chain_client.w3.eth.get_transaction_count(account.address)
+        # Use the pending-block nonce so a second raw-key tx submitted in the
+        # same tick (e.g. set_target_allocations right after this) doesn't reuse
+        # a nonce already sitting in the mempool and silently drop one of them.
+        # Matches execute_rebalance / _send_vault_admin_tx in this file.
+        nonce = await chain_client.w3.eth.get_transaction_count(account.address, "pending")
 
         tx = await vault.functions.setTokenOracles(
             checksummed_tokens,
@@ -706,7 +710,10 @@ class ChainExecutor:
             raise RuntimeError("No agent account configured — set CIRCLE_API_KEY or ARC_AGENT_PRIVATE_KEY")
 
         vault = self.loader.vault(vault_address)
-        nonce = await chain_client.w3.eth.get_transaction_count(account.address)
+        # Pending-block nonce (see set_token_oracles): when _process_vault calls
+        # this right after set_token_oracles, the first tx is still in the
+        # mempool and "latest" would hand back its nonce, dropping one tx.
+        nonce = await chain_client.w3.eth.get_transaction_count(account.address, "pending")
 
         tx = await vault.functions.setTargetAllocations(
             checksummed,

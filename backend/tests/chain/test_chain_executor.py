@@ -754,3 +754,34 @@ class TestInsufficientLiquidityError:
 
     def test_min_threshold_is_positive(self):
         assert MIN_HEALTHY_LIQUIDITY_USDC > 0
+
+
+# ── Nonce handling on the raw-key path (#909) ─────────────────
+
+
+class TestSequentialNonce:
+    @pytest.mark.asyncio
+    async def test_set_oracles_and_allocations_read_pending_nonce(self, executor, mock_loader):
+        """Regression for #909: set_token_oracles + set_target_allocations run
+        back-to-back in one _process_vault tick. Both must read the PENDING-block
+        nonce, otherwise the second reuses the first's still-in-mempool nonce and
+        one tx is silently dropped."""
+        mock_cc = executor._mock_cc
+        account = MagicMock()
+        account.address = "0xAbC0000000000000000000000000000000000001"
+        account.sign_transaction.return_value.raw_transaction = b"\x01" * 32
+        mock_cc.settings.agent_account = account
+
+        vault = mock_loader.vault.return_value
+        vault.functions.setTokenOracles.return_value.build_transaction = AsyncMock(return_value={})
+        vault.functions.setTargetAllocations.return_value.build_transaction = AsyncMock(return_value={})
+
+        with patch("archimedes.chain.executor.circle_signer") as mock_signer:
+            mock_signer.is_configured = False  # force the raw-key path
+            await executor.set_token_oracles("0xVault", ["0xT"], ["0xO"])
+            await executor.set_target_allocations("0xVault", ["0xT"], [10000])
+
+        assert mock_cc.w3.eth.get_transaction_count.await_count == 2
+        for call in mock_cc.w3.eth.get_transaction_count.await_args_list:
+            # (address, "pending") — the unfixed code passed only (address,).
+            assert call.args == (account.address, "pending"), f"nonce read used {call.args}, must request pending"
