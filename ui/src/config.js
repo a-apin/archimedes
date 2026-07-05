@@ -29,13 +29,63 @@ export const publicClient = createPublicClient({
 // Keyed by rdns (reverse-DNS identifier the wallet self-declares).
 const eip6963Providers = new Map()
 
+// ── Live account/chain-change listeners (EIP-6963-aware) ──────────────────
+// Providers we've already bound change-listeners to. WeakSet dedups so a
+// re-announcement doesn't stack duplicate handlers, and lets GC reclaim
+// providers we never keep.
+const _listenerBoundProviders = new WeakSet()
+let _lastSeenChainId = null
+
+// Bound per-provider so the ACTIVE wallet drives session state regardless of
+// whether it is window.ethereum (injected EOA) or an EIP-6963 provider
+// (Rabby/Brave/…) whose object is NOT window.ethereum (#921). Every handler
+// no-ops unless the event's provider is the one connectWallet selected
+// (_provider), so an announced-but-inactive wallet can't hijack the session.
+function _onAccountsChanged(provider, accounts) {
+  if (provider !== _provider) return
+  if (!accounts?.length) {
+    disconnectWallet()
+    window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: null } }))
+    return
+  }
+  _address = accounts[0]
+  if (_providerId) saveWalletMeta(_providerId, _address)
+  _walletClient = createWalletClient({ account: _address, chain: arcTestnet, transport: custom(provider) })
+  window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: _address } }))
+}
+
+function _onChainChanged(provider, newChainId) {
+  if (provider !== _provider) return
+  // Coinbase Wallet (Chrome) re-emits chainChanged on internal lifecycle
+  // events (tab sync, popup re-open) even when the chain hasn't changed; the
+  // previous handler reloaded on every emit → infinite reload loop. Track the
+  // last-seen chain id and react only to actual transitions. viem clients are
+  // pinned to arcTestnet at construction, so no rebuild is needed — just notify.
+  if (newChainId === _lastSeenChainId) return
+  _lastSeenChainId = newChainId
+  window.dispatchEvent(new CustomEvent('wallet-chain-changed', { detail: { chainId: newChainId } }))
+}
+
+function attachWalletListeners(provider) {
+  if (!provider?.on || _listenerBoundProviders.has(provider)) return
+  _listenerBoundProviders.add(provider)
+  provider.on('accountsChanged', (accounts) => _onAccountsChanged(provider, accounts))
+  provider.on('chainChanged', (chainId) => _onChainChanged(provider, chainId))
+}
+
 if (typeof window !== 'undefined') {
   window.addEventListener('eip6963:announceProvider', (event) => {
     const detail = event.detail
     if (detail?.info?.rdns && detail?.provider) {
       eip6963Providers.set(detail.info.rdns, detail)
+      // Attach change-listeners to every announced provider so account/chain
+      // switches in a non-window.ethereum wallet are detected (#921).
+      attachWalletListeners(detail.provider)
     }
   })
+  // Injected EOAs still expose window.ethereum — bind it too (deduped if it is
+  // also announced via EIP-6963, since it's the same provider object).
+  if (window.ethereum) attachWalletListeners(window.ethereum)
   // Ask wallets that loaded before this listener was attached to re-announce.
   window.dispatchEvent(new Event('eip6963:requestProvider'))
 }
@@ -507,39 +557,9 @@ export function getAvailableProviders() {
   return [...passkey, ...filtered, ...discovered]
 }
 
-// Listen for account/chain changes from the wallet extension
-if (typeof window !== 'undefined' && window.ethereum) {
-  window.ethereum.on?.('accountsChanged', (accounts) => {
-    if (!accounts?.length) {
-      disconnectWallet()
-      window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: null } }))
-    } else {
-      _address = accounts[0]
-      if (_providerId) saveWalletMeta(_providerId, _address)
-      if (_provider) {
-        _walletClient = createWalletClient({
-          account: _address,
-          chain: arcTestnet,
-          transport: custom(_provider),
-        })
-      }
-      window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: _address } }))
-    }
-  })
-  // Coinbase Wallet (Chrome) re-emits chainChanged on internal lifecycle
-  // events — tab sync, popup re-open, multi-tab state sync — even when
-  // the chain hasn't changed. The previous handler reloaded on every
-  // emit, which produced an infinite reload loop on Chrome + Coinbase.
-  // Track the last-seen chain id and only react to actual transitions.
-  // viem clients are pinned to arcTestnet at construction so we don't
-  // need to rebuild them; just notify any consumer that wants to know.
-  let _lastChainId = null
-  window.ethereum.on?.('chainChanged', (newChainId) => {
-    if (newChainId === _lastChainId) return
-    _lastChainId = newChainId
-    window.dispatchEvent(new CustomEvent('wallet-chain-changed', { detail: { chainId: newChainId } }))
-  })
-}
+// Account/chain-change listeners are attached at module load via
+// attachWalletListeners() — bound to window.ethereum AND every EIP-6963
+// announced provider (see the top of this file, #921).
 
 // ─── ABIs (minimal, just what we need) ──────────────────────
 
