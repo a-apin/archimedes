@@ -14,11 +14,27 @@ class MarketplaceAgent(Base):
     __tablename__ = "marketplace_agents"
 
     __table_args__ = (
+        # In PostgreSQL: partial unique on strategy_id where publisher+running (one active publisher).
+        # In SQLite (tests): unique on (role, strategy_id) — allows publisher+subscriber for same
+        # strategy_id while still preventing duplicate running publishers.
         Index(
             "uq_marketplace_agents_running_publisher",
+            "role",
             "strategy_id",
             unique=True,
             postgresql_where=text("role = 'publisher' AND status = 'running'"),
+        ),
+        # Prevent duplicate active subscriptions: same wallet cannot subscribe
+        # to the same strategy twice (TOCTOU race closes via unique index).
+        # In PostgreSQL: partial unique on (subscriber_wallet, strategy_id) where subscriber+running.
+        # In SQLite (tests): unique on (role, subscriber_wallet, strategy_id).
+        Index(
+            "uq_marketplace_agents_running_subscriber",
+            "role",
+            "subscriber_wallet",
+            "strategy_id",
+            unique=True,
+            postgresql_where=text("role = 'subscriber' AND status = 'running'"),
         ),
     )
 
@@ -34,7 +50,9 @@ class MarketplaceAgent(Base):
     vault_address: Mapped[str] = mapped_column(String(42), nullable=False, default="")
     ephemeral_wallet: Mapped[str] = mapped_column(String(42), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")  # running | stopped
-    halted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # subscriber halted for non-payment (C-5)
+    halted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )  # subscriber halted for non-payment (C-5)
     # Per-creator Gateway seller address (publisher role). The creator's Circle
     # agent wallet 0x address that receives x402 Gateway settlement.
     gateway_seller_address: Mapped[str | None] = mapped_column(String(42), nullable=True, default=None)
