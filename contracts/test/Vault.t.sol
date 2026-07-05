@@ -1399,4 +1399,138 @@ contract VaultTest is Test {
         arr = new uint256[](1);
         arr[0] = x;
     }
+
+    // ─── Redemption Liquidation-Slippage Fairness (issue #913) ───────
+
+    /// @dev Deposit alice + bob equally, then rebalance most USDC into sTSLA so a full-exit
+    ///      redemption has to liquidate at a loss.
+    function _twoUserVaultMostlyInSynth() internal returns (uint256 aliceShares, uint256 bobShares) {
+        // Give the swaps room: raise the oracle-floor tolerance to the 5% cap so the later
+        // liquidation isn't rejected. The realized slippage the test measures is still just
+        // the AMM fee + price impact — the tolerance only gates whether the swap is allowed.
+        vm.prank(agent);
+        vault.setMaxSlippageBps(500);
+
+        // Alice + bob each own ~half the vault.
+        _depositAsAlice(5_000 * 10**6);
+        vm.startPrank(bob);
+        usdc.approve(address(vault), 5_000 * 10**6);
+        vault.deposit(5_000 * 10**6, bob);
+        vm.stopPrank();
+
+        // Register sTSLA in heldTokens with a negligible 1-USDC buy (keeps the pool at its
+        // oracle-aligned starting ratio), then seed a large synth position directly — same
+        // fixture shape as test_withdraw_liquidation_slippage_buffer_covers_oracle_floor.
+        // The vault now holds ~10k USDC + ~90k sTSLA NAV, so a half-vault exit must liquidate
+        // ~40k of synth into an oracle-aligned pool and eat the fee + impact (a real loss vs
+        // oracle NAV, unlike selling back into a pool a prior buy already skewed upward).
+        _rebalanceBuyTsla(1 * 10**6);
+        sTSLA.mint(address(vault), 45_000 * 1e18); // 45k tokens * 2 USDC = 90k NAV
+
+        aliceShares = vault.balanceOf(alice);
+        bobShares = vault.balanceOf(bob);
+    }
+
+    /// @dev The core #913 invariant: a redemption that forces a liquidation must not lower
+    ///      the per-share NAV of the holders who stay. Pre-fix, alice got the full pre-trade
+    ///      claim and bob silently ate the liquidation slippage.
+    function test_redeem_liquidation_slippage_not_socialized() public {
+        (uint256 aliceShares,) = _twoUserVaultMostlyInSynth();
+
+        uint256 navPerShareBefore = (vault.totalAssets() * 1e18) / vault.totalSupply();
+
+        vm.prank(alice);
+        vault.redeem(aliceShares, alice, alice);
+
+        uint256 navPerShareAfter = (vault.totalAssets() * 1e18) / vault.totalSupply();
+
+        // Bob's per-share NAV must not fall. It can tick up a hair (integer-division dust
+        // rounds in the vault's favor), so assert non-decreasing rather than exact.
+        assertGe(navPerShareAfter, navPerShareBefore, "remaining holders' NAV must not drop");
+    }
+
+    /// @dev The flip side: the redeemer actually absorbs the slippage — her payout is below
+    ///      the pre-trade claim, and RedemptionLiquidationCharge is emitted.
+    function test_redeem_charges_redeemer_the_slippage() public {
+        (uint256 aliceShares,) = _twoUserVaultMostlyInSynth();
+
+        uint256 claim = vault.previewRedeem(aliceShares); // pre-trade (uncharged) value
+        uint256 aliceBefore = usdc.balanceOf(alice);
+
+        vm.recordLogs();
+        vm.prank(alice);
+        uint256 paid = vault.redeem(aliceShares, alice, alice);
+
+        assertEq(usdc.balanceOf(alice) - aliceBefore, paid, "payout matches return value");
+        assertLt(paid, claim, "redeemer bears the liquidation slippage");
+
+        // RedemptionLiquidationCharge(owner, slippageLoss) was emitted, and the charge
+        // equals the gap between the pre-trade claim and what was actually paid.
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 sig = keccak256("RedemptionLiquidationCharge(address,uint256)");
+        bool found;
+        for (uint256 i; i < logs.length; i++) {
+            if (logs[i].topics[0] == sig) {
+                found = true;
+                assertEq(address(uint160(uint256(logs[i].topics[1]))), alice, "owner indexed");
+                uint256 loss = abi.decode(logs[i].data, (uint256));
+                assertEq(loss, claim - paid, "charge equals claim - payout");
+            }
+        }
+        assertTrue(found, "RedemptionLiquidationCharge emitted");
+    }
+
+    /// @dev withdraw() must still deliver EXACTLY the requested USDC, charging the caller
+    ///      the slippage in extra burned shares — so remaining holders are protected the
+    ///      same way, without changing the exact-assets-out contract.
+    function test_withdraw_liquidation_burns_extra_shares_from_withdrawer() public {
+        (uint256 aliceSharesBefore,) = _twoUserVaultMostlyInSynth();
+
+        uint256 navPerShareBefore = (vault.totalAssets() * 1e18) / vault.totalSupply();
+
+        // Base shares withdraw() would burn with no slippage (mirrors _convertToShares:
+        // ceil(assets * totalSupply / totalAssets)), for comparison.
+        uint256 baseShares =
+            (30_000 * 10**6 * vault.totalSupply() + vault.totalAssets() - 1) / vault.totalAssets();
+
+        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        vm.prank(alice);
+        uint256 sharesBurned = vault.withdraw(30_000 * 10**6, alice, alice);
+
+        // Exactly the requested USDC is delivered.
+        assertEq(usdc.balanceOf(alice) - aliceUsdcBefore, 30_000 * 10**6, "exact assets out");
+        // More shares were burned than the no-slippage base — that's the slippage charge.
+        assertGt(sharesBurned, baseShares, "extra shares cover the slippage");
+        assertEq(aliceSharesBefore - vault.balanceOf(alice), sharesBurned, "burned from the withdrawer");
+
+        // Remaining holders' NAV/share is preserved.
+        uint256 navPerShareAfter = (vault.totalAssets() * 1e18) / vault.totalSupply();
+        assertGe(navPerShareAfter, navPerShareBefore, "remaining holders' NAV must not drop");
+    }
+
+    /// @dev Regression: when the vault holds enough USDC on hand, no liquidation runs, so
+    ///      no charge is applied and the redeemer gets the full pre-trade claim.
+    function test_redeem_no_charge_when_usdc_on_hand() public {
+        _depositAsAlice(50_000 * 10**6);
+        vm.startPrank(bob);
+        usdc.approve(address(vault), 50_000 * 10**6);
+        vault.deposit(50_000 * 10**6, bob);
+        vm.stopPrank();
+        // No rebalance — the vault is all USDC, so redeem is fully covered.
+
+        uint256 aliceShares = vault.balanceOf(alice);
+        uint256 claim = vault.previewRedeem(aliceShares);
+
+        vm.recordLogs();
+        vm.prank(alice);
+        uint256 paid = vault.redeem(aliceShares, alice, alice);
+
+        assertEq(paid, claim, "full claim when no liquidation needed");
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 sig = keccak256("RedemptionLiquidationCharge(address,uint256)");
+        for (uint256 i; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != sig, "no charge event when USDC covers the redemption");
+        }
+    }
 }

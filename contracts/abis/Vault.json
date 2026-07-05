@@ -1076,6 +1076,25 @@
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "RedemptionLiquidationCharge",
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "slippageLoss",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "ERC20InsufficientAllowance",
     "inputs": [
