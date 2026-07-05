@@ -33,6 +33,16 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     /// @notice Accumulated protocol fees in USDC (6 decimals)
     uint256 public protocolFees;
 
+    /// @notice Max age of the oracle price accepted by mint/burn (default 1h).
+    ///         The PriceOracle's admin fallback tolerates a price up to
+    ///         MAX_STALENESS (24h) so NAV/deposits never brick, but mint and burn
+    ///         MOVE value at that price — trusting a stale one is the classic
+    ///         stale-price arbitrage (mint cheap / burn rich against an old admin
+    ///         price, #910). mint/burn therefore enforce this tighter window.
+    ///         Owner-tunable within (0, oracle.MAX_STALENESS()] as an operational
+    ///         escape hatch; the safe default matches the 1h feed heartbeat.
+    uint256 public mintBurnMaxStaleness = 1 hours;
+
     uint256 public constant BPS = 10000;
     uint256 public constant SYNTH_DECIMALS = 18;
 
@@ -46,11 +56,17 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     ///         (collateral C < liability L). `grossValue` is the uncapped current-price
     ///         claim; `cappedValue` is the C/L-scaled payout (haircut = gross - capped).
     event RedemptionHaircut(address indexed user, uint256 grossValue, uint256 cappedValue);
+    /// @notice Emitted when the owner retunes the mint/burn price-freshness window.
+    event MintBurnMaxStalenessUpdated(uint256 oldValue, uint256 newValue);
 
     // ─── Errors ──────────────────────────────────────────────────────
 
     error ZeroAmount();
     error InsufficientCollateral();
+    /// @notice mint/burn were called with an oracle price older than mintBurnMaxStaleness.
+    error StaleOraclePrice();
+    /// @notice setMintBurnMaxStaleness given 0 or a value above oracle.MAX_STALENESS().
+    error InvalidStaleness();
 
     // ─── Constructor ─────────────────────────────────────────────────
 
@@ -70,6 +86,7 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     /// @notice Mint synth tokens by depositing USDC.
     function mint(uint256 amountUsdc) external nonReentrant returns (uint256) {
         if (amountUsdc == 0) revert ZeroAmount();
+        _requireFreshOraclePrice();
 
         uint256 assetPrice = oracle.getPrice();
         uint256 fee = (amountUsdc * mintFeeBps) / BPS;
@@ -123,6 +140,7 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     ///        identical to the pre-fix path: full current-price value, minus burn fee.
     function burn(uint256 synthAmount) external nonReentrant returns (uint256) {
         if (synthAmount == 0) revert ZeroAmount();
+        _requireFreshOraclePrice();
 
         uint256 assetPrice = oracle.getPrice();
         uint256 usdcValue = (synthAmount * assetPrice) / (10 ** SYNTH_DECIMALS);
@@ -174,12 +192,25 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
         return (usdcValue, false);
     }
 
+    /// @dev Reverts if the oracle price is older than `mintBurnMaxStaleness`.
+    ///      Guards the value-moving paths (mint/burn and their previews) against
+    ///      the stale-price arbitrage in #910. Keyed on the admin `lastUpdated`
+    ///      timestamp — the live source on this testnet, which has no Chainlink
+    ///      feed wired. NAV/health views (totalCollateral, vaultCollateralization)
+    ///      deliberately skip this so a merely-stale price can't brick reads.
+    function _requireFreshOraclePrice() internal view {
+        if (block.timestamp > oracle.lastUpdated() + mintBurnMaxStaleness) {
+            revert StaleOraclePrice();
+        }
+    }
+
     // ─── Views ───────────────────────────────────────────────────────
 
     /// @notice Mirror mint()'s zero-amount guards exactly so callers can rely on
     ///         previewMint to detect inputs that would revert before submitting a tx.
     function previewMint(uint256 amountUsdc) external view returns (uint256 synthAmount) {
         if (amountUsdc == 0) revert ZeroAmount();
+        _requireFreshOraclePrice();
         uint256 assetPrice = oracle.getPrice();
         uint256 fee = (amountUsdc * mintFeeBps) / BPS;
         uint256 netUsdc = amountUsdc - fee;
@@ -188,6 +219,7 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     }
 
     function previewBurn(uint256 synthAmount) external view returns (uint256) {
+        _requireFreshOraclePrice();
         uint256 assetPrice = oracle.getPrice();
         uint256 usdcValue = (synthAmount * assetPrice) / (10 ** SYNTH_DECIMALS);
 
@@ -219,6 +251,16 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
         require(newRatio >= BPS, "ratio must be >= 100%");
         emit CollateralRatioUpdated(collateralRatio, newRatio);
         collateralRatio = newRatio;
+    }
+
+    /// @notice Retune the mint/burn price-freshness window (#910). Bounded to
+    ///         (0, oracle.MAX_STALENESS()]: 0 would brick mint/burn, and accepting
+    ///         a price staler than the oracle itself serves makes no sense. The
+    ///         default is 1h; loosen only if the price-push cadence forces it.
+    function setMintBurnMaxStaleness(uint256 newMaxStaleness) external onlyOwner {
+        if (newMaxStaleness == 0 || newMaxStaleness > oracle.MAX_STALENESS()) revert InvalidStaleness();
+        emit MintBurnMaxStalenessUpdated(mintBurnMaxStaleness, newMaxStaleness);
+        mintBurnMaxStaleness = newMaxStaleness;
     }
 
     function collectFees() external onlyOwner {

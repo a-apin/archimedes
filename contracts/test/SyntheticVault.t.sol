@@ -609,4 +609,104 @@ contract SyntheticVaultTest is Test {
 
         assertEq(usdc.balanceOf(address(vault)), vaultBalBefore + amount);
     }
+
+    // ─── Mint/burn price-freshness guard (#910) ───────────────────
+
+    function test_mint_burn_default_staleness_is_one_hour() public view {
+        assertEq(vault.mintBurnMaxStaleness(), 1 hours);
+    }
+
+    function test_mint_succeeds_when_price_fresh() public {
+        // Price is set within the window (setUp seeded it this block).
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        uint256 out = vault.mint(usdcAmount);
+        vm.stopPrank();
+        assertGt(out, 0);
+    }
+
+    function test_revert_mint_when_price_stale() public {
+        uint256 usdcAmount = 10_000 * 10**6;
+        // Past the 1h mint/burn window but still inside the oracle's 24h admin
+        // window, so getPrice() would happily return the old price — this is the
+        // exact arbitrage window mint must refuse.
+        vm.warp(block.timestamp + 2 hours);
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        vm.expectRevert(SyntheticVault.StaleOraclePrice.selector);
+        vault.mint(usdcAmount);
+        vm.stopPrank();
+    }
+
+    function test_revert_burn_when_price_stale() public {
+        // Mint fresh, then let the price go stale before burning.
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        uint256 synth = vault.mint(usdcAmount);
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 2 hours);
+        vm.prank(alice);
+        vm.expectRevert(SyntheticVault.StaleOraclePrice.selector);
+        vault.burn(synth);
+    }
+
+    function test_burn_succeeds_after_fresh_price_push() public {
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        uint256 synth = vault.mint(usdcAmount);
+        vm.stopPrank();
+
+        // Price goes stale, then the oracle is refreshed — burn works again.
+        vm.warp(block.timestamp + 2 hours);
+        vm.prank(owner);
+        oracle.setPrice(INITIAL_PRICE + 1_000_000); // fresh push, small deviation
+        vm.prank(alice);
+        uint256 usdcOut = vault.burn(synth);
+        assertGt(usdcOut, 0);
+    }
+
+    function test_previewMint_reverts_when_price_stale() public {
+        vm.warp(block.timestamp + 2 hours);
+        vm.expectRevert(SyntheticVault.StaleOraclePrice.selector);
+        vault.previewMint(10_000 * 10**6);
+    }
+
+    function test_setMintBurnMaxStaleness_updates_window() public {
+        vm.prank(owner);
+        vault.setMintBurnMaxStaleness(6 hours);
+        assertEq(vault.mintBurnMaxStaleness(), 6 hours);
+
+        // A 2h-old price now passes the loosened window.
+        vm.warp(block.timestamp + 2 hours);
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        assertGt(vault.mint(usdcAmount), 0);
+        vm.stopPrank();
+    }
+
+    function test_revert_setMintBurnMaxStaleness_zero() public {
+        vm.prank(owner);
+        vm.expectRevert(SyntheticVault.InvalidStaleness.selector);
+        vault.setMintBurnMaxStaleness(0);
+    }
+
+    function test_revert_setMintBurnMaxStaleness_above_oracle_max() public {
+        // Read the constant BEFORE the prank so vm.prank applies to the
+        // setMintBurnMaxStaleness call, not the MAX_STALENESS() read.
+        uint256 tooBig = oracle.MAX_STALENESS() + 1;
+        vm.prank(owner);
+        vm.expectRevert(SyntheticVault.InvalidStaleness.selector);
+        vault.setMintBurnMaxStaleness(tooBig);
+    }
+
+    function test_revert_setMintBurnMaxStaleness_non_owner() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.setMintBurnMaxStaleness(2 hours);
+    }
 }
