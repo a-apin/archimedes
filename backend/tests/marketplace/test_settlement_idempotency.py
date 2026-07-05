@@ -56,7 +56,9 @@ def _sub(sub_id="0x" + "cc" * 32):
 
 def test_claim_settlement_intent_lifecycle():
     svc = _svc()
-    key = dict(strategy_id="strat_a", tick_id="strat_a:1", sub_id="0x" + "cc" * 32, step="REBALANCE")
+    # Unique tick_id per test — assertions are scoped to this logical charge so
+    # they never depend on cross-test DB isolation.
+    key = dict(strategy_id="strat_a", tick_id="lifecycle:1", sub_id="0x" + "cc" * 32, step="rebalance")
 
     assert svc._claim_settlement_intent(**key) == "claimed"
     # A second claim for the same logical charge is blocked (pending in-flight).
@@ -75,9 +77,10 @@ def test_claim_settlement_intent_lifecycle():
 async def test_charge_one_settles_once_then_skips_on_retry():
     svc = _svc()
     pub, sub = _pub(), _sub()
+    tick = "settle-once:1"
     with patch("archimedes.marketplace.payments.charge", new=AsyncMock(return_value=True)) as m_charge:
-        first = await svc._charge_one(pub, sub, "strat_a", "strat_a:1", TickStep.REBALANCE, 1)
-        second = await svc._charge_one(pub, sub, "strat_a", "strat_a:1", TickStep.REBALANCE, 1)
+        first = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
+        second = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
 
     assert first is True
     # The retry of the SAME (strategy, tick, sub, step) returns paid WITHOUT a
@@ -91,12 +94,13 @@ async def test_charge_one_in_flight_pending_does_not_recharge():
     before recording) must block a re-charge, not settle again."""
     svc = _svc()
     pub, sub = _pub(), _sub()
+    tick = "in-flight:1"
     # Simulate a crashed prior attempt: pending intent already present (use the
     # enum value the charge path writes, TickStep.REBALANCE.value == "rebalance").
-    svc._claim_settlement_intent("strat_a", "strat_a:1", sub.sub_id, TickStep.REBALANCE.value)
+    svc._claim_settlement_intent("strat_a", tick, sub.sub_id, TickStep.REBALANCE.value)
 
     with patch("archimedes.marketplace.payments.charge", new=AsyncMock(return_value=True)) as m_charge:
-        result = await svc._charge_one(pub, sub, "strat_a", "strat_a:1", TickStep.REBALANCE, 1)
+        result = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
 
     assert result is False
     m_charge.assert_not_awaited()
@@ -105,11 +109,14 @@ async def test_charge_one_in_flight_pending_does_not_recharge():
 async def test_charge_one_dry_run_never_claims_or_charges():
     svc = _svc(dry_run=True)
     pub, sub = _pub(), _sub()
+    tick = "dry-run:1"
     with patch("archimedes.marketplace.payments.charge", new=AsyncMock(return_value=True)) as m_charge:
-        assert await svc._charge_one(pub, sub, "strat_a", "strat_a:1", TickStep.REBALANCE, 1) is True
+        assert await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1) is True
     m_charge.assert_not_awaited()
+    # Scoped to THIS charge's key (never claims under dry-run) — independent of
+    # any rows other tests may have left in a shared DB.
     with get_session() as session:
-        assert session.query(SettlementIntent).count() == 0
+        assert session.query(SettlementIntent).filter_by(tick_id=tick).count() == 0
 
 
 # ── #8 — auto-withdraw on unsubscribe ─────────────────────────────────────
