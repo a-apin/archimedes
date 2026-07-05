@@ -119,6 +119,29 @@ class TestOracleReads:
         assert result["sSPY"]["stale"] is True
 
     @pytest.mark.asyncio
+    async def test_read_oracle_prices_future_timestamp_stale(self, mock_chain_client):
+        """An updated_at ahead of the host clock reads as stale, not fresh (#934).
+
+        A future block timestamp otherwise leaves (now_ts - updated_at) negative
+        forever, so a frozen price could never trip the staleness gate."""
+        future_ts = time.time() + 1  # 1 second in the future
+        service = AssetMarketService()
+
+        mock_contract = MagicMock()
+        mock_contract.functions.getPrice.return_value.call = AsyncMock(
+            return_value=(100_000_000, int(future_ts) + 1),  # ceil past now to stay in the future
+        )
+        mock_client_w3 = MagicMock()
+        mock_client_w3.eth.contract.return_value = mock_contract
+        mock_chain_client.w3 = mock_client_w3
+
+        with patch("archimedes.chain.client.chain_client", mock_chain_client):
+            result = await service._read_oracle_prices(["sSPY"])
+
+        assert "sSPY" in result
+        assert result["sSPY"]["stale"] is True
+
+    @pytest.mark.asyncio
     async def test_read_oracle_prices_missing_symbol(self, mock_chain_client):
         """Symbol not in oracle_addresses → skipped, not error."""
         service = AssetMarketService()
