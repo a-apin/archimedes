@@ -75,7 +75,7 @@ export default function MarketplacePage({ onNavigate }) {
               key={s.strategy_id}
               className="card cursor-pointer"
               onClick={() => onNavigate('market-strategy', { strategyId: s.strategy_id })}
-              onKeyDown={(e) => { if (e.key === 'Enter') onNavigate('market-strategy', { strategyId: s.strategy_id }) }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onNavigate('market-strategy', { strategyId: s.strategy_id }) } }}
               role="button"
               tabIndex={0}
             >

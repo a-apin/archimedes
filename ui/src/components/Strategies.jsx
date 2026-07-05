@@ -6,7 +6,7 @@ import RigorExplainer from './RigorExplainer'
 import RigorStrictnessControl, { levelLabel } from './RigorStrictnessControl'
 import { useRigorStrictness, BADGE_LEVEL } from '../hooks/useRigorStrictness'
 
-import { apiGet, apiPost } from '../api'
+import { apiGet, apiPost, apiDelete } from '../api'
 
 // A compact "deployable at your level" chip for a library row, driven by the
 // strategy's min_passing_level (from the live gate) and the user's strictness.
@@ -391,7 +391,7 @@ export function StrategyArchitect({ strategies }) {
 // + rigor metrics). One row per strategy; no visual hierarchy by status (the
 // STATUS column does that job).
 
-function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, deploy, level }) {
+function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, deploy, level, extraActions }) {
   const [open, setOpen] = useState(isHighlighted)
   const rowRef = useRef(null)
   const years = periodInYears(s.backtest_start, s.backtest_end)
@@ -605,7 +605,7 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
   )
 }
 
-function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigorExplainer, onOpenPassport, deployMap, level }) {
+function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigorExplainer, onOpenPassport, deployMap, level, extraActions }) {
   if (!strategies.length) return emptyState
   return (
     <>
@@ -638,6 +638,7 @@ function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigo
                 onOpenPassport={onOpenPassport}
                 deploy={deployMap?.[s.id]}
                 level={level}
+                extraActions={extraActions}
               />
             ))}
           </tbody>
@@ -736,10 +737,11 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
     setLoading(true)
     setLoadError('')
     try {
-      const [seedRes, genRes, gateRes] = await Promise.allSettled([
+      const [seedRes, genRes, gateRes, publishedRes] = await Promise.allSettled([
         apiGet('/api/strategies/'),
         apiGet('/api/strategies/generated'),
         apiGet('/api/selection-bias/gate'),
+        apiGet('/api/marketplace/my-published'),
       ])
       if (seedRes.status === 'fulfilled') {
         const sorted = [...(seedRes.value.strategies || [])].sort(
@@ -759,7 +761,10 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
         }
         setDeployMap(map)
       }
-      // Generated tab + gate failing are non-fatal — empty state / no chip is the honest fallback.
+      if (publishedRes.status === 'fulfilled') {
+        setPublished(Array.isArray(publishedRes.value) ? publishedRes.value : [])
+      }
+      // Generated tab + gate + published failing are non-fatal — empty state is the honest fallback.
     } finally {
       setLoading(false)
     }
@@ -957,7 +962,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                       className="btn btn-sm btn-outline-danger"
                       onClick={async () => {
                         if (window.confirm(`Stop publishing "` + (row.strategy_name || row.strategy_id) + `"?`)) {
-                          await apiPost(`/api/marketplace/stop-publish/${row.strategy_id}`, {})
+                          await apiDelete(`/api/marketplace/publish/${row.strategy_id}`)
                           load()
                         }
                       }}

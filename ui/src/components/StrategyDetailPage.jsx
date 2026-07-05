@@ -18,13 +18,8 @@ function shortAddr(a) {
   return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '—'
 }
 
-function fmtTime(iso) {
-  if (!iso) return ''
-  const d = new Date(iso)
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
-
 const SUBSCRIPTION_MANAGER = NEW_CONTRACTS.subscriptionManager
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 // Pre-compute event topic hashes for the SubscriptionManager contract.
 const SUBSCRIBED_TOPIC = toEventSelector('Subscribed(bytes32,address,bytes32,string)')
@@ -77,20 +72,24 @@ export default function StrategyDetailPage({ strategyId, onNavigate }) {
 
   const walletAddr = getAddress()
   const isCircle = getConnectedProvider() === 'circle-passkey'
+  // Guard against zero-address placeholder — contracts not deployed until T3.2 redeploy
+  const isContractDeployed = SUBSCRIPTION_MANAGER !== ZERO_ADDRESS
 
   const handleSubscribe = async () => {
     setSubError('')
     setSubSuccess('')
     setBusy(true)
 
-    // USDC on Arc uses 6 decimals (USDC_DECIMALS = 6)
-    const depositAmount = parseUnits(initialDeposit, USDC_DECIMALS)
-
     try {
+      // USDC on Arc uses 6 decimals (USDC_DECIMALS = 6).
+      // parseUnits throws on empty / non-numeric input — must be inside try so
+      // the finally { setBusy(false) } fires and the button re-enables.
+      const depositAmount = parseUnits(initialDeposit, USDC_DECIMALS)
+
       // Step 1: USDC.approve(SUBSCRIPTION_MANAGER, amount)
       setStepStatus({ 1: 'active', 2: 'idle', 3: 'idle' })
       const walletClient = await getWalletClient()
-      const approveHash = await walletClient.writeContract({
+      await walletClient.writeContract({
         address: USDC,
         abi: USDC_ABI,
         functionName: 'approve',
@@ -284,10 +283,16 @@ export default function StrategyDetailPage({ strategyId, onNavigate }) {
                   } />
                 </div>
 
+                {!isContractDeployed && (
+                  <p className="text-xs text-[var(--color-warning)] mb-2">
+                    Subscription contract not yet deployed. Subscribe will be available after the T3.2 contract deployment.
+                  </p>
+                )}
+
                 <button
                   className="btn btn-primary"
                   onClick={handleSubscribe}
-                  disabled={busy || isCircle}
+                  disabled={busy || isCircle || !isContractDeployed}
                 >
                   {busy ? 'Processing…' : 'Subscribe'}
                 </button>
