@@ -139,6 +139,43 @@ async def test_cvar_cvar_exceeds_var():
         )
 
 
+@pytest.mark.asyncio
+async def test_cvar_single_return_emits_valid_json():
+    """A portfolio with exactly one daily return used to leak a bare NaN into
+    the JSON (std(ddof=1) divides by zero). The response must stay valid JSON
+    and every parametric number must be finite."""
+    import json
+    import math
+
+    from archimedes.main import app
+
+    # Two equity points -> exactly one daily return, so std(ddof=1) is 0/0.
+    s1 = _make_strategy("s1")
+    bt1 = _make_backtest(equity_curve=[100.0, 101.0])
+
+    mock_provider = MagicMock()
+    mock_provider.list_strategies.return_value = [s1]
+    mock_provider.get_backtest_result.return_value = bt1
+
+    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/risk/cvar")
+
+    assert resp.status_code == 200
+    # A bare NaN token is what strict parsers (JSON.parse, Swift, Go) reject.
+    assert "NaN" not in resp.text
+
+    # Re-parse rejecting the non-standard constants to prove it's strict JSON.
+    def _reject(_):
+        raise AssertionError("response contains a non-finite JSON constant")
+
+    parsed = json.loads(resp.text, parse_constant=_reject)
+    for lv in parsed["levels"]:
+        assert lv["sample_size"] == 1
+        for key in ("var_parametric", "cvar_parametric", "var_historical", "cvar_historical"):
+            assert math.isfinite(lv[key]), f"{key} is not finite: {lv[key]}"
+
+
 # ── Greeks tests ──────────────────────────────────────────────
 
 

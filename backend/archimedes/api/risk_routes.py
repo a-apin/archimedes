@@ -361,8 +361,12 @@ async def get_portfolio_cvar():
     portfolio_returns = stacked.mean(axis=1)
 
     n = len(portfolio_returns)
-    mu = portfolio_returns.mean()
-    sigma = portfolio_returns.std(ddof=1)
+    mu = float(portfolio_returns.mean())
+    # std(ddof=1) is 0/0 -> NaN for a single daily return, and a bare NaN
+    # serializes as an invalid JSON token that breaks strict parsers on the
+    # Risk page. Treat a single-sample portfolio as zero-volatility, and guard
+    # against any stray NaN/inf in the multi-sample path too.
+    sigma = float(np.nan_to_num(portfolio_returns.std(ddof=1), nan=0.0)) if n > 1 else 0.0
 
     levels: list[CVaRLevel] = []
     for conf in (0.90, 0.95, 0.99):
