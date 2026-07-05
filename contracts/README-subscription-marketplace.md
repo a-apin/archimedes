@@ -43,7 +43,7 @@ vyper contracts/vyper/PaymentSplitter.vy -f bytecode > contracts/abis/PaymentSpl
 PAYMENT_SPLITTER_CODE=$(cat contracts/abis/PaymentSplitter.bin)
 
 # 3. Deploy via Forge script
-forge script contracts/script/DeploySubscriptionMarketplace.s.sol \
+forge script contracts/script/DeployPaymentSplitter.s.sol \
   --rpc-url https://rpc.testnet.arc.network \
   --broadcast \
   --env-vars USDC_ADDRESS,PLATFORM_WALLET,FLAT_FEE_PER_ACTION,PAYMENT_SPLITTER_BYTECODE

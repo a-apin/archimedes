@@ -8,8 +8,10 @@ triple duty:
   3. The monolith signs micropayments in-process via CircleWalletSigner
 
 Uses the same Circle API credentials and encrypt-entity-secret pattern
-as ``chain/circle_signer.py``. Idempotent: passes the reference ID in the
-wallet metadata/ref field so a retry does not create a duplicate wallet.
+as ``chain/circle_signer.py``. Truly idempotent: the idempotency key is
+deterministically derived from the reference value (``sub:<sub_id>`` /
+``pub:<pool_id>``), so a retry reuses the same key and Circle returns
+the existing wallet instead of provisioning a duplicate.
 """
 
 from __future__ import annotations
@@ -89,9 +91,11 @@ async def _create_circle_wallet(ref_value: str, ref_purpose: str) -> tuple[str, 
 
         ciphertext = _encrypt_entity_secret(entity_secret, public_key)
 
-        # 2. Create the wallet with ref in the metadata for idempotency
+        # 2. Create the wallet with a deterministic idempotency key derived from the ref.
+        #    Retries for the same ref_value reuse the same key → Circle returns the
+        #    existing wallet (409) instead of provisioning a duplicate.
         payload = {
-            "idempotencyKey": str(uuid.uuid4()),
+            "idempotencyKey": str(uuid.uuid5(uuid.NAMESPACE_URL, f"archimedes-wallet:{ref_value}")),
             "blockchain": CIRCLE_BLOCKCHAIN,
             "metadata": [
                 {"name": "ref", "value": ref_value},

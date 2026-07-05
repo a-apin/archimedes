@@ -25,6 +25,8 @@ from circlekit.server import GatewayMiddleware
 from circlekit.wallets import CircleWalletSigner
 from circlekit.x402 import create_payment_header, get_payment_required
 
+from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+
 logger = logging.getLogger(__name__)
 
 _USDC_DECIMALS = 6
@@ -61,7 +63,7 @@ def get_gateway_middleware(seller_address: str) -> GatewayMiddleware:
             f"refusing to charge into zero address ({seller_address})"
         )
 
-    chain = os.getenv("GATEWAY_CHAIN", "arcTestnet").strip()
+    chain = os.getenv("GATEWAY_CHAIN", DEFAULT_GATEWAY_CHAIN).strip()
     mw = create_gateway_middleware(
         seller_address=seller_address,
         chain=chain,

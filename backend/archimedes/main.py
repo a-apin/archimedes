@@ -106,10 +106,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     from archimedes.marketplace.service import MarketService
 
     interval = int(os.getenv("AGENT_INTERVAL_SECONDS", "300"))
-    dry_run = os.getenv("AGENT_DRY_RUN", "false").lower() in ("1", "true", "yes")
-    market = MarketService(interval_seconds=interval, dry_run=dry_run)
+    payments_dry_run = os.getenv("PAYMENTS_DRY_RUN", "false").lower() in ("1", "true", "yes")
+    paper_trading = os.getenv("PAPER_TRADING", "true").lower() in ("1", "true", "yes")
+    market = MarketService(interval_seconds=interval, payments_dry_run=payments_dry_run, paper_trading=paper_trading)
     _app.state.market = market
-    _logger.info("marketplace engine started (interval=%ds, dry_run=%s)", interval, dry_run)
+    _logger.info("marketplace engine started (interval=%ds, payments_dry_run=%s, paper_trading=%s)", interval, payments_dry_run, paper_trading)
 
     # 3a. Rehydrate running publishers from Postgres
     try:

@@ -14,7 +14,7 @@ from archimedes.marketplace.service import MarketService, Subscriber
 @pytest.fixture
 def market():
     """MarketService with mocked state and no running publishers."""
-    svc = MarketService(interval_seconds=9999, dry_run=True)
+    svc = MarketService(interval_seconds=9999, payments_dry_run=True, paper_trading=True)
     svc.state = MagicMock()
     svc.state.load_subscribers = AsyncMock()
     svc.state.save_subscribers = AsyncMock()

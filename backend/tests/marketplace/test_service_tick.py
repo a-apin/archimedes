@@ -49,7 +49,7 @@ def _dummy_targets():
 
 @pytest.fixture
 def market():
-    svc = MarketService(interval_seconds=9999, dry_run=False)
+    svc = MarketService(interval_seconds=9999, payments_dry_run=False, paper_trading=False)
     # Mock the heavy dependencies
     svc.executor = MagicMock()
     svc.executor.read_portfolio = AsyncMock(
