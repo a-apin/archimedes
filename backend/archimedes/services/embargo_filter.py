@@ -58,7 +58,10 @@ def apply_outcome_embargo(
     Returns
     -------
     list[dict]
-        Papers whose publication date is before ``at - embargo_days``.
+        Papers whose publication date is before ``at - embargo_days``. Papers
+        with a missing or unparseable ``published`` date are dropped (fail
+        closed) — their age can't be verified, so keeping them would risk a
+        look-ahead leak (#953).
     """
     if at is None:
         at = date.today()
@@ -69,10 +72,15 @@ def apply_outcome_embargo(
     for p in papers:
         pub = _parse_published(p.get("published", ""))
         if pub is None:
-            # Cannot determine age — keep (conservative: include rather
-            # than silently drop papers with missing dates).
-            logger.debug("embargo: paper %s has no parseable published date — keeping", p.get("arxiv_id", "?"))
-            result.append(p)
+            # Cannot determine age — DROP the paper (fail closed). Keeping it
+            # would let a too-recent paper with a missing/malformed date bypass
+            # the embargo, leaking future-outcome information into a backtest
+            # decision — the exact Oracle Fallacy this filter exists to prevent
+            # (#953). Look-ahead safety beats corpus completeness.
+            logger.warning(
+                "embargo: paper %s has no parseable published date — dropping (fail-closed)",
+                p.get("arxiv_id", "?"),
+            )
             continue
         if pub.toordinal() <= cutoff:
             result.append(p)
