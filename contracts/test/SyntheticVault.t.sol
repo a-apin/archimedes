@@ -21,6 +21,21 @@ contract MockUSDC is ERC20 {
     }
 }
 
+/// @dev Attacker-controlled "vault" for the issue #904 drain scenario: if the
+///      owner could re-point SyntheticToken.vault here, this contract would
+///      mint unbacked synth to the attacker for free.
+contract MaliciousVault {
+    SyntheticToken public token;
+
+    constructor(SyntheticToken _token) {
+        token = _token;
+    }
+
+    function mintUnbacked(address to, uint256 amount) external {
+        token.mint(to, amount);
+    }
+}
+
 contract SyntheticVaultTest is Test {
     MockUSDC public usdc;
     PriceOracle public oracle;
@@ -559,6 +574,66 @@ contract SyntheticVaultTest is Test {
         vm.stopPrank();
 
         assertEq(preview, actual);
+    }
+
+    // ─── setVault Immutability Tests (issue #904) ─────────────────
+
+    /// @dev setVault is set-once: a second call reverts even for the owner.
+    ///      Pre-fix, the owner could re-point `vault` at any contract and
+    ///      mint unbacked synth against the real vault's collateral.
+    function test_revert_setVault_already_set() public {
+        vm.prank(owner);
+        vm.expectRevert(SyntheticToken.VaultAlreadySet.selector);
+        sTSLA.setVault(address(0xBAD));
+    }
+
+    function test_revert_setVault_zero_address() public {
+        SyntheticToken fresh = new SyntheticToken("Fresh", "FRSH", owner);
+        vm.prank(owner);
+        vm.expectRevert(SyntheticToken.ZeroVault.selector);
+        fresh.setVault(address(0));
+    }
+
+    function test_revert_setVault_non_owner() public {
+        SyntheticToken fresh = new SyntheticToken("Fresh", "FRSH", owner);
+        vm.prank(alice);
+        vm.expectRevert();
+        fresh.setVault(address(vault));
+    }
+
+    /// @dev Full drain scenario from issue #904: alice deposits real USDC, the
+    ///      owner tries to re-point the synth token at a malicious "vault" and
+    ///      mint unlimited synth to burn against alice's collateral. Post-fix
+    ///      the re-point reverts, the malicious mint reverts, and the real
+    ///      vault keeps working with its collateral intact.
+    function test_owner_cannot_drain_via_setVault_repoint() public {
+        // Alice deposits real collateral into the legitimate vault.
+        uint256 usdcAmount = 10_000 * 10**6;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), usdcAmount);
+        uint256 aliceSynth = vault.mint(usdcAmount);
+        vm.stopPrank();
+
+        uint256 collateralBefore = usdc.balanceOf(address(vault));
+
+        // Owner deploys a malicious vault and tries to re-point the token.
+        MaliciousVault evil = new MaliciousVault(sTSLA);
+        vm.prank(owner);
+        vm.expectRevert(SyntheticToken.VaultAlreadySet.selector);
+        sTSLA.setVault(address(evil));
+
+        // The malicious contract cannot mint — it never became the vault.
+        vm.expectRevert(SyntheticToken.NotVault.selector);
+        evil.mintUnbacked(owner, 1_000_000 * 1e18);
+
+        // Real vault is unaffected: collateral intact, alice can still redeem.
+        assertEq(usdc.balanceOf(address(vault)), collateralBefore);
+        assertEq(sTSLA.vault(), address(vault), "vault pointer unchanged");
+
+        vm.prank(alice);
+        uint256 usdcBack = vault.burn(aliceSynth);
+        assertGt(usdcBack, 0);
+        assertEq(sTSLA.balanceOf(alice), 0);
     }
 
     // ─── Admin Tests ──────────────────────────────────────────────
