@@ -187,7 +187,7 @@ class MarketService:
     path, charges on-chain, and fans out via in-process + Redis.
     """
 
-    def __init__(self, interval_seconds: int = 300, dry_run: bool = False):
+    def __init__(self, interval_seconds: int = 300, payments_dry_run: bool = False, paper_trading: bool = True):
         self.settings = chain_client.settings
         self.signer = circle_signer
         self.executor = chain_executor
@@ -195,7 +195,8 @@ class MarketService:
         self.state = MarketState()
         self.provider = default_provider()
         self.interval = interval_seconds
-        self.dry_run = dry_run
+        self.payments_dry_run = payments_dry_run
+        self.paper_trading = paper_trading
         self.publishers: dict[str, Publisher] = {}  # strategy_id -> Publisher
         self._stop = asyncio.Event()
         # Regime detection (same pattern as agent_runner)
@@ -394,7 +395,7 @@ class MarketService:
             )
 
             # Publisher's own vault ALWAYS trades if the pipeline cleared.
-            if not self.dry_run:
+            if not self.paper_trading:
                 try:
                     await self.executor.execute_trades(pub.vault_address, trades)
                     await self.state.store.save_last_rebalance(pub.vault_address)
@@ -407,7 +408,8 @@ class MarketService:
 
             # Settlement sweep (P5) — Gateway → wallet → depositToPool.
             # Runs inside its own try/except so a sweep failure never fails the tick.
-            if not self.dry_run:
+            # Gated on payments_dry_run — sweep disburses real collected fees.
+            if not self.payments_dry_run:
                 try:
                     await self._sweeper.sweep_publisher(pub)
                 except Exception:
@@ -687,7 +689,7 @@ class MarketService:
 
     # F6.5 — single charge, reused by pipeline + REBALANCE
     async def _charge_one(self, pub, sub, strategy_id, tick_id, step: TickStep, action_count: int) -> bool:
-        if self.dry_run:
+        if self.payments_dry_run:
             return True
         if not pub.gateway_seller_address:
             logger.warning("[%s] no gateway_seller_address for pub %s — unpaid", tick_id, strategy_id)
@@ -752,7 +754,7 @@ class MarketService:
 
     # F6.8 — apply publisher trades to subscriber (frozen TradeOrder → asdict)
     async def _apply_to_subscriber(self, sub, target_weights, addr_map=None) -> tuple[bool, object]:
-        if self.dry_run:
+        if self.paper_trading:
             return True, []
         try:
             sub_portfolio = await self.executor.read_portfolio(sub.vault_address)

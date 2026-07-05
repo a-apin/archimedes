@@ -79,7 +79,7 @@ def test_publisher_never_has_notice():
 @pytest.mark.asyncio
 async def test_stop_publisher_clears_redis_cache():
     """stop_publisher calls save_subscribers({}) to clear the Redis cache."""
-    svc = MarketService(interval_seconds=9999, dry_run=False)
+    svc = MarketService(interval_seconds=9999, payments_dry_run=False, paper_trading=False)
     svc.executor = MagicMock()
     svc.signer = MagicMock()
     svc.signer.is_configured = False
@@ -121,7 +121,7 @@ async def test_stop_publisher_clears_redis_cache():
 async def test_stop_publisher_sets_retired_flag():
     """stop_publisher sets pub.retired=True so _run_loop exits cleanly
     without mid-charge cancellation."""
-    svc = MarketService(interval_seconds=9999, dry_run=False)
+    svc = MarketService(interval_seconds=9999, payments_dry_run=False, paper_trading=False)
     svc.executor = MagicMock()
     svc.signer = MagicMock()
     svc.signer.is_configured = False
@@ -150,7 +150,7 @@ async def test_stop_publisher_sets_retired_flag():
 @pytest.mark.asyncio
 async def test_stop_publisher_noop_for_missing():
     """stop_publisher is a no-op for a non-existent strategy (no error)."""
-    svc = MarketService(interval_seconds=9999, dry_run=False)
+    svc = MarketService(interval_seconds=9999, payments_dry_run=False, paper_trading=False)
     svc.state = MagicMock()
     svc.state.save_subscribers = AsyncMock()
     svc.state.append_event = AsyncMock()
@@ -164,7 +164,7 @@ async def test_stop_publisher_noop_for_missing():
 @pytest.mark.asyncio
 async def test_stop_publisher_pop_from_publishers():
     """stop_publisher removes the strategy from the publishers dict."""
-    svc = MarketService(interval_seconds=9999, dry_run=False)
+    svc = MarketService(interval_seconds=9999, payments_dry_run=False, paper_trading=False)
     svc.executor = MagicMock()
     svc.signer = MagicMock()
     svc.signer.is_configured = False
@@ -195,7 +195,7 @@ async def test_stop_publisher_pop_from_publishers():
 async def test_run_loop_exits_when_publisher_retired():
     """_run_loop breaks out of the loop when pub.retired is True, avoiding
     mid-charge cancellation (TASK 18)."""
-    svc = MarketService(interval_seconds=9999, dry_run=False)
+    svc = MarketService(interval_seconds=9999, payments_dry_run=False, paper_trading=False)
     svc.executor = MagicMock()
     svc.signer = MagicMock()
     svc.signer.is_configured = False

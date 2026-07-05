@@ -67,7 +67,7 @@ def app():
     a.dependency_overrides[require_verified_wallet] = lambda: TEST_WALLET
 
     market = MagicMock(spec=MarketService)
-    market.dry_run = True
+    market.payments_dry_run = True
     # Use the signer path for contract calls (simpler mock surface)
     market.signer = MagicMock()
     market.signer.is_configured = True
@@ -174,7 +174,7 @@ def test_list_published_empty(client):
 
 
 def test_subscribe_succeeds_live_mode_no_chain_calls(client, app):
-    """Subscribe succeeds in live mode (dry_run=False) with no SubscriptionManager calls."""
+    """Subscribe succeeds in live mode (payments_dry_run=False) with no SubscriptionManager calls."""
     from archimedes.marketplace.wallet_provisioner import provision_subscriber_wallet
 
     # Create publisher first
@@ -186,7 +186,7 @@ def test_subscribe_succeeds_live_mode_no_chain_calls(client, app):
 
     # Enable live mode
     market = app.state.market
-    market.dry_run = False
+    market.payments_dry_run = False
 
     # Mock the wallet provisioner so it succeeds without real Circle API
     wallet_id = "test-wallet-uuid"

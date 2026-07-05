@@ -71,7 +71,7 @@ def _patch_evaluator(stack: ExitStack, weights: dict | None = None):
 
 @pytest.fixture
 def market():
-    svc = MarketService(interval_seconds=9999, dry_run=True)
+    svc = MarketService(interval_seconds=9999, payments_dry_run=True, paper_trading=True)
     svc.executor = MagicMock()
     svc.executor.read_portfolio = AsyncMock(
         return_value=MagicMock(total_value_usdc=10000, weights_dict={})
@@ -130,7 +130,7 @@ def _add_sub(pub, sub_id="sub_1", active=True):
 # ── Tests ───────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_dry_run_happy_path(market: MarketService):
+async def test_payments_dry_run_happy_path(market: MarketService):
     """Dry-run: one ready subscriber, non-empty trades → 13 charged pipeline
     records + 1 REBALANCE record; zero halted."""
     records = []
@@ -225,7 +225,7 @@ async def test_no_drift_halt(market: MarketService):
 async def test_cant_pay_deferral(market: MarketService):
     """Non-dry-run: sub with _charge_one→False at REGIME_CLASSIFY is deferred,
     other sub still reaches REBALANCE."""
-    market.dry_run = False
+    market.payments_dry_run = False
     records = []
 
     async def _capture_record(rec):
@@ -278,7 +278,7 @@ async def test_cant_pay_deferral(market: MarketService):
 @pytest.mark.asyncio
 async def test_mirror_failure(market: MarketService):
     """_apply_to_subscriber → (False, exc) → EXECUTION record + liability."""
-    market.dry_run = False
+    market.paper_trading = False
     records = []
 
     async def _capture_record(rec):
@@ -341,7 +341,7 @@ async def test_underfunded_sub_excluded(market: MarketService):
 @pytest.mark.asyncio
 async def test_empty_active_set(market: MarketService):
     """All subscribers unready → pipeline still clears, publisher vault trades."""
-    market.dry_run = False
+    market.paper_trading = False
     records = []
 
     async def _capture_record(rec):

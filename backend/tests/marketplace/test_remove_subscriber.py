@@ -45,7 +45,7 @@ def _use_tmp_db(tmp_path):
 @pytest.fixture
 def market():
     """MarketService with mocked state/executor and no running publishers."""
-    svc = MarketService(interval_seconds=9999, dry_run=True)
+    svc = MarketService(interval_seconds=9999, payments_dry_run=True, paper_trading=True)
     svc.state = MagicMock()
     svc.state.save_subscribers = AsyncMock()
     svc.publishers = {}
