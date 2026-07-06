@@ -86,6 +86,28 @@ class TestExpectedMaxDrawdown1y:
         result = expected_max_drawdown_1y(mu, sigma)
         assert result == pytest.approx(0.05 * sigma, rel=1e-6)
 
+    def test_high_sharpe_floor_stays_strictly_positive(self):
+        # Documented behavior (issue #945): the linear fit drives the raw
+        # estimate negative for high-Sharpe assets (here Sharpe = mu/sigma = 5,
+        # well outside the Sharpe <= 1 regime the fit is valid for). The floor
+        # must keep the returned drawdown strictly positive rather than
+        # surfacing an implausible negative/zero DD.
+        mu, sigma = 1.0, 0.20  # raw est = 0.63*0.20 - 0.30*1.0 = -0.174 < 0
+        raw_est = 0.63 * sigma - 0.30 * mu
+        assert raw_est < 0.0  # confirm we are in the broken-approximation corner
+        result = expected_max_drawdown_1y(mu, sigma)
+        assert result > 0.0
+        assert result == pytest.approx(0.05 * sigma, rel=1e-6)
+
+    def test_low_sharpe_regime_uses_linear_estimate_above_floor(self):
+        # In the documented valid regime (Sharpe <= 1) the linear estimate
+        # exceeds the 0.05*sigma floor and is returned unclamped.
+        mu, sigma = 0.05, 0.15  # Sharpe = 0.33; est = 0.0795 > floor 0.0075
+        est = 0.63 * sigma - 0.30 * mu
+        assert est > 0.05 * sigma  # floor does not bind in this regime
+        result = expected_max_drawdown_1y(mu, sigma)
+        assert result == pytest.approx(est, rel=1e-6)
+
 
 # ---------------------------------------------------------------------------
 # Section 2 — TestValueAtRisk951y

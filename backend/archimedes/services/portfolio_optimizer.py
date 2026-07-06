@@ -97,20 +97,36 @@ class KellyOptimizationResult:
 
 
 def expected_max_drawdown_1y(mu_ann: float, sigma_ann: float) -> float:
-    """Closed-form 1-year expected max drawdown for a GBM with drift.
+    """Approximate 1-year expected max drawdown for a GBM with drift.
 
-    From Magdon-Ismail & Atiya (2004) "Maximum Drawdown".  For an
-    arithmetic Brownian motion with annual drift μ and volatility σ
-    over horizon T (here T=1), the expected max-DD has a tractable
-    form in the dimensionless quantity α = μ·√T / σ.  For typical
-    risk-asset Sharpes (α ∈ [0, 1.5]) we use the well-known
-    approximation:
+    Motivated by Magdon-Ismail & Atiya (2004) "Maximum Drawdown".  For a
+    Brownian motion with annual drift μ and volatility σ over horizon
+    T=1, the expected max-DD is a nonlinear function of the dimensionless
+    Sharpe α = μ·√T / σ.  Here we use a **linear approximation** of that
+    relationship, calibrated for the low-Sharpe regime:
 
-        E[max-DD over 1y] ≈ 0.63·σ - 0.30·μ        (μ ≥ 0, low Sharpe)
+        E[max-DD over 1y] ≈ 0.63·σ - 0.30·μ        (μ ≥ 0)
 
-    This dramatically improves on the previous ``2·σ`` heuristic
-    (which was the median 1y down-move for a zero-Sharpe asset, not a
-    max drawdown).  Returns a POSITIVE decimal (e.g. 0.15 = 15% DD).
+    **Validity — read before trusting the output.**  The 0.63/0.30 linear
+    fit tracks the Magdon-Ismail curve reasonably only for **Sharpe α ≲ 1**.
+    It is NOT accurate for high-Sharpe assets: because the μ term enters
+    linearly, the estimate keeps shrinking as μ grows and eventually goes
+    negative (e.g. μ = 2·σ ⇒ 0.63·σ - 0.60·σ < 0), which is not a real
+    drawdown — the true expected max-DD stays strictly positive for any
+    σ > 0.  For α > 1 read the number as a rough lower-bound placeholder,
+    not a calibrated estimate; a proper fix (Magdon-Ismail table lookup or
+    Monte Carlo) is tracked in issue #945.
+
+    To keep the output honest in that high-Sharpe corner we clamp the
+    estimate to a floor of 0.05·σ (5% of annual vol) rather than returning
+    a negative or near-zero drawdown.  The floor is a deliberate "never
+    claim less than this" guard, not a modelled value; when it binds, the
+    caller is in the α > 1 regime where this linear approximation has
+    broken down.
+
+    Improves on the previous ``2·σ`` heuristic (the median 1y down-move
+    for a zero-Sharpe asset, not a max drawdown).  Returns a POSITIVE
+    decimal (e.g. 0.15 = 15% DD).
 
     Reference: Magdon-Ismail & Atiya (2004), Wilmott Magazine.
     """
@@ -121,7 +137,11 @@ def expected_max_drawdown_1y(mu_ann: float, sigma_ann: float) -> float:
         # (the η→0 limit in Magdon-Ismail's table).
         return float(0.79 * sigma_ann)
     est = 0.63 * sigma_ann - 0.30 * mu_ann
-    return float(max(est, 0.05 * sigma_ann))  # never claim < 5% of σ
+    # High-Sharpe guard: the linear fit drives `est` toward (and past) zero
+    # as μ grows, so floor at 5% of σ — never claim < 5% of σ.  When this
+    # floor binds we are outside the Sharpe ≲ 1 regime the fit is valid for
+    # (see docstring / issue #945).
+    return float(max(est, 0.05 * sigma_ann))
 
 
 def value_at_risk_95_1y(mu_ann: float, sigma_ann: float) -> float:
