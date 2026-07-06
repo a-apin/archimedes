@@ -948,13 +948,25 @@ def ledoit_wolf_shrinkage(returns: np.ndarray) -> tuple[np.ndarray, float]:
     X = X - X.mean(axis=0, keepdims=True)
     S = (X.T @ X) / T  # MLE sample covariance (1/T convention, per LW2004)
 
+    # LW2004's derivation (target μ·I, intensity δ, and the b̄²/d² closed forms
+    # below) is all internally consistent in the 1/T MLE convention, so we do the
+    # whole estimate in 1/T and convert the FINAL output to the unbiased ddof=1
+    # convention (1/(T-1)) that the rest of this module uses (np.cov(..., ddof=1)).
+    # Without this, LW sits a factor (T-1)/T below the other covariance paths —
+    # ~5% low at T=20 — understating variance (issue #950). δ is scale-invariant
+    # (b² and d² both scale with S), so scaling the output by T/(T-1) is exactly
+    # the LW estimate on the unbiased sample covariance and leaves δ unchanged.
+    # (Rescaling S mid-function would instead break the b̄² closed form, which
+    # couples tr(S²) with the raw ‖x_k‖² norms.) T ≥ 2 here, so T-1 ≥ 1.
+    ddof_correction = T / (T - 1)
+
     mu = float(np.trace(S)) / N  # ⟨S, I⟩ — average sample variance
     tr_s2 = float(np.trace(S @ S))
     d2 = tr_s2 / N - mu**2  # ‖S − μI‖²_F / N — dispersion of S around target
 
     if d2 <= 0.0:
         # S is already isotropic (e.g. N == 1): nothing to shrink.
-        return S, 0.0
+        return S * ddof_correction, 0.0
 
     # b̄² = (1/T²)·Σ_k‖x_k x_kᵀ − S‖²_F / N, via the closed form
     #      Σ_k‖x_k‖⁴ − T·tr(S²)  (avoids the per-observation outer-product loop).
@@ -964,7 +976,7 @@ def ledoit_wolf_shrinkage(returns: np.ndarray) -> tuple[np.ndarray, float]:
 
     delta = b2 / d2
     shrunk = delta * mu * np.eye(N) + (1.0 - delta) * S
-    return shrunk, float(delta)
+    return shrunk * ddof_correction, float(delta)
 
 
 def _shrink_cov(cov: np.ndarray, intensity: float = 0.10) -> np.ndarray:
