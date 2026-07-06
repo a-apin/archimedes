@@ -35,15 +35,32 @@ logger = logging.getLogger(__name__)
 
 auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# Session signing key — prefer SIWE_SESSION_KEY (dedicated session-signing secret);
-# falls back to EMAIL_ENCRYPTION_KEY for backwards compatibility. Production enforces
-# EMAIL_ENCRYPTION_KEY at boot (main.py RuntimeError), so the secrets.token_hex(32)
-# path is local-dev only.
-# Multi-worker note: main.py:~127 raises RuntimeError at boot if PUBLIC_DOMAIN is set
-# (production) and EMAIL_ENCRYPTION_KEY is unset, so the secrets.token_hex(32) fallback
-# is only reachable in single-worker local dev -- per-worker secret divergence (which
-# would break cross-worker session-cookie verification) can't occur there.
-_SESSION_SECRET = os.getenv("SIWE_SESSION_KEY") or os.getenv("EMAIL_ENCRYPTION_KEY", secrets.token_hex(32))
+
+def _resolve_session_secret() -> str:
+    """Resolve the session-cookie signing secret (issue #933).
+
+    Prefers SIWE_SESSION_KEY (dedicated), then EMAIL_ENCRYPTION_KEY (back-compat).
+    If neither is set, falls back to a per-process random secret AND logs a loud
+    WARNING: that fallback is only safe in single-worker local dev — across
+    multiple uvicorn workers each worker would get a DIFFERENT random secret, so
+    a cookie signed by one worker fails verification on another and users are
+    logged out at random. Production can't reach the random path: main.py raises
+    at boot when PUBLIC_DOMAIN is set (production) and EMAIL_ENCRYPTION_KEY is
+    unset. The warning makes a misconfigured multi-worker deploy visible instead
+    of silently churning sessions.
+    """
+    configured = os.getenv("SIWE_SESSION_KEY") or os.getenv("EMAIL_ENCRYPTION_KEY")
+    if configured:
+        return configured
+    logger.warning(
+        "No SIWE_SESSION_KEY / EMAIL_ENCRYPTION_KEY set — using a per-process random "
+        "session secret. Safe ONLY for single-worker local dev; a multi-worker deploy "
+        "will log users out at random (set SIWE_SESSION_KEY or EMAIL_ENCRYPTION_KEY)."
+    )
+    return secrets.token_hex(32)
+
+
+_SESSION_SECRET = _resolve_session_secret()
 _SESSION_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 _NONCE_TTL_SECONDS = 300  # 5 minutes
 _CLOCK_SKEW_SECONDS = 120  # tolerate small client/server clock drift on Issued At
