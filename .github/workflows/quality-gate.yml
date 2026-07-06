@@ -37,7 +37,14 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install --quiet -r backend/requirements.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0" "fakeredis[lua]>=2.26.0"
+        # Unit tests never load the embedding model — paper_rag.py lazy-imports
+        # torch/sentence-transformers and falls back to TF-IDF on ImportError, and
+        # test_paper_rag.py mocks sentence_transformers. Skipping them here keeps the
+        # required check off the pytorch wheel CDN (an SSL-flaky external dependency)
+        # and cuts ~2.5GB + minutes off every run. They stay in the prod Docker image.
+        run: |
+          grep -vE '^(--extra-index-url https://download\.pytorch\.org|torch[ >=<~!]|sentence-transformers[ >=<~!])' backend/requirements.txt > /tmp/req-ci.txt
+          pip install --quiet -r /tmp/req-ci.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0" "fakeredis[lua]>=2.26.0"
       - name: Test
         run: pytest -m "not integration" --tb=short -q
 
@@ -185,7 +192,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install --quiet -r backend/requirements.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0"
+      # Same torch/sentence-transformers skip as the unit-test job above (CDN-independent).
+      - run: |
+          grep -vE '^(--extra-index-url https://download\.pytorch\.org|torch[ >=<~!]|sentence-transformers[ >=<~!])' backend/requirements.txt > /tmp/req-ci.txt
+          pip install --quiet -r /tmp/req-ci.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0"
       - run: pytest -m "not integration" --cov=archimedes --cov-fail-under=60 --tb=short -q
 
   supply-chain:
