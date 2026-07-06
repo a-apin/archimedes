@@ -3,6 +3,7 @@ import WalletConnect from './WalletConnect'
 import Breadcrumbs from './Breadcrumbs'
 import WelcomeProfileModal from './WelcomeProfileModal'
 import { NEW_CONTRACTS, getStoredWalletName } from '../config'
+import { getStoredTheme, applyTheme } from '../theme'
 
 // Sidebar groups separate Home (anchor / landing) from the three product-state
 // bands. Empty group label is intentional for the Home entry — it renders as a
@@ -73,7 +74,14 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
   const [userProfile, setUserProfile] = useState(null)
   const [showWelcomeModal, setShowWelcomeModal] = useState(false)
   const [showEditProfile, setShowEditProfile] = useState(false)
+  const [theme, setTheme] = useState(getStoredTheme)
   const blockLabel = Object.keys(NEW_CONTRACTS).length ? 'Arc · Testnet live' : 'Arc · Connecting'
+
+  const toggleTheme = () => {
+    const next = theme === 'light' ? 'dark' : 'light'
+    applyTheme(next)
+    setTheme(next)
+  }
 
   const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -218,6 +226,15 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
             {/* Personalized greeting moved into the WalletConnect dropdown
                 header so the topbar stays compact + the greeting lives next
                 to the wallet identity it belongs to. */}
+            <button
+              type="button"
+              className="topbar-icon-btn"
+              onClick={toggleTheme}
+              aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
+              title={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
+            >
+              <span className={theme === 'light' ? 'i-lucide-moon' : 'i-lucide-sun'} style={{width:18,height:18}} />
+            </button>
             {onOpenTour && (
               <button
                 type="button"

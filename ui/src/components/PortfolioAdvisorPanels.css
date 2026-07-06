@@ -5,7 +5,7 @@
 /* ─── segmented control ─── */
 .pap-segmented {
   display: inline-flex;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--glass-hover);
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   padding: 3px;
@@ -45,7 +45,7 @@
   gap: 6px;
 }
 .pap-field input {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--glass);
   border: 1px solid var(--glass-border);
   border-radius: 6px;
   padding: 9px 12px;
@@ -55,14 +55,14 @@
   outline: none;
 }
 .pap-field input:focus {
-  border-color: var(--accent-border);
+  border-color: var(--accent);
 }
 .pap-kelly-out {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
   padding: 16px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--glass);
   border-radius: 8px;
   border: 1px solid var(--glass-border);
 }
@@ -80,7 +80,7 @@
 .pap-drift-track {
   position: relative;
   height: 14px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--glass-hover);
   border-radius: 4px;
   overflow: visible;
 }
@@ -120,7 +120,7 @@
 }
 .pap-weight-track {
   height: 8px;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--glass-hover);
   border-radius: 4px;
   overflow: hidden;
 }

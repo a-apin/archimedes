@@ -120,7 +120,7 @@ export function fmtUsd(n, fractionDigits = 0) {
 
 function WeightBar({ weight, accent }) {
   return (
-    <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 4, height: 8, overflow: 'hidden' }}>
+    <div style={{ background: 'var(--glass-hover)', borderRadius: 4, height: 8, overflow: 'hidden' }}>
       <div style={{ width: `${(weight * 100).toFixed(1)}%`, height: '100%', background: accent || 'var(--accent)' }} />
     </div>
   )
@@ -297,7 +297,7 @@ export function StrategyArchitect({ strategies }) {
               : null
             if (!agg) return null
             return (
-              <div className="card-flat mt-3.5" style={{ padding: 14, background: 'rgba(255,255,255,0.03)' }}>
+              <div className="card-flat mt-3.5" style={{ padding: 14, background: 'var(--glass)' }}>
                 <div className="label mb-2">Expected portfolio profile (weighted from per-strategy backtests)</div>
                 <div className="grid grid-cols-3 gap-3 mb-2">
                   <div><div className="caption">Blended Sharpe</div><div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{fmt(agg.sharpe_ratio)}</div></div>
@@ -481,7 +481,7 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
       </tr>
       {open && (
         <tr className="lib-row-detail">
-          <td colSpan={8} style={{ padding: '12px 18px', background: 'rgba(255,255,255,0.02)' }}>
+          <td colSpan={8} style={{ padding: '12px 18px', background: 'var(--glass)' }}>
             <div className="text-[0.82rem]" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 18 }}>
               <div>
                 <div className="label mb-2">Methodology</div>
@@ -620,7 +620,7 @@ function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigo
       <div className="overflow-x-auto rounded-lg border border-[var(--glass-border)]">
         <table className="lib-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
           <thead>
-            <tr style={{ background: 'rgba(255,255,255,0.03)', textAlign: 'left', borderBottom: '1px solid var(--glass-border)' }}>
+            <tr style={{ background: 'var(--glass)', textAlign: 'left', borderBottom: '1px solid var(--glass-border)' }}>
               <th style={{ padding: '10px 14px' }}>Strategy</th>
               <th style={{ padding: '10px 14px' }}>Paper</th>
               <th style={{ padding: '10px 14px' }}>Status</th>
@@ -873,7 +873,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                   style={{
                     color: 'var(--text-3)',
                     padding: '10px 14px',
-                    background: 'var(--bg-2)',
+                    background: 'var(--surface-2)',
                     border: '1px solid var(--glass-border)',
                     borderRadius: 6,
                     listStyle: 'none',

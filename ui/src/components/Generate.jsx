@@ -211,7 +211,7 @@ export default function Generate({ onNavigate, walletAddr }) {
                 className="text-left"
                 style={{
                   padding: '6px 10px',
-                  background: 'var(--bg-2)',
+                  background: 'var(--surface-2)',
                   border: '1px solid var(--glass-border)',
                   borderRadius: 6,
                   cursor: 'pointer',

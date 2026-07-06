@@ -165,7 +165,7 @@ export default function Explore() {
               style={{
                 textAlign: 'left',
                 padding: 16,
-                background: 'rgba(255,255,255,0.02)',
+                background: 'var(--glass)',
                 border: '1px solid var(--glass-border)',
                 borderRadius: 8,
                 cursor: 'pointer',
@@ -174,11 +174,11 @@ export default function Explore() {
                 transition: 'background 0.15s, border-color 0.15s',
               }}
               onMouseEnter={e => {
-                e.currentTarget.style.background = 'rgba(255,255,255,0.05)'
+                e.currentTarget.style.background = 'var(--glass-hover)'
                 e.currentTarget.style.borderColor = 'var(--text-4)'
               }}
               onMouseLeave={e => {
-                e.currentTarget.style.background = 'rgba(255,255,255,0.02)'
+                e.currentTarget.style.background = 'var(--glass)'
                 e.currentTarget.style.borderColor = 'var(--glass-border)'
               }}
               aria-label={`Open details for ${a.symbol}`}

@@ -62,7 +62,7 @@ function EquityDrawdownChart({ returns, oosStartFrac }) {
       <div className="label mb-2">Equity Curve &amp; Drawdown</div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Equity curve with drawdown overlay" style={{ display: 'block' }}>
         {eqTicks.map((t, i) => (
-          <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+          <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="var(--chart-grid)" strokeWidth="1" />
         ))}
         {/* left axis = equity (accent) */}
         {eqTicks.map((t, i) => (
@@ -77,8 +77,8 @@ function EquityDrawdownChart({ returns, oosStartFrac }) {
           </text>
         ))}
         {/* OOS divider */}
-        <line x1={oosX} y1={PAD_T} x2={oosX} y2={H - PAD_B} stroke="rgba(255,255,255,0.28)" strokeWidth="1" strokeDasharray="4 3" />
-        <text x={oosX + 4} y={PAD_T + 10} fill="rgba(255,255,255,0.5)" fontSize="9">
+        <line x1={oosX} y1={PAD_T} x2={oosX} y2={H - PAD_B} stroke="var(--chart-grid-strong)" strokeWidth="1" strokeDasharray="4 3" />
+        <text x={oosX + 4} y={PAD_T + 10} fill="var(--chart-label-strong)" fontSize="9">
           OOS →
         </text>
         <path d={ddArea} fill="rgba(239,68,68,0.14)" stroke="none" />
@@ -120,10 +120,10 @@ function WalkForwardBands({ folds }) {
               <rect x={x + isW + 2} y={20} width={oosW} height={40} rx={3} fill={oosColor} opacity="0.85">
                 <title>Fold {i + 1} out-of-sample: OOS Sharpe {f.oosSharpe.toFixed(2)}</title>
               </rect>
-              <text x={x + segW / 2} y={14} textAnchor="middle" fill="rgba(255,255,255,0.45)" fontSize="8">
+              <text x={x + segW / 2} y={14} textAnchor="middle" fill="var(--chart-label)" fontSize="8">
                 F{i + 1}
               </text>
-              <text x={x + segW / 2} y={76} textAnchor="middle" fill="rgba(255,255,255,0.55)" fontSize="8" className="mono">
+              <text x={x + segW / 2} y={76} textAnchor="middle" fill="var(--chart-label-strong)" fontSize="8" className="mono">
                 {f.oosSharpe.toFixed(2)}
               </text>
             </g>
@@ -258,14 +258,14 @@ function RollingStatBand({ returns, window }) {
       <div className="label mb-2">Rolling Sharpe with Confidence Band ({window}d)</div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Rolling Sharpe with confidence band" style={{ display: 'block' }}>
         {yTicks.map((t, i) => (
-          <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+          <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="var(--chart-grid)" strokeWidth="1" />
         ))}
         {yTicks.map((t, i) => (
-          <text key={`l${i}`} x={PAD_L - 6} y={t.y + 3} textAnchor="end" fill="rgba(255,255,255,0.42)" fontSize="9" className="mono">
+          <text key={`l${i}`} x={PAD_L - 6} y={t.y + 3} textAnchor="end" fill="var(--chart-label)" fontSize="9" className="mono">
             {t.label}
           </text>
         ))}
-        <line x1={PAD_L} y1={zeroY} x2={W - PAD_R} y2={zeroY} stroke="rgba(255,255,255,0.2)" strokeWidth="1" strokeDasharray="3 3" />
+        <line x1={PAD_L} y1={zeroY} x2={W - PAD_R} y2={zeroY} stroke="var(--chart-grid-strong)" strokeWidth="1" strokeDasharray="3 3" />
         {bandPath && <path d={bandPath} fill="rgba(192,132,252,0.15)" stroke="none" />}
         {line && <path d={line} fill="none" stroke="var(--accent)" strokeWidth="1.6" strokeLinejoin="round" />}
       </svg>

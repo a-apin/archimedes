@@ -82,7 +82,7 @@ function Illustration({ name }) {
   const accent = 'var(--accent)'
   const text = 'var(--text-2)'
   const muted = 'var(--text-4)'
-  const bg = 'var(--bg-2)'
+  const bg = 'var(--surface-2)'
 
   switch (name) {
     case 'archimedes':

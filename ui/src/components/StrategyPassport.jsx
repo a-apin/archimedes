@@ -312,7 +312,7 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
                 <div
                   key={p.arxiv_id || idx}
                   className="pb-3"
-                  style={idx < s.papers.length - 1 ? { borderBottom: '1px solid var(--border, rgba(255,255,255,0.08))' } : undefined}
+                  style={idx < s.papers.length - 1 ? { borderBottom: '1px solid var(--glass-border)' } : undefined}
                 >
                   <p className="body leading-snug" style={{ fontStyle: 'italic', fontWeight: 600 }}>
                     "{p.title || p.arxiv_id || '—'}"
@@ -457,7 +457,7 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
         {/* Return source (T2.5) — the rigor gate says whether the edge survives;
             this says WHY it exists, and how durable that source is. */}
         {s.return_source && (
-          <div className="mt-4 pt-4 border-t border-[var(--border,rgba(255,255,255,0.08))]">
+          <div className="mt-4 pt-4 border-t border-[var(--glass-border)]">
             <div className="flex items-center gap-2 flex-wrap mb-1">
               <span className="caption text-[var(--text-4)]">Dominant return source</span>
               <span className={`tag ${returnSourceChip(s.return_source).cls}`}>

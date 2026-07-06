@@ -29,7 +29,7 @@ function fmtPct(v, d = 2) {
 
 const SHARPE_WINDOWS = [
   { w: 30, color: 'var(--accent)', label: '30d' },
-  { w: 60, color: '#60a5fa', label: '60d' },
+  { w: 60, color: 'var(--info)', label: '60d' },
   { w: 90, color: 'var(--positive)', label: '90d' },
 ]
 
@@ -241,7 +241,7 @@ function GreeksPanel({ greeksData }) {
               <thead>
                 <tr
                   style={{
-                    background: 'rgba(255,255,255,0.03)',
+                    background: 'var(--glass)',
                     textAlign: 'left',
                     borderBottom: '1px solid var(--glass-border)',
                   }}
@@ -315,10 +315,10 @@ function DrawdownPlot({ returns }) {
       <div className="label mb-2">Drawdown (Underwater Plot)</div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Drawdown over time" style={{ display: 'block' }}>
         {yTicks.map((t, i) => (
-          <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+          <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="var(--chart-grid)" strokeWidth="1" />
         ))}
         {yTicks.map((t, i) => (
-          <text key={`l${i}`} x={PAD_L - 6} y={t.y + 3} textAnchor="end" fill="rgba(255,255,255,0.42)" fontSize="9" className="mono">
+          <text key={`l${i}`} x={PAD_L - 6} y={t.y + 3} textAnchor="end" fill="var(--chart-label)" fontSize="9" className="mono">
             {t.label}
           </text>
         ))}
@@ -386,15 +386,15 @@ function RollingSharpePlot({ returns }) {
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Rolling Sharpe ratio over time" style={{ display: 'block' }}>
         {yTicks.map((t, i) => (
-          <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+          <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="var(--chart-grid)" strokeWidth="1" />
         ))}
         {yTicks.map((t, i) => (
-          <text key={`l${i}`} x={PAD_L - 6} y={t.y + 3} textAnchor="end" fill="rgba(255,255,255,0.42)" fontSize="9" className="mono">
+          <text key={`l${i}`} x={PAD_L - 6} y={t.y + 3} textAnchor="end" fill="var(--chart-label)" fontSize="9" className="mono">
             {t.label}
           </text>
         ))}
         {/* zero reference line */}
-        <line x1={PAD_L} y1={zeroY} x2={W - PAD_R} y2={zeroY} stroke="rgba(255,255,255,0.2)" strokeWidth="1" strokeDasharray="3 3" />
+        <line x1={PAD_L} y1={zeroY} x2={W - PAD_R} y2={zeroY} stroke="var(--chart-grid-strong)" strokeWidth="1" strokeDasharray="3 3" />
         {lines.map((l) => (
           <path key={l.label} d={l.path} fill="none" stroke={l.color} strokeWidth="1.6" strokeLinejoin="round" />
         ))}

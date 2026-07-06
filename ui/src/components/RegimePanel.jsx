@@ -25,7 +25,7 @@ function regimeBorder(regime) {
 function MiniBar({ value, max, color }) {
   const pct = Math.max(0, Math.min((value / (max || 1)) * 100, 100))
   return (
-    <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 3, height: 6, overflow: 'hidden', flex: 1 }}>
+    <div style={{ background: 'var(--glass-hover)', borderRadius: 3, height: 6, overflow: 'hidden', flex: 1 }}>
       <div style={{ width: `${pct.toFixed(1)}%`, height: '100%', background: color || 'var(--accent)' }} />
     </div>
   )
@@ -74,7 +74,7 @@ function TransitionRow({ from, to, prob }) {
       <span className="caption" style={{ width: 100, color: 'var(--text-3)', fontSize: '0.75rem' }}>
         {from === to ? `Stay ${regimeLabel(from)}` : `→ ${regimeLabel(to)}`}
       </span>
-      <MiniBar value={prob} max={1} color={from === to ? 'var(--accent)' : 'rgba(255,255,255,0.25)'} />
+      <MiniBar value={prob} max={1} color={from === to ? 'var(--accent)' : 'var(--glass-border)'} />
       <span className="mono" style={{ fontSize: '0.75rem', width: 36, textAlign: 'right' }}>
         {fmtPct(prob)}
       </span>
@@ -169,7 +169,7 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
   const vixScore = vixUsable
     ? (signals.vix_score ?? Math.min((signals.vix_level - 10) / 30, 1))
     : 0
-  const vixBarColor = vixScore > 0.7 ? 'var(--negative)' : vixScore > 0.4 ? '#f59e0b' : 'var(--positive)'
+  const vixBarColor = vixScore > 0.7 ? 'var(--negative)' : vixScore > 0.4 ? 'var(--warning)' : 'var(--positive)'
 
   return (
     <div
@@ -192,7 +192,7 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
         <span className="caption">confidence {fmtPct(confidencePct)}</span>
         {regime.regime_changed && (
           <span style={{ fontSize: '0.72rem', fontWeight: 600, padding: '2px 7px', borderRadius: 4,
-            background: 'rgba(245,158,11,0.2)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.4)' }}>
+            background: 'var(--warning-bg)', color: 'var(--warning)', border: '1px solid var(--warning-bd)' }}>
             REGIME CHANGE
           </span>
         )}
@@ -206,7 +206,7 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
 
       {/* Confidence bar */}
       <div style={{ marginBottom: 18 }}>
-        <div style={{ background: 'rgba(255,255,255,0.08)', borderRadius: 4, height: 8, overflow: 'hidden' }}>
+        <div style={{ background: 'var(--glass-hover)', borderRadius: 4, height: 8, overflow: 'hidden' }}>
           <div style={{
             width: `${(confidencePct * 100).toFixed(1)}%`,
             height: '100%',
@@ -279,7 +279,7 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
           <div className="label mb-3" style={{ fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: 8 }}>
             Regime Persistence
             {regime.transitions_source === 'default_prior' && (
-              <span className="caption" style={{ fontSize: '0.6rem', padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: 'var(--text-4)' }}>prior</span>
+              <span className="caption" style={{ fontSize: '0.6rem', padding: '1px 6px', borderRadius: 4, background: 'var(--glass-hover)', color: 'var(--text-4)' }}>prior</span>
             )}
           </div>
           {currentTransitions ? (
@@ -298,7 +298,7 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
           (red-team 2026-05-24 H3). Fall back to an 8-char id prefix only if
           the backend didn't return a title for that index. */}
       {recommended.length > 0 && (
-        <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--glass-hover)' }}>
           <span className="caption" style={{ color: 'var(--text-3)', marginRight: 10 }}>Best strategies for this regime:</span>
           {recommended.map((id, i) => {
             const title = recommendedTitles[i]
@@ -309,7 +309,7 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
               <span key={id} title={title || id} style={{
                 display: 'inline-block', marginRight: 6, padding: '2px 9px', borderRadius: 4,
                 fontSize: '0.75rem', fontWeight: 600,
-                background: 'rgba(255,255,255,0.07)', color: 'var(--text-2)',
+                background: 'var(--glass-hover)', color: 'var(--text-2)',
                 border: '1px solid var(--glass-border)',
               }}>
                 {label}
@@ -321,7 +321,7 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
 
       {/* Findable definitions — every regime explained inline, so the labels
           above are never a black box. The current regime is highlighted. */}
-      <details style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+      <details style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--glass-hover)' }}>
         <summary className="caption" style={{ cursor: 'pointer', color: 'var(--text-3)' }}>
           What do these regimes mean?
         </summary>
@@ -332,7 +332,7 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
             return (
               <div key={key} style={{
                 padding: '8px 10px', borderRadius: 6,
-                background: active ? m.bg : 'rgba(255,255,255,0.02)',
+                background: active ? m.bg : 'var(--glass)',
                 border: `1px solid ${active ? m.border : 'var(--glass-border)'}`,
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>

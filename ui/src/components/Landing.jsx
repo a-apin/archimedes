@@ -175,10 +175,10 @@ function SectionTitle({ children }) {
 function FeatureCard({ icon, title, tag, children }) {
   return (
     <div className="flex flex-col bg-[var(--surface-1)] border border-[var(--glass-border)] rounded-xl p-6 hover:border-[var(--accent)] transition-colors duration-200">
-      <span className={`i-lucide-${icon} w-7 h-7 mb-3`} style={{color: '#D4A853'}} />
+      <span className={`i-lucide-${icon} w-7 h-7 mb-3`} style={{color: 'var(--accent)'}} />
       <h3 className="text-[1rem] font-semibold mb-2 text-[var(--text-1)]">{title}</h3>
       <p className="text-[0.85rem] leading-[1.6] text-[var(--text-2)] mb-3 flex-1">{children}</p>
-      <span className="inline-block self-start text-[0.7rem] font-semibold px-2.5 py-1 rounded" style={{color: '#D4A853', background: 'rgba(212,168,83,0.08)'}}>
+      <span className="inline-block self-start text-[0.7rem] font-semibold px-2.5 py-1 rounded" style={{color: 'var(--accent)', background: 'rgba(var(--accent-rgb),0.08)'}}>
         {tag}
       </span>
     </div>

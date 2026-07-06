@@ -91,7 +91,7 @@ export default function StressScenarioPanel({ allocations, usdcWeight, portfolio
         <div className="overflow-x-auto rounded-lg border border-[var(--glass-border)]">
           <table className="lib-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
             <thead>
-              <tr style={{ background: 'rgba(255,255,255,0.03)', textAlign: 'left', borderBottom: '1px solid var(--glass-border)' }}>
+              <tr style={{ background: 'var(--glass)', textAlign: 'left', borderBottom: '1px solid var(--glass-border)' }}>
                 <th style={{ padding: '10px 14px' }}>Scenario</th>
                 <th style={{ padding: '10px 14px', textAlign: 'right' }}>P&amp;L %</th>
                 <th style={{ padding: '10px 14px', textAlign: 'right' }}>Value after</th>

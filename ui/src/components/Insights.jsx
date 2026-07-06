@@ -36,15 +36,15 @@ const COUNTRY_NAMES = {
 }
 
 const card = {
-  background: 'var(--surface, #14161c)',
-  border: '1px solid var(--border, #262a34)',
+  background: 'var(--surface-1)',
+  border: '1px solid var(--glass-border)',
   borderRadius: 12,
   padding: '20px 22px',
 }
 
 function Bar({ pct, color = '#5b9dff' }) {
   return (
-    <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 6, height: 10, overflow: 'hidden' }}>
+    <div style={{ background: 'var(--glass-hover)', borderRadius: 6, height: 10, overflow: 'hidden' }}>
       <div style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: color, height: '100%', transition: 'width .3s' }} />
     </div>
   )
@@ -106,7 +106,7 @@ export default function Insights() {
           {loading ? 'Refreshing…' : '↻ Refresh'}
         </button>
       </div>
-      <p style={{ color: 'var(--text-dim, #8b93a7)', marginTop: 0, fontSize: 14 }}>
+      <p style={{ color: 'var(--text-2)', marginTop: 0, fontSize: 14 }}>
         Live conversion instruments for our (un-promoted) traffic. Read-only, PII-free.
       </p>
 
@@ -119,7 +119,7 @@ export default function Insights() {
       </div>
 
       {error && (
-        <div style={{ ...card, borderColor: '#a3434a', color: '#ff9aa2', marginBottom: 16 }}>
+        <div style={{ ...card, borderColor: 'var(--negative-bd)', color: 'var(--negative)', marginBottom: 16 }}>
           Couldn’t load metrics: {error}
         </div>
       )}
@@ -137,7 +137,7 @@ export default function Insights() {
               <Stat label="Total requests" value={metrics?.total_requests} />
               <Stat label="Real users (wallets)" value={metrics?.real_users} accent="#3fb56b" />
             </div>
-            <p style={{ color: 'var(--text-dim, #8b93a7)', fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
+            <p style={{ color: 'var(--text-2)', fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
               ⚠️ The request counts are <strong>cumulative request counts</strong>, not unique users — and the
               “human” bucket is inflated by browser-UA bots. <strong>Real users</strong> is the honest distinct
               count (wallet rows). The funnel below (distinct visitors, JS-gated so crawlers drop out) is the
@@ -158,8 +158,8 @@ export default function Insights() {
                   <div key={s.stage}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 5 }}>
                       <span>{FUNNEL_LABELS[s.stage] || s.stage}</span>
-                      <span style={{ color: 'var(--text-dim, #8b93a7)' }}>
-                        <strong style={{ color: 'var(--text, #e6e9f0)' }}>{s.distinct_visitors}</strong>
+                      <span style={{ color: 'var(--text-2)' }}>
+                        <strong style={{ color: 'var(--text-1)' }}>{s.distinct_visitors}</strong>
                         {i > 0 && <> · {(s.step_conversion * 100).toFixed(0)}% of prev</>}
                       </span>
                     </div>
@@ -173,7 +173,7 @@ export default function Insights() {
           {/* ── Visitor insights (geo + device) ── */}
           <section style={card}>
             <h2 style={{ marginTop: 0, fontSize: 16 }}>Who’s visiting — geography &amp; device</h2>
-            <p style={{ color: 'var(--text-dim, #8b93a7)', fontSize: 12.5, marginTop: 0, marginBottom: 14 }}>
+            <p style={{ color: 'var(--text-2)', fontSize: 12.5, marginTop: 0, marginBottom: 14 }}>
               Same JS-gated <strong>landed</strong> population as the funnel — distinct visitors, attributed once
               per visitor, so these counts reconcile with the funnel’s <em>Landed</em> number. Country shows{' '}
               <code>ZZ</code> (unknown / not provided) until CloudFront forwards the visitor's country.
@@ -187,7 +187,7 @@ export default function Insights() {
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 24 }}>
                 <div>
-                  <h3 style={{ fontSize: 13, color: 'var(--text-dim,#8b93a7)', margin: '0 0 10px' }}>Top countries</h3>
+                  <h3 style={{ fontSize: 13, color: 'var(--text-2)', margin: '0 0 10px' }}>Top countries</h3>
                   <div style={{ display: 'grid', gap: 10 }}>
                     {(visitors.countries || []).slice(0, 8).map(c => (
                       <div key={c.code}>
@@ -201,7 +201,7 @@ export default function Insights() {
                   </div>
                 </div>
                 <div>
-                  <h3 style={{ fontSize: 13, color: 'var(--text-dim,#8b93a7)', margin: '0 0 10px' }}>Device</h3>
+                  <h3 style={{ fontSize: 13, color: 'var(--text-2)', margin: '0 0 10px' }}>Device</h3>
                   <div style={{ display: 'grid', gap: 10 }}>
                     {Object.entries(visitors.devices || {})
                       .filter(([, n]) => n > 0)
@@ -252,14 +252,14 @@ function InternalDashboard({ session }) {
   return (
     <section style={card}>
       <h2 style={{ marginTop: 0, fontSize: 16 }}>Internal — cost &amp; ops</h2>
-      {err && <div style={{ color: '#ff9aa2', fontSize: 13, marginBottom: 12 }}>Couldn’t load: {err}</div>}
+      {err && <div style={{ color: 'var(--negative)', fontSize: 13, marginBottom: 12 }}>Couldn’t load: {err}</div>}
       <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
         <Stat label="Real users (wallets)" value={cost?.real_users} accent="#3fb56b" />
         <Stat label="Bedrock / mo (USD)" value={cost?.bedrock_monthly_usd} />
         <Stat label="Infra / mo (USD)" value={cost?.infra_monthly_usd} />
         <Stat label="Cost / user (USD)" value={cost?.cost_per_user_usd} />
       </div>
-      <p style={{ color: 'var(--text-dim, #8b93a7)', fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
+      <p style={{ color: 'var(--text-2)', fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
         {cost?.source === 'draft'
           ? 'Draft placeholders — live Bedrock/infra billing wiring is roadmap work. Any $/user or $/gen figure is derived from real users (wallets) or generations, never the request tallies (#830).'
           : 'Per-user / per-generation figures are derived from real users or generations, never the request tallies (#830).'}
@@ -278,9 +278,9 @@ function TabButton({ active, onClick, children }) {
         padding: '6px 14px',
         borderRadius: 8,
         cursor: 'pointer',
-        border: '1px solid var(--border, #262a34)',
-        background: active ? 'var(--surface, #14161c)' : 'transparent',
-        color: active ? 'var(--text, #e6e9f0)' : 'var(--text-dim, #8b93a7)',
+        border: '1px solid var(--glass-border)',
+        background: active ? 'var(--surface-1)' : 'transparent',
+        color: active ? 'var(--text-1)' : 'var(--text-2)',
         fontWeight: active ? 700 : 400,
       }}
     >
@@ -293,12 +293,12 @@ function Stat({ label, value, accent }) {
   const display = value == null ? '—' : (typeof value === 'number' ? value.toLocaleString() : value)
   return (
     <div>
-      <div style={{ fontSize: 26, fontWeight: 700, color: accent || 'var(--text, #e6e9f0)' }}>{display}</div>
-      <div style={{ fontSize: 12.5, color: 'var(--text-dim, #8b93a7)' }}>{label}</div>
+      <div style={{ fontSize: 26, fontWeight: 700, color: accent || 'var(--text-1)' }}>{display}</div>
+      <div style={{ fontSize: 12.5, color: 'var(--text-2)' }}>{label}</div>
     </div>
   )
 }
 
 function Empty({ children }) {
-  return <p style={{ color: 'var(--text-dim, #8b93a7)', fontSize: 13.5, margin: 0 }}>{children}</p>
+  return <p style={{ color: 'var(--text-2)', fontSize: 13.5, margin: 0 }}>{children}</p>
 }

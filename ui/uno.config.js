@@ -115,6 +115,8 @@ export default defineConfig({
     'i-lucide-skip-forward',
     'i-lucide-hourglass',
     'i-lucide-smartphone',
+    'i-lucide-sun',
+    'i-lucide-moon',
     'i-lucide-file-text',
     'i-lucide-trending-up',
     'i-lucide-trending-down',

@@ -211,7 +211,7 @@ function CatalogTab({ papers, total, page, loading, search, setSearch, categoryF
                 <col style={{ width: '15%' }} />
               </colgroup>
               <thead>
-                <tr style={{ background: 'rgba(255,255,255,0.03)', textAlign: 'left', borderBottom: '1px solid var(--glass-border)' }}>
+                <tr style={{ background: 'var(--glass)', textAlign: 'left', borderBottom: '1px solid var(--glass-border)' }}>
                   <th style={{ padding: '7px 12px', whiteSpace: 'nowrap' }}>Authors</th>
                   <th style={{ padding: '7px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>Year</th>
                   <th style={{ padding: '7px 12px' }}>Title</th>
@@ -224,7 +224,7 @@ function CatalogTab({ papers, total, page, loading, search, setSearch, categoryF
                     key={p.arxiv_id}
                     onClick={() => openPaper(p.arxiv_id)}
                     style={{ borderBottom: '1px solid var(--glass-border)', cursor: 'pointer' }}
-                    className="hover:bg-[rgba(255,255,255,0.03)]"
+                    className="hover:bg-[var(--glass)]"
                   >
                     <td
                       style={{ padding: '5px 12px', color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}

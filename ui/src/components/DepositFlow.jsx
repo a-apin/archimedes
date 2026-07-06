@@ -583,12 +583,12 @@ function PasskeyDepositFlow({ vaultAddress, depositAmount = '100', strategy, onC
 
         {/* In-flight state */}
         {state === 'SIGNING' && (
-          <div className="info-box mt-3" style={{ background: 'rgba(224,166,79,0.08)' }}>
+          <div className="info-box mt-3" style={{ background: 'var(--accent-muted)' }}>
             <span className="caption">Waiting for passkey confirmation… (Touch ID / Face ID / hardware key)</span>
           </div>
         )}
         {state === 'SENT' && (
-          <div className="info-box mt-3" style={{ background: 'rgba(224,166,79,0.08)' }}>
+          <div className="info-box mt-3" style={{ background: 'var(--accent-muted)' }}>
             <span className="caption">User operation submitted. Awaiting on-chain confirmation…</span>
           </div>
         )}
