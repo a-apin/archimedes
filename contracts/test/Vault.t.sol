@@ -214,6 +214,34 @@ contract VaultTest is Test {
         vault.deposit(0, alice);
     }
 
+    /// @dev #932: the first-depositor inflation floor must be large enough that a
+    ///      minimal seed + a large NAV donation can't round a later small deposit
+    ///      down to zero shares (a griefable ZeroShares revert). The attacker seeds
+    ///      with the smallest valid first deposit (MIN_LIQUIDITY + 1) and donates
+    ///      10k USDC to inflate NAV-per-share; a victim's 1 USDC deposit must still
+    ///      mint > 0 shares. Because the seed scales with MIN_LIQUIDITY, this reverts
+    ///      at the old 1e3 floor (seed 1001 → victim rounds to 0) and passes at 1e6.
+    function test_min_liquidity_blocks_first_depositor_inflation_grief() public {
+        assertEq(vault.MIN_LIQUIDITY(), 1e6);
+
+        uint256 seed = vault.MIN_LIQUIDITY() + 1;
+        vm.startPrank(alice);
+        usdc.approve(address(vault), seed);
+        vault.deposit(seed, alice);
+        vm.stopPrank();
+
+        // Attacker donates USDC straight to the vault to inflate NAV-per-share.
+        usdc.mint(address(vault), 10_000 * 10**6);
+
+        // Victim's 1 USDC deposit must still mint a positive share amount.
+        vm.startPrank(bob);
+        usdc.approve(address(vault), 1 * 10**6);
+        uint256 bobShares = vault.deposit(1 * 10**6, bob);
+        vm.stopPrank();
+
+        assertGt(bobShares, 0);
+    }
+
     // ─── Withdraw Tests ──────────────────────────────────────────────
 
     function test_withdraw() public {
