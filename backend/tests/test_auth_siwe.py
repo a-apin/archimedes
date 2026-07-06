@@ -555,7 +555,10 @@ async def test_verify_fails_closed_even_with_no_body(monkeypatch):
     monkeypatch.setattr("archimedes.api.auth_siwe._EXPECTED_DOMAIN", None)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post("/api/auth/verify", json={"message": "", "signature": ""})
+        # No `json=`/`content=` at all -- a literal empty body. If the domain
+        # check ran after `await request.json()`, this would 400/500 on the
+        # empty-body JSON parse instead of the 503 we're asserting.
+        resp = await client.post("/api/auth/verify")
     assert resp.status_code == 503
 
 
