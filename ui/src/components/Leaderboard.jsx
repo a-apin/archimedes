@@ -47,13 +47,13 @@ function rigorBadge(entry) {
 function ScoreBar({ components, weights }) {
   if (!components || !weights) return null
   const parts = [
-    { key: 'gate', color: '#e0a64f', label: 'Rigor gate' },
+    { key: 'gate', color: 'var(--accent)', label: 'Rigor gate' },
     { key: 'dsr_confidence', color: '#4f9be0', label: 'DSR confidence' },
     { key: 'oos_performance', color: '#5fc08a', label: 'Out-of-sample' },
     { key: 'overfitting_resistance', color: '#b07fd0', label: 'Overfit-resistant' },
   ]
   return (
-    <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', background: '#1c1c20', width: 120 }}>
+    <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', background: 'var(--surface-3)', width: 120 }}>
       {parts.map(p => {
         const w = (weights[p.key] ?? 0) * (components[p.key] ?? 0) * 100
         return <div key={p.key} title={`${p.label}: ${((components[p.key] ?? 0) * 100).toFixed(0)}% × weight ${weights[p.key]}`} style={{ width: `${w}%`, background: p.color }} />
@@ -97,22 +97,22 @@ export default function Leaderboard() {
           it carries to mainnet.
         </p>
         {engine?.disclaimer && (
-          <div style={{ marginTop: 10, padding: '8px 12px', borderLeft: '3px solid #e0a64f', background: 'rgba(224,166,79,0.08)', borderRadius: 4, fontSize: 13, color: '#cfcfcf' }}>
-            <strong style={{ color: '#e0a64f' }}>Testnet — paper/simulated.</strong> {engine.disclaimer}
+          <div style={{ marginTop: 10, padding: '8px 12px', borderLeft: '3px solid var(--accent)', background: 'var(--accent-muted)', borderRadius: 4, fontSize: 13, color: 'var(--text-2)' }}>
+            <strong style={{ color: 'var(--accent)' }}>Testnet — paper/simulated.</strong> {engine.disclaimer}
           </div>
         )}
       </div>
 
       {/* Scoring engine: weights + methodology + the one real StockBench datum, as honest context */}
       {engine && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 18, padding: 14, background: '#141417', borderRadius: 8, border: '1px solid #26262b' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 18, padding: 14, background: 'var(--surface-2)', borderRadius: 8, border: '1px solid var(--glass-border)' }}>
           <div style={{ flex: '1 1 320px' }}>
-            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: '#8a8a92', marginBottom: 6 }}>Scoring engine · validation axis (live)</div>
-            <div style={{ fontSize: 13, color: '#cfcfcf' }}>{engine.methodology}</div>
+            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-3)', marginBottom: 6 }}>Scoring engine · validation axis (live)</div>
+            <div style={{ fontSize: 13, color: 'var(--text-2)' }}>{engine.methodology}</div>
           </div>
           <div style={{ flex: '1 1 260px' }}>
-            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: '#8a8a92', marginBottom: 6 }}>Forward axis (pending)</div>
-            <div style={{ fontSize: 13, color: '#cfcfcf' }}>
+            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-3)', marginBottom: 6 }}>Forward axis (pending)</div>
+            <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
               Per-strategy <strong>StockBench</strong> + <strong>live paper-P&L</strong> pair into this engine next.
               StockBench today is a single whole-pipeline run (honest, not per-strategy):{' '}
               {sb && <span title={`${sb.window} · ${sb.source}`}>Sortino {fmt(sb.sortino)}, return {sb.return_pct}%, rank {sb.rank}</span>}.
@@ -123,7 +123,7 @@ export default function Leaderboard() {
 
       {/* Controls */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 14 }}>
-        <span style={{ fontSize: 12, color: '#8a8a92' }}>Sort</span>
+        <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Sort</span>
         {SORT_OPTIONS.map(o => (
           <button key={o.id} type="button" onClick={() => setSortBy(o.id)}
             className={sortBy === o.id ? 'tag-accent' : 'tag-muted'}
@@ -136,22 +136,22 @@ export default function Leaderboard() {
           title="Toggle sort direction">
           {order === 'desc' ? '↓ desc' : '↑ asc'}
         </button>
-        <span style={{ width: 1, height: 18, background: '#2a2a30', margin: '0 4px' }} />
-        <label style={{ fontSize: 12, color: '#cfcfcf', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+        <span style={{ width: 1, height: 18, background: 'var(--glass-border)', margin: '0 4px' }} />
+        <label style={{ fontSize: 12, color: 'var(--text-2)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
           <input type="checkbox" checked={minRigor} onChange={e => setMinRigor(e.target.checked)} /> Rigor-gated only
         </label>
         <select value={regime} onChange={e => setRegime(e.target.value)}
-          style={{ background: '#1c1c20', color: '#cfcfcf', border: '1px solid #2a2a30', borderRadius: 6, padding: '4px 8px', fontSize: 12 }}>
+          style={{ background: 'var(--surface-3)', color: 'var(--text-2)', border: '1px solid var(--glass-border)', borderRadius: 6, padding: '4px 8px', fontSize: 12 }}>
           {REGIMES.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
         </select>
-        {data && <span style={{ fontSize: 12, color: '#8a8a92', marginLeft: 'auto' }}>{data.total} strateg{data.total === 1 ? 'y' : 'ies'}</span>}
+        {data && <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 'auto' }}>{data.total} strateg{data.total === 1 ? 'y' : 'ies'}</span>}
       </div>
 
-      {loading && <div className="body" style={{ color: '#8a8a92' }}>Loading the board…</div>}
+      {loading && <div className="body" style={{ color: 'var(--text-3)' }}>Loading the board…</div>}
       {error && <div className="tag-warning" style={{ display: 'inline-block', padding: '6px 10px' }}>Couldn’t load the leaderboard: {error}</div>}
 
       {!loading && !error && data && data.entries.length === 0 && (
-        <div className="body" style={{ color: '#8a8a92', padding: 20, textAlign: 'center', border: '1px dashed #2a2a30', borderRadius: 8 }}>
+        <div className="body" style={{ color: 'var(--text-3)', padding: 20, textAlign: 'center', border: '1px dashed var(--glass-border)', borderRadius: 8 }}>
           No strategies match these filters yet.
         </div>
       )}
@@ -160,7 +160,7 @@ export default function Leaderboard() {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
-              <tr style={{ textAlign: 'left', color: '#8a8a92', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              <tr style={{ textAlign: 'left', color: 'var(--text-3)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                 <th style={{ padding: '8px 10px' }}>#</th>
                 <th style={{ padding: '8px 10px' }}>Strategy</th>
                 <th style={{ padding: '8px 10px' }}>Conviction</th>
@@ -173,27 +173,27 @@ export default function Leaderboard() {
             </thead>
             <tbody>
               {data.entries.map(e => (
-                <tr key={e.id} style={{ borderTop: '1px solid #1f1f24' }}>
+                <tr key={e.id} style={{ borderTop: '1px solid var(--glass-border)' }}>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap', fontWeight: 600 }}>
                     {e.medal ? <span style={{ marginRight: 4 }}>{MEDAL[e.medal]}</span> : null}{e.rank}
                   </td>
                   <td style={{ padding: '10px', maxWidth: 280 }}>
-                    <div style={{ color: '#f0f0f0', fontWeight: 500 }}>{e.name}</div>
-                    <div style={{ fontSize: 11, color: '#8a8a92' }}>
+                    <div style={{ color: 'var(--text-1)', fontWeight: 500 }}>{e.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
                       {e.creator === 'Archimedes' ? 'Archimedes (curated)' : `by ${e.creator.slice(0, 6)}…${e.creator.slice(-4)}`}
                       {e.regime_tag && e.regime_tag !== 'regime_neutral' ? ` · ${e.regime_tag}` : ''}
                     </div>
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
-                    <div style={{ fontWeight: 600, color: '#e0a64f' }}>{fmt(e.conviction_score, 1)}</div>
+                    <div style={{ fontWeight: 600, color: 'var(--accent)' }}>{fmt(e.conviction_score, 1)}</div>
                     <ScoreBar components={e.score_components} weights={engine?.weights} />
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmt(e.sharpe_ratio)}</td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmtPct(e.cagr)}</td>
-                  <td style={{ padding: '10px', whiteSpace: 'nowrap', color: '#d08a8a' }}>{fmtPct(e.max_drawdown)}</td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap', color: 'var(--negative)' }}>{fmtPct(e.max_drawdown)}</td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
                     {rigorBadge(e)}
-                    {e.dsr_p_value != null && <div style={{ fontSize: 11, color: '#8a8a92', marginTop: 2 }} title="DSR confidence (0–1, higher is better): probability the Sharpe survives deflation/multiple-testing. Not a classical p-value.">DSR conf={fmt(e.dsr_p_value)}{e.pbo_score != null ? ` · PBO ${fmt(e.pbo_score)}` : ''}</div>}
+                    {e.dsr_p_value != null && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }} title="DSR confidence (0–1, higher is better): probability the Sharpe survives deflation/multiple-testing. Not a classical p-value.">DSR conf={fmt(e.dsr_p_value)}{e.pbo_score != null ? ` · PBO ${fmt(e.pbo_score)}` : ''}</div>}
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
                     <span className="tag-muted" title="Per-strategy StockBench eval is pending">SB pending</span>{' '}

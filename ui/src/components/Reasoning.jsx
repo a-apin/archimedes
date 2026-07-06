@@ -260,7 +260,7 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                     {t.confidence > 0 && (
                       <div className="mb-2">
                         <div className="caption">Confidence: {(t.confidence * 100).toFixed(0)}%</div>
-                        <div className="rounded h-1 w-full" style={{ background: 'var(--bg-2)' }}>
+                        <div className="rounded h-1 w-full" style={{ background: 'var(--surface-2)' }}>
                           <div className="rounded h-1 bg-[var(--accent)]" style={{ width: `${t.confidence * 100}%` }} />
                         </div>
                       </div>

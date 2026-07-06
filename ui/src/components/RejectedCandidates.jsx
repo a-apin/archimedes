@@ -107,7 +107,7 @@ export default function RejectedCandidates({ jobId, onClose, onNavigate }) {
         className="card"
         style={{
           maxWidth: 720, width: '100%', maxHeight: '80vh', overflowY: 'auto', padding: 24,
-          background: 'var(--bg-1)',
+          background: 'var(--canvas)',
           border: '1px solid var(--glass-border)',
           boxShadow: '0 24px 48px rgba(0,0,0,0.5)',
         }}

@@ -148,20 +148,20 @@ function EfficientFrontier({ points }) {
       <div className="label mb-2">Efficient Frontier</div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Efficient frontier: expected return vs risk" style={{ display: 'block' }}>
         {yTicks.map((t, i) => (
-          <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+          <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="var(--chart-grid)" strokeWidth="1" />
         ))}
         {yTicks.map((t, i) => (
-          <text key={`yl${i}`} x={PAD_L - 6} y={t.y + 3} textAnchor="end" fill="rgba(255,255,255,0.42)" fontSize="9" className="mono">
+          <text key={`yl${i}`} x={PAD_L - 6} y={t.y + 3} textAnchor="end" fill="var(--chart-label)" fontSize="9" className="mono">
             {t.label}
           </text>
         ))}
         {xTicks.map((t, i) => (
-          <text key={`xl${i}`} x={t.x} y={H - PAD_B + 16} textAnchor="middle" fill="rgba(255,255,255,0.42)" fontSize="9" className="mono">
+          <text key={`xl${i}`} x={t.x} y={H - PAD_B + 16} textAnchor="middle" fill="var(--chart-label)" fontSize="9" className="mono">
             {t.label}
           </text>
         ))}
         {/* axis titles */}
-        <text x={(W + PAD_L) / 2} y={H - 4} textAnchor="middle" fill="rgba(255,255,255,0.55)" fontSize="10">
+        <text x={(W + PAD_L) / 2} y={H - 4} textAnchor="middle" fill="var(--chart-label-strong)" fontSize="10">
           Risk (annualized σ)
         </text>
         {frontierPath && <path d={frontierPath} fill="none" stroke="var(--accent)" strokeWidth="1.6" strokeLinejoin="round" />}

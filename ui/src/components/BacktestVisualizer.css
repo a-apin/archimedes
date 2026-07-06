@@ -45,7 +45,7 @@
   flex-wrap: wrap;
 }
 .bv-filter input[type='date'] {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--glass);
   border: 1px solid var(--glass-border);
   border-radius: 6px;
   padding: 5px 8px;
@@ -54,13 +54,12 @@
   font-size: 0.78rem;
   margin-left: 5px;
   outline: none;
-  color-scheme: dark;
 }
 .bv-filter input[type='date']:focus {
-  border-color: var(--accent-border);
+  border-color: var(--accent);
 }
 .bv-clear {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--glass-hover);
   border: 1px solid var(--glass-border);
   border-radius: 6px;
   color: var(--text-2);
@@ -70,7 +69,7 @@
   transition: background 0.15s;
 }
 .bv-clear:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--surface-4);
   color: var(--text-1);
 }
 

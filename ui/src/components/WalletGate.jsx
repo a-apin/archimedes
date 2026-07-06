@@ -29,8 +29,8 @@ export default function WalletGate({ walletAddr, pageName, description, onConnec
         width: 56,
         height: 56,
         borderRadius: '50%',
-        background: 'rgba(212, 168, 83, 0.10)',
-        border: '1px solid rgba(212, 168, 83, 0.30)',
+        background: 'rgba(var(--accent-rgb), 0.10)',
+        border: '1px solid rgba(var(--accent-rgb), 0.30)',
         marginBottom: 18,
       }}>
         <span className="i-lucide-lock" style={{ width: 22, height: 22, color: 'var(--accent)' }} aria-hidden="true" />

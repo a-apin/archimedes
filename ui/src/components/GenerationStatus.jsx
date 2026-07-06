@@ -167,7 +167,7 @@ export default function GenerationStatus({ walletAddr, activeJobId, onDrillIn })
                       }
                     }}
                     style={{
-                      borderBottom: '1px solid rgba(255,255,255,0.04)',
+                      borderBottom: '1px solid var(--glass)',
                       background: isActive
                         ? 'rgba(255,209,102,0.07)'
                         : 'transparent',
@@ -175,7 +175,7 @@ export default function GenerationStatus({ walletAddr, activeJobId, onDrillIn })
                       transition: 'background 0.12s',
                     }}
                     onMouseEnter={e => {
-                      if (!isActive) e.currentTarget.style.background = 'rgba(255,255,255,0.03)'
+                      if (!isActive) e.currentTarget.style.background = 'var(--glass)'
                     }}
                     onMouseLeave={e => {
                       if (!isActive) e.currentTarget.style.background = 'transparent'

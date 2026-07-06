@@ -44,9 +44,9 @@ function SharpeDriftBadge({ drift }) {
   if (!drift) return null
   const statusColors = {
     NORMAL: { bg: 'rgba(16,185,129,0.12)', color: 'var(--positive)', border: 'rgba(16,185,129,0.3)', label: 'NORMAL' },
-    WARNING: { bg: 'rgba(245,158,11,0.12)', color: '#F59E0B', border: 'rgba(245,158,11,0.3)', label: 'WARNING' },
+    WARNING: { bg: 'rgba(245,158,11,0.12)', color: 'var(--warning)', border: 'rgba(245,158,11,0.3)', label: 'WARNING' },
     CRITICAL: { bg: 'rgba(239,68,68,0.12)', color: 'var(--negative)', border: 'rgba(239,68,68,0.3)', label: 'CRITICAL' },
-    INSUFFICIENT_DATA: { bg: 'rgba(255,255,255,0.06)', color: 'var(--text-3)', border: 'var(--glass-border)', label: 'INSUFFICIENT DATA' },
+    INSUFFICIENT_DATA: { bg: 'var(--glass-hover)', color: 'var(--text-3)', border: 'var(--glass-border)', label: 'INSUFFICIENT DATA' },
   }
   const s = statusColors[drift.status] || statusColors.INSUFFICIENT_DATA
   return (

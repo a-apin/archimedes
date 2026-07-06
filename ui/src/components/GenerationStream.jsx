@@ -244,7 +244,7 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
         style={{
           maxHeight: 320,
           overflowY: 'auto',
-          background: 'rgba(255,255,255,0.02)',
+          background: 'var(--glass)',
           border: '1px solid var(--glass-border)',
           borderRadius: 6,
           padding: 12,
@@ -314,7 +314,7 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
                       borderRadius: 999,
                       fontSize: '0.75rem',
                       fontWeight: 700,
-                      background: c.regime === 'bull' ? 'rgba(34,197,94,0.15)' : c.regime === 'bear' ? 'rgba(239,68,68,0.15)' : 'var(--bg-2)',
+                      background: c.regime === 'bull' ? 'rgba(34,197,94,0.15)' : c.regime === 'bear' ? 'rgba(239,68,68,0.15)' : 'var(--surface-2)',
                       color: c.regime === 'bull' ? 'var(--positive, #22c55e)' : c.regime === 'bear' ? 'var(--negative, #ef4444)' : 'var(--text-2)',
                     }}>
                       {c.regime === 'bull' ? <><RegimeIcon regime="bull" /> Bull</> : c.regime === 'bear' ? <><RegimeIcon regime="bear" /> Bear</> : 'Neutral'}

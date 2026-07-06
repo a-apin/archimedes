@@ -164,7 +164,7 @@ function PipelineStep({ index, title, sub, youAct, isLast }) {
             flexShrink: 0,
             fontSize: '0.85rem',
             fontVariantNumeric: 'tabular-nums',
-            color: youAct ? 'var(--bg-1)' : 'var(--accent)',
+            color: youAct ? 'var(--canvas)' : 'var(--accent)',
             background: youAct ? 'var(--accent)' : 'var(--surface-1)',
             border: '1.5px solid var(--accent)',
             boxShadow: youAct ? '0 0 0 4px var(--accent-glow)' : 'none',
@@ -289,7 +289,7 @@ function MemoryPillar() {
               className="font-bold"
               style={{
                 background: 'var(--accent)',
-                color: 'var(--bg-1)',
+                color: 'var(--canvas)',
                 padding: '4px 10px',
                 borderRadius: 4,
                 fontSize: '0.82rem',

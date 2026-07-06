@@ -48,7 +48,7 @@ function AllocationBar({ label, weight, isUsdc, kelly, rigorPassed, isCandidate 
           {!isUsdc && !rigorPassed && isCandidate !== undefined && (
             <span style={{
               fontSize: '0.68rem', fontWeight: 600, padding: '1px 6px', borderRadius: 3,
-              background: 'rgba(255,255,255,0.04)', color: 'var(--text-4)',
+              background: 'var(--glass)', color: 'var(--text-4)',
               border: '1px solid var(--glass-border)',
             }}>
               Candidate
@@ -57,7 +57,7 @@ function AllocationBar({ label, weight, isUsdc, kelly, rigorPassed, isCandidate 
         </div>
         <span className="mono" style={{ fontWeight: 700, fontSize: '0.9rem' }}>{pct}%</span>
       </div>
-      <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 4, height: 10, overflow: 'hidden' }}>
+      <div style={{ background: 'var(--glass-hover)', borderRadius: 4, height: 10, overflow: 'hidden' }}>
         <div style={{
           width: `${pct}%`,
           height: '100%',
@@ -127,7 +127,7 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
                 padding: '6px 16px', borderRadius: 6, border: 'none', cursor: 'pointer',
                 fontWeight: selectedProfile === rp.id ? 700 : 400,
                 fontSize: '0.82rem',
-                background: selectedProfile === rp.id ? 'var(--accent)' : 'rgba(255,255,255,0.07)',
+                background: selectedProfile === rp.id ? 'var(--accent)' : 'var(--glass-hover)',
                 color: selectedProfile === rp.id ? '#000' : 'var(--text-2)',
                 transition: 'background 0.15s',
               }}
@@ -304,16 +304,16 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
                   const lowCoverage = coverage < 0.8
                   const color = !Number.isFinite(pnl) ? 'var(--text-4)'
                     : pnl < -0.10 ? 'var(--negative)'
-                    : pnl < 0 ? '#f59e0b'
+                    : pnl < 0 ? 'var(--warning)'
                     : 'var(--positive)'
                   return (
-                    <div key={s.scenario} style={{ padding: 12, background: 'rgba(255,255,255,0.03)', borderRadius: 6, borderLeft: `3px solid ${color}` }}>
+                    <div key={s.scenario} style={{ padding: 12, background: 'var(--glass)', borderRadius: 6, borderLeft: `3px solid ${color}` }}>
                       <div style={{ fontWeight: 600, fontSize: '0.78rem', marginBottom: 4 }}>{s.label}</div>
                       <div className="mono" style={{ fontWeight: 700, fontSize: '1.3rem', color }}>
                         {Number.isFinite(pnl) ? `${(pnl * 100).toFixed(1)}%` : '—'}
                       </div>
                       {lowCoverage && (
-                        <div className="inline-flex items-center gap-1 mt-0.5 text-[0.65rem] font-semibold text-[#f59e0b]">
+                        <div className="inline-flex items-center gap-1 mt-0.5 text-[0.65rem] font-semibold text-[var(--warning)]">
                           <span className="i-lucide-alert-triangle w-3 h-3" />
                           only {(coverage * 100).toFixed(0)}% of book modeled
                         </div>
@@ -365,7 +365,7 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
                       {data.correlation_pairs.map((p, i) => (
                         <tr key={i}>
                           <td className="mono" style={{ fontSize: '0.72rem' }}>{p.a} ⟷ {p.b}</td>
-                          <td className="text-right mono" style={{ color: Math.abs(p.corr) > 0.6 ? '#f59e0b' : 'inherit' }}>
+                          <td className="text-right mono" style={{ color: Math.abs(p.corr) > 0.6 ? 'var(--warning)' : 'inherit' }}>
                             {p.corr > 0 ? '+' : ''}{p.corr.toFixed(2)}
                           </td>
                         </tr>

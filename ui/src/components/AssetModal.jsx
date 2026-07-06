@@ -56,7 +56,7 @@ function PriceHistoryChart({ points, loading, error }) {
         style={{
           height: SVG_H,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: 'rgba(255,255,255,0.02)',
+          background: 'var(--glass)',
           border: '1px dashed var(--glass-border)',
           borderRadius: 6,
         }}
@@ -135,25 +135,25 @@ function PriceHistoryChart({ points, loading, error }) {
       {/* horizontal grid */}
       {yTicks.map((t, i) => (
         <line key={i} x1={PAD_L} y1={t.y} x2={SVG_W - PAD_R} y2={t.y}
-          stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+          stroke="var(--chart-grid)" strokeWidth="1" />
       ))}
       {/* axes */}
       <line x1={PAD_L} y1={PAD_T} x2={PAD_L} y2={SVG_H - PAD_B}
-        stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+        stroke="var(--chart-grid-strong)" strokeWidth="1" />
       <line x1={PAD_L} y1={SVG_H - PAD_B} x2={SVG_W - PAD_R} y2={SVG_H - PAD_B}
-        stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+        stroke="var(--chart-grid-strong)" strokeWidth="1" />
 
       {/* y-axis labels */}
       {yTicks.map((t, i) => (
         <text key={i} x={PAD_L - 6} y={t.y + 4} textAnchor="end"
-          fill="rgba(255,255,255,0.42)" fontSize="9" className="mono">
+          fill="var(--chart-label)" fontSize="9" className="mono">
           {t.label}
         </text>
       ))}
       {/* x-axis labels */}
       {xTicks.map((t, i) => (
         <text key={i} x={t.x} y={SVG_H - PAD_B + 14} textAnchor="middle"
-          fill="rgba(255,255,255,0.42)" fontSize="9">
+          fill="var(--chart-label)" fontSize="9">
           {t.label}
         </text>
       ))}

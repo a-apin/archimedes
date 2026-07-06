@@ -112,7 +112,7 @@ export default function RigorStrictnessControl({ level, onChange }) {
       {current && (
         <div
           className="grid grid-cols-3 gap-3 mt-4 pt-3"
-          style={{ borderTop: '1px solid var(--border, rgba(255,255,255,0.08))' }}
+          style={{ borderTop: '1px solid var(--glass-border)' }}
         >
           <Threshold label="DSR p-value" value={`≥ ${current.dsr_p_min.toFixed(2)}`} />
           <Threshold label="PBO" value={`< ${current.pbo_max.toFixed(2)}`} />

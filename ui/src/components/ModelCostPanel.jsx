@@ -82,7 +82,7 @@ export default function ModelCostPanel({ selectedModel = null, onSelectModel }) 
         <div style={{ padding: '6px 18px 18px', borderTop: '1px solid var(--glass-border)' }}>
           <p className="caption mb-3" style={{ color: 'var(--text-3)' }}>
             {pricing.unit} · {pricing.region} · snapshot {pricing.generated}. Cheaper is usually
-            less capable — pick for your budget. <strong style={{ color: '#3fb950' }}>✓</strong> = invokable
+            less capable — pick for your budget. <strong style={{ color: 'var(--positive)' }}>✓</strong> = invokable
             now and selectable; <strong>premium</strong> models (Claude) are <em>activating soon — pending AWS Bedrock approval</em>.
           </p>
           <div style={{ overflowX: 'auto' }}>
@@ -136,7 +136,7 @@ export default function ModelCostPanel({ selectedModel = null, onSelectModel }) 
                           <span style={{ color: 'var(--accent)', marginRight: 4 }} title="Recommended cheap pick">★</span>
                         )}
                         {m.works_now ? (
-                          <span style={{ color: '#3fb950' }} title="Invokable now">✓</span>
+                          <span style={{ color: 'var(--positive)' }} title="Invokable now">✓</span>
                         ) : (
                           <span className="caption" style={{ color: 'var(--text-3)' }} title="Premium model — activating soon (pending Bedrock approval)">
                             Premium · soon
