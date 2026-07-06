@@ -34,7 +34,7 @@ yfinance>=1.4.1
 # `pip install -r requirements.txt` resolve fails and the Docker deploy breaks
 # (regression from Dependabot #702, caught on deploy 2026-06-25). Keep <2.34
 # until arxiv relaxes its pin. environment.yml uses the same floor.
-requests>=2.32,<2.34
+requests>=2.34.2,<2.35
 # Bumped from 3.13.5 to close CVE-2026-34993 / CVE-2026-47265 (HTTP parser
 # DoS/smuggling).
 aiohttp>=3.14.1
