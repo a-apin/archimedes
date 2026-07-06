@@ -20,9 +20,8 @@ from __future__ import annotations
 import types
 from unittest.mock import MagicMock, patch
 
-import numpy as np
-
 import archimedes.services.paper_rag as rag_module
+import numpy as np
 
 # Access all symbols via the module alias so monkeypatching the module-level
 # globals (e.g. rag_module._embedding_model) is always reflected in calls.
