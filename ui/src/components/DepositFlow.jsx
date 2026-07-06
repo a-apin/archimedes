@@ -63,6 +63,36 @@ function StatusIcon({ status }) {
   return <span className="i-lucide-circle w-[1.1rem] h-[1.1rem]" style={{ color: 'var(--text-4)' }} />
 }
 
+// Marker so the catch blocks can tell a bad-input parse failure apart from an
+// on-chain approve/deposit revert and show "Invalid amount" rather than the
+// misleading "Approval failed" / "Deposit failed" path.
+const INVALID_AMOUNT_MESSAGE = 'Invalid amount'
+
+// Normalize a user-typed USDC amount to at most USDC_DECIMALS (6) decimals and
+// hand it to parseUnits. viem's parseUnits throws on >6-decimal or
+// scientific-notation input; both cases used to surface as "Approval failed".
+// We round the fractional part DOWN to 6 places (never mint more than typed)
+// and reject anything that isn't a plain decimal number with a clear message.
+function parseUsdcAmount(amount) {
+  const trimmed = (amount ?? '').toString().trim()
+  // Plain decimal only: digits, optional single '.', at least one digit.
+  // Rejects scientific notation ("1e5"), signs, and stray characters.
+  if (!/^\d+(\.\d+)?$|^\.\d+$|^\d+\.$/.test(trimmed)) {
+    throw new Error(INVALID_AMOUNT_MESSAGE)
+  }
+  const [whole, frac = ''] = trimmed.split('.')
+  // Truncate (round down) the fractional part to the token's decimal precision.
+  const truncatedFrac = frac.slice(0, USDC_DECIMALS)
+  const normalized = truncatedFrac ? `${whole || '0'}.${truncatedFrac}` : (whole || '0')
+  try {
+    return parseUnits(normalized, USDC_DECIMALS)
+  } catch {
+    // Defensive: anything parseUnits still rejects is an invalid amount, not a
+    // transaction failure.
+    throw new Error(INVALID_AMOUNT_MESSAGE)
+  }
+}
+
 // Default allocation: equal weight across first 4 synthetics + remainder USDC
 function defaultAllocations() {
   const tokens = ASSETS.slice(0, 4)
@@ -128,8 +158,8 @@ function EoaDepositFlow({ vaultAddress, depositAmount = '100', strategy, onClose
       // address if a future caller passes one.
       if (!isAddress(vaultAddress)) throw new Error('Invalid vault address — refusing to send funds.')
       const walletClient = await getWalletClient()
-      const parsedAmount = parseUnits(amount, USDC_DECIMALS)
-      if (parsedAmount <= 0n) throw new Error('Amount must be greater than 0')
+      const parsedAmount = parseUsdcAmount(amount)
+      if (parsedAmount <= 0n) throw new Error(INVALID_AMOUNT_MESSAGE)
 
       const hash = await walletClient.writeContract({
         address: USDC,
@@ -159,7 +189,7 @@ function EoaDepositFlow({ vaultAddress, depositAmount = '100', strategy, onClose
       const walletClient = await getWalletClient()
       const userAddr = getAddress()
       if (!userAddr) throw new Error('Wallet address not available')
-      const parsedAmount = parseUnits(amount, USDC_DECIMALS)
+      const parsedAmount = parseUsdcAmount(amount)
 
       const hash = await walletClient.writeContract({
         address: vaultAddress,
@@ -421,8 +451,8 @@ function PasskeyDepositFlow({ vaultAddress, depositAmount = '100', strategy, onC
       if (!smartAccount || !client) {
         throw new Error('Passkey wallet not initialized — please reconnect.')
       }
-      const parsedAmount = parseUnits(amount, USDC_DECIMALS)
-      if (parsedAmount <= 0n) throw new Error('Amount must be greater than 0')
+      const parsedAmount = parseUsdcAmount(amount)
+      if (parsedAmount <= 0n) throw new Error(INVALID_AMOUNT_MESSAGE)
 
       const { tokens, weights } = defaultAllocations()
 
