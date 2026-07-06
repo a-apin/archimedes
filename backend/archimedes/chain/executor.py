@@ -260,6 +260,14 @@ class ChainExecutor:
                 tokens_out.append(token_addr)
                 amounts_out.append(token_raw)
 
+        # Nothing left to swap once the cash/USDC legs are filtered out (or a
+        # rebalance that was cash-only to begin with). Submitting an all-empty
+        # rebalance([],[],[],[]) still costs gas and publishes a REBALANCE trace
+        # that never moved a position, so skip the tx entirely (issue #925).
+        if not tokens_in and not tokens_out:
+            logger.info(f"SKIP rebalance for {vault_address}: no non-cash legs after filtering")
+            return []
+
         # Circle path
         if circle_signer.is_configured:
             # Convert address[] and uint256[] to ABI-compatible strings

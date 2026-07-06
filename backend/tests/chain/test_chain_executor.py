@@ -290,10 +290,10 @@ class TestExecuteTradesDepth:
     path uses str. Both must be tested.
     """
 
-    def test_empty_trades_no_amm_calls(self, executor, mock_loader):
-        """Empty trades list — _validate_trade_liquidity sees no synth legs,
-        so no AMM getPool calls fire. The rebalance() invocation does
-        proceed with empty arrays (current behavior — not short-circuited).
+    def test_empty_trades_skips_tx(self, executor, mock_loader):
+        """Empty trades list — no synth legs to swap, so the executor skips the
+        rebalance tx entirely rather than submitting rebalance([],[],[],[])
+        (issue #925). No AMM getPool calls and no signer call fire.
         """
         with (
             patch.object(executor, "_confirm_receipt", new=AsyncMock(return_value="0xtxhash")),
@@ -302,11 +302,13 @@ class TestExecuteTradesDepth:
             mock_signer.is_configured = True
             mock_signer.execute_contract = AsyncMock(return_value="0xtxhash")
             result = asyncio.run(executor.execute_trades("0xvault", []))
-            assert result == ["0xtxhash"]
+            assert result == []
+            mock_signer.execute_contract.assert_not_called()
             mock_loader.amm_router.functions.getPool.assert_not_called()
 
-    def test_all_usdc_legs_filtered_no_pool_calls(self, executor, mock_loader):
-        """All-USDC trades filtered out (#399) — no AMM `getPool` invocations."""
+    def test_all_usdc_legs_filtered_skips_tx(self, executor, mock_loader):
+        """All-USDC (cash) trades filtered out (#399) — nothing left to swap, so
+        no AMM `getPool` calls and no rebalance tx is submitted (issue #925)."""
         usdc_trade = _make_trade(
             symbol="USDC",
             token_address="0x3600000000000000000000000000000000000000",
@@ -317,8 +319,10 @@ class TestExecuteTradesDepth:
         ):
             mock_signer.is_configured = True
             mock_signer.execute_contract = AsyncMock(return_value="0xtxhash")
-            asyncio.run(executor.execute_trades("0xvault", [usdc_trade]))
-            # _validate_trade_liquidity should have seen an empty list after filtering
+            result = asyncio.run(executor.execute_trades("0xvault", [usdc_trade]))
+            # Cash-only rebalance is skipped: empty result, no swap lookups, no tx.
+            assert result == []
+            mock_signer.execute_contract.assert_not_called()
             mock_loader.amm_router.functions.getPool.assert_not_called()
 
     def test_sell_direction_calls_usdc_value_to_token_raw(self, executor, mock_loader):
