@@ -85,6 +85,26 @@ def _normalize_domain(domain: str) -> str:
     return domain.strip().removeprefix("https://").removeprefix("http://").rstrip("/").lower()
 
 
+def _address_from_siwe_message(message: str) -> str | None:
+    """Return the lowercased signer address from an EIP-4361 SIWE message.
+
+    The address is line 2 (index 1), immediately after the
+    ``"<domain> wants you to sign in with your Ethereum account:"`` preamble.
+    Read it positionally: scanning for "the last 42-char 0x line" (the previous
+    behavior) let a 0x address appearing later in the message — e.g. inside a
+    ``Resources:`` URI — overwrite the real signer. On the EOA-recovery-fail →
+    ERC-1271 smart-wallet path that misplaced address is the wallet we verify
+    against, so a crafted message could point verification at the wrong account
+    (#946). Returns ``None`` if line 2 is absent or not a 42-char 0x string.
+    """
+    lines = message.split("\n")
+    if len(lines) >= 2:
+        addr = lines[1].strip()
+        if addr.startswith("0x") and len(addr) == 42:
+            return addr.lower()
+    return None
+
+
 def _sign_session(wallet: str, issued_at: float) -> str:
     """Create an HMAC-signed session token."""
     payload = json.dumps({"wallet": wallet.lower(), "iat": issued_at})
@@ -232,6 +252,9 @@ async def verify_signature(request: Request, response: Response):
     lines = message.split("\n")
     if lines and " wants you to sign in" in lines[0]:
         domain_from_message = lines[0].split(" wants you to sign in")[0].strip()
+    # Read the signer address positionally from EIP-4361 line 2 — see
+    # _address_from_siwe_message for why "the last 0x line" was wrong (#946).
+    wallet_from_message = _address_from_siwe_message(message)
     for line in lines:
         line = line.strip()
         if line.startswith("Nonce: "):
@@ -240,8 +263,6 @@ async def verify_signature(request: Request, response: Response):
             chain_id_from_message = line[len("Chain ID: ") :].strip()
         elif line.startswith("Issued At: "):
             issued_at_from_message = line[len("Issued At: ") :].strip()
-        elif line.startswith("0x") and len(line) == 42:
-            wallet_from_message = line.lower()
 
     if not nonce:
         raise HTTPException(status_code=400, detail="Nonce not found in message")
