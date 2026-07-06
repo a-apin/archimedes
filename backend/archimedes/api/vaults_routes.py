@@ -383,8 +383,19 @@ async def get_vault_metadata(address: str):
 
 @vaults_router.post("/{address}/derive-allocations", response_model=SetAllocationsResponse)
 @limiter.limit("20/minute")
-async def derive_vault_allocations(address: str, req: SetAllocationsRequest, request: Request, response: Response):  # noqa: ARG001 — slowapi @limiter.limit inspects param name; path param routes the request
-    """Derive target allocations from selected strategies."""
+async def derive_vault_allocations(
+    address: str,  # noqa: ARG001 — path param routes the request; not referenced in body
+    req: SetAllocationsRequest,
+    request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
+    response: Response,  # noqa: ARG001 — reserved for slowapi rate-limit headers
+    wallet: str = Depends(require_verified_wallet),  # noqa: ARG001 — SIWE gate (#917): auth required, wallet unused in body
+):
+    """Derive target allocations from selected strategies.
+
+    Gated behind a verified SIWE session (#917): the derivation runs a full
+    strategy scan + on-chain reads, so it is not exposed to unauthenticated
+    callers who could amplify it into a compute-DoS.
+    """
     from archimedes.chain.client import chain_client
     from archimedes.services.strategy_signal_evaluator import strategy_evaluator
 

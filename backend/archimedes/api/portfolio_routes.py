@@ -12,8 +12,10 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+
+from archimedes.api.limiter import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -125,13 +127,17 @@ class ScenarioRequest(BaseModel):
 
 
 class ScenarioAnalysisRequest(BaseModel):
-    weights: dict[str, float]
+    # Compute-amplification guard (#917): scenario analysis iterates
+    # len(weights) × len(scenarios), so both must be bounded at validation —
+    # before any work — or a single unauthenticated request can pin the worker.
+    weights: dict[str, float] = Field(..., max_length=100)
     portfolio_value: float = 10000.0
-    scenarios: list[ScenarioRequest] | None = None
+    scenarios: list[ScenarioRequest] | None = Field(None, max_length=10)
 
 
 @portfolio_router.post("/optimize")
-async def optimize_portfolio(req: OptimizeRequest) -> dict:
+@limiter.limit("5/minute")
+async def optimize_portfolio(req: OptimizeRequest, request: Request) -> dict:  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     """Compute optimal synth-asset weights with the requested optimizer.
 
     Returns {method, optimizer, risk_profile, usdc_weight, weights, symbols_used,
@@ -203,7 +209,8 @@ async def optimize_portfolio(req: OptimizeRequest) -> dict:
 
 
 @portfolio_router.post("/parameter-sweep")
-async def parameter_sweep(req: ParameterSweepRequest) -> dict:
+@limiter.limit("5/minute")
+async def parameter_sweep(req: ParameterSweepRequest, request: Request) -> dict:  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     """Run a 2D sensitivity sweep over two backtest parameters.
 
     Returns a heatmap-ready grid_2d with rows=param1 values, cols=param2 values,
@@ -282,7 +289,8 @@ async def parameter_sweep(req: ParameterSweepRequest) -> dict:
 
 
 @portfolio_router.post("/scenario-analysis")
-async def scenario_analysis(req: ScenarioAnalysisRequest) -> dict:
+@limiter.limit("10/minute")
+async def scenario_analysis(req: ScenarioAnalysisRequest, request: Request) -> dict:  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     """Apply mark-to-model stress shocks to a portfolio and return per-scenario P&L.
 
     Uses predefined scenarios when none are supplied. Applies a 1.2x stress beta

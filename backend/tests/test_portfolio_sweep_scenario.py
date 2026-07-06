@@ -250,3 +250,36 @@ async def test_scenario_analysis_stress_amplification_applied():
         assert sc["stress_adjusted_pct"] == pytest.approx(sc["impact_pct"] * 1.2, rel=1e-4), (
             f"Stress amplification wrong for '{sc['scenario_name']}'"
         )
+
+
+@pytest.mark.asyncio
+async def test_scenario_analysis_rejects_oversized_weights():
+    """#917: >100 weights is rejected at validation (422) before any compute."""
+    from archimedes.main import app
+
+    payload = {
+        "weights": {f"SYM{i}": 0.01 for i in range(101)},
+        "portfolio_value": 10000.0,
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/portfolio/scenario-analysis", json=payload)
+
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_scenario_analysis_rejects_oversized_scenario_list():
+    """#917: >10 scenarios is rejected at validation (422) before the O(w×s) loop."""
+    from archimedes.main import app
+
+    payload = {
+        "weights": {"SPY": 1.0},
+        "portfolio_value": 10000.0,
+        "scenarios": [{"name": f"s{i}", "shocks": [{"asset": "SPY", "shock": -0.01}]} for i in range(11)],
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/portfolio/scenario-analysis", json=payload)
+
+    assert resp.status_code == 422, resp.text
