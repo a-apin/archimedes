@@ -54,6 +54,22 @@ def test_zero_variance_aum_returns_insufficient():
     assert result["live_sharpe"] is None
 
 
+def test_zero_aum_snapshot_does_not_manufacture_return():
+    """A snapshot with aum_usdc=0 must be skipped, not dropped to share_price≈1.0
+    (issue #931). Otherwise a flat ~50_000 AUM series gains a spurious ±99.99%
+    round-trip that fabricates variance and a garbage live Sharpe.
+
+    Snapshots are most-recent-first; one carries aum_usdc=0 + share_price=1.0.
+    With the old fallback that becomes a 50_000→1→50_000 spike; skipping it
+    leaves the series flat → INSUFFICIENT_DATA (Sharpe undefined for zero var).
+    """
+    snaps = [{"aum_usdc": 50_000.0} for _ in range(20)]
+    snaps[5] = {"aum_usdc": 0, "share_price": 1.0}  # poison snapshot
+    result = compute_sharpe_drift(snaps, backtest_sharpe=1.0)
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["live_sharpe"] is None
+
+
 # ─── McLean-Pontiff decay floor ───────────────────────────────────────
 
 

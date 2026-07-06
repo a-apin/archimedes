@@ -45,8 +45,13 @@ def compute_sharpe_drift(
             "status": "INSUFFICIENT_DATA",
         }
 
-    # Compute period returns from AUM history (most-recent first in snapshots)
-    navs = [s.get("aum_usdc", 0) or s.get("share_price", 0) for s in reversed(aum_snapshots)]
+    # Compute period returns from AUM history (most-recent first in snapshots).
+    # Build the NAV series from aum_usdc ONLY. The old `aum_usdc or share_price`
+    # fallback mixed a ~50_000-scale series with a ~1.0-scale one, so a single
+    # snapshot with aum_usdc=0/null dropped to share_price≈1.0 and manufactured
+    # a spurious ±99.99% return that poisoned the live Sharpe/drift (issue #931).
+    # Skip snapshots without a usable positive aum_usdc instead.
+    navs = [aum for s in reversed(aum_snapshots) if isinstance((aum := s.get("aum_usdc")), (int, float)) and aum > 0]
     returns = [(navs[i] - navs[i - 1]) / navs[i - 1] for i in range(1, len(navs)) if navs[i - 1] > 0]
 
     if len(returns) < _MIN_SNAPSHOTS_FOR_SHARPE - 1:
