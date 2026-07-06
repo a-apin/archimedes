@@ -26,6 +26,21 @@ JOB_TTL = 3600  # 1 hour
 EVENT_LOG_TTL = 900  # 15 minutes after terminal state — spec 0.5 § Reconnection
 
 
+def _safe_json(raw, default, *, context: str):
+    """``json.loads`` that returns ``default`` on malformed data (#919).
+
+    A truncated / tampered ``payload`` or ``result`` field must not 500 the job
+    read path; log and fall back to the default so the job still lists.
+    """
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("Malformed JSON in job store (%s) — using default: %s", context, exc)
+        return default
+
+
 class JobStore:
     """Thin Redis wrapper for async job lifecycle."""
 
@@ -75,8 +90,8 @@ class JobStore:
             "id": raw.get("id", job_id),
             "type": raw.get("type", ""),
             "status": raw.get("status", "unknown"),
-            "payload": json.loads(raw["payload"]) if raw.get("payload") else {},
-            "result": json.loads(raw["result"]) if raw.get("result") else None,
+            "payload": _safe_json(raw.get("payload"), {}, context=f"job:{job_id}:payload"),
+            "result": _safe_json(raw.get("result"), None, context=f"job:{job_id}:result"),
             "error": raw.get("error", ""),
             "created_at": raw.get("created_at", ""),
             "updated_at": raw.get("updated_at", ""),
@@ -173,8 +188,8 @@ class JobStore:
                     "id": raw.get("id", key.removeprefix(KEY_PREFIX)),
                     "type": raw.get("type", ""),
                     "status": raw.get("status", "unknown"),
-                    "payload": json.loads(raw["payload"]) if raw.get("payload") else {},
-                    "result": json.loads(raw["result"]) if raw.get("result") else None,
+                    "payload": _safe_json(raw.get("payload"), {}, context=f"job:{key}:payload"),
+                    "result": _safe_json(raw.get("result"), None, context=f"job:{key}:result"),
                     "error": raw.get("error", ""),
                     "created_at": raw.get("created_at", ""),
                     "updated_at": raw.get("updated_at", ""),

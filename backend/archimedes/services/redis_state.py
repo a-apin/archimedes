@@ -37,6 +37,20 @@ KEY_TRACE_INDEX = "archimedes:trace:index"
 KEY_SIWE_NONCE_PREFIX = "archimedes:auth:nonce:"
 
 
+def _safe_json_loads(raw, *, context: str):
+    """``json.loads`` that degrades gracefully on malformed data (#919).
+
+    A truncated, partial, or externally-tampered Redis value must not crash a
+    read path with a 500. Logs the decode failure and returns ``None`` so the
+    caller can skip the bad entry or return a null/empty response.
+    """
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("Malformed JSON in Redis (%s) — dropping value: %s", context, exc)
+        return None
+
+
 class AgentStateStore:
     """Thin wrapper over Redis for agent state."""
 
@@ -122,7 +136,7 @@ class AgentStateStore:
         r = await self._get_redis()
         raw = await r.get(KEY_REGIME)
         if raw:
-            return json.loads(raw)
+            return _safe_json_loads(raw, context=KEY_REGIME)
         return None
 
     async def load_ensemble_consensus(self) -> dict | None:
@@ -130,7 +144,7 @@ class AgentStateStore:
         r = await self._get_redis()
         raw = await r.get(KEY_ENSEMBLE_CONSENSUS)
         if raw:
-            return json.loads(raw)
+            return _safe_json_loads(raw, context=KEY_ENSEMBLE_CONSENSUS)
         return None
 
     # ─── Heartbeat ────────────────────────────────────────────────
@@ -176,7 +190,7 @@ class AgentStateStore:
     async def get_events(self, count: int = 20) -> list[dict]:
         r = await self._get_redis()
         raw = await r.lrange("archimedes:agent:events", 0, count - 1)
-        return [json.loads(e) for e in raw]
+        return [d for e in raw if (d := _safe_json_loads(e, context="agent:events")) is not None]
 
     # ─── Vault Monitoring ─────────────────────────────────────────
 
@@ -197,7 +211,7 @@ class AgentStateStore:
         r = await self._get_redis()
         key = f"archimedes:vault:snapshots:{vault_address.lower()}"
         raw = await r.lrange(key, 0, count - 1)
-        return [json.loads(e) for e in raw]
+        return [d for e in raw if (d := _safe_json_loads(e, context="vault:snapshots")) is not None]
 
     # ─── Reasoning Trace Persistence ────────────────────────────
 
@@ -243,14 +257,18 @@ class AgentStateStore:
         # Try direct hash lookup
         raw = await r.get(f"{KEY_TRACE_PREFIX}{trace_id_or_hash}")
         if raw:
-            return json.loads(raw)
+            parsed = _safe_json_loads(raw, context="trace:hash")
+            if parsed is not None:
+                return parsed
 
         # Try UUID → hash → data
         hash_val = await r.get(f"{KEY_TRACE_PREFIX}id:{trace_id_or_hash}")
         if hash_val:
             raw = await r.get(f"{KEY_TRACE_PREFIX}{hash_val}")
             if raw:
-                return json.loads(raw)
+                parsed = _safe_json_loads(raw, context="trace:uuid")
+                if parsed is not None:
+                    return parsed
 
         return None
 
@@ -274,7 +292,9 @@ class AgentStateStore:
             raw = await r.get(f"{KEY_TRACE_PREFIX}{h}")
             if not raw:
                 continue
-            data = json.loads(raw)
+            data = _safe_json_loads(raw, context="trace:index")
+            if data is None:
+                continue
 
             # Apply filters
             if vault_address and data.get("vault_address", "").lower() != vault_address.lower():
