@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 from archimedes.services.dsl_to_backtrader import (
     _eval_condition,
@@ -97,6 +99,91 @@ def _get_bt_strategy_class():
     import backtrader as bt
 
     return bt.Strategy
+
+
+def _record_rebalance_bars(cls, n_bars: int) -> list[int]:
+    """Run ``cls`` over ``n_bars`` of synthetic data, returning rebalance bar indices.
+
+    Wraps the generated strategy's ``_should_rebalance`` so that every bar where it
+    returns True records ``len(self)`` (backtrader's 1-indexed bar count). This lets
+    the test observe the rebalance cadence without depending on order fills.
+    """
+    import backtrader as bt
+    import pandas as pd
+
+    fired: list[int] = []
+    original = cls._should_rebalance
+
+    def _recording_should_rebalance(self):
+        result = original(self)
+        if result:
+            fired.append(len(self))
+        return result
+
+    cls._should_rebalance = _recording_should_rebalance
+    try:
+        # Monotone-rising close keeps entry (close > sma) true so rebalances that
+        # act do so consistently; the cadence itself is what we measure.
+        dates = pd.date_range("2020-01-01", periods=n_bars, freq="D")
+        prices = [100.0 + i for i in range(n_bars)]
+        frame = pd.DataFrame(
+            {
+                "open": prices,
+                "high": [p + 0.5 for p in prices],
+                "low": [p - 0.5 for p in prices],
+                "close": prices,
+                "volume": [1000] * n_bars,
+            },
+            index=dates,
+        )
+        cerebro = bt.Cerebro()
+        cerebro.adddata(bt.feeds.PandasData(dataname=frame))
+        cerebro.addstrategy(cls)
+        cerebro.broker.setcash(100000.0)
+        cerebro.run()
+    finally:
+        cls._should_rebalance = original
+    return fired
+
+
+class TestRebalanceCadencePhase:
+    """The first rebalance must land right after warmup, not a full period later."""
+
+    def _monthly_sma21_spec(self):
+        # sma_21 -> warmup == 21; monthly -> period == 21. Before the phase-shift
+        # fix the counter started at 0, so the first rebalance fired ~21 bars after
+        # warmup ended (~bar 42) instead of on the first post-warmup bar (~bar 21).
+        spec_dict = {
+            "name": "SMA-21 Monthly",
+            "asset_universe": ["SPY"],
+            "rebalance_frequency": "monthly",
+            "entry": {"gt": ["close", "sma_21"]},
+            "exit": {"lt": ["close", "sma_21"]},
+            "position_sizing": {"type": "full_invested_when_in_market"},
+            "source_arxiv_ids": ["0706.1497"],
+            "look_ahead_safe": True,
+        }
+        return validate_strategy_spec(spec_dict)
+
+    def test_first_rebalance_near_warmup_not_double(self):
+        cls = interpret_spec(self._monthly_sma21_spec())
+        fired = _record_rebalance_bars(cls, n_bars=252)
+
+        assert fired, "expected at least one rebalance over a 252-bar year"
+        first = fired[0]
+        # First rebalance should be the first post-warmup bar (~22), well below the
+        # phase-shifted ~42 the old counter produced.
+        assert first <= 30, f"first rebalance at bar {first}, expected near warmup (~22)"
+        assert first < 40, f"first rebalance at bar {first} shows the period-1 phase shift"
+
+    def test_steady_state_cadence_preserved(self):
+        cls = interpret_spec(self._monthly_sma21_spec())
+        fired = _record_rebalance_bars(cls, n_bars=252)
+
+        assert len(fired) >= 3, "need several rebalances to check cadence"
+        gaps = [b - a for a, b in pairwise(fired)]
+        # Every rebalance after the first stays on the 21-bar monthly cadence.
+        assert all(gap == 21 for gap in gaps), f"steady-state cadence broke: gaps={gaps}"
 
 
 class TestInterpretVariant:

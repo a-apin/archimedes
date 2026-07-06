@@ -116,7 +116,12 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
                 self._indicators[alias] = _make_indicator(self.data.close, name, period)
             self._warmup = max_period
             self._vol_target = self.params.vol_target_annual
-            self._rebal_counter = 0
+            # Seed the counter so the first post-warmup bar rebalances instead of
+            # waiting a full period first. _should_rebalance() increments before
+            # testing the modulus, so starting one short of a period boundary makes
+            # the first executed bar (counter -> period) the first rebalance. Without
+            # this the strategy phase-shifts by up to period-1 bars versus the paper.
+            self._rebal_counter = self._rebalance_period() - 1
 
         def _bar_values(self) -> dict[str, float]:
             vals: dict[str, float] = {
@@ -133,15 +138,23 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
                     vals[alias] = float("nan")
             return vals
 
+        @staticmethod
+        def _rebalance_period() -> int:
+            """Bars between rebalances for the spec's rebalance frequency."""
+            if spec.rebalance_frequency == "weekly":
+                return 5
+            if spec.rebalance_frequency == "monthly":
+                return 21
+            return 1
+
         def _should_rebalance(self) -> bool:
             if spec.rebalance_frequency == "daily":
                 return True
+            period = self._rebalance_period()
+            if period <= 1:
+                return True
             self._rebal_counter += 1
-            if spec.rebalance_frequency == "weekly":
-                return self._rebal_counter % 5 == 0
-            if spec.rebalance_frequency == "monthly":
-                return self._rebal_counter % 21 == 0
-            return True
+            return self._rebal_counter % period == 0
 
         def next(self) -> None:
             if len(self) <= self._warmup:
