@@ -81,6 +81,17 @@ class TestS3ArtifactStore:
         result = store.download_bytes("test.bin")
         assert result == b"binary data"
 
+    def test_download_bytes_throttle_returns_none(self, mock_s3_client):
+        """A transient AWS throttle degrades to None, not a raised ClientError."""
+        from botocore.exceptions import ClientError
+
+        mock_s3_client.get_object.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}}, "GetObject"
+        )
+        store = S3ArtifactStore(bucket="test-bucket")
+        store._client = mock_s3_client
+        assert store.download_bytes("test.bin") is None
+
     def test_exists_true(self, mock_s3_client):
         mock_s3_client.head_object.return_value = {}
         store = S3ArtifactStore(bucket="test-bucket")

@@ -63,6 +63,17 @@ class TestDynamoDBPaperIndex:
         result = index.get_paper("9999.99999")
         assert result is None
 
+    def test_get_paper_throttle_returns_none(self, mock_table):
+        """A transient AWS throttle degrades to None, not a raised ClientError."""
+        from botocore.exceptions import ClientError
+
+        mock_table.get_item.side_effect = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "Rate exceeded"}},
+            "GetItem",
+        )
+        index = DynamoDBPaperIndex()
+        assert index.get_paper("2301.01234") is None
+
     def test_put_paper(self, mock_table):
         index = DynamoDBPaperIndex()
         index.put_paper({"arxiv_id": "2301.01234", "title": "Test", "sharpe": 1.5})

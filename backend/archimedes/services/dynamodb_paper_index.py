@@ -67,13 +67,18 @@ class DynamoDBPaperIndex:
         return self._table
 
     def get_paper(self, arxiv_id: str) -> dict[str, Any] | None:
-        """Get a single paper by arxiv_id. Returns None if not found."""
+        """Get a single paper by arxiv_id.
+
+        Returns None if the paper is not found, and also returns None on a
+        transient AWS error (throttle, timeout, unavailable) so the caller can
+        degrade gracefully (e.g. 503) instead of surfacing a 500.
+        """
         try:
             resp = self.table.get_item(Key={"arxiv_id": arxiv_id})
             return resp.get("Item")
         except ClientError as exc:
             logger.error("DynamoDB get_paper(%s) failed: %s", arxiv_id, exc)
-            raise
+            return None
 
     def put_paper(self, item: dict[str, Any]) -> None:
         """Upsert a paper record. Must contain 'arxiv_id'."""
