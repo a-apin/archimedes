@@ -77,6 +77,10 @@ else:
     _openapi_url = "/openapi.json"
 
 
+class _MarketplaceUnavailable(Exception):
+    """Sentinel: the marketplace engine did not start, so rehydration is skipped."""
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """FastAPI lifespan context manager — startup before yield, shutdown after."""
@@ -125,29 +129,45 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _logger.warning("startup: corpus seed failed (non-fatal): %s", exc)
 
-    # 3. Start the in-process marketplace engine (MarketService)
-    from archimedes.marketplace.service import MarketService
-
-    interval = int(os.getenv("AGENT_INTERVAL_SECONDS", "300"))
-    # Both money-affecting switches FAIL SAFE (default to dry) and must be
-    # turned on together and deliberately. Previously PAYMENTS_DRY_RUN
-    # defaulted to "false" while PAPER_TRADING defaulted to "true", so an
-    # out-of-the-box deploy mirrored no real trades yet charged real USDC —
-    # the worst possible asymmetry. Charging real money now requires an
-    # explicit PAYMENTS_DRY_RUN=false.
-    payments_dry_run = os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")
-    paper_trading = os.getenv("PAPER_TRADING", "true").lower() in ("1", "true", "yes")
-    market = MarketService(interval_seconds=interval, payments_dry_run=payments_dry_run, paper_trading=paper_trading)
-    _app.state.market = market
-    _logger.info(
-        "marketplace engine started (interval=%ds, payments_dry_run=%s, paper_trading=%s)",
-        interval,
-        payments_dry_run,
-        paper_trading,
-    )
-
-    # 3a. Rehydrate running publishers from Postgres
+    # 3. Start the in-process marketplace engine (MarketService).
+    # FAIL-SOFT: constructing the engine (or importing its deps, e.g. circlekit)
+    # must NEVER take down the whole backend — a new subsystem crashing at
+    # startup should degrade to "marketplace unavailable" (routes 503), not 502
+    # the entire app. market stays None on failure and everything downstream
+    # (rehydration, routes via _get_market, shutdown) guards on that.
+    market = None
     try:
+        from archimedes.marketplace.service import MarketService
+
+        interval = int(os.getenv("AGENT_INTERVAL_SECONDS", "300"))
+        # Both money-affecting switches FAIL SAFE (default to dry) and must be
+        # turned on together and deliberately. Previously PAYMENTS_DRY_RUN
+        # defaulted to "false" while PAPER_TRADING defaulted to "true", so an
+        # out-of-the-box deploy mirrored no real trades yet charged real USDC —
+        # the worst possible asymmetry. Charging real money now requires an
+        # explicit PAYMENTS_DRY_RUN=false.
+        payments_dry_run = os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")
+        paper_trading = os.getenv("PAPER_TRADING", "true").lower() in ("1", "true", "yes")
+        market = MarketService(
+            interval_seconds=interval, payments_dry_run=payments_dry_run, paper_trading=paper_trading
+        )
+        _app.state.market = market
+        _logger.info(
+            "marketplace engine started (interval=%ds, payments_dry_run=%s, paper_trading=%s)",
+            interval,
+            payments_dry_run,
+            paper_trading,
+        )
+    except Exception as exc:
+        _app.state.market = None
+        _logger.error("startup: marketplace engine failed to start — running WITHOUT it (non-fatal): %s", exc)
+
+    # 3a. Rehydrate running publishers from Postgres. Guarded on the engine
+    # having started; the surrounding try/except is fail-soft regardless.
+    try:
+        if market is None:
+            raise _MarketplaceUnavailable
+
         from archimedes.db import get_session
         from archimedes.marketplace.service import Subscriber
         from archimedes.models.marketplace import MarketplaceAgent
@@ -217,6 +237,8 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 row.vault_address,
                 len(subs),
             )
+    except _MarketplaceUnavailable:
+        _logger.info("startup: marketplace engine not running — skipping publisher rehydration")
     except Exception as exc:
         _logger.warning("startup: publisher rehydration failed (non-fatal): %s", exc)
 
