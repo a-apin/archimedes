@@ -73,6 +73,23 @@ contract SyntheticVaultTest is Test {
         usdc.mint(bob,   100_000 * 10**6);
     }
 
+    // ─── #942: synth-decimals invariant ───────────────────────────
+
+    /// @dev The mint/burn/solvency math hardcodes 10**SYNTH_DECIMALS, so the
+    ///      constructor must reject a synth token whose decimals != 18 rather
+    ///      than silently mispricing NAV and collateral. MockUSDC reports 6
+    ///      decimals; using it as the synth token must revert.
+    function test_revert_constructor_non18_decimal_synth() public {
+        vm.expectRevert(SyntheticVault.UnexpectedSynthDecimals.selector);
+        new SyntheticVault(address(usdc), address(usdc), address(oracle), owner);
+    }
+
+    /// @dev Positive control: the real 18-decimal SyntheticToken constructs fine
+    ///      and the vault's SYNTH_DECIMALS matches the token's reported decimals.
+    function test_constructor_accepts_18_decimal_synth() public view {
+        assertEq(uint256(sTSLA.decimals()), vault.SYNTH_DECIMALS());
+    }
+
     // ─── Oracle Tests ─────────────────────────────────────────────
 
     function test_oracle_initial_price() public view {

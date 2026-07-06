@@ -34,6 +34,21 @@ contract MockToken is ERC20 {
     }
 }
 
+/// @dev A non-18-decimal token (8 decimals) for the #942 NAV-pricing tests.
+contract MockToken8 is ERC20 {
+    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
+        _mint(msg.sender, 1_000_000 * 10**8);
+    }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 8;
+    }
+}
+
 contract VaultTest is Test {
     MockUSDC public usdc;
     AMMRouter public router;
@@ -1041,6 +1056,79 @@ contract VaultTest is Test {
         vault.deposit(amount, alice);
 
         assertEq(vault.totalAssets(), amount);
+    }
+
+    // ─── #942: decimal-aware NAV pricing ──────────────────────────────
+
+    /// @dev Wiring an oracle snapshots 10**decimals for the token, so NAV/swap
+    ///      math scales by the token's real precision. sTSLA (18 dec, wired in
+    ///      setUp) caches 1e18; an 8-decimal token caches 1e8; an unwired token
+    ///      falls back to 1e18 via the getter default (but the public mapping
+    ///      itself is still 0).
+    function test_tokenUnit_cached_from_decimals() public {
+        // sTSLA is 18-decimal and was wired in setUp.
+        assertEq(vault.tokenUnit(address(sTSLA)), 1e18);
+
+        MockToken8 eightDec = new MockToken8("Eight", "E8");
+        PriceOracle eightOracle = new PriceOracle("E8", 2 * 10**6, owner);
+        address[] memory tokens = new address[](1);
+        tokens[0] = address(eightDec);
+        address[] memory oracles = new address[](1);
+        oracles[0] = address(eightOracle);
+        vm.prank(agent);
+        vault.setTokenOracles(tokens, oracles);
+
+        assertEq(vault.tokenUnit(address(eightDec)), 10**8);
+    }
+
+    /// @dev End-to-end regression: a rebalance-buy into an 8-decimal token
+    ///      conserves NAV. Under the old hardcoded 1e18 divisor the 8-decimal
+    ///      holding would be priced at ~1e-10 of its true value, so totalAssets
+    ///      would collapse to just the unspent USDC. With the cached 1e8 unit,
+    ///      totalAssets stays ~= the deposit (fee + price impact aside).
+    function test_totalAssets_prices_non18_decimal_token() public {
+        // Fresh 8-decimal synth + oracle + AMM pool, aligned at 2 USDC / token
+        // (10,000,000 USDC : 5,000,000 token, same value ratio as TSLA_PRICE).
+        MockToken8 s8 = new MockToken8("Synthetic8", "S8");
+        PriceOracle o8 = new PriceOracle("S8", TSLA_PRICE, owner);
+
+        router.createPool(address(usdc), address(s8));
+        uint256 poolUsdc = 10_000_000 * 10**6;
+        uint256 poolS8 = 5_000_000 * 10**8; // 8-decimal reserves
+        usdc.mint(address(this), poolUsdc);
+        s8.mint(address(this), poolS8);
+        usdc.approve(address(router), poolUsdc);
+        s8.approve(address(router), poolS8);
+        router.addLiquidity(address(usdc), address(s8), poolUsdc, poolS8, 0);
+
+        address[] memory oracleTokens = new address[](1);
+        oracleTokens[0] = address(s8);
+        address[] memory oracles = new address[](1);
+        oracles[0] = address(o8);
+        vm.prank(agent);
+        vault.setTokenOracles(oracleTokens, oracles);
+
+        uint256 deposit = 50_000 * 10**6;
+        _depositAsAlice(deposit);
+
+        // Buy ~40k USDC of the 8-decimal token so most of the NAV sits in the
+        // non-USDC holding — the slice the old 1e18 scaling mispriced to dust.
+        address[] memory tokensIn = new address[](1);
+        tokensIn[0] = address(s8);
+        uint256[] memory amountsIn = new uint256[](1);
+        amountsIn[0] = 40_000 * 10**6;
+        address[] memory tokensOut = new address[](0);
+        uint256[] memory amountsOut = new uint256[](0);
+        _commitFor(tokensIn, amountsIn, tokensOut, amountsOut);
+        vm.prank(agent);
+        vault.rebalance(tokensIn, amountsIn, tokensOut, amountsOut);
+
+        // Vault holds ~40k of the 8-decimal token plus ~10k USDC. NAV must stay
+        // within ~1% of the deposit (30bps AMM fee + bounded price impact).
+        assertApproxEqRel(vault.totalAssets(), deposit, 0.01e18);
+        // And the 8-decimal holding must contribute the bulk of NAV, not dust:
+        // strictly more than the leftover USDC alone would (old-code failure).
+        assertGt(vault.totalAssets(), 20_000 * 10**6);
     }
 
     // ─── Fee Tests ───────────────────────────────────────────────────
