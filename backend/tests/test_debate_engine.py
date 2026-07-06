@@ -340,6 +340,51 @@ async def test_propose_pool_drops_nonconformant_specs(monkeypatch, corpus):
     assert pool == []
 
 
+# ── Test #893 — proposer pool dedup ────────────────────────────────────────────
+
+
+def test_canonical_spec_hash_ignores_key_order_and_float_noise():
+    a = {"entry": {"gt": ["momentum_20", 0]}, "exit": {"lt": ["close", "sma_200"]}, "weight": 0.1 + 0.2}
+    b = {"exit": {"lt": ["close", "sma_200"]}, "entry": {"gt": ["momentum_20", 0]}, "weight": 0.3}
+    assert de._canonical_spec_hash(a) == de._canonical_spec_hash(b)
+    c = {"exit": {"lt": ["close", "sma_200"]}, "entry": {"gt": ["momentum_40", 0]}, "weight": 0.3}
+    assert de._canonical_spec_hash(a) != de._canonical_spec_hash(c)
+
+
+async def test_propose_pool_dedupes_identical_specs_across_steers(monkeypatch, corpus):
+    """Fix #893: different regime/mechanism steers converging on the same spec
+    (byte-identical under a different marketing name) must collapse to one pool
+    entry, not be counted as independent trials."""
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    monkeypatch.setenv("DEBATE_POOL_MAX", "4")
+
+    # A conformant spec that also survives the full validate_strategy_spec pass
+    # (unlike _CONFORMANT_SPEC, whose parameter_variants key doesn't reference an
+    # entry/exit alias — fine for the narrow _dsl_conformance_ok check elsewhere,
+    # but rejected by the full propose() validation, which nulls strategy_spec).
+    dedup_spec = {k: v for k, v in _CONFORMANT_SPEC.items() if k != "parameter_variants"}
+
+    def _fake_make(model=None, **kw):
+        return _CannedFusionBackend(model=model, spec=dedup_spec)
+
+    # Force every steer to select the SAME evidence set, so the canned backend's
+    # embedded source_arxiv_ids (and therefore the full spec) is byte-identical
+    # across all steers regardless of regime_bias/mechanism.
+    monkeypatch.setattr(
+        "archimedes.agents.strategy_fusion.select_candidates",
+        lambda fb, corpus, regime_bias=None: list(corpus)[:2],
+    )
+    monkeypatch.setattr("archimedes.agents.strategy_fusion.make_llm_backend", _fake_make)
+    monkeypatch.setattr(de.asyncio, "to_thread", _passthrough_to_thread)
+
+    brief = GenerateBrief(intent="momentum equities", max_papers=4)
+    pool = await de._propose_pool(brief, "m", corpus)
+
+    assert len(pool) == 1
+    hashes = {de._canonical_spec_hash(p.strategy_spec) for p in pool}
+    assert len(hashes) == len(pool)
+
+
 # ── Test 8 — flag-OFF byte-identical (fix A2) ─────────────────────────────────
 
 

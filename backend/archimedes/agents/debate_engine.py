@@ -10,7 +10,9 @@ checks corpus size. The pipeline:
      ``select_candidates(regime_bias=R)`` evidence sets (the A3 model seam
      threads the user's Generate-page model pick). Drops non-actionable
      (``FusionProposal.is_actionable``) and non-conformant (``_dsl_conformance_ok``,
-     fix A5) specs. ``pool_size = len(POOL)``.
+     fix A5) specs, then dedups by canonical spec hash (fix #893 — different
+     steers can converge on the same spec under a different name). ``pool_size
+     = len(POOL)`` counts unique specs only.
   2. **Adversarial round** — a thin, best-effort bull/bear transcript.
      Surfaces adversarial topology on the SSE stream but never gates;
      deterministic critics do the real culling (the budget trick).
@@ -31,6 +33,8 @@ back-compat callers); ``_run_debate_leaderboard`` returns the FULL ranked board
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 from typing import TYPE_CHECKING, Any
@@ -172,6 +176,28 @@ def _dsl_conformance_ok(spec: dict[str, Any] | None) -> bool:
     return all(stem in _CONFORMANT_INDICATORS for stem in _indicator_alias_stems(spec))
 
 
+def _canonical_spec_hash(spec: dict[str, Any]) -> str:
+    """Content hash of ``spec`` invariant to key order and float noise (fix #893).
+
+    Different regime/mechanism steers can independently converge on the same
+    strategy (byte-identical ``entry``/``exit`` trees) under a different marketing
+    name. Rounding floats to 6dp absorbs float-repr jitter without collapsing
+    genuinely distinct parameterizations (e.g. sma_20 vs sma_21).
+    """
+
+    def _normalize(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {k: _normalize(node[k]) for k in sorted(node)}
+        if isinstance(node, list):
+            return [_normalize(v) for v in node]
+        if isinstance(node, float):
+            return round(node, 6)
+        return node
+
+    canonical = json.dumps(_normalize(spec), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 # ── Viability precheck ────────────────────────────────────────────────────────
 
 
@@ -248,11 +274,22 @@ async def _propose_pool(brief: GenerateBrief, model: str | None, corpus: list[An
     )
 
     pool: list[Any] = []
+    seen_hashes: set[str] = set()
+    dropped = 0
     for p in proposals:
         if isinstance(p, BaseException) or p is None:
             continue
-        if p.is_actionable and _dsl_conformance_ok(p.strategy_spec):
-            pool.append(p)
+        if not (p.is_actionable and _dsl_conformance_ok(p.strategy_spec)):
+            continue
+        spec_hash = _canonical_spec_hash(p.strategy_spec)
+        if spec_hash in seen_hashes:
+            dropped += 1
+            continue
+        seen_hashes.add(spec_hash)
+        pool.append(p)
+
+    if dropped:
+        logger.info("debate proposer pool_deduped: kept=%d dropped=%d", len(pool), dropped)
     return pool
 
 
