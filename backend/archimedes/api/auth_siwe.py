@@ -51,7 +51,7 @@ _CLOCK_SKEW_SECONDS = 120  # tolerate small client/server clock drift on Issued 
 # SIWE message binding — a valid signature must be for THIS site and chain, not
 # merely carry a live nonce. Must match what GET /api/auth/nonce advertises and
 # what the UI puts in the message (see ui/src/siwe.js).
-_EXPECTED_DOMAIN = os.getenv("PUBLIC_DOMAIN", "https://archimedes-arc.com")
+_EXPECTED_DOMAIN = os.getenv("PUBLIC_DOMAIN") or "https://archimedes-arc.com"
 _EXPECTED_CHAIN_ID = int(os.getenv("ARC_CHAIN_ID", "5042002"))
 
 # Pending-nonce store: Redis-backed (via AgentStateStore) so /nonce and /verify
@@ -182,7 +182,7 @@ async def get_nonce():
 
     return {
         "nonce": nonce,
-        "domain": os.getenv("PUBLIC_DOMAIN", "https://archimedes-arc.com")
+        "domain": os.getenv("PUBLIC_DOMAIN") or "https://archimedes-arc.com"
         .replace("https://", "")
         .replace("http://", ""),
         "issued_at": int(now),
