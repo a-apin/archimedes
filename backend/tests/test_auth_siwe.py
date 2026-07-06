@@ -94,6 +94,22 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+@pytest.fixture(autouse=True)
+def _configured_domain(monkeypatch):
+    """Default all tests in this module to a configured PUBLIC_DOMAIN (#940).
+
+    _EXPECTED_DOMAIN is read from os.getenv("PUBLIC_DOMAIN") once at module
+    import time, and the hermetic test process never sets PUBLIC_DOMAIN (see
+    backend/tests/conftest.py) — so without this, every existing test hitting
+    /api/auth/nonce or /api/auth/verify would 503 under the new fail-closed
+    behavior. Patching the already-imported module attribute (rather than the
+    env var, which is read once at import and won't be re-read) restores the
+    prior "configured" behavior as the default for this file; the dedicated
+    fail-closed tests below override this back to None to exercise the 503 path.
+    """
+    monkeypatch.setattr("archimedes.api.auth_siwe._EXPECTED_DOMAIN", "archimedes-arc.com")
+
+
 # ── Unit tests for session token functions ─────────────────────
 
 
@@ -485,6 +501,62 @@ async def test_verify_rejects_message_missing_chain_id():
         resp = await client.post("/api/auth/verify", json={"message": message, "signature": "0xfake"})
     assert resp.status_code == 400
     assert "Chain ID" in resp.json()["detail"]
+
+
+# ── Fail closed when PUBLIC_DOMAIN is unconfigured (#940) ───────────
+#
+# Two independent hardcoded fallbacks (one in _EXPECTED_DOMAIN, one inline in
+# the /nonce handler) used to make domain binding a no-op whenever
+# PUBLIC_DOMAIN was unset: both sides silently agreed on the same literal, so
+# the check "passed" without actually proving anything. These tests pin the
+# fixed behavior: with no domain configured, both endpoints refuse to serve
+# the SIWE flow at all (503) rather than silently authenticating against a
+# spoofable default.
+
+
+@pytest.mark.asyncio
+async def test_nonce_endpoint_fails_closed_when_domain_unconfigured(monkeypatch):
+    from archimedes.main import app
+
+    monkeypatch.setattr("archimedes.api.auth_siwe._EXPECTED_DOMAIN", None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/auth/nonce")
+    assert resp.status_code == 503
+    assert "PUBLIC_DOMAIN" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_verify_fails_closed_when_domain_unconfigured(monkeypatch):
+    """503 before even reaching the nonce/signature checks -- an otherwise
+    well-formed, correctly-domained message must still be rejected."""
+    from archimedes.main import app
+
+    monkeypatch.setattr("archimedes.api.auth_siwe._EXPECTED_DOMAIN", None)
+
+    message = (
+        "archimedes-arc.com wants you to sign in with your Ethereum account:\n"
+        "0xabcdef1234567890abcdef1234567890abcdef12\n\n"
+        "Chain ID: 5042002\n"
+        f"Nonce: somenonce123456\nIssued At: {_now_iso()}"
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/auth/verify", json={"message": message, "signature": "0xfake"})
+    assert resp.status_code == 503
+    assert "PUBLIC_DOMAIN" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_verify_fails_closed_even_with_no_body(monkeypatch):
+    """The domain-configuration check runs before message/signature validation
+    -- a request with no body at all still gets 503, not 400."""
+    from archimedes.main import app
+
+    monkeypatch.setattr("archimedes.api.auth_siwe._EXPECTED_DOMAIN", None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/auth/verify", json={"message": "", "signature": ""})
+    assert resp.status_code == 503
 
 
 # ── Redis-backed nonce store (multi-worker support) ─────────────

@@ -39,6 +39,20 @@ def _load_agent_journey():
 aj = _load_agent_journey()
 
 
+@pytest.fixture(autouse=True)
+def _configured_domain(monkeypatch):
+    """Default PUBLIC_DOMAIN to configured for this module (#940).
+
+    archimedes.api.auth_siwe._EXPECTED_DOMAIN is read once at import time from
+    os.getenv("PUBLIC_DOMAIN"), and the hermetic test process never sets it --
+    without this, the round-trip test below 503s on /api/auth/nonce instead of
+    exercising the harness's message-building recipe against the real
+    verifier. See test_auth_siwe.py's fixture of the same name for the full
+    rationale.
+    """
+    monkeypatch.setattr("archimedes.api.auth_siwe._EXPECTED_DOMAIN", "archimedes-arc.com")
+
+
 # ── Unit: message shape carries every server-enforced binding ─────────
 
 
