@@ -106,11 +106,17 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
   const [failedRegimes, setFailedRegimes] = useState([])  // {regime, message}
   const esRef = useRef(null)
   const scrollRef = useRef(null)
+  // Mirror of `terminal` so the EventSource `onerror` handler reads the current
+  // state. `onerror` closes over the effect's first render, where `terminal` is
+  // null; without this ref it would never see 'done'/'error' and could keep
+  // auto-reconnecting after the stream has legitimately ended.
+  const terminalRef = useRef(null)
 
   useEffect(() => {
     if (!jobId) return
     setEvents([])
     setTerminal(null)
+    terminalRef.current = null
     setStrategyId(null)
     setServedModel(null)
     setErrorMsg('')
@@ -149,6 +155,7 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
       }
       if (name === 'done') {
         setTerminal('done')
+        terminalRef.current = 'done'
         if (data?.strategy_id) setStrategyId(data.strategy_id)
         if (data?.served_model) setServedModel(data.served_model)
         es.close()
@@ -160,6 +167,7 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
       }
       if (name === 'error') {
         setTerminal('error')
+        terminalRef.current = 'error'
         setErrorMsg(data?.message || 'Generation failed')
         es.close()
       }
@@ -169,7 +177,10 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
 
     es.onerror = () => {
       // EventSource will auto-reconnect; only treat as fatal once terminal.
-      if (terminal) es.close()
+      // Read the live state via the ref — the closed-over `terminal` is stale
+      // (captured at first render), so relying on it would let the stream
+      // reconnect-loop instead of settling after 'done'/'error'.
+      if (terminalRef.current) es.close()
     }
 
     return () => { es.close() }
