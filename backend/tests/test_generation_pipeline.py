@@ -19,10 +19,64 @@ from __future__ import annotations
 import numpy as np
 from archimedes.agents.generation_pipeline import (
     _CandidateResult,
+    _is_deployable,
     _patch_dsr_with_pool_correlation,
     _rigor_verdict_for,
     _society_num_trials,
 )
+
+
+def _deployability_candidate(*, passing: bool, has_real_rigor: bool, data_source: str) -> _CandidateResult:
+    """Minimal candidate to exercise the SSE deployable signal (#937)."""
+    return _CandidateResult(
+        candidate_id="c1",
+        strategy_name="S",
+        thesis="t",
+        asset_universe=["sSPY"],
+        source_papers=[],
+        weights={"sSPY": 1.0},
+        reasoning="r",
+        rigor_verdict={"passing": passing, "data_source": data_source},
+        passes_rigor=passing,
+        has_real_rigor=has_real_rigor,
+    )
+
+
+class TestDeployableSignal:
+    """deployable must be (passing AND real-data-graded), not just passing (#937)."""
+
+    def test_passing_on_real_data_is_deployable(self):
+        c = _deployability_candidate(passing=True, has_real_rigor=True, data_source="real")
+        assert _is_deployable(c) is True
+
+    def test_passing_on_synthetic_data_is_not_deployable(self):
+        # The bug: a synthetic-data-graded candidate can pass the gate but must
+        # not be advertised deployable.
+        c = _deployability_candidate(passing=True, has_real_rigor=True, data_source="synthetic")
+        assert _is_deployable(c) is False
+
+    def test_passing_without_real_rigor_is_not_deployable(self):
+        c = _deployability_candidate(passing=True, has_real_rigor=False, data_source="real")
+        assert _is_deployable(c) is False
+
+    def test_missing_data_source_defaults_to_synthetic_not_deployable(self):
+        c = _CandidateResult(
+            candidate_id="c1",
+            strategy_name="S",
+            thesis="t",
+            asset_universe=["sSPY"],
+            source_papers=[],
+            weights={"sSPY": 1.0},
+            reasoning="r",
+            rigor_verdict={"passing": True},  # no data_source key → treated as synthetic
+            passes_rigor=True,
+            has_real_rigor=True,
+        )
+        assert _is_deployable(c) is False
+
+    def test_failing_gate_is_never_deployable(self):
+        c = _deployability_candidate(passing=False, has_real_rigor=True, data_source="real")
+        assert _is_deployable(c) is False
 
 
 class TestSocietyNumTrialsFormula:
