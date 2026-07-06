@@ -397,11 +397,14 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
           <div className="caption mt-2">
             Paper-claimed Sharpe: <strong>{fmt(s.paper_claimed_sharpe)}</strong>{' '}
             · realized: <strong>{fmt(s.sharpe_ratio)}</strong>{' '}
-            {s.sharpe_ratio != null && (
-              <span className={s.sharpe_ratio / s.paper_claimed_sharpe >= 0.5 ? 'positive' : 'negative'}>
-                ({((s.sharpe_ratio / s.paper_claimed_sharpe) * 100).toFixed(0)}% of paper claim)
-              </span>
-            )}
+            {s.sharpe_ratio != null && (() => {
+              const ratio = s.paper_claimed_sharpe > 0.01 ? s.sharpe_ratio / s.paper_claimed_sharpe : null
+              return (
+                <span className={ratio != null && ratio >= 0.5 ? 'positive' : 'negative'}>
+                  ({ratio != null ? `${(ratio * 100).toFixed(0)}% of paper claim` : '—'})
+                </span>
+              )
+            })()}
           </div>
         )}
       </div>
