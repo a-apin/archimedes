@@ -39,7 +39,21 @@ from archimedes.api.explore_routes import explore_router
 from archimedes.api.generate_routes import generate_router
 from archimedes.api.leaderboard_routes import leaderboard_router
 from archimedes.api.limiter import limiter
-from archimedes.api.marketplace_routes import marketplace_router
+
+# FAIL-SOFT import: marketplace_routes → service → payments imports circlekit
+# (the circle-titanoboa-sdk VCS dependency). If that dependency fails to IMPORT
+# in the runtime image (installs fine in the builder but a runtime lib/module is
+# missing in the slim final stage), the whole backend must NOT crash on boot —
+# it degrades to "marketplace routes absent" (404). PR #958 prod incident:
+# the first successful deploy crash-looped the backend on exactly this import.
+try:
+    from archimedes.api.marketplace_routes import marketplace_router
+except Exception as _mkt_exc:  # noqa: BLE001 — must not let a bad optional dep 502 the app
+    logging.getLogger(__name__).error(
+        "marketplace router unavailable — importing it failed (running WITHOUT marketplace): %s",
+        _mkt_exc,
+    )
+    marketplace_router = None
 
 # (the marketplace route registration was removed — hardcoded fees + invented math, Issue #381)
 from archimedes.api.metrics_private_routes import metrics_private_router
@@ -398,7 +412,8 @@ app.include_router(chat_router)
 app.include_router(corpus_router)
 app.include_router(explore_router)
 app.include_router(generate_router)
-app.include_router(marketplace_router)
+if marketplace_router is not None:
+    app.include_router(marketplace_router)
 app.include_router(risk_router)
 app.include_router(portfolio_router)
 app.include_router(selection_bias_router)
