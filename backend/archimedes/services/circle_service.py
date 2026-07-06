@@ -65,6 +65,23 @@ class CircleService:
         """Get comprehensive Circle integration status for the demo."""
         from archimedes.chain.client import chain_client
 
+        # Single source of truth for the deployed-contract list so the count and
+        # the human-readable description can never drift apart (#951 — the
+        # description said "10 contracts" beside a hardcoded count of 11).
+        deployed_contracts = [
+            "Vault",
+            "VaultFactory",
+            "AMMPool",
+            "AMMRouter",
+            "AssetRegistry",
+            "PriceOracle",
+            "ReasoningTraceRegistry",
+            "SyntheticFactory",
+            "SyntheticToken",
+            "SyntheticVault",
+            "StrategyRegistry",
+        ]
+
         # What we currently use
         tools_used = {
             "developer_controlled_wallets": {
@@ -75,21 +92,9 @@ class CircleService:
             },
             "smart_contracts": {
                 "status": "active",
-                "description": "10 contracts deployed on Arc testnet via Circle wallet",
-                "contracts": [
-                    "Vault",
-                    "VaultFactory",
-                    "AMMPool",
-                    "AMMRouter",
-                    "AssetRegistry",
-                    "PriceOracle",
-                    "ReasoningTraceRegistry",
-                    "SyntheticFactory",
-                    "SyntheticToken",
-                    "SyntheticVault",
-                    "StrategyRegistry",
-                ],
-                "count": 11,
+                "description": f"{len(deployed_contracts)} contracts deployed on Arc testnet via Circle wallet",
+                "contracts": deployed_contracts,
+                "count": len(deployed_contracts),
             },
             "usdc_settlement": {
                 "status": "active",
