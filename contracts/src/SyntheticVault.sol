@@ -75,6 +75,8 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
     /// @notice Oracle price is older than mintBurnMaxStaleness on a mint/burn path (issue #910).
     error StaleOraclePrice(uint256 lastUpdated, uint256 maxStaleness, uint256 nowTs);
     error InvalidStalenessWindow();
+    /// @notice Thrown when the wired synth token's decimals != SYNTH_DECIMALS (#942).
+    error UnexpectedSynthDecimals();
 
     // ─── Constructor ─────────────────────────────────────────────────
 
@@ -87,6 +89,15 @@ contract SyntheticVault is Ownable, ReentrancyGuard {
         usdc       = IERC20(_usdc);
         synthToken = SyntheticToken(_synthToken);
         oracle     = PriceOracle(_oracle);
+
+        // The mint/burn/solvency math hardcodes 10**SYNTH_DECIMALS to convert
+        // between synth units and USDC value. That is correct only if the synth
+        // token actually reports SYNTH_DECIMALS decimals; enforce it at wiring
+        // time so a mismatched token reverts here instead of silently mispricing
+        // NAV and collateral downstream (#942).
+        if (SyntheticToken(_synthToken).decimals() != SYNTH_DECIMALS) {
+            revert UnexpectedSynthDecimals();
+        }
     }
 
     // ─── User Actions ────────────────────────────────────────────────

@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -98,6 +99,15 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Oracle address for each held token (for NAV pricing)
     mapping(address => address) public override tokenOracle;
+
+    /// @notice Cached 10**decimals for each priced token (#942). NAV/swap math
+    ///         previously hardcoded a 1e18 divisor, silently mispricing any held
+    ///         token whose ERC-20 decimals != 18. The unit is snapshotted from
+    ///         `token.decimals()` when its oracle is wired (see _cacheTokenUnit),
+    ///         so the funds-path pricing views never make an external decimals()
+    ///         call that could revert. 0 means "unset" and _tokenUnit() falls back
+    ///         to 1e18 — preserving the pre-fix behavior for any legacy token.
+    mapping(address => uint256) public tokenUnit;
 
     /// @notice Max slippage tolerance (in bps) applied to every AMM swap,
     ///         relative to the oracle-implied fair output. Owner-configurable,
@@ -345,10 +355,11 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
             address oracle = tokenOracle[heldTokens[i]];
             if (oracle == address(0)) continue;
 
-            // synth tokens: 18 decimals, oracle price: 6 decimals (USDC)
-            // value in USDC (6 decimals) = balance(18) * price(6) / 1e18
+            // oracle price: 6 decimals (USDC) per one whole token.
+            // value in USDC (6 decimals) = balance(tokenDecimals) * price(6)
+            //                              / 10**tokenDecimals  (#942)
             uint256 price = PriceOracle(oracle).getPrice();
-            nav += (balance * price) / 1e18;
+            nav += (balance * price) / _tokenUnit(heldTokens[i]);
         }
 
         return nav;
@@ -486,6 +497,7 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
         if (tokens.length != oracles.length) revert InvalidAllocations();
         for (uint256 i = 0; i < tokens.length; i++) {
             tokenOracle[tokens[i]] = oracles[i];
+            _cacheTokenUnit(tokens[i]);
         }
         emit TokenOraclesSet(tokens.length);
     }
@@ -508,8 +520,32 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
             address oracle = assetRegistry.registeredOracle(tokens[i]);
             if (oracle == address(0)) revert OracleNotRegistered(tokens[i]);
             tokenOracle[tokens[i]] = oracle;
+            _cacheTokenUnit(tokens[i]);
         }
         emit TokenOraclesSetFromRegistry(tokens.length);
+    }
+
+    /// @dev Snapshot 10**decimals for a token so NAV/swap math scales by the
+    ///      token's real precision instead of a hardcoded 1e18 (#942). Called
+    ///      when an oracle is wired for the token — an owner/manager action, so
+    ///      any misbehaving decimals() surfaces there, never inside the funds
+    ///      path. Falls back to 1e18 if the token doesn't expose decimals(),
+    ///      preserving the pre-fix behavior and keeping registration from
+    ///      reverting on a minimal ERC-20.
+    function _cacheTokenUnit(address token) internal {
+        try IERC20Metadata(token).decimals() returns (uint8 dec) {
+            tokenUnit[token] = 10 ** uint256(dec);
+        } catch {
+            tokenUnit[token] = 1e18;
+        }
+    }
+
+    /// @dev The cached 10**decimals scale for a token, defaulting to 1e18 when
+    ///      unset so a token priced before this cache existed keeps the old
+    ///      18-decimal assumption instead of dividing by 10**0 == 1.
+    function _tokenUnit(address token) internal view returns (uint256) {
+        uint256 unit = tokenUnit[token];
+        return unit == 0 ? 1e18 : unit;
     }
 
     function getHoldings()
@@ -581,11 +617,12 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
     ///         on-chain oracle price, minus the bounded slippage tolerance.
     /// @dev    Exactly one side of every vault swap is USDC (the vault asset);
     ///         the other side is a synth token. Decimal conventions (matching
-    ///         totalAssets()): USDC has 6 decimals; synth tokens have 18;
-    ///         oracle prices are USDC (6 decimals) per 1e18 synth units.
+    ///         totalAssets()): USDC has 6 decimals; oracle prices are USDC
+    ///         (6 decimals) per one whole synth token; the synth side scales by
+    ///         its cached unit = 10**decimals (#942), not a hardcoded 1e18.
     ///
-    ///         synth -> USDC: expectedOut(6) = amountIn(18) * price(6) / 1e18
-    ///         USDC -> synth: expectedOut(18) = amountIn(6) * 1e18 / price(6)
+    ///         synth -> USDC: expectedOut(6) = amountIn(dec) * price(6) / unit
+    ///         USDC -> synth: expectedOut(dec) = amountIn(6) * unit / price(6)
     ///
     ///         Reverts if the non-USDC side has no registered oracle (an
     ///         unpriced swap would be unprotected) or the oracle price is zero.
@@ -603,9 +640,11 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
         uint256 price = PriceOracle(oracle).getPrice();
         if (price == 0) revert InvalidOraclePrice();
 
+        // Scale by the non-USDC token's real precision, not a hardcoded 1e18 (#942).
+        uint256 unit = _tokenUnit(synth);
         uint256 expectedOut = tokenIn == address(asset)
-            ? (amountIn * 1e18) / price // buy: USDC(6) -> synth(18)
-            : (amountIn * price) / 1e18; // sell: synth(18) -> USDC(6)
+            ? (amountIn * unit) / price // buy: USDC(6) -> synth(unit)
+            : (amountIn * price) / unit; // sell: synth(unit) -> USDC(6)
 
         minAmountOut = (expectedOut * (BPS - maxSlippageBps)) / BPS;
     }
@@ -623,7 +662,7 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
             if (oracle == address(0)) continue;
 
             uint256 price = PriceOracle(oracle).getPrice();
-            totalNonUsdcValue += (balance * price) / 1e18;
+            totalNonUsdcValue += (balance * price) / _tokenUnit(heldTokens[i]);
         }
 
         if (totalNonUsdcValue == 0) revert InsufficientLiquidity();
@@ -648,12 +687,13 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
             if (oracle == address(0)) continue;
 
             uint256 price = PriceOracle(oracle).getPrice();
-            uint256 tokenValue = (balance * price) / 1e18;
+            uint256 unit = _tokenUnit(heldTokens[i]);
+            uint256 tokenValue = (balance * price) / unit;
             if (tokenValue == 0) continue;
 
             // This token's proportional share of the liquidation
             uint256 targetValue = (liquidationTarget * tokenValue) / totalNonUsdcValue;
-            uint256 tokensToSell = (targetValue * 1e18) / price;
+            uint256 tokensToSell = (targetValue * unit) / price;
             if (tokensToSell == 0) continue;
             if (tokensToSell > balance) tokensToSell = balance;
 
