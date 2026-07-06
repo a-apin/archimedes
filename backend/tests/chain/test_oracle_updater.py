@@ -12,6 +12,7 @@ Hermetic: chain reads and Circle HTTP calls are mocked at the boundary
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -243,6 +244,7 @@ class TestPushPricesOnChain:
             patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
             patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
             patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(_int6(100.0), True))),
+            patch.object(updater, "_poll_circle_tx", AsyncMock(return_value="COMPLETE")),
         ):
             result = await updater.push_prices_on_chain([good])
 
@@ -290,3 +292,85 @@ class TestPushPricesOnChain:
 
         assert result is None
         session.post.assert_not_called()
+
+
+# ── push_prices_on_chain confirms txs before trusting them (#905) ──────
+
+
+@pytest.mark.usefixtures("circle_creds")
+class TestPushConfirmation:
+    """A 201 from Circle is submission-accepted, not landed-on-chain. The cached
+    deviation reference must move ONLY on a COMPLETE terminal state — a reverted
+    push that still updates the cache poisons every later deviation check."""
+
+    def _updater_with_submission(self):
+        updater = OracleUpdater()
+        updater._circle_public_key = "cached-pem"
+        resp = MagicMock(status=201)
+        resp.json = AsyncMock(return_value={"data": {"id": "tx-905"}})
+        return updater, _mock_aiohttp_session(post_response=resp)
+
+    async def _push_with_terminal_state(self, state: str):
+        updater, (session_cm, session) = self._updater_with_submission()
+        good = _price(symbol="sSPY", usd=110.0)
+        with (
+            patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
+            patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(_int6(100.0), True))),
+            patch.object(updater, "_poll_circle_tx", AsyncMock(return_value=state)) as poll,
+        ):
+            result = await updater.push_prices_on_chain([good])
+        return updater, session, poll, result
+
+    async def test_complete_tx_updates_cache(self):
+        updater, _session, poll, result = await self._push_with_terminal_state("COMPLETE")
+        poll.assert_awaited_once()
+        assert result == "tx-905"
+        assert updater._last_pushed_price_int["sSPY"] == _int6(110.0)
+
+    async def test_failed_tx_leaves_cache_unchanged_and_logs_error(self, caplog):
+        with caplog.at_level(logging.ERROR, logger="archimedes.chain.oracle_updater"):
+            updater, _session, poll, result = await self._push_with_terminal_state("FAILED")
+        poll.assert_awaited_once()
+        # The tx was submitted but reverted: no success signal, no cache update.
+        assert result is None
+        assert "sSPY" not in updater._last_pushed_price_int
+        assert any("deviation-guard reference unchanged" in r.message for r in caplog.records)
+
+    async def test_timeout_treated_as_failure(self):
+        updater, _session, _poll, result = await self._push_with_terminal_state("TIMEOUT")
+        assert result is None
+        assert "sSPY" not in updater._last_pushed_price_int
+
+    async def test_poll_returns_terminal_state_from_circle(self):
+        # _poll_circle_tx itself: a FAILED state on the list endpoint is returned
+        # verbatim (the caller decides what to do with it — never raises).
+        updater = OracleUpdater()
+        get_resp = MagicMock(status=200)
+        get_resp.json = AsyncMock(
+            return_value={"data": {"transactions": [{"id": "tx-905", "state": "FAILED", "txHash": "0xdead"}]}}
+        )
+        session = MagicMock()
+        get_cm = MagicMock()
+        get_cm.__aenter__ = AsyncMock(return_value=get_resp)
+        get_cm.__aexit__ = AsyncMock(return_value=False)
+        session.get = MagicMock(return_value=get_cm)
+
+        assert await updater._poll_circle_tx(session, "tx-905") == "FAILED"
+
+    async def test_poll_times_out_on_never_terminal_tx(self, monkeypatch):
+        import archimedes.chain.oracle_updater as ou
+
+        monkeypatch.setattr(ou, "_TX_MAX_POLLS", 2)
+        monkeypatch.setattr(ou, "_TX_POLL_INTERVAL_S", 0)
+
+        updater = OracleUpdater()
+        get_resp = MagicMock(status=200)
+        get_resp.json = AsyncMock(return_value={"data": {"transactions": [{"id": "tx-905", "state": "QUEUED"}]}})
+        session = MagicMock()
+        get_cm = MagicMock()
+        get_cm.__aenter__ = AsyncMock(return_value=get_resp)
+        get_cm.__aexit__ = AsyncMock(return_value=False)
+        session.get = MagicMock(return_value=get_cm)
+
+        assert await updater._poll_circle_tx(session, "tx-905") == "TIMEOUT"
