@@ -323,14 +323,14 @@ class TestPushConfirmation:
         return updater, session, poll, result
 
     async def test_complete_tx_updates_cache(self):
-        updater, session, poll, result = await self._push_with_terminal_state("COMPLETE")
+        updater, _session, poll, result = await self._push_with_terminal_state("COMPLETE")
         poll.assert_awaited_once()
         assert result == "tx-905"
         assert updater._last_pushed_price_int["sSPY"] == _int6(110.0)
 
     async def test_failed_tx_leaves_cache_unchanged_and_logs_error(self, caplog):
         with caplog.at_level(logging.ERROR, logger="archimedes.chain.oracle_updater"):
-            updater, session, poll, result = await self._push_with_terminal_state("FAILED")
+            updater, _session, poll, result = await self._push_with_terminal_state("FAILED")
         poll.assert_awaited_once()
         # The tx was submitted but reverted: no success signal, no cache update.
         assert result is None
@@ -338,7 +338,7 @@ class TestPushConfirmation:
         assert any("deviation-guard reference unchanged" in r.message for r in caplog.records)
 
     async def test_timeout_treated_as_failure(self):
-        updater, session, poll, result = await self._push_with_terminal_state("TIMEOUT")
+        updater, _session, _poll, result = await self._push_with_terminal_state("TIMEOUT")
         assert result is None
         assert "sSPY" not in updater._last_pushed_price_int
 
