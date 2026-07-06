@@ -8,6 +8,7 @@ so the suite stays offline + DB-free per pytest.ini's unit profile.
 
 from __future__ import annotations
 
+import math
 from datetime import date
 from unittest.mock import patch
 
@@ -190,6 +191,33 @@ class TestAnnualizedMetrics:
         assert m["cagr"] == 0.0
         m1 = _annualized_metrics([0.01], [100_000])
         assert m1["sharpe_ratio"] == 0.0
+
+    def test_sortino_uses_rms_of_negatives_convention(self) -> None:
+        """Pin the deliberate downside-frequency-weighted Sortino convention (#952):
+        the denominator is the RMS over the NEGATIVE returns only (divisor = count of
+        negatives), not the textbook total-N target-downside-deviation. Mirrors
+        analytics-engine/engine.py::test_sortino_rms_of_negatives_convention so the two
+        implementations stay verifiably identical."""
+        from archimedes.services.portfolio_backtester import RF_DAILY
+
+        rets = [0.05, -0.02, 0.03, -0.04]
+        eq = [100_000.0]
+        for r in rets:
+            eq.append(eq[-1] * (1 + r))
+
+        downside = [r for r in rets if r < 0]
+        dd_rms = math.sqrt(sum(r * r for r in downside) / len(downside))  # ÷ count of negatives
+        mean = sum(rets) / len(rets)
+        expected = ((mean - RF_DAILY) / dd_rms) * math.sqrt(ANNUALIZATION)
+
+        m = _annualized_metrics(rets, eq[1:])
+        assert m["sortino_ratio"] == pytest.approx(expected)
+
+        # And it must NOT equal the total-N (textbook) convention when downside days
+        # are sparse — proving the count-of-negatives divisor is the one in force.
+        dd_rms_total_n = math.sqrt(sum(r * r for r in downside) / len(rets))
+        textbook = ((mean - RF_DAILY) / dd_rms_total_n) * math.sqrt(ANNUALIZATION)
+        assert m["sortino_ratio"] != pytest.approx(textbook)
 
 
 class TestCorrelation:
