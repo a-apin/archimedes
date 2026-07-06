@@ -37,14 +37,23 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
     ///         donation is overwhelmingly burned, making the attack strictly unprofitable,
     ///         and later depositors' shares no longer round to zero.
     ///
+    ///         Sizing (issue #932): set to 1e6 share-wei, matching OZ's 1e6 virtual-offset
+    ///         magnitude. At 1e3 the floor was too small: a first deposit just above 1e3
+    ///         plus a large NAV donation could still round a later small deposit to 0 shares
+    ///         (a griefable ZeroShares revert), and 1/(1e3+1) ≈ 0.1% of a donation is not
+    ///         negligible. 1e6 bounds the attacker's donation share to ~1e-6 and forces the
+    ///         attack's first deposit to be at least 1e6 share-wei (= 1 USDC), so the
+    ///         tiny-first-deposit setup reverts outright.
+    ///
     ///         Why not Option A (OZ-style virtual decimals offset): a decimals offset of
     ///         d > 0 rescales shares-per-asset by 10**d, which silently breaks this vault's
     ///         performance-fee math — `highWaterMark` is initialized to 1e18 assuming a 1:1
     ///         share:asset scale, so nav-per-share would start at 1e18/10**d and the
     ///         performance fee would never (or wrongly) accrue. Dead shares preserve the
     ///         1:1 scale and leave the fee logic untouched. Cost: the first depositor
-    ///         forfeits MIN_LIQUIDITY share-wei (1e3 = 0.001 USDC at 6 decimals) — negligible.
-    uint256 public constant MIN_LIQUIDITY = 1e3;
+    ///         forfeits MIN_LIQUIDITY share-wei (1e6 = 1 USDC at 6 decimals) — negligible
+    ///         against any realistic first deposit.
+    uint256 public constant MIN_LIQUIDITY = 1e6;
 
     /// @notice Sink for dead shares (OZ ERC20 forbids minting to address(0)).
     address public constant DEAD_SHARES_SINK = address(0xdEaD);
