@@ -19,12 +19,42 @@ from archimedes.api.auth_siwe import (
     _NONCE_TTL_SECONDS,
     _SESSION_TTL_SECONDS,
     _pending_nonces,
+    _resolve_session_secret,
     _sign_session,
     _verify_session,
     get_verified_wallet,
     require_verified_wallet,
 )
 from httpx import ASGITransport, AsyncClient
+
+
+class TestResolveSessionSecret:
+    """The session secret must be stable when configured, and warn loudly on the
+    per-process random fallback so a multi-worker misconfig is visible (#933)."""
+
+    def test_prefers_siwe_session_key(self, monkeypatch):
+        monkeypatch.setenv("SIWE_SESSION_KEY", "dedicated-key")
+        monkeypatch.setenv("EMAIL_ENCRYPTION_KEY", "email-key")
+        assert _resolve_session_secret() == "dedicated-key"
+
+    def test_falls_back_to_email_key(self, monkeypatch):
+        monkeypatch.delenv("SIWE_SESSION_KEY", raising=False)
+        monkeypatch.setenv("EMAIL_ENCRYPTION_KEY", "email-key")
+        assert _resolve_session_secret() == "email-key"
+
+    def test_random_fallback_warns_and_diverges(self, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.delenv("SIWE_SESSION_KEY", raising=False)
+        monkeypatch.delenv("EMAIL_ENCRYPTION_KEY", raising=False)
+        with caplog.at_level(logging.WARNING):
+            s1 = _resolve_session_secret()
+            s2 = _resolve_session_secret()
+        # Random per-process secret: 32 bytes → 64 hex chars, and two calls differ
+        # (this divergence is exactly what breaks cross-worker cookie verification).
+        assert len(s1) == 64
+        assert s1 != s2
+        assert any("random session secret" in r.message for r in caplog.records)
 
 
 def _now_iso() -> str:
