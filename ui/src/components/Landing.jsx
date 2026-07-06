@@ -5,21 +5,6 @@ export default function Landing({ onNavigate }) {
       {/* ── Hero ─────────────────────────────────────────────────── */}
       <section className="pt-6 pb-10 px-4 text-center border-b border-[var(--glass-border)] bg-[var(--canvas)] sm:px-6 sm:pb-12 lg:px-12 lg:pb-16">
         <div className="max-w-[760px] mx-auto">
-          <span style={{
-            display: 'inline-block',
-            fontSize: '0.7rem',
-            fontWeight: 600,
-            textTransform: 'uppercase',
-            letterSpacing: '0.12em',
-            color: 'var(--accent)',
-            border: '1px solid var(--accent)',
-            borderRadius: '9999px',
-            padding: '4px 16px',
-            marginBottom: '20px',
-            opacity: 0.85,
-          }}>
-            Agora Agents Hackathon 2026
-          </span>
           <p className="font-serif italic text-[1rem] text-[var(--text-3)] mb-3 md:text-[1.1rem]">
             Agentic trading, grounded in research.
           </p>
