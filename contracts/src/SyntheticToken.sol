@@ -11,6 +11,8 @@ contract SyntheticToken is ERC20, Ownable {
     address public vault;
 
     error NotVault();
+    error VaultAlreadySet();
+    error ZeroVault();
 
     modifier onlyVault() {
         if (msg.sender != vault) revert NotVault();
@@ -22,8 +24,16 @@ contract SyntheticToken is ERC20, Ownable {
         Ownable(_owner)
     {}
 
-    /// @notice Set the vault address (owner only). Called after vault deploys.
+    /// @notice Set the vault address (owner only). Called once after the vault
+    ///         deploys; immutable afterwards. A mutable pointer would let the
+    ///         owner re-point `vault` at a contract they control, mint unbacked
+    ///         synth, and burn it against the real vault to drain user USDC —
+    ///         breaking the non-custodial guarantee (issue #904). Vault
+    ///         evolution requires deploying a new token+vault pair via the
+    ///         factory, never re-pointing a live token.
     function setVault(address _vault) external onlyOwner {
+        if (vault != address(0)) revert VaultAlreadySet();
+        if (_vault == address(0)) revert ZeroVault();
         vault = _vault;
     }
 
