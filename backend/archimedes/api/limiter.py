@@ -21,7 +21,8 @@ import logging
 import os
 
 from slowapi import Limiter
-from slowapi.util import get_remote_address
+
+from archimedes.services.generation_quota import client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,15 @@ except Exception as exc:
     else:
         logger.info("Rate limiter: REDIS_URL not set — using in-memory storage (local/dev/CI).")
 
+# Key on the REAL client IP, not slowapi's get_remote_address. Behind nginx,
+# request.client.host is the nginx peer (10.x inside the container), so
+# get_remote_address collapsed every caller into one shared bucket — per-IP
+# limits were effectively global. client_ip reads the nginx-set X-Real-IP
+# header (it overwrites any client-supplied value and is bound to the trusted
+# ALB CIDR), matching how generation_quota already keys its per-IP cap. It
+# deliberately does NOT trust X-Forwarded-For, whose first hop is spoofable.
 limiter = Limiter(
-    key_func=get_remote_address,
+    key_func=client_ip,
     storage_uri=_storage_uri,
     default_limits=["60/minute"],  # default for undecorated routes
     headers_enabled=True,  # X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset
