@@ -107,6 +107,16 @@ contract PriceOracle is Ownable {
     ///         touch this field; the cooldown only governs the setPrice path.
     uint256 public lastSetPriceTime;
 
+    /// @notice Timestamp of the last *forceSetPrice* call (0 until the first one).
+    ///         forceSetPrice keeps its OWN cooldown clock, separate from
+    ///         lastSetPriceTime, so a single emergency reprice is still immediate
+    ///         (the escape hatch works even right after a setPrice push) but two
+    ///         consecutive force calls are spaced by updateCooldown. A single call
+    ///         is already bounded to FORCE_MAX_DEVIATION_BPS (10×); the spacing is
+    ///         what stops a compromised owner from CHAINING 10× moves in one
+    ///         block/window to ratchet the price arbitrarily fast (issue #935).
+    uint256 public lastForceSetPriceTime;
+
     /// @notice Max allowed move per setPrice, in basis points vs the prior price.
     ///         Default 2000 bps (20%) — generous for a daily-update cadence but
     ///         blocks fat-finger / glitched-feed / compromised-key writes that
@@ -132,8 +142,11 @@ contract PriceOracle is Ownable {
     ///         updateCooldown seconds between accepted updates blocks that intra-block
     ///         chaining and limits a compromised key to one bounded move per window,
     ///         giving the owner time to react (rotate the key / forceSetPrice).
-    ///         Owner-configurable via setUpdateCooldown; forceSetPrice (owner escape
-    ///         hatch) is exempt so the owner can always reprice out-of-band.
+    ///         Owner-configurable via setUpdateCooldown. forceSetPrice does not
+    ///         share the setPrice clock — a single emergency reprice is always
+    ///         immediate — but consecutive force calls are spaced by this same
+    ///         window (its own lastForceSetPriceTime clock) so a compromised owner
+    ///         can't chain force moves to ratchet the price (issue #935).
     ///         Default 30s — well above Arc's sub-second block time (so it defeats the
     ///         same-block ratchet this guards against) yet comfortably below the oracle
     ///         runner's 60s push cadence (ORACLE_INTERVAL_SECONDS), so legitimate
@@ -212,10 +225,22 @@ contract PriceOracle is Ownable {
     /// @notice Emergency override — owner-only escape hatch for legitimately
     ///         gapped markets (e.g. a >maxDeviationBps overnight move). Bounded
     ///         by FORCE_MAX_DEVIATION_BPS (900% / 10×) when a prior price exists;
-    ///         a legitimate >10× gap requires two sequential calls. Emits a
-    ///         distinct event so forced updates are auditable on-chain.
+    ///         a legitimate >10× gap requires two sequential calls, now spaced by
+    ///         updateCooldown. Emits a distinct event so forced updates are
+    ///         auditable on-chain.
+    /// @dev    The FIRST force call is immediate (single-move escape hatch intact,
+    ///         even right after a setPrice push — it reads lastForceSetPriceTime,
+    ///         not lastSetPriceTime). Consecutive force calls within updateCooldown
+    ///         revert, so a compromised owner cannot chain 10× moves in one
+    ///         block/window to ratchet the price arbitrarily fast (issue #935).
     function forceSetPrice(uint256 _newPrice) external onlyOwner {
         if (_newPrice == 0) revert ZeroPrice();
+        // Rate-limit consecutive force calls (issue #935). Skipped on the very
+        // first call (lastForceSetPriceTime == 0), so a single emergency reprice
+        // is always immediate; a chained second call must wait updateCooldown.
+        if (lastForceSetPriceTime != 0 && block.timestamp < lastForceSetPriceTime + updateCooldown) {
+            revert UpdateRateLimited(lastForceSetPriceTime, updateCooldown, block.timestamp);
+        }
         uint256 oldPrice = price;
         if (oldPrice != 0) {
             uint256 diff = _newPrice > oldPrice ? _newPrice - oldPrice : oldPrice - _newPrice;
@@ -225,6 +250,7 @@ contract PriceOracle is Ownable {
         }
         price = _newPrice;
         lastUpdated = block.timestamp;
+        lastForceSetPriceTime = block.timestamp;
         emit PriceForced(oldPrice, _newPrice, block.timestamp);
     }
 
