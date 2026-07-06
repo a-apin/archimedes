@@ -26,10 +26,12 @@ Rigor + keying:
     would defeat a cookie-keyed cap. A sophisticated IP-rotating abuser is out of
     scope for this MVP cap (the slowapi + nginx limits remain the rate backstop).
 
-Fail-open: a Redis error returns "allowed" (logged at WARNING). Blocking every
-wallet-less generation during a Redis blip would be worse than the narrow abuse
-window, and the slowapi/nginx rate limits remain in force regardless. Set
-`WALLET_LESS_GENERATION_DAILY_CAP=0` to disable the cap (unlimited).
+Fail-closed: a Redis error returns "not allowed" (logged at WARNING) so the
+wallet-less LLM-spend cap can't be bypassed by inducing a cache blip (issue
+#929). This blocks only *wallet-less* generation during the outage —
+SIWE-authenticated callers bypass the cap entirely, so a wallet-connected user
+is never affected, and the blocked anonymous caller is steered to connect a
+wallet. Set `WALLET_LESS_GENERATION_DAILY_CAP=0` to disable the cap (unlimited).
 """
 
 from __future__ import annotations
@@ -114,9 +116,13 @@ class GenerationQuota:
         """Atomically count this wallet-less generation for ``ip`` today.
 
         Returns ``(allowed, used)`` where ``used`` is the count *after* this
-        attempt. ``allowed`` is ``used <= cap``. **Fails open** — a Redis error on
-        the INCR returns ``(True, 0)`` so a cache outage never blocks generation
-        (the slowapi/nginx rate limits remain the backstop).
+        attempt. ``allowed`` is ``used <= cap``. **Fails closed** — a Redis error
+        on the INCR returns ``(False, 0)`` so the wallet-less LLM-spend cap is not
+        silently bypassable during a cache outage (issue #929). This only affects
+        *wallet-less* callers: SIWE-authenticated callers bypass the cap entirely
+        (see ``enforce_generation_quota``), so a Redis blip can never block a
+        wallet-connected user — the blocked wallet-less caller is steered to
+        connect a wallet, which is the intended escape hatch.
         """
         try:
             r = await self._get_redis()
@@ -124,8 +130,8 @@ class GenerationQuota:
             key = f"archimedes:genquota:{day}:{ip}"
             count = await r.incr(key)
         except Exception as exc:
-            logger.warning("generation quota check failed for ip=%s — FAILING OPEN: %s", ip, exc)
-            return (True, 0)
+            logger.warning("generation quota check failed for ip=%s — FAILING CLOSED (spend cap held): %s", ip, exc)
+            return (False, 0)
 
         # TTL is BEST-EFFORT and must not discard the already-successful INCR.
         # ``EXPIRE ... NX`` sets the TTL only when the key has none, so it
