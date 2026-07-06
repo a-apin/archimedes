@@ -116,6 +116,45 @@ contract AMMTest is Test {
         assertEq(IERC20(pool).balanceOf(alice), lpTokens);
     }
 
+    /// @dev #955: tokens transferred directly to the pool (not via addLiquidity)
+    ///      are stranded — the balance grows but the tracked reserves don't. sync()
+    ///      folds that surplus into the reserves (accruing to LPs) instead.
+    function test_sync_folds_direct_transfer_into_reserves() public {
+        address pool = router.createPool(address(tokenA), address(tokenB));
+        uint256 amountA = 10_000 * 1e18;
+        uint256 amountB = 20_000 * 1e18;
+
+        vm.startPrank(alice);
+        tokenA.approve(address(router), amountA);
+        tokenB.approve(address(router), amountB);
+        router.addLiquidity(address(tokenA), address(tokenB), amountA, amountB, 0);
+        vm.stopPrank();
+
+        AMMPool amm = AMMPool(pool);
+        uint256 r0Before = amm.reserve0();
+        uint256 r1Before = amm.reserve1();
+
+        // Donate tokenA straight to the pool, bypassing addLiquidity.
+        uint256 donation = 500 * 1e18;
+        vm.prank(bob);
+        tokenA.transfer(pool, donation);
+
+        // Stranded: reserves are unchanged until sync().
+        assertEq(amm.reserve0(), r0Before);
+        assertEq(amm.reserve1(), r1Before);
+
+        amm.sync();
+
+        // After sync the reserves equal the real balances, folding in the donation.
+        assertEq(amm.reserve0(), IERC20(amm.token0()).balanceOf(pool));
+        assertEq(amm.reserve1(), IERC20(amm.token1()).balanceOf(pool));
+        if (amm.token0() == address(tokenA)) {
+            assertEq(amm.reserve0(), r0Before + donation);
+        } else {
+            assertEq(amm.reserve1(), r1Before + donation);
+        }
+    }
+
     function test_addLiquidity_second_deposit() public {
         address pool = router.createPool(address(tokenA), address(tokenB));
 
