@@ -16,6 +16,7 @@ from archimedes.chain.executor import (
     MIN_HEALTHY_LIQUIDITY_USDC,
     ChainExecutor,
     InsufficientLiquidityError,
+    OraclePriceUnavailableError,
     TradeRevertedError,
     VaultCreationRevertedError,
 )
@@ -726,19 +727,21 @@ class TestUsdcValueToTokenRaw:
         # $100 / $500 = 0.2 tokens × 1e18
         assert result == 200_000_000_000_000_000  # 0.2 × 1e18
 
-    def test_fallback_on_oracle_failure(self, executor, mock_loader):
-        """Oracle failure → fallback 1:1 at 18 decimals."""
+    def test_oracle_failure_raises_not_1to1(self, executor, mock_loader):
+        """Oracle failure must FAIL the rebalance, not fall back to a 1:1 ($1) price (#923).
+
+        The old 1:1 fallback ordered ~price× too many units on a high-priced synth.
+        """
         mock_oracle = mock_loader.oracle_for.return_value
         mock_oracle.functions.price.return_value.call = AsyncMock(side_effect=RuntimeError("oracle down"))
 
-        result = asyncio.run(executor._usdc_value_to_token_raw("0xE745C07d7d32A1Ca0d6162A1c50e876619CF7388", 5.0))
-        # Fallback: 5 × 1e18
-        assert result == 5_000_000_000_000_000_000
+        with pytest.raises(OraclePriceUnavailableError):
+            asyncio.run(executor._usdc_value_to_token_raw("0xE745C07d7d32A1Ca0d6162A1c50e876619CF7388", 5.0))
 
-    def test_unknown_token_fallback(self, executor):
-        """Unknown token address → fallback 1:1 at 18 decimals."""
-        result = asyncio.run(executor._usdc_value_to_token_raw("0x0000000000000000000000000000000000099999", 1.0))
-        assert result == 1_000_000_000_000_000_000  # 1 × 1e18
+    def test_unknown_token_raises_not_1to1(self, executor):
+        """Unknown token (no oracle) must raise, not guess a 1:1 ($1) price (#923)."""
+        with pytest.raises(OraclePriceUnavailableError):
+            asyncio.run(executor._usdc_value_to_token_raw("0x0000000000000000000000000000000000099999", 1.0))
 
 
 # ── InsufficientLiquidityError ────────────────────────────────

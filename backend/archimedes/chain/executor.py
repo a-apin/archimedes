@@ -34,6 +34,15 @@ class InsufficientLiquidityError(RuntimeError):
     """Raised when an AMM pool's USDC reserve is below MIN_HEALTHY_LIQUIDITY_USDC."""
 
 
+class OraclePriceUnavailableError(RuntimeError):
+    """Raised when a synth's oracle price can't be read for a SELL sizing (#923).
+
+    The old behavior fell back to a 1:1 ($1) price, which on a high-priced synth
+    (e.g. sSPY ≈ $600) meant ordering ~price× too many units — bleeding the vault.
+    Failing the rebalance is the safe choice: no trade beats a grossly mis-sized one.
+    """
+
+
 class TradeRevertedError(RuntimeError):
     """Raised when a submitted rebalance transaction reverts on-chain (status 0).
 
@@ -226,11 +235,28 @@ class ChainExecutor:
                 tokens_in.append(token_addr)
                 amounts_in.append(int(trade.amount * 1e6))
             else:
-                # SELL: amount is USDC value → convert to token raw amount via oracle price
+                # SELL: amount is USDC value → convert to token raw amount via oracle price.
+                # Guard a zero/sub-cent estimated value (#923): estimated_usdc_value is
+                # rounded to 2dp upstream, so a sub-cent leg arrives as 0.00 and would
+                # size to 0 units. Skip it rather than submit a no-op 0-unit SELL.
+                if trade.estimated_usdc_value <= 0:
+                    logger.warning(
+                        "Skipping SELL leg for %s: estimated_usdc_value=%s (zero/sub-cent) — nothing to sell",
+                        token_addr,
+                        trade.estimated_usdc_value,
+                    )
+                    continue
                 token_raw = await self._usdc_value_to_token_raw(
                     token_addr,
                     trade.estimated_usdc_value,
                 )
+                if token_raw <= 0:
+                    logger.warning(
+                        "Skipping SELL leg for %s: $%.4f priced to 0 raw units",
+                        token_addr,
+                        trade.estimated_usdc_value,
+                    )
+                    continue
                 tokens_out.append(token_addr)
                 amounts_out.append(token_raw)
 
@@ -776,17 +802,29 @@ class ChainExecutor:
                 try:
                     oracle = loader.oracle_for(sym)
                     price_raw = await oracle.functions.price().call()  # 6 decimals
-                    price_usd = price_raw / 1e6  # e.g. 592.40 for sSPY
-                    if price_usd > 0:
-                        token_amount = usdc_value / price_usd
-                        return int(token_amount * 1e18)  # synths have 18 decimals
                 except Exception as e:
-                    logger.warning(f"Oracle price lookup failed for {sym}: {e}")
-                    break
+                    # Do NOT fall back to a 1:1 ($1) price (#923): on a high-priced
+                    # synth (sSPY ≈ $600) that orders ~price× too many units and
+                    # bleeds the vault. Fail the rebalance instead.
+                    logger.error("Oracle price lookup failed for %s (%s) — failing rebalance: %s", sym, addr, e)
+                    raise OraclePriceUnavailableError(
+                        f"Cannot size SELL for {sym}: oracle price read failed ({e})"
+                    ) from e
+                price_usd = price_raw / 1e6  # e.g. 592.40 for sSPY
+                if price_usd <= 0:
+                    logger.error(
+                        "Oracle returned non-positive price for %s (raw=%s) — failing rebalance", sym, price_raw
+                    )
+                    raise OraclePriceUnavailableError(
+                        f"Cannot size SELL for {sym}: oracle price is non-positive ({price_raw})"
+                    )
+                token_amount = usdc_value / price_usd
+                return int(token_amount * 1e18)  # synths have 18 decimals
 
-        # Fallback: treat as 18-decimal token, estimate at $1
-        logger.warning(f"No oracle for {token_address[:10]}, estimating 1:1 USDC for SELL amount")
-        return int(usdc_value * 1e18)
+        # No oracle wired for this token: refuse to guess a 1:1 price (#923) —
+        # a mis-sized SELL is worse than a failed rebalance.
+        logger.error("No oracle for %s — failing rebalance (was: 1:1 USDC estimate)", token_address[:10])
+        raise OraclePriceUnavailableError(f"No oracle configured for token {token_address} — cannot size SELL")
 
     # ─── Helpers ───────────────────────────────────────────────────
 
