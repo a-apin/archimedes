@@ -332,7 +332,13 @@ class AssetMarketService:
                     timeout=max(0.1, min(_ORACLE_READ_TIMEOUT, remaining)),
                 )
                 price_usd = float(price_raw) / 1e6  # 6 decimals per PriceOracle.sol
-                stale = (now_ts - updated_at) > _STALE_WINDOW_SECONDS
+                # A future updated_at (block time ahead of the host clock) is
+                # anomalous: normal block timestamps are ≤ wall clock, and a
+                # timestamp in the future would leave the age permanently
+                # negative — masking genuine staleness forever. Treat any
+                # future timestamp as stale rather than "fresh" (#934).
+                age = now_ts - updated_at
+                stale = age < 0 or age > _STALE_WINDOW_SECONDS
                 results[symbol] = {
                     "price": price_usd,
                     "updated_at": updated_at,
