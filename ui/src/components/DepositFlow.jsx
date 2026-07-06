@@ -140,7 +140,13 @@ function EoaDepositFlow({ vaultAddress, depositAmount = '100', strategy, onClose
       updateStep(0, 'txHash', hash)
       updateStep(0, 'status', CONFIRMING)
 
-      await publicClient.waitForTransactionReceipt({ hash })
+      // viem does NOT throw on a mined-but-reverted tx — it returns a receipt
+      // with status 'reverted'. Check it, or a reverted approve would read as
+      // "Confirmed" and the flow would advance as if funds moved.
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      if (receipt.status !== 'success') {
+        throw new Error(`Approval reverted on-chain (${shortHash(hash)})`)
+      }
 
       updateStep(0, 'status', DONE)
       setCurrentStep(1)
@@ -170,7 +176,12 @@ function EoaDepositFlow({ vaultAddress, depositAmount = '100', strategy, onClose
       updateStep(1, 'txHash', hash)
       updateStep(1, 'status', CONFIRMING)
 
-      await publicClient.waitForTransactionReceipt({ hash })
+      // A reverted deposit still returns a receipt; guard it so we never report
+      // the deposit as done when the funds didn't actually move.
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      if (receipt.status !== 'success') {
+        throw new Error(`Deposit reverted on-chain (${shortHash(hash)})`)
+      }
 
       updateStep(1, 'status', DONE)
       setCurrentStep(2)
@@ -198,7 +209,12 @@ function EoaDepositFlow({ vaultAddress, depositAmount = '100', strategy, onClose
       updateStep(2, 'txHash', hash)
       updateStep(2, 'status', CONFIRMING)
 
-      await publicClient.waitForTransactionReceipt({ hash })
+      // A reverted setTargetAllocations still returns a receipt; guard it so the
+      // flow doesn't finish "successfully" with allocations that never set.
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      if (receipt.status !== 'success') {
+        throw new Error(`Allocation reverted on-chain (${shortHash(hash)})`)
+      }
 
       updateStep(2, 'status', DONE)
       clearProgress(vaultAddress)
