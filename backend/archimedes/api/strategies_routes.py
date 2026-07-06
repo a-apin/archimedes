@@ -2054,6 +2054,7 @@ async def _run_fusion_job(job_id: str) -> None:
             }
 
         strategy_id = None
+        persist_error: str | None = None
         try:
             with get_session() as session:
                 source_papers = [{"arxiv_id": aid, "sha256": ""} for aid in result.source_arxiv_ids]
@@ -2071,8 +2072,13 @@ async def _run_fusion_job(job_id: str) -> None:
                 )
                 session.commit()
                 strategy_id = record.id
-        except Exception:
-            logger.debug("fusion strategy persist failed", exc_info=True)
+        except Exception as exc:
+            # Persist failure is NOT cosmetic: without a saved strategy_id there is
+            # no record for the "view" link to open, so the job must not be reported
+            # as a successful "done". Log at ERROR (was debug — the failure was
+            # silently swallowed) and mark the job failed below (#948).
+            persist_error = str(exc)
+            logger.error("fusion strategy persist failed for job %s", job_id, exc_info=True)
 
         try:
             import hashlib
@@ -2176,7 +2182,18 @@ async def _run_fusion_job(job_id: str) -> None:
             if eval_result.error:
                 job_result["eval_error"] = eval_result.error
 
-        await store.update_status(job_id, "done", result=job_result)
+        if strategy_id is None:
+            # The fusion produced an actionable strategy but it could not be saved,
+            # so there is nothing for the "view" link to open. Report the job as
+            # failed rather than a "done" job with a null strategy_id + dead link
+            # (#948). The proposal is still recorded in episodic memory below.
+            await store.update_status(
+                job_id,
+                "failed",
+                error=f"Strategy generated but could not be saved: {persist_error or 'persistence failed'}",
+            )
+        else:
+            await store.update_status(job_id, "done", result=job_result)
 
         # ── Persist fusion proposal to episodic memory (T-PE.8) ──
         try:
