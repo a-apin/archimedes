@@ -18,6 +18,7 @@ from archimedes.api.auth_siwe import (
     _COOKIE_NAME,
     _NONCE_TTL_SECONDS,
     _SESSION_TTL_SECONDS,
+    _address_from_siwe_message,
     _pending_nonces,
     _resolve_session_secret,
     _sign_session,
@@ -55,6 +56,36 @@ class TestResolveSessionSecret:
         assert len(s1) == 64
         assert s1 != s2
         assert any("random session secret" in r.message for r in caplog.records)
+
+
+class TestAddressFromSiweMessage:
+    """The signer address must come from EIP-4361 line 2, not the last 0x line (#946)."""
+
+    _SIGNER = "0x" + "a" * 40
+    _DECOY = "0x" + "b" * 40
+
+    def _msg(self, body: str) -> str:
+        return (
+            f"archimedes-arc.com wants you to sign in with your Ethereum account:\n"
+            f"{self._SIGNER}\n\n"
+            f"Sign in to Archimedes\n\n"
+            f"{body}"
+        )
+
+    def test_reads_line_two(self):
+        msg = self._msg("URI: https://archimedes-arc.com\nNonce: abc\nChain ID: 5042002")
+        assert _address_from_siwe_message(msg) == self._SIGNER
+
+    def test_trailing_decoy_address_does_not_override_signer(self):
+        # A 42-char 0x string in a Resources URI must NOT become the signer.
+        body = f"Nonce: abc\nChain ID: 5042002\nResources:\n- {self._DECOY}"
+        msg = self._msg(body)
+        assert _address_from_siwe_message(msg) == self._SIGNER
+        assert _address_from_siwe_message(msg) != self._DECOY
+
+    def test_returns_none_when_line_two_not_an_address(self):
+        assert _address_from_siwe_message("only one line") is None
+        assert _address_from_siwe_message("preamble\nnot-an-address\nNonce: x") is None
 
 
 def _now_iso() -> str:
