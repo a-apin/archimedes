@@ -25,7 +25,7 @@ numpy>=2.4.6,<3.0
 # non-yanked release. (NB: environment.yml still floors pandas>=2.2 — a
 # pre-existing local-vs-prod major drift to reconcile separately.)
 pandas>=3.0.3
-scipy>=1.13
+scipy>=1.18.0
 scikit-learn>=1.5  # GaussianMixture + StandardScaler for the data-driven GmmRegimeDetector (issue #661); BSD-3-Clause
 
 # Market data
