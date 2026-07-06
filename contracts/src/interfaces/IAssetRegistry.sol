@@ -69,12 +69,14 @@ interface IAssetRegistry {
         bytes calldata metrics
     ) external;
 
-    /// @notice Get the top vaults by AUM for a given tier.
+    /// @notice Get the top vaults by AUM for a given tier, paginated (#927).
     /// @param tier 1 or 2 (0 = all tiers)
-    /// @param limit Max results to return
+    /// @param offset Number of top-ranked vaults to skip (page start)
+    /// @param limit Max results to return; 0 = all from offset onward
     /// @return vaults Array of vault addresses sorted by AUM descending
     function getLeaderboard(
         uint8 tier,
+        uint256 offset,
         uint256 limit
     ) external view returns (address[] memory vaults);
 

@@ -139,13 +139,25 @@ contract AssetRegistry is IAssetRegistry, Ownable {
         emit VaultMetricsUpdated(vault, _vaults[vault].aum, block.timestamp);
     }
 
-    function getLeaderboard(uint8 tier, uint256 limit)
+    /// @notice Top vaults by AUM for a tier, paginated (issue #927).
+    /// @param tier   1 or 2 (0 = all tiers).
+    /// @param offset Number of top-ranked vaults to skip (the page start).
+    /// @param limit  Max results to return; 0 = all from ``offset`` onward.
+    /// @dev    Was a full O(n²) insertion sort over EVERY matching vault before
+    ///         applying the limit — as the vault set grows that view exceeds the
+    ///         block gas limit and bricks on-chain callers + eth_call reads. Now a
+    ///         PARTIAL selection sort: it extracts only the top ``offset + limit``
+    ///         vaults (O(n · (offset+limit))) and returns the ``[offset, …)`` slice,
+    ///         so a bounded page stays bounded in gas regardless of total size.
+    ///         (limit == 0 keeps the old "return all" behavior and its O(n²) cost —
+    ///         callers should page with a real limit for large sets.)
+    function getLeaderboard(uint8 tier, uint256 offset, uint256 limit)
         external
         view
         override
         returns (address[] memory vaults)
     {
-        // Count matching vaults
+        // Count matching vaults.
         uint256 total;
         for (uint256 i = 0; i < _vaultList.length; i++) {
             if (tier == 0 || _vaults[_vaultList[i]].tier == tier) {
@@ -153,13 +165,12 @@ contract AssetRegistry is IAssetRegistry, Ownable {
             }
         }
 
-        if (total == 0) return new address[](0);
+        if (total == 0 || offset >= total) return new address[](0);
 
-        // Build full sorted array
+        // Build the filtered (addr, aum) arrays.
         address[] memory allAddrs = new address[](total);
         uint256[] memory allAums = new uint256[](total);
         uint256 idx;
-
         for (uint256 i = 0; i < _vaultList.length; i++) {
             if (tier == 0 || _vaults[_vaultList[i]].tier == tier) {
                 allAddrs[idx] = _vaultList[i];
@@ -168,26 +179,29 @@ contract AssetRegistry is IAssetRegistry, Ownable {
             }
         }
 
-        // Simple insertion sort descending by AUM
-        for (uint256 i = 1; i < total; i++) {
-            address keyAddr = allAddrs[i];
-            uint256 keyAum = allAums[i];
-            uint256 j = i;
-            while (j > 0 && allAums[j - 1] < keyAum) {
-                allAddrs[j] = allAddrs[j - 1];
-                allAums[j] = allAums[j - 1];
-                j--;
+        // We only need the top `needed` ranked to serve [offset, offset+limit).
+        uint256 needed = (limit == 0 || offset + limit > total) ? total : offset + limit;
+
+        // Partial selection sort: pull the max into each of the first `needed`
+        // positions. O(total · needed) — bounded by the page for a real limit,
+        // versus the old O(total²) full sort.
+        for (uint256 i = 0; i < needed; i++) {
+            uint256 maxJ = i;
+            for (uint256 j = i + 1; j < total; j++) {
+                if (allAums[j] > allAums[maxJ]) {
+                    maxJ = j;
+                }
             }
-            allAddrs[j] = keyAddr;
-            allAums[j] = keyAum;
+            if (maxJ != i) {
+                (allAddrs[i], allAddrs[maxJ]) = (allAddrs[maxJ], allAddrs[i]);
+                (allAums[i], allAums[maxJ]) = (allAums[maxJ], allAums[i]);
+            }
         }
 
-        // Apply limit
-        uint256 resultCount = limit > 0 && limit < total ? limit : total;
-
+        uint256 resultCount = needed - offset;
         vaults = new address[](resultCount);
         for (uint256 i = 0; i < resultCount; i++) {
-            vaults[i] = allAddrs[i];
+            vaults[i] = allAddrs[offset + i];
         }
     }
 

@@ -672,7 +672,7 @@ contract AssetRegistryTest is Test {
         vm.stopPrank();
 
         // Get all tiers leaderboard
-        address[] memory leaderboard = registry.getLeaderboard(0, 0);
+        address[] memory leaderboard = registry.getLeaderboard(0, 0, 0);
         assertEq(leaderboard.length, 3);
         assertEq(leaderboard[0], v2); // AUM 3000
         assertEq(leaderboard[1], v3); // AUM 2000
@@ -692,12 +692,12 @@ contract AssetRegistryTest is Test {
         vm.stopPrank();
 
         // Tier 1 only
-        address[] memory tier1 = registry.getLeaderboard(1, 0);
+        address[] memory tier1 = registry.getLeaderboard(1, 0, 0);
         assertEq(tier1.length, 1);
         assertEq(tier1[0], v1);
 
         // Tier 2 only
-        address[] memory tier2 = registry.getLeaderboard(2, 0);
+        address[] memory tier2 = registry.getLeaderboard(2, 0, 0);
         assertEq(tier2.length, 1);
         assertEq(tier2[0], v2);
     }
@@ -718,14 +718,46 @@ contract AssetRegistryTest is Test {
         vm.stopPrank();
 
         // Limit to top 2
-        address[] memory top2 = registry.getLeaderboard(0, 2);
+        address[] memory top2 = registry.getLeaderboard(0, 0, 2);
         assertEq(top2.length, 2);
         assertEq(top2[0], v2); // 3000
         assertEq(top2[1], v3); // 2000
     }
 
+    /// @dev #927: pages via (offset, limit) must be sorted and DISJOINT.
+    function test_getLeaderboard_pagination_disjoint_pages() public {
+        address v1 = address(0x400);
+        address v2 = address(0x401);
+        address v3 = address(0x402);
+
+        vm.startPrank(owner);
+        registry.registerVault(v1, 1, "");
+        registry.registerVault(v2, 1, "");
+        registry.registerVault(v3, 1, "");
+        registry.updateVaultMetrics(v1, abi.encode(uint256(1000)));
+        registry.updateVaultMetrics(v2, abi.encode(uint256(3000)));
+        registry.updateVaultMetrics(v3, abi.encode(uint256(2000)));
+        vm.stopPrank();
+
+        // Sorted order is [v2 (3000), v3 (2000), v1 (1000)].
+        address[] memory page0 = registry.getLeaderboard(0, 0, 2); // offset 0, limit 2
+        assertEq(page0.length, 2);
+        assertEq(page0[0], v2);
+        assertEq(page0[1], v3);
+
+        address[] memory page1 = registry.getLeaderboard(0, 2, 2); // offset 2, limit 2
+        assertEq(page1.length, 1); // only one vault left past offset 2
+        assertEq(page1[0], v1);
+
+        // The two pages are disjoint and together cover the whole set.
+        assertTrue(page0[0] != page1[0] && page0[1] != page1[0]);
+
+        // An offset at or beyond the end returns empty (not a revert).
+        assertEq(registry.getLeaderboard(0, 3, 2).length, 0);
+    }
+
     function test_getLeaderboard_empty() public view {
-        address[] memory leaderboard = registry.getLeaderboard(0, 0);
+        address[] memory leaderboard = registry.getLeaderboard(0, 0, 0);
         assertEq(leaderboard.length, 0);
     }
 
