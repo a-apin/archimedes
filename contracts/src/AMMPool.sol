@@ -193,6 +193,22 @@ contract AMMPool is IAMMPool, ERC20, Ownable, ReentrancyGuard {
         emit LiquidityRemoved(msg.sender, amount0, amount1, lpTokens);
     }
 
+    /// @notice Emitted when sync() folds a direct-transfer surplus into the reserves.
+    event Sync(uint256 reserve0, uint256 reserve1);
+
+    /// @notice Force the tracked reserves to match the pool's actual token balances.
+    /// @dev    Reserves are updated only inside swap/addLiquidity/removeLiquidity, so
+    ///         tokens transferred DIRECTLY to the pool (not via addLiquidity) are
+    ///         otherwise stranded — invisible to pricing and unrecoverable. sync()
+    ///         folds any such surplus into the reserves, where it accrues to every LP
+    ///         (k grows); it never extracts value. Permissionless, mirroring Uniswap
+    ///         V2's Pair.sync (issue #955).
+    function sync() external nonReentrant {
+        reserve0 = IERC20(token0).balanceOf(address(this));
+        reserve1 = IERC20(token1).balanceOf(address(this));
+        emit Sync(reserve0, reserve1);
+    }
+
     // ─── Views ───────────────────────────────────────────────────────
 
     function getAmountOut(address tokenIn, uint256 amountIn)
