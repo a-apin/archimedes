@@ -44,13 +44,35 @@ class TestOutcomeEmbargo:
         result = apply_outcome_embargo(papers, at=date(2025, 10, 31), embargo_days=30)
         assert len(result) == 1
 
-    def test_missing_published_kept(self):
-        """Paper with no published date is kept (conservative)."""
+    def test_missing_published_dropped(self):
+        """Paper with no published date is DROPPED — fail closed (#953).
+
+        Its age can't be verified, so keeping it would let a too-recent paper
+        with a missing/malformed date bypass the embargo and leak look-ahead."""
         from archimedes.services.embargo_filter import apply_outcome_embargo
 
         papers = [{"arxiv_id": "no.date", "published": ""}]
         result = apply_outcome_embargo(papers, embargo_days=30)
-        assert len(result) == 1
+        assert result == []
+
+    def test_unparseable_published_dropped(self):
+        """A malformed (unparseable) published date is also dropped (#953)."""
+        from archimedes.services.embargo_filter import apply_outcome_embargo
+
+        papers = [{"arxiv_id": "bad.date", "published": "not-a-date"}]
+        result = apply_outcome_embargo(papers, at=date(2025, 11, 2), embargo_days=30)
+        assert result == []
+
+    def test_old_paper_kept_when_date_present(self):
+        """Fail-closed drop must NOT affect a paper with a valid, old-enough date."""
+        from archimedes.services.embargo_filter import apply_outcome_embargo
+
+        papers = [
+            {"arxiv_id": "old.ok", "published": "2025-01-01"},
+            {"arxiv_id": "no.date", "published": ""},
+        ]
+        result = apply_outcome_embargo(papers, at=date(2025, 11, 2), embargo_days=30)
+        assert [p["arxiv_id"] for p in result] == ["old.ok"]
 
     def test_default_embargo_30_days(self):
         """Default embargo is 30 days."""
