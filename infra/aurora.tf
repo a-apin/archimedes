@@ -67,7 +67,9 @@ resource "aws_rds_cluster" "main" {
   vpc_security_group_ids = [aws_security_group.aurora.id]
 
   storage_encrypted = true
-  # deletion_protection = true  # Enable after migration is verified — see follow-up note in PR
+  # Real user data has been live in this cluster since 2026-06-24. Deletion protection was
+  # enabled live via the CLI on 2026-07-05; this codifies it so `terraform apply` won't revert it.
+  deletion_protection                 = true
   iam_database_authentication_enabled = true # enables IAM-based DB auth as alternative to password (no cost)
 
   # Aurora automated backups — 7 days is the standard production retention.
@@ -79,10 +81,11 @@ resource "aws_rds_cluster" "main" {
     max_capacity = 16
   }
 
-  # Skip final snapshot during development (enable for production)
-  # Follow-up: flip skip_final_snapshot=false + deletion_protection=true
-  # BEFORE any real user data lands in the cluster.
-  skip_final_snapshot = true
+  # Real user data is live — take a final snapshot on deletion (destroy-time-only attrs;
+  # changing these produces no infrastructure change on apply). deletion_protection above
+  # blocks destroy outright; this is the second safety net if protection is ever lifted.
+  skip_final_snapshot       = false
+  final_snapshot_identifier = "${var.project_name}-aurora-final"
 
   tags = {
     Project = var.project_name
