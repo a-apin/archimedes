@@ -55,8 +55,88 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [deployedVault, setDeployedVault] = useState(null) // triggers DepositFlow
+  // Set when createVault() succeeded on-chain but setAgent() did NOT — the vault
+  // exists but has no rebalance agent. Holds { address, message } so the user sees
+  // the failure and can retry or continue, instead of it being swallowed (#947).
+  const [agentPending, setAgentPending] = useState(null)
 
   const [deployPhase, setDeployPhase] = useState('') // '', 'creating', 'authorizing', 'metadata'
+
+  // Persist the strategy↔vault link off-chain. Non-fatal: the vault already exists
+  // on-chain, so a metadata failure is only a UX hint, not a hard error.
+  const persistMetadata = async (vaultAddress) => {
+    try {
+      await fetch(`${API_BASE}/api/vaults/metadata`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vault_address: vaultAddress,
+          name,
+          symbol,
+          creator_address: walletAddr || '',
+          strategy_ids: strategy?.id ? [strategy.id] : [],
+          // The server re-checks the strategy passes at this strictness before
+          // persisting the link — the client-signed deploy path's rigor choke point.
+          strictness_level: strictnessLevel,
+        }),
+      })
+    } catch (_metaErr) {
+      // Non-fatal — vault exists on-chain; metadata persistence is a UX hint.
+    }
+  }
+
+  // Authorize the autonomous agent on the vault. Returns null on success, or an
+  // error message on failure — the caller surfaces it rather than swallowing it.
+  const authorizeAgent = async (vaultAddress, walletClient) => {
+    try {
+      // Read the factory's configured agent address
+      const agentAddr = await publicClient.readContract({
+        address: NEW_CONTRACTS.vaultFactory,
+        abi: VAULT_FACTORY_ABI,
+        functionName: 'agentAddress',
+      })
+      if (agentAddr && agentAddr !== '0x' + '0'.repeat(40)) {
+        const setAgentHash = await walletClient.writeContract({
+          address: vaultAddress,
+          abi: VAULT_ABI,
+          functionName: 'setAgent',
+          args: [agentAddr],
+        })
+        await publicClient.waitForTransactionReceipt({ hash: setAgentHash })
+      }
+      return null
+    } catch (agentErr) {
+      return agentErr?.message || 'Agent authorization failed'
+    }
+  }
+
+  // Retry setAgent on a vault that was created but never got an agent. Called from
+  // the "agent setup pending" screen.
+  const handleRetryAgent = async () => {
+    if (!agentPending?.address) return
+    setSubmitting(true)
+    setDeployPhase('authorizing')
+    const walletClient = await getWalletClient()
+    const agentErr = await authorizeAgent(agentPending.address, walletClient)
+    setDeployPhase('')
+    setSubmitting(false)
+    if (agentErr) {
+      setAgentPending({ address: agentPending.address, message: agentErr })
+      return
+    }
+    // Success on retry — clear the pending flag and continue into DepositFlow.
+    const addr = agentPending.address
+    setAgentPending(null)
+    setDeployedVault(addr)
+  }
+
+  // Proceed into the deposit flow without a rebalance agent set. The vault is a
+  // plain (self-managed) vault until the user retries setAgent later.
+  const handleContinueWithoutAgent = () => {
+    const addr = agentPending.address
+    setAgentPending(null)
+    setDeployedVault(addr)
+  }
 
   const handleDeploy = async () => {
     setError('')
@@ -101,53 +181,29 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
 
       // Step 2: Authorize agent — user signs setAgent() so the autonomous
       // agent can rebalance on behalf of the vault
+      let agentErr = null
       if (agentAssisted) {
         setDeployPhase('authorizing')
-        try {
-          // Read the factory's configured agent address
-          const agentAddr = await publicClient.readContract({
-            address: NEW_CONTRACTS.vaultFactory,
-            abi: VAULT_FACTORY_ABI,
-            functionName: 'agentAddress',
-          })
-          if (agentAddr && agentAddr !== '0x' + '0'.repeat(40)) {
-            const setAgentHash = await walletClient.writeContract({
-              address: vaultAddress,
-              abi: VAULT_ABI,
-              functionName: 'setAgent',
-              args: [agentAddr],
-            })
-            await publicClient.waitForTransactionReceipt({ hash: setAgentHash })
-          }
-        } catch (agentErr) {
-          // Non-fatal — vault is created, agent auth can be retried
-          console.warn('setAgent failed (non-fatal):', agentErr)
-        }
+        agentErr = await authorizeAgent(vaultAddress, walletClient)
       }
 
-      // Step 3: Persist off-chain metadata (strategy↔vault link, creator wallet)
+      // Step 3: Persist off-chain metadata (strategy↔vault link, creator wallet).
+      // The vault exists on-chain regardless of whether setAgent succeeded, so
+      // persist the link either way.
       setDeployPhase('metadata')
-      try {
-        await fetch(`${API_BASE}/api/vaults/metadata`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            vault_address: vaultAddress,
-            name,
-            symbol,
-            creator_address: walletAddr || '',
-            strategy_ids: strategy?.id ? [strategy.id] : [],
-            // The server re-checks the strategy passes at this strictness before
-            // persisting the link — the client-signed deploy path's rigor choke point.
-            strictness_level: strictnessLevel,
-          }),
-        })
-      } catch (_metaErr) {
-        // Non-fatal — vault exists on-chain; metadata persistence is a UX hint.
-      }
+      await persistMetadata(vaultAddress)
 
       setDeployPhase('')
       if (onDeployed) onDeployed(vaultAddress)
+
+      // If setAgent failed, the vault is on-chain but agent-less. Don't silently
+      // advance as if it succeeded — surface the failure and let the user retry
+      // or continue with a self-managed vault (#947).
+      if (agentErr) {
+        setAgentPending({ address: vaultAddress, message: agentErr })
+        return
+      }
+
       // Open DepositFlow instead of closing
       setDeployedVault(vaultAddress)
     } catch (e) {
@@ -168,6 +224,64 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
         onClose={() => { setDeployedVault(null); onClose?.() }}
         onComplete={() => { setDeployedVault(null); onClose?.() }}
       />
+    )
+  }
+
+  // The vault was created on-chain but setAgent() failed. Surface it clearly and
+  // offer retry or continue-without-agent — don't advance as if it succeeded (#947).
+  if (agentPending) {
+    return createPortal(
+      <div
+        className="fixed inset-0 flex items-center justify-center z-[1000]"
+        style={{ background: 'rgba(0,0,0,0.78)', backdropFilter: 'blur(6px)' }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="agent-pending-title"
+      >
+        <div
+          className="card-elevated p-6 max-w-[560px] w-[92vw]"
+          style={{ background: 'var(--surface-1)', maxHeight: '90vh', overflowY: 'auto' }}
+        >
+          <div className="caption mb-2 uppercase tracking-wider text-[var(--text-4)]">Agent setup pending</div>
+          <h3 id="agent-pending-title" className="font-serif text-[1.5rem] mb-1">Vault created — agent not authorized</h3>
+          <p className="caption mb-4 leading-relaxed">
+            Your vault was created on-chain, but the second step (<code>setAgent</code>,
+            which grants the autonomous agent rebalance authority) did not complete. The
+            vault is live and non-custodial, but until you authorize the agent it will
+            not rebalance automatically.
+          </p>
+
+          <div className="info-box warning mt-3" style={{ fontSize: '0.8rem' }}>
+            <strong>setAgent failed:</strong> {agentPending.message}
+          </div>
+
+          <div className="info-box mt-3" style={{ fontSize: '0.8rem' }}>
+            Vault address:{' '}
+            <code className="mono">{agentPending.address}</code>
+            <br />
+            You can retry authorizing the agent now, or continue and set it up later —
+            either way the vault stays yours.
+          </div>
+
+          <div className="flex justify-end gap-2 mt-5">
+            <button
+              className="btn btn-outline"
+              onClick={handleContinueWithoutAgent}
+              disabled={submitting}
+            >
+              Continue without agent
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={handleRetryAgent}
+              disabled={submitting}
+            >
+              {submitting ? 'Authorizing agent… (sign in wallet)' : 'Retry setAgent'}
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body,
     )
   }
 
