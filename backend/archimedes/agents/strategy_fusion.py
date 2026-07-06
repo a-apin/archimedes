@@ -103,10 +103,71 @@ SUPPORTED_UNIVERSE: tuple[str, ...] = tuple(
 # synth key ("sSPY") the user / UI might send, mapping both to the canonical
 # display symbol used in the strategy_spec.
 _UNIVERSE_LOOKUP: dict[str, str] = {}
+# Display symbol -> SSOT asset_class tag (e.g. "BTC" -> "crypto"). Used by
+# `_unrepresented_asset_classes` (#892) to recognize that a classified class
+# name IS represented when the universe already contains a ticker of that
+# SSOT class — even where the class name has no entry in
+# `_ASSET_CLASS_PROXIES` below (e.g. "crypto": BTC/ETH are named directly by
+# the model, so the class itself needs no proxy-ticker injection, but it
+# should still read as covered rather than a false-positive gap).
+_DISPLAY_TO_ASSET_CLASS: dict[str, str] = {}
 for _synth, (_yf, _display, _ac, _exch) in GLOBAL_ASSETS.items():
     _UNIVERSE_LOOKUP[_display.casefold()] = _display
     _UNIVERSE_LOOKUP[_synth.casefold()] = _display
     _UNIVERSE_LOOKUP[_yf.casefold()] = _display
+    _DISPLAY_TO_ASSET_CLASS[_display.casefold()] = _ac
+
+# ── Asset-CLASS (not ticker) → representative SSOT proxies (#892) ──────────
+#
+# `brief.asset_classes` can carry a coarse class NAME (e.g. "treasuries") from
+# either an explicit user steer or the LLM brief-validator's
+# `asset_classes_inferred` — never a ticker. `_UNIVERSE_LOOKUP` above only
+# indexes concrete display/synth/yfinance symbols, so a class name silently
+# resolved to nothing and the leg vanished from the universe with no signal
+# (issue #892: "treasuries" requested + correctly classified, but every
+# candidate traded crypto only). This map gives each class name a small,
+# deterministic set of representative tickers actually present in
+# `GLOBAL_ASSETS`, so a classified class with real data-source coverage is
+# never dropped just because the caller said the class name instead of a
+# ticker.
+#
+# Deliberately DISJOINT from `_ASSET_SYNONYMS`' keys (equities/rates/credit/
+# fx/commodities/crypto/vol/macro): those are established, test-pinned as
+# PAPER-RETRIEVAL-ONLY class filters that intentionally do NOT resolve to a
+# concrete universe (`derive_asset_universe`'s docstring: broad-class steers
+# "are dropped from the *universe*"; see test_universe_falls_back_to_ssot_
+# when_no_instrument_steer et al. in test_strategy_fusion.py, which assert
+# `["equities", "rates"]` falls through to the model/full branch). Overloading
+# those same keys here would silently flip that established behavior. Instead
+# this map only covers class names that (a) have no existing universe
+# resolution path at all today and (b) are what the brief-validator / a user
+# steer realistically emits for a class the SSOT actually has tickers for —
+# "treasuries" (this issue's exact reproduction) plus its close synonyms.
+_ASSET_CLASS_PROXIES: dict[str, tuple[str, ...]] = {
+    "treasuries": ("IEF", "SHY", "TLT"),
+    "treasury": ("IEF", "SHY", "TLT"),
+    "treasury_bonds": ("IEF", "SHY", "TLT"),
+    "us_treasuries": ("IEF", "SHY", "TLT"),
+    "bonds": ("IEF", "SHY", "TLT", "AGG"),
+    "bond": ("IEF", "SHY", "TLT", "AGG"),
+    "fixed_income": ("IEF", "SHY", "TLT", "AGG"),
+    "fixed income": ("IEF", "SHY", "TLT", "AGG"),
+    "govt_bonds": ("IEF", "SHY", "TLT"),
+    "government_bonds": ("IEF", "SHY", "TLT"),
+    "munis": ("MUB",),
+    "municipal_bonds": ("MUB",),
+    "reits": ("VNQ",),
+    "real_estate": ("VNQ",),
+    "real estate": ("VNQ",),
+}
+
+
+def _class_proxy_tickers(class_name: str) -> list[str]:
+    """Representative SSOT tickers for a class NAME, filtered to what's actually
+    registered in ``GLOBAL_ASSETS`` (defensive — the literal map above is hand
+    maintained and could drift from the SSOT)."""
+    candidates = _ASSET_CLASS_PROXIES.get(class_name.strip().lower(), ())
+    return [_UNIVERSE_LOOKUP[c.casefold()] for c in candidates if c.casefold() in _UNIVERSE_LOOKUP]
 
 
 def _repair_spec(backend: Any, brief: FusionBrief, parsed: dict[str, Any]) -> dict[str, Any] | None:
@@ -141,7 +202,17 @@ def _repair_spec(backend: Any, brief: FusionBrief, parsed: dict[str, Any]) -> di
 
 
 def _resolve_user_assets(selected_assets: list[str]) -> list[str]:
-    """Resolve user tokens to canonical SSOT display symbols (may be empty)."""
+    """Resolve user tokens to canonical SSOT display symbols (may be empty).
+
+    Concrete-ticker resolution ONLY (exact SSOT display/synth/yfinance match).
+    Coarse asset-CLASS names (e.g. "equities", "treasuries") deliberately do
+    NOT resolve here — that's long-established behavior
+    (``derive_asset_universe``'s docstring: broad-class steers "are dropped
+    from the *universe*") that several tests pin. Class-name → proxy-ticker
+    resolution for #892 lives in ``_class_proxy_tickers`` / ``_gap_fill_tickers``
+    below and is applied as a supplement, never a same-function override, so it
+    can never silently clobber a concrete user/model ticker pick.
+    """
     resolved: list[str] = []
     seen: set[str] = set()
     for token in selected_assets or []:
@@ -152,10 +223,110 @@ def _resolve_user_assets(selected_assets: list[str]) -> list[str]:
     return resolved
 
 
+def _class_represented_by_ssot_tag(class_name: str, universe: list[str]) -> bool:
+    """True iff ``universe`` already contains a ticker whose SSOT ``asset_class``
+    tag matches ``class_name`` (#892: e.g. "crypto" is represented once BTC/ETH
+    — SSOT tag "crypto" — are in the universe, even with no
+    ``_ASSET_CLASS_PROXIES`` entry, since the model/user already named concrete
+    tickers for it).
+
+    Reuses ``_ASSET_SYNONYMS`` (the existing class-name -> keyword-stem map) so
+    "equities" also recognizes tags like "us_equity_etf" via its "equit" stem,
+    not just a literal "equities" substring — the same vocabulary the paper
+    filter already trusts for this class name. Falls back to a direct
+    substring match (both directions) for class names outside that map (e.g.
+    "treasuries", which isn't an ``_ASSET_SYNONYMS`` key).
+    """
+    key = class_name.strip().lower()
+    if not key:
+        return False
+    stems = _ASSET_SYNONYMS.get(key, (key,))
+    for sym in universe:
+        tag = _DISPLAY_TO_ASSET_CLASS.get(sym.casefold(), "")
+        if not tag:
+            continue
+        tag_words = tag.replace("_", " ")
+        if any(stem in tag_words for stem in stems) or key in tag_words or tag_words in key:
+            return True
+    return False
+
+
+def _unrepresented_asset_classes(asset_classes: list[str], universe: list[str]) -> list[str]:
+    """Which classified ``asset_classes`` have ZERO representation in ``universe``.
+
+    #892: the honest-surfacing half of the fix. A class name is "represented"
+    if any of: (1) it's itself a concrete ticker already in the universe; (2)
+    its ``_ASSET_CLASS_PROXIES`` proxy tickers are present; (3) the universe
+    already contains a ticker whose SSOT ``asset_class`` tag matches the name
+    (covers classes like "crypto" that the model names directly with no proxy
+    map entry needed). A class matching none of these is reported as a gap —
+    either there is no data source for it, or the caller's classification is a
+    broad paper-retrieval-only filter (e.g. "equities"/"rates") we have no
+    independent universe evidence for. Order-preserving, de-duped,
+    case-insensitive.
+    """
+    universe_set = {u.casefold() for u in universe}
+    gaps: list[str] = []
+    seen: set[str] = set()
+    for ac in asset_classes or []:
+        name = str(ac).strip()
+        key = name.lower()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        # Already a concrete ticker that made it in? Not a gap.
+        canonical = _UNIVERSE_LOOKUP.get(name.casefold())
+        if canonical and canonical.casefold() in universe_set:
+            continue
+        proxies = _class_proxy_tickers(name)
+        if proxies and any(p.casefold() in universe_set for p in proxies):
+            continue
+        if _class_represented_by_ssot_tag(name, universe):
+            continue
+        gaps.append(name)
+    return gaps
+
+
+def _gap_fill_tickers(asset_classes: list[str], universe: list[str]) -> list[str]:
+    """Proxy tickers for any classified class that ``_ASSET_CLASS_PROXIES`` covers
+    but that has zero representation in ``universe`` yet (#892).
+
+    This is an ADDITIVE supplement, never a replacement: it only fills in a
+    class the caller explicitly named (e.g. "treasuries") that a concrete user
+    ticker pick or the model's own universe failed to cover — it never removes
+    or overrides anything the user/model already chose (so a "crypto +
+    treasuries" brief keeps the model's BTC/ETH AND gains the treasury proxy,
+    rather than one leg clobbering the other). Order-preserving, de-duped
+    against what's already present.
+
+    A class with ANY of its proxy tickers already in ``universe`` (e.g. "IEF"
+    present for "treasuries") counts as already represented — a gap-fill tops
+    up a *missing* leg, it does not pad out a partially-present one, so no
+    further proxies are injected once at least one is present (mirrors the
+    "already represented" check in ``_unrepresented_asset_classes`` above;
+    Copilot review comment on PR #1033).
+    """
+    universe_set = {u.casefold() for u in universe}
+    fill: list[str] = []
+    seen: set[str] = set(universe_set)
+    for ac in asset_classes or []:
+        name = str(ac).strip()
+        if not name or name.casefold() in universe_set:
+            continue  # already a concrete ticker present in the universe
+        proxies = _class_proxy_tickers(name)
+        if any(p.casefold() in universe_set for p in proxies):
+            continue  # class already has at least one proxy represented
+        for proxy in proxies:
+            if proxy.casefold() not in seen:
+                seen.add(proxy.casefold())
+                fill.append(proxy)
+    return fill
+
+
 _MODEL_UNIVERSE_CAP = 8
 
 
-def _spec_universe(brief: FusionBrief, strategy_spec: dict[str, Any]) -> tuple[list[str], str]:
+def _spec_universe(brief: FusionBrief, strategy_spec: dict[str, Any]) -> tuple[list[str], str, list[str]]:
     """Pick the spec's asset universe: user steer > model suggestion > full SSOT.
 
     Fixes #847: the old unconditional ``derive_asset_universe`` override sent
@@ -167,15 +338,37 @@ def _spec_universe(brief: FusionBrief, strategy_spec: dict[str, Any]) -> tuple[l
     the full supported universe (preserving #682's "never a hardcoded SPY"
     floor).
 
-    Returns ``(universe, universe_source)`` where ``universe_source`` is one of
-    ``"user" | "model" | "full"`` (#857) — a model-picked universe is a mild
-    look-ahead channel (the model can pick names it already "knows" did well
-    over the window from training data), so which branch fired is recorded for
-    the passport rather than silently collapsed into just the resulting list.
+    #892 gap-fill: whichever branch above fires, any ``brief.asset_classes``
+    entry that has a known proxy (``_ASSET_CLASS_PROXIES``) but zero
+    representation in that branch's universe gets its proxy tickers appended
+    — additively, never replacing what the branch already chose. This is what
+    keeps a "trend-following on BTC/ETH with a defensive rotation into
+    treasuries" brief from losing the treasury leg just because the model only
+    named BTC/ETH explicitly: the user/model branch still wins for the assets
+    it *did* address, and the gap-fill covers the classified class it missed.
+
+    Returns ``(universe, universe_source, universe_gaps)``:
+      - ``universe_source`` is one of ``"user" | "model" | "full"`` (#857) — a
+        model-picked universe is a mild look-ahead channel (the model can pick
+        names it already "knows" did well over the window from training
+        data), so which branch fired is recorded for the passport rather than
+        silently collapsed into just the resulting list. Gap-filling does not
+        change which branch is recorded — it is applied on top.
+      - ``universe_gaps`` (#892) lists any ``brief.asset_classes`` entry that
+        STILL has zero representation after gap-fill — i.e. a classified class
+        with no known data-source proxy at all (or, for the broad
+        paper-retrieval-only class names like "equities"/"rates" that
+        deliberately have no proxy map entry, no independent universe
+        evidence). Empty when every classified class is represented. This is
+        the claim-integrity signal: the passport/reasoning trace must say "X
+        was requested but not available" rather than silently proceeding as
+        if X was honored.
     """
     user_assets = _resolve_user_assets(brief.asset_classes)
     if user_assets:
-        return user_assets, "user"
+        universe = user_assets + _gap_fill_tickers(brief.asset_classes, user_assets)
+        gaps = _unrepresented_asset_classes(brief.asset_classes, universe)
+        return universe, "user", gaps
     model_assets = _resolve_user_assets([str(a) for a in strategy_spec.get("asset_universe") or []])
     # Parrot defense: a bare single proxy (the classic ["SPY"] default weak
     # models emit regardless of thesis) is indistinguishable from a non-choice —
@@ -184,8 +377,17 @@ def _spec_universe(brief: FusionBrief, strategy_spec: dict[str, Any]) -> tuple[l
     if len(model_assets) >= 2:
         if len(model_assets) > _MODEL_UNIVERSE_CAP:
             logger.info("fusion: model universe capped %d → %d", len(model_assets), _MODEL_UNIVERSE_CAP)
-        return model_assets[:_MODEL_UNIVERSE_CAP], "model"
-    return list(SUPPORTED_UNIVERSE), "full"
+        capped = model_assets[:_MODEL_UNIVERSE_CAP]
+        universe = capped + _gap_fill_tickers(brief.asset_classes, capped)
+        gaps = _unrepresented_asset_classes(brief.asset_classes, universe)
+        return universe, "model", gaps
+    full = list(SUPPORTED_UNIVERSE)
+    # No user/model steer fired, so the full SSOT is already in play — nothing
+    # to gap-fill (every proxy ticker is already a member of "full" by
+    # construction); a classified class is only a real gap here if it has no
+    # known proxy at all.
+    gaps = _unrepresented_asset_classes(brief.asset_classes, full)
+    return full, "full", gaps
 
 
 def derive_asset_universe(selected_assets: list[str]) -> list[str]:
@@ -558,6 +760,14 @@ class FusionProposal:
     # (disabled / insufficient_corpus / unparseable) — there is no universe to
     # attribute a source to.
     universe_source: str | None = None
+    # (#892) Any brief.asset_classes entries with ZERO representation in the
+    # final strategy_spec["asset_universe"] — e.g. a classified asset class
+    # with no data source wired up, or one whose proxies were dropped by the
+    # model-universe cap. Empty (the common case) when every classified class
+    # is represented. Claim-integrity signal: surfaced in risk_notes and
+    # persisted so the passport/reasoning trace says so honestly instead of
+    # silently proceeding as if the request was fully honored.
+    universe_gaps: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
@@ -809,6 +1019,7 @@ class StrategyFusion:
         if not isinstance(strategy_spec, dict):
             strategy_spec = _repair_spec(backend, brief, parsed)
         universe_source: str | None = None
+        universe_gaps: list[str] = []
         if not isinstance(strategy_spec, dict):
             strategy_spec = None
         else:
@@ -817,7 +1028,10 @@ class StrategyFusion:
             # (#857) the branch taken is recorded as universe_source so the
             # passport can surface which one fired — a model-picked universe
             # is a mild look-ahead channel worth being auditable, not blocked.
-            strategy_spec["asset_universe"], universe_source = _spec_universe(brief, strategy_spec)
+            # (#892) universe_gaps carries any classified asset_classes that
+            # ended up with zero representation — surfaced below, never
+            # silently dropped.
+            strategy_spec["asset_universe"], universe_source, universe_gaps = _spec_universe(brief, strategy_spec)
             # Validate the FINAL dict (post-steering). An invalid spec — a
             # partial repair that happened to carry entry/exit, or a malformed
             # model emission — must degrade to honest text-only HERE, not
@@ -828,6 +1042,16 @@ class StrategyFusion:
                 logger.warning("fusion: strategy_spec failed DSL validation (%s) — falling back to text-only", exc)
                 strategy_spec = None
                 universe_source = None
+                universe_gaps = []
+
+        risk_notes = str(parsed.get("risk_notes", "")).strip()
+        if universe_gaps:
+            gap_note = (
+                f"Universe gap: {', '.join(universe_gaps)} requested/classified but not available "
+                "in the current data universe — the traded universe above does not include it."
+            )
+            logger.warning("fusion: universe gap for brief asset_classes=%s -> %s", brief.asset_classes, universe_gaps)
+            risk_notes = f"{risk_notes} {gap_note}".strip() if risk_notes else gap_note
 
         return FusionProposal(
             status="ok",
@@ -837,11 +1061,12 @@ class StrategyFusion:
             source_arxiv_ids=source_ids,
             fusion_reasoning=str(parsed.get("fusion_reasoning", "")).strip(),
             novelty_rationale=str(parsed.get("novelty_rationale", "")).strip(),
-            risk_notes=str(parsed.get("risk_notes", "")).strip(),
+            risk_notes=risk_notes,
             model=backend.served_model,  # TRUE served model — field of record
             requested_model=backend.model_id,  # what we asked for
             strategy_spec=strategy_spec,
             universe_source=universe_source,
+            universe_gaps=universe_gaps,
         )
 
 

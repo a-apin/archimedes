@@ -766,6 +766,35 @@ async def run_generation(
         if validated.get("risk_appetite_adjusted") and validated["risk_appetite_adjusted"] != brief.risk_appetite:
             brief = brief.model_copy(update={"risk_appetite": validated["risk_appetite_adjusted"]})
 
+        # Fold the validator's classified asset_classes back into the brief
+        # (#892). Bug: brief_validated correctly classified e.g.
+        # ["crypto", "treasuries"] and emitted it on the SSE event for display,
+        # but the classification was then discarded — brief.asset_classes kept
+        # whatever the client originally sent (often empty, or only the
+        # explicit ticker picks), so the debate society / fusion universe
+        # steering below never saw the LLM's better read of the brief. Union
+        # (not replace) so an explicit user ticker pick is never dropped by a
+        # coarser class inference.
+        # The validator's output is LLM-generated and not type-enforced, so
+        # `asset_classes_inferred` could come back as something other than a
+        # list (e.g. a bare string) — guard against that before iterating, or
+        # a string would silently explode into a "class per character" and
+        # pollute brief.asset_classes downstream (Copilot review comment on
+        # PR #1033).
+        _raw_inferred = validated.get("asset_classes_inferred", [])
+        if not isinstance(_raw_inferred, list):
+            _raw_inferred = [_raw_inferred] if _raw_inferred else []
+        inferred_classes = [str(a).strip() for a in _raw_inferred if str(a).strip()]
+        if inferred_classes:
+            merged_classes = list(brief.asset_classes or [])
+            seen_classes = {c.strip().lower() for c in merged_classes}
+            for ac in inferred_classes:
+                if ac.lower() not in seen_classes:
+                    seen_classes.add(ac.lower())
+                    merged_classes.append(ac)
+            if merged_classes != (brief.asset_classes or []):
+                brief = brief.model_copy(update={"asset_classes": merged_classes})
+
         await emit.emit(
             "brief_validated",
             asset_classes=validated.get("asset_classes_inferred", []),
