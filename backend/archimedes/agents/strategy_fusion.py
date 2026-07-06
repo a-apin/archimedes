@@ -298,6 +298,13 @@ def _gap_fill_tickers(asset_classes: list[str], universe: list[str]) -> list[str
     treasuries" brief keeps the model's BTC/ETH AND gains the treasury proxy,
     rather than one leg clobbering the other). Order-preserving, de-duped
     against what's already present.
+
+    A class with ANY of its proxy tickers already in ``universe`` (e.g. "IEF"
+    present for "treasuries") counts as already represented — a gap-fill tops
+    up a *missing* leg, it does not pad out a partially-present one, so no
+    further proxies are injected once at least one is present (mirrors the
+    "already represented" check in ``_unrepresented_asset_classes`` above;
+    Copilot review comment on PR #1033).
     """
     universe_set = {u.casefold() for u in universe}
     fill: list[str] = []
@@ -306,7 +313,10 @@ def _gap_fill_tickers(asset_classes: list[str], universe: list[str]) -> list[str
         name = str(ac).strip()
         if not name or name.casefold() in universe_set:
             continue  # already a concrete ticker present in the universe
-        for proxy in _class_proxy_tickers(name):
+        proxies = _class_proxy_tickers(name)
+        if any(p.casefold() in universe_set for p in proxies):
+            continue  # class already has at least one proxy represented
+        for proxy in proxies:
             if proxy.casefold() not in seen:
                 seen.add(proxy.casefold())
                 fill.append(proxy)

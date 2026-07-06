@@ -27,6 +27,7 @@ from archimedes.agents.strategy_fusion import (
     FusionBrief,
     FusionCannedBackend,
     StrategyFusion,
+    _gap_fill_tickers,
     derive_asset_universe,
     fusion_enabled,
     load_corpus,
@@ -716,6 +717,21 @@ def test_gap_fill_never_overrides_explicit_user_ticker_picks(monkeypatch, crypto
     assert any(t in universe for t in ("IEF", "SHY", "TLT"))
     assert proposal.universe_source == "user"
     assert proposal.universe_gaps == ["crypto"]  # honest: no crypto ticker was ever named
+
+
+def test_gap_fill_tickers_does_not_top_up_a_partially_represented_class():
+    """Copilot review comment on PR #1033: `_gap_fill_tickers` must treat a
+    class as represented once ANY of its proxy tickers is already in the
+    universe — it should not keep injecting the remaining proxies (e.g. add
+    SHY/TLT on top of an already-present IEF). Gap-fill patches in a *missing*
+    leg; it doesn't pad out a partially-present one.
+    """
+    fill = _gap_fill_tickers(["treasuries"], ["IEF"])
+    assert fill == []
+
+    # Still fills when genuinely absent.
+    fill = _gap_fill_tickers(["treasuries"], ["BTC", "ETH"])
+    assert set(fill) == {"IEF", "SHY", "TLT"}
 
 
 def test_broad_paper_filter_classes_still_report_as_gaps_on_full_fallback(monkeypatch, corpus):

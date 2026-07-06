@@ -428,6 +428,61 @@ async def test_validated_asset_classes_union_with_explicit_user_picks(monkeypatc
         assert "treasuries" in classes, "validator's inferred class must be folded in alongside the user pick"
 
 
+@pytest.mark.asyncio
+async def test_validated_asset_classes_non_list_is_not_exploded_into_characters(monkeypatch):
+    """Copilot review comment on PR #1033: `_validate_brief`'s output is
+    LLM-generated and not type-enforced, so `asset_classes_inferred` could
+    come back as a bare string instead of a list. Iterating a string
+    character-by-character would merge garbage single-letter "classes" into
+    brief.asset_classes; the non-list case must be treated as one whole class
+    name instead.
+    """
+    from archimedes.services import generation_pipeline as gp
+
+    monkeypatch.setattr(gp, "_llm_available", lambda: True)
+
+    async def fake_validate(brief):
+        return {
+            "is_valid": True,
+            "intent_summary": brief.intent[:140],
+            "asset_classes_inferred": "treasuries",  # malformed: string, not list
+            "time_horizon_inferred": "unknown",
+            "risk_appetite_adjusted": brief.risk_appetite,
+        }
+
+    monkeypatch.setattr(gp, "_validate_brief", fake_validate)
+
+    import archimedes.agents.debate_engine as de
+
+    monkeypatch.setattr(de, "_debate_can_run", lambda brief: False)
+    monkeypatch.setenv("GENERATION_PIPELINE_FIXTURE", "1")
+
+    seen_asset_classes: list[list[str] | None] = []
+    real_runner = gp._run_fixture_candidate
+
+    async def _spy_runner(*, brief, **kwargs):
+        seen_asset_classes.append(list(brief.asset_classes or []))
+        return await real_runner(brief=brief, **kwargs)
+
+    monkeypatch.setattr(gp, "_run_fixture_candidate", _spy_runner)
+
+    store = _FakeStore()
+    brief = GenerateBrief(
+        intent="defensive rotation into treasuries",
+        risk_appetite="moderate",
+        asset_classes=None,
+    )
+    with patch(
+        "archimedes.agents.generation_pipeline._persist_candidate",
+        new=AsyncMock(return_value=("strat_892_003", "0x892c")),
+    ):
+        await gp.run_generation(job_id="job_892_003", brief=brief, n_candidates=1, store=store)
+
+    assert seen_asset_classes
+    for classes in seen_asset_classes:
+        assert classes == ["treasuries"], f"non-list validator output was exploded into: {classes!r}"
+
+
 # ── Dual bull/bear regime tests (Issue #163) ───────────────────────────────
 
 
