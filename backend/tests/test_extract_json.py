@@ -8,7 +8,6 @@ no LLM, no network, no .env.
 from __future__ import annotations
 
 import pytest
-
 from archimedes.agents.strategy_architect import extract_json
 
 
