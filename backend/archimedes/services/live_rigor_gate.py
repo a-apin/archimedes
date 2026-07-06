@@ -42,6 +42,40 @@ PASS = "pass"
 FAIL = "fail"
 PENDING = "pending"
 
+# Fail-safe selection-set size when the true library trial count cannot be
+# derived (#902). Deflating with too many trials errs toward rejecting a
+# strategy; deflating with num_trials=1 errs toward an UNDEFLATED pass — the
+# exact failure mode #902 flags. So when the DB/provider is unreachable the
+# default leans conservative (the seeded v1 library size), never 1.
+_FALLBACK_NUM_TRIALS = 5
+
+
+def _default_num_trials() -> int:
+    """Library-wide selection-set size for DSR deflation (#902).
+
+    The multiple-testing set for a library strategy is the library itself —
+    the number of strategies with enough persisted real returns to grade
+    (same valid-set definition as ``verdicts_for_strategies``). Callers that
+    already hold cohort context pass ``num_trials`` explicitly; this default
+    exists so the single-verdict path can never silently run undeflated
+    (``num_trials=1`` collapses DSR to plain Sharpe > 0). Fail-safe to
+    ``_FALLBACK_NUM_TRIALS`` — more deflation, never less — on any failure.
+    """
+    try:
+        from archimedes.db import get_session, init_db
+        from archimedes.services.backtest_repository import get_all_daily_returns
+        from archimedes.services.strategy_provider import default_provider
+
+        strategy_ids = [s.id for s in default_provider().list_strategies()]
+        init_db()
+        with get_session() as session:
+            returns_by_strategy = get_all_daily_returns(session, strategy_ids)
+        n = sum(1 for v in returns_by_strategy.values() if len(v) >= _MIN_RETURNS_FOR_GATE)
+        return max(n, 1)
+    except Exception as exc:
+        logger.warning("default num_trials derivation failed (fallback=%d): %s", _FALLBACK_NUM_TRIALS, exc)
+        return _FALLBACK_NUM_TRIALS
+
 
 @dataclass(frozen=True)
 class RigorGateVerdict:
@@ -104,7 +138,7 @@ def verdict_from_returns(
     strategy_id: str,
     daily_returns: list[float],
     *,
-    num_trials: int = 1,
+    num_trials: int | None = None,
     pbo_scores: dict[str, float] | None = None,
     strategy_code: str | None = None,
     paper_claimed_sharpe: float | None = None,
@@ -117,9 +151,18 @@ def verdict_from_returns(
     gate cannot run and the verdict is ``pending`` (NOT a fixture boolean). Any
     unexpected failure inside the gate fails closed to ``pending`` so the badge can
     never claim a pass it did not earn.
+
+    ``num_trials=None`` (the default) derives the library-wide selection-set size
+    (#902) — the old ``num_trials=1`` default zeroed the multiple-testing penalty
+    (``E_max_N=0``) and collapsed DSR to a plain Sharpe test, so an unspecified
+    trial count silently ran the badge undeflated. Callers holding cohort context
+    (``verdicts_for_strategies``, the generation pipeline) still pass it explicitly.
     """
     if not daily_returns or len(daily_returns) < _MIN_RETURNS_FOR_GATE:
         return RigorGateVerdict.pending()
+
+    if num_trials is None:
+        num_trials = _default_num_trials()
 
     # Local import keeps this module importable without pulling the full rigor stack
     # at API import time, and avoids any import cycle with rigor_evaluator.

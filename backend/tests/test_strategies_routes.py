@@ -18,6 +18,8 @@ Hermetic gate:
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
 from archimedes.services.live_rigor_gate import (
@@ -118,6 +120,124 @@ class TestVerdictFromReturns:
         v = verdict_from_returns("s", _passing_series(), num_trials=2)
         assert v.status == PENDING
         assert v.passes is False
+
+
+class TestDefaultNumTrials:
+    """#902: an unspecified num_trials must never silently run undeflated."""
+
+    def test_default_num_trials_derives_library_size(self, monkeypatch):
+        # The default resolves to the count of library strategies with enough
+        # persisted returns — NOT 1 (which zeroes the DSR deflation).
+        from archimedes.services import live_rigor_gate
+
+        captured = {}
+
+        def _spy_gate(*args, **kwargs):
+            captured.update(kwargs)
+            return run_rigor_gate(*args, **kwargs)
+
+        monkeypatch.setattr("archimedes.services.rigor_evaluator.run_rigor_gate", _spy_gate)
+        monkeypatch.setattr(live_rigor_gate, "_default_num_trials", lambda: 7)
+
+        verdict_from_returns("a", _passing_series(0), strategy_code=_CLEAN_CODE)
+        assert captured["num_trials"] == 7
+
+    def test_default_num_trials_fail_safe_is_not_one(self, monkeypatch):
+        # When the library size cannot be derived, the fallback must lean toward
+        # MORE deflation (a conservative floor), never num_trials=1.
+        from archimedes.services import live_rigor_gate
+
+        def _boom():
+            raise RuntimeError("no provider")
+
+        monkeypatch.setattr("archimedes.services.strategy_provider.default_provider", _boom)
+        assert live_rigor_gate._default_num_trials() == live_rigor_gate._FALLBACK_NUM_TRIALS
+        assert live_rigor_gate._FALLBACK_NUM_TRIALS > 1
+
+    def test_explicit_num_trials_still_wins(self, monkeypatch):
+        from archimedes.services import live_rigor_gate
+
+        captured = {}
+
+        def _spy_gate(*args, **kwargs):
+            captured.update(kwargs)
+            return run_rigor_gate(*args, **kwargs)
+
+        monkeypatch.setattr("archimedes.services.rigor_evaluator.run_rigor_gate", _spy_gate)
+        monkeypatch.setattr(
+            live_rigor_gate, "_default_num_trials", lambda: (_ for _ in ()).throw(AssertionError("not called"))
+        )
+
+        verdict_from_returns("a", _passing_series(0), num_trials=3, strategy_code=_CLEAN_CODE)
+        assert captured["num_trials"] == 3
+
+
+class TestSingleStrategyCohortContext:
+    """#902: the single-strategy fetch must grade with the library cohort, so the
+    detail view can never disagree with the (deflated) list badge."""
+
+    def test_live_verdict_for_one_uses_full_library_cohort(self, monkeypatch):
+        from archimedes.api import strategies_routes
+
+        lib = [MagicMock(id=f"s{i}") for i in range(3)]
+        target = lib[1]
+        provider = MagicMock()
+        provider.list_strategies.return_value = lib
+        monkeypatch.setattr(strategies_routes, "strategy_provider", lambda: provider)
+
+        captured = {}
+
+        def _fake_batch(strategies):
+            captured["cohort_ids"] = [s.id for s in strategies]
+            return {target.id: RigorGateVerdict.failed()}
+
+        monkeypatch.setattr(strategies_routes, "verdicts_for_strategies", _fake_batch)
+
+        v = strategies_routes._live_verdict_for_one(target)
+        assert captured["cohort_ids"] == ["s0", "s1", "s2"]
+        assert v.status == FAIL
+
+    def test_live_verdict_for_one_appends_unlisted_strategy(self, monkeypatch):
+        # A just-generated strategy missing from the provider list still grades.
+        from archimedes.api import strategies_routes
+
+        provider = MagicMock()
+        provider.list_strategies.return_value = [MagicMock(id="s0")]
+        monkeypatch.setattr(strategies_routes, "strategy_provider", lambda: provider)
+
+        captured = {}
+
+        def _fake_batch(strategies):
+            captured["cohort_ids"] = [s.id for s in strategies]
+            return {}
+
+        monkeypatch.setattr(strategies_routes, "verdicts_for_strategies", _fake_batch)
+
+        fresh = MagicMock(id="fresh")
+        v = strategies_routes._live_verdict_for_one(fresh)
+        assert "fresh" in captured["cohort_ids"]
+        # Batch returned nothing for it → fail-closed pending, never a fixture.
+        assert v.status == PENDING
+
+    def test_live_rigor_result_for_one_uses_full_library_cohort(self, monkeypatch):
+        from archimedes.api import strategies_routes
+
+        lib = [MagicMock(id="s0"), MagicMock(id="s1")]
+        provider = MagicMock()
+        provider.list_strategies.return_value = lib
+        monkeypatch.setattr(strategies_routes, "strategy_provider", lambda: provider)
+
+        sentinel = object()
+        captured = {}
+
+        def _fake_batch(strategies):
+            captured["cohort_ids"] = [s.id for s in strategies]
+            return {"s1": sentinel}
+
+        monkeypatch.setattr(strategies_routes, "_live_rigor_results_for_strategies", _fake_batch)
+
+        assert strategies_routes._live_rigor_result_for_one(lib[1]) is sentinel
+        assert captured["cohort_ids"] == ["s0", "s1"]
 
 
 class TestRigorGateVerdict:

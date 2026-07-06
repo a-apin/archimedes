@@ -63,6 +63,15 @@ class RigorProfile:
 
 # The ladder. Level 1 (Conservative) is the badge bar; level 5 (Speculative) is
 # the riskiest rung. ``dsr_p_min`` at level 5 equals ``DSR_P_FLOOR`` by design.
+#
+# Level-1 dsr_p_min = 0.90 is INTENTIONAL (recalibrated 0.95 → 0.90 in PR #901,
+# team-sanctioned), with an explicit risk caveat (#902): 0.90 is a one-sided
+# ~10% test — real but not overwhelming evidence, and materially weaker than a
+# conventional 0.95 bar. It was chosen so the badge stays achievable at the
+# current library size, where the multiple-testing deflation (num_trials =
+# library N) already stiffens the p-value; anyone marketing the badge should
+# say "deflated-Sharpe evidence at the 0.90 level", not "statistically proven".
+# Revisit toward 0.95 as the library and return histories grow.
 _PROFILES: dict[int, RigorProfile] = {
     1: RigorProfile(
         1,

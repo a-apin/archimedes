@@ -815,9 +815,13 @@ def run_rigor_gate(
             explicitly if that path should ever gate on the floor too.
     """
     if num_trials == 1:
-        logger.debug(
-            "Rigor gate [%s]: num_trials=1 — no multiple-testing correction. "
-            "Pass num_trials=len(strategy_library) for meaningful DSR.",
+        # Loud on purpose (#902): num_trials=1 zeroes E[max SR] and collapses DSR
+        # to a plain "Sharpe > 0" test — the exact silent-undeflation failure mode
+        # that made the badge weaker than claimed. Legitimate only for a genuinely
+        # single-trial context, never for grading a library member.
+        logger.warning(
+            "Rigor gate [%s]: num_trials=1 — DSR runs UNDEFLATED (no multiple-testing correction). "
+            "Pass num_trials=len(strategy_library) for a meaningful deflated verdict.",
             strategy_id,
         )
 
