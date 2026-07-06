@@ -179,6 +179,25 @@ class TestPollTransaction:
             with pytest.raises(RuntimeError, match="timed out"):
                 await configured._poll_transaction(session, "tx-1")
 
+    async def test_poll_query_scoped_to_wallet(self, configured):
+        """The poll GET must filter by walletIds so the target tx can't fall off
+        an unfiltered global page (#941).
+
+        Without the walletIds filter, Circle's GET /transactions returns the
+        newest txs across every wallet capped at pageSize; with >50 in flight
+        the real tx drops off the window and polling false-times-out on a tx
+        that actually completed. This asserts the filter is on the request URL.
+        """
+        session = _mock_session()
+        body = {"data": {"transactions": [{"id": "tx-1", "state": "COMPLETE", "txHash": "0xHASH"}]}}
+        session.get = MagicMock(return_value=session._cm(_resp(200, body)))
+
+        result = await configured._poll_transaction(session, "tx-1")
+
+        assert result == "0xHASH"
+        called_url = session.get.call_args.args[0]
+        assert "walletIds=wallet-uuid" in called_url
+
 
 # ── sign_and_broadcast ────────────────────────────────────────
 

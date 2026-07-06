@@ -201,10 +201,13 @@ class CircleSigner:
     async def _poll_transaction(self, session: aiohttp.ClientSession, circle_tx_id: str) -> str:
         """Poll Circle transaction until terminal state."""
         for _ in range(_MAX_POLLS):
-            # Use the list endpoint — Circle's GET /transactions returns
-            # all recent txs for the wallet. Find ours by ID.
+            # Scope the list to this wallet's transactions via the walletIds
+            # filter. An unfiltered GET /transactions returns the newest txs
+            # across every wallet, so with >50 txs in flight the one we care
+            # about can fall off the page before it reaches a terminal state,
+            # producing a false timeout on a tx that actually succeeded (#941).
             async with session.get(
-                f"{CIRCLE_API_BASE}/transactions?pageSize=50",
+                f"{CIRCLE_API_BASE}/transactions?pageSize=50&walletIds={self._wallet_id}",
                 headers={"Authorization": f"Bearer {self._api_key}"},
             ) as resp:
                 if resp.status == 200:
