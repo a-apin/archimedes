@@ -255,6 +255,32 @@ class TestLedoitWolfShrinkage:
         with pytest.raises(ValueError):
             ledoit_wolf_shrinkage(np.array([[0.01, 0.02, 0.03]]))  # T=1
 
+    def test_output_uses_unbiased_ddof1_convention(self):
+        # Issue #950: the LW output must match the ddof=1 convention used
+        # everywhere else (np.cov(..., ddof=1)), NOT the 1/T MLE — otherwise
+        # variance is understated ~5% at T=20. Single asset ⇒ no shrinkage, so
+        # the output is exactly the unbiased sample variance.
+        rng = np.random.default_rng(7)
+        X = rng.normal(0.0, 1.0, (20, 1))  # small T where 1/T vs 1/(T-1) differ ~5%
+        shrunk, delta = ledoit_wolf_shrinkage(X)
+        assert delta == 0.0
+        unbiased_var = float(np.cov(X, rowvar=False, ddof=1))
+        mle_var = float(((X - X.mean()) ** 2).sum() / len(X))
+        assert shrunk[0, 0] == pytest.approx(unbiased_var, rel=1e-9)
+        assert shrunk[0, 0] > mle_var  # strictly larger than the old 1/T value
+
+    def test_ddof1_scaling_applied_but_delta_unchanged(self):
+        # The shrunk covariance is the 1/T LW estimate scaled by T/(T-1); δ is
+        # scale-invariant, so the correction leaves it unchanged (#950).
+        X = self._correlated_returns(T=25, N=5)
+        shrunk, delta = ledoit_wolf_shrinkage(X)
+        T, N = X.shape
+        Xc = X - X.mean(axis=0)
+        S = Xc.T @ Xc / T  # the pre-correction 1/T estimate the function builds
+        mu = float(np.trace(S)) / N
+        mle_lw = delta * mu * np.eye(N) + (1.0 - delta) * S
+        np.testing.assert_allclose(shrunk, mle_lw * (T / (T - 1)), rtol=1e-9, atol=1e-12)
+
 
 # ---------------------------------------------------------------------------
 # Section 6 — TestGmv
