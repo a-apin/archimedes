@@ -66,6 +66,9 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
   const [recentTraces, setRecentTraces] = useState([])
   const [tracesLoading, setTracesLoading] = useState(false)
   const [vaultsLoading, setVaultsLoading] = useState(false)
+  // True when at least one vault's on-chain reads reverted (e.g. totalAssets()
+  // on a stale oracle) so the row is a placeholder rather than fully fetched.
+  const [vaultsPartial, setVaultsPartial] = useState(false)
 
   // Load user's own vaults (wallet-gated, from on-chain via VaultFactory.getVaultsByCreator).
   // This is the personal surface; we deliberately do NOT pull /api/vaults/ here —
@@ -80,12 +83,16 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
   // additional deposits land at the drifted PPS).
   const loadVaults = useCallback(async () => {
     const factoryAddr = NEW_CONTRACTS.vaultFactory
-    if (!factoryAddr || !walletAddr) { setUserVaults([]); return }
+    if (!factoryAddr || !walletAddr) { setUserVaults([]); setVaultsPartial(false); return }
     setVaultsLoading(true)
     try {
       const creatorVaults = await publicClient.readContract({
         address: factoryAddr, abi: VAULT_FACTORY_ABI, functionName: 'getVaultsByCreator', args: [walletAddr],
       })
+      // Per-vault reads are independent: a revert on one vault (e.g. a stale
+      // oracle failing totalAssets()) must NOT drop the whole list. On failure
+      // we keep the vault as an `incomplete` placeholder row rather than
+      // filtering it out, and flag the batch as partial so the UI can warn.
       const rows = await Promise.all((creatorVaults || []).map(async (addr) => {
         try {
           const [totalAssets, totalSupply, userShares, tier, name] = await Promise.all([
@@ -107,12 +114,19 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
           return {
             address: addr, aum, tier: Number(tier), name,
             shares, userValue, userPnlUsdc, userPnlPct,
+            incomplete: false,
           }
-        } catch { return null }
+        } catch {
+          // One vault's reads reverted — keep it visible as a placeholder so the
+          // list isn't emptied, and mark it so the card renders "—" / "loading".
+          return { address: addr, incomplete: true }
+        }
       }))
-      setUserVaults(rows.filter(Boolean))
+      setUserVaults(rows)
+      setVaultsPartial(rows.some(r => r.incomplete))
     } catch {
       setUserVaults([])
+      setVaultsPartial(false)
     } finally {
       setVaultsLoading(false)
     }
@@ -159,9 +173,11 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
     return () => clearInterval(t)
   }, [loadAgentAndRegime, loadTraces, loadWalletUsdc, loadVaults])
 
-  // YOUR AUM — sum across vaults the connected wallet created.
+  // YOUR AUM — sum across vaults the connected wallet created. Placeholder rows
+  // for vaults whose reads reverted contribute 0 (their AUM is unknown), so a
+  // stale-oracle vault doesn't poison the total with NaN.
   // Wallet-disconnected users see 0; wallet-connected users see real $ at risk.
-  const yourAum = userVaults.reduce((s, v) => s + v.aum, 0)
+  const yourAum = userVaults.reduce((s, v) => s + (v.aum || 0), 0)
   const hasVaults = userVaults.length > 0
 
   // Aggregate unrealized PnL across the user's vault positions (positions they
@@ -267,8 +283,49 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
       {hasVaults && (
         <div className="mb-7">
           <div className="label mb-3">Your Vault Positions</div>
+          {/* Non-blocking warning — some vaults couldn't be fully read (usually a
+              stale-oracle revert on totalAssets()). The affected rows still show
+              below as placeholders; the next 30s poll retries them. */}
+          {vaultsPartial && (
+            <div
+              className="card mb-3 flex items-center gap-2"
+              style={{ padding: '10px 14px', color: 'var(--text-3)' }}
+            >
+              <span className="i-lucide-alert-triangle w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--warning, var(--negative))' }} />
+              <span className="caption">
+                Some vaults couldn't be fully loaded — showing what we have. This is usually a transient on-chain read (e.g. a stale oracle) and retries automatically.
+              </span>
+            </div>
+          )}
           <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
-            {userVaults.map(v => (
+            {userVaults.map(v => v.incomplete ? (
+              // Placeholder row for a vault whose reads reverted — kept visible
+              // instead of dropped, so the user never sees a phantom "0 vaults".
+              <div
+                key={v.address}
+                className="card vault-card-clickable"
+                onClick={() => onSelectVault?.(v.address)}
+                style={{ padding: 18 }}
+                title="This vault's on-chain data couldn't be read right now — retrying."
+              >
+                <div className="flex justify-between items-center mb-2">
+                  <span className="font-semibold" style={{ fontSize: '0.95rem' }}>
+                    {`Vault ${shortAddr(v.address)}`}
+                  </span>
+                  <span className="tag tag-muted">
+                    <span className="i-lucide-clock w-3.5 h-3.5" /> Loading
+                  </span>
+                </div>
+                <div className="flex items-baseline gap-2 mt-3 mb-1">
+                  <span className="text-[1.5rem] font-bold" style={{ color: 'var(--text-3)' }}>—</span>
+                  <span className="caption">AUM</span>
+                </div>
+                <div className="flex justify-between items-center mt-2 flex-wrap gap-2">
+                  <code className="caption" style={{ color: 'var(--text-3)' }}>{shortAddr(v.address)}</code>
+                  <span className="caption" style={{ color: 'var(--text-3)' }} title="On-chain read pending">—</span>
+                </div>
+              </div>
+            ) : (
               <div
                 key={v.address}
                 className="card vault-card-clickable"
