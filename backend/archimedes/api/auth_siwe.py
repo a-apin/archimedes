@@ -182,9 +182,8 @@ async def get_nonce():
 
     return {
         "nonce": nonce,
-        "domain": os.getenv("PUBLIC_DOMAIN") or "https://archimedes-arc.com"
-        .replace("https://", "")
-        .replace("http://", ""),
+        "domain": os.getenv("PUBLIC_DOMAIN")
+        or "https://archimedes-arc.com".replace("https://", "").replace("http://", ""),
         "issued_at": int(now),
         "expiry_seconds": _NONCE_TTL_SECONDS,
     }
