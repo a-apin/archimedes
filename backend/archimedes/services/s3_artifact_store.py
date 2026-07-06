@@ -64,10 +64,18 @@ class S3ArtifactStore:
         self.client.put_object(Bucket=self.bucket, Key=key, Body=data)
         logger.info("Uploaded s3://%s/%s (%d bytes)", self.bucket, key, len(data))
 
-    def download_bytes(self, key: str) -> bytes:
-        """Download an object as bytes. Raises ClientError if not found."""
-        resp = self.client.get_object(Bucket=self.bucket, Key=key)
-        return resp["Body"].read()
+    def download_bytes(self, key: str) -> bytes | None:
+        """Download an object as bytes.
+
+        Returns None on a transient AWS error (throttle, timeout, unavailable) so
+        the caller can degrade gracefully (e.g. 503) instead of surfacing a 500.
+        """
+        try:
+            resp = self.client.get_object(Bucket=self.bucket, Key=key)
+            return resp["Body"].read()
+        except ClientError as exc:
+            logger.error("S3 download_bytes(s3://%s/%s) failed: %s", self.bucket, key, exc)
+            return None
 
     def exists(self, key: str) -> bool:
         """Check if an object exists."""
