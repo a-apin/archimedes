@@ -103,6 +103,34 @@ contract PriceOracleCooldownTest is Test {
         assertEq(oracle.lastSetPriceTime(), 0);
     }
 
+    /// @dev #935: a compromised owner must not be able to CHAIN forceSetPrice
+    ///      calls (each bounded to 10×) with no spacing to ratchet the price
+    ///      arbitrarily fast. The first force call is immediate (escape hatch),
+    ///      but a consecutive one within updateCooldown reverts.
+    function test_forceSetPrice_second_call_rate_limited() public {
+        // First force call is immediate.
+        vm.prank(owner);
+        oracle.forceSetPrice(WITHIN_BOUND);
+        assertEq(oracle.lastForceSetPriceTime(), block.timestamp);
+
+        // A second force call in the same block (within the cooldown) is blocked.
+        vm.expectRevert(); // UpdateRateLimited
+        vm.prank(owner);
+        oracle.forceSetPrice(WITHIN_BOUND + 1);
+
+        // One second short of the window: still blocked.
+        vm.warp(block.timestamp + oracle.updateCooldown() - 1);
+        vm.expectRevert(); // UpdateRateLimited
+        vm.prank(owner);
+        oracle.forceSetPrice(WITHIN_BOUND + 1);
+
+        // Once the window elapses, the owner can force again (gap recovery).
+        vm.warp(block.timestamp + 1);
+        vm.prank(owner);
+        oracle.forceSetPrice(WITHIN_BOUND + 1);
+        assertEq(oracle.price(), WITHIN_BOUND + 1);
+    }
+
     function test_setUpdateCooldown_changes_window_and_emits() public {
         vm.expectEmit(false, false, false, true);
         emit PriceOracle.UpdateCooldownChanged(30, 600);
