@@ -53,6 +53,12 @@ from archimedes.services.strategy_dsl import (
 
 logger = logging.getLogger(__name__)
 
+# CSCV partition count used when calling compute_pbo without an explicit
+# s_partitions (its default). Mirrored here so the fusion path can detect a
+# too-short window (T // S < 1) before compute_pbo returns its all-0.0 sentinel
+# (#918). Keep in sync with _rigor_helpers.compute_pbo's default.
+_PBO_S_PARTITIONS = 16
+
 # ── Result types ──────────────────────────────────────────────────────
 
 
@@ -667,11 +673,21 @@ def apply_rigor_gate(
     # PBO: compute real CSCV PBO when >= 2 variant backtests are available.
     pbo_score: float | None = None
     if len(variant_returns) >= 2:
-        pbo_map = compute_pbo(variant_returns)
-        # All strategies in the matrix get the same PBO score (library-level
-        # metric per Bailey et al. 2014). Pick the first entry's value.
-        first_key = next(iter(pbo_map))
-        pbo_score = pbo_map[first_key]
+        # Fail-closed on a too-short variant window (#918). compute_pbo returns
+        # an all-0.0 sentinel (a spurious PASS, since 0.0 < pbo_max) when
+        # rows_per_block = T // s_partitions < 1 — i.e. fewer aligned bars than
+        # partitions (e.g. a 5-day fusion window against the default S=16). That
+        # 0.0 is meaningless, so guard it here exactly as the curated path does
+        # in rigor_evaluator.compute_library_pbo: an under-length window is
+        # non-computable and must FAIL the PBO criterion, not pass it. Leaving
+        # pbo_score = None routes into the pbo_pass fail-closed branch below.
+        shortest = min((len(r) for r in variant_returns.values()), default=0)
+        if shortest // _PBO_S_PARTITIONS >= 1:
+            pbo_map = compute_pbo(variant_returns)
+            # All strategies in the matrix get the same PBO score (library-level
+            # metric per Bailey et al. 2014). Pick the first entry's value.
+            first_key = next(iter(pbo_map))
+            pbo_score = pbo_map[first_key]
 
     # Look-ahead admission: validate_strategy_spec rejects any DSL spec with a
     # self-declared look_ahead_safe=False before this evaluator ever runs, so

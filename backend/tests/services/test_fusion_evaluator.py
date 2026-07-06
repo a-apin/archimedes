@@ -300,6 +300,25 @@ class TestFusionWithVariantsComputesRealPbo:
         verdict = apply_rigor_gate(metrics, variants_metrics=single_variant)
         assert verdict.pbo_score is None, "PBO must be None when fewer than 2 variant backtests are provided"
 
+    def test_fusion_short_variant_window_pbo_stays_none_and_fails(self):
+        """#918: variant series shorter than the CSCV partition count (S=16) are
+        non-computable. compute_pbo returns an all-0.0 sentinel there — a spurious
+        'best possible' PASS — so the fusion path must guard it: pbo_score must be
+        None (fail-closed) and the verdict must NOT pass. A ~5-day fusion window
+        (6-point curve → 5 daily returns, well under S=16) is the canonical
+        trigger from the issue."""
+        short_curve_a = [100_000.0 * (1.002**i) for i in range(6)]
+        short_curve_b = [100_000.0 * (1.001**i) for i in range(6)]
+        variants = {
+            "v0": _metrics_from_curve(short_curve_a),
+            "v1": _metrics_from_curve(short_curve_b),
+        }
+        verdict = apply_rigor_gate(_metrics_from_curve(short_curve_a), variants_metrics=variants)
+        assert verdict.pbo_score is None, (
+            "a <16-bar variant window is non-computable; PBO must be None, not the 0.0 sentinel"
+        )
+        assert verdict.passing is False, "a non-computable PBO must FAIL the fusion gate, not pass it"
+
     def test_fusion_high_pbo_fails_rigor_gate(self):
         """A synthetic overfit grid where PBO > 0.5 must cause passing=False.
 
