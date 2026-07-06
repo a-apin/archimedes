@@ -101,6 +101,55 @@ class TestSimulate:
         # Cost must drag terminal equity strictly below the zero-cost run.
         assert eq_with_cost[-1] < eq_no_cost[-1]
 
+    def test_linear_cost_is_round_trip_on_turnover(self) -> None:
+        """Pin the round-trip convention: ``tx_cost_bps`` is a one-way (per-leg)
+        rate, and the linear cost is charged on the two-sided turnover
+        ``sum(|Δw|)`` — i.e. on both the sell leg and the buy leg of each
+        rebalance. This locks the intentional 2×-per-rebalance semantics so it
+        cannot silently drift to a one-way charge (issue #936).
+
+        Deterministic single-rebalance scenario built to make ``sum(|Δw|)``
+        exactly ``1/11`` with zero Almgren impact (``gamma=0``):
+
+          - 3 bars, ``rebalance_days=2`` → the only rebalance is at bar i=2.
+          - Prices flat bar0→bar1; on bar1→bar2 SPY jumps +20%, TLT flat.
+          - Held weights entering bar 2 are the static target [0.5, 0.5].
+            After the +20% SPY move they drift to [0.6, 0.5] → normalized to
+            [6/11, 5/11], so ``Δw = [1/22, 1/22]`` and ``sum(|Δw|) = 1/11``.
+          - Pre-cost bar-2 return is 0.5 * 0.20 = 0.10; the realized (post-cost)
+            return is ``0.10 - sum(|Δw|) * (tx_cost_bps / 10_000)``.
+        """
+        idx = pd.bdate_range("2020-01-02", periods=3)
+        # SPY: flat, flat, then +20%. TLT: flat throughout.
+        spy = pd.Series([100.0, 100.0, 120.0], index=idx)
+        tlt = pd.Series([100.0, 100.0, 100.0], index=idx)
+        panel = pd.DataFrame({"SPY": spy, "TLT": tlt})
+        vols = pd.DataFrame({"SPY": pd.Series([1e6] * 3, index=idx), "TLT": pd.Series([1e6] * 3, index=idx)})
+
+        tx_cost_bps = 30
+        rets, _eq = _simulate_portfolio(
+            panel=panel,
+            volume_panel=vols,
+            target_weights={"SPY": 0.5, "TLT": 0.5},
+            rebalance_days=2,
+            initial_cash=100_000.0,
+            tx_cost_bps=tx_cost_bps,
+            gamma=0.0,  # isolate the linear bps cost from Almgren impact
+        )
+
+        turnover = 1.0 / 11.0  # sum(|Δw|) — two-sided, sell leg + buy leg
+        pre_cost_return = 0.10  # 0.5 SPY weight * +20% move
+        round_trip_cost_fraction = turnover * (tx_cost_bps / 10_000.0)
+
+        # Realized return on the rebalance bar equals pre-cost minus the
+        # round-trip linear cost fraction, to machine precision.
+        assert rets[2] == pytest.approx(pre_cost_return - round_trip_cost_fraction, abs=1e-12)
+
+        # And it must NOT match the one-way (halved) charge — the convention is
+        # round-trip, so a per-leg-only cost is the wrong model here.
+        one_way_cost_fraction = turnover * (tx_cost_bps / 2 / 10_000.0)
+        assert rets[2] != pytest.approx(pre_cost_return - one_way_cost_fraction, abs=1e-12)
+
     def test_all_zero_weights_raises(self) -> None:
         panel, vols = _flat_panel(["SPY", "TLT"], n_bars=120)
         with pytest.raises(ValueError, match="non-positive"):

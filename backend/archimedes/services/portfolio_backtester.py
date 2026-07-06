@@ -138,7 +138,18 @@ def _simulate_portfolio(
         conservative 0.1 so the impact haircut is honest-but-not-punitive. It is
         a tunable parameter, not a fitted constant — surface it per-asset once we
         have venue-specific ADV/impact calibration data.
-      - Proportional transaction costs (tx_cost_bps) are additive to Almgren impact.
+      - Proportional transaction costs (``tx_cost_bps``) are additive to Almgren
+        impact. ``tx_cost_bps`` is a **one-way** (per-leg) rate in basis points,
+        and the linear cost is charged on the two-sided turnover ``sum(|Δw|)`` at
+        each rebalance. A rebalance moves weight out of some positions and into
+        others, so ``sum(|Δw|)`` counts both the sell leg and the buy leg; the
+        model therefore charges ``tx_cost_bps`` on **both legs — i.e. round-trip
+        per rebalance**. Concretely, shifting a fraction ``f`` of the book from one
+        holding to another has ``sum(|Δw|) = 2f`` (``f`` sold + ``f`` bought), so
+        the realized drag is ``2 * f * tx_cost_bps / 10_000``. This is intentional
+        and conservative (it slightly overstates cost / understates CAGR rather
+        than the reverse); callers who want to model a one-way-only fill should
+        pass half the round-trip bps. See the ``linear_cost_dollars`` line below.
       - No leverage. Negative weights are clamped to zero at normalization
         (long-only enforcement matches the agent's actual output contract).
     """
@@ -228,6 +239,13 @@ def _simulate_portfolio(
             # Impact Cost = sum(gamma * sigma_j * Q_j * sqrt(Q_j / ADV_j))
             # + linear bps cost
             impact_dollars = np.sum(gamma * sigma_arr[i] * q_j * np.sqrt(q_j / safe_adv))
+            # `tx_cost_bps` is a one-way (per-leg) rate. `delta_w = |drifted - target|`
+            # is two-sided turnover: each rebalance sells `f` of the book and buys `f`
+            # elsewhere, so `sum(delta_w)` counts both legs and this charges the bps
+            # on both — i.e. round-trip per rebalance. Intentional and conservative;
+            # documented on the function docstring and pinned by
+            # test_linear_cost_is_round_trip_on_turnover. Do not "halve" this without
+            # updating that test and the round-trip convention across the codebase.
             linear_cost_dollars = np.sum(delta_w) * equity * (tx_cost_bps / 10_000.0)
 
             total_cost_dollars = impact_dollars + linear_cost_dollars
