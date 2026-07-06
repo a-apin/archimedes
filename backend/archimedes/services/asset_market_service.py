@@ -434,7 +434,12 @@ class AssetMarketService:
             # Convert Series to a plain list for downstream math.
             raw_hist = histories.get(synth)
             if raw_hist is not None and hasattr(raw_hist, "tolist"):
-                hist_prices = [float(v) for v in raw_hist.tolist() if not math.isnan(v)]
+                # An object-dtype series (a feed gap, a mixed column) can hold
+                # None or other non-numbers. math.isnan() raises TypeError on a
+                # non-float, which previously aborted the entire /explore/assets
+                # response over one bad element — guard the type and drop those
+                # instead of dropping the whole universe (#928).
+                hist_prices = [float(v) for v in raw_hist.tolist() if isinstance(v, (int, float)) and not math.isnan(v)]
             elif isinstance(raw_hist, dict):
                 hist_prices = raw_hist.get("close") or []
             else:
