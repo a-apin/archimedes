@@ -9,7 +9,7 @@ fastapi>=0.138.1
 # CVE-2026-54283 (CVE bump 2026-06-25). FastAPI's requires-dist is
 # starlette>=0.46.0 with no upper bound, so this floor resolves cleanly.
 starlette>=1.3.1
-uvicorn[standard]>=0.49.0
+uvicorn[standard]>=0.50.0
 sqlalchemy>=2.0.51
 psycopg2-binary>=2.9.12
 redis>=8.0.1
