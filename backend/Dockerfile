@@ -27,8 +27,15 @@ COPY . /app
 # Docker copies these dirs into named volumes on first initialisation, so the
 # volume inherits nonroot ownership rather than the default root:root.
 # Paths mirror docker-compose.yml: corpus-artifact is mounted at both locations.
-RUN mkdir -p /app/data/corpus-artifact /srv/corpus-artifact \
-    && chown nonroot:nonroot /app/data/corpus-artifact /srv/corpus-artifact
+#
+# /home/nonroot MUST exist and be writable: circlekit → boa → vvm (the Vyper
+# version manager, pulled in by the marketplace x402 payments, PR #958) runs
+# `Path.home()/".vvm".mkdir()` at IMPORT time with no parents=True, so a missing
+# home dir raises FileNotFoundError and crash-loops the backend (2026-07-05
+# outage). useradd is --no-create-home, so we create it explicitly here.
+ENV HOME=/home/nonroot
+RUN mkdir -p /app/data/corpus-artifact /srv/corpus-artifact /home/nonroot/.vvm \
+    && chown -R nonroot:nonroot /app/data/corpus-artifact /srv/corpus-artifact /home/nonroot
 
 # Bake all-MiniLM-L6-v2 into the image at build time so cold starts never
 # fetch from HuggingFace at runtime (offline / air-gapped containers work).
