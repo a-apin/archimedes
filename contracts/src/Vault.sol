@@ -126,6 +126,11 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
     // ─── Events (Vault-local) ────────────────────────────────────────
 
     event MaxSlippageBpsSet(uint256 oldBps, uint256 newBps);
+    /// @notice Emitted when a redeem/withdraw forced a liquidation and the caller was
+    ///         charged its slippage cost (issue #913). `slippageLoss` is the NAV lost to
+    ///         AMM impact + fees; for redeem it reduces the USDC paid out, for withdraw it
+    ///         is charged as extra burned shares.
+    event RedemptionLiquidationCharge(address indexed owner, uint256 slippageLoss);
     event AgentSet(address indexed oldAgent, address indexed newAgent);
     event PlatformFeeRecipientSet(address indexed oldRecipient, address indexed newRecipient);
     event AssetRegistrySet(address indexed registry);
@@ -219,13 +224,22 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
 
         _accrueFees();
 
+        // Snapshot the pre-liquidation rate so any slippage charge below is sized against
+        // the same NAV/share the base shares were priced at (issue #913).
+        uint256 navBefore = totalAssets();
+        uint256 supplyBefore = totalSupply();
+
         shares = _convertToShares(assets);
         if (shares == 0) revert ZeroShares();
 
         // ERC-4626 allowance enforcement — CEI: check BEFORE any external call (audit B6).
         // A caller may only burn `owner_`'s shares when it IS the owner, or when the owner
         // has granted it a share allowance. `_spendAllowance` is a no-op for an infinite
-        // (type(uint256).max) allowance, matching the canonical pattern.
+        // (type(uint256).max) allowance, matching the canonical pattern. Any extra shares
+        // charged for liquidation slippage below are a bounded top-up whose size isn't
+        // knowable until the AMM has executed; that incremental allowance is spent
+        // post-liquidation, which is safe — _spendAllowance makes no external call and the
+        // function is nonReentrant.
         if (msg.sender != owner_) {
             _spendAllowance(owner_, msg.sender, shares);
         }
@@ -234,7 +248,23 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
         // after the allowance check, satisfying the Check-Effects-Interactions pattern).
         uint256 usdcOnHand = IERC20(asset).balanceOf(address(this));
         if (usdcOnHand < assets) {
-            _liquidateToUsdc(assets - usdcOnHand);
+            uint256 slippageLoss = _liquidateAndMeasureLoss(assets - usdcOnHand);
+            if (slippageLoss > 0 && navBefore > 0) {
+                // withdraw() must deliver EXACTLY `assets`, so the caller pays the slippage
+                // they forced in EXTRA burned shares (worth `slippageLoss` at the pre-trade
+                // rate) rather than in reduced USDC — preserving remaining holders' per-share
+                // NAV (issue #913). Round up against the withdrawer. If the caller lacks the
+                // shares to cover the charge, _burn reverts — the correct outcome (they should
+                // use redeem() for a slippage-absorbing full exit).
+                uint256 extraShares = (slippageLoss * supplyBefore + navBefore - 1) / navBefore;
+                if (extraShares > 0) {
+                    if (msg.sender != owner_) {
+                        _spendAllowance(owner_, msg.sender, extraShares);
+                    }
+                    shares += extraShares;
+                    emit RedemptionLiquidationCharge(owner_, slippageLoss);
+                }
+            }
         }
 
         _burn(owner_, shares);
@@ -270,9 +300,19 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
 
         // Ensure we have enough USDC — liquidate positions if needed (external AMM calls
         // after the allowance check, satisfying the Check-Effects-Interactions pattern).
+        // The redeemer bears the slippage of the liquidation THEY forced: without this the
+        // ~0.3–5% AMM cost drops totalAssets() while the redeemer still receives the full
+        // pre-trade claim, silently draining every remaining holder's NAV (issue #913).
+        // Charging it here keeps the payout no larger than the vault can afford at the
+        // realized rate, so per-share NAV for those who stay is preserved.
         uint256 usdcOnHand = IERC20(asset).balanceOf(address(this));
         if (usdcOnHand < assets) {
-            _liquidateToUsdc(assets - usdcOnHand);
+            uint256 slippageLoss = _liquidateAndMeasureLoss(assets - usdcOnHand);
+            if (slippageLoss > 0) {
+                assets = assets > slippageLoss ? assets - slippageLoss : 0;
+                if (assets == 0) revert ZeroAssets();
+                emit RedemptionLiquidationCharge(owner_, slippageLoss);
+            }
         }
 
         _burn(owner_, shares);
@@ -618,6 +658,22 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
         // Verify we now have enough USDC
         uint256 usdcAfter = IERC20(asset).balanceOf(address(this));
         if (usdcAfter < shortfall) revert InsufficientLiquidity();
+    }
+
+    /// @notice Liquidate to cover a `shortfall` of USDC and return the NAV lost to
+    ///         AMM slippage + fees in doing so (issue #913).
+    /// @dev    Liquidation sells synths at the AMM, which realizes strictly less USDC than
+    ///         their oracle-priced NAV (price impact + the 0.3% AMM fee). Because
+    ///         totalAssets() marks synths at the oracle price, converting synth-NAV into
+    ///         USDC at a worse rate drops totalAssets() by exactly that realized loss. The
+    ///         oracle price is unchanged within the call, so `navBefore - navAfter` is the
+    ///         precise cost the redeeming caller imposed. Returning it lets redeem()/withdraw()
+    ///         charge that caller instead of socializing it onto the holders who stayed.
+    function _liquidateAndMeasureLoss(uint256 shortfall) internal returns (uint256 slippageLoss) {
+        uint256 navBefore = totalAssets();
+        _liquidateToUsdc(shortfall);
+        uint256 navAfter = totalAssets();
+        slippageLoss = navBefore > navAfter ? navBefore - navAfter : 0;
     }
 
     function _accrueFees() internal {
