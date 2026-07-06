@@ -63,6 +63,11 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
     ///         Prevents the owner from effectively disabling swap protection.
     uint256 public constant MAX_SLIPPAGE_CAP_BPS = 500;
 
+    /// @notice Upper bound on the owner-configurable rebalance dead-band (20%). A band
+    ///         wider than this would let the manager drift arbitrarily far from target
+    ///         before a correction is required, defeating the churn guard (issue #915).
+    uint256 public constant MAX_REBALANCE_BAND_BPS = 2000;
+
     // ─── Immutables ──────────────────────────────────────────────────
 
     address public immutable override asset;
@@ -115,6 +120,16 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
     ///         covers the 30 bps AMM fee plus bounded price impact.
     uint256 public maxSlippageBps = 100;
 
+    /// @notice Dead-band (bps) around each token's target weight inside which rebalance()
+    ///         will not trade it (issue #915). A token is only tradable once it is more than
+    ///         this far off target, and only in the direction that closes the gap (never past
+    ///         target). This is the churn guard: without it the manager's only bound was the
+    ///         per-swap oracle floor, so a compromised agent could wash USDC↔synth every
+    ///         rebalance and bleed the fee + impact each way. Owner-configurable, bounded by
+    ///         MAX_REBALANCE_BAND_BPS. Default 100 bps (1%). Only enforced once a target
+    ///         allocation policy exists (see _requireTowardTarget).
+    uint256 public rebalanceBandBps = 100;
+
     /// @notice Owner-curated registry consulted by setTokenOraclesFromRegistry.
     ///         The manager may wire oracles only from this allowlist, never an
     ///         arbitrary address — see setTokenOraclesFromRegistry.
@@ -141,6 +156,12 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
     error OracleNotRegistered(address token);
     error AssetRegistryNotSet();
     error TraceRegistryNotSet();
+    /// @notice A rebalance swap would move `token` away from its target weight, or trade it
+    ///         while it is already within the dead-band of target (issue #915).
+    error RebalanceNotTowardTarget(address token);
+    /// @notice A rebalance swap would overshoot `token` past its target weight (issue #915).
+    error RebalanceOvershootsTarget(address token);
+    error InvalidRebalanceBand();
 
     // ─── Events (Vault-local) ────────────────────────────────────────
 
@@ -150,6 +171,7 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
     ///         AMM impact + fees; for redeem it reduces the USDC paid out, for withdraw it
     ///         is charged as extra burned shares.
     event RedemptionLiquidationCharge(address indexed owner, uint256 slippageLoss);
+    event RebalanceBandBpsSet(uint256 oldBps, uint256 newBps);
     event AgentSet(address indexed oldAgent, address indexed newAgent);
     event PlatformFeeRecipientSet(address indexed oldRecipient, address indexed newRecipient);
     event AssetRegistrySet(address indexed registry);
@@ -419,12 +441,19 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
                 continue;
             }
 
+            // Compute the oracle floor first (reverts on missing oracle / stale / zero price),
+            // so tokenOracle[tokenOut] is known-nonzero for the toward-target check below.
+            uint256 minOut = _oracleMinOut(tokenOut, asset, amount);
+            // #915 churn guard: this sell must move tokenOut toward its target weight
+            // (over-allocated → sell) and not past it. sellValue is the synth's oracle NAV.
+            uint256 sellValue = (amount * PriceOracle(tokenOracle[tokenOut]).getPrice()) / 1e18;
+            _requireTowardTarget(tokenOut, sellValue, false);
+
             // Approve router
             IERC20(tokenOut).safeIncreaseAllowance(address(ammRouter), amount);
 
             // Swap tokenOut -> USDC with oracle-derived slippage floor
-            uint256 usdcReceived =
-                ammRouter.swap(tokenOut, asset, amount, _oracleMinOut(tokenOut, asset, amount));
+            uint256 usdcReceived = ammRouter.swap(tokenOut, asset, amount, minOut);
 
             _removeHolding(tokenOut, amount);
             _addHolding(address(asset), usdcReceived);
@@ -440,12 +469,18 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
                 continue;
             }
 
+            // Oracle floor first (reverts on missing oracle / stale / zero price).
+            uint256 minOut = _oracleMinOut(asset, tokenIn, amount);
+            // #915 churn guard: this buy must move tokenIn toward its target weight
+            // (under-allocated → buy) and not past it. The USDC spent (`amount`) is the
+            // NAV added to the position.
+            _requireTowardTarget(tokenIn, amount, true);
+
             // Approve router
             IERC20(asset).safeIncreaseAllowance(address(ammRouter), amount);
 
             // Swap USDC -> tokenIn with oracle-derived slippage floor
-            uint256 tokensReceived =
-                ammRouter.swap(asset, tokenIn, amount, _oracleMinOut(asset, tokenIn, amount));
+            uint256 tokensReceived = ammRouter.swap(asset, tokenIn, amount, minOut);
 
             _removeHolding(asset, amount);
             _addHolding(tokenIn, tokensReceived);
@@ -603,6 +638,16 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
         maxSlippageBps = _maxSlippageBps;
     }
 
+    /// @notice Tune the rebalance dead-band around target weights (issue #915). Bounded by
+    ///         MAX_REBALANCE_BAND_BPS. A value of 0 is allowed — it removes the band but keeps
+    ///         the directional "toward target, never overshoot" constraint, the load-bearing
+    ///         part of the churn guard.
+    function setRebalanceBandBps(uint256 _bandBps) external onlyOwner {
+        if (_bandBps > MAX_REBALANCE_BAND_BPS) revert InvalidRebalanceBand();
+        emit RebalanceBandBpsSet(rebalanceBandBps, _bandBps);
+        rebalanceBandBps = _bandBps;
+    }
+
     function pause() external onlyOwner {
         _pause();
     }
@@ -612,6 +657,53 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
     }
 
     // ─── Internal ────────────────────────────────────────────────────
+
+    /// @notice A token's current value in USDC (6-decimal) terms, matching totalAssets()'s
+    ///         convention: USDC at face value, synths at balance(18) * price(6) / 1e18.
+    ///         Unpriced tokens contribute 0 (they can't be weighted); a rebalance touching
+    ///         such a token reverts earlier in _oracleMinOut anyway.
+    function _tokenValueUsdc(address token) internal view returns (uint256) {
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        if (token == address(asset)) return bal;
+        address oracle = tokenOracle[token];
+        if (oracle == address(0)) return 0;
+        return (bal * PriceOracle(oracle).getPrice()) / 1e18;
+    }
+
+    /// @notice Enforce that a rebalance swap moves `token` toward its target weight and does
+    ///         not overshoot it (issue #915). `tradeValueUsdc` is the USDC NAV moved by the
+    ///         swap; `isBuy` distinguishes a weight-raising buy from a weight-lowering sell.
+    /// @dev    The churn guard. Evaluated against LIVE state so it composes correctly across
+    ///         multiple swaps in one call and across repeated rebalances: once a token reaches
+    ///         (within the dead-band of) its target, further trades in that direction revert,
+    ///         so USDC↔synth washing can't drain the vault a fee at a time. Only enforced once
+    ///         a target allocation policy exists — with no targets set there is no "toward" to
+    ///         define, and blocking every trade would break initial position-building; a vault
+    ///         run without target weights therefore has no churn guard (set targets to arm it).
+    function _requireTowardTarget(address token, uint256 tradeValueUsdc, bool isBuy) internal view {
+        if (targetTokens.length == 0) return; // no policy → nothing to enforce against
+        uint256 nav = totalAssets();
+        if (nav == 0) return;
+
+        uint256 currentValue = _tokenValueUsdc(token);
+        uint256 currentWeight = (currentValue * BPS) / nav;
+        uint256 target = targetWeightBps[token]; // 0 for a token not in the target set
+        uint256 targetValue = (target * nav) / BPS;
+
+        if (isBuy) {
+            // Buying raises the weight: only allowed while under target by more than the
+            // dead-band, and only up to the target (never past it).
+            if (currentWeight + rebalanceBandBps >= target) revert RebalanceNotTowardTarget(token);
+            uint256 maxBuy = targetValue > currentValue ? targetValue - currentValue : 0;
+            if (tradeValueUsdc > maxBuy) revert RebalanceOvershootsTarget(token);
+        } else {
+            // Selling lowers the weight: only allowed while over target by more than the
+            // dead-band, and only down to the target (never past it).
+            if (currentWeight <= target + rebalanceBandBps) revert RebalanceNotTowardTarget(token);
+            uint256 maxSell = currentValue > targetValue ? currentValue - targetValue : 0;
+            if (tradeValueUsdc > maxSell) revert RebalanceOvershootsTarget(token);
+        }
+    }
 
     /// @notice Compute the minimum acceptable output for an AMM swap from the
     ///         on-chain oracle price, minus the bounded slippage tolerance.
