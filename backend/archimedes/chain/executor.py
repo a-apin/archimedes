@@ -618,6 +618,23 @@ class ChainExecutor:
             "paused": paused,
         }
 
+    async def get_vault_owner(self, vault_address: str) -> str | None:
+        """Read the vault's on-chain Ownable owner — the authoritative controller.
+
+        The owner (not the immutable ``creator``, which is the deploy signer for
+        vaults minted through ``createVault``) is who currently controls the
+        vault after any ``transferOwnership``. Returns the address string, or
+        ``None`` if it can't be read so the caller can fail closed rather than
+        assume ownership.
+        """
+        try:
+            vault = self.loader.vault(vault_address)
+            owner = await vault.functions.owner().call()
+            return str(owner)
+        except Exception as exc:
+            logger.warning("Could not read on-chain owner for vault %s: %s", vault_address, exc)
+            return None
+
     async def get_all_vaults(self) -> list[str]:
         """Get all vault addresses from VaultFactory."""
         factory = self.loader.vault_factory

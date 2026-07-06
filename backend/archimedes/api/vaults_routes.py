@@ -299,11 +299,21 @@ async def store_vault_metadata(
     """Store off-chain vault metadata (strategy associations, display name).
 
     SIWE-gated and owner-scoped: this write triggers `_anchor_strategies_async`,
-    a backend-signed on-chain transaction. Previously anyone could overwrite any
-    vault's metadata and spend gas. The authenticated wallet now becomes the
-    metadata owner on first write, and subsequent writes require the caller to
-    be that owner.
+    a backend-signed on-chain transaction. The caller must be the vault's
+    on-chain Ownable owner — the authoritative controller read from the
+    contract, not "whoever wrote metadata first". This closes the IDOR (#916)
+    where the first authenticated writer could claim `creator_address` on any
+    vault that had no metadata row yet.
     """
+    # Ownership gate first, before any rigor compute or DB work: only the vault's
+    # on-chain owner may write its metadata. A read failure fails closed (503) —
+    # we never let an unverifiable caller claim a vault.
+    on_chain_owner = await chain_executor.get_vault_owner(req.vault_address)
+    if on_chain_owner is None:
+        raise HTTPException(status_code=503, detail="Could not verify vault ownership on-chain; try again shortly.")
+    if on_chain_owner.lower() != wallet.lower():
+        raise HTTPException(status_code=403, detail="Only the vault's on-chain owner may edit its metadata.")
+
     # Server-side rigor enforcement on the client-signed deploy path — the real
     # choke point. The UI creates the vault on-chain from the user's own wallet
     # (bypassing POST /create), then links strategies here, so THIS is where a
@@ -321,14 +331,13 @@ async def store_vault_metadata(
         if meta is None:
             meta = VaultMetadata(vault_address=req.vault_address)
             session.add(meta)
-        elif meta.creator_address and meta.creator_address.lower() != wallet.lower():
-            # An owner already claimed this vault's metadata; only they may edit it.
-            raise HTTPException(status_code=403, detail="Not authorized to edit this vault's metadata.")
 
         meta.name = req.name
         meta.symbol = req.symbol
-        # Bind ownership to the authenticated wallet — never trust a
-        # caller-supplied creator_address (that was the spoofing vector).
+        # Record the writer, who the gate above proved is the on-chain owner.
+        # Never trust a caller-supplied creator_address (that was the spoofing
+        # vector), and don't gate on a stale recorded value either — that would
+        # wrongly block a legitimately transferred new on-chain owner.
         meta.creator_address = wallet.lower()
         meta.set_strategy_ids(req.strategy_ids)
         session.commit()
