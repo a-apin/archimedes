@@ -1365,8 +1365,34 @@ async def run_stress_test(payload: dict, request: Request, response: Response): 
     allocations = payload.get("allocations") or []
     if not isinstance(allocations, list) or not allocations:
         raise HTTPException(status_code=400, detail="allocations[] is required")
+
+    # Validate each allocation's shape before handing it to the stress engine.
+    # stress_one indexes ``a["symbol"]`` and does ``float(a.get("weight") or 0.0)``,
+    # so a missing symbol (KeyError) or a non-numeric weight (ValueError) would
+    # otherwise surface as an opaque 500. Reject those as a 422 client error
+    # instead (issue #926). ``usdc_weight`` per-element is not consumed by the
+    # engine (it is the top-level field below), so it is not required here.
+    for i, a in enumerate(allocations):
+        if not isinstance(a, dict):
+            raise HTTPException(status_code=422, detail=f"allocations[{i}] must be an object")
+        sym = a.get("symbol")
+        if not isinstance(sym, str) or not sym.strip():
+            raise HTTPException(
+                status_code=422,
+                detail=f"allocations[{i}].symbol is required and must be a non-empty string",
+            )
+        w = a.get("weight")
+        if w is not None:
+            try:
+                float(w)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail=f"allocations[{i}].weight must be a number") from None
+
     scenario = payload.get("scenario", "all")
-    usdc_weight = float(payload.get("usdc_weight") or 0.0)
+    try:
+        usdc_weight = float(payload.get("usdc_weight") or 0.0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="usdc_weight must be a number") from None
 
     if scenario == "all":
         results = stress_all(allocations, usdc_weight=usdc_weight)
