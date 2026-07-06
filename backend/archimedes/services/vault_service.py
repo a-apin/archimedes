@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -313,10 +314,8 @@ class VaultService:
             logger.debug("Redis price snapshot not available for %s: %s", sanitize_log_value(vault_address), e)
         finally:
             if r is not None:
-                try:
+                with contextlib.suppress(Exception):
                     await r.aclose()
-                except Exception:
-                    pass
 
         # Fallback: compute simulated returns from allocation weights
         # This gives realistic numbers until real price history accumulates
