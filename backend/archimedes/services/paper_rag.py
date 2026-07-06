@@ -385,13 +385,22 @@ def augment_candidate_scores(
         logger.warning("paper_rag: semantic rerank failed, keyword-only fallback: %s", exc)
         return [(c, 1.0) for c in candidates]
 
-    # Map back to original objects, preserving score
-    arxiv_to_score = {s[0]["arxiv_id"]: s[1] for s in scored}
+    # Map scores back to the original objects by paper-dict OBJECT IDENTITY, not
+    # by arxiv_id. Keying on arxiv_id let empty or duplicate ids collapse in the
+    # dict — a real candidate then fell through to the 0.5 default, which can
+    # outrank a genuinely-scored paper and reorder fusion pair selection (#938).
+    # semantic_rerank returns the same dict objects it was handed, one per input,
+    # so identity is a stable, collision-free key.
+    score_by_dict_id = {id(s[0]): s[1] for s in scored}
     result = []
-    for c in head:
-        aid = getattr(c, "arxiv_id", "")
-        score = arxiv_to_score.get(aid, 0.5)
-        result.append((c, score))
+    for c, paper_dict in zip(head, paper_dicts, strict=True):
+        aid = str(getattr(c, "arxiv_id", "") or "").strip()
+        if not aid:
+            # A candidate with no arxiv_id can't be provenance-tracked into a
+            # fusion pair — score it 0.0 so it can't outrank a real paper (#938).
+            result.append((c, 0.0))
+            continue
+        result.append((c, score_by_dict_id.get(id(paper_dict), 0.0)))
     # Tail candidates were not semantically scored; rank them below the head.
     for c in tail:
         result.append((c, 0.0))
