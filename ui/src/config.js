@@ -616,7 +616,7 @@ export const TRACE_REGISTRY_ABI = [
 export const ASSET_REGISTRY_ABI = [
   { name: 'getAllSynthetics', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'address[]' }] },
   { name: 'vaultCount',       type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
-  { name: 'getLeaderboard',   type: 'function', stateMutability: 'view', inputs: [{ type: 'uint8' }, { type: 'uint256' }], outputs: [{ type: 'address[]' }] },
+  { name: 'getLeaderboard',   type: 'function', stateMutability: 'view', inputs: [{ type: 'uint8' }, { type: 'uint256' }, { type: 'uint256' }], outputs: [{ type: 'address[]' }] }, // (tier, offset, limit) — paginated (#927)
 ]
 
 export const VAULT_ABI = [
