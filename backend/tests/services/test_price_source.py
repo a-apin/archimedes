@@ -215,27 +215,26 @@ async def test_cascade_mode_prefers_pyth_then_yfinance(monkeypatch):
     from archimedes.chain.oracle_updater import OracleUpdater
 
     upd = OracleUpdater()
-    # Pyth covers sBTC + sSPY (FRESH observations); yfinance must fill the rest
-    # (sOIL/sNKY/sTSLA/sNVDA/sGOLD). Use a real-fresh timestamp: a fresh Pyth read is
-    # what counts as "covered" now that stale observations fall through (below).
+    # Pyth covers sBTC (FRESH observation) but not sSPY (the only remaining synth
+    # in YFINANCE_MAP after the #943 prune) — yfinance must fill that gap. Use a
+    # real-fresh timestamp: a fresh Pyth read is what counts as "covered" now that
+    # stale observations fall through (below).
     fresh = datetime.now(UTC)
     pyth_ret = {
         "sBTC": AssetPrice("sBTC", 58000, fresh, "pyth_hermes"),
-        "sSPY": AssetPrice("sSPY", 512, fresh, "pyth_hermes"),
     }
     with (
         patch("archimedes.services.price_source.fetch_pyth_prices", AsyncMock(return_value=pyth_ret)),
-        patch.object(upd, "_fetch_yfinance", return_value=[AssetPrice("sOIL", 70, fresh, "yfinance")]) as yf_mock,
+        patch.object(upd, "_fetch_yfinance", return_value=[AssetPrice("sSPY", 512, fresh, "yfinance")]) as yf_mock,
         patch.object(upd, "_fetch_crypto", AsyncMock(return_value=[])) as crypto_mock,
     ):
         prices = await upd.fetch_prices()
     by = {p.symbol: p for p in prices}
     assert by["sBTC"].source == "pyth_hermes"  # Pyth wins for covered
-    assert by["sSPY"].source == "pyth_hermes"
-    assert by["sOIL"].source == "yfinance"  # fallback filled the gap
+    assert by["sSPY"].source == "yfinance"  # fallback filled the gap
     # yfinance was asked only for the symbols Pyth didn't cover
     called_symbols = set(yf_mock.call_args[0][0].keys())
-    assert "sSPY" not in called_symbols and "sGOLD" in called_symbols
+    assert called_symbols == {"sSPY"}
     crypto_mock.assert_not_called()  # sBTC came from Pyth → no CoinGecko
 
 

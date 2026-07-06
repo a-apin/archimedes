@@ -266,7 +266,8 @@ class TestModuleConstants:
     def test_symbol_maps_present(self):
         from archimedes.chain.oracle_updater import CRYPTO_MAP, YFINANCE_MAP
 
-        assert YFINANCE_MAP["sTSLA"] == "TSLA"
+        # sSPY is the one live synth with a yfinance ticker; sBTC is the one crypto.
+        assert YFINANCE_MAP["sSPY"] == "SPY"
         assert CRYPTO_MAP["sBTC"] == "bitcoin"
 
     def test_circle_constants(self):
@@ -274,3 +275,67 @@ class TestModuleConstants:
 
         assert CIRCLE_BLOCKCHAIN == "ARC-TESTNET"
         assert CIRCLE_API_BASE.startswith("https://")
+
+
+# Synths dropped from the on-chain universe: sTSLA/sNVDA (single stocks, #725,
+# compliance-flagged backtest-only) and sGOLD/sOIL/sNKY (#842 — sGOLD→sGLD/sXAU,
+# sOIL/sNKY dropped). None are in universe.ON_CHAIN_SYNTHS, so none must be fetched.
+RETIRED_SYNTHS = ("sTSLA", "sNVDA", "sGOLD", "sOIL", "sNKY")
+
+
+class TestYfinanceMapPrunedToLiveUniverse:
+    """Issue #943 — YFINANCE_MAP must not carry retired synths (wasted fetch + misleading log)."""
+
+    def test_retired_synths_absent_from_yfinance_map(self):
+        from archimedes.chain.oracle_updater import YFINANCE_MAP
+
+        for symbol in RETIRED_SYNTHS:
+            assert symbol not in YFINANCE_MAP, (
+                f"{symbol} is retired from the on-chain universe and must not be in YFINANCE_MAP"
+            )
+
+    def test_every_synth_key_is_in_the_live_universe(self):
+        """Every ``s``-prefixed YFINANCE_MAP key must be a live on-chain synth.
+
+        The ``^``-prefixed keys (^GSPC, ^VIX) are index tickers used for regime
+        signals, not synths, so they are exempt — and the fetch loop's leading-"s"
+        filter already excludes them from the synth fetch. This is the parity guard
+        that stops a future stale entry from creeping back in.
+        """
+        from archimedes import universe
+        from archimedes.chain.oracle_updater import YFINANCE_MAP
+
+        live = set(universe.ON_CHAIN_SYNTHS)
+        synth_keys = {k for k in YFINANCE_MAP if k.startswith("s")}
+        assert synth_keys, "expected at least one live synth in YFINANCE_MAP"
+        stale = synth_keys - live
+        assert not stale, f"YFINANCE_MAP carries synths absent from the live universe: {sorted(stale)}"
+
+    async def test_fetch_prices_does_not_fetch_retired_symbols(self, updater):
+        """Negative control: the yfinance fetch is handed only live-universe synths.
+
+        ``fetch_prices`` builds ``equity_symbols`` from YFINANCE_MAP and passes it to
+        ``_fetch_yfinance``. We spy on that boundary (no network) and assert none of the
+        retired symbols — nor their old tickers — reach the fetch. Positive control: the
+        one live synth (sSPY) IS passed through, proving the filter isn't just empty.
+        """
+        captured: dict[str, str] = {}
+
+        def _spy_fetch(symbols, timestamp):
+            captured.update(symbols)
+            return []
+
+        with (
+            patch.object(updater, "_fetch_yfinance", side_effect=_spy_fetch),
+            patch.object(updater, "_fetch_crypto", AsyncMock(return_value=[])),
+        ):
+            await updater.fetch_prices()
+
+        # No retired synth key reaches the fetch...
+        for symbol in RETIRED_SYNTHS:
+            assert symbol not in captured
+        # ...and neither do their old upstream tickers.
+        for stale_ticker in ("GC=F", "CL=F", "^N225", "TSLA", "NVDA"):
+            assert stale_ticker not in captured.values()
+        # Positive control: the live synth is still fetched.
+        assert captured.get("sSPY") == "SPY"

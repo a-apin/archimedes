@@ -21,16 +21,23 @@ from archimedes.models.asset import AssetPrice, MarketSnapshot
 
 logger = logging.getLogger(__name__)
 
-# Symbol → yfinance ticker mapping
+# Symbol → yfinance ticker mapping.
+#
+# Only synths that are actually on the live on-chain universe belong here — the
+# fetch loop (fetch_prices) and the secondary cross-check (_cross_check_secondary)
+# both key off this map, so a stale entry means a wasted download and a misleading
+# "fetched N prices" log every cycle. Retired single-stock synths (sTSLA/sNVDA,
+# dropped from the SSOT in #725 pending securities-compliance review) and the
+# futures/index synths retired in #842 (sGOLD → sGLD/sXAU, sOIL/sNKY dropped) are
+# no longer in universe.ON_CHAIN_SYNTHS, so they are removed here too. sSPY is the
+# only live synth with a yfinance ticker; the ^-prefixed entries are index tickers
+# (not synths) used for regime signals — the S&P 500 moving averages
+# (_fetch_sp500_moving_averages) and VIX (fetch_market_snapshot) — and are excluded
+# from the synth fetch loop by the leading-"s" filter, so they stay.
 YFINANCE_MAP = {
-    "sTSLA": "TSLA",
-    "sNVDA": "NVDA",
     "sSPY": "SPY",
-    "sGOLD": "GC=F",  # Gold futures
-    "sOIL": "CL=F",  # WTI crude oil futures
-    "sNKY": "^N225",  # Nikkei 225
-    "^GSPC": "^GSPC",  # S&P 500 index
-    "^VIX": "^VIX",  # VIX index
+    "^GSPC": "^GSPC",  # S&P 500 index (regime signal, not a synth)
+    "^VIX": "^VIX",  # VIX index (regime signal, not a synth)
 }
 
 # Symbol → CoinGecko ID
