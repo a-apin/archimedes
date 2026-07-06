@@ -305,6 +305,129 @@ async def test_brief_validation_rejects_invalid_brief(monkeypatch):
     assert statuses[-1] == "error"
 
 
+@pytest.mark.asyncio
+async def test_validated_asset_classes_are_folded_into_brief_before_dispatch(monkeypatch):
+    """#892: brief_validated's asset_classes_inferred must reach the brief the
+    pipeline actually dispatches with — not just the SSE event payload.
+
+    Reproduces the issue's exact bug: the user's brief is classified with
+    ["crypto", "treasuries"] (brief_validated correctly reports it), but before
+    this fix, brief.asset_classes downstream still held whatever the CLIENT
+    originally sent (here: nothing at all) because the validator's inferred
+    classes were only ever used for the SSE display event, never folded back
+    into the brief object that the debate society / fusion universe steering
+    consumes. Forces the live-validator branch (_llm_available=True) but
+    routes to the fixture runner (_debate_can_run=False) so the assertion is
+    hermetic — no LLM, no corpus.
+    """
+    from archimedes.services import generation_pipeline as gp
+
+    monkeypatch.setattr(gp, "_llm_available", lambda: True)
+
+    async def fake_validate(brief):
+        return {
+            "is_valid": True,
+            "intent_summary": brief.intent[:140],
+            "asset_classes_inferred": ["crypto", "treasuries"],
+            "time_horizon_inferred": "unknown",
+            "risk_appetite_adjusted": brief.risk_appetite,
+        }
+
+    monkeypatch.setattr(gp, "_validate_brief", fake_validate)
+
+    # Force the fixture runner (not the debate society) so this stays
+    # hermetic, while still exercising the live-style validation branch above.
+    import archimedes.agents.debate_engine as de
+
+    monkeypatch.setattr(de, "_debate_can_run", lambda brief: False)
+    monkeypatch.setenv("GENERATION_PIPELINE_FIXTURE", "1")
+
+    seen_asset_classes: list[list[str] | None] = []
+    real_runner = gp._run_fixture_candidate
+
+    async def _spy_runner(*, brief, **kwargs):
+        seen_asset_classes.append(list(brief.asset_classes or []))
+        return await real_runner(brief=brief, **kwargs)
+
+    monkeypatch.setattr(gp, "_run_fixture_candidate", _spy_runner)
+
+    store = _FakeStore()
+    brief = GenerateBrief(
+        intent="trend-following on BTC and ETH with a defensive rotation into treasuries when volatility spikes",
+        risk_appetite="moderate",
+        asset_classes=None,  # the client sent nothing explicit — only the LLM classified it
+    )
+    with patch(
+        "archimedes.agents.generation_pipeline._persist_candidate",
+        new=AsyncMock(return_value=("strat_892_001", "0x892")),
+    ):
+        await gp.run_generation(job_id="job_892_001", brief=brief, n_candidates=1, store=store)
+
+    # The SSE event still reports the validator's classification (unchanged UX).
+    bv = next(e for e in store.events if e["event"] == "brief_validated")
+    assert set(bv["data"]["asset_classes"]) == {"crypto", "treasuries"}
+
+    # THE BUG: every dispatched candidate must actually see the classified
+    # classes on brief.asset_classes, not just the discarded SSE payload.
+    assert seen_asset_classes, "fixture runner was never invoked — test setup is wrong"
+    for classes in seen_asset_classes:
+        assert set(classes) == {"crypto", "treasuries"}, (
+            f"brief.asset_classes at dispatch time was {classes!r} — the validator's "
+            "asset_classes_inferred was not folded back into the brief"
+        )
+
+
+@pytest.mark.asyncio
+async def test_validated_asset_classes_union_with_explicit_user_picks(monkeypatch):
+    """#892: an explicit user ticker pick must survive the merge, not be
+    replaced by the validator's coarser class inference."""
+    from archimedes.services import generation_pipeline as gp
+
+    monkeypatch.setattr(gp, "_llm_available", lambda: True)
+
+    async def fake_validate(brief):
+        return {
+            "is_valid": True,
+            "intent_summary": brief.intent[:140],
+            "asset_classes_inferred": ["treasuries"],
+            "time_horizon_inferred": "unknown",
+            "risk_appetite_adjusted": brief.risk_appetite,
+        }
+
+    monkeypatch.setattr(gp, "_validate_brief", fake_validate)
+
+    import archimedes.agents.debate_engine as de
+
+    monkeypatch.setattr(de, "_debate_can_run", lambda brief: False)
+    monkeypatch.setenv("GENERATION_PIPELINE_FIXTURE", "1")
+
+    seen_asset_classes: list[list[str] | None] = []
+    real_runner = gp._run_fixture_candidate
+
+    async def _spy_runner(*, brief, **kwargs):
+        seen_asset_classes.append(list(brief.asset_classes or []))
+        return await real_runner(brief=brief, **kwargs)
+
+    monkeypatch.setattr(gp, "_run_fixture_candidate", _spy_runner)
+
+    store = _FakeStore()
+    brief = GenerateBrief(
+        intent="BTC momentum with a treasury hedge",
+        risk_appetite="moderate",
+        asset_classes=["BTC"],  # explicit user pick — must not be dropped
+    )
+    with patch(
+        "archimedes.agents.generation_pipeline._persist_candidate",
+        new=AsyncMock(return_value=("strat_892_002", "0x892b")),
+    ):
+        await gp.run_generation(job_id="job_892_002", brief=brief, n_candidates=1, store=store)
+
+    assert seen_asset_classes
+    for classes in seen_asset_classes:
+        assert "BTC" in classes, "explicit user pick must survive the validator merge"
+        assert "treasuries" in classes, "validator's inferred class must be folded in alongside the user pick"
+
+
 # ── Dual bull/bear regime tests (Issue #163) ───────────────────────────────
 
 

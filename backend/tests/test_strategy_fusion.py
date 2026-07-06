@@ -23,6 +23,7 @@ import pytest
 from archimedes.agents.strategy_fusion import (
     MIN_PAPERS,
     SUPPORTED_UNIVERSE,
+    CorpusPaper,
     FusionBrief,
     FusionCannedBackend,
     StrategyFusion,
@@ -576,3 +577,157 @@ def test_universe_source_is_full_on_fallback(monkeypatch, corpus):
     assert proposal.status == "ok"
     assert proposal.strategy_spec["asset_universe"] == list(SUPPORTED_UNIVERSE)
     assert proposal.universe_source == "full"
+
+
+# ── Defensive-leg universe gap-fill + honest surfacing (#892) ─────────────
+#
+# Issue #892: a brief classified with multiple asset_classes (e.g.
+# ["crypto", "treasuries"]) had its "treasuries" leg silently vanish from
+# every candidate's traded universe — the model named concrete crypto tickers
+# but "treasuries" is a class, not a ticker, so `_resolve_user_assets` /
+# `_spec_universe` dropped it with no signal. Fixed by (a) wiring the
+# already-registered treasury tickers (IEF/SHY/TLT etc.) into the universe
+# via a class-name -> proxy-ticker gap-fill, and (b) honestly surfacing any
+# classified class that STILL has zero representation (universe_gaps /
+# risk_notes) instead of silently proceeding.
+
+
+@pytest.fixture
+def crypto_treasury_corpus():
+    """A tiny dedicated corpus whose abstracts literally contain "crypto" and
+    "treasuries" so the deterministic pre-LLM paper filter (select_candidates,
+    keyed on _ASSET_SYNONYMS + the raw class term) yields >=MIN_PAPERS for
+    those exact asset_classes — independent of the shared fixture corpus
+    above, which has no crypto paper and only a singular "treasury" (not
+    "treasuries") mention.
+    """
+    return [
+        CorpusPaper(
+            arxiv_id="2501.00001",
+            title="Momentum and Trend-Following in Crypto Markets",
+            abstract="A trend-following strategy on major crypto assets with regime conditioning.",
+            primary_category="q-fin.PM",
+            categories=("q-fin.PM",),
+            published="2025-01-05",
+        ),
+        CorpusPaper(
+            arxiv_id="2502.00002",
+            title="Defensive Rotation into Treasuries During Volatility Spikes",
+            abstract="A volatility-managed rotation into treasuries as a defensive overlay.",
+            primary_category="q-fin.PM",
+            categories=("q-fin.PM",),
+            published="2025-02-10",
+        ),
+    ]
+
+
+class _CryptoOnlyUniverseBackend:
+    """Mirrors the issue's exact reproduction: the model names concrete crypto
+    tickers (BTC, ETH) but never mentions the classified "treasuries" leg —
+    a class name, not a ticker, so it can't appear in a ticker-only spec."""
+
+    model_id = "claude-sonnet-4-20250514"
+    served_model = "glm-4.7"
+
+    def complete(self, system: str, user: str) -> str:
+        payload = json.loads(user)
+        ids = [p["arxiv_id"] for p in payload["candidate_papers"][:2]]
+        return json.dumps(
+            {
+                "strategy_name": "TrendFusion Momentum Strategy",
+                "thesis": "Trend-following on BTC/ETH with a defensive rotation.",
+                "source_arxiv_ids": ids,
+                "fusion_reasoning": "Paper A momentum + paper B vol-managed rotation.",
+                "novelty_rationale": "Joint combination unpublished.",
+                "risk_notes": "Pre-backtest; rigor gate pending.",
+                "strategy_spec": {
+                    "name": "TrendFusion Momentum Strategy",
+                    "asset_universe": ["BTC", "ETH"],  # the model only named the crypto leg
+                    "rebalance_frequency": "monthly",
+                    "entry": {"gt": ["close", "sma_200"]},
+                    "exit": {"lt": ["close", "sma_200"]},
+                    "position_sizing": {"type": "full_invested_when_in_market"},
+                    "source_arxiv_ids": ids,
+                    "look_ahead_safe": True,
+                    "indicators": ["sma_200"],
+                },
+            }
+        )
+
+
+def test_defensive_leg_is_gap_filled_not_silently_dropped(monkeypatch, crypto_treasury_corpus):
+    """Reproduces #892: brief classified ["crypto", "treasuries"]; the model's
+    spec only names BTC/ETH. The treasury leg must be injected into the final
+    universe (real registered tickers, e.g. IEF/SHY/TLT), not silently lost —
+    and universe_gaps must be empty since both classified legs end up
+    represented (crypto directly by the model, treasuries via gap-fill)."""
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    svc = StrategyFusion(backend=_CryptoOnlyUniverseBackend(), corpus=crypto_treasury_corpus)
+    proposal = svc.propose(FusionBrief(asset_classes=["crypto", "treasuries"]))
+
+    assert proposal.status == "ok"
+    universe = proposal.strategy_spec["asset_universe"]
+    assert "BTC" in universe and "ETH" in universe  # the model's crypto leg survives
+    assert any(t in universe for t in ("IEF", "SHY", "TLT")), (
+        f"treasury leg was dropped from the universe: {universe!r}"
+    )
+    assert proposal.universe_gaps == []  # both classified legs are represented
+    assert "gap" not in proposal.risk_notes.lower()
+
+
+def test_genuinely_unavailable_asset_class_is_surfaced_not_fabricated(monkeypatch, crypto_treasury_corpus):
+    """Option (b) of the issue: a classified class with NO real data source at
+    all must be surfaced honestly (universe_gaps + risk_notes), never silently
+    dropped AND never covered by a fabricated data feed."""
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    svc = StrategyFusion(backend=_CryptoOnlyUniverseBackend(), corpus=crypto_treasury_corpus)
+    # "lunar_futures" has no proxy map entry and no SSOT asset_class tag match —
+    # there is genuinely no data source for it. "treasuries" is included purely
+    # so the paper filter matches both fixture papers (>=MIN_PAPERS) — the
+    # model's spec below never names a treasury ticker either, so this brief
+    # exercises "two classified classes, one gets a real proxy, one doesn't".
+    proposal = svc.propose(FusionBrief(asset_classes=["crypto", "lunar_futures", "treasuries"]))
+
+    assert proposal.status == "ok"
+    universe = proposal.strategy_spec["asset_universe"]
+    assert "lunar_futures" not in universe  # never fabricated as if it were a real ticker
+    assert proposal.universe_gaps == ["lunar_futures"]
+    assert "lunar_futures" in proposal.risk_notes
+    assert "not available" in proposal.risk_notes.lower()
+
+
+def test_gap_fill_never_overrides_explicit_user_ticker_picks(monkeypatch, crypto_treasury_corpus):
+    """The user's own concrete ticker picks stay the authoritative universe;
+    gap-fill only ADDS a classified class's proxy, never removes a user pick.
+
+    "crypto" is included purely so the paper filter matches both fixture
+    papers (>=MIN_PAPERS); this particular brief's model backend never names
+    a crypto ticker, so "crypto" is honestly (and separately, correctly)
+    reported as a gap — the assertion below is about QQQ/treasuries, which
+    are NOT gaps.
+    """
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    svc = StrategyFusion(backend=_SpecBackend(), corpus=crypto_treasury_corpus)  # model parrots ["SPY"], ignored
+    proposal = svc.propose(FusionBrief(asset_classes=["QQQ", "treasuries", "crypto"]))
+
+    assert proposal.status == "ok"
+    universe = proposal.strategy_spec["asset_universe"]
+    assert "QQQ" in universe
+    assert any(t in universe for t in ("IEF", "SHY", "TLT"))
+    assert proposal.universe_source == "user"
+    assert proposal.universe_gaps == ["crypto"]  # honest: no crypto ticker was ever named
+
+
+def test_broad_paper_filter_classes_still_report_as_gaps_on_full_fallback(monkeypatch, corpus):
+    """ "equities"/"rates" remain paper-RETRIEVAL-only class filters (established
+    behavior, #847/#682) — they resolve no proxy ticker of their own. On the
+    full-SSOT fallback the SSOT-tag check still recognizes them as represented
+    (equities/bonds ARE abundantly present in the full universe), so this must
+    NOT be a false-positive gap.
+    """
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    svc = StrategyFusion(backend=_SpecBackend(), corpus=corpus)
+    proposal = svc.propose(FusionBrief(asset_classes=["equities", "rates"]))
+    assert proposal.status == "ok"
+    assert proposal.universe_source == "full"
+    assert proposal.universe_gaps == []

@@ -164,30 +164,34 @@ def test_invalid_model_spec_degrades_to_text_only(monkeypatch):
 
 def test_user_assets_win_over_model_universe():
     spec = {"asset_universe": ["TSLA", "NVDA"]}
-    out, source = sf._spec_universe(_brief(asset_classes=["SPY", "gld"]), spec)
+    out, source, gaps = sf._spec_universe(_brief(asset_classes=["SPY", "gld"]), spec)
     assert out == ["SPY", "GLD"]  # canonical, order-preserving
     assert source == "user"
+    assert gaps == []
 
 
 def test_unsteered_brief_uses_models_validated_universe():
     spec = {"asset_universe": ["SPY", "GLD", "NOT_A_REAL_TICKER_XYZ"]}
-    out, source = sf._spec_universe(_brief(), spec)
+    out, source, gaps = sf._spec_universe(_brief(), spec)
     assert out == ["SPY", "GLD"]  # SSOT-validated; garbage dropped
     assert "NOT_A_REAL_TICKER_XYZ" not in out
     assert source == "model"
+    assert gaps == []
 
 
 def test_model_universe_is_capped():
     many = list(sf.SUPPORTED_UNIVERSE)[: sf._MODEL_UNIVERSE_CAP + 5]
-    out, source = sf._spec_universe(_brief(), {"asset_universe": many})
+    out, source, gaps = sf._spec_universe(_brief(), {"asset_universe": many})
     assert len(out) == sf._MODEL_UNIVERSE_CAP
     assert source == "model"
+    assert gaps == []
 
 
 def test_no_user_no_model_falls_back_to_full_universe():
-    out, source = sf._spec_universe(_brief(), {"asset_universe": []})
+    out, source, gaps = sf._spec_universe(_brief(), {"asset_universe": []})
     assert out == list(sf.SUPPORTED_UNIVERSE)  # #682's floor preserved
     assert source == "full"
+    assert gaps == []
 
 
 def test_propose_threads_model_universe_when_unsteered(monkeypatch):
@@ -214,6 +218,7 @@ def test_invalid_brief_message_guides_instead_of_insults(reason):
 def test_single_proxy_model_universe_is_treated_as_parroted_default():
     # A weak model emitting the classic bare ["SPY"] regardless of thesis is a
     # non-choice — fall back to the full universe (never trust the parrot).
-    out, source = sf._spec_universe(_brief(), {"asset_universe": ["SPY"]})
+    out, source, gaps = sf._spec_universe(_brief(), {"asset_universe": ["SPY"]})
     assert out == list(sf.SUPPORTED_UNIVERSE)
     assert source == "full"
+    assert gaps == []
