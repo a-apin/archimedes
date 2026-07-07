@@ -49,6 +49,17 @@ generate_router = APIRouter(prefix="/api/generate", tags=["generate"])
 _TERMINAL_EVENTS = {"done", "error"}
 _POLL_INTERVAL_SECONDS = 0.4
 _STREAM_TIMEOUT_SECONDS = 300  # cap a single SSE connection at 5 min
+# How long the connection may go byte-silent before we push a keep-alive
+# comment (#891). Debate/fan-out compute (sequential adversarial LLM turns,
+# then a parallel backtest gather across the whole candidate pool) can run
+# for tens of seconds without producing a new job-store event — the poll
+# loop previously just slept through that stretch and wrote nothing to the
+# socket. Intermediaries with an idle-read timeout shorter than that stretch
+# (CloudFront's origin idle timeout, corporate/browser proxies) will drop a
+# chunked connection that's gone quiet that long, even though the origin is
+# still alive and the job keeps running server-side. A ~15s heartbeat
+# cadence gives multiple safety margins under any such timeout.
+_HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 # Live registry of in-flight asyncio tasks per job. Lets cancel_job actually
 # stop the work — without this, /cancel only flips Redis status while the
@@ -232,8 +243,16 @@ async def stream_events(
         yield ": stream opened\n\n"
 
         cursor = last_event_id
-        elapsed = 0.0
-        while elapsed < _STREAM_TIMEOUT_SECONDS:
+        # Wall-clock, not accumulated sleep duration: list_events() latency or
+        # scheduler jitter can make a single loop iteration take longer than
+        # _POLL_INTERVAL_SECONDS, and summing the intended sleep length instead
+        # of measuring real elapsed time would undercount silence and could
+        # delay a heartbeat past _HEARTBEAT_INTERVAL_SECONDS -- reintroducing
+        # the idle-disconnect this fix exists to prevent.
+        loop = asyncio.get_running_loop()
+        stream_start = loop.time()
+        last_heartbeat_at = stream_start
+        while loop.time() - stream_start < _STREAM_TIMEOUT_SECONDS:
             if await request.is_disconnected():
                 logger.info("sse client disconnected (job=%s, after=%d)", sanitize_log_value(job_id), cursor)
                 return
@@ -242,11 +261,22 @@ async def stream_events(
             for ev in new_events:
                 cursor = ev["id"]
                 yield _format_sse(ev)
+                last_heartbeat_at = loop.time()  # a real event resets the silence clock too
                 if ev.get("event") in _TERMINAL_EVENTS:
                     return
 
+            # No new events this cycle — a long-running compute step (debate
+            # turns, candidate-fan-out backtests) may keep the job busy for a
+            # while yet. Emit a keep-alive comment so the connection never
+            # goes byte-silent long enough for an intermediary to decide it's
+            # dead (#891). SSE comment lines are ignored by EventSource/any
+            # spec-compliant parser, so this is invisible to application code.
+            now = loop.time()
+            if now - last_heartbeat_at >= _HEARTBEAT_INTERVAL_SECONDS:
+                yield ": heartbeat\n\n"
+                last_heartbeat_at = now
+
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
-            elapsed += _POLL_INTERVAL_SECONDS
 
         # Heartbeat-timeout exit — client can reconnect with Last-Event-ID.
         yield ": stream timeout\n\n"
