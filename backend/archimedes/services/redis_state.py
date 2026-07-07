@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
@@ -35,6 +36,45 @@ KEY_LAST_REBALANCE_PREFIX = "archimedes:agent:last_rebalance:"
 KEY_TRACE_PREFIX = "archimedes:trace:"
 KEY_TRACE_INDEX = "archimedes:trace:index"
 KEY_SIWE_NONCE_PREFIX = "archimedes:auth:nonce:"
+
+# Runner exactly-once lease (#1043) — funds-adjacent singleton runners
+# (oracle_runner, agent_runner, kb_runner) use this to make sure only ONE live
+# copy performs on-chain writes at a time. `KEY_LEASE_PREFIX + runner_name` is
+# the lock; `KEY_LEASE_PREFIX + runner_name + KEY_LEASE_FENCING_SUFFIX` is a
+# monotonically increasing counter whose current value is folded into every
+# issued token so each acquisition has a unique, ordered identity for
+# audit/log correlation — independent of the SET NX itself, which is what
+# actually enforces exclusivity. Deliberately a SEPARATE key namespace from
+# KEY_HEARTBEAT: the heartbeat has no TTL, no owner, and is written once per
+# tick by whichever process happens to be running — it cannot answer "am I
+# the only one running?" and must not be repurposed for that.
+KEY_LEASE_PREFIX = "archimedes:leader:"
+KEY_LEASE_FENCING_SUFFIX = ":fencing"
+
+# Lua: renew a lease's TTL — ONLY if the caller's token still matches the
+# stored owner (compare-and-set). Re-issuing SET with PX (rather than
+# PEXPIRE) keeps the value identical to a fresh acquire while proving
+# ownership hasn't changed underneath the caller between check and renew.
+_LEASE_RENEW_LUA = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+    return 1
+else
+    return 0
+end
+"""
+
+# Lua: release a lease — ONLY if the caller's token still matches the stored
+# owner (compare-and-delete). Without this check, a stale holder (e.g. one
+# whose lease already expired and was re-acquired by someone else) could
+# delete a lock it no longer owns.
+_LEASE_RELEASE_LUA = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+else
+    return 0
+end
+"""
 
 
 def _safe_json_loads(raw, *, context: str):
@@ -57,6 +97,8 @@ class AgentStateStore:
     def __init__(self, url: str | None = None) -> None:
         self._url = url or REDIS_URL
         self._redis: aioredis.Redis | None = None
+        self._lease_renew_script = None  # lazy-registered compare-and-set Lua script
+        self._lease_release_script = None  # lazy-registered compare-and-delete Lua script
 
     async def _get_redis(self) -> aioredis.Redis:
         if self._redis is None:
@@ -156,6 +198,65 @@ class AgentStateStore:
     async def get_heartbeat(self) -> str | None:
         r = await self._get_redis()
         return await r.get(KEY_HEARTBEAT)
+
+    # ─── Runner exactly-once lease (#1043) ─────────────────────────
+    #
+    # A real mutual-exclusion primitive — owner token + TTL + compare-and-set
+    # renew/release — for funds-adjacent singleton runners. NOT a repurposing
+    # of save_heartbeat/get_heartbeat above (those stay untouched: no TTL, no
+    # owner, once-per-tick, and cannot prove exclusivity).
+
+    async def acquire_lease(self, runner_name: str, ttl_ms: int) -> str | None:
+        """Attempt to acquire the exactly-once lease for *runner_name*.
+
+        Uses ``SET key token NX PX ttl_ms`` — atomic acquire-with-expiry.
+        Returns a fencing token ``"<uuid4>:<fence>"`` on success, or ``None``
+        if another live copy already holds the lease. ``fence`` is a
+        monotonically increasing per-runner counter (``INCR`` on a dedicated
+        key) folded into the token so every acquisition attempt gets a
+        unique, ordered identity — useful for audit/log correlation,
+        independent of the NX check itself (which is what actually enforces
+        exclusivity).
+
+        The returned token must be passed to ``renew_lease`` / ``release_lease``
+        so only the current owner can mutate the lease.
+        """
+        r = await self._get_redis()
+        key = f"{KEY_LEASE_PREFIX}{runner_name}"
+        fencing_key = f"{KEY_LEASE_PREFIX}{runner_name}{KEY_LEASE_FENCING_SUFFIX}"
+        fence = await r.incr(fencing_key)
+        token = f"{uuid.uuid4()}:{fence}"
+        acquired = await r.set(key, token, nx=True, px=ttl_ms)
+        return token if acquired else None
+
+    async def renew_lease(self, runner_name: str, token: str, ttl_ms: int) -> bool:
+        """Extend the lease TTL — ONLY if *token* still matches the stored owner.
+
+        Returns ``False`` (never raises for a lost lease) when the token no
+        longer matches — e.g. the lease expired and another copy acquired it.
+        Callers MUST treat a ``False`` return as "lease lost" and fail
+        closed: skip the on-chain write this cycle and keep retrying to
+        re-acquire. See ``chain/oracle_runner.py`` and ``chain/agent_runner.py``.
+        """
+        r = await self._get_redis()
+        key = f"{KEY_LEASE_PREFIX}{runner_name}"
+        if self._lease_renew_script is None:
+            self._lease_renew_script = r.register_script(_LEASE_RENEW_LUA)
+        result = await self._lease_renew_script(keys=[key], args=[token, str(ttl_ms)])
+        return bool(result)
+
+    async def release_lease(self, runner_name: str, token: str) -> None:
+        """Release the lease — a no-op if *token* no longer matches the owner.
+
+        Best-effort: safe to call on shutdown even if the lease already
+        expired or was reclaimed by another copy (the compare-and-delete
+        check makes that a no-op rather than deleting someone else's lease).
+        """
+        r = await self._get_redis()
+        key = f"{KEY_LEASE_PREFIX}{runner_name}"
+        if self._lease_release_script is None:
+            self._lease_release_script = r.register_script(_LEASE_RELEASE_LUA)
+        await self._lease_release_script(keys=[key], args=[token])
 
     # ─── Last rebalance per vault ─────────────────────────────────
 

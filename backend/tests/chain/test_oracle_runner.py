@@ -1,4 +1,4 @@
-"""Tests for the oracle runner loop (#738).
+"""Tests for the oracle runner loop (#738, #1043).
 
 Target: backend/archimedes/chain/oracle_runner.py
 The runner is the periodic process that fetches prices and pushes them on-chain.
@@ -8,7 +8,10 @@ no tx" branch — breaking out of the otherwise-infinite `while True` by making
 `asyncio.sleep` raise a sentinel.
 
 Hermetic: the OracleUpdater is mocked at the boundary; `asyncio.sleep` is
-patched to stop the loop. No network, no Arc RPC, no Circle.
+patched to stop the loop. No network, no Arc RPC, no Circle. The #1043
+exactly-once lease is mocked to a stub that is always "held" — its own
+acquire/renew/fail-closed behavior is covered by
+`backend/tests/test_runner_lease.py`; this file's job is the price-push loop.
 """
 
 from __future__ import annotations
@@ -30,10 +33,21 @@ def _price(symbol: str = "sTSLA", usd: float = 100.0) -> AssetPrice:
     return AssetPrice(symbol=symbol, price_usd=usd, timestamp=datetime.now(UTC), source="yfinance")
 
 
-async def _run_one_cycle(updater: MagicMock) -> None:
+def _fake_lease(*, is_valid: bool = True) -> MagicMock:
+    """A RunnerLeaseGuard stub that is always already-acquired and valid."""
+    lease = MagicMock()
+    lease.acquire_forever = AsyncMock(return_value=None)
+    lease.start_renewal = MagicMock()
+    lease.install_sigterm_release = MagicMock()
+    lease.is_valid = is_valid
+    return lease
+
+
+async def _run_one_cycle(updater: MagicMock, lease: MagicMock | None = None) -> None:
     """Run oracle_runner.run() through exactly one loop body, then stop."""
     with (
         patch("archimedes.chain.oracle_runner.OracleUpdater", return_value=updater),
+        patch("archimedes.chain.oracle_runner.RunnerLeaseGuard", return_value=lease or _fake_lease()),
         patch("archimedes.chain.oracle_runner.asyncio.sleep", AsyncMock(side_effect=_StopLoop)),
         pytest.raises(_StopLoop),
     ):
@@ -78,3 +92,33 @@ class TestOracleRunnerLoop:
         # Sanity: the module-level INTERVAL falls back to 60 when env is unset.
         assert isinstance(oracle_runner.INTERVAL, int)
         assert oracle_runner.INTERVAL >= 1
+
+
+class TestOracleRunnerLeaseGate:
+    """#1043 — the on-chain price push is gated on the exactly-once lease."""
+
+    async def test_lease_held_pushes_prices(self):
+        updater = MagicMock()
+        updater.fetch_prices = AsyncMock(return_value=[_price()])
+        updater.push_prices_on_chain = AsyncMock(return_value="0xtx-1")
+        await _run_one_cycle(updater, lease=_fake_lease(is_valid=True))
+        updater.push_prices_on_chain.assert_awaited_once()
+
+    async def test_lease_not_held_skips_push_fail_closed(self):
+        updater = MagicMock()
+        updater.fetch_prices = AsyncMock(return_value=[_price()])
+        updater.push_prices_on_chain = AsyncMock(return_value="0xtx-1")
+        await _run_one_cycle(updater, lease=_fake_lease(is_valid=False))
+        # Prices were fetched but the on-chain write is skipped — never fail open.
+        updater.fetch_prices.assert_awaited_once()
+        updater.push_prices_on_chain.assert_not_called()
+
+    async def test_run_blocks_on_acquire_before_entering_loop(self):
+        # acquire_forever() must be awaited BEFORE the price-fetch loop starts.
+        updater = MagicMock()
+        updater.fetch_prices = AsyncMock(return_value=[])
+        lease = _fake_lease()
+        await _run_one_cycle(updater, lease=lease)
+        lease.acquire_forever.assert_awaited_once()
+        lease.start_renewal.assert_called_once()
+        lease.install_sigterm_release.assert_called_once()

@@ -6,6 +6,17 @@ Run as a standalone process:
 Env:
     ORACLE_INTERVAL_SECONDS  — how often to push prices (default: 60)
     ARC_OWNER_PRIVATE_KEY    — required for on-chain pushes
+    ORACLE_LEASE_TTL_MS      — exactly-once lease TTL (default: 300000 = 5min)
+    ORACLE_LEASE_RENEW_S     — lease renewal interval (default: 90s, ~ttl/3)
+
+Exactly-once (#1043): this runner is a funds-adjacent singleton — two live
+copies pushing prices concurrently is wasted gas at best and a source of
+stale/racing on-chain state at worst. On startup it blocks until it holds a
+Redis lease (``RunnerLeaseGuard``); a second copy simply waits. The lease is
+renewed on an INDEPENDENT background schedule, and every on-chain price push
+is gated on the lease still being held — if it's lost mid-run, this runner
+fails closed (skips the push, keeps retrying) rather than risking a
+duplicate write.
 """
 
 from __future__ import annotations
@@ -16,6 +27,7 @@ import os
 import sys
 
 from archimedes.chain.oracle_updater import OracleUpdater
+from archimedes.services.runner_lease import RunnerLeaseGuard
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,20 +38,37 @@ logger = logging.getLogger(__name__)
 
 INTERVAL = int(os.getenv("ORACLE_INTERVAL_SECONDS", "60"))
 
+RUNNER_NAME = "oracle_runner"
+LEASE_TTL_MS = int(os.getenv("ORACLE_LEASE_TTL_MS", "300000"))  # 5 min
+LEASE_RENEW_INTERVAL_S = int(os.getenv("ORACLE_LEASE_RENEW_S", "90"))  # ~ttl/3
+
 
 async def run() -> None:
     updater = OracleUpdater()
+    lease = RunnerLeaseGuard(RUNNER_NAME, LEASE_TTL_MS, LEASE_RENEW_INTERVAL_S)
+
+    logger.info(f"Oracle runner starting — updating every {INTERVAL}s; acquiring exactly-once lease…")
+    await lease.acquire_forever()
+    lease.start_renewal()
+    lease.install_sigterm_release()
     logger.info(f"Oracle runner started — updating every {INTERVAL}s")
 
     while True:
         try:
             prices = await updater.fetch_prices()
             if prices:
-                tx = await updater.push_prices_on_chain(prices)
-                if tx:
-                    logger.info(f"Price push complete — first tx: {tx}")
+                if lease.is_valid:
+                    tx = await updater.push_prices_on_chain(prices)
+                    if tx:
+                        logger.info(f"Price push complete — first tx: {tx}")
+                    else:
+                        logger.info("Prices fetched (no on-chain push — owner key not configured)")
                 else:
-                    logger.info("Prices fetched (no on-chain push — owner key not configured)")
+                    logger.error(
+                        "[lease:%s] lease NOT held — SKIPPING on-chain price push this cycle "
+                        "(fail-closed; will retry once the lease is re-acquired)",
+                        RUNNER_NAME,
+                    )
             else:
                 logger.warning("No prices fetched this cycle")
         except Exception:

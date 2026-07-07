@@ -8,6 +8,22 @@ container stays small.
 Re-run trigger:
   (new papers since last run ≥ KB_NEW_PAPER_THRESHOLD)
   OR (days elapsed since last run ≥ KB_MAX_DAYS_SINCE_LAST)
+
+Exactly-once (#1043): the manifest read-decide-write above is UNLOCKED — two
+live copies could both decide ``needs_rerun() == True`` and race the same
+(heavy, expensive) pipeline against the same manifest file. kb_runner is a
+plain synchronous ``time.sleep`` loop (not asyncio), so it does not use
+``services.runner_lease.RunnerLeaseGuard`` (that class's independent
+``asyncio.create_task`` renewal loop needs a running event loop). Instead
+``_SyncLeaseClient`` below talks to the exact same Redis keys via the exact
+same compare-and-set/delete Lua scripts imported from ``redis_state.py`` —
+a lease taken out here is indistinguishable on the wire from one taken out
+by the async runners; only the transport (sync ``redis`` client vs.
+``redis.asyncio``) differs. kb is NOT funds-adjacent, so unlike
+oracle_runner/agent_runner this uses a simpler non-blocking acquire-hold-
+release around the pipeline: if another copy already holds the lease, this
+cycle is just skipped (not retried-with-backoff) — the next scheduled tick
+tries again.
 """
 
 from __future__ import annotations
@@ -15,7 +31,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,6 +43,112 @@ INTERVAL_SECONDS = int(os.getenv("KB_RUNNER_INTERVAL_SECONDS", "21600"))  # 6 h
 NEW_PAPER_THRESHOLD = int(os.getenv("KB_NEW_PAPER_THRESHOLD", "100"))
 MAX_DAYS_SINCE_LAST = int(os.getenv("KB_MAX_DAYS_SINCE_LAST", "7"))
 ARTIFACT_DIR = Path(os.getenv("KB_ARTIFACT_DIR", "/srv/corpus-artifact"))
+
+# Exactly-once lease (#1043)
+RUNNER_NAME = "kb_runner"
+# Long TTL — the corpus pipeline (SPECTER2 embed + HDBSCAN/BERTopic cluster +
+# REBEL/SciSpacy KG) can run for a while; the background renewal thread keeps
+# it alive for the duration, this just bounds an unclean-death orphan.
+LEASE_TTL_MS = int(os.getenv("KB_LEASE_TTL_MS", "1_800_000"))  # 30 min
+LEASE_RENEW_INTERVAL_S = int(os.getenv("KB_LEASE_RENEW_INTERVAL_S", "600"))  # 10 min, ~ttl/3
+
+
+class _SyncLeaseClient:
+    """Minimal SYNC counterpart to ``AgentStateStore``'s lease API (#1043).
+
+    kb_runner is a plain ``time.sleep`` loop, not asyncio — round-tripping
+    through ``asyncio.run(...)`` for every acquire/renew call would spin up a
+    fresh event loop each time for no benefit. This talks directly to the
+    SAME Redis keys (``archimedes:leader:<runner_name>`` +
+    ``:fencing``) using the SAME compare-and-set/delete Lua scripts imported
+    from ``redis_state.py``, so a lease taken out here is indistinguishable
+    on the wire from one taken out by the async runners.
+    """
+
+    def __init__(self, url: str | None = None) -> None:
+        # Imported lazily so importing kb_runner in tests never requires the
+        # sync `redis` package to actually reach a server, and so the async
+        # AgentStateStore module (redis.asyncio) stays the only import site
+        # for callers that don't need the sync path.
+        import redis as sync_redis
+
+        from archimedes.services.redis_state import _LEASE_RELEASE_LUA, _LEASE_RENEW_LUA, REDIS_URL
+
+        self._client = sync_redis.Redis.from_url(url or REDIS_URL, decode_responses=True)
+        self._renew_script = self._client.register_script(_LEASE_RENEW_LUA)
+        self._release_script = self._client.register_script(_LEASE_RELEASE_LUA)
+
+    def acquire(self, runner_name: str, ttl_ms: int) -> str | None:
+        from archimedes.services.redis_state import KEY_LEASE_FENCING_SUFFIX, KEY_LEASE_PREFIX
+
+        key = f"{KEY_LEASE_PREFIX}{runner_name}"
+        fencing_key = f"{KEY_LEASE_PREFIX}{runner_name}{KEY_LEASE_FENCING_SUFFIX}"
+        fence = self._client.incr(fencing_key)
+        token = f"{uuid.uuid4()}:{fence}"
+        acquired = self._client.set(key, token, nx=True, px=ttl_ms)
+        return token if acquired else None
+
+    def renew(self, runner_name: str, token: str, ttl_ms: int) -> bool:
+        from archimedes.services.redis_state import KEY_LEASE_PREFIX
+
+        key = f"{KEY_LEASE_PREFIX}{runner_name}"
+        result = self._renew_script(keys=[key], args=[token, str(ttl_ms)])
+        return bool(result)
+
+    def release(self, runner_name: str, token: str) -> None:
+        from archimedes.services.redis_state import KEY_LEASE_PREFIX
+
+        key = f"{KEY_LEASE_PREFIX}{runner_name}"
+        self._release_script(keys=[key], args=[token])
+
+
+def _run_pipeline_with_lease() -> None:
+    """Acquire the exactly-once lease, run the pipeline with a background
+    renewal thread, then release. Fails closed: if the lease cannot be
+    acquired — Redis unreachable, or another kb_runner copy already holds it
+    — this cycle is skipped rather than racing the unlocked manifest
+    read-decide-write against a concurrent pipeline run.
+    """
+    try:
+        client = _SyncLeaseClient()
+    except Exception:
+        logger.exception("kb_runner: lease client unavailable (Redis down?) — skipping this cycle (fail-closed)")
+        return
+
+    try:
+        token = client.acquire(RUNNER_NAME, LEASE_TTL_MS)
+    except Exception:
+        logger.exception("kb_runner: lease acquire errored — skipping this cycle (fail-closed)")
+        return
+
+    if token is None:
+        logger.info("kb_runner: lease held by another copy — skipping this cycle")
+        return
+
+    logger.info("kb_runner: lease acquired — triggering pipeline")
+    stop_renew = threading.Event()
+
+    def _renew_loop() -> None:
+        while not stop_renew.wait(LEASE_RENEW_INTERVAL_S):
+            try:
+                if not client.renew(RUNNER_NAME, token, LEASE_TTL_MS):
+                    logger.error("kb_runner: lease renew compare-and-set FAILED — lease lost mid-run")
+            except Exception:
+                logger.exception("kb_runner: lease renew errored")
+
+    renew_thread = threading.Thread(target=_renew_loop, name="kb-lease-renew", daemon=True)
+    renew_thread.start()
+    try:
+        from archimedes.scripts.run_kb_pipeline import run_pipeline
+
+        run_pipeline()
+    finally:
+        stop_renew.set()
+        renew_thread.join(timeout=5)
+        try:
+            client.release(RUNNER_NAME, token)
+        except Exception:
+            logger.warning("kb_runner: lease release failed (TTL expiry will reclaim it)", exc_info=True)
 
 
 def _load_manifest() -> dict | None:
@@ -98,10 +222,7 @@ def main() -> None:
     while True:
         try:
             if needs_rerun():
-                logger.info("kb_runner: triggering pipeline")
-                from archimedes.scripts.run_kb_pipeline import run_pipeline
-
-                run_pipeline()
+                _run_pipeline_with_lease()
             else:
                 logger.info("kb_runner: needs_rerun=False, sleeping")
         except NotImplementedError as exc:
