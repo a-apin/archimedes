@@ -300,6 +300,49 @@ resource "aws_cloudwatch_metric_alarm" "nat_egress_anomaly" {
   tags                = { Project = var.project_name }
 }
 
+# NAT health + auto-recovery (issue #1039 N1). Mirrors the app box's own
+# `ec2_status_check_failed` alarm above (same alarm-name suffix pattern,
+# SNS action, tags), with two deliberate deltas from an exact mirror:
+#
+# 1. Metric is `StatusCheckFailed_System`, NOT the combined `StatusCheckFailed`
+#    the app box alarm uses. This isn't stylistic — it's an AWS hard
+#    requirement: "The recover action can be used only with
+#    StatusCheckFailed_System, not with StatusCheckFailed_Instance." (AWS docs,
+#    Add recover actions to Amazon CloudWatch alarms). The combined
+#    StatusCheckFailed metric is Max(_System, _Instance), so an alarm on it
+#    would fail to accept the ec2:recover action outright — using it here would
+#    be a change that looks right but silently can't do the one thing this
+#    alarm exists for. t4g.nano (the NAT instance type, vpc.tf) is in AWS's
+#    supported-instance-type list for CloudWatch action based recovery.
+# 2. `evaluation_periods = 2` (not 3, the app box's value) — AWS's own
+#    recommendation for recover alarms specifically ("we recommend that you
+#    set recover alarms to two evaluation periods of one minute each"), to
+#    avoid a race condition if a reboot alarm with the same period count is
+#    ever added alongside it later.
+#
+# BOTH actions fire on the SAME alarm_actions list: the SNS topic (so a human
+# is paged the moment a NAT goes unhealthy, exactly like every other alarm in
+# this file) AND the `ec2:recover` automate ARN (so AWS attempts to migrate
+# the instance off failed hardware without waiting on that human) — self-heal
+# and visibility are not mutually exclusive.
+resource "aws_cloudwatch_metric_alarm" "nat_status_check_failed" {
+  count               = length(aws_instance.nat)
+  alarm_name          = "${var.project_name}-nat-status-check-failed-${count.index}"
+  alarm_description   = "NAT instance ${count.index} system status check failed — host unhealthy, auto-recovering onto new hardware."
+  namespace           = "AWS/EC2"
+  metric_name         = "StatusCheckFailed_System"
+  statistic           = "Maximum"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  period              = 60
+  evaluation_periods  = 2
+  dimensions          = { InstanceId = aws_instance.nat[count.index].id }
+  alarm_actions       = [aws_sns_topic.alerts.arn, "arn:aws:automate:${var.aws_region}:ec2:recover"]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "breaching"
+  tags                = { Project = var.project_name }
+}
+
 # ALB 5xx error RATE > 1% sustained 5 min. Uses a metric-math expression:
 # 100 * target-5xx / request-count. This is distinct from the existing
 # absolute-count alarm (alb_5xx_high) — a rate alarm catches degradation that
