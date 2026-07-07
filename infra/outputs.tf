@@ -163,3 +163,25 @@ output "ecs_migrate_task_definition_family" {
   description = "ECS task definition family for the one-off Alembic migrate task (infra/ecs_migrate.tf) — distinct from ecs_task_definition_family (the SERVICE family, backend+nginx). .github/workflows/deploy.yml's migrate job's ECS_MIGRATE_TASK_FAMILY literal must match this value."
   value       = aws_ecs_task_definition.migrate.family
 }
+
+# Static awsvpcConfiguration for `aws ecs run-task --network-configuration`
+# against the migrate task family (issue #1039 B2). Sourced from aws_subnet.private
+# (vpc.tf) + aws_security_group.ecs_backend (ecs.tf) — BOTH exist independently of
+# aws_ecs_service.backend, unlike the `aws ecs describe-services archimedes-backend`
+# call deploy.yml's migrate job previously used, which by definition can't resolve
+# until the service (which the migrate task must run BEFORE) already exists. Run
+# `terraform output -raw ecs_migrate_network_configuration` after applying
+# aws_subnet.private + aws_security_group.ecs_backend and paste the result into
+# .github/workflows/deploy.yml's ECS_MIGRATE_NETWORK_CONFIGURATION literal — same
+# "CI can't run terraform output" literal-constant pattern as ECS_CLUSTER /
+# ECS_MIGRATE_TASK_FAMILY there.
+output "ecs_migrate_network_configuration" {
+  description = "Static awsvpcConfiguration JSON for `aws ecs run-task --network-configuration` against the migrate task family. Copy into .github/workflows/deploy.yml's ECS_MIGRATE_NETWORK_CONFIGURATION literal (issue #1039 B2)."
+  value = jsonencode({
+    awsvpcConfiguration = {
+      subnets        = aws_subnet.private[*].id
+      securityGroups = [aws_security_group.ecs_backend.id]
+      assignPublicIp = "DISABLED"
+    }
+  })
+}

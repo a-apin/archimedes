@@ -8,7 +8,15 @@
 > 2026-07-07 (build-chunk 4/4, `docs-runbook` — the full ordered
 > apply → seed → cutover → verify → decommission sequence below, with explicit
 > zero-downtime and self-heal verification drills that were previously
-> implied but not spelled out).
+> implied but not spelled out); updated again 2026-07-07 (build-chunk 5,
+> `infra-hardening` — PR #1041 review comprehensiveness pass: B2 static
+> migrate network config splits Phase 1's Stage 2 into 2a/2b with a mandatory
+> migrate-then-verify gate between them; B3 mandatory baseline-stamp
+> pre-flight; N1 NAT auto-recovery alarm; N2 dead-egress RPC timeout +
+> chain_connected alarm; N3 NAT AMI-drift guard; a free S3 Gateway endpoint;
+> C1 CI now redeploys Fargate itself; C2 corrects the rollback doc; C3 guards
+> against a concurrent SSM deploy race; R1 reorders Phase 8's decommission
+> gate and adds a NAT-outage scenario to the disaster-recovery runbook).
 > **Not yet applied, not yet drilled.** Written against `infra/ecr.tf` +
 > `infra/ecs.tf` on the `dbrowneup/1039-fargate-infra` epic branch. No
 > `terraform apply`, ALB cutover, or EC2 decommission has happened — those are
@@ -89,12 +97,12 @@ no code fix required for the service to come up healthy):
   before the EC2 instance can actually be decommissioned (Phase 8 / #1039
   P6). Tracked as a residual, not silently dropped.
 
-### Alembic pre-rollout migrate stage (#1039 P4, build-chunk 3)
+### Alembic pre-rollout migrate stage (#1039 P4, build-chunk 3; B2 hardening, build-chunk 5)
 
 `.github/workflows/deploy.yml` gained a `migrate` job (`needs: build-and-push`;
-`deploy` now `needs: [build-and-push, migrate]`) that runs `alembic upgrade
-head` as a one-off `aws ecs run-task` against the **dedicated** migrate task
-definition (`infra/ecs_migrate.tf`'s `aws_ecs_task_definition.migrate`, family
+`deploy` now `needs: [build-and-push, migrate]`) that runs a one-off `aws ecs
+run-task` against the **dedicated** migrate task definition
+(`infra/ecs_migrate.tf`'s `aws_ecs_task_definition.migrate`, family
 `archimedes-migrate`) — a single container, no nginx sidecar, no
 healthCheck/dependsOn — but **only if `backend/alembic.ini` exists on the
 checked-out ref**. (Originally this targeted the SERVICE family,
@@ -109,12 +117,22 @@ EXISTS` patches), so the job detects that and no-ops loudly (a clear log
 line, exit 0) rather than either failing the pipeline on a stage with
 nothing to do yet, or silently pretending to run a migration that doesn't
 exist. The moment `backend/alembic.ini` lands on this branch, the step
-activates itself — no further pipeline change needed. It still reuses the
-LIVE ECS **service's** own `networkConfiguration` (private subnets +
-`ecs_backend` security group) via `aws ecs describe-services` — only the
-`--task-definition` passed to `run-task` changed — rather than hardcoding
-subnet/SG ids, so it also fails closed with a clear message if Alembic lands
-before `terraform apply` has run.
+activates itself — no further pipeline change needed.
+
+**B2 — static network configuration, not `describe-services`.** The job
+previously borrowed the LIVE ECS **service's** own `networkConfiguration` via
+`aws ecs describe-services archimedes-backend`. That's a chicken-and-egg bug:
+`describe-services` can only succeed once `aws_ecs_service.backend` already
+exists, but the whole point of the migrate task is to run **before** that
+service is created (a bare `terraform apply` creating the service also
+instantly launches an un-migrated task from it). Fixed: the job now uses a
+STATIC `ECS_MIGRATE_NETWORK_CONFIGURATION` literal, sourced from
+`terraform output -raw ecs_migrate_network_configuration` (built from
+`aws_subnet.private` + `aws_security_group.ecs_backend`, both of which exist
+independently of the service) — same literal-constant pattern as
+`ECS_CLUSTER` / `ECS_MIGRATE_TASK_FAMILY`. **This is why Phase 1 below applies
+the cluster/task-defs/security-group in their own stage (2a) BEFORE the
+service (2b), and requires a green migrate run in between.**
 
 ---
 
@@ -142,13 +160,30 @@ multiple healthy targets round-robins across all of them. In practice:
 
 ## Phase 1 — Terraform apply order
 
-Apply in **two stages**, not one big-bang `terraform apply` for the whole
-chunk. The reason: `aws_ecs_service.backend` will try to launch tasks the
-moment it's created, and a task with nothing to pull from ECR fails to start
-(not fatal — `deployment_circuit_breaker` + the still-healthy EC2 target
-mean this is a no-op, not an outage — but it's noisy and wastes a launch
-cycle). Staging means the ECS service's first-ever launch attempt already
-has a real image to pull.
+Apply in **three stages**, not one big-bang `terraform apply` for the whole
+chunk — **1, 2a, 2b, in that order, with a hard gate between 2a and 2b.**
+Two independent reasons force the staging:
+
+- `aws_ecs_service.backend` will try to launch tasks the moment it's created,
+  and a task with nothing to pull from ECR fails to start (not fatal —
+  `deployment_circuit_breaker` + the still-healthy EC2 target mean this is a
+  no-op, not an outage — but it's noisy and wastes a launch cycle). Staging
+  means the ECS service's first-ever launch attempt already has a real image
+  to pull.
+- **MANDATORY (issue #1039 B2/B3): the Alembic migrate task must run to
+  exit 0, with `alembic current` verified `>=` the baseline revision
+  (`af9c6a9376e4`), BEFORE the `terraform apply` that creates
+  `aws_ecs_service.backend`.** Once the service exists, it immediately
+  launches tasks against whatever schema state the database happens to be
+  in — if that apply runs before a real migrate pass, the very first Fargate
+  task can boot against a stale or (on prod Aurora specifically) an
+  Alembic-untracked schema. `aws_ecs_service.backend` and the migrate task
+  definition both live in what was previously a single "Stage 2" apply; it
+  is now split into **Stage 2a** (everything the migrate task needs — cluster,
+  task definitions, the `ecs_backend` security group, the CI deploy role's
+  ECS permissions — but explicitly NOT the service) and **Stage 2b** (the
+  service + autoscaling), with the migrate run + verification as the gate
+  between them.
 
 ```bash
 aws sso login --profile ArchimedesDanAdmin
@@ -161,9 +196,10 @@ aws sts get-caller-identity   # smoke-test — confirms account 037613907429
 cd infra/
 terraform init
 terraform plan   # scrutinize: should show ONLY new resources (ecr.tf, ecs.tf,
-                  # the alb.tf security-group egress addition) — zero destroys,
-                  # zero changes to aws_lb.main / aws_lb_target_group.backend /
-                  # aws_rds_cluster.main / aws_elasticache_replication_group.main.
+                  # ecs_migrate.tf, the alb.tf security-group egress addition)
+                  # — zero destroys, zero changes to aws_lb.main /
+                  # aws_lb_target_group.backend / aws_rds_cluster.main /
+                  # aws_elasticache_replication_group.main.
 ```
 
 **Stage 1 — ECR only** (repos + lifecycle policies; nothing that launches a task):
@@ -174,38 +210,94 @@ terraform apply -target=aws_ecr_repository.backend -target=aws_ecr_repository.ng
 ```
 
 Then go to **Phase 2** and seed a real image before continuing — do not skip
-ahead to Stage 2 with empty repos.
+ahead to Stage 2a with empty repos.
 
-**Stage 2 — everything else** (IAM, ECS cluster/task-def/service, autoscaling,
-the `alb.tf` SG egress addition) — only after Phase 2 has pushed at least one
-image:
+**Stage 2a — everything the migrate task needs, but NOT the service** (IAM
+roles/policies, the ECS cluster, both task definitions, the `ecs_backend`
+security group) — only after Phase 2 has pushed at least one image:
 
 ```bash
-terraform plan    # re-diff — should now show only ecs.tf/ec2_iam.tf-adjacent
-                   # resources + the one alb.tf SG rule; ECR resources already
-                   # applied read as unchanged
-terraform apply
+terraform plan    # re-diff — should show ecs.tf/ecs_migrate.tf/ec2_iam.tf-
+                   # adjacent resources; ECR resources already applied read
+                   # as unchanged
+terraform apply \
+  -target=aws_ecs_cluster.main \
+  -target=aws_ecs_task_definition.backend \
+  -target=aws_ecs_task_definition.migrate \
+  -target=aws_security_group.ecs_backend \
+  -target=aws_iam_role_policy.github_deploy_ecs
 ```
 
 1. **Seed the SSM secrets** (Phase 0, blocker 3) if you haven't yet — the
-   service will otherwise sit in a launch-failure loop on `DATABASE_URL`/
-   `REDIS_URL` secret resolution.
+   migrate task (and later, the service) will otherwise sit in a
+   launch-failure loop on `DATABASE_URL`/`REDIS_URL` secret resolution.
 2. **Land the nginx.conf + Dockerfile fixes** (Phase 0, blockers 1–2) before
-   or immediately after this stage — until then, tasks may reach `RUNNING`
-   but never pass the ALB health check, which is a safe (if noisy) failure
-   mode per the section above.
-3. `terraform apply`. Expect: ECS cluster/service/task definition created,
-   task(s) attempt to launch and pull the image Phase 2 already seeded.
+   or immediately after this stage — they only affect the SERVICE containers
+   (nginx + backend serving HTTP), not the single-container migrate task, so
+   they don't block the migrate gate below, but land them before Stage 2b.
+3. `terraform apply` (the `-target` list above). Expect: ECS cluster + both
+   task definitions + `ecs_backend` security group created — **no service,
+   no tasks launched yet.**
+4. `terraform output -raw ecs_migrate_network_configuration` — copy the
+   result into `.github/workflows/deploy.yml`'s `ECS_MIGRATE_NETWORK_CONFIGURATION`
+   literal (replacing the `REPLACE_WITH_*` placeholders), commit, and push
+   (or merge via PR — either way this needs a real commit; the migrate job
+   fails closed with a clear `::error::` while the placeholders are still
+   there).
+
+**GATE — run the migrate task and verify BEFORE Stage 2b:**
+
+```bash
+# Preferred: let CI run it for real (needs backend/alembic.ini to already be
+# on `main` — issue #1028 — and DEPLOY_ENABLED=true):
+gh workflow run deploy.yml --ref main
+gh run watch   # follow the `migrate` job specifically; it must exit 0
+
+# Verify `alembic current` reports a revision — not just "the job exited 0"
+# (a no-op skip due to a missing alembic.ini would also exit 0, silently
+# proving nothing). Run a second one-off task overriding the command:
+aws ecs run-task \
+  --cluster archimedes-cluster \
+  --task-definition archimedes-migrate \
+  --launch-type FARGATE \
+  --network-configuration "$(terraform output -raw ecs_migrate_network_configuration)" \
+  --overrides '{"containerOverrides":[{"name":"migrate","command":["python","-m","alembic","current"]}]}' \
+  --query 'tasks[0].taskArn' --output text
+# then: aws ecs wait tasks-stopped --cluster archimedes-cluster --tasks <arn>
+# then check CloudWatch Logs (/archimedes/app, ecs-migrate-* stream, this
+# task's own stream) for the printed revision — it must be present (not
+# empty) and must be the real Alembic head, not merely "some revision".
+```
+
+Do **not** proceed to Stage 2b until: the migrate job/task exited 0, AND the
+`alembic current` check above shows a real, non-empty head revision. If
+either check fails, stop — do not create the service against a schema you
+haven't confirmed is current.
+
+**Stage 2b — the service + autoscaling** (only after the gate above passes):
+
+```bash
+terraform plan    # re-diff — should now show ONLY aws_ecs_service.backend,
+                   # aws_appautoscaling_target.backend,
+                   # aws_appautoscaling_policy.backend_cpu, and the one
+                   # alb.tf SG egress rule; everything from Stage 2a reads as
+                   # unchanged
+terraform apply
+```
+
+Expect: ECS service + autoscaling created, task(s) attempt to launch and pull
+the image Phase 2 already seeded — now against a database whose schema is
+already confirmed current.
 
 ---
 
 ## Phase 2 — Seed ECR with the first image
 
-The ECS service (Stage 2 above) needs a real, boot-validated image sitting in
-`archimedes-backend` / `archimedes-nginx` **before** it launches its first
+The ECS service (Stage 2b above) needs a real, boot-validated image sitting
+in `archimedes-backend` / `archimedes-nginx` **before** it launches its first
 task, or that first launch attempt is guaranteed to fail (empty repo → pull
 error → circuit breaker trips → task never reaches steady state). Do this
-right after Stage 1 (ECR-only apply) and before Stage 2.
+right after Stage 1 (ECR-only apply) and before Stage 2a.
 
 **Preferred path — let CI do it** (same `build-and-push` job build-chunk 1
 wired; already boot-validates both images with a live `/health` curl before
@@ -226,10 +318,23 @@ gh run watch   # follow build-and-push; it fails closed with an explicit
 ```
 
 This pushes both `archimedes-backend:<commit-sha>`, `archimedes-backend:latest`,
-`archimedes-nginx:<commit-sha>`, and `archimedes-nginx:latest` — the `migrate`
-and `deploy` jobs will also run (gated on the same `DEPLOY_ENABLED` flag), but
-`deploy` only touches the still-untouched EC2 box, so this is safe to run
-before Stage 2's ECS apply.
+`archimedes-nginx:<commit-sha>`, and `archimedes-nginx:latest`. The `migrate`
+and `deploy` jobs also run (gated on the same `DEPLOY_ENABLED` flag) after
+`build-and-push` — `build-and-push` itself has already succeeded and pushed
+the images by the time either of those runs, so this step's actual goal (seed
+ECR) is achieved regardless of what happens next:
+- If `backend/alembic.ini` isn't on `main` yet, `migrate` no-ops loudly and
+  exits 0, same as always.
+- If it IS on `main` but Stage 2a hasn't been applied yet (this phase, by
+  definition, runs before Stage 2a), `migrate` now **fails closed** with a
+  clear `::error::` (the `ECS_MIGRATE_NETWORK_CONFIGURATION` literal still
+  has its `REPLACE_WITH_*` placeholders, or the migrate task definition
+  doesn't exist yet) rather than silently passing — expected and fine at this
+  point in the sequence, not a real incident.
+- `deploy` only touches the still-untouched EC2 box regardless, so it's
+  always safe to run this trigger before Stage 2a — the worst case is a red
+  Actions run for a step that had nothing to verify yet, not any live-traffic
+  effect.
 
 **Fallback — push manually** (only if CI is down or you need an image before
 merging to `main`; skips CI's own boot-validation, so treat this as a
@@ -250,7 +355,7 @@ docker tag archimedes-nginx:manual "$ECR_REGISTRY/archimedes-nginx:latest"
 docker push "$ECR_REGISTRY/archimedes-nginx:latest"
 ```
 
-**Verify the seed landed** before moving to Stage 2:
+**Verify the seed landed** before moving to Stage 2a:
 
 ```bash
 aws ecr describe-images --repository-name archimedes-backend \
@@ -263,7 +368,7 @@ aws ecr describe-images --repository-name archimedes-nginx \
 
 ## Phase 3 — Verify the ECS service comes up healthy
 
-After Stage 2's apply:
+After Stage 2b's apply (which only happens after the migrate gate above passes):
 
 ```bash
 # Service + task status

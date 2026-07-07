@@ -34,6 +34,29 @@
 # for `ECS_CLUSTER` / `EC2_INSTANCE_ID` there (CI can't run `terraform output`
 # without a full backend/state setup, so the value itself stays a literal; the
 # Terraform output is the sync-check a reviewer / future change can grep for).
+#
+# ── B2 fix (#1039): the `--network-configuration` this task needs is STATIC,
+# not fetched via `aws ecs describe-services` ──────────────────────────────
+# The migrate task's whole reason to exist is to run BEFORE `aws_ecs_service.
+# backend` (ecs.tf) is created — see infra/runbooks/ecs-fargate-cutover.md
+# Phase 1. `deploy.yml`'s `migrate` job previously fetched its
+# `--network-configuration` via `aws ecs describe-services archimedes-backend`,
+# which by definition does not exist until Stage 2's `terraform apply` creates
+# the service — and that same apply immediately launches a task against
+# whatever image tag is baked into the SERVICE task definition's bootstrap
+# default, un-migrated, the instant the service resource is created. A
+# describe-services-sourced network config can therefore never run BEFORE the
+# service exists; it can only run after, which is the exact ordering bug B2
+# closes. The fix: the migrate task's network configuration is built from
+# resources that exist independently of the service — `aws_subnet.private`
+# (vpc.tf, pre-dates this whole epic — Aurora/ElastiCache already sit there)
+# and `aws_security_group.ecs_backend` (ecs.tf, created in the SAME apply as
+# this task definition, but the service is a separate, later resource in the
+# dependency graph) — exported below as `ecs_migrate_network_configuration`
+# and consumed by `deploy.yml`'s `migrate` job as a literal
+# `ECS_MIGRATE_NETWORK_CONFIGURATION` constant (same "CI can't run terraform
+# output" literal-constant pattern as `ECS_CLUSTER` / `ECS_MIGRATE_TASK_FAMILY`
+# above), NOT a live API call against the service.
 
 resource "aws_ecs_task_definition" "migrate" {
   family                   = "${var.project_name}-migrate"

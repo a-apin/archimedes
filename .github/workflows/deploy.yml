@@ -279,13 +279,6 @@ jobs:
           # literal-constant pattern as EC2_INSTANCE_ID / ECR_REGISTRY above,
           # not a new cross-job variable.
           ECS_CLUSTER: archimedes-cluster
-          # The SERVICE name (aws_ecs_service.backend, infra/ecs.tf) — used
-          # ONLY to borrow its live networkConfiguration (private subnets +
-          # the ecs_backend security group) below. NOT the task-def family to
-          # run: that family boots backend+nginx together and would hang
-          # waiting on a health check the migrate command overrides away —
-          # see infra/ecs_migrate.tf's header comment (PR #1041 Copilot review).
-          ECS_SERVICE_NAME: archimedes-backend
           # The dedicated one-off migrate task-def family (infra/ecs_migrate.tf,
           # `aws_ecs_task_definition.migrate`, family = "${var.project_name}-migrate")
           # — single container, no nginx sidecar, no healthCheck/dependsOn to
@@ -293,21 +286,31 @@ jobs:
           # `ecs_migrate_task_definition_family` output (infra/outputs.tf);
           # this literal is the CI-side half of that sync contract.
           ECS_MIGRATE_TASK_FAMILY: archimedes-migrate
+          # STATIC --network-configuration (issue #1039 B2). Deliberately NOT
+          # fetched via `aws ecs describe-services archimedes-backend`: that
+          # call can only succeed once `aws_ecs_service.backend` (ecs.tf)
+          # already exists, but the migrate task's entire reason to exist is
+          # to run BEFORE that service is created — see
+          # infra/runbooks/ecs-fargate-cutover.md Phase 1 ("run migrate to
+          # exit 0 before the Stage-2 terraform apply that creates the
+          # service"). A describe-services-sourced config can therefore never
+          # actually satisfy that ordering; it can only ever run after, which
+          # was the bug. Sourced instead from `aws_subnet.private` (vpc.tf)
+          # + `aws_security_group.ecs_backend` (ecs.tf) — both exist
+          # independently of the service. Run `terraform output -raw
+          # ecs_migrate_network_configuration` (infra/outputs.tf) after
+          # applying those two resources and paste the result here, replacing
+          # the REPLACE_WITH_* placeholders below — same literal-constant
+          # pattern as ECS_CLUSTER / ECS_MIGRATE_TASK_FAMILY above. The run
+          # step below fails closed with a clear error if this still contains
+          # a placeholder rather than silently passing an invalid config to
+          # `aws ecs run-task`.
+          ECS_MIGRATE_NETWORK_CONFIGURATION: '{"awsvpcConfiguration":{"subnets":["REPLACE_WITH_PRIVATE_SUBNET_IDS"],"securityGroups":["REPLACE_WITH_ECS_BACKEND_SECURITY_GROUP_ID"],"assignPublicIp":"DISABLED"}}'
         run: |
           set -euo pipefail
 
-          # Reuse the LIVE service's own network configuration (private
-          # subnets + the ecs_backend security group, infra/ecs.tf) rather
-          # than hardcoding subnet/SG ids here — those only exist post
-          # `terraform apply` (issue #1039 chunk 2) and are Terraform-managed,
-          # not CI-managed. Fails closed with a clear message if the service
-          # doesn't exist yet (i.e. Alembic landed before Dan applied the
-          # Terraform) rather than a bare AWS API error deep in run-task.
-          NET_CONFIG=$(aws ecs describe-services \
-            --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE_NAME" \
-            --query 'services[0].networkConfiguration' --output json 2>/dev/null || echo "")
-          if [ -z "$NET_CONFIG" ] || [ "$NET_CONFIG" = "null" ]; then
-            echo "::error::ECS service '$ECS_SERVICE_NAME' not found in cluster '$ECS_CLUSTER'. Apply the ECS Terraform in infra/ (issue #1039 chunk 2, infra/ecs.tf) before Alembic can run its pre-rollout migrate task — see infra/runbooks/ecs-fargate-cutover.md."
+          if [[ "$ECS_MIGRATE_NETWORK_CONFIGURATION" == *REPLACE_WITH_* ]]; then
+            echo "::error::ECS_MIGRATE_NETWORK_CONFIGURATION in .github/workflows/deploy.yml still has REPLACE_WITH_* placeholders. Run 'terraform output -raw ecs_migrate_network_configuration' in infra/ (after applying aws_subnet.private + aws_security_group.ecs_backend) and paste the real value in — see infra/runbooks/ecs-fargate-cutover.md Phase 1 (issue #1039 B2)."
             exit 1
           fi
 
@@ -319,13 +322,14 @@ jobs:
           # to /deps:/app in the image) and works identically either way.
           #
           # Runs against ECS_MIGRATE_TASK_FAMILY (the dedicated single-
-          # container task def, infra/ecs_migrate.tf), NOT ECS_SERVICE_NAME's
-          # family — see the env block comment above and infra/ecs_migrate.tf.
+          # container task def, infra/ecs_migrate.tf), using the STATIC
+          # ECS_MIGRATE_NETWORK_CONFIGURATION from the env block above — NOT
+          # the service's family or a describe-services lookup.
           TASK_ARN=$(aws ecs run-task \
             --cluster "$ECS_CLUSTER" \
             --task-definition "$ECS_MIGRATE_TASK_FAMILY" \
             --launch-type FARGATE \
-            --network-configuration "$NET_CONFIG" \
+            --network-configuration "$ECS_MIGRATE_NETWORK_CONFIGURATION" \
             --overrides "{\"containerOverrides\":[{\"name\":\"migrate\",\"command\":[\"python\",\"-m\",\"alembic\",\"upgrade\",\"head\"]}]}" \
             --query 'tasks[0].taskArn' --output text)
 
