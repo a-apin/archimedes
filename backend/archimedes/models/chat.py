@@ -39,8 +39,13 @@ class VaultMetadata(Base):
     name: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     symbol: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     # FK retrofit (issue #1028, D1): every creator must be a known identity.
+    # No Python-side default: creator_address FKs to wallet_identities, so an
+    # insert that omitted it would previously write "" and violate the FK.
+    # The sole constructor (vaults_routes.py store_vault_metadata) always
+    # assigns the real on-chain owner before commit — a caller that forgets
+    # should fail fast here, not silently persist an empty string.
     creator_address: Mapped[str] = mapped_column(
-        String(42), ForeignKey("wallet_identities.wallet_address"), nullable=False, default=""
+        String(42), ForeignKey("wallet_identities.wallet_address"), nullable=False
     )
     strategy_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")  # JSON array
     created_at: Mapped[datetime] = mapped_column(
@@ -86,8 +91,9 @@ class ChatMessage(Base):
     # persona's agent wallet, actor_class='agent') must be a known identity.
     # Chat allows unverified attribution (see `verified` below) — the
     # write-time upsert into wallet_identities for a not-yet-seen wallet is
-    # Phase B work (issue #1028); on Postgres this FK is only load-bearing
-    # once that upsert lands alongside it.
+    # already implemented: ChatService.post_message() / post_ai_message()
+    # call ensure_wallet_identity() before every insert (services/chat_service.py),
+    # so this FK is load-bearing on Postgres today.
     wallet_address: Mapped[str] = mapped_column(
         String(42), ForeignKey("wallet_identities.wallet_address"), nullable=False
     )

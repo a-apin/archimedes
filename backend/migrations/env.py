@@ -52,6 +52,7 @@ from archimedes.models.marketplace import (  # noqa: E402,F401
     SubscriberLiability,
     SubscriberTickLog,
 )
+from archimedes.models.request_snapshot import RequestCountSnapshot  # noqa: E402,F401
 from archimedes.models.strategy_generators import StrategyGenerator  # noqa: E402,F401
 from archimedes.models.strategy_passport_record import (  # noqa: E402,F401
     PassportPaperRef,
@@ -82,6 +83,7 @@ __all__ = [
     "MarketplaceAgent",
     "PaperRecord",
     "PassportPaperRef",
+    "RequestCountSnapshot",
     "SettlementIntent",
     "StrategyBacktestFixture",
     "StrategyDailyReturn",
