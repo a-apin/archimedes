@@ -28,7 +28,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from archimedes.db import Base, engine, get_session, init_db
+from archimedes.db import Base, get_session, init_db
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 

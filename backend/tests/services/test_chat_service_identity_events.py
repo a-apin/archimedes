@@ -19,7 +19,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from archimedes.db import get_session
+from archimedes.db import get_session, init_db
 from archimedes.models.identity import IdentityEvent, WalletIdentity
 from archimedes.services.chat_service import AI_WALLET_ADDRESS, ChatService
 
@@ -37,16 +37,19 @@ def _use_tmp_db(tmp_path, monkeypatch):
     non-deterministic. A dedicated per-test DB makes them hermetic and
     order-independent, which passing in isolation but failing in-suite showed we
     needed."""
-    import archimedes.db as db
+    import sys
+
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
     url = f"sqlite:///{tmp_path / 'chat_identity.db'}"
     monkeypatch.setenv("DATABASE_URL", url)
     eng = create_engine(url, connect_args={"check_same_thread": False})
-    monkeypatch.setattr(db, "engine", eng)
-    monkeypatch.setattr(db, "SessionLocal", sessionmaker(bind=eng, autocommit=False, autoflush=False))
-    db.init_db()
+    # String-target monkeypatch so we don't import archimedes.db both as a module
+    # and via ``from archimedes.db import ...`` (dual-import style flagged by CodeQL).
+    monkeypatch.setattr("archimedes.db.engine", eng)
+    monkeypatch.setattr("archimedes.db.SessionLocal", sessionmaker(bind=eng, autocommit=False, autoflush=False))
+    init_db()
 
     # ``chat_service.AI_WALLET_ADDRESS`` is a module constant computed once at
     # import from ``os.getenv("WALLET_ADDRESS", <default>)``. In the full suite
@@ -57,12 +60,8 @@ def _use_tmp_db(tmp_path, monkeypatch):
     # the real agent wallet so the test is independent of that import-order
     # pollution. (Prod always sets WALLET_ADDRESS, so this only papers over a
     # test-harness ordering artifact, not a product behavior.)
-    import sys
-
-    import archimedes.services.chat_service as chat_service_mod
-
     valid_ai_wallet = "0xc221dcd6fe7d81ff741f94c08e61f52bea1f9ac9"
-    monkeypatch.setattr(chat_service_mod, "AI_WALLET_ADDRESS", valid_ai_wallet)
+    monkeypatch.setattr("archimedes.services.chat_service.AI_WALLET_ADDRESS", valid_ai_wallet)
     monkeypatch.setattr(sys.modules[__name__], "AI_WALLET_ADDRESS", valid_ai_wallet)
     yield
 
