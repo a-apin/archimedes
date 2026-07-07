@@ -85,9 +85,14 @@ resource "aws_ecr_lifecycle_policy" "backend" {
         rulePriority = 2
         description  = "Keep only the last ${local.ecr_keep_last_n_images} tagged images"
         selection = {
-          tagStatus   = "any"
-          countType   = "imageCountMoreThan"
-          countNumber = local.ecr_keep_last_n_images
+          # "tagged" + tagPatternList ["*"] scopes this to TAGGED images only
+          # (SHA + "latest") so it can't count/expire untagged images — those are
+          # handled solely by rule 1. "any" here would double-count untagged and
+          # could shrink effective tagged retention.
+          tagStatus      = "tagged"
+          tagPatternList = ["*"]
+          countType      = "imageCountMoreThan"
+          countNumber    = local.ecr_keep_last_n_images
         }
         action = { type = "expire" }
       }
@@ -114,9 +119,14 @@ resource "aws_ecr_lifecycle_policy" "nginx" {
         rulePriority = 2
         description  = "Keep only the last ${local.ecr_keep_last_n_images} tagged images"
         selection = {
-          tagStatus   = "any"
-          countType   = "imageCountMoreThan"
-          countNumber = local.ecr_keep_last_n_images
+          # "tagged" + tagPatternList ["*"] scopes this to TAGGED images only
+          # (SHA + "latest") so it can't count/expire untagged images — those are
+          # handled solely by rule 1. "any" here would double-count untagged and
+          # could shrink effective tagged retention.
+          tagStatus      = "tagged"
+          tagPatternList = ["*"]
+          countType      = "imageCountMoreThan"
+          countNumber    = local.ecr_keep_last_n_images
         }
         action = { type = "expire" }
       }

@@ -431,7 +431,10 @@ resource "aws_ecs_task_definition" "backend" {
       environment = [
         { name = "AWS_REGION", value = var.aws_region },
         { name = "AWS_SSM_PATH_PREFIX", value = "/archimedes/prod/" },
-        { name = "PUBLIC_DOMAIN", value = var.domain_name },
+        # PUBLIC_DOMAIN must include the scheme — it's used as a CORS allowed
+        # origin (main.py) and the SIWE expected domain, both of which compare
+        # against scheme-qualified origins. var.domain_name is the bare host.
+        { name = "PUBLIC_DOMAIN", value = "https://${var.domain_name}" },
         { name = "ARCHIMEDES_FUSION_ENABLED", value = "true" },
         # KNOWN GAP #2 (see file header): these three paths have no Fargate
         # equivalent of the docker-compose host bind mount yet.
