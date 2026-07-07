@@ -968,6 +968,47 @@ resource "aws_cloudwatch_log_group" "nginx" {
   tags              = { Project = var.project_name }
 }
 
+# ── Dead-egress detection — chain_connected health signal (issue #1039 N2) ──
+#
+# Deliberately does NOT flip /health's HTTP status code on chain-down (that
+# risks cascading the whole ECS service on a transient Arc RPC blip — the ALB
+# target-group health check and ECS's own container healthCheck both key off
+# /health's status code, so a 5xx there would drain/kill tasks over an RPC-only
+# problem). Instead: backend/archimedes/main.py's `/health` handler logs a
+# loud, greppable WARNING (`HEALTH_CHAIN_DISCONNECTED`) whenever
+# `chain_connected` is false while still returning HTTP 200 — a "degraded but
+# healthy" task keeps serving traffic (correct) while this filter+alarm pair
+# makes that degraded state page a human instead of silently sitting in the
+# JSON body of a response nobody is reading.
+resource "aws_cloudwatch_log_metric_filter" "chain_disconnected" {
+  name           = "${var.project_name}-chain-disconnected"
+  log_group_name = aws_cloudwatch_log_group.app.name
+  pattern        = "\"HEALTH_CHAIN_DISCONNECTED\""
+
+  metric_transformation {
+    name          = "ChainDisconnectedCount"
+    namespace     = "Archimedes/Health"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "chain_disconnected_alarm" {
+  alarm_name          = "${var.project_name}-chain-disconnected"
+  alarm_description   = "/health reported chain_connected=false 3+ times in 5 min — Arc RPC unreachable (dead NAT egress or upstream RPC outage) on a task that is still serving HTTP 200."
+  namespace           = aws_cloudwatch_log_metric_filter.chain_disconnected.metric_transformation[0].namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.chain_disconnected.metric_transformation[0].name
+  statistic           = "Sum"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 3
+  period              = 300
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  tags                = { Project = var.project_name }
+}
+
 # ── Outputs ──────────────────────────────────────────────────────────────────
 
 output "alerts_topic_arn" {
