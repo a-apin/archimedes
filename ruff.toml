@@ -15,6 +15,7 @@ target-version = "py312"
 
 extend-exclude = [
     "submodules",
+    "contracts/lib",  # vendored Foundry deps (forge-std / openzeppelin submodules) — not our code
     "node_modules",
     "ui/build",
     "ui/dist",
