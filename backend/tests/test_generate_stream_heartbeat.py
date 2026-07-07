@@ -1,6 +1,6 @@
 """SSE heartbeat during long-running debate/fan-out compute (#891).
 
-Reproduced against prod: the generation SSE stream advances through
+Reported/observed in prod (#891): the generation SSE stream advances through
 ``job_queued -> ... -> agent_iteration -> tool_called`` then the transport
 dies ("peer closed connection ... incomplete chunked read") once debate
 compute starts, even though the job keeps running server-side. Root cause:

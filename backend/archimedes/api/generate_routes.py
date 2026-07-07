@@ -54,11 +54,11 @@ _STREAM_TIMEOUT_SECONDS = 300  # cap a single SSE connection at 5 min
 # then a parallel backtest gather across the whole candidate pool) can run
 # for tens of seconds without producing a new job-store event — the poll
 # loop previously just slept through that stretch and wrote nothing to the
-# socket. CloudFront's default origin idle-read timeout (60s) and various
-# corporate/browser proxies will drop a chunked connection that's gone
-# quiet that long, even though the origin is still alive and the job keeps
-# running server-side. A ~15s heartbeat cadence gives multiple safety
-# margins under any such timeout.
+# socket. Intermediaries with an idle-read timeout shorter than that stretch
+# (CloudFront's origin idle timeout, corporate/browser proxies) will drop a
+# chunked connection that's gone quiet that long, even though the origin is
+# still alive and the job keeps running server-side. A ~15s heartbeat
+# cadence gives multiple safety margins under any such timeout.
 _HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 # Live registry of in-flight asyncio tasks per job. Lets cancel_job actually
