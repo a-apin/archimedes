@@ -99,6 +99,82 @@ async def test_pipeline_terminates_with_done_status():
     assert regimes == {"bull", "bear"}
 
 
+@pytest.mark.asyncio
+async def test_pipeline_writes_identity_ledger_generation_completed_for_owned_job():
+    """Issue #1028 (D2/D2a): an IDENTIFIED run (owner_wallet set) ledgers a
+    ``generation_completed`` event carrying the winning strategy/candidate ids."""
+    from archimedes.db import get_session
+    from archimedes.models.identity import IdentityEvent, WalletIdentity
+
+    wallet = "0x" + "aa11" * 10
+
+    def _cleanup():
+        session = get_session()
+        try:
+            session.query(IdentityEvent).filter(IdentityEvent.wallet == wallet).delete(synchronize_session=False)
+            session.query(WalletIdentity).filter(WalletIdentity.wallet_address == wallet).delete(
+                synchronize_session=False
+            )
+            session.commit()
+        finally:
+            session.close()
+
+    _cleanup()
+    store = _FakeStore()
+    brief = GenerateBrief(intent="balanced macro", risk_appetite="moderate")
+
+    try:
+        with patch(
+            "archimedes.agents.generation_pipeline._persist_candidate",
+            new=AsyncMock(return_value=("strat_owned_001", "0xabc")),
+        ):
+            await run_generation(job_id="job_owned_001", brief=brief, n_candidates=1, store=store, owner_wallet=wallet)
+
+        session = get_session()
+        try:
+            events = session.query(IdentityEvent).filter(IdentityEvent.wallet == wallet).all()
+            shapes = [(e.event_type, e.actor_class, e.meta) for e in events]
+        finally:
+            session.close()
+    finally:
+        _cleanup()
+
+    matching = [s for s in shapes if s[0] == "generation_completed"]
+    assert len(matching) == 1
+    _, actor_class, meta = matching[0]
+    assert actor_class == "human"
+    assert meta["best_strategy_id"] == "strat_owned_001"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_does_not_ledger_generation_completed_for_anonymous_job():
+    """D2a: owner_wallet=None (anonymous generation) has nothing to anchor a
+    row to — must not write to the identity ledger."""
+    from archimedes.db import get_session
+    from archimedes.models.identity import IdentityEvent
+
+    session = get_session()
+    try:
+        before = session.query(IdentityEvent).filter(IdentityEvent.event_type == "generation_completed").count()
+    finally:
+        session.close()
+
+    store = _FakeStore()
+    brief = GenerateBrief(intent="balanced macro", risk_appetite="moderate")
+    with patch(
+        "archimedes.agents.generation_pipeline._persist_candidate",
+        new=AsyncMock(return_value=("strat_anon_001", "0xabc")),
+    ):
+        await run_generation(job_id="job_anon_001", brief=brief, n_candidates=1, store=store, owner_wallet=None)
+
+    session = get_session()
+    try:
+        after = session.query(IdentityEvent).filter(IdentityEvent.event_type == "generation_completed").count()
+    finally:
+        session.close()
+    assert after == before
+
+
 def test_rigor_adapter_computes_dsr_and_oos_sharpe_on_synthetic_series():
     """Wires Önder's rigor_evaluator on a synthetic return series.
 
@@ -807,10 +883,10 @@ async def test_debate_dispatch_end_to_end_persists_debate_strategy(tmp_path, mon
     emitted, (c) StrategyRecord.generation_method == 'debate'.
     """
     import archimedes.agents.debate_engine as de
-    from archimedes.agents import strategy_fusion as sf
     import archimedes.db as _db
     import archimedes.services.fusion_evaluator as fe
     from archimedes.agents import generation_pipeline as gp
+    from archimedes.agents import strategy_fusion as sf
     from archimedes.models.strategy_store import StrategyRecord
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -889,10 +965,10 @@ async def test_debate_critic_rigor_num_trials_matches_society_formula(tmp_path, 
     value across the full proposal pool.
     """
     import archimedes.agents.debate_engine as de
-    from archimedes.agents import strategy_fusion as sf
     import archimedes.db as _db
     import archimedes.services.fusion_evaluator as fe
     from archimedes.agents import generation_pipeline as gp
+    from archimedes.agents import strategy_fusion as sf
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
@@ -1010,10 +1086,10 @@ async def test_debate_text_only_pool_no_spurious_backtest_failed(tmp_path, monke
     tested the same _static_skip guard on the retired standalone-fusion dispatch.
     """
     import archimedes.agents.debate_engine as de
-    from archimedes.agents import strategy_fusion as sf
     import archimedes.db as _db
     import archimedes.services.fusion_evaluator as fe
     from archimedes.agents import generation_pipeline as gp
+    from archimedes.agents import strategy_fusion as sf
     from archimedes.models.strategy_store import StrategyRecord
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker

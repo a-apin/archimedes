@@ -361,6 +361,81 @@ async def test_verify_with_valid_signature():
 
 
 @pytest.mark.asyncio
+async def test_verify_writes_the_identity_ledger_auth_verified_event():
+    """Issue #1028 (D2/D2a): the missed write. Until this epic, SIWE verify held
+    a cryptographically proven wallet and wrote NOTHING durable for it —
+    ``auth_verified`` is the identity ledger's write at the exact moment of
+    proof. This pins: ``wallet_identities`` gets anchored with
+    ``actor_class='human'`` + ``last_auth_at`` set, and ``identity_events``
+    gets an ``auth_verified`` row for that wallet carrying the SAME visitor id
+    the anonymous pre-auth funnel used (D2a: vid↔wallet linkage captured
+    post-auth, not before)."""
+    from archimedes.db import get_session
+    from archimedes.main import app
+    from archimedes.models.identity import IdentityEvent, WalletIdentity
+    from eth_account import Account
+    from eth_account.messages import encode_defunct
+
+    acct = Account.create()
+    wallet = acct.address.lower()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        nonce_resp = await client.get("/api/auth/nonce")
+        assert nonce_resp.status_code == 200
+        nonce_data = nonce_resp.json()
+        # ensure_visitor_id_middleware stamps a fresh archimedes_vid cookie on
+        # this first response; the AsyncClient's jar carries it into the
+        # verify call below — exactly what a real browser session does.
+        vid_before_verify = client.cookies.get("archimedes_vid")
+        assert vid_before_verify
+
+        message = (
+            f"{nonce_data['domain']} wants you to sign in with your Ethereum account:\n"
+            f"{wallet}\n\n"
+            f"Sign in to Archimedes.\n\n"
+            f"URI: https://{nonce_data['domain']}\n"
+            f"Version: 1\n"
+            f"Chain ID: 5042002\n"
+            f"Nonce: {nonce_data['nonce']}\n"
+            f"Issued At: {_now_iso()}"
+        )
+        signed = acct.sign_message(encode_defunct(text=message))
+
+        verify_resp = await client.post(
+            "/api/auth/verify",
+            json={"message": message, "signature": signed.signature.hex()},
+        )
+        assert verify_resp.status_code == 200
+
+    session = get_session()
+    try:
+        identity = session.get(WalletIdentity, wallet)
+        assert identity is not None
+        identity_actor_class = identity.actor_class
+        identity_last_auth_at = identity.last_auth_at
+
+        events = session.query(IdentityEvent).filter(IdentityEvent.wallet == wallet).all()
+        event_shapes = [(e.event_type, e.actor_class, e.vid) for e in events]
+    finally:
+        session.query(IdentityEvent).filter(IdentityEvent.wallet == wallet).delete(synchronize_session=False)
+        session.query(WalletIdentity).filter(WalletIdentity.wallet_address == wallet).delete(synchronize_session=False)
+        session.commit()
+        session.close()
+
+    assert identity_actor_class == "human"
+    assert identity_last_auth_at is not None
+
+    assert len(event_shapes) == 1
+    event_type, actor_class, vid = event_shapes[0]
+    assert event_type == "auth_verified"
+    assert actor_class == "human"
+    # D2a: the vid captured on this write is the SAME cookie the pre-auth
+    # (anonymous) funnel already saw — linkage happens AT verification, not
+    # before it and not by inventing a new id.
+    assert vid == vid_before_verify
+
+
+@pytest.mark.asyncio
 async def test_verify_rejects_wrong_signer():
     """Signature from wallet A cannot authenticate as wallet B.
 

@@ -16,7 +16,8 @@ import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
-from archimedes.db import get_session
+import pytest
+from archimedes.db import get_session, init_db
 from archimedes.models.identity import IdentityEvent, WalletIdentity
 from archimedes.services.identity_metrics import (
     count_human_wallets,
@@ -24,6 +25,21 @@ from archimedes.services.identity_metrics import (
     list_human_wallets,
     list_wallet_connections,
 )
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _ensure_tables():
+    """Guarantee wallet_identities/identity_events exist before this module's tests run.
+
+    Every other DB-backed test file either imports ``archimedes.main`` (whose
+    module-level ``init_db()`` call is the usual trigger) or runs its own
+    ``init_db()``/``create_all`` fixture; this file did neither, so running it
+    standalone (``pytest backend/tests/test_identity_metrics.py``, the hermetic
+    per-module gate from CLAUDE.md) hit ``OperationalError: no such table:
+    wallet_identities``. ``init_db()`` is idempotent (``create_all`` no-ops on
+    existing tables) so this is safe to call regardless of run order.
+    """
+    init_db()
 
 
 def _unique_wallet() -> str:
