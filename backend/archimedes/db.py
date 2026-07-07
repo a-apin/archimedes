@@ -25,6 +25,7 @@ from archimedes.models.marketplace import (  # noqa: F401
     SubscriberLiability,
     SubscriberTickLog,
 )
+from archimedes.models.request_snapshot import RequestCountSnapshot  # noqa: F401
 from archimedes.models.strategy_generators import StrategyGenerator  # noqa: F401
 from archimedes.models.strategy_proposal import StrategyProposal  # noqa: F401
 from archimedes.models.strategy_store import StrategyRecord  # noqa: F401

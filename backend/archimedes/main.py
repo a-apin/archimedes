@@ -583,7 +583,8 @@ async def health():
     except Exception:
         logger.debug("telemetry counts read failed", exc_info=True)
 
-    # Distinct "real users" = wallet rows in user_profiles (issue #830). Surfaced
+    # Distinct "real users" = human wallets in wallet_identities (issue #830,
+    # honest denominator per #1028 AC1 — see services/user_stats.py). Surfaced
     # next to the request tallies so no doc/monitor can conflate traffic with
     # users. Fail-safe: returns 0 on any DB error.
     real_users = 0

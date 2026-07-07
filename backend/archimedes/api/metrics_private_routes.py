@@ -9,10 +9,12 @@ Gating reuses the existing SIWE session gate — the same mechanism ``user_route
 uses to protect PII (``auth_siwe.require_verified_wallet``). No new auth system:
 a request without a valid ``archimedes_session`` cookie gets **401**.
 
-Claim integrity (issue #830): the private numbers here are recomputed against the
-honest instruments — distinct wallets (``user_profiles``) and strategy generations
-— NEVER the cumulative request tallies. ``$/user`` / ``$/gen`` figures are derived
-from true users or generations, not from ``human_count``.
+Claim integrity (issue #830, denominator honesty updated by #1028 AC1): the
+private numbers here are recomputed against the honest instruments — distinct
+HUMAN WALLETS (``wallet_identities``, not the ``user_profiles`` row count,
+which undercounted — see ``services/user_stats.py``) and strategy generations
+— NEVER the cumulative request tallies. ``$/user`` / ``$/gen`` figures are
+derived from true users or generations, not from ``human_count``.
 
 Today's cost fields are DRAFT/illustrative placeholders (the live Bedrock/infra
 billing wiring — AWS Cost Explorer + Bedrock token metering — is roadmap work);
