@@ -61,6 +61,40 @@ from archimedes.models.strategy_proposal import StrategyProposal  # noqa: E402,F
 from archimedes.models.strategy_store import StrategyRecord  # noqa: E402,F401
 from archimedes.models.user_profile import UserProfile  # noqa: E402,F401
 
+# The model imports above are side-effect imports: they register every table on
+# ``Base.metadata`` so Alembic's ``target_metadata`` (below) sees the full schema
+# for autogenerate/verification. ruff ignores them via ``noqa: F401``; listing
+# them in ``__all__`` marks them as intentional re-exports so CodeQL's
+# unused-import query treats them as used too. (This module is an Alembic
+# entrypoint, never ``import *``-ed, so ``__all__`` has no other effect.)
+__all__ = [
+    "DATABASE_URL",
+    "Base",
+    "target_metadata",
+    "run_migrations_offline",
+    "run_migrations_online",
+    "BacktestResultRecord",
+    "ControlledWallet",
+    "CorpusMetaRecord",
+    "IdentityEvent",
+    "KGEntity",
+    "KGRelation",
+    "MarketplaceAgent",
+    "PaperRecord",
+    "PassportPaperRef",
+    "SettlementIntent",
+    "StrategyBacktestFixture",
+    "StrategyDailyReturn",
+    "StrategyGenerator",
+    "StrategyPassportRecord",
+    "StrategyProposal",
+    "StrategyRecord",
+    "SubscriberLiability",
+    "SubscriberTickLog",
+    "UserProfile",
+    "WalletIdentity",
+]
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config

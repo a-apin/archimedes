@@ -28,15 +28,18 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from archimedes.db import engine, get_session, init_db
-from sqlalchemy import inspect, text
+from archimedes.db import Base, engine, get_session, init_db
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 
 
 @pytest.fixture(autouse=True, scope="module")
 def _ensure_tables():
     """See test_identity_metrics.py's identical fixture for the rationale:
-    this file must be runnable standalone under the hermetic per-module gate."""
+    this file must be runnable standalone under the hermetic per-module gate.
+    (The FK-introspection helper below builds its own engine, so it does not
+    depend on this — this only seeds the shared engine for the CHECK-constraint
+    insert tests.)"""
     init_db()
 
 
@@ -45,14 +48,28 @@ def _unique_wallet() -> str:
 
 
 def _fk_targets(table: str) -> dict[str, str]:
-    """``{constrained_column: referred_table}`` for every FK on ``table``."""
-    inspector = inspect(engine)
-    out: dict[str, str] = {}
-    for fk in inspector.get_foreign_keys(table):
-        referred = fk["referred_table"]
-        for col in fk["constrained_columns"]:
-            out[col] = referred
-    return out
+    """``{constrained_column: referred_table}`` for every FK on ``table``.
+
+    Reflects a throwaway in-memory engine built purely from ``Base.metadata``
+    rather than the process-wide file-backed ``engine``. This test pins the ORM
+    MODELS' FK definitions (see the module docstring), so building a fresh schema
+    and reflecting it is both faithful to that intent AND immune to the shared
+    session-wide SQLite file being mid-create/drop when other modules
+    (test_marketplace_routes, test_settlement_idempotency) run before this one in
+    the full suite — the cause of the intermittent NoSuchTableError otherwise.
+    """
+    probe = create_engine("sqlite://")  # in-memory, single shared connection
+    try:
+        Base.metadata.create_all(probe)
+        inspector = inspect(probe)
+        out: dict[str, str] = {}
+        for fk in inspector.get_foreign_keys(table):
+            referred = fk["referred_table"]
+            for col in fk["constrained_columns"]:
+                out[col] = referred
+        return out
+    finally:
+        probe.dispose()
 
 
 # ─── FK retrofits (AC4) ────────────────────────────────────────────────────

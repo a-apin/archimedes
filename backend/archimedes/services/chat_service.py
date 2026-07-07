@@ -39,7 +39,7 @@ Never promise returns. Always frame in terms of process and rigor."""
 # operator-supplied WALLET_ADDRESS env var isn't guaranteed to be.
 AI_WALLET_ADDRESS = os.getenv(
     "WALLET_ADDRESS", "0xc221dcd6fe7d81ff741f94c08e61f52bea1f9ac9"
-).lower()  # Circle agent walleter for AI identity
+).lower()  # Circle agent wallet for AI identity
 
 # Optional per-surface model override for vault chat. When unset (the default),
 # chat rides the same cheap env-resolved model as the rest of the app via

@@ -155,12 +155,25 @@ def upgrade() -> None:
     # ── 3. Relax marketplace_agents sentinel columns to nullable ─────────
     # (Must precede step 5's ''→NULL backfill: you can't UPDATE a NOT NULL
     # column to NULL.)
+    # server_default=None DROPS the old DEFAULT '' — critical, because these
+    # columns get an FK to wallet_identities below. If the ''-default survived,
+    # any insert that omits creator_wallet/subscriber_wallet would still receive
+    # '' (not NULL) and violate the new FK. With the default dropped, an omitted
+    # value is NULL, which the FK permits.
     with op.batch_alter_table("marketplace_agents", schema=None) as batch_op:
         batch_op.alter_column(
-            "creator_wallet", existing_type=sa.String(length=42), nullable=True, existing_server_default=""
+            "creator_wallet",
+            existing_type=sa.String(length=42),
+            nullable=True,
+            existing_server_default="",
+            server_default=None,
         )
         batch_op.alter_column(
-            "subscriber_wallet", existing_type=sa.String(length=42), nullable=True, existing_server_default=""
+            "subscriber_wallet",
+            existing_type=sa.String(length=42),
+            nullable=True,
+            existing_server_default="",
+            server_default=None,
         )
 
     # ── 4. Normalize casing BEFORE adding CHECK/FK constraints ───────────

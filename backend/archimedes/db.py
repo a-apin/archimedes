@@ -31,6 +31,36 @@ from archimedes.models.strategy_proposal import StrategyProposal  # noqa: F401
 from archimedes.models.strategy_store import StrategyRecord  # noqa: F401
 from archimedes.models.user_profile import UserProfile  # noqa: F401
 
+# The model imports above exist to register their tables on ``Base.metadata``
+# (a side effect of import) so ``init_db()``'s ``create_all`` sees every table.
+# ruff ignores them via ``noqa: F401``; listing them in ``__all__`` marks them as
+# intentional re-exports so CodeQL's unused-import query also treats them as used.
+# (``db.py`` is never ``import *``-ed, so ``__all__`` has no other effect.)
+__all__ = [
+    "Base",
+    "DATABASE_URL",
+    "engine",
+    "get_session",
+    "init_db",
+    "BacktestResultRecord",
+    "ControlledWallet",
+    "CorpusMetaRecord",
+    "IdentityEvent",
+    "MarketplaceAgent",
+    "PaperRecord",
+    "RequestCountSnapshot",
+    "SettlementIntent",
+    "StrategyBacktestFixture",
+    "StrategyDailyReturn",
+    "StrategyGenerator",
+    "StrategyProposal",
+    "StrategyRecord",
+    "SubscriberLiability",
+    "SubscriberTickLog",
+    "UserProfile",
+    "WalletIdentity",
+]
+
 logger = logging.getLogger(__name__)
 
 # backend/ — the directory containing the top-level `archimedes` package.
