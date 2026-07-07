@@ -243,9 +243,16 @@ async def stream_events(
         yield ": stream opened\n\n"
 
         cursor = last_event_id
-        elapsed = 0.0
-        since_heartbeat = 0.0
-        while elapsed < _STREAM_TIMEOUT_SECONDS:
+        # Wall-clock, not accumulated sleep duration: list_events() latency or
+        # scheduler jitter can make a single loop iteration take longer than
+        # _POLL_INTERVAL_SECONDS, and summing the intended sleep length instead
+        # of measuring real elapsed time would undercount silence and could
+        # delay a heartbeat past _HEARTBEAT_INTERVAL_SECONDS -- reintroducing
+        # the idle-disconnect this fix exists to prevent.
+        loop = asyncio.get_running_loop()
+        stream_start = loop.time()
+        last_heartbeat_at = stream_start
+        while loop.time() - stream_start < _STREAM_TIMEOUT_SECONDS:
             if await request.is_disconnected():
                 logger.info("sse client disconnected (job=%s, after=%d)", sanitize_log_value(job_id), cursor)
                 return
@@ -254,7 +261,7 @@ async def stream_events(
             for ev in new_events:
                 cursor = ev["id"]
                 yield _format_sse(ev)
-                since_heartbeat = 0.0  # a real event resets the silence clock too
+                last_heartbeat_at = loop.time()  # a real event resets the silence clock too
                 if ev.get("event") in _TERMINAL_EVENTS:
                     return
 
@@ -264,13 +271,12 @@ async def stream_events(
             # goes byte-silent long enough for an intermediary to decide it's
             # dead (#891). SSE comment lines are ignored by EventSource/any
             # spec-compliant parser, so this is invisible to application code.
-            if since_heartbeat >= _HEARTBEAT_INTERVAL_SECONDS:
+            now = loop.time()
+            if now - last_heartbeat_at >= _HEARTBEAT_INTERVAL_SECONDS:
                 yield ": heartbeat\n\n"
-                since_heartbeat = 0.0
+                last_heartbeat_at = now
 
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
-            elapsed += _POLL_INTERVAL_SECONDS
-            since_heartbeat += _POLL_INTERVAL_SECONDS
 
         # Heartbeat-timeout exit — client can reconnect with Last-Event-ID.
         yield ": stream timeout\n\n"
