@@ -120,20 +120,26 @@ resource "aws_security_group" "ecs_backend" {
   description = "ECS Fargate backend task (nginx + backend) - HTTP from ALB only"
   vpc_id      = aws_vpc.main.id
 
-  # CIDR-restricted (aws_vpc.main's own 10.0.0.0/16), NOT a
+  # CIDR-restricted to the ALB's OWN public subnets (10.0.0.0/24,
+  # 10.0.1.0/24 — aws_subnet.public in vpc.tf), NOT the whole VPC CIDR
+  # (10.0.0.0/16, which also covers the private subnets Aurora/ElastiCache/
+  # this same task sit in and is far wider than the ALB needs) and NOT a
   # `security_groups = [aws_security_group.alb.id]` reference: the ALB SG's
-  # new egress rule below already references THIS security group's id, and a
+  # egress rule below already references THIS security group's id, and a
   # reciprocal reference the other way round is a dependency cycle Terraform
   # can't resolve ("Cycle: aws_security_group.ecs_backend,
-  # aws_security_group.alb"). Same one-directional pattern main.tf's
-  # `aws_security_group.archimedes` already uses against this exact CIDR for
-  # the exact same reason.
+  # aws_security_group.alb"). Referencing `aws_subnet.public[*].cidr_block`
+  # directly (PR #1041 Copilot review) tightens the rule to exactly where the
+  # ALB's ENIs live without introducing that cycle — subnet resources have no
+  # dependency on either security group. Same one-directional
+  # avoid-the-SG-cycle rationale main.tf's `aws_security_group.archimedes`
+  # documents for its own CIDR-based rule.
   ingress {
-    description = "HTTP from ALB (nginx container port), restricted to the ALB VPC CIDR"
+    description = "HTTP from ALB (nginx container port), restricted to the ALB's public subnet CIDRs"
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
+    cidr_blocks = aws_subnet.public[*].cidr_block
   }
 
   egress {
