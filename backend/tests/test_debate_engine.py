@@ -340,6 +340,119 @@ async def test_propose_pool_drops_nonconformant_specs(monkeypatch, corpus):
     assert pool == []
 
 
+# ── Test #893 — proposer pool dedup ────────────────────────────────────────────
+
+
+def test_canonical_spec_hash_ignores_key_order_and_float_noise():
+    a = {"entry": {"gt": ["momentum_20", 0]}, "exit": {"lt": ["close", "sma_200"]}, "weight": 0.1 + 0.2}
+    b = {"exit": {"lt": ["close", "sma_200"]}, "entry": {"gt": ["momentum_20", 0]}, "weight": 0.3}
+    assert de._canonical_spec_hash(a) == de._canonical_spec_hash(b)
+    c = {"exit": {"lt": ["close", "sma_200"]}, "entry": {"gt": ["momentum_40", 0]}, "weight": 0.3}
+    assert de._canonical_spec_hash(a) != de._canonical_spec_hash(c)
+
+
+def test_canonical_spec_hash_ignores_marketing_name_and_citations():
+    """Fix #893's actual failure mode: same trading logic, different LLM-picked
+    name and citation set. These MUST hash identically, or dedup is a no-op
+    against the exact scenario it's meant to catch."""
+    base = dict(_CONFORMANT_SPEC)
+    a = {**base, "name": "TrendFusionCryptoVolatility", "source_arxiv_ids": ["2401.00001", "2402.00001"]}
+    b = {**base, "name": "CryptoVolTrendGuard", "source_arxiv_ids": ["2402.00001", "2401.00001"]}
+    assert de._canonical_spec_hash(a) == de._canonical_spec_hash(b)
+    # But a genuinely different entry condition must still be caught.
+    c = {**b, "entry": {"gt": ["momentum_40", 0]}}
+    assert de._canonical_spec_hash(a) != de._canonical_spec_hash(c)
+
+
+class _NameVaryingFusionBackend:
+    """Like _CannedFusionBackend, but emits a different strategy_name and
+    source_arxiv_ids ORDER on every call while keeping strategy_spec's
+    behavioral fields (entry/exit/universe/sizing) fixed — the real #893
+    scenario: independently-generated proposals that converge on the same
+    trading logic under different marketing names."""
+
+    _MARKETING_NAMES = [
+        "TrendFusionCryptoVolatility",
+        "CryptoVolTrendGuard",
+        "Volatility-Hedge Trend-Follow",
+        "Crypto-TailHedging TrendFollow",
+    ]
+
+    def __init__(self, model=None, *, spec):
+        self.model_id = model or "env-default"
+        self.served_model = f"served::{self.model_id}"
+        self.available = True
+        self._spec = spec
+        self._call_n = 0
+
+    def complete(self, system: str, user: str) -> str:
+        payload = json.loads(user)
+        ids = [p["arxiv_id"] for p in payload["candidate_papers"][:2]]
+        if self._call_n % 2:
+            ids = list(reversed(ids))
+        name = self._MARKETING_NAMES[self._call_n % len(self._MARKETING_NAMES)]
+        self._call_n += 1
+        spec = dict(self._spec)
+        spec["name"] = name
+        spec["source_arxiv_ids"] = ids
+        return json.dumps(
+            {
+                "strategy_name": name,
+                "thesis": "Fuse momentum + vol mechanisms.",
+                "source_arxiv_ids": ids,
+                "fusion_reasoning": "canned",
+                "novelty_rationale": "canned",
+                "risk_notes": "canned",
+                "strategy_spec": spec,
+            }
+        )
+
+
+async def test_propose_pool_dedupes_identical_specs_across_steers(monkeypatch, corpus):
+    """Fix #893: different regime/mechanism steers converging on the same
+    trading logic — but with a different LLM-picked marketing name and
+    citation order each time — must collapse to one pool entry, not be
+    counted as independent trials."""
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    monkeypatch.setenv("DEBATE_POOL_MAX", "4")
+
+    # A conformant spec that also survives the full validate_strategy_spec pass
+    # (unlike _CONFORMANT_SPEC, whose parameter_variants key doesn't reference an
+    # entry/exit alias — fine for the narrow _dsl_conformance_ok check elsewhere,
+    # but rejected by the full propose() validation, which nulls strategy_spec).
+    dedup_spec = {k: v for k, v in _CONFORMANT_SPEC.items() if k != "parameter_variants"}
+
+    backend = _NameVaryingFusionBackend(spec=dedup_spec)
+
+    def _fake_make(model=None, **kw):
+        return backend
+
+    # Force every steer to select the SAME evidence set, so the only things
+    # that vary between calls are the marketing name and citation order
+    # (mimicking independent LLM calls converging on the same evidence).
+    monkeypatch.setattr(
+        "archimedes.agents.strategy_fusion.select_candidates",
+        lambda fb, corpus, regime_bias=None: list(corpus)[:2],
+    )
+    monkeypatch.setattr("archimedes.agents.strategy_fusion.make_llm_backend", _fake_make)
+    monkeypatch.setattr(de.asyncio, "to_thread", _passthrough_to_thread)
+
+    brief = GenerateBrief(intent="momentum equities", max_papers=4)
+    pool = await de._propose_pool(brief, "m", corpus)
+
+    # Sanity: the backend really did emit >1 distinct marketing name across
+    # steers (i.e. this test exercises the actual #893 failure mode, not an
+    # already-identical pool that would collapse trivially).
+    assert backend._call_n > 1
+    assert len({backend._MARKETING_NAMES[i % 4] for i in range(backend._call_n)}) > 1
+
+    # Despite differently-named proposals, the trading logic is identical —
+    # must collapse to a single unique entry.
+    assert len(pool) == 1
+    hashes = {de._canonical_spec_hash(p.strategy_spec) for p in pool}
+    assert len(hashes) == len(pool)
+
+
 # ── Test 8 — flag-OFF byte-identical (fix A2) ─────────────────────────────────
 
 
