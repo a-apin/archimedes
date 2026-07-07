@@ -314,12 +314,20 @@ jobs:
             exit 1
           fi
 
-          # `python -m alembic`, not the `alembic` console script:
-          # backend/Dockerfile installs deps via `pip install --target=/deps`
-          # (a PYTHONPATH-based layout, not a real venv/site-packages
-          # install), so console-script entry points under /deps/bin are not
-          # on PATH. `python -m` resolves purely via PYTHONPATH (already set
-          # to /deps:/app in the image) and works identically either way.
+          # Runs `archimedes.scripts.alembic_migrate_preflight`, NOT a bare
+          # `python -m alembic upgrade head` (issue #1039 B3 — MANDATORY, see
+          # infra/runbooks/ecs-fargate-cutover.md): prod Aurora has no
+          # `alembic_version` table today (its schema was built by
+          # `create_all()` + hand-rolled ALTER patches, not Alembic), so a
+          # bare `upgrade head` against it fails "relation ... already
+          # exists" on the baseline revision. The pre-flight script stamps
+          # the baseline (`af9c6a9376e4`) first — idempotently, a no-op once
+          # `alembic_version` exists — then runs `upgrade head` for real. Uses
+          # `python -m` (not the `alembic` console script): backend/Dockerfile
+          # installs deps via `pip install --target=/deps` (a PYTHONPATH-based
+          # layout, not a real venv/site-packages install), so console-script
+          # entry points under /deps/bin are not on PATH; `python -m` resolves
+          # purely via PYTHONPATH (already set to /deps:/app in the image).
           #
           # Runs against ECS_MIGRATE_TASK_FAMILY (the dedicated single-
           # container task def, infra/ecs_migrate.tf), using the STATIC
@@ -330,7 +338,7 @@ jobs:
             --task-definition "$ECS_MIGRATE_TASK_FAMILY" \
             --launch-type FARGATE \
             --network-configuration "$ECS_MIGRATE_NETWORK_CONFIGURATION" \
-            --overrides "{\"containerOverrides\":[{\"name\":\"migrate\",\"command\":[\"python\",\"-m\",\"alembic\",\"upgrade\",\"head\"]}]}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"migrate\",\"command\":[\"python\",\"-m\",\"archimedes.scripts.alembic_migrate_preflight\"]}]}" \
             --query 'tasks[0].taskArn' --output text)
 
           if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
@@ -345,10 +353,10 @@ jobs:
             --query 'tasks[0].containers[?name==`migrate`].exitCode | [0]' --output text)
 
           if [ "$EXIT_CODE" != "0" ]; then
-            echo "::error::alembic upgrade head failed (container exit code ${EXIT_CODE}) — see CloudWatch Logs (/archimedes/app, ecs-migrate-* stream) for detail. Blocking deploy: a new task must never serve before schema is current (#1039 acceptance criterion 5)."
+            echo "::error::alembic_migrate_preflight failed (container exit code ${EXIT_CODE}) — see CloudWatch Logs (/archimedes/app, ecs-migrate-* stream) for detail. Blocking deploy: a new task must never serve before schema is current (#1039 acceptance criterion 5)."
             exit 1
           fi
-          echo "alembic upgrade head OK — schema is current; safe for new tasks to serve."
+          echo "alembic_migrate_preflight OK — schema is current (stamped + upgraded to head); safe for new tasks to serve."
 
   deploy:
     needs: [build-and-push, migrate]

@@ -97,7 +97,7 @@ no code fix required for the service to come up healthy):
   before the EC2 instance can actually be decommissioned (Phase 8 / #1039
   P6). Tracked as a residual, not silently dropped.
 
-### Alembic pre-rollout migrate stage (#1039 P4, build-chunk 3; B2 hardening, build-chunk 5)
+### Alembic pre-rollout migrate stage (#1039 P4, build-chunk 3; B2/B3 hardening, build-chunk 5)
 
 `.github/workflows/deploy.yml` gained a `migrate` job (`needs: build-and-push`;
 `deploy` now `needs: [build-and-push, migrate]`) that runs a one-off `aws ecs
@@ -133,6 +133,30 @@ independently of the service) — same literal-constant pattern as
 `ECS_CLUSTER` / `ECS_MIGRATE_TASK_FAMILY`. **This is why Phase 1 below applies
 the cluster/task-defs/security-group in their own stage (2a) BEFORE the
 service (2b), and requires a green migrate run in between.**
+
+**B3 — MANDATORY: auto-stamp the already-populated prod DB.** Prod Aurora has
+**no `alembic_version` table today** — its schema was built by
+`init_db()`'s `create_all()` + hand-rolled `ADD COLUMN IF NOT EXISTS`
+patches, never by Alembic. A bare `alembic upgrade head` against that
+database fails immediately: it tries to `CREATE TABLE backtest_results` (the
+baseline revision's first statement) against a table that already exists.
+The migrate task's command is therefore **not** `python -m alembic upgrade
+head` — it is `python -m archimedes.scripts.alembic_migrate_preflight`
+(`backend/archimedes/scripts/alembic_migrate_preflight.py`), which:
+1. Checks whether `alembic_version` is absent **and** `backtest_results`
+   (the oldest pre-Alembic table) already exists.
+2. If so, runs `alembic stamp af9c6a9376e4` (the baseline revision — see
+   `backend/migrations/versions/af9c6a9376e4_baseline_schema.py`) first.
+3. Then runs `alembic upgrade head` unconditionally.
+
+This is idempotent — after the first successful run, `alembic_version`
+exists, so every later run skips straight to step 3. **Do not run a bare
+`alembic upgrade head` against prod by hand outside this task** — it will
+fail on the baseline the same way. `backend/tests/scripts/
+test_alembic_migrate_preflight.py` covers the decision logic hermetically
+(sqlite, no Postgres/alembic needed) plus a full Postgres integration test
+(`@pytest.mark.integration` — create_all() → stamp → upgrade head → assert
+success) that self-activates once `backend/alembic.ini` lands.
 
 ---
 

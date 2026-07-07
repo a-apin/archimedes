@@ -80,10 +80,12 @@ resource "aws_ecs_task_definition" "migrate" {
 
       # Deliberately NO portMappings, NO healthCheck, NO dependsOn: this is a
       # single-container, run-to-completion task (`aws ecs run-task`, command
-      # overridden by CI to `python -m alembic upgrade head`) — there is no
-      # HTTP surface to health-check and nothing else in the task definition
-      # to depend on it, unlike the `backend` container in the service task
-      # definition below, which nginx depends on being HEALTHY.
+      # overridden by CI to `python -m archimedes.scripts.alembic_migrate_preflight`
+      # — the idempotent stamp-then-upgrade pre-flight, issue #1039 B3, NOT a
+      # bare `alembic upgrade head`; see that script's module docstring) —
+      # there is no HTTP surface to health-check and nothing else in the task
+      # definition to depend on it, unlike the `backend` container in the
+      # service task definition below, which nginx depends on being HEALTHY.
 
       environment = [
         { name = "AWS_REGION", value = var.aws_region },
