@@ -137,7 +137,10 @@ def ingest_passport(
         regime_tag=passport.regime_tag or "regime_neutral",
         extraction_llm=passport.extraction_llm,
         extraction_prompt_hash=passport.extraction_prompt_hash,
-        curator_wallet=passport.curator_wallet,
+        # Lowercased (issue #1028): curator_wallet now FKs to wallet_identities,
+        # whose own primary key is enforced lowercase — a curated YAML's
+        # CURATOR_WALLET metadata is human-typed and not guaranteed to match.
+        curator_wallet=passport.curator_wallet.lower() if passport.curator_wallet else None,
         curator_note=passport.curator_note,
         owner_wallet=owner_wallet,
         strategy_code_path=passport.strategy_code_path,

@@ -137,6 +137,12 @@ async def publish_strategy(
 
     try:
         agent_wallet_id, gateway_seller_address = await provision_publisher_wallet(pool_id)
+        # Casing fix (issue #1028): Circle's API returns the wallet address
+        # as-is (not guaranteed lowercase); this was the un-lowercased write
+        # path the issue calls out (#958). Normalize before it ever touches
+        # the DB — a new ck_marketplace_agents_gateway_seller_lower CHECK
+        # constraint makes the invariant durable going forward.
+        gateway_seller_address = gateway_seller_address.lower()
     except Exception as exc:
         logger.error("Circle wallet provisioning failed for publisher %s: %s", strategy_id, exc)
         raise HTTPException(status_code=502, detail="Failed to provision publisher settlement wallet") from exc

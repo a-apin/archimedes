@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, Numeric, String, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from archimedes.models.chat import Base
@@ -14,6 +14,13 @@ class MarketplaceAgent(Base):
     __tablename__ = "marketplace_agents"
 
     __table_args__ = (
+        # Casing fix (issue #1028): #958's un-lowercased gateway_seller_address
+        # write path (Circle's API returns the address as-is). Write path
+        # fixed in marketplace_routes.py; this CHECK makes it durable.
+        CheckConstraint(
+            "gateway_seller_address IS NULL OR gateway_seller_address = lower(gateway_seller_address)",
+            name="ck_marketplace_agents_gateway_seller_lower",
+        ),
         # One active publisher per strategy. Partial unique index — MUST carry
         # the same WHERE on BOTH backends (sqlite_where + postgresql_where):
         # without sqlite_where the index degrades to an unconditional unique on
@@ -63,8 +70,18 @@ class MarketplaceAgent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     role: Mapped[str] = mapped_column(String(16), nullable=False)  # "publisher" | "subscriber"
     strategy_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    creator_wallet: Mapped[str] = mapped_column(String(42), nullable=False, default="")
-    subscriber_wallet: Mapped[str] = mapped_column(String(42), nullable=False, default="")
+    # FK retrofit (issue #1028, D1): every non-empty wallet must be a known
+    # identity. Nullable (was NOT NULL default "") because only ONE of these
+    # two columns is meaningful per role — a publisher row never has a
+    # subscriber_wallet and vice versa; "" was a not-applicable sentinel, not
+    # a real value, so it doesn't belong in wallet_identities either. The
+    # issue #1028 migration backfills existing "" rows to NULL.
+    creator_wallet: Mapped[str | None] = mapped_column(
+        String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True, default=None
+    )
+    subscriber_wallet: Mapped[str | None] = mapped_column(
+        String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True, default=None
+    )
     sub_id: Mapped[str] = mapped_column(String(66), nullable=False, default="")  # 0x + 64 hex
     pool_id: Mapped[str] = mapped_column(
         String(66), nullable=False, default=""

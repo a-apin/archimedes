@@ -18,6 +18,7 @@ from archimedes.models.backtest_store import BacktestResultRecord  # noqa: F401
 from archimedes.models.chat import Base
 from archimedes.models.corpus_store import CorpusMetaRecord, PaperRecord  # noqa: F401
 from archimedes.models.daily_returns_store import StrategyDailyReturn  # noqa: F401
+from archimedes.models.identity import ControlledWallet, IdentityEvent, WalletIdentity  # noqa: F401
 from archimedes.models.marketplace import (  # noqa: F401
     MarketplaceAgent,
     SettlementIntent,

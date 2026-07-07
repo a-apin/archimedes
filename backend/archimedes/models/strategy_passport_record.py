@@ -71,14 +71,20 @@ class StrategyPassportRecord(Base):
     # ── Curation trail ───────────────────────────────────────
     extraction_llm = Column(String(64), nullable=True)
     extraction_prompt_hash = Column(String(64), nullable=True)
-    curator_wallet = Column(String(42), nullable=True)
+    # FK retrofit (issue #1028, D1): every non-NULL curator must be a known
+    # identity. Curator is a distinct role from owner (a curated strategy can
+    # have a curator with no owner) so this stays nullable independently.
+    curator_wallet = Column(String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True)
     curator_note = Column(Text, nullable=True)
 
     # ── Ownership (mirror of strategy_store.owner_wallet) ────
     # SIWE-derived generating wallet, bound server-side; lowercase; NULL for
-    # curated/legacy rows. Visibility gating reads strategy_store (source of
-    # truth); this mirror keeps the passport row self-describing.
-    owner_wallet = Column(String(42), nullable=True)
+    # curated/legacy rows (backfilled to the D7 'system' identity in the issue
+    # #1028 migration; stays nullable here — see strategy_store.owner_wallet
+    # for the matching rationale). Visibility gating reads strategy_store
+    # (source of truth); this mirror keeps the passport row self-describing.
+    # FK retrofit (issue #1028, D1): every non-NULL value must be a known identity.
+    owner_wallet = Column(String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True)
 
     # ── Code binding ─────────────────────────────────────────
     strategy_code_path = Column(String(512), nullable=True)

@@ -33,9 +33,12 @@ Never promise returns. Always frame in terms of process and rigor."""
 
 # Use the Circle dev-controlled wallet as the AI's identity in chat.
 # Falls back to a labelled placeholder if the wallet address isn't configured.
+# Lowercased (issue #1028): chat_messages.wallet_address now FKs to
+# wallet_identities, whose primary key is enforced lowercase — an
+# operator-supplied WALLET_ADDRESS env var isn't guaranteed to be.
 AI_WALLET_ADDRESS = os.getenv(
     "WALLET_ADDRESS", "0xc221dcd6fe7d81ff741f94c08e61f52bea1f9ac9"
-)  # Circle agent walleter for AI identity
+).lower()  # Circle agent walleter for AI identity
 
 # Optional per-surface model override for vault chat. When unset (the default),
 # chat rides the same cheap env-resolved model as the rest of the app via
