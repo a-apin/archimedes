@@ -1,4 +1,4 @@
-# Archimedes — Deploy to EC2 via SSM (no SSH keys)
+# Archimedes — Build (CI) → ECR → Deploy to EC2 via SSM (no SSH keys)
 #
 # Authentication: OIDC federation (GitHub → AWS IAM role assumption).
 # No long-lived AWS access keys in GitHub Secrets.
@@ -9,16 +9,53 @@
 #   and are read by the EC2 instance role at runtime, never injected from CI.
 #   Population runbook: infra/iam/README.md § "SSM Parameter Store — app secrets".
 #
+# Pipeline (issue #1039 — "build-in-CI is not redundant with Fargate, it is its
+# prerequisite"): this workflow has TWO jobs, gated on the SAME DEPLOY_ENABLED
+# flag so the whole pipeline is one on/off switch:
+#
+#   build-and-push   Builds the backend image (backend/Dockerfile) and the
+#                    nginx/frontend image (nginx/Dockerfile) on the CI runner,
+#                    boots each in a throwaway container and curls /health
+#                    (backend directly; nginx through its reverse-proxy path,
+#                    which also exercises the docker-network DNS resolution to
+#                    a `backend` container) — a bad image is caught HERE,
+#                    before it ever reaches ECR or a serving host — then tags
+#                    both <commit-sha> + latest and pushes to ECR.
+#   deploy           (needs: build-and-push) SSMs the EC2 box: pulls the
+#                    just-pushed <commit-sha> image from ECR and runs
+#                    `docker compose up -d --force-recreate` — NO docker build
+#                    ever runs on the serving host. This is the P1 "stop the
+#                    bleeding" interim from #1039: it ends the
+#                    docker-compose-build-on-a-4GB-serving-host OOM class that
+#                    caused 3 production outages on 2026-07-06 (#1001), ahead
+#                    of the full ECS Fargate cutover (later phases of #1039).
+#
+# ECR repos expected: `archimedes-backend` (shared by the backend/oracle/agent/
+# kb-runner services — same image, different `command:` override, exactly as
+# today) and `archimedes-nginx`. Provisioned by Terraform (issue #1039 chunk 2,
+# infra/ecr.tf — not part of this PR); build-and-push fails with a clear
+# `::error::` if a repo doesn't exist yet rather than a bare AWS API error.
+#
+# Box-side prerequisite (NOT applied by this PR — tracked in #1039 chunk 2):
+# the EC2 instance role (`archimedes-backend-role`) needs
+# ecr:GetAuthorizationToken + ecr:BatchGetImage + ecr:GetDownloadUrl +
+# ecr:BatchCheckLayerAvailability on repository/archimedes*, and the box needs
+# `awscli` installed, so `docker compose pull` can authenticate to ECR. The
+# deploy step fails closed with an explicit error if either is missing — see
+# docs/deployment.md § "Production deploy flow".
+#
 # Required GitHub Variables (or hardcoded below):
 #   AWS_ROLE_ARN — arn:aws:iam::037613907429:role/archimedes-github-deploy
+#     (also grants ECR push, scoped to repository/archimedes* — see
+#     infra/scripts/setup-github-oidc.sh)
 #   EC2_INSTANCE_ID — i-01803d3abc271d39b
-#   DEPLOY_ENABLED — gate flag; the deploy job runs ONLY when this repo variable
-#     equals 'true'. Unset/false → the job is skipped (neutral, not failed). The
+#   DEPLOY_ENABLED — gate flag; both jobs below run ONLY when this repo
+#     variable equals 'true'. Unset/false → skipped (neutral, not failed). The
 #     stack was rebuilt on a NEW account (037613907429 / us-east-1) and is LIVE
 #     again at archimedes-arc.com (2026-06-24), so the deploy target exists. This
 #     gate is kept OFF until the migration PR (#716) merges + the OIDC role/trust
 #     are confirmed; flip DEPLOY_ENABLED=true (Settings → Secrets and variables →
-#     Actions → Variables) to make merges to main auto-deploy.
+#     Actions → Variables) to make merges to main auto-build + push + deploy.
 #
 # ─── KNOWN SECURITY DEBT ───
 #
@@ -29,7 +66,10 @@
 #    now reads LLM_*/EMAIL_ENCRYPTION_KEY from SSM Parameter Store via its EC2
 #    instance role at container start (services/secrets_service.load_ssm_secrets,
 #    IAM in infra/iam/archimedes-backend-policy.json). The deploy script no longer
-#    touches secrets, so no secret value enters any AWS audit surface.
+#    touches secrets, so no secret value enters any AWS audit surface. The new
+#    ECR docker-login below preserves this: it authenticates via the box's own
+#    IAM instance role (a short-lived STS-vended token), never a literal
+#    secret/password flowing through the SSM command body.
 #
 # 2. OUT-OF-BAND IAM RESOURCES NOT TERRAFORMED.
 #    `archimedes-github-deploy`, `AWSSystemsManagerDefaultEC2InstanceManagementRole`,
@@ -45,7 +85,7 @@
 #    Verify with: aws iam get-role --role-name archimedes-github-deploy
 #    and inspect AssumeRolePolicyDocument's Condition block.
 
-name: Deploy to EC2
+name: Build, Push & Deploy
 
 on:
   push:
@@ -63,16 +103,136 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
+  ECR_REGISTRY: 037613907429.dkr.ecr.us-east-1.amazonaws.com
+  BACKEND_ECR_REPO: archimedes-backend
+  NGINX_ECR_REPO: archimedes-nginx
   EC2_INSTANCE_ID: i-01803d3abc271d39b
 
 jobs:
+  build-and-push:
+    name: Build, validate + push to ECR
+    # Same gate as `deploy` below — see the header comment. Kept OFF until
+    # DEPLOY_ENABLED=true so a stray push to main doesn't start pushing images
+    # to an ECR repo that Terraform (issue #1039 chunk 2) hasn't created yet.
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30  # torch/sentence-transformers install + model bake + multi-GB ECR push
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build backend image
+        run: docker build -t archimedes-backend:ci -f backend/Dockerfile backend
+
+      - name: Build nginx image
+        # VITE_* build-args are left at their Dockerfile defaults (empty) —
+        # this is a boot/smoke validation image, not the artifact served in
+        # prod; the pushed tag is rebuilt identically either way since the
+        # box never bakes secrets into the image (see docker-compose.yml).
+        run: docker build -t archimedes-nginx:ci -f nginx/Dockerfile .
+
+      - name: Validate backend image boots (GET /health)
+        run: |
+          set -euo pipefail
+          docker network create archimedes-ci
+          docker run -d --name backend --network archimedes-ci -p 8000:8000 archimedes-backend:ci
+          ok=""
+          for _ in $(seq 1 40); do
+            if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 3
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::backend image failed to answer GET /health within 120s — see logs below"
+            docker logs backend || true
+            exit 1
+          fi
+          echo "backend /health OK"
+
+      - name: Validate nginx image boots + proxies (GET / and /health)
+        # Runs on the same user-defined docker network as the backend
+        # container above (container name `backend`, matching nginx.conf's
+        # `upstream backend_api { server backend:8000 resolve; }`) so this
+        # also exercises the runtime DNS re-resolution path, not just a
+        # standalone nginx boot.
+        run: |
+          set -euo pipefail
+          docker run -d --name nginx-validate --network archimedes-ci -p 18080:8080 archimedes-nginx:ci
+          ok=""
+          for _ in $(seq 1 40); do
+            if curl -fsS http://localhost:18080/ >/dev/null 2>&1 && curl -fsS http://localhost:18080/health >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 3
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::nginx image failed to serve / and proxy /health within 120s — see logs below"
+            docker logs nginx-validate || true
+            docker logs backend || true
+            exit 1
+          fi
+          echo "nginx / + /health OK"
+
+      - name: Teardown validation containers
+        if: always()
+        run: |
+          docker rm -f backend nginx-validate 2>/dev/null || true
+          docker network rm archimedes-ci 2>/dev/null || true
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b  # v6.2.1
+        with:
+          role-to-assume: arn:aws:iam::037613907429:role/archimedes-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64  # v2.1.6
+
+      - name: Verify ECR repositories exist
+        # Fails clearly instead of letting `docker push` surface a bare
+        # "repository does not exist" AWS API error. The repos are Terraform
+        # resources (issue #1039 chunk 2, infra/ecr.tf) not yet applied as of
+        # this PR — this is the intended failure mode until Dan runs
+        # `terraform apply` in infra/ (see infra/README.md).
+        run: |
+          set -euo pipefail
+          for repo in "$BACKEND_ECR_REPO" "$NGINX_ECR_REPO"; do
+            if ! aws ecr describe-repositories --repository-names "$repo" --region "$AWS_REGION" >/dev/null 2>&1; then
+              echo "::error::ECR repository '$repo' does not exist yet. Apply the ECR Terraform in infra/ (issue #1039 chunk 2) before enabling DEPLOY_ENABLED — see infra/README.md."
+              exit 1
+            fi
+          done
+
+      - name: Tag + push backend image
+        run: |
+          set -euo pipefail
+          docker tag archimedes-backend:ci "$ECR_REGISTRY/$BACKEND_ECR_REPO:${{ github.sha }}"
+          docker tag archimedes-backend:ci "$ECR_REGISTRY/$BACKEND_ECR_REPO:latest"
+          docker push "$ECR_REGISTRY/$BACKEND_ECR_REPO:${{ github.sha }}"
+          docker push "$ECR_REGISTRY/$BACKEND_ECR_REPO:latest"
+
+      - name: Tag + push nginx image
+        run: |
+          set -euo pipefail
+          docker tag archimedes-nginx:ci "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}"
+          docker tag archimedes-nginx:ci "$ECR_REGISTRY/$NGINX_ECR_REPO:latest"
+          docker push "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}"
+          docker push "$ECR_REGISTRY/$NGINX_ECR_REPO:latest"
+
   deploy:
+    needs: build-and-push
     name: Deploy
-    # Gated behind an explicit opt-in repo variable. The stack is LIVE again on
+    # Gated behind an explicit opt-in repo variable (also enforced transitively
+    # via `needs: build-and-push`, which carries the same `if:` — kept explicit
+    # here too so this job's own skip reason is legible in the Actions UI
+    # without following the dependency graph). The stack is LIVE again on
     # the new account (037613907429 / us-east-1, instance i-01803d3abc271d39b),
     # but the gate stays OFF until the migration PR (#716) merges and the OIDC
     # role + trust policy are confirmed, so a stray push to main can't deploy
-    # mid-migration. With DEPLOY_ENABLED unset, this job is SKIPPED (neutral,
+    # mid-migration. With DEPLOY_ENABLED unset, both jobs are SKIPPED (neutral,
     # keeps the Actions history green); set DEPLOY_ENABLED=true to enable.
     if: ${{ vars.DEPLOY_ENABLED == 'true' }}
     runs-on: ubuntu-latest
@@ -114,7 +274,18 @@ jobs:
               "# values not yet in SSM, incl. the build-time VITE_CIRCLE_CLIENT_KEY. See",
               "# infra/iam/README.md for the SSM population runbook.",
               "grep -q '"'"'^PUBLIC_DOMAIN='"'"' .env || echo '"'"'PUBLIC_DOMAIN=https://archimedes-arc.com'"'"' >> .env",
-              "docker compose build",
+              "# P1 interim (issue #1039): PULL the image the build-and-push job above",
+              "# already built + validated + pushed to ECR — NEVER build on this serving",
+              "# host again. This is what stops the docker-compose-build OOM that caused",
+              "# 3 outages on 2026-07-06 (#1001). Requires awscli + an ECR-pull-capable",
+              "# instance role on this box (archimedes-backend-role — issue #1039 chunk",
+              "# 2, infra/ec2_iam.tf, NOT applied as of this PR); fails closed below with",
+              "# an explicit message rather than falling back to a local build.",
+              "grep -q '"'"'^ECR_REGISTRY='"'"' .env && sed -i '"'"'s#^ECR_REGISTRY=.*#ECR_REGISTRY=${{ env.ECR_REGISTRY }}#'"'"' .env || echo '"'"'ECR_REGISTRY=${{ env.ECR_REGISTRY }}'"'"' >> .env",
+              "grep -q '"'"'^IMAGE_TAG='"'"' .env && sed -i '"'"'s#^IMAGE_TAG=.*#IMAGE_TAG=${{ github.sha }}#'"'"' .env || echo '"'"'IMAGE_TAG=${{ github.sha }}'"'"' >> .env",
+              "command -v aws >/dev/null 2>&1 || { echo '"'"'ERROR_NO_AWSCLI_ON_BOX: install awscli on this instance and grant archimedes-backend-role ECR pull permissions (see infra/ec2_iam.tf, issue #1039 chunk 2, and docs/deployment.md).'"'"'; exit 1; }",
+              "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }} || { echo '"'"'ERROR_ECR_LOGIN_FAILED: verify archimedes-backend-role (EC2 instance role) has ecr:GetAuthorizationToken (infra/ec2_iam.tf).'"'"'; exit 1; }",
+              "docker compose pull || { echo '"'"'ERROR_ECR_PULL_FAILED: verify the archimedes-backend/archimedes-nginx ECR repos exist (terraform apply in infra/, issue #1039 chunk 2) and that tag ${{ github.sha }} was pushed by the build-and-push job.'"'"'; exit 1; }",
               "# Remove orphan containers left by an interrupted --force-recreate.",
               "# Docker renames the old container to <hex>_<name> before deleting it; if a",
               "# run is interrupted mid-recreate the orphan survives, and the next recreate",
