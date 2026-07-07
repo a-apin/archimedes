@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import os
 
+from eth_abi import encode as abi_encode
+from eth_utils import keccak
 from web3.contract import AsyncContract
 
 from archimedes.chain.circle_signer import circle_signer
@@ -28,6 +30,34 @@ logger = logging.getLogger(__name__)
 # Set to $5 for testnet (wallet balance is limited by faucet rate).
 # Production would raise this to $1000+.
 MIN_HEALTHY_LIQUIDITY_USDC = 5.0
+
+# Solidity types of Vault.rebalance()'s params, in order — MUST match
+# Vault.sol's `rebalance(address[] tokensIn, uint256[] amountsIn,
+# address[] tokensOut, uint256[] amountsOut)` exactly, since
+# `compute_trade_id` reproduces the contract's own
+# `keccak256(abi.encode(tokensIn, amountsIn, tokensOut, amountsOut))` (Vault.sol).
+_REBALANCE_ABI_TYPES = ["address[]", "uint256[]", "address[]", "uint256[]"]
+
+
+def compute_trade_id(
+    tokens_in: list[str],
+    amounts_in: list[int],
+    tokens_out: list[str],
+    amounts_out: list[int],
+) -> bytes:
+    """Compute the tradeId Vault.rebalance() will derive from these exact arrays.
+
+    Mirrors Vault.sol's ``bytes32 tradeId = keccak256(abi.encode(tokensIn, amountsIn,
+    tokensOut, amountsOut))`` byte-for-byte (same types, same order). The arrays
+    passed here MUST be the identical ones later submitted to
+    ``ChainExecutor.execute_trades(..., trade_arrays=...)`` — any divergence (a
+    reordered leg, a re-read oracle price) produces a different tradeId and the
+    on-chain recompute won't find a matching commitment (#588).
+
+    Returns the raw 32-byte hash (not hex-encoded).
+    """
+    encoded = abi_encode(_REBALANCE_ABI_TYPES, [tokens_in, amounts_in, tokens_out, amounts_out])
+    return keccak(encoded)
 
 
 class InsufficientLiquidityError(RuntimeError):
@@ -197,20 +227,31 @@ class ChainExecutor:
             raise TradeRevertedError(f"Rebalance tx reverted on-chain: {norm}")
         return norm
 
-    async def execute_trades(
+    async def build_trade_arrays(
         self,
         vault_address: str,
         trades: list[TradeOrder],
-    ) -> list[str]:
-        """Execute rebalance trades for a vault.
+    ) -> tuple[list[str], list[int], list[str], list[int]]:
+        """Build the (tokensIn, amountsIn, tokensOut, amountsOut) arrays for Vault.rebalance().
 
-        Uses Circle dev-controlled wallet if configured, falls back to raw private key.
-        Pre-flight: validates AMM pool liquidity before submitting.
+        This is the EXACT array construction ``Vault.rebalance()`` hashes into its
+        tradeId — ``keccak256(abi.encode(tokensIn, amountsIn, tokensOut, amountsOut))``
+        (Vault.sol). Callers that need to bind a commit-reveal tradeId to a trade
+        (see ``agent_runner._commit_trace``) MUST call this once and reuse the
+        returned arrays for BOTH the tradeId computation and the ``execute_trades()``
+        submission (via its ``trade_arrays`` param) — do NOT call this twice for the
+        same trade. The SELL-leg sizing reads a live oracle price
+        (``_usdc_value_to_token_raw``), so two independent calls could read two
+        different prices and produce two DIFFERENT tradeId values; the on-chain
+        recompute in ``Vault.rebalance()`` would then miss the commitment and revert
+        (#588 / commit-before-trade guard).
 
         Amounts in TradeOrder are in human-readable USDC units (e.g. 8.0 for $8).
         The vault's rebalance() expects raw token amounts:
           - BUY (USDC → synth): amount in USDC raw (6 decimals)
           - SELL (synth → USDC): amount in synth raw (18 decimals)
+
+        Raises InsufficientLiquidityError if a leg's AMM pool lacks liquidity.
         """
         # Drop USDC-denominated legs (cash / TREASURY allocation): holding USDC
         # is already the settlement asset, so there is no swap to make and no
@@ -259,6 +300,38 @@ class ChainExecutor:
                     continue
                 tokens_out.append(token_addr)
                 amounts_out.append(token_raw)
+
+        return tokens_in, amounts_in, tokens_out, amounts_out
+
+    async def execute_trades(
+        self,
+        vault_address: str,
+        trades: list[TradeOrder],
+        trade_arrays: tuple[list[str], list[int], list[str], list[int]] | None = None,
+    ) -> list[str]:
+        """Execute rebalance trades for a vault.
+
+        Uses Circle dev-controlled wallet if configured, falls back to raw private key.
+        Pre-flight: validates AMM pool liquidity before submitting (unless
+        ``trade_arrays`` is already provided, in which case liquidity was validated
+        when those arrays were built).
+
+        Amounts in TradeOrder are in human-readable USDC units (e.g. 8.0 for $8).
+        The vault's rebalance() expects raw token amounts:
+          - BUY (USDC → synth): amount in USDC raw (6 decimals)
+          - SELL (synth → USDC): amount in synth raw (18 decimals)
+
+        Args:
+            trade_arrays: optional precomputed ``(tokensIn, amountsIn, tokensOut,
+                amountsOut)``, e.g. from a prior ``build_trade_arrays()`` call used to
+                derive a commit-reveal tradeId. When provided, it is submitted AS-IS
+                (not recomputed) so the tx matches the tradeId already committed
+                on-chain. When omitted, the arrays are built fresh from ``trades``.
+        """
+        if trade_arrays is not None:
+            tokens_in, amounts_in, tokens_out, amounts_out = trade_arrays
+        else:
+            tokens_in, amounts_in, tokens_out, amounts_out = await self.build_trade_arrays(vault_address, trades)
 
         # Nothing left to swap once the cash/USDC legs are filtered out (or a
         # rebalance that was cash-only to begin with). Submitting an all-empty

@@ -308,16 +308,18 @@ class TestCommitReveal:
             client.settings = MagicMock(reasoning_trace_registry_address="0xreg")
             client.w3.eth.get_transaction_receipt = AsyncMock(return_value=fake_receipt)
 
-            trace_id, tx, block = await publisher.commit(trace, claimed_execution_time=9999999999)
+            trade_id = b"\xab" * 32
+            trace_id, tx, block = await publisher.commit(trace, claimed_execution_time=9999999999, trade_id=trade_id)
 
         assert tx == "0xCOMMIT"
         assert trace_id == 42
         assert block == 100
         assert trace.commit_tx_hash == "0xCOMMIT"
-        # commit() called with the real signature + claimedExecutionTime
+        # commit() called with the real (5-arg) signature + claimedExecutionTime + tradeId
         call = signer.execute_contract.await_args
-        assert call.kwargs["abi_function"] == "commit(address,bytes32,uint64,bytes)"
+        assert call.kwargs["abi_function"] == "commit(address,bytes32,uint64,bytes32,bytes)"
         assert call.kwargs["abi_params"][2] == "9999999999"
+        assert call.kwargs["abi_params"][3] == "0x" + trade_id.hex()
 
     @pytest.mark.asyncio
     async def test_reveal_submits_same_canonical_bytes_and_cid(self):
@@ -368,5 +370,5 @@ class TestCommitReveal:
 
         trace = _make_trace()
         trace.compute_hash()
-        trace_id, tx, block = await publisher.commit(trace, claimed_execution_time=9999999999)
+        trace_id, tx, block = await publisher.commit(trace, claimed_execution_time=9999999999, trade_id=b"\xcd" * 32)
         assert (trace_id, tx, block) == (None, None, None)

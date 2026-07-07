@@ -129,19 +129,29 @@ class TracePublisher:
         self,
         trace: ReasoningTrace,
         claimed_execution_time: int,
+        trade_id: bytes,
         trade_intent_summary: bytes = b"",
     ) -> tuple[int | None, str | None, int | None]:
         """Commit the trace hash on-chain BEFORE the covered trade executes.
 
         Calls ``ReasoningTraceRegistry.commit(vault, contentHash, claimedExecutionTime,
-        tradeIntentSummary)``. The committed ``contentHash`` is keccak256 of the trace's
-        canonical JSON — the SAME bytes ``reveal`` will later submit, so the on-chain
-        hash binding holds.
+        tradeId, tradeIntentSummary)``. The committed ``contentHash`` is keccak256 of
+        the trace's canonical JSON — the SAME bytes ``reveal`` will later submit, so
+        the on-chain hash binding holds. ``tradeId`` binds this commitment to the
+        specific rebalance ``Vault.rebalance()`` will later recompute
+        (``keccak256(abi.encode(tokensIn, amountsIn, tokensOut, amountsOut))`` —
+        see ``archimedes.chain.executor.compute_trade_id``): the caller MUST derive
+        it from the EXACT arrays that will be submitted to
+        ``ChainExecutor.execute_trades()``, or the on-chain recompute won't find a
+        matching commitment and ``rebalance()`` reverts (#588).
 
         Args:
             trace: the trace being committed (its hash is computed here if absent).
             claimed_execution_time: unix time the trade is claimed to land at; must be
                 strictly after the commit block's timestamp (the contract enforces this).
+            trade_id: 32-byte trade identifier matching what ``Vault.rebalance()`` will
+                recompute for the covered trade. Must be non-empty (the contract rejects
+                ``bytes32(0)``).
             trade_intent_summary: ABI/opaque bytes summarizing intended trades (metadata).
 
         Returns:
@@ -156,6 +166,9 @@ class TracePublisher:
             )
             return None, None, None
 
+        if not trade_id or len(trade_id) != 32:
+            raise ValueError(f"trade_id must be 32 bytes, got {len(trade_id) if trade_id else 0}")
+
         content_hash = trace.trace_hash or trace.compute_hash()
         content_hash_bytes = bytes.fromhex(content_hash.removeprefix("0x"))  # 32 bytes
         vault_addr = chain_client.to_checksum(trace.vault_address)
@@ -165,11 +178,12 @@ class TracePublisher:
         if circle_signer.is_configured:
             try:
                 content_hash_hex = "0x" + content_hash.removeprefix("0x")
+                trade_id_hex = "0x" + trade_id.hex()
                 intent_hex = "0x" + trade_intent_summary.hex() if trade_intent_summary else "0x"
                 tx_hash = await circle_signer.execute_contract(
                     contract_address=registry_addr,
-                    abi_function="commit(address,bytes32,uint64,bytes)",
-                    abi_params=[vault_addr, content_hash_hex, str(claimed_execution_time), intent_hex],
+                    abi_function="commit(address,bytes32,uint64,bytes32,bytes)",
+                    abi_params=[vault_addr, content_hash_hex, str(claimed_execution_time), trade_id_hex, intent_hex],
                 )
                 logger.info(f"Trace committed via Circle: {tx_hash[:16]}...")
                 return await self._finalize_commit(trace, tx_hash, vault_addr)
@@ -186,7 +200,7 @@ class TracePublisher:
         try:
             nonce = await chain_client.w3.eth.get_transaction_count(account.address)
             tx = await registry.functions.commit(
-                vault_addr, content_hash_bytes, claimed_execution_time, trade_intent_summary
+                vault_addr, content_hash_bytes, claimed_execution_time, trade_id, trade_intent_summary
             ).build_transaction(
                 {
                     "from": account.address,

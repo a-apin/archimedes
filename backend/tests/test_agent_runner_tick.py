@@ -261,6 +261,7 @@ class TestCommitRevealDryRun:
             "reasoning text",
             _portfolio(),
             _allocs(sSPY=0.6, USDC=0.4),
+            None,  # trade_id — DRY_RUN, so no real commit is made and it's unused
         )
         # DRY_RUN → no on-chain ids, but the canonical trace IS built + hashed.
         assert trace_id is None and commit_tx is None and commit_block is None and claimed_time is None
@@ -283,6 +284,7 @@ class TestCommitRevealDryRun:
             "r",
             _portfolio(),
             _allocs(sSPY=0.6, USDC=0.4),
+            None,  # trade_id — DRY_RUN, so no real commit is made and it's unused
         )
         await runner._reveal_trace(trace, trace_id, "tick-1", tx_hashes=[])
         # Off-chain persist happened with temporal_binding_source = "none" (dry-run).
