@@ -27,6 +27,7 @@ export default function PublishPage({ onNavigate }) {
   // Vault creation / deposit flow
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [createdVault, setCreatedVault] = useState(null)  // address after create+deposit
+  const [depositDone, setDepositDone] = useState(false)   // true once DepositFlow completes
   const [vaultBalance, setVaultBalance] = useState(null)  // bigint raw
   const [checkingBalance, setCheckingBalance] = useState(false)
 
@@ -61,13 +62,14 @@ export default function PublishPage({ onNavigate }) {
       .then(b => setVaultBalance(b))
       .catch(() => setVaultBalance(null))
       .finally(() => setCheckingBalance(false))
-  }, [vaultMode, createdVault, existingVault, selectedStrategy])
+  }, [vaultMode, createdVault, existingVault, selectedStrategy, depositDone])
 
   const resetMenu = () => {
     setSelectedStrategy(null)
     setVaultMode('create')
     setExistingVault('')
     setCreatedVault(null)
+    setDepositDone(false)
     setVaultBalance(null)
     setPublishing(false)
     setPublishError('')
@@ -94,9 +96,16 @@ export default function PublishPage({ onNavigate }) {
     }
   }
 
-  // ── Callback when CreateVaultModal's deposit completes ──
+  // ── Callbacks for CreateVaultModal ──
+  // onDeployed fires right after on-chain createVault+setAgent succeed (before DepositFlow).
+  // We capture the address early so it's ready when DepositFlow completes.
   const handleVaultDeployed = (addr) => {
     setCreatedVault(addr)
+  }
+  // onClose fires when the modal fully closes (after DepositFlow's onComplete or user cancel).
+  // If we captured a vault address, assume the deposit flow completed.
+  const handleCloseModal = () => {
+    if (createdVault) setDepositDone(true)
     setShowCreateModal(false)
   }
 
@@ -244,12 +253,12 @@ export default function PublishPage({ onNavigate }) {
           </div>
         </div>
 
-        {/* CreateVaultModal portal */}
+        {/* CreateVaultModal portal — handles createVault + setAgent + DepositFlow */}
         {showCreateModal && (
           <CreateVaultModal
             strategy={{ id: selectedStrategy.id, paper_title: selectedStrategy.title || selectedStrategy.id }}
             walletAddr={walletAddr}
-            onClose={() => setShowCreateModal(false)}
+            onClose={handleCloseModal}
             onDeployed={handleVaultDeployed}
           />
         )}
