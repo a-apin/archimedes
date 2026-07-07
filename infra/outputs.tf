@@ -158,3 +158,8 @@ output "ecs_exec_shell_command" {
   description = "Template for shelling into a running backend task via ECS Exec (fill in the task id from `aws ecs list-tasks --cluster <ecs_cluster_name> --service-name <ecs_service_name>`)"
   value       = "aws ecs execute-command --cluster ${aws_ecs_cluster.main.name} --task <task-id> --container backend --interactive --command \"/bin/sh\""
 }
+
+output "ecs_migrate_task_definition_family" {
+  description = "ECS task definition family for the one-off Alembic migrate task (infra/ecs_migrate.tf) — distinct from ecs_task_definition_family (the SERVICE family, backend+nginx). .github/workflows/deploy.yml's migrate job's ECS_MIGRATE_TASK_FAMILY literal must match this value."
+  value       = aws_ecs_task_definition.migrate.family
+}

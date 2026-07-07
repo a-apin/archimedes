@@ -352,9 +352,13 @@ resource "aws_iam_role_policy" "github_deploy_ecs" {
           "ecs:DescribeTasks",
           "ecs:ListTasks",
           "ecs:UpdateService",
-          # RunTask/StopTask: the shared Alembic one-off migrate task (#1039
+          # RunTask/StopTask: the dedicated Alembic one-off migrate task
+          # (infra/ecs_migrate.tf's `aws_ecs_task_definition.migrate`, #1039
           # P4, coupled to #1028 Phase A) runs this same way — pre-rollout,
-          # before new tasks serve traffic.
+          # before new tasks serve traffic. `Resource = "*"` already covers
+          # that family (and the service family below); no separate grant
+          # needed when the migrate task-def was split out from the service
+          # one (PR #1041 Copilot review).
           "ecs:RunTask",
           "ecs:StopTask"
         ]
@@ -364,6 +368,9 @@ resource "aws_iam_role_policy" "github_deploy_ecs" {
         Sid    = "PassEcsRoles"
         Effect = "Allow"
         Action = "iam:PassRole"
+        # Same two roles infra/ecs_migrate.tf's task definition reuses
+        # (execution_role_arn / task_role_arn) — no additional PassRole grant
+        # needed for the dedicated migrate task-def.
         Resource = [
           aws_iam_role.ecs_task_execution.arn,
           aws_iam_role.ecs_task.arn

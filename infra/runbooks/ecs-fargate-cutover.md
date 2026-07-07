@@ -93,20 +93,28 @@ no code fix required for the service to come up healthy):
 
 `.github/workflows/deploy.yml` gained a `migrate` job (`needs: build-and-push`;
 `deploy` now `needs: [build-and-push, migrate]`) that runs `alembic upgrade
-head` as a one-off `aws ecs run-task` against this chunk's cluster/task
-definition — but **only if `backend/alembic.ini` exists on the checked-out
-ref**. As of this PR, #1028 Phase A hasn't landed Alembic yet
-(`backend/migrations/` is still hand-rolled timestamped `.sql` +
+head` as a one-off `aws ecs run-task` against the **dedicated** migrate task
+definition (`infra/ecs_migrate.tf`'s `aws_ecs_task_definition.migrate`, family
+`archimedes-migrate`) — a single container, no nginx sidecar, no
+healthCheck/dependsOn — but **only if `backend/alembic.ini` exists on the
+checked-out ref**. (Originally this targeted the SERVICE family,
+`archimedes-backend`, which bundles an nginx sidecar that `dependsOn` the
+backend container being `HEALTHY`; since a migrate run overrides the backend
+command away from serving HTTP, `/health` never resolves and ECS would kill
+the task before Alembic finished — split out into its own family per the
+PR #1041 Copilot review.) As of this PR, #1028 Phase A hasn't landed Alembic
+yet (`backend/migrations/` is still hand-rolled timestamped `.sql` +
 `archimedes.db.init_db()`'s idempotent `create_all` / `ADD COLUMN IF NOT
 EXISTS` patches), so the job detects that and no-ops loudly (a clear log
 line, exit 0) rather than either failing the pipeline on a stage with
 nothing to do yet, or silently pretending to run a migration that doesn't
 exist. The moment `backend/alembic.ini` lands on this branch, the step
-activates itself — no further pipeline change needed. It reuses the LIVE
-ECS service's own `networkConfiguration` (private subnets + `ecs_backend`
-security group) via `aws ecs describe-services` rather than hardcoding
-subnet/SG ids, so it also fails closed with a clear message if Alembic
-lands before `terraform apply` has run.
+activates itself — no further pipeline change needed. It still reuses the
+LIVE ECS **service's** own `networkConfiguration` (private subnets +
+`ecs_backend` security group) via `aws ecs describe-services` — only the
+`--task-definition` passed to `run-task` changed — rather than hardcoding
+subnet/SG ids, so it also fails closed with a clear message if Alembic lands
+before `terraform apply` has run.
 
 ---
 

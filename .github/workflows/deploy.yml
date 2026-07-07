@@ -274,13 +274,25 @@ jobs:
       - name: Run `alembic upgrade head` as a one-off Fargate task
         if: steps.check.outputs.present == 'true'
         env:
-          # Matches infra/ecs.tf's `${var.project_name}-cluster` /
-          # `${var.project_name}-backend` with the default `project_name =
-          # "archimedes"` (infra/variables.tf) — same literal-constant
-          # pattern as EC2_INSTANCE_ID / ECR_REGISTRY above, not a new
-          # cross-job variable.
+          # Matches infra/ecs.tf's `${var.project_name}-cluster` with the
+          # default `project_name = "archimedes"` (infra/variables.tf) — same
+          # literal-constant pattern as EC2_INSTANCE_ID / ECR_REGISTRY above,
+          # not a new cross-job variable.
           ECS_CLUSTER: archimedes-cluster
-          ECS_TASK_FAMILY: archimedes-backend
+          # The SERVICE name (aws_ecs_service.backend, infra/ecs.tf) — used
+          # ONLY to borrow its live networkConfiguration (private subnets +
+          # the ecs_backend security group) below. NOT the task-def family to
+          # run: that family boots backend+nginx together and would hang
+          # waiting on a health check the migrate command overrides away —
+          # see infra/ecs_migrate.tf's header comment (PR #1041 Copilot review).
+          ECS_SERVICE_NAME: archimedes-backend
+          # The dedicated one-off migrate task-def family (infra/ecs_migrate.tf,
+          # `aws_ecs_task_definition.migrate`, family = "${var.project_name}-migrate")
+          # — single container, no nginx sidecar, no healthCheck/dependsOn to
+          # stall on while Alembic runs. Kept in sync with Terraform via the
+          # `ecs_migrate_task_definition_family` output (infra/outputs.tf);
+          # this literal is the CI-side half of that sync contract.
+          ECS_MIGRATE_TASK_FAMILY: archimedes-migrate
         run: |
           set -euo pipefail
 
@@ -292,10 +304,10 @@ jobs:
           # doesn't exist yet (i.e. Alembic landed before Dan applied the
           # Terraform) rather than a bare AWS API error deep in run-task.
           NET_CONFIG=$(aws ecs describe-services \
-            --cluster "$ECS_CLUSTER" --services "$ECS_TASK_FAMILY" \
+            --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE_NAME" \
             --query 'services[0].networkConfiguration' --output json 2>/dev/null || echo "")
           if [ -z "$NET_CONFIG" ] || [ "$NET_CONFIG" = "null" ]; then
-            echo "::error::ECS service '$ECS_TASK_FAMILY' not found in cluster '$ECS_CLUSTER'. Apply the ECS Terraform in infra/ (issue #1039 chunk 2, infra/ecs.tf) before Alembic can run its pre-rollout migrate task — see infra/runbooks/ecs-fargate-cutover.md."
+            echo "::error::ECS service '$ECS_SERVICE_NAME' not found in cluster '$ECS_CLUSTER'. Apply the ECS Terraform in infra/ (issue #1039 chunk 2, infra/ecs.tf) before Alembic can run its pre-rollout migrate task — see infra/runbooks/ecs-fargate-cutover.md."
             exit 1
           fi
 
@@ -305,12 +317,16 @@ jobs:
           # install), so console-script entry points under /deps/bin are not
           # on PATH. `python -m` resolves purely via PYTHONPATH (already set
           # to /deps:/app in the image) and works identically either way.
+          #
+          # Runs against ECS_MIGRATE_TASK_FAMILY (the dedicated single-
+          # container task def, infra/ecs_migrate.tf), NOT ECS_SERVICE_NAME's
+          # family — see the env block comment above and infra/ecs_migrate.tf.
           TASK_ARN=$(aws ecs run-task \
             --cluster "$ECS_CLUSTER" \
-            --task-definition "$ECS_TASK_FAMILY" \
+            --task-definition "$ECS_MIGRATE_TASK_FAMILY" \
             --launch-type FARGATE \
             --network-configuration "$NET_CONFIG" \
-            --overrides "{\"containerOverrides\":[{\"name\":\"backend\",\"command\":[\"python\",\"-m\",\"alembic\",\"upgrade\",\"head\"]}]}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"migrate\",\"command\":[\"python\",\"-m\",\"alembic\",\"upgrade\",\"head\"]}]}" \
             --query 'tasks[0].taskArn' --output text)
 
           if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
@@ -322,10 +338,10 @@ jobs:
           aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN"
 
           EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
-            --query 'tasks[0].containers[?name==`backend`].exitCode | [0]' --output text)
+            --query 'tasks[0].containers[?name==`migrate`].exitCode | [0]' --output text)
 
           if [ "$EXIT_CODE" != "0" ]; then
-            echo "::error::alembic upgrade head failed (container exit code ${EXIT_CODE}) — see CloudWatch Logs (/archimedes/app, ecs-* stream) for detail. Blocking deploy: a new task must never serve before schema is current (#1039 acceptance criterion 5)."
+            echo "::error::alembic upgrade head failed (container exit code ${EXIT_CODE}) — see CloudWatch Logs (/archimedes/app, ecs-migrate-* stream) for detail. Blocking deploy: a new task must never serve before schema is current (#1039 acceptance criterion 5)."
             exit 1
           fi
           echo "alembic upgrade head OK — schema is current; safe for new tasks to serve."
