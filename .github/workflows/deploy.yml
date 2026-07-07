@@ -485,3 +485,111 @@ jobs:
 
           echo "❌ Deploy timed out waiting for SSM command"
           exit 1
+
+  deploy-ecs:
+    needs: [build-and-push, migrate]
+    name: Deploy (ECS Fargate)
+    # Issue #1039 C1: CI never redeployed Fargate — build-and-push pushed a
+    # fresh image to ECR, but nothing ever pointed the ECS service at it, so
+    # every deploy after the Fargate cutover would silently keep serving
+    # whatever image tag Terraform bootstrapped the service with. This job
+    # is that missing piece: it registers a new task-definition revision
+    # carrying this commit's image tags and force-redeploys the service.
+    #
+    # Same gate + ordering as the EC2 `deploy` job above (needs the same two
+    # upstream jobs, same DEPLOY_ENABLED flag, kept explicit here for the
+    # same "legible in the Actions UI" reason) — the two deploy targets are
+    # independent siblings, not a chain, so a slow/failing EC2 SSM deploy
+    # never blocks the ECS redeploy or vice versa. Both currently serve
+    # LIVE traffic side by side off the same target group during the
+    # EC2-to-Fargate cutover window (see infra/runbooks/ecs-fargate-cutover.md
+    # "What `terraform apply` actually does") — every deploy MUST update
+    # both, or the two targets silently drift onto different code.
+    #
+    # Self-activating, same convention as the `migrate` job: `aws_ecs_service.
+    # backend` (infra/ecs.tf) is authored but NOT YET APPLIED as of this PR
+    # (Stage 2b in the cutover runbook, still Dan's pending AWS operation) —
+    # this job detects that with `aws ecs describe-services` and no-ops
+    # loudly (clear log line, exit 0) rather than failing every deploy on a
+    # service that doesn't exist yet. The moment Stage 2b is applied, this
+    # activates itself with zero further pipeline changes.
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b  # v6.2.1
+        with:
+          role-to-assume: arn:aws:iam::037613907429:role/archimedes-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check whether the ECS service exists yet
+        id: check
+        env:
+          ECS_CLUSTER: archimedes-cluster
+          ECS_SERVICE: archimedes-backend
+        run: |
+          set -euo pipefail
+          STATUS=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].status' --output text 2>/dev/null || echo "")
+          if [ "$STATUS" = "ACTIVE" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "ECS service '$ECS_SERVICE' is ACTIVE — registering a new task-definition revision and redeploying."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "NO-OP: ECS service '$ECS_SERVICE' not found/ACTIVE in cluster '$ECS_CLUSTER' — the Fargate cutover (infra/runbooks/ecs-fargate-cutover.md Stage 2b) hasn't been applied yet. The EC2 deploy above remains the live path; skipping cleanly (not a failure)."
+          fi
+
+      - name: Register a new task-definition revision + force-redeploy the service
+        if: steps.check.outputs.present == 'true'
+        env:
+          ECS_CLUSTER: archimedes-cluster
+          ECS_SERVICE: archimedes-backend
+          # The SERVICE task-def family (infra/ecs.tf's aws_ecs_task_definition.backend,
+          # `${var.project_name}-backend`) — distinct from ECS_MIGRATE_TASK_FAMILY
+          # above, which boots a single container with no HTTP surface. This one
+          # boots the real nginx+backend pair the ALB target group routes to.
+          ECS_TASK_FAMILY: archimedes-backend
+        run: |
+          set -euo pipefail
+
+          # Fetch the CURRENTLY REGISTERED task definition for this family —
+          # not `aws_ecs_task_definition.backend`'s Terraform-authored JSON —
+          # so every other field (cpu/memory/roles/secrets/log config/env)
+          # carries forward unchanged; only the two container images below
+          # are freshly pushed. Matches the same "reuse infra Terraform
+          # already applied" spirit as the migrate job's static network
+          # config (B2) — this job never re-derives infra config CI has no
+          # business owning.
+          aws ecs describe-task-definition --task-definition "$ECS_TASK_FAMILY" \
+            --query 'taskDefinition' > current-task-def.json
+
+          jq --arg backend_image "$ECR_REGISTRY/$BACKEND_ECR_REPO:${{ github.sha }}" \
+             --arg nginx_image "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}" '
+            .containerDefinitions = (.containerDefinitions | map(
+              if .name == "backend" then .image = $backend_image
+              elif .name == "nginx" then .image = $nginx_image
+              else . end
+            )) |
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+          ' current-task-def.json > new-task-def.json
+
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://new-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          if [ -z "$NEW_TASK_DEF_ARN" ] || [ "$NEW_TASK_DEF_ARN" = "None" ]; then
+            echo "::error::ecs register-task-definition did not return a task definition ARN — see the command output above."
+            exit 1
+          fi
+          echo "Registered $NEW_TASK_DEF_ARN"
+
+          # --force-new-deployment: the service's own lifecycle.ignore_changes
+          # = [task_definition, desired_count] (infra/ecs.tf) means Terraform
+          # never reverts this out-of-band update on a later apply.
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --task-definition "$NEW_TASK_DEF_ARN" --force-new-deployment >/dev/null
+
+          echo "Waiting for the ECS service to reach steady state (deployment_circuit_breaker will auto-rollback a bad revision)..."
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          echo "✅ ECS deploy complete — $ECS_SERVICE is stable on $NEW_TASK_DEF_ARN"
