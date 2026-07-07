@@ -1039,3 +1039,78 @@ class TestDegenerateSeriesExcludedFromCohort:
         assert resp.status_code == 200
         num_trials_seen = {kwargs["num_trials"] for kwargs in captured_kwargs}
         assert num_trials_seen == {1}, "only 1 real series survives both filters"
+
+
+class TestCacheKeyReactsToStrategyCodeChange:
+    """Copilot review, PR #1040: the /api/selection-bias/gate cache key
+    (rigor_cache.cohort_key + strictness) previously fingerprinted only
+    persisted returns, but run_rigor_gate's look-ahead audit also depends on
+    strategy_code (loaded from s.strategy_code_path). Editing a strategy's code
+    without touching its returns therefore served a STALE cached look-ahead
+    verdict/passes_all for up to the TTL. Proves the fix: run_rigor_gate reruns
+    when a strategy's strategy_code_hash changes, even with byte-identical
+    persisted returns.
+    """
+
+    @staticmethod
+    def _real_series(seed: int, n: int = 300) -> list[float]:
+        return np.random.default_rng(seed).normal(0.001, 0.01, n).tolist()
+
+    @pytest.mark.asyncio
+    async def test_code_hash_change_busts_cache_with_unchanged_returns(self, monkeypatch):
+        from archimedes.api import selection_bias_routes as routes
+        from archimedes.main import app
+        from archimedes.services.rigor_evaluator import run_rigor_gate as real_run_rigor_gate
+
+        strategies = routes._provider().list_strategies()
+        assert len(strategies) >= 1, "need >=1 curated strategy for this cohort"
+        target = strategies[0]
+        original_hash = target.strategy_code_hash
+
+        returns = {s.id: self._real_series(abs(hash(s.id)) % 10_000) for s in strategies}
+        monkeypatch.setattr(
+            "archimedes.services.backtest_repository.get_all_daily_returns",
+            lambda session, ids: dict(returns),
+        )
+
+        call_count = {"n": 0}
+
+        def _spy(*args, **kwargs):
+            call_count["n"] += 1
+            return real_run_rigor_gate(*args, **kwargs)
+
+        monkeypatch.setattr(routes, "run_rigor_gate", _spy)
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp1 = await client.get("/api/selection-bias/gate")
+            assert resp1.status_code == 200
+            first_calls = call_count["n"]
+            assert first_calls > 0, "first call must run the live gate"
+
+            # Second call: everything unchanged (same returns, same code) — pure
+            # cache hit, no new run_rigor_gate invocations.
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp2 = await client.get("/api/selection-bias/gate")
+            assert resp2.status_code == 200
+            assert call_count["n"] == first_calls, "unchanged returns+code must be a cache hit"
+
+            # Simulate a code edit on `target`: persisted returns are UNCHANGED,
+            # only its code hash differs (mirrors what LocalStrategyProvider.refresh()
+            # would compute after the underlying file's contents actually changed).
+            target.strategy_code_hash = f"{original_hash}-edited"
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp3 = await client.get("/api/selection-bias/gate")
+            assert resp3.status_code == 200
+            assert call_count["n"] > first_calls, (
+                "a strategy's strategy_code_hash changing (with byte-identical "
+                "returns) must bust the /api/selection-bias/gate cache key and "
+                "rerun run_rigor_gate — otherwise a stale look-ahead verdict can "
+                "be served for up to the TTL after a real code edit"
+            )
+        finally:
+            # `_provider()` is a process-lifetime lru_cache singleton (shared
+            # across the whole test session) — restore the mutated attribute so
+            # this test can't leak state into any other test.
+            target.strategy_code_hash = original_hash

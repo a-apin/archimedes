@@ -304,12 +304,19 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
     call per strategy — measured ~6s for this route) is memoized in
     ``services.rigor_cache`` keyed on a data-version token
     (``rigor_cache.cohort_key``) derived from the exact persisted-returns read just
-    above. The DB read itself is NEVER cached — it always runs live, which is what
-    lets the key react the instant persisted returns change. This is honest
-    caching: the cached value IS the real live-computed result, so a cache hit
-    serves exactly what a cache miss would have computed. ``rigor_cache.get_or_compute``
-    fails open (any cache-layer error falls back to calling the compute closure
-    directly), so a cache bug can only make a request slow, never wrong.
+    above, PLUS each strategy's ``strategy_code_hash`` — the look-ahead audit
+    inside ``run_rigor_gate`` also depends on the strategy's code, so the code
+    hash has to participate in the key or a code edit could serve a stale
+    look-ahead verdict for up to the TTL (Copilot review, PR #1040). The DB read
+    itself is NEVER cached — it always runs live, which is what lets the key
+    react the instant persisted returns change. This is honest caching: the
+    cached value IS the real live-computed result, so a cache hit serves exactly
+    what a cache miss would have computed. ``rigor_cache.get_or_compute`` fails
+    open (any cache-layer error falls back to calling the compute closure
+    directly), so a cache bug can only make a request slow, never wrong. It also
+    never caches the ``{}`` failure sentinel (``cache_if=lambda v: bool(v)``) so
+    a transient cohort-compute failure can't strand every strategy on stale
+    fallback fields for the full TTL.
     """
     if not strategies:
         return {}
@@ -329,7 +336,16 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
 
     from archimedes.services.rigor_cache import cohort_key, get_or_compute
 
-    cache_key = "strategies_list:" + cohort_key(strategy_ids, returns_by_strategy)
+    # Fold each strategy's code-version token into the key (Copilot review, PR
+    # #1040): run_rigor_gate's look-ahead audit reads `strategy_code`, so a key
+    # built from returns alone can serve a stale look-ahead verdict/passes_all
+    # after a code edit even though returns are unchanged. `strategy_code_hash`
+    # is a SHA-256 of the strategy file contents already computed onto the
+    # Strategy object by LocalStrategyProvider — reading it here costs no extra
+    # I/O on the request path (the cheap-identifier preference `cohort_key`'s
+    # docstring calls for).
+    code_versions = {s.id: getattr(s, "strategy_code_hash", None) for s in strategies}
+    cache_key = "strategies_list:" + cohort_key(strategy_ids, returns_by_strategy, code_versions)
 
     def _compute() -> dict[str, RigorGateResult]:
         from archimedes.services.rigor_evaluator import (
@@ -395,7 +411,14 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
                 logger.warning("live rigor gate failed for %s in batch (numbers → stale fallback): %s", s.id, exc)
         return computed
 
-    return get_or_compute(cache_key, _compute)
+    # cache_if=lambda v: bool(v): `_compute()` returns `{}` on a transient
+    # cohort-context compute failure (see the `except Exception` above), and an
+    # empty dict must never be memoized — caching it would make that transient
+    # failure "sticky" for the full TTL, serving every strategy's stale
+    # fallback fields long after the underlying failure has passed (Copilot
+    # review, PR #1040). The live `{}` is still returned to THIS caller either
+    # way; only whether it's written to the store for the NEXT caller changes.
+    return get_or_compute(cache_key, _compute, cache_if=lambda v: bool(v))
 
 
 def _load_strategy_code_safe_local(strategy: Strategy) -> str | None:

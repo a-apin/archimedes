@@ -243,6 +243,16 @@ async def evaluate_rigor_gate(
     # any cache-layer error falls back to calling the compute closure directly —
     # so a cache bug can only make a request slow, never wrong.
     #
+    # code_versions folds each strategy's strategy_code_hash into the key
+    # (Copilot review, PR #1040): run_rigor_gate's look-ahead audit below reads
+    # strategy_code_map[s.id], which is loaded FROM s.strategy_code_path — so the
+    # cached result depends on strategy code, not just returns + strictness. A
+    # key built from returns+strictness alone could keep serving a stale
+    # look-ahead verdict/passes_all after a code edit even though returns are
+    # unchanged. strategy_code_hash is already computed onto the Strategy object
+    # by LocalStrategyProvider, so reading it here is free — no extra I/O on the
+    # request path.
+    #
     # NOTE: on a cache HIT the per-strategy DB rigor-fields write-back
     # (update_rigor_gate_fields) below does NOT re-run. That write-back is
     # idempotent — it re-persists the exact numbers already written the first
@@ -252,7 +262,10 @@ async def evaluate_rigor_gate(
     # resumes on the next (now-live) call.
     from archimedes.services.rigor_cache import cohort_key, get_or_compute
 
-    cache_key = f"selection_bias_gate:strictness={strictness}:" + cohort_key(strategy_ids, returns_by_strategy)
+    code_versions = {s.id: getattr(s, "strategy_code_hash", None) for s in strategies}
+    cache_key = f"selection_bias_gate:strictness={strictness}:" + cohort_key(
+        strategy_ids, returns_by_strategy, code_versions
+    )
 
     def _compute() -> list[StrategyRigorResult]:
         strategy_code_map: dict[str, str | None] = {}
@@ -395,7 +408,13 @@ async def evaluate_rigor_gate(
             )
         return computed
 
-    results = get_or_compute(cache_key, _compute)
+    # cache_if=lambda v: bool(v): `strategies` is non-empty here (checked
+    # above), so `_compute()` always appends one result per strategy today —
+    # but a hard guard against ever memoizing an empty list matches
+    # strategies_routes.py's `_live_rigor_results_for_strategies` (same failure
+    # class: an empty result must never get "sticky" for the TTL) and costs
+    # nothing when `_compute()` returns its normal non-empty list.
+    results = get_or_compute(cache_key, _compute, cache_if=lambda v: bool(v))
 
     passing = sum(1 for r in results if r.passes_all)
     return RigorGateResponse(

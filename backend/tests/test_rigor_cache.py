@@ -71,10 +71,11 @@ class _FakeStrategy:
     attributes ``_live_rigor_results_for_strategies`` / ``_load_strategy_code_safe_local``
     actually touch."""
 
-    def __init__(self, id_: str, paper_claimed_sharpe: float | None = None):
+    def __init__(self, id_: str, paper_claimed_sharpe: float | None = None, strategy_code_hash: str | None = None):
         self.id = id_
         self.paper_claimed_sharpe = paper_claimed_sharpe
         self.strategy_code_path = None  # None -> _load_strategy_code_safe_local short-circuits, no file I/O
+        self.strategy_code_hash = strategy_code_hash  # cheap code-version token folded into cohort_key
 
 
 def _spy_run_rigor_gate(monkeypatch, calls: list):
@@ -208,6 +209,83 @@ def test_changed_returns_invalidate_the_cache_and_recompute(monkeypatch):
     ), "second call must reflect the new data, not the first call's cached result"
 
 
+# ── (d) code change with UNCHANGED returns -> different key -> live gate reruns
+# (Copilot review, PR #1040): cohort_key previously fingerprinted only persisted
+# returns, but run_rigor_gate's look-ahead audit also depends on strategy_code —
+# so editing a strategy's code and reloading served a STALE cached look-ahead
+# verdict/passes_all for up to the TTL even though returns never changed. Proven
+# below at both the cohort_key unit level and the route level. ─────────────────
+
+
+def test_code_hash_change_with_unchanged_returns_busts_cache_and_recomputes(monkeypatch):
+    """Route-level proof: only strategy_code_hash changes between the two calls
+    (persisted returns are byte-identical) — this alone must bust the cache key
+    and rerun run_rigor_gate, closing the stale-look-ahead-verdict gap."""
+    from archimedes.api import strategies_routes as sr
+
+    returns = {"s0": _series(0), "s1": _series(1)}
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: dict(returns),
+    )
+    monkeypatch.setattr(sr, "_load_strategy_code_safe_local", lambda s: _CLEAN_CODE)
+
+    calls: list = []
+    _spy_run_rigor_gate(monkeypatch, calls)
+
+    strategies = [_FakeStrategy("s0", strategy_code_hash="hash-v1"), _FakeStrategy("s1", strategy_code_hash="hash-v1")]
+
+    first = sr._live_rigor_results_for_strategies(strategies)
+    assert len(calls) == 2
+
+    # Same object, same returns — pure cache hit.
+    second = sr._live_rigor_results_for_strategies(strategies)
+    assert len(calls) == 2, "unchanged returns AND unchanged code must still be a cache hit"
+    for sid in first:
+        assert second[sid] is first[sid]
+
+    # Simulate a code edit on s0 ONLY — its persisted returns are untouched.
+    strategies[0].strategy_code_hash = "hash-v2-edited"
+
+    third = sr._live_rigor_results_for_strategies(strategies)
+    assert len(calls) == 4, (
+        "a strategy's code_hash changing (with byte-identical returns) must bust "
+        "the cache key and rerun run_rigor_gate for the whole cohort — a code "
+        "edit must never keep serving the pre-edit look-ahead verdict"
+    )
+    assert set(third) == {"s0", "s1"}
+
+
+def test_cohort_key_changes_when_a_code_version_changes_but_returns_do_not():
+    """Pure unit-level proof, isolated from run_rigor_gate/DB entirely: two
+    cohort_key calls with byte-identical strategy_ids + returns_by_strategy but
+    a different code_versions entry for one strategy must produce different
+    keys."""
+    returns = {"a": _series(1), "b": _series(2)}
+
+    k1 = rigor_cache.cohort_key(["a", "b"], returns, {"a": "hash-v1", "b": "hash-v1"})
+    k2 = rigor_cache.cohort_key(["a", "b"], returns, {"a": "hash-v2", "b": "hash-v1"})
+    assert k1 != k2, "changing ONE strategy's code_versions token must change the key"
+
+    # Sanity: re-supplying the ORIGINAL code_versions reproduces the original key
+    # (proves the difference above was solely due to the code_versions delta).
+    k1_again = rigor_cache.cohort_key(["a", "b"], returns, {"a": "hash-v1", "b": "hash-v1"})
+    assert k1 == k1_again
+
+
+def test_cohort_key_omitting_code_versions_matches_empty_code_versions():
+    """Backward compatibility: a caller that omits code_versions entirely (the
+    pre-#1040 call shape, still used by any caller that hasn't been updated)
+    must produce the same key as one that explicitly passes an all-empty-string
+    code_versions map — so existing callers aren't silently broken by the new
+    optional parameter."""
+    returns = {"a": _series(1), "b": _series(2)}
+    k_omitted = rigor_cache.cohort_key(["a", "b"], returns)
+    k_explicit_empty = rigor_cache.cohort_key(["a", "b"], returns, {"a": "", "b": ""})
+    k_none_values = rigor_cache.cohort_key(["a", "b"], returns, {"a": None, "b": None})
+    assert k_omitted == k_explicit_empty == k_none_values
+
+
 # ── (c) cache-layer error -> fail open to live compute ──────────────────────
 
 
@@ -278,6 +356,111 @@ def test_live_rigor_results_survive_a_broken_cache(monkeypatch):
     assert result["s1"].passes_all == expected_s1.passes_all
 
 
+# ── cache_if: a transient failure result must never get "sticky" ───────────
+# (Copilot review, PR #1040): ``_compute()`` returns ``{}`` on a transient
+# cohort-context compute failure, and an un-guarded get_or_compute would cache
+# that ``{}`` — every strategy then falls back to stale fields for the FULL
+# TTL, even though the very next request would have succeeded live. Proven
+# below at both the pure get_or_compute unit level and the route level.
+
+
+def test_get_or_compute_cache_if_false_does_not_cache_the_result():
+    """Pure unit-level proof: when cache_if(value) is False, get_or_compute
+    still returns the live value but does NOT write it to the store — the next
+    call recomputes rather than replaying the un-cached (e.g. failure) value."""
+    calls = {"n": 0}
+
+    def _compute():
+        calls["n"] += 1
+        return {}  # falsy — the failure-sentinel shape this predicate guards against
+
+    result = rigor_cache.get_or_compute("k-cache-if", _compute, cache_if=lambda v: bool(v))
+    assert result == {}
+    assert calls["n"] == 1
+    assert "k-cache-if" not in rigor_cache._store, "a falsy result must never be written to the store"
+
+    # Second call: still a miss (nothing was cached), so compute_fn runs again.
+    rigor_cache.get_or_compute("k-cache-if", _compute, cache_if=lambda v: bool(v))
+    assert calls["n"] == 2, "an un-cached falsy result must force recompute on the next call"
+
+
+def test_get_or_compute_cache_if_true_caches_normally():
+    """Sanity companion: a truthy result under the same predicate IS cached and
+    the second call is a pure hit — cache_if doesn't disable caching outright,
+    only for values that fail the predicate."""
+    calls = {"n": 0}
+
+    def _compute():
+        calls["n"] += 1
+        return {"strategy": "real result"}
+
+    first = rigor_cache.get_or_compute("k-cache-if-true", _compute, cache_if=lambda v: bool(v))
+    second = rigor_cache.get_or_compute("k-cache-if-true", _compute, cache_if=lambda v: bool(v))
+    assert first == second == {"strategy": "real result"}
+    assert calls["n"] == 1, "a truthy result under cache_if must still be cached (second call is a hit)"
+
+
+def test_get_or_compute_cache_if_predicate_error_falls_back_to_not_caching():
+    """A cache_if predicate that itself raises must never crash the request —
+    consistent with this module's fail-open contract, the safe default on any
+    doubt is "don't cache" (never "crash" or "cache blindly")."""
+
+    def _boom_predicate(_value):
+        raise RuntimeError("simulated predicate bug")
+
+    sentinel = object()
+    result = rigor_cache.get_or_compute("k-cache-if-boom", lambda: sentinel, cache_if=_boom_predicate)
+    assert result is sentinel
+    assert "k-cache-if-boom" not in rigor_cache._store
+
+
+def test_transient_cohort_failure_is_not_sticky_across_calls(monkeypatch):
+    """Route-level proof of the concrete bug this closes: the FIRST call's
+    cohort-context compute fails (-> {} degraded response, per the existing
+    fail-closed contract), and the SECOND call — even with the exact same
+    cache key (unchanged returns/code) — must recompute live and return the
+    real result, not replay the cached {} from the failed first call."""
+    from archimedes.api import strategies_routes as sr
+
+    returns = {"s0": _series(0), "s1": _series(1)}
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: dict(returns),
+    )
+    monkeypatch.setattr(sr, "_load_strategy_code_safe_local", lambda s: _CLEAN_CODE)
+
+    strategies = [_FakeStrategy("s0"), _FakeStrategy("s1")]
+
+    # First call: force the cohort-context compute (PBO) to blow up on ITS
+    # FIRST invocation only, simulating a transient failure (e.g. a momentary
+    # numerical/DB hiccup) that has cleared by the time the next request lands.
+    from archimedes.services.rigor_evaluator import compute_pbo as _real_compute_pbo
+
+    pbo_call_count = {"n": 0}
+
+    def _flaky_pbo(*args, **kwargs):
+        pbo_call_count["n"] += 1
+        if pbo_call_count["n"] == 1:
+            raise RuntimeError("simulated transient cohort-compute failure")
+        return _real_compute_pbo(*args, **kwargs)
+
+    monkeypatch.setattr("archimedes.services.rigor_evaluator.compute_pbo", _flaky_pbo)
+
+    first = sr._live_rigor_results_for_strategies(strategies)
+    assert first == {}, "a cohort-compute failure must degrade to {} (existing fail-closed contract)"
+
+    # Second call: same cache key as the first (unchanged returns AND code) —
+    # the transient failure has cleared, so this must recompute live and NOT
+    # replay the cached {} from the failed first call.
+    second = sr._live_rigor_results_for_strategies(strategies)
+    assert second != {}, (
+        "the {} from the first (failed) call must never have been cached — a "
+        "transient failure must not strand every strategy on stale fallback "
+        "fields for the full TTL"
+    )
+    assert set(second) == {"s0", "s1"}
+
+
 # ── cohort_key unit properties ──────────────────────────────────────────────
 
 
@@ -311,3 +494,77 @@ def test_clear_removes_all_entries():
     assert rigor_cache._store  # sanity: something is cached
     rigor_cache.clear()
     assert rigor_cache._store == {}
+
+
+# ── unbounded-store backstop (Copilot review, PR #1040) ─────────────────────
+# The TTL only stops STALE entries from being SERVED — nothing previously
+# reclaimed the memory an expired/obsolete key occupied, so a frequently-
+# changing key (a returns-rewrite path, a growing/rotating strategy set) could
+# grow `_store` without bound despite the TTL. Two independent backstops, both
+# proven below: (1) opportunistic pruning of expired entries on every write,
+# and (2) a hard `_MAX_STORE_SIZE` cap, oldest-evicted-first, as a ceiling that
+# doesn't depend on anything ever expiring.
+
+
+def test_store_stays_bounded_across_many_distinct_keys():
+    """The store must never exceed `_MAX_STORE_SIZE` entries even when many
+    more distinct keys than that are written across the cache's lifetime —
+    proving the hard cap backstop actually bounds memory, not just the TTL."""
+    n_keys = rigor_cache._MAX_STORE_SIZE * 3
+    for i in range(n_keys):
+        rigor_cache.get_or_compute(f"bounded-key-{i}", lambda i=i: i)
+
+    assert len(rigor_cache._store) <= rigor_cache._MAX_STORE_SIZE, (
+        f"_store grew to {len(rigor_cache._store)} entries across {n_keys} distinct "
+        f"keys — the hard cap of {rigor_cache._MAX_STORE_SIZE} was not enforced"
+    )
+
+
+def test_store_cap_evicts_oldest_entries_first():
+    """The hard-cap eviction removes the OLDEST entries (by stored_at), not an
+    arbitrary subset — so the most-recently-written keys survive."""
+    max_size = rigor_cache._MAX_STORE_SIZE
+    for i in range(max_size + 10):
+        rigor_cache.get_or_compute(f"evict-order-{i}", lambda i=i: i)
+
+    # The 10 oldest keys (0..9) must have been evicted; the most recent
+    # max_size keys (10..max_size+9) must all still be present.
+    for i in range(10):
+        assert f"evict-order-{i}" not in rigor_cache._store, f"oldest key evict-order-{i} should have been evicted"
+    for i in range(10, max_size + 10):
+        assert f"evict-order-{i}" in rigor_cache._store, f"recent key evict-order-{i} should still be cached"
+
+
+def test_prune_expired_locked_removes_only_entries_past_ttl(monkeypatch):
+    """Unit-level proof of the opportunistic-pruning half of the backstop:
+    entries older than `_TTL_SECONDS` are removed by `_prune_expired_locked`;
+    fresh entries are left alone."""
+    now = 10_000.0
+    rigor_cache._store["fresh"] = (now - 1.0, "fresh-value")
+    rigor_cache._store["stale"] = (now - rigor_cache._TTL_SECONDS - 1.0, "stale-value")
+
+    rigor_cache._prune_expired_locked(now)
+
+    assert "fresh" in rigor_cache._store
+    assert "stale" not in rigor_cache._store
+
+
+def test_pruning_reclaims_expired_entries_on_the_next_write(monkeypatch):
+    """Route-adjacent proof: an entry that has aged past the TTL is reclaimed
+    the next time get_or_compute WRITES (not merely skipped on read) — i.e. the
+    prune actually runs as part of the normal get_or_compute write path, not
+    just as an isolated helper."""
+    fake_now = {"t": 0.0}
+    monkeypatch.setattr(rigor_cache.time, "monotonic", lambda: fake_now["t"])
+
+    rigor_cache.get_or_compute("old-entry", lambda: "v1")
+    assert "old-entry" in rigor_cache._store
+
+    # Advance time past the TTL, then write a DIFFERENT key — the opportunistic
+    # prune on that write must reclaim "old-entry" even though nothing ever
+    # looked it up again.
+    fake_now["t"] = rigor_cache._TTL_SECONDS + 1.0
+    rigor_cache.get_or_compute("new-entry", lambda: "v2")
+
+    assert "old-entry" not in rigor_cache._store, "expired entry must be reclaimed on the next cache write"
+    assert "new-entry" in rigor_cache._store
