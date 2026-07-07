@@ -104,6 +104,11 @@ def app():
     market.signer.execute_contract = AsyncMock()
     market.executor = MagicMock()
     market.executor.create_vault = AsyncMock(return_value="0xvault")
+    # Funding gate (D7): the publish route rejects (402) when the vault holds less
+    # than MARKETPLACE_MIN_VAULT_FUNDS_RAW. Mock the vault as well-funded so the
+    # publish-path tests exercise publishing rather than the funding gate; the
+    # gate itself is covered by test_publish_underfunded_vault_returns_402.
+    market._usdc_balance_of = AsyncMock(return_value=10_000_000)
     market.loader = MagicMock()
     market.loader._contract.return_value.functions.pools.return_value.call = AsyncMock(
         return_value=("0xaddr", "0xaddr", 0, 0, False)
@@ -153,6 +158,17 @@ def test_publish_creates_publisher_row(client):
     assert data["pool_id"].startswith("0x")
     assert len(data["pool_id"]) == 66
     assert data["pool_id"] != "sub_id"  # not accidentally in sub_id column
+
+
+def test_publish_underfunded_vault_returns_402(client):
+    """Publish rejects with 402 when the vault holds less than the minimum funding."""
+    client.app.state.market._usdc_balance_of = AsyncMock(return_value=0)
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": "0xvault_pre"},
+    )
+    assert resp.status_code == 402, resp.text
+    assert "below minimum" in resp.json()["detail"]
 
 
 def test_subscribe_rejects_blank_sub_id(client):

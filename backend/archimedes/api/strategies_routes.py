@@ -437,6 +437,7 @@ async def list_strategies(
     served ``status: "validated"``. This is intentional — the stored status is the
     stable filter key; the served status reflects the live verdict.
     """
+    from archimedes.db import get_session
     from archimedes.models.strategy_generators import wallet_can_publish
 
     status_filter = StrategyStatus(status) if status else None
