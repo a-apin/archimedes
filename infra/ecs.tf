@@ -304,10 +304,22 @@ resource "aws_iam_role_policy" "ecs_task_exec_command" {
         Resource = "*"
       },
       {
+        # logs:DescribeLogGroups is a LIST action and does NOT support
+        # resource-level permissions (see the CloudWatch Logs section of the
+        # AWS IAM "Actions, resources, and condition keys" reference) — it
+        # must be Resource = "*" or the grant is silently ineffective. Kept
+        # in its own statement, separate from the log-STREAM actions below
+        # which DO support (and are correctly scoped to) specific log-group
+        # ARNs. (PR #1041 Copilot review.)
+        Sid      = "EcsExecDescribeLogGroups"
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogGroups"]
+        Resource = "*"
+      },
+      {
         Sid    = "EcsExecSessionLogging"
         Effect = "Allow"
         Action = [
-          "logs:DescribeLogGroups",
           "logs:CreateLogStream",
           "logs:DescribeLogStreams",
           "logs:PutLogEvents"
