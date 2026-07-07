@@ -699,6 +699,24 @@ export async function getUsdcBalance(address) {
   }
 }
 
+/** Read the raw 6-dec USDC balance for an arbitrary address (bigint). */
+export async function usdcBalanceOfRaw(address) {
+  return await publicClient.readContract({
+    address: USDC,
+    abi: [
+      { name: 'balanceOf', type: 'function', stateMutability: 'view',
+        inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },
+    ],
+    functionName: 'balanceOf',
+    args: [address],
+  })
+}
+
+/** Minimum idle USDC (raw 6-dec) a vault must hold before a strategy may be
+ *  published. Mirrors MARKETPLACE_MIN_VAULT_FUNDS_RAW on the backend.
+ *  1000000 = 1 USDC. Backend-authoritative — this is a client pre-check only. */
+export const MIN_VAULT_FUNDS_RAW = BigInt(import.meta.env.VITE_MARKETPLACE_MIN_VAULT_FUNDS_RAW ?? '1000000')
+
 export const ASSETS = [
   { id: 'TSLA',   name: 'Tesla',      sym: 'sTSLA',   icon: 'i-simple-icons-tesla',          oracle: '0xe1c9f2b11be97097223a66a188fca541e07873a6', vault: '0xf0356600e26c6c403ec4f5b36b0e3380bb0609ab', token: '0xd514cd27baf762c650536765cde9b61c876abacd' },
   { id: 'NVDA',   name: 'Nvidia',     sym: 'sNVDA',   icon: 'i-simple-icons-nvidia',          oracle: '0xeb36acf88e739dd312de8278985262146a017374', vault: '0x4c3cdc2bf44195ad8a4d201c8afbd453949a8781', token: '0x805e75019a1291a598dfc134ad2519121a35fb11' },
