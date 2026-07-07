@@ -416,6 +416,18 @@ async def evaluate_rigor_gate(
     # nothing when `_compute()` returns its normal non-empty list.
     results = get_or_compute(cache_key, _compute, cache_if=bool)
 
+    # Copilot review (PR #1040): on a rigor_cache HIT, `results` are memoized
+    # StrategyRigorResult objects whose `library_pbo` reflects whatever was
+    # current at cache-WRITE time. `library_pbo` (above, line ~211) is always
+    # freshly computed for THIS request. Without this reconciliation, a cache
+    # hit could serve a response where the top-level `library_pbo` and each
+    # per-strategy `result.library_pbo` disagree — an internally inconsistent
+    # response. Rebuild (never mutate the cached objects in place, since
+    # `results` may be the exact list object shared with a concurrent
+    # reader of the same cache entry) with the fresh payload so top-level and
+    # per-strategy always agree, on both cache hits and misses.
+    results = [r.model_copy(update={"library_pbo": library_pbo}) for r in results]
+
     passing = sum(1 for r in results if r.passes_all)
     return RigorGateResponse(
         strategies=results,

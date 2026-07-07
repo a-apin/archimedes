@@ -20,6 +20,9 @@ Hermetic gate:
 
 from __future__ import annotations
 
+import threading
+import time
+
 import numpy as np
 import pytest
 from archimedes.services import rigor_cache
@@ -51,10 +54,15 @@ def _use_tmp_db(tmp_path, monkeypatch):
 def _isolated_rigor_cache():
     """Every test gets a clean process-level cache — this module's cache is a
     module-global dict, so without this fixture, state (and the raise-on-access
-    monkeypatches used in the fail-open tests) would leak across tests."""
+    monkeypatches used in the fail-open tests) would leak across tests. Also
+    resets ``_inflight`` (the single-flight bookkeeping dict, Copilot review,
+    PR #1040) — ``rigor_cache.clear()`` deliberately does NOT touch it (see its
+    docstring), so it's reset here instead, purely for test isolation."""
     rigor_cache.clear()
+    rigor_cache._inflight.clear()
     yield
     rigor_cache.clear()
+    rigor_cache._inflight.clear()
 
 
 # A clean strategy snippet that passes the AST look-ahead audit (no future/peek
@@ -354,6 +362,147 @@ def test_live_rigor_results_survive_a_broken_cache(monkeypatch):
     assert result["s0"].passes_all == expected_s0.passes_all
     _assert_close(result["s1"].deflated_sharpe, expected_s1.deflated_sharpe)
     assert result["s1"].passes_all == expected_s1.passes_all
+
+
+# ── single-flight: thundering-herd fix (Copilot review, PR #1040) ──────────
+# ``get_or_compute`` previously released ``_lock`` before calling
+# ``compute_fn()``, so N concurrent misses for the SAME key each ran the
+# (expensive) live computation in parallel. Proven below: N threads racing on
+# one key invoke ``compute_fn`` exactly once; every other thread waits for
+# that call and reuses its result.
+
+
+def test_concurrent_misses_for_the_same_key_invoke_compute_fn_once():
+    """N concurrent get_or_compute MISSES for the SAME key must invoke
+    compute_fn exactly once. The lone caller who becomes the "leader" is held
+    inside compute_fn (via ``release``) until every other thread has had time
+    to reach the follower's wait state — this proves the dedup holds under
+    real contention, not just when the leader happens to finish instantly."""
+    n_threads = 8
+    call_count = {"n": 0}
+    call_lock = threading.Lock()
+    start_barrier = threading.Barrier(n_threads)
+    release = threading.Event()
+
+    def _slow_compute():
+        with call_lock:
+            call_count["n"] += 1
+        assert release.wait(timeout=5.0), "test setup: release was never signaled"
+        return "computed-value"
+
+    results: list[str | None] = [None] * n_threads
+    errors: list[BaseException] = []
+
+    def _worker(i):
+        start_barrier.wait(timeout=5.0)
+        try:
+            results[i] = rigor_cache.get_or_compute("single-flight-key", _slow_compute)
+        except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`, not swallowed
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker, args=(i,)) for i in range(n_threads)]
+    for t in threads:
+        t.start()
+
+    # Give every thread time to register as leader-or-follower (i.e. reach
+    # either compute_fn's release.wait() or the follower's event.wait())
+    # before letting the single compute_fn call complete.
+    time.sleep(0.2)
+    release.set()
+
+    for t in threads:
+        t.join(timeout=5.0)
+        assert not t.is_alive(), "a worker thread never finished — likely a single-flight deadlock"
+
+    assert not errors, f"worker thread(s) raised: {errors}"
+    assert call_count["n"] == 1, (
+        f"compute_fn ran {call_count['n']} times for {n_threads} concurrent same-key misses — "
+        "single-flight failed to dedup the thundering herd"
+    )
+    assert results == ["computed-value"] * n_threads
+
+
+def test_single_flight_does_not_dedup_across_different_keys():
+    """Sanity companion: single-flight scopes to ONE key — concurrent misses
+    for DIFFERENT keys must each still invoke their own compute_fn (dedup must
+    never over-apply and merge unrelated computations)."""
+    n_threads = 4
+    calls: dict[str, int] = {f"key-{i}": 0 for i in range(n_threads)}
+    calls_lock = threading.Lock()
+    start_barrier = threading.Barrier(n_threads)
+
+    def _make_compute(key):
+        def _compute():
+            with calls_lock:
+                calls[key] += 1
+            return f"value-for-{key}"
+
+        return _compute
+
+    results: dict[str, str] = {}
+    results_lock = threading.Lock()
+
+    def _worker(key):
+        start_barrier.wait(timeout=5.0)
+        value = rigor_cache.get_or_compute(key, _make_compute(key))
+        with results_lock:
+            results[key] = value
+
+    threads = [threading.Thread(target=_worker, args=(f"key-{i}",)) for i in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+
+    assert all(n == 1 for n in calls.values()), f"each distinct key must compute exactly once: {calls}"
+    assert results == {f"key-{i}": f"value-for-key-{i}" for i in range(n_threads)}
+
+
+def test_follower_falls_back_to_live_compute_when_leader_result_is_not_cached():
+    """A follower waking up to find the leader's result was NOT written to
+    `_store` (because `cache_if` rejected it) must fall back to computing
+    live itself — never hang, never fabricate a value, never wait forever."""
+    release = threading.Event()
+    leader_started = threading.Event()
+
+    def _leader_compute():
+        leader_started.set()
+        assert release.wait(timeout=5.0), "test setup: release was never signaled"
+        return {}  # falsy -> rejected by cache_if=bool, nothing gets stored
+
+    follower_result = {}
+
+    def _follower_compute():
+        return {"from": "follower-live-compute"}
+
+    def _leader_worker():
+        follower_result["leader"] = rigor_cache.get_or_compute("cache-if-key", _leader_compute, cache_if=bool)
+
+    def _follower_worker():
+        assert leader_started.wait(timeout=5.0), "leader never started"
+        # Give the leader a moment to actually register in `_inflight` (it does
+        # so before signaling `leader_started` via compute_fn, so this is a
+        # belt-and-suspenders wait, not load-bearing on its own).
+        time.sleep(0.05)
+        follower_result["follower"] = rigor_cache.get_or_compute("cache-if-key", _follower_compute, cache_if=bool)
+
+    t_leader = threading.Thread(target=_leader_worker)
+    t_follower = threading.Thread(target=_follower_worker)
+    t_leader.start()
+    t_follower.start()
+
+    # Let the follower reach event.wait() before releasing the leader.
+    time.sleep(0.2)
+    release.set()
+
+    t_leader.join(timeout=5.0)
+    t_follower.join(timeout=5.0)
+    assert not t_leader.is_alive()
+    assert not t_follower.is_alive()
+
+    assert follower_result["leader"] == {}
+    assert follower_result["follower"] == {"from": "follower-live-compute"}
+    assert "cache-if-key" not in rigor_cache._store
 
 
 # ── cache_if: a transient failure result must never get "sticky" ───────────

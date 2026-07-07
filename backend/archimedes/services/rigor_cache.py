@@ -63,6 +63,12 @@ _MAX_STORE_SIZE = 256
 _lock = threading.Lock()
 _store: dict[str, tuple[float, Any]] = {}
 
+# Single-flight bookkeeping (Copilot review, PR #1040 — thundering herd fix).
+# Maps a key currently being computed by some caller to a threading.Event
+# that fires when that computation finishes. Guarded by `_lock` exactly like
+# `_store` — but never held across `compute_fn()` itself (see `get_or_compute`).
+_inflight: dict[str, threading.Event] = {}
+
 
 def _prune_expired_locked(now: float) -> None:
     """Remove every entry older than ``_TTL_SECONDS``. Caller must hold ``_lock``."""
@@ -175,6 +181,25 @@ def get_or_compute(
     its (real, correct) result. This function never suppresses an exception raised
     BY ``compute_fn()`` itself — that is the caller's live computation failing, and
     must propagate exactly as it would without a cache in front of it.
+
+    SINGLE-FLIGHT (Copilot review, PR #1040 — thundering herd): a cache MISS
+    previously released ``_lock`` before calling ``compute_fn()``, so N
+    concurrent misses for the SAME key each ran the (expensive) computation in
+    parallel. Now, only the first concurrent caller for a given key (the
+    "leader") actually calls ``compute_fn()``; every other concurrent caller
+    for that SAME key (a "follower") waits on a per-key ``threading.Event``
+    (registered in ``_inflight``, guarded by ``_lock`` exactly like ``_store``)
+    and then reads whatever the leader stored. ``compute_fn()`` itself is
+    NEVER called while holding ``_lock`` — an expensive computation must never
+    block other keys' cache reads/writes, and must never run underneath a lock
+    other threads are blocked on. A follower that wakes to find nothing usable
+    was stored (the leader's ``compute_fn`` raised, or its result failed
+    ``cache_if``) simply computes live itself — a follower must never hang or
+    fabricate a value. Any error in the single-flight bookkeeping itself
+    (registering/looking up/clearing an ``_inflight`` entry) falls back to
+    calling ``compute_fn()`` directly, and — critically — never leaves a
+    follower waiting forever: any Event this call created is always released
+    before that fallback returns.
     """
     try:
         now = time.monotonic()
@@ -188,7 +213,71 @@ def get_or_compute(
         logger.warning("rigor_cache: lookup failed, falling back to live compute: %s", exc)
         return compute_fn()
 
-    value = compute_fn()
+    # ── Single-flight: register as the leader for `key`, or discover we're a
+    # follower behind an already-in-flight computation for the same key. ──
+    event: threading.Event | None = None
+    is_leader = False
+    try:
+        with _lock:
+            existing = _inflight.get(key)
+            if existing is None:
+                event = threading.Event()
+                _inflight[key] = event
+                is_leader = True
+            else:
+                event = existing
+    except Exception as exc:  # pragma: no cover - defensive; bookkeeping must never break the request
+        logger.warning("rigor_cache: single-flight registration failed, falling back to live compute: %s", exc)
+        # Best-effort: if we created (and possibly stored) an Event before the
+        # failure, never strand a follower waiting on it forever.
+        if event is not None:
+            try:
+                with _lock:
+                    _inflight.pop(key, None)
+            except Exception:  # pragma: no cover - defensive, best-effort only
+                pass
+            event.set()
+        return compute_fn()
+
+    if not is_leader:
+        # A concurrent caller is already computing this exact key. Wait for
+        # it to finish (releasing NO lock while waiting — we never held one),
+        # then read whatever it stored. This is the dedup: N followers pay
+        # for one compute_fn() call, not N.
+        try:
+            event.wait()
+            with _lock:
+                entry = _store.get(key)
+            if entry is not None:
+                stored_at, value = entry
+                if time.monotonic() - stored_at < _TTL_SECONDS:
+                    return value
+        except Exception as exc:  # pragma: no cover - defensive; a follower must never hang or crash
+            logger.warning("rigor_cache: single-flight wait failed, falling back to live compute: %s", exc)
+        # The leader's result wasn't usable to us (it computed but `cache_if`
+        # said "don't cache", it raised, or re-reading `_store` itself
+        # raised) — fall back to computing live ourselves. Never suppresses
+        # anything: this is OUR OWN compute_fn() call, so if it raises, that
+        # exception propagates exactly as it would with no cache in front.
+        return compute_fn()
+
+    # ── Leader path: compute WITHOUT holding `_lock`. ──
+    try:
+        value = compute_fn()
+    except Exception:
+        # The LIVE computation itself failed — this is the leader's own
+        # exception, not a cache-layer bug, so it must propagate exactly as it
+        # would without single-flight in front of it (never suppressed). Still
+        # release any followers first so none of them hang forever on a
+        # leader that errored; each falls back to computing live itself.
+        try:
+            with _lock:
+                _inflight.pop(key, None)
+        except Exception as exc:  # pragma: no cover - defensive, best-effort only
+            logger.warning("rigor_cache: single-flight cleanup after a failed compute also failed: %s", exc)
+        finally:
+            event.set()
+        raise
 
     try:
         should_cache = cache_if(value)
@@ -209,6 +298,17 @@ def get_or_compute(
                 _evict_oldest_locked(_MAX_STORE_SIZE)
         except Exception as exc:  # pragma: no cover - defensive; cache store must never break the request
             logger.warning("rigor_cache: store failed, serving live result anyway: %s", exc)
+
+    # Release any followers waiting on this key — they'll read the entry we
+    # just (attempted to) store above, or fall back to their own live compute
+    # if `should_cache` was False / the store write itself failed.
+    try:
+        with _lock:
+            _inflight.pop(key, None)
+    except Exception as exc:  # pragma: no cover - defensive, best-effort only
+        logger.warning("rigor_cache: single-flight cleanup failed: %s", exc)
+    finally:
+        event.set()
 
     return value
 

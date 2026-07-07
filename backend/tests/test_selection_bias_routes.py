@@ -800,6 +800,61 @@ async def test_library_pbo_does_not_change_verdict_or_pbo_score(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_library_pbo_stays_consistent_between_top_level_and_per_strategy_on_cache_hit(monkeypatch):
+    """Regression test (Copilot review, PR #1040): ``get_or_compute`` may return a
+    CACHED list of ``StrategyRigorResult`` objects whose ``library_pbo`` reflects
+    an earlier request, while the top-level ``library_pbo`` on the response is
+    always freshly computed via ``_library_pbo_payload()``. Without reconciling
+    the two, a cache HIT could serve an internally inconsistent response
+    (top-level != some per-strategy ``library_pbo``). Call the gate endpoint
+    twice with the SAME underlying returns/code (so the rigor_cache
+    ``cohort_key`` is identical -> the second call is guaranteed to be a cache
+    hit) but a DIFFERENT ``_library_pbo_payload`` mock each time, and assert
+    every per-strategy ``library_pbo`` always matches the top-level one — on
+    both the cache-priming call and the cache-hit call."""
+    from archimedes.api import selection_bias_routes as routes
+    from archimedes.main import app
+
+    async def _run_once():
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            return (await client.get("/api/selection-bias/gate")).json()
+
+    def _assert_internally_consistent(data):
+        top = data["library_pbo"]
+        for strat in data["strategies"]:
+            assert strat["library_pbo"] == top, (
+                f"strategy {strat['strategy_id']}'s library_pbo {strat['library_pbo']} "
+                f"disagrees with the top-level library_pbo {top}"
+            )
+
+    # Call A: primes the rigor_cache (this cohort has not been computed yet in
+    # this test) with library_pbo forced to a concrete value.
+    monkeypatch.setattr(
+        routes,
+        "_library_pbo_payload",
+        lambda: routes.LibraryPbo(value=0.42, data_vintage="2026-06-11", selection_set_size=22),
+    )
+    data_a = await _run_once()
+    _assert_internally_consistent(data_a)
+
+    # Call B: SAME underlying returns/code (nothing else changed) -> the exact
+    # same rigor_cache cohort_key -> `results` from get_or_compute is a CACHE
+    # HIT carrying run-A's per-strategy library_pbo (0.42) unless the route
+    # reconciles it against the freshly-computed top-level value. The
+    # top-level library_pbo is recomputed as "unavailable" (None) this time —
+    # the two must still agree.
+    monkeypatch.setattr(
+        routes,
+        "_library_pbo_payload",
+        lambda: routes.LibraryPbo(value=None, source="unavailable"),
+    )
+    data_b = await _run_once()
+    _assert_internally_consistent(data_b)
+    assert data_b["library_pbo"]["value"] is None
+    assert data_b["library_pbo"]["source"] == "unavailable"
+
+
+@pytest.mark.asyncio
 async def test_run_rigor_gate_called_without_library_pbo_kwarg(monkeypatch):
     """The gate verdict path must be provably unchanged: run_rigor_gate is called
     WITHOUT a library_pbo= argument (passing it would alter criterion 4 = option 3,
