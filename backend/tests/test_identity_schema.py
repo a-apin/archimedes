@@ -1,6 +1,6 @@
 """Identity-ledger schema tests (issue #1028, "tests" chunk — 5/5).
 
-Covers the two things the epic's Target schema locks in structurally:
+Covers the three things the epic's Target schema locks in structurally:
 
   1. **FK retrofits** (AC4: "every wallet column in ``information_schema``
      either FKs to ``wallet_identities`` or is registered in
@@ -16,21 +16,33 @@ Covers the two things the epic's Target schema locks in structurally:
      enforced, not just application-level convention. SQLite enforces CHECK
      constraints unconditionally (unlike FKs, which need ``PRAGMA
      foreign_keys=ON`` and are NOT turned on anywhere in this codebase —
-     verified empirically; see the FK section below for why this suite tests
-     FK *presence* via introspection rather than FK *enforcement*).
+     verified empirically; see the FK-enforcement section below for why the
+     FK tests above check *presence* via introspection rather than
+     *enforcement*).
+  3. **FK enforcement against real Postgres** — the ``@pytest.mark.integration``
+     section at the bottom of this file. SQLite's non-enforcement (see 2.)
+     means the FK-presence tests above cannot prove the retrofit actually
+     protects data integrity; this section closes that gap with a real
+     orphan-reference insert against Postgres, skipped cleanly when no
+     Postgres DSN is configured.
 
-Hermetic: uses the same shared SQLite engine every other DB-backed test in
-this suite uses (``archimedes.db.engine``); no network, no Postgres.
+Hermetic (everything above the FK-enforcement section): uses the same shared
+SQLite engine every other DB-backed test in this suite uses
+(``archimedes.db.engine``); no network, no Postgres. The FK-enforcement
+section is the one deliberate exception — it is marked ``integration`` and
+excluded from the default unit run precisely because it needs real Postgres.
 """
 
 from __future__ import annotations
 
+import os
 import uuid
 
 import pytest
 from archimedes.db import Base, get_session, init_db
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -237,3 +249,71 @@ def test_marketplace_agents_allows_null_gateway_seller_address():
         session.execute(text("DELETE FROM marketplace_agents WHERE strategy_id = :sid"), {"sid": sid})
         session.commit()
         session.close()
+
+
+# ─── FK enforcement (real Postgres only) ───────────────────────────────────
+#
+# Every test above pins FK *presence* via `sqlalchemy.inspect` against the
+# SQLite-built schema, per the module docstring: SQLite doesn't enforce FKs
+# without `PRAGMA foreign_keys=ON`, which nothing in this codebase sets, so
+# an SQLite insert of an orphan wallet reference would silently succeed and
+# prove nothing about the retrofit actually protecting data integrity. This
+# test closes that gap by running the real insert against real Postgres —
+# the FK is only meaningfully verified once an IntegrityError is observed
+# from the database, not merely inferred from the constraint existing in
+# `information_schema`.
+#
+# Marked `integration` (registered in `pytest.ini`) and skipped cleanly when
+# no Postgres DSN is configured — the default unit run (`pytest -m "not
+# integration"`, per `quality-gate.yml`) never touches this test; it's meant
+# to run in an environment with a real Postgres available (e.g. `docker
+# compose up -d postgres` locally, or a future CI Postgres service).
+
+
+def _postgres_test_dsn() -> str | None:
+    """The DSN to run this test against, or None to skip.
+
+    Deliberately reads the raw `DATABASE_URL` env var directly rather than
+    `archimedes.db.DATABASE_URL` — the latter falls back to a SQLite file
+    when unset (see `db.py`'s `_default_database_url()`), which would make
+    this test silently exercise SQLite instead of skipping.
+    """
+    dsn = os.environ.get("DATABASE_URL", "")
+    return dsn if dsn.startswith("postgresql") else None
+
+
+@pytest.mark.integration
+def test_vault_metadata_creator_address_fk_enforced_on_postgres():
+    """Inserting a vault_metadata row whose creator_address references a
+    wallet absent from wallet_identities must raise IntegrityError — the
+    FK retrofit (issue #1028) actually enforced, not just declared."""
+    dsn = _postgres_test_dsn()
+    if not dsn:
+        pytest.skip("no Postgres DATABASE_URL configured — set DATABASE_URL to a postgresql:// DSN to run")
+
+    engine = create_engine(dsn)
+    try:
+        try:
+            conn = engine.connect()
+            conn.close()
+        except OperationalError as exc:
+            pytest.skip(f"Postgres DSN configured but unreachable: {exc}")
+
+        session = sessionmaker(bind=engine)()
+        orphan_wallet = "0x" + uuid.uuid4().hex[:40]  # not backfilled into wallet_identities
+        try:
+            with pytest.raises(IntegrityError):
+                session.execute(
+                    text(
+                        "INSERT INTO vault_metadata "
+                        "(vault_address, name, symbol, creator_address, strategy_ids, created_at) "
+                        "VALUES (:addr, 'fk-test-vault', 'FKT', :creator, '[]', CURRENT_TIMESTAMP)"
+                    ),
+                    {"addr": orphan_wallet, "creator": orphan_wallet},
+                )
+                session.commit()
+        finally:
+            session.rollback()
+            session.close()
+    finally:
+        engine.dispose()

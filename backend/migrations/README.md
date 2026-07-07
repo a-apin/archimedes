@@ -1,11 +1,20 @@
 # backend/migrations — Alembic
 
-Adopted in issue #1028 (chunk 1/5, `alembic-baseline`). Replaces the ad-hoc
-"idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`" patches that used to
-live in `archimedes.db.init_db()` for retrofitting an already-populated
-Postgres database. `init_db()` / `Base.metadata.create_all()` remains the
-fresh-DB path for SQLite (all tests + local dev) — see the docstrings in
-`archimedes/db.py` and `migrations/env.py` for the full two-path rationale.
+Adopted in issue #1028 (chunk 1/5, `alembic-baseline`). On Postgres, Alembic
+is now the sole owner of schema: new tables, columns, and constraints go
+through an Alembic revision from here forward, not a new hand-rolled `ALTER
+TABLE` in `init_db()`. `init_db()` / `Base.metadata.create_all()` is gated to
+SQLite only (all tests + local dev) — it no longer runs against Postgres at
+all, because running it unconditionally raced Alembic's own DDL under
+multiple concurrently-booting Fargate tasks.
+
+That said, this does **not** mean the pre-Alembic ad-hoc `ALTER TABLE ...
+ADD COLUMN IF NOT EXISTS` patches (and `_ensure_ownership_columns()`) were
+removed from `init_db()` — they still run, unchanged, on every Postgres
+boot. They are transitional: kept only until every column they cover has
+landed as a proper Alembic revision (a follow-up cleanup, not done here),
+at which point they can be deleted. See the docstrings in `archimedes/db.py`
+and `migrations/env.py` for the full two-path rationale.
 
 ## Layout
 

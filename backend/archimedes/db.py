@@ -95,14 +95,21 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
 def init_db() -> None:
-    """Create all tables (idempotent for hackathon — no Alembic needed).
+    """Build the schema on SQLite (local dev + hermetic tests); on Postgres,
+    Alembic owns schema creation (`alembic upgrade head` — see
+    `migrations/README.md`) and this function only applies transitional
+    idempotent patches.
 
     Also runs hand-rolled ADD COLUMN IF NOT EXISTS migrations for model fields
     that were added after the original `papers` table was created. Postgres
     only; on SQLite (local dev) the create_all on a fresh DB takes the new
     columns directly. Without this, /api/papers/ returns a 500 in any env
     where the papers table predates these model additions (i.e. our running
-    docker volume).
+    docker volume). This block, and `_ensure_ownership_columns()` below, are
+    transitional: Alembic is now the source of truth for new Postgres schema
+    changes going forward (issue #1028), and these idempotent ALTERs remain
+    only until every column they cover has landed as a proper Alembic
+    revision — a follow-up cleanup, not done here.
     """
     # Side-effect imports: ensure all ORM models register their tables with
     # Base.metadata before create_all runs. Otherwise the kg_* tables only
@@ -112,12 +119,26 @@ def init_db() -> None:
         strategy_passport_record,  # noqa: F401
     )
 
-    Base.metadata.create_all(bind=engine)
-    logger.info(f"Database tables created at {DATABASE_URL}")
+    # SQLite-only. On Postgres, schema is Alembic's job exclusively — running
+    # create_all() unconditionally here raced Alembic's own DDL under
+    # multiple concurrently-booting Fargate tasks: two tasks starting at once
+    # could each try to create (or one create while another's migration
+    # ALTERs/constrains) the same tables — e.g. the issue #1028
+    # identity-ledger tables — producing duplicate-table / duplicate-
+    # constraint errors on a cold multi-task deploy instead of one clean
+    # rollout. Gating to SQLite (local dev + every hermetic test's fresh
+    # file/in-memory DB) removes Postgres from that race entirely.
+    if DATABASE_URL.startswith("sqlite"):
+        Base.metadata.create_all(bind=engine)
+        logger.info(f"Database tables created at {DATABASE_URL}")
 
     if DATABASE_URL.startswith("postgresql"):
         from sqlalchemy import text
 
+        # Transitional: these predate Alembic (issue #1028) and still run on
+        # every Postgres boot. New Postgres schema changes go through an
+        # Alembic revision instead (see `migrations/README.md`) — this block
+        # is not the place to add new columns.
         added_columns_sql = [
             "ALTER TABLE papers ADD COLUMN IF NOT EXISTS cluster_id TEXT",
             "ALTER TABLE papers ADD COLUMN IF NOT EXISTS topic_label TEXT",
