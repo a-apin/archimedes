@@ -189,6 +189,29 @@ is a team decision (Chuan, as repo admin, owns it).
 > These runbooks are **authored, not drilled.** Run a game-day (see the DR
 > drill checklist) before trusting the measured RTO/RPO.
 
+## ECS Fargate (issue #1039)
+
+- **`ecr.tf`** — the two private ECR repos CI (build-chunk 1) already pushes
+  to (`archimedes-backend`, `archimedes-nginx`), each with a lifecycle policy
+  (expire untagged after 1 day; keep the last 15 tagged images).
+- **`ecs.tf`** — ECS cluster, the `archimedes-backend` task definition
+  (nginx + backend, one Fargate task, `awsvpc` mode) and service (registered
+  into the **existing** `archimedes-backend-tg` target group via a data
+  source — `alb.tf` itself is untouched except one additive security-group
+  egress rule), CPU-based Application Auto Scaling (min/max via
+  `ecs_service_min_count` / `ecs_service_max_count`), and the task
+  execution/task IAM roles + an additive inline policy on the existing
+  out-of-band `archimedes-github-deploy` CI role.
+- **`runbooks/ecs-fargate-cutover.md`** — the three blockers that must close
+  before this actually serves traffic, what `terraform apply` does the
+  instant it runs (starts live blue/green traffic against the same target
+  group — read before applying), verification commands, and the full
+  cutover → EC2 decommission sequence.
+
+> **Authored 2026-07-06, not yet `terraform plan`-verified against live AWS
+> (no credentials in this environment) — `terraform validate`/`fmt` only.**
+> Same review-then-apply posture as the rest of this section.
+
 ## Per-deploy artifacts
 
 - **`deploy_output.json`** (repo root) is written by

@@ -74,7 +74,7 @@ resource "aws_s3_bucket_policy" "alb_logs" {
         Effect    = "Deny"
         Principal = "*"
         Action    = "s3:*"
-        Resource  = [
+        Resource = [
           aws_s3_bucket.alb_logs.arn,
           "${aws_s3_bucket.alb_logs.arn}/*"
         ]
@@ -92,7 +92,7 @@ resource "aws_s3_bucket_policy" "alb_logs" {
 # Using DNS validation via Route 53.
 
 resource "aws_acm_certificate" "main" {
-  domain_name       = "${var.domain_name}"
+  domain_name       = var.domain_name
   validation_method = "DNS"
 
   tags = {
@@ -168,6 +168,25 @@ resource "aws_security_group" "alb" {
     security_groups = [aws_security_group.archimedes.id]
   }
 
+  # Outbound to the ECS Fargate backend task (issue #1039) — nginx container
+  # port, registered directly on the ENI in awsvpc mode (no host port
+  # remapping like the EC2/docker-compose "80:8080"). Added as a SECOND
+  # inline egress block on this SAME resource (not a standalone
+  # aws_security_group_rule) — this resource's inline ingress/egress blocks
+  # are authoritative for ALL rules on this SG, and mixing inline blocks with
+  # standalone aws_security_group_rule resources makes Terraform fight itself
+  # and delete "unmanaged" rules on every apply (vpc.tf documents the same
+  # footgun for route tables). Both this rule and the one above stay live
+  # simultaneously during the EC2→Fargate cutover window — see
+  # infra/runbooks/ecs-fargate-cutover.md.
+  egress {
+    description     = "To ECS Fargate backend (nginx container, #1039)"
+    from_port       = 8080
+    to_port         = 8080
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ecs_backend.id]
+  }
+
   tags = {
     Name    = "${var.project_name}-alb-sg"
     Project = var.project_name
@@ -184,8 +203,8 @@ resource "aws_lb" "main" {
   subnets            = aws_subnet.public[*].id
 
   idle_timeout               = 300  # SSE /api/generate/stream/ needs long-lived connections
-  drop_invalid_header_fields = true  # Strip malformed headers before they reach the backend
-  enable_deletion_protection = true  # Require explicit console action to delete
+  drop_invalid_header_fields = true # Strip malformed headers before they reach the backend
+  enable_deletion_protection = true # Require explicit console action to delete
 
   access_logs {
     bucket  = aws_s3_bucket.alb_logs.id
@@ -205,7 +224,7 @@ resource "aws_lb_target_group" "backend" {
   port        = 80
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id # ALB and TG must be in same VPC
-  target_type = "ip"           # IP-based targeting for cross-VPC (EC2 in default VPC)
+  target_type = "ip"            # IP-based targeting for cross-VPC (EC2 in default VPC)
 
   health_check {
     enabled             = true

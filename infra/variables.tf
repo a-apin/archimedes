@@ -52,3 +52,47 @@ variable "backend_ami_id" {
   type        = string
   default     = ""
 }
+
+# ── ECS Fargate (issue #1039) ──────────────────────────────────────────────
+
+variable "ecs_backend_cpu" {
+  description = "Fargate task-level vCPU units for the archimedes-backend task (nginx + backend containers, one task). 1024 = 1 vCPU. Must be a valid Fargate cpu/memory pairing — see https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html."
+  type        = string
+  default     = "1024"
+}
+
+variable "ecs_backend_memory" {
+  description = "Fargate task-level memory (MiB) for the archimedes-backend task. Must pair validly with ecs_backend_cpu (1024 cpu allows 2048-8192 in 1024 steps)."
+  type        = string
+  default     = "3072"
+}
+
+variable "ecs_service_desired_count" {
+  description = "Steady-state desired task count for the archimedes-backend ECS service. Terraform sets this once at bootstrap; day-to-day changes (CPU autoscaling, CI deploys) are ignored via lifecycle.ignore_changes on the service (see ecs.tf) so they're never reverted by a later apply."
+  type        = number
+  default     = 1
+}
+
+variable "ecs_service_min_count" {
+  description = "Application Auto Scaling floor for the archimedes-backend service."
+  type        = number
+  default     = 1
+}
+
+variable "ecs_service_max_count" {
+  description = "Application Auto Scaling ceiling for the archimedes-backend service. 4 mirrors the cost cap already used by the optional EC2 ASG tier (asg.tf) for this single-user, ~0.07 req/s workload."
+  type        = number
+  default     = 4
+}
+
+variable "ecs_autoscale_cpu_target" {
+  description = "Target average CPU utilization (%) for the archimedes-backend service's target-tracking autoscaling policy."
+  type        = number
+  default     = 60
+}
+
+variable "backend_image_tag" {
+  description = "Image tag Terraform registers in the initial archimedes-backend/archimedes-nginx task-definition revision (bootstrap only). Real deploys after that are CI registering a new task-definition revision (commit-SHA tag) and calling `aws ecs update-service --force-new-deployment` directly, NOT `terraform apply` — the service ignores task_definition/desired_count drift (see ecs.tf) so those out-of-band deploys are never reverted by a later plan/apply."
+  type        = string
+  default     = "latest"
+}

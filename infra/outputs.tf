@@ -111,3 +111,50 @@ output "backend_asg_name" {
   description = "Backend auto-scaling group name (null unless the optional ASG tier is enabled via backend_ami_id)"
   value       = one(aws_autoscaling_group.backend[*].name)
 }
+
+# ── ECS Fargate outputs (issue #1039) ─────────────────────────────────────
+
+output "ecr_backend_repository_url" {
+  description = "ECR repository URL for the archimedes-backend image (backend + oracle + agent + kb-runner)"
+  value       = aws_ecr_repository.backend.repository_url
+}
+
+output "ecr_nginx_repository_url" {
+  description = "ECR repository URL for the archimedes-nginx image"
+  value       = aws_ecr_repository.nginx.repository_url
+}
+
+output "ecs_cluster_name" {
+  description = "ECS cluster name"
+  value       = aws_ecs_cluster.main.name
+}
+
+output "ecs_cluster_arn" {
+  description = "ECS cluster ARN"
+  value       = aws_ecs_cluster.main.arn
+}
+
+output "ecs_service_name" {
+  description = "ECS service name (behind the existing archimedes-backend-tg target group)"
+  value       = aws_ecs_service.backend.name
+}
+
+output "ecs_task_definition_family" {
+  description = "ECS task definition family (register new revisions against this family for CI deploys)"
+  value       = aws_ecs_task_definition.backend.family
+}
+
+output "ecs_task_execution_role_arn" {
+  description = "ECS task execution role ARN (image pull, log shipping, secrets resolution)"
+  value       = aws_iam_role.ecs_task_execution.arn
+}
+
+output "ecs_task_role_arn" {
+  description = "ECS task role ARN (application runtime permissions — SSM read, Bedrock invoke, ECS Exec channel)"
+  value       = aws_iam_role.ecs_task.arn
+}
+
+output "ecs_exec_shell_command" {
+  description = "Template for shelling into a running backend task via ECS Exec (fill in the task id from `aws ecs list-tasks --cluster <ecs_cluster_name> --service-name <ecs_service_name>`)"
+  value       = "aws ecs execute-command --cluster ${aws_ecs_cluster.main.name} --task <task-id> --container backend --interactive --command \"/bin/sh\""
+}
