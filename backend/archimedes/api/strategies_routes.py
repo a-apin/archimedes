@@ -414,6 +414,7 @@ def _verdict_from_result(result: RigorGateResult | None) -> RigorGateVerdict:
 
 @strategies_router.get("/", response_model=StrategyListResponse)
 async def list_strategies(
+    request: Request,
     status: str | None = Query(None, pattern="^(candidate|validated|live|retired)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -436,16 +437,24 @@ async def list_strategies(
     served ``status: "validated"``. This is intentional — the stored status is the
     stable filter key; the served status reflects the live verdict.
     """
+    from archimedes.models.strategy_generators import wallet_can_publish
+
     status_filter = StrategyStatus(status) if status else None
     strats = strategy_provider().list_strategies(status=status_filter)
     total = len(strats)
     window = strats[offset : offset + limit]
     rigor_results = _live_rigor_results_for_strategies(window)
+    caller = get_verified_wallet(request)
+    responses: list[StrategyResponse] = []
+    with get_session() as session:
+        for s in window:
+            resp = _to_strategy_response(s, _verdict_from_result(rigor_results.get(s.id)), rigor_results.get(s.id))
+            resp.can_publish = bool(caller) and wallet_can_publish(
+                session, strategy_id=s.id, wallet_address=caller, is_example=True
+            )
+            responses.append(resp)
     return StrategyListResponse(
-        strategies=[
-            _to_strategy_response(s, _verdict_from_result(rigor_results.get(s.id)), rigor_results.get(s.id))
-            for s in window
-        ],
+        strategies=responses,
         total=total,
     )
 
@@ -464,6 +473,7 @@ async def list_generated_strategies(request: Request, limit: int = Query(50, ge=
     from sqlalchemy import or_
 
     from archimedes.db import get_session
+    from archimedes.models.strategy_generators import wallet_can_publish
     from archimedes.models.strategy_store import StrategyRecord
 
     caller = get_verified_wallet(request)  # None when anonymous — never an error
@@ -485,7 +495,13 @@ async def list_generated_strategies(request: Request, limit: int = Query(50, ge=
             else:
                 query = query.filter(StrategyRecord.is_published.is_(True))
             records = query.order_by(StrategyRecord.created_at.desc()).limit(limit).all()
-            rows = [_redact_owner_wallet(r.to_dict(), caller) for r in records]
+            rows = []
+            for r in records:
+                d = r.to_dict()
+                d["can_publish"] = bool(caller) and wallet_can_publish(
+                    session, strategy_id=r.id, wallet_address=caller, is_example=False
+                )
+                rows.append(_redact_owner_wallet(d, caller))
     except Exception as exc:
         import logging as _logging
 

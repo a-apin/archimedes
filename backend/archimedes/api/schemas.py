@@ -235,6 +235,12 @@ class StrategyResponse(BaseModel):
     return_source: str = "noise"  # "risk_premium" | "mispricing" | "productive_growth" | "noise"
     return_source_note: str = ""
 
+    # Whether the caller's wallet is permitted to publish this strategy.
+    # Always False for anonymous requests; True only when the caller is the
+    # generating wallet (generated strategies) or a platform admin (examples).
+    # Backend-authoritative — the frontend uses this to hide the publish affordance.
+    can_publish: bool = False
+
 
 class StrategyListResponse(BaseModel):
     strategies: list[StrategyResponse]
