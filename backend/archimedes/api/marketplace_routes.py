@@ -22,6 +22,7 @@ from archimedes.marketplace.service import MarketService, Subscriber
 from archimedes.models.marketplace import MarketplaceAgent
 from archimedes.models.strategy_generators import wallet_can_publish
 from archimedes.models.strategy_store import StrategyRecord
+from archimedes.services.identity_events import emit_identity_event, register_controlled_wallet
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,24 @@ async def publish_strategy(
         agent_wallet_id=agent_wallet_id,
     )
 
+    # Identity ledger (#1028, D1a/D2/D3): register the Circle DCW this publish
+    # just provisioned in controlled_wallets (it is never itself an identity —
+    # D1a), then ledger the publish against the creator's own wallet. `wallet`
+    # is SIWE-verified (require_verified_wallet dependency) — always identified.
+    # Fail-safe; neither call can affect the response above.
+    register_controlled_wallet(
+        address=gateway_seller_address,
+        wallet_class="publisher_settlement",
+        controller_wallet=wallet,
+        key_binding=agent_wallet_id,
+    )
+    emit_identity_event(
+        wallet=wallet,
+        event_type="strategy_published",
+        actor_class="human",
+        meta={"strategy_id": strategy_id, "pool_id": pool_id, "vault_address": vault_address},
+    )
+
     result["pool_id"] = pool_id
     return result
 
@@ -380,6 +399,24 @@ async def subscribe_strategy(
     )
     await market.add_subscriber(strategy_id, sub)
 
+    # Identity ledger (#1028, D1a/D2/D3): register the Circle DCW this
+    # subscribe just provisioned in controlled_wallets, then ledger the
+    # subscribe against the subscriber's own wallet. `wallet` is SIWE-verified
+    # (require_verified_wallet dependency) — always identified. Fail-safe;
+    # neither call can affect the response above.
+    register_controlled_wallet(
+        address=ephemeral_wallet,
+        wallet_class="subscriber_payment",
+        controller_wallet=wallet,
+        key_binding=wallet_id,
+    )
+    emit_identity_event(
+        wallet=wallet,
+        event_type="marketplace_subscribed",
+        actor_class="human",
+        meta={"strategy_id": strategy_id, "sub_id": sub_id, "pool_id": pool_id},
+    )
+
     return result
 
 
@@ -431,6 +468,15 @@ async def unsubscribe_strategy(
         dcw_address=dcw_address,
         to_wallet=wallet,
         sub_id=sub_id,
+    )
+
+    # Identity ledger (#1028, D2): `wallet` is SIWE-verified (require_verified_wallet
+    # dependency) — always identified. Fail-safe; never affects the response above.
+    emit_identity_event(
+        wallet=wallet,
+        event_type="marketplace_unsubscribed",
+        actor_class="human",
+        meta={"strategy_id": strategy_id, "sub_id": sub_id, "refund_tx": refund_tx},
     )
 
     return {"status": "unsubscribed", "strategy_id": strategy_id, "refund_tx": refund_tx}

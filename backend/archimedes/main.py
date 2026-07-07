@@ -48,7 +48,7 @@ from archimedes.api.limiter import limiter
 # the first successful deploy crash-looped the backend on exactly this import.
 try:
     from archimedes.api.marketplace_routes import marketplace_router
-except Exception as _mkt_exc:  # noqa: BLE001 — must not let a bad optional dep 502 the app
+except Exception as _mkt_exc:
     logging.getLogger(__name__).error(
         "marketplace router unavailable — importing it failed (running WITHOUT marketplace): %s",
         _mkt_exc,
@@ -214,6 +214,31 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _app.state.market = None
         _logger.error("startup: marketplace engine failed to start — running WITHOUT it (non-fatal): %s", exc)
+
+    # 3z. Register the system/agent addresses in controlled_wallets (issue
+    # #1028, D1a/D3). Idempotent upsert — safe to run on every boot.
+    #   - The trading-agent signer (chain_client.settings.agent_account): the
+    #     SAME key both StrategyRunner (rebalance) and MarketService
+    #     (createPool / on-chain settlement) sign with — one row covers both
+    #     "agent_runner" and "the marketplace engine" from the issue's scope.
+    #   - ARCHIMEDES_TREASURY_WALLET: the platform's revenue-split address
+    #     (marketplace_routes.publish_strategy) — never a user identity.
+    # Circle DCWs (publisher_settlement / subscriber_payment) are registered
+    # per-wallet at provision time (marketplace_routes.py), not here — there's
+    # no fixed set of those to enumerate at boot.
+    try:
+        from archimedes.chain.client import chain_client
+        from archimedes.services.identity_events import register_controlled_wallet
+
+        agent_account = chain_client.settings.agent_account
+        if agent_account is not None:
+            register_controlled_wallet(address=agent_account.address, wallet_class="trading_agent")
+
+        treasury_wallet = os.getenv("ARCHIMEDES_TREASURY_WALLET", "").strip()
+        if treasury_wallet:
+            register_controlled_wallet(address=treasury_wallet, wallet_class="treasury")
+    except Exception as exc:
+        _logger.warning("startup: controlled-wallet registration failed (non-fatal): %s", exc)
 
     # 3a. Rehydrate running publishers from Postgres. Guarded on the engine
     # having started; the surrounding try/except is fail-soft regardless.

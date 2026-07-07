@@ -67,6 +67,14 @@ SYSTEM_WALLET = "system"
 # JSON on SQLite (no native JSONB there).
 _JSON_VARIANT = postgresql.JSONB().with_variant(sa.JSON(), "sqlite")
 
+# Portable autoincrement PK: BigInteger on Postgres (BIGSERIAL — matches the
+# Target schema exactly), plain Integer on SQLite. SQLite only aliases a
+# primary-key column to its ROWID (autoincrement-without-an-explicit-value)
+# when the column's type affinity is exactly INTEGER; BIGINT does not get
+# that aliasing, so a bare `alembic upgrade head` against a fresh SQLite DB
+# would otherwise raise "NOT NULL constraint failed" on the first insert.
+_ID_VARIANT = sa.BigInteger().with_variant(sa.Integer(), "sqlite")
+
 
 def _backfill_identities(table: str, column: str, actor_class: str = "human", where_extra: str = "") -> None:
     """INSERT DISTINCT non-empty ``table.column`` values into wallet_identities.
@@ -121,7 +129,7 @@ def upgrade() -> None:
 
     op.create_table(
         "identity_events",
-        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column("id", _ID_VARIANT, autoincrement=True, nullable=False),
         sa.Column("wallet", sa.String(length=42), nullable=True),
         sa.Column("vid", sa.String(length=32), nullable=True),
         sa.Column("event_type", sa.String(length=64), nullable=False),

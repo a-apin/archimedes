@@ -411,10 +411,30 @@ async def verify_signature(request: Request, response: Response):
     logger.info("SIWE session issued for wallet %s", recovered_lower[:10])
 
     # Conversion funnel (#787): the visitor connected a wallet — the trust step
-    # we most need to move. Fail-safe; never blocks the auth response.
+    # we most need to move. Stays anonymous (vid only, no wallet) — D2a keeps
+    # this pre-auth instrument unchanged. Fail-safe; never blocks the response.
     from archimedes.api.funnel_middleware import record_funnel
 
     await record_funnel(request, "wallet_connected")
+
+    # The identity ledger (#1028, D2/D2a): this is THE missed write — the one
+    # moment the backend holds a cryptographically verified wallet, and until
+    # now nothing durable was written for it. Upserts wallet_identities(wallet,
+    # last_auth_at) and appends an identity_events `auth_verified` row. The
+    # browser vid is captured HERE — post-auth — deliberately reversing #787's
+    # blanket "no wallet linkage": D2a scopes that rule to pre-auth traffic
+    # only; a vid↔wallet link at the exact moment of proof is standard
+    # analytics practice, not the over-extension #787 shipped. Fail-safe;
+    # never blocks the auth response.
+    from archimedes.services.identity_events import emit_identity_event
+
+    emit_identity_event(
+        wallet=recovered_lower,
+        event_type="auth_verified",
+        actor_class="human",
+        vid=getattr(request.state, "visitor_id", None),
+        touch_last_auth=True,
+    )
 
     return {
         "status": "authenticated",

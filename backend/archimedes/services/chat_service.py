@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 
 from archimedes.db import get_session
 from archimedes.models.chat import ChatMessage
+from archimedes.services.identity_events import emit_identity_event, ensure_wallet_identity
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,17 @@ class ChatService:
         `verified` is True only when the caller proved wallet ownership via a
         SIWE session (#524); body-supplied identities stay False.
         """
+        # Identity ledger (#1028, D1/D2): chat allows unverified attribution
+        # (`verified` above) — unlike every other wallet-FK'd write path in
+        # this codebase, this wallet may never have gone through SIWE, so
+        # nothing else guarantees it's already anchored. Anchor it BEFORE the
+        # insert below: chat_messages.wallet_address FKs to wallet_identities
+        # (models/chat.py) on Postgres, so anchoring it after the fact would
+        # be too late — the insert itself would violate the FK. Fail-safe;
+        # never blocks the request (worst case on a DB-down race: the FK
+        # trips and this post fails exactly as it would have before #1028).
+        ensure_wallet_identity(wallet_address, "human")
+
         session = get_session()
         try:
             msg = ChatMessage(
@@ -100,6 +112,15 @@ class ChatService:
             session.refresh(msg)
 
             result = msg.to_dict()
+
+            # Ledger the post itself (D2). The anchor above already
+            # guarantees the wallet exists, so this is just an append.
+            emit_identity_event(
+                wallet=wallet_address,
+                event_type="chat_posted",
+                actor_class="human",
+                meta={"vault_address": vault_address, "verified": verified},
+            )
 
             # Check for @archimedes mention — trigger AI response
             if "@archimedes" in message.lower():
@@ -121,6 +142,12 @@ class ChatService:
         trigger: str = "mention",
     ) -> dict | None:
         """Post an AI-generated message (rebalance event, regime change, or mention response)."""
+        # Identity ledger (#1028, D1/D3): the AI persona is a first-class agent
+        # actor, anchored as actor_class='agent' BEFORE the insert below — same
+        # FK-ordering reason as post_message (chat_messages.wallet_address FKs
+        # to wallet_identities). Fail-safe; never blocks the post.
+        ensure_wallet_identity(AI_WALLET_ADDRESS, "agent")
+
         session = get_session()
         try:
             msg = ChatMessage(
@@ -137,6 +164,16 @@ class ChatService:
 
             result = msg.to_dict()
             result["trigger"] = trigger
+
+            # Ledger the post itself (D2). The anchor above already
+            # guarantees the wallet exists, so this is just an append.
+            emit_identity_event(
+                wallet=AI_WALLET_ADDRESS,
+                event_type="chat_posted",
+                actor_class="agent",
+                meta={"vault_address": vault_address, "trigger": trigger},
+            )
+
             return result
         except Exception:
             session.rollback()

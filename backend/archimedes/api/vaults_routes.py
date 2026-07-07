@@ -263,6 +263,17 @@ async def create_vault(
 
     await record_funnel(request, "vault_deployed")
 
+    # Identity ledger (#1028, D2): `wallet` here is SIWE-verified (required_verified_wallet
+    # dependency) — always identified, unlike the anonymous-tolerant Generate path.
+    from archimedes.services.identity_events import emit_identity_event
+
+    emit_identity_event(
+        wallet=wallet,
+        event_type="vault_created",
+        actor_class="human",
+        meta={"vault_address": vault_address, "strategy_ids": req.strategy_ids},
+    )
+
     return VaultCreateResponse(vault_address=vault_address, strategy_ids=req.strategy_ids)
 
 

@@ -37,6 +37,7 @@ from archimedes.api.generate_schemas import (
 )
 from archimedes.api.limiter import limiter
 from archimedes.services.generation_quota import enforce_generation_quota
+from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import EVENT_LOG_TTL, get_job_store
 from archimedes.services.llm_backend import is_allowed_model
 from archimedes.services.log_scrubber import sanitize_log_value
@@ -181,6 +182,17 @@ async def start_generation(
     # Conversion funnel (#787): a generation actually started for this visitor —
     # the key "tried the product" transition. Fail-safe; never blocks the response.
     await record_funnel(request, "generation_started")
+
+    # Identity ledger (#1028, D2): only an IDENTIFIED start is ledgered — an
+    # anonymous request (flag off / no session) has no wallet to anchor a row
+    # to and is left to the anonymous funnel above (D2a: pre-auth stays
+    # anonymous). Fail-safe; never blocks the response.
+    emit_identity_event(
+        wallet=_wallet,
+        event_type="generation_started",
+        actor_class="human",
+        meta={"job_id": job_id, "model": selected_model},
+    )
 
     return GenerateStartResponse(
         job_id=job_id,

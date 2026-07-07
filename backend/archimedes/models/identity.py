@@ -33,6 +33,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -58,6 +59,16 @@ CONTROLLED_WALLET_CLASSES = (
 # plain JSON on SQLite (no native JSONB there — this is the same
 # with_variant pattern used for other dialect-sensitive types in this repo).
 _JSONVariant = JSONB().with_variant(JSON(), "sqlite")
+
+# Portable autoincrement PK: BigInteger on Postgres (BIGSERIAL — matches the
+# Target schema's BIGSERIAL exactly), plain Integer on SQLite. SQLite only
+# aliases a primary-key column to its ROWID (the thing that makes
+# autoincrement work with no application-supplied value) when the column's
+# type affinity is exactly INTEGER; BIGINT does NOT get that aliasing, so an
+# INSERT with no explicit id raises "NOT NULL constraint failed: ...id" on
+# every SQLite target (all tests + local dev) even though the identical
+# schema is correct on Postgres.
+_IdVariant = BigInteger().with_variant(Integer(), "sqlite")
 
 
 class WalletIdentity(Base):
@@ -116,7 +127,7 @@ class IdentityEvent(Base):
 
     __tablename__ = "identity_events"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(_IdVariant, primary_key=True, autoincrement=True)
     # NULL only for actor_class='system' (per the Target schema comment).
     wallet: Mapped[str | None] = mapped_column(
         String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True
