@@ -1,38 +1,106 @@
-import { useState } from 'react'
-import { apiPost } from '../api'
-import { getAddress } from '../config'
+import { useState, useEffect, useCallback } from 'react'
+import { apiPost, apiGet } from '../api'
+import { getAddress, usdcBalanceOfRaw, MIN_VAULT_FUNDS_RAW } from '../config'
+import StrategyTable from './PublishStrategyTable'
+import CreateVaultModal from './CreateVaultModal'
+
+const USDC_DECIMALS = 6
+
+function formatUsdc(raw) {
+  return (Number(raw) / 10 ** USDC_DECIMALS).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
 
 export default function PublishPage({ onNavigate }) {
   const walletAddr = getAddress()
-  const [strategyId, setStrategyId] = useState('')
-  const [vaultAddress, setVaultAddress] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
+  const [activeTab, setActiveTab] = useState('generated')
+  const [generated, setGenerated] = useState([])
+  const [examples, setExamples] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [selectedStrategy, setSelectedStrategy] = useState(null)   // { id, title }
+
+  // Publish menu state
+  const [vaultMode, setVaultMode] = useState('create') // 'create' | 'existing'
+  const [existingVault, setExistingVault] = useState('')
+  const [publishing, setPublishing] = useState(false)
+  const [publishError, setPublishError] = useState('')
+
+  // Vault creation / deposit flow
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const [createdVault, setCreatedVault] = useState(null)  // address after create+deposit
+  const [vaultBalance, setVaultBalance] = useState(null)  // bigint raw
+  const [checkingBalance, setCheckingBalance] = useState(false)
+
+  // Result panel
   const [result, setResult] = useState(null)
 
-  const handlePublish = async (e) => {
-    e.preventDefault()
-    if (!strategyId.trim()) return
-    setError('')
-    setResult(null)
-    setBusy(true)
+  const load = useCallback(async () => {
+    setLoading(true)
     try {
-      const body = { strategy_id: strategyId.trim() }
-      if (vaultAddress.trim()) body.vault_address = vaultAddress.trim()
+      const [genRes, exRes] = await Promise.all([
+        apiGet('/api/strategies/generated'),
+        apiGet('/api/strategies/'),
+      ])
+      setGenerated(genRes.strategies || [])
+      setExamples(exRes.strategies || [])
+    } catch (err) {
+      console.error('Failed to load strategies', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
-      const res = await apiPost('/api/marketplace/publish', body)
+  useEffect(() => { load() }, [load])
+
+  // Check vault balance whenever vault address changes
+  useEffect(() => {
+    if (!vaultMode || !selectedStrategy) return
+    const addr = vaultMode === 'create' ? createdVault : existingVault.trim()
+    if (!addr) { setVaultBalance(null); return }
+    setCheckingBalance(true)
+    usdcBalanceOfRaw(addr)
+      .then(b => setVaultBalance(b))
+      .catch(() => setVaultBalance(null))
+      .finally(() => setCheckingBalance(false))
+  }, [vaultMode, createdVault, existingVault, selectedStrategy])
+
+  const resetMenu = () => {
+    setSelectedStrategy(null)
+    setVaultMode('create')
+    setExistingVault('')
+    setCreatedVault(null)
+    setVaultBalance(null)
+    setPublishing(false)
+    setPublishError('')
+    setShowCreateModal(false)
+  }
+
+  const balanceOk = vaultBalance !== null && vaultBalance >= MIN_VAULT_FUNDS_RAW
+  const vaultAddress = vaultMode === 'create' ? createdVault : existingVault.trim()
+
+  const handlePublish = async () => {
+    if (!selectedStrategy || !vaultAddress) return
+    setPublishing(true)
+    setPublishError('')
+    try {
+      const res = await apiPost('/api/marketplace/publish', {
+        strategy_id: selectedStrategy.id,
+        vault_address: vaultAddress,
+      })
       setResult(res)
     } catch (err) {
-      if (err.message?.includes('409')) {
-        setError(`Strategy "${strategyId}" is already published.`)
-      } else {
-        setError(err.message || 'Publish failed')
-      }
+      setPublishError(err.message || 'Publish failed')
     } finally {
-      setBusy(false)
+      setPublishing(false)
     }
   }
 
+  // ── Callback when CreateVaultModal's deposit completes ──
+  const handleVaultDeployed = (addr) => {
+    setCreatedVault(addr)
+    setShowCreateModal(false)
+  }
+
+  // ── Not connected ──
   if (!walletAddr) {
     return (
       <div className="page-panel">
@@ -47,6 +115,7 @@ export default function PublishPage({ onNavigate }) {
     )
   }
 
+  // ── Success result panel ──
   if (result) {
     return (
       <div className="page-panel">
@@ -62,7 +131,7 @@ export default function PublishPage({ onNavigate }) {
             <button className="btn" onClick={() => onNavigate('marketplace')}>
               View Marketplace
             </button>
-            <button className="btn btn-ghost" onClick={() => { setResult(null); setStrategyId('') }}>
+            <button className="btn btn-ghost" onClick={() => { setResult(null); resetMenu() }}>
               Publish Another
             </button>
           </div>
@@ -71,54 +140,163 @@ export default function PublishPage({ onNavigate }) {
     )
   }
 
+  // ── Inline publish menu for a selected strategy ──
+  if (selectedStrategy) {
+    return (
+      <div className="page-panel">
+        <div className="max-w-[640px] mx-auto">
+          <button className="btn btn-ghost btn-sm mb-4" onClick={resetMenu}>
+            ← Back to strategies
+          </button>
+
+          <h2 className="serif text-[1.6rem] mb-1">Publish</h2>
+          <p className="body text-[var(--color-muted)] mb-4">
+            Strategy: <strong>{selectedStrategy.title || selectedStrategy.id}</strong> ({selectedStrategy.id})
+          </p>
+
+          {/* Vault choice */}
+          <div className="card p-4 space-y-4">
+            <div>
+              <label className="caption block mb-2">Vault</label>
+              <div className="flex gap-3 mb-2">
+                <button
+                  className={`btn btn-sm ${vaultMode === 'create' ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setVaultMode('create')}
+                >
+                  Create new vault
+                </button>
+                <button
+                  className={`btn btn-sm ${vaultMode === 'existing' ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setVaultMode('existing')}
+                >
+                  Use existing vault
+                </button>
+              </div>
+            </div>
+
+            {vaultMode === 'create' && (
+              <div>
+                {!createdVault ? (
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => setShowCreateModal(true)}
+                  >
+                    Create Vault + Deposit
+                  </button>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="text-sm">
+                      <span className="text-[var(--color-muted)]">Vault:</span>{' '}
+                      <span className="font-mono">{createdVault}</span>
+                    </div>
+                    {checkingBalance && <div className="caption">Checking balance…</div>}
+                    {!checkingBalance && vaultBalance !== null && (
+                      <div className={`text-sm ${balanceOk ? 'text-[var(--positive)]' : 'text-[var(--color-danger)]'}`}>
+                        USDC balance: {formatUsdc(vaultBalance)}{' '}
+                        {!balanceOk && `(minimum required: ${formatUsdc(MIN_VAULT_FUNDS_RAW)})`}
+                      </div>
+                    )}
+                    <button className="btn btn-sm btn-ghost" onClick={() => setShowCreateModal(true)}>
+                      Re-create vault
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {vaultMode === 'existing' && (
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  className="input w-full font-mono text-sm"
+                  value={existingVault}
+                  onChange={e => setExistingVault(e.target.value)}
+                  placeholder="0x..."
+                />
+                {checkingBalance && <div className="caption">Checking balance…</div>}
+                {!checkingBalance && vaultBalance !== null && existingVault.trim() && (
+                  <div className={`text-sm ${balanceOk ? 'text-[var(--positive)]' : 'text-[var(--color-danger)]'}`}>
+                    USDC balance: {formatUsdc(vaultBalance)}{' '}
+                    {!balanceOk && `(minimum required: ${formatUsdc(MIN_VAULT_FUNDS_RAW)})`}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Publish button */}
+            <div className="pt-2">
+              {publishError && (
+                <p className="text-sm text-[var(--color-danger)] mb-2">{publishError}</p>
+              )}
+              <button
+                className="btn btn-primary"
+                disabled={!vaultAddress || !balanceOk || publishing}
+                onClick={handlePublish}
+              >
+                {publishing ? 'Publishing…' : 'Publish'}
+              </button>
+              {!balanceOk && vaultAddress && !checkingBalance && (
+                <p className="caption text-[var(--color-danger)] mt-1">
+                  Vault holds insufficient USDC. Publishing requires ≥ {formatUsdc(MIN_VAULT_FUNDS_RAW)} USDC.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* CreateVaultModal portal */}
+        {showCreateModal && (
+          <CreateVaultModal
+            strategy={{ id: selectedStrategy.id, paper_title: selectedStrategy.title || selectedStrategy.id }}
+            walletAddr={walletAddr}
+            onClose={() => setShowCreateModal(false)}
+            onDeployed={handleVaultDeployed}
+          />
+        )}
+      </div>
+    )
+  }
+
+  // ── Main tabbed view ──
   return (
     <div className="page-panel">
-      <div className="max-w-[540px] mx-auto">
-        <h2 className="serif text-[2rem] mb-2">Publish a Strategy</h2>
+      <div className="max-w-[960px] mx-auto">
+        <h2 className="serif text-[2rem] mb-1">Publish a Strategy</h2>
         <p className="body text-[var(--color-muted)] mb-6">
-          Publish a strategy to the marketplace. The backend derives the pool ID
-          from your strategy ID and wallet address. Subscribers will copy-trade
-          this strategy through their own vaults.
+          Select a strategy to publish to the on-chain marketplace.
+          You need a vault with at least {formatUsdc(MIN_VAULT_FUNDS_RAW)} USDC to publish.
         </p>
 
-        <form onSubmit={handlePublish} className="space-y-4">
-          <div>
-            <label className="text-xs text-[var(--color-muted)] block mb-1">Strategy ID *</label>
-            <input
-              type="text"
-              className="input w-full"
-              value={strategyId}
-              onChange={(e) => setStrategyId(e.target.value)}
-              placeholder="e.g. mom_2014"
-              required
-              disabled={busy}
-            />
-            <p className="text-xs text-[var(--color-muted)] mt-1">
-              The strategy ID must exist in the strategy provider.
-            </p>
-          </div>
-
-          <div>
-            <label className="text-xs text-[var(--color-muted)] block mb-1">Vault Address (optional)</label>
-            <input
-              type="text"
-              className="input w-full font-mono text-sm"
-              value={vaultAddress}
-              onChange={(e) => setVaultAddress(e.target.value)}
-              placeholder="0x... (leave empty to auto-create)"
-              disabled={busy}
-            />
-          </div>
-
-
-          {error && (
-            <p className="text-sm text-[var(--color-danger)]">{error}</p>
-          )}
-
-          <button type="submit" className="btn btn-primary" disabled={busy || !strategyId.trim()}>
-            {busy ? 'Publishing…' : 'Publish'}
+        <div className="flex gap-2 mb-4">
+          <button
+            className={`tag ${activeTab === 'generated' ? 'tag-accent' : 'tag-muted'}`}
+            onClick={() => setActiveTab('generated')}
+          >
+            Generated
           </button>
-        </form>
+          <button
+            className={`tag ${activeTab === 'examples' ? 'tag-accent' : 'tag-muted'}`}
+            onClick={() => setActiveTab('examples')}
+          >
+            Examples
+          </button>
+        </div>
+
+        {loading && <div className="caption">Loading…</div>}
+
+        {!loading && activeTab === 'generated' && (
+          <StrategyTable
+            strategies={generated}
+            onSelect={s => setSelectedStrategy(s)}
+          />
+        )}
+
+        {!loading && activeTab === 'examples' && (
+          <StrategyTable
+            strategies={examples}
+            onSelect={s => setSelectedStrategy(s)}
+          />
+        )}
       </div>
     </div>
   )
