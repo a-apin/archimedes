@@ -176,25 +176,36 @@ def _dsl_conformance_ok(spec: dict[str, Any] | None) -> bool:
     return all(stem in _CONFORMANT_INDICATORS for stem in _indicator_alias_stems(spec))
 
 
+# Non-behavioral spec keys: the LLM-generated marketing name and the citation
+# list vary freely across steers (each proposer call re-fuses/re-labels) even
+# when the actual trading logic (entry/exit/universe/sizing) is identical.
+# #893's whole premise is that this happens; hashing these in would make the
+# dedup a no-op against the exact failure mode it's meant to catch.
+_HASH_IGNORED_SPEC_KEYS = frozenset({"name", "source_arxiv_ids"})
+
+
 def _canonical_spec_hash(spec: dict[str, Any]) -> str:
-    """Content hash of ``spec`` invariant to key order and float noise (fix #893).
+    """Content hash of the BEHAVIORAL fields of ``spec`` (fix #893).
 
     Different regime/mechanism steers can independently converge on the same
     strategy (byte-identical ``entry``/``exit`` trees) under a different marketing
-    name. Rounding floats to 6dp absorbs float-repr jitter without collapsing
-    genuinely distinct parameterizations (e.g. sma_20 vs sma_21).
+    name and/or citation set. Excludes ``_HASH_IGNORED_SPEC_KEYS`` so two specs
+    that only differ by name/provenance still dedupe. Rounding floats to 6dp
+    absorbs float-repr jitter without collapsing genuinely distinct
+    parameterizations (e.g. sma_20 vs sma_21).
     """
 
-    def _normalize(node: Any) -> Any:
+    def _normalize(node: Any, *, top_level: bool = False) -> Any:
         if isinstance(node, dict):
-            return {k: _normalize(node[k]) for k in sorted(node)}
+            keys = node.keys() - _HASH_IGNORED_SPEC_KEYS if top_level else node.keys()
+            return {k: _normalize(node[k]) for k in sorted(keys)}
         if isinstance(node, list):
             return [_normalize(v) for v in node]
         if isinstance(node, float):
             return round(node, 6)
         return node
 
-    canonical = json.dumps(_normalize(spec), sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(_normalize(spec, top_level=True), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
