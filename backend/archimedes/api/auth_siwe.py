@@ -68,7 +68,14 @@ _CLOCK_SKEW_SECONDS = 120  # tolerate small client/server clock drift on Issued 
 # SIWE message binding — a valid signature must be for THIS site and chain, not
 # merely carry a live nonce. Must match what GET /api/auth/nonce advertises and
 # what the UI puts in the message (see ui/src/siwe.js).
-_EXPECTED_DOMAIN = os.getenv("PUBLIC_DOMAIN") or "https://archimedes-arc.com"
+#
+# No hardcoded literal fallback here (#940): a fallback like
+# "https://archimedes-arc.com" would mean every deployment that forgets to set
+# PUBLIC_DOMAIN — including a phishing clone — advertises and verifies against
+# the SAME domain string, defeating the entire point of domain binding (a
+# signature scoped to one site being replayed against another). May be None;
+# callers must go through _require_configured_domain() before using it.
+_EXPECTED_DOMAIN = os.getenv("PUBLIC_DOMAIN")
 _EXPECTED_CHAIN_ID = int(os.getenv("ARC_CHAIN_ID", "5042002"))
 
 # Pending-nonce store: Redis-backed (via AgentStateStore) so /nonce and /verify
@@ -83,6 +90,26 @@ _COOKIE_NAME = "archimedes_session"
 def _normalize_domain(domain: str) -> str:
     """Bare authority for domain comparison — drop scheme and trailing slash."""
     return domain.strip().removeprefix("https://").removeprefix("http://").rstrip("/").lower()
+
+
+def _require_configured_domain() -> str:
+    """Return the configured SIWE domain, or fail closed if PUBLIC_DOMAIN is unset.
+
+    (#940) Both /api/auth/nonce and /api/auth/verify must call this — a single
+    source of truth kills the drift risk of two independent os.getenv() reads
+    going out of sync, and the missing-config case now fails closed (503)
+    instead of silently falling back to a spoofable hardcoded domain.
+
+    This deliberately does NOT raise at module-import time: main.py's
+    `_is_production = bool(os.getenv("PUBLIC_DOMAIN"))` switch treats an unset
+    PUBLIC_DOMAIN as the intentional local-dev mode (per .env.example), and the
+    app must still boot cleanly in that mode (test_docs_enabled_in_local_dev).
+    Raising here only at first use of the two SIWE endpoints keeps that
+    contract intact while still closing the domain-binding hole at request time.
+    """
+    if not _EXPECTED_DOMAIN:
+        raise HTTPException(status_code=503, detail="SIWE auth requires PUBLIC_DOMAIN to be configured")
+    return _EXPECTED_DOMAIN
 
 
 def _address_from_siwe_message(message: str) -> str | None:
@@ -194,11 +221,15 @@ def gate_generation(request: Request) -> str | None:
 async def get_nonce():
     """Issue a challenge nonce for SIWE signing.
 
-    Stored in Redis (via AgentStateStore) with a TTL so /verify on a
-    different worker can find it -- Redis handles expiry via SETEX, so no
-    manual sweep is needed on that path. Falls back to the in-process
-    `_pending_nonces` dict if Redis is unreachable (single-worker local dev).
+    Fails closed (503) if PUBLIC_DOMAIN isn't configured (#940) — see
+    _require_configured_domain for why. Otherwise: stored in Redis (via
+    AgentStateStore) with a TTL so /verify on a different worker can find it --
+    Redis handles expiry via SETEX, so no manual sweep is needed on that path.
+    Falls back to the in-process `_pending_nonces` dict if Redis is unreachable
+    (single-worker local dev).
     """
+    domain = _normalize_domain(_require_configured_domain())
+
     now = time.time()
     nonce = secrets.token_hex(16)
 
@@ -219,8 +250,7 @@ async def get_nonce():
 
     return {
         "nonce": nonce,
-        "domain": os.getenv("PUBLIC_DOMAIN")
-        or "https://archimedes-arc.com".replace("https://", "").replace("http://", ""),
+        "domain": domain,
         "issued_at": int(now),
         "expiry_seconds": _NONCE_TTL_SECONDS,
     }
@@ -231,7 +261,12 @@ async def verify_signature(request: Request, response: Response):
     """Verify a signed SIWE message and issue a session cookie.
 
     Body: { "message": "<SIWE message text>", "signature": "0x..." }
+
+    Fails closed (503) if PUBLIC_DOMAIN isn't configured (#940), before any
+    domain comparison happens — see _require_configured_domain.
     """
+    expected_domain = _require_configured_domain()
+
     from eth_account import Account
     from eth_account.messages import encode_defunct
 
@@ -277,7 +312,7 @@ async def verify_signature(request: Request, response: Response):
     # "https://archimedes-arc.com/" are treated as the same site.
     if domain_from_message is None:
         raise HTTPException(status_code=400, detail="SIWE message is missing the domain line")
-    if _normalize_domain(domain_from_message) != _normalize_domain(_EXPECTED_DOMAIN):
+    if _normalize_domain(domain_from_message) != _normalize_domain(expected_domain):
         raise HTTPException(status_code=401, detail="SIWE message domain does not match this site")
 
     # Chain-id binding — reject messages signed for the wrong chain (or with none).

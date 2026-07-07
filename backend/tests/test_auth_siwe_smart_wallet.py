@@ -30,6 +30,20 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+@pytest.fixture(autouse=True)
+def _configured_domain(monkeypatch):
+    """Default PUBLIC_DOMAIN to configured for this module (#940).
+
+    _EXPECTED_DOMAIN is read once at archimedes.api.auth_siwe import time, and
+    the hermetic test process never sets PUBLIC_DOMAIN -- without this, every
+    /api/auth/nonce and /api/auth/verify call below 503s under the new
+    fail-closed behavior instead of exercising the smart-wallet path this file
+    is actually testing. See test_auth_siwe.py's fixture of the same name for
+    the full rationale.
+    """
+    monkeypatch.setattr("archimedes.api.auth_siwe._EXPECTED_DOMAIN", "archimedes-arc.com")
+
+
 async def _nonce_and_message(client: AsyncClient, wallet: str) -> str:
     nonce_data = (await client.get("/api/auth/nonce")).json()
     return (
