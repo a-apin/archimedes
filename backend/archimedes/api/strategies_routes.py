@@ -298,6 +298,18 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
 
     Any DB or cohort-compute failure degrades to ``{}`` (every id falls back to
     the stale fields) rather than raising into the library-list response.
+
+    **Perf (Library page load latency):** the batch cohort compute below (PBO,
+    average correlation, per-strategy look-ahead code load, one ``run_rigor_gate``
+    call per strategy — measured ~6s for this route) is memoized in
+    ``services.rigor_cache`` keyed on a data-version token
+    (``rigor_cache.cohort_key``) derived from the exact persisted-returns read just
+    above. The DB read itself is NEVER cached — it always runs live, which is what
+    lets the key react the instant persisted returns change. This is honest
+    caching: the cached value IS the real live-computed result, so a cache hit
+    serves exactly what a cache miss would have computed. ``rigor_cache.get_or_compute``
+    fails open (any cache-layer error falls back to calling the compute closure
+    directly), so a cache bug can only make a request slow, never wrong.
     """
     if not strategies:
         return {}
@@ -307,11 +319,6 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
     try:
         from archimedes.db import get_session, init_db
         from archimedes.services.backtest_repository import get_all_daily_returns
-        from archimedes.services.rigor_evaluator import (
-            compute_average_pairwise_correlation,
-            compute_pbo,
-            run_rigor_gate,
-        )
 
         init_db()
         with get_session() as session:
@@ -320,60 +327,75 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
         logger.warning("live rigor result batch: DB read failed (all → stale fallback): %s", exc)
         return {}
 
-    # Exclude zero-variance (degenerate/placeholder-flat) series from the cohort
-    # context — same fix as selection_bias_routes.py's valid_returns filter
-    # (#868), so num_trials/avg_correlation/pbo_scores here match that route's
-    # library-wide gate exactly rather than drifting apart on this input.
-    valid_returns = {
-        k: v for k, v in returns_by_strategy.items() if len(v) >= 10 and float(np.ptp(np.asarray(v, dtype=float))) > 0.0
-    }
+    from archimedes.services.rigor_cache import cohort_key, get_or_compute
 
-    try:
-        pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
-        num_trials = max(len(valid_returns), 1)
-        avg_correlation = compute_average_pairwise_correlation(valid_returns) if len(valid_returns) >= 2 else 0.0
-    except Exception as exc:
-        logger.warning("live rigor result batch: cohort-context compute failed (all → stale fallback): %s", exc)
-        return {}
+    cache_key = "strategies_list:" + cohort_key(strategy_ids, returns_by_strategy)
 
-    # Load code for every strategy that has >= 10 returns — degenerate series
-    # (excluded from valid_returns) still run their own gate (#868) and need the
-    # look-ahead audit input.
-    code_by_id = {
-        s.id: _load_strategy_code_safe_local(s) for s in strategies if len(returns_by_strategy.get(s.id, [])) >= 10
-    }
+    def _compute() -> dict[str, RigorGateResult]:
+        from archimedes.services.rigor_evaluator import (
+            compute_average_pairwise_correlation,
+            compute_pbo,
+            run_rigor_gate,
+        )
 
-    results: dict[str, RigorGateResult] = {}
-    for s in strategies:
-        daily_returns = returns_by_strategy.get(s.id, [])
-        if len(daily_returns) < 10:
-            continue  # No sufficient returns — caller falls back to stale fields
-        if s.id in valid_returns:
-            # Non-degenerate series: run with the full cohort context so
-            # num_trials / pbo_scores / avg_correlation match the library gate.
-            gate_kwargs: dict = {
-                "num_trials": num_trials,
-                "pbo_scores": pbo_scores,
-                "average_correlation": avg_correlation,
-            }
-        else:
-            # Degenerate (zero-variance) series: excluded from cohort context to
-            # prevent inflating num_trials or diluting avg_correlation (#868), but
-            # the strategy still runs its own gate so the caller gets a live "fail"
-            # verdict rather than falling back to a stale fixture value.
-            gate_kwargs = {"num_trials": 1, "pbo_scores": {}, "average_correlation": 0.0}
+        # Exclude zero-variance (degenerate/placeholder-flat) series from the cohort
+        # context — same fix as selection_bias_routes.py's valid_returns filter
+        # (#868), so num_trials/avg_correlation/pbo_scores here match that route's
+        # library-wide gate exactly rather than drifting apart on this input.
+        valid_returns = {
+            k: v
+            for k, v in returns_by_strategy.items()
+            if len(v) >= 10 and float(np.ptp(np.asarray(v, dtype=float))) > 0.0
+        }
+
         try:
-            results[s.id] = run_rigor_gate(
-                strategy_id=s.id,
-                daily_returns=daily_returns,
-                strategy_code=code_by_id.get(s.id),
-                in_sample_sharpe=None,
-                paper_claimed_sharpe=getattr(s, "paper_claimed_sharpe", None),
-                **gate_kwargs,
-            )
+            pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
+            num_trials = max(len(valid_returns), 1)
+            avg_correlation = compute_average_pairwise_correlation(valid_returns) if len(valid_returns) >= 2 else 0.0
         except Exception as exc:
-            logger.warning("live rigor gate failed for %s in batch (numbers → stale fallback): %s", s.id, exc)
-    return results
+            logger.warning("live rigor result batch: cohort-context compute failed (all → stale fallback): %s", exc)
+            return {}
+
+        # Load code for every strategy that has >= 10 returns — degenerate series
+        # (excluded from valid_returns) still run their own gate (#868) and need the
+        # look-ahead audit input.
+        code_by_id = {
+            s.id: _load_strategy_code_safe_local(s) for s in strategies if len(returns_by_strategy.get(s.id, [])) >= 10
+        }
+
+        computed: dict[str, RigorGateResult] = {}
+        for s in strategies:
+            daily_returns = returns_by_strategy.get(s.id, [])
+            if len(daily_returns) < 10:
+                continue  # No sufficient returns — caller falls back to stale fields
+            if s.id in valid_returns:
+                # Non-degenerate series: run with the full cohort context so
+                # num_trials / pbo_scores / avg_correlation match the library gate.
+                gate_kwargs: dict = {
+                    "num_trials": num_trials,
+                    "pbo_scores": pbo_scores,
+                    "average_correlation": avg_correlation,
+                }
+            else:
+                # Degenerate (zero-variance) series: excluded from cohort context to
+                # prevent inflating num_trials or diluting avg_correlation (#868), but
+                # the strategy still runs its own gate so the caller gets a live "fail"
+                # verdict rather than falling back to a stale fixture value.
+                gate_kwargs = {"num_trials": 1, "pbo_scores": {}, "average_correlation": 0.0}
+            try:
+                computed[s.id] = run_rigor_gate(
+                    strategy_id=s.id,
+                    daily_returns=daily_returns,
+                    strategy_code=code_by_id.get(s.id),
+                    in_sample_sharpe=None,
+                    paper_claimed_sharpe=getattr(s, "paper_claimed_sharpe", None),
+                    **gate_kwargs,
+                )
+            except Exception as exc:
+                logger.warning("live rigor gate failed for %s in batch (numbers → stale fallback): %s", s.id, exc)
+        return computed
+
+    return get_or_compute(cache_key, _compute)
 
 
 def _load_strategy_code_safe_local(strategy: Strategy) -> str | None:

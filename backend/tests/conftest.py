@@ -71,3 +71,27 @@ def returns_matrix():
 def regime_shift_returns():
     """Factory fixture: (market, strategy) returns with a mid-series vol regime shift."""
     return quant_factories.make_regime_shift_returns
+
+
+@pytest.fixture(autouse=True)
+def _clear_rigor_cache():
+    """Reset the process-level live-rigor-gate cache (services/rigor_cache.py)
+    around every test.
+
+    That cache is a module-global dict keyed on a data-version token
+    (strategy ids + a fingerprint of their returns). Several test files reuse
+    the SAME real curated strategy ids (via the session-scoped ``provider`` /
+    ``default_provider()``) with the SAME synthetic returns fixtures across
+    different test functions — without this reset, a cache entry populated by
+    one test could be silently served to a later, unrelated test in the same
+    pytest process, making that test's assertions (e.g. call-count spies on
+    ``run_rigor_gate``) order-dependent on whatever ran before it. Clearing
+    before AND after keeps every test's view of the cache empty regardless of
+    suite order, matching the hermetic-test mandate (no hidden environmental
+    state leaking between tests).
+    """
+    from archimedes.services import rigor_cache
+
+    rigor_cache.clear()
+    yield
+    rigor_cache.clear()
