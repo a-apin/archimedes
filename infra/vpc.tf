@@ -183,4 +183,14 @@ resource "aws_instance" "nat" {
     Name    = "${var.project_name}-nat-${local.azs[count.index]}"
     Project = var.project_name
   }
+
+  lifecycle {
+    # Same rationale as aws_instance.archimedes (main.tf): data.aws_ami.fck_nat
+    # is `most_recent = true`, so an unrelated `terraform apply` picking up a
+    # newly-published fck-nat AMI would otherwise destroy-recreate a LIVE NAT
+    # instance — taking down both private subnets' egress (ECR pulls, Bedrock,
+    # Arc RPC, Aurora/ElastiCache client traffic) for the recreate window, on
+    # a plan that had nothing to do with NAT (issue #1039 N3).
+    ignore_changes = [ami]
+  }
 }
