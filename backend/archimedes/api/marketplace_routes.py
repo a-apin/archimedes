@@ -119,7 +119,18 @@ async def publish_strategy(
             owner_wallet=wallet,
         )
 
-    # 3a. Auto-provision publisher settlement wallet (Circle DCW).
+    # 3a. Publish funding gate (D7) — vault MUST hold at least
+    #     MARKETPLACE_MIN_VAULT_FUNDS_RAW idle USDC (raw 6-dec).
+    #     Single threshold for both new and reused vaults.
+    min_funds_raw = int(os.getenv("MARKETPLACE_MIN_VAULT_FUNDS_RAW", "1000000"))
+    balance = await market._usdc_balance_of(vault_address)
+    if balance < min_funds_raw:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Vault USDC balance {balance} below minimum {min_funds_raw}",
+        )
+
+    # 3b. Auto-provision publisher settlement wallet (Circle DCW).
     #     Must happen before on-chain createPool so a wallet failure never
     #     leaves an on-chain pool with no way to be funded.
     from archimedes.marketplace.wallet_provisioner import provision_publisher_wallet
