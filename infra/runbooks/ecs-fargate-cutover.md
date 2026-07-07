@@ -601,10 +601,38 @@ Fargate carrying 100% of traffic:
 ## Rollback (bad Fargate deploy, EC2 still attached — Phases 1–4 window only)
 
 Because the EC2 target stays attached to `archimedes-backend-tg` throughout
-Phases 1–4, the cheapest rollback during the cutover window is simply: set
-`ecs_service_desired_count` (or the running service's `DesiredCount`) to `0`
-— the ALB keeps serving 100% of traffic from the still-healthy EC2 target
-with no DNS change, no ALB reconfiguration, nothing else to do.
+Phases 1–4, the cheapest rollback during the cutover window is simply:
+drain Fargate to zero tasks so the ALB serves 100% of traffic from the
+still-healthy EC2 target, with no DNS change and no ALB reconfiguration.
+
+**This MUST be done via the AWS CLI against the live service, NOT by
+changing `var.ecs_service_desired_count` and re-running `terraform apply`**
+(issue #1039 C2 — a real bug in an earlier draft of this runbook). The
+service has `lifecycle { ignore_changes = [task_definition, desired_count]
+}` (`infra/ecs.tf`) specifically so CI's deploys and autoscaling aren't
+reverted by a later `terraform apply` — but that same guard means a
+Terraform-side `desired_count` change is a **silent no-op** against the
+running service. Setting `TF_VAR_ecs_service_desired_count=0` and applying
+will NOT drain any tasks; you'll walk away believing you rolled back while
+Fargate keeps serving. The only thing that actually changes the running
+service's desired count is the CLI, direct against the service:
+
+```bash
+aws ecs update-service \
+  --cluster "$(terraform output -raw ecs_cluster_name)" \
+  --service "$(terraform output -raw ecs_service_name)" \
+  --desired-count 0
+```
+
+To bring Fargate back afterward (once the bad revision is fixed), the same
+CLI form with a positive count — again, not a Terraform apply:
+
+```bash
+aws ecs update-service \
+  --cluster "$(terraform output -raw ecs_cluster_name)" \
+  --service "$(terraform output -raw ecs_service_name)" \
+  --desired-count 1
+```
 
 **After Phase 4 (EC2 detached), rollback is the standard ECS rollback**: the
 `deployment_circuit_breaker` (Phase 7) already does this automatically for a
