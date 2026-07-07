@@ -131,6 +131,28 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[count.index].id
 }
 
+# ── S3 Gateway VPC endpoint (FREE — $0, no ENI, no hourly charge) ──────────
+# ECR stores image layers in S3, so `docker pull` from ECR (the ECS task
+# startup path, ecr.tf) transits S3 even though the request is issued against
+# an ecr.<region>.amazonaws.com hostname. A Gateway endpoint adds a prefix-list
+# route to the private route tables so that S3 traffic goes directly to S3 over
+# the AWS network instead of out through a NAT instance — meaning ECS image
+# pulls (and anything else in the private subnets talking to S3) keep working
+# even during the exact NAT-instance outage N1/N3 above defend against. Gateway
+# type (not Interface) is what makes this free: it's a route-table entry, not a
+# billed ENI+hourly-charge PrivateLink endpoint.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = aws_route_table.private[*].id
+
+  tags = {
+    Name    = "${var.project_name}-s3-endpoint"
+    Project = var.project_name
+  }
+}
+
 # ── NAT Instances (fck-nat, t4g.nano, one per AZ) ───────────
 
 data "aws_ami" "fck_nat" {
