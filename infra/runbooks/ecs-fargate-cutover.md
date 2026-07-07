@@ -536,6 +536,49 @@ isn't, check `health_check_grace_period_seconds` (90s in `ecs.tf`) and the
 ALB target group's own health-check interval/threshold in `alb.tf` before
 concluding the criterion is unmet — both feed the total.
 
+### NAT-kill drill (issue #1039 N1/N3 — self-heal isn't just an ECS-task story)
+
+The task-kill drill above proves the ALB/service layer self-heals. The NAT
+instances (`aws_instance.nat`, `vpc.tf`) are a SEPARATE single point of
+failure for both private subnets' egress (ECR pulls, Bedrock, Arc RPC,
+Aurora/ElastiCache client traffic) — drill their self-heal deliberately too,
+don't just assume the `infra/cloudwatch.tf` `nat-status-check-failed` alarm
++ `ec2:recover` action wired for N1 works:
+
+```bash
+# No dedicated Terraform output for the NAT instance ids — look them up by
+# their Name tag (vpc.tf: "${var.project_name}-nat-${az}").
+NAT_ID=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=archimedes-nat-*" "Name=instance-state-name,Values=running" \
+  --query 'Reservations[0].Instances[0].InstanceId' --output text)
+echo "Stopping $NAT_ID at $(date -u +%H:%M:%S) — simulates a NAT-down outage"
+
+aws ec2 stop-instances --instance-ids "$NAT_ID"
+aws ec2 wait instance-stopped --instance-ids "$NAT_ID"
+
+# Confirm the OTHER AZ's NAT keeps that AZ's private subnet alive (this is
+# why there are two, one per AZ, not one shared) — tasks in the stopped AZ's
+# subnet lose egress until this NAT is back; tasks in the other AZ's subnet
+# are unaffected. Watch the archimedes-nat-status-check-failed-<n> alarm
+# (infra/cloudwatch.tf, N1) transition to ALARM in the CloudWatch console or:
+aws cloudwatch describe-alarms --alarm-names "archimedes-nat-status-check-failed-0" "archimedes-nat-status-check-failed-1" \
+  --query 'MetricAlarms[*].{name:AlarmName,state:StateValue}'
+
+# Recover: aws_instance.nat has no auto-restart on `stop` (only the
+# StatusCheckFailed_System + ec2:recover path self-heals a HARDWARE-level
+# failure, not an operator `stop-instances` — this drill exercises detection
+# via the alarm, not automatic recovery from a stop). Manually restart to end
+# the drill:
+aws ec2 start-instances --instance-ids "$NAT_ID"
+aws ec2 wait instance-running --instance-ids "$NAT_ID"
+```
+
+**Verify:** the corresponding `archimedes-nat-status-check-failed-<n>` alarm
+transitions to `ALARM` within the alarm's own 2-minute evaluation window
+(N1, `infra/cloudwatch.tf`) and pages the SNS topic. See
+`infra/runbooks/disaster-recovery.md` § "NAT instance down" for the full
+detect → recover playbook this drill exercises (added alongside this same
+issue).
+
 ---
 
 ## Phase 7 — Verify ECS Exec (acceptance criterion #4)
@@ -578,23 +621,44 @@ aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
 ## Phase 8 — Decommission the EC2 app instance
 
 Only after Phase 4 is confirmed for at least one full deploy cycle with
-Fargate carrying 100% of traffic:
+Fargate carrying 100% of traffic. **Reordered (issue #1039 R1): the
+runner-replacement gate is now step 1, and terminating the EC2 instance is
+the LAST step — an earlier draft of this runbook put "terminate" first and
+the runner check second, which is backwards. Do not terminate the box while
+step 1's gate is still red.**
 
-1. Terminate `aws_instance.archimedes` (remove from `main.tf`, `terraform
-   apply`). Aurora/ElastiCache/ALB/WAF/CloudFront/Route 53 are all
-   unaffected; this chunk never touched them.
-2. Before terminating, confirm the **oracle/agent/kb-runner** background
-   daemons (Phase 0's residual — no Fargate home in this chunk) have
-   somewhere to run. Decommissioning the EC2 instance while those still only
-   exist as `docker compose` services on that box silently kills the
-   vault/regime-state source of truth — this is the one step in this runbook
-   that is NOT just "detach and delete," it needs its own Fargate
-   service(s) first (singleton, no ALB, `desired_count = 1`, no
-   autoscaling — same anti-goal as the EC2 ASG tier: these loops must not be
-   duplicated).
-3. Remove the now-dead `EC2_INSTANCE_ID` / SSM-deploy path from `deploy.yml`
+1. **HARD GATE — confirm the oracle/agent/kb-runner background daemons have
+   somewhere to run, with a concrete verification command, BEFORE touching
+   the EC2 instance at all.** These are singleton, no-ALB background loops
+   (Phase 0's residual — no Fargate home in this chunk; they need their own
+   Fargate service(s), `desired_count = 1`, no autoscaling — same anti-goal
+   as the EC2 ASG tier: these loops must not be duplicated) that are today
+   the vault/regime-state source of truth as `docker compose` services on
+   the EC2 box. Decommissioning the box while they still only exist there
+   silently kills that state — this is the one step in this runbook that is
+   NOT just "detach and delete."
+
+   ```bash
+   for svc in archimedes-oracle archimedes-agent archimedes-kb-runner; do
+     echo "=== $svc ==="
+     aws ecs describe-services --cluster "$(terraform output -raw ecs_cluster_name)" \
+       --services "$svc" \
+       --query 'services[0].{status:status,running:runningCount,desired:desiredCount}' \
+       --output table || echo "MISSING: $svc has no Fargate service yet — GATE FAILS"
+   done
+   ```
+
+   **Gate passes only if all three print `status: ACTIVE` with
+   `running >= desired >= 1`.** Any `MISSING` line, any `status` other than
+   `ACTIVE`, or `running < desired` — STOP. Do not proceed to step 2 or 3.
+   (These singleton services aren't provisioned by this PR — see the note at
+   the top of this file: they're pending cost sign-off as a follow-up.)
+2. Remove the now-dead `EC2_INSTANCE_ID` / SSM-deploy path from `deploy.yml`
    entirely (Phase 4 step 3 already replaced its function; this step is
    just deleting the now-unreachable code, not changing behavior).
+3. **Only now, last:** terminate `aws_instance.archimedes` (remove from
+   `main.tf`, `terraform apply`). Aurora/ElastiCache/ALB/WAF/CloudFront/
+   Route 53 are all unaffected; this chunk never touched them.
 
 ---
 
