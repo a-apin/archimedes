@@ -143,6 +143,48 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _logger.warning("startup: corpus seed failed (non-fatal): %s", exc)
 
+    # 2a. Seed provider examples into strategy_store (idempotent, D1).
+    # Each provider example gets a StrategyRecord keyed by its 32-char
+    # provider id so the publish route can look it up. content_hash is a
+    # domain-separated SHA-256 to avoid collision with real generated hashes.
+    try:
+        import hashlib
+        import json
+
+        from archimedes.models.strategy_store import StrategyRecord
+
+        provider = default_provider()
+        with get_session() as session:
+            count = 0
+            for s in provider.list_strategies():
+                if session.query(StrategyRecord).filter_by(id=s.id).first():
+                    continue
+                content_hash = "0x" + hashlib.sha256(("example:" + s.id).encode()).hexdigest()
+                papers_list = [
+                    {"arxiv_id": p.arxiv_id, "title": p.title, "authors": p.authors}
+                    for p in s.papers
+                ]
+                record = StrategyRecord(
+                    id=s.id,
+                    content_hash=content_hash,
+                    is_example=True,
+                    generation_method="curated",
+                    strategy_name=s.paper_title or s.id,
+                    thesis=s.methodology_summary or "",
+                    source_papers=json.dumps(papers_list),
+                    asset_universe=json.dumps(s.asset_universe or []),
+                    risk_profile=(s.risk_profiles[0] if s.risk_profiles else "moderate"),
+                    status="live",
+                    owner_wallet=None,
+                )
+                session.add(record)
+                count += 1
+            if count:
+                session.commit()
+                _logger.info("startup: seeded %d example strategies into strategy_store", count)
+    except Exception as exc:
+        _logger.warning("startup: example strategy seed failed (non-fatal): %s", exc)
+
     # 3. Start the in-process marketplace engine (MarketService).
     # FAIL-SOFT: constructing the engine (or importing its deps, e.g. circlekit)
     # must NEVER take down the whole backend — a new subsystem crashing at
