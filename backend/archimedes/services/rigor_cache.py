@@ -31,9 +31,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import struct
 import threading
 import time
+from array import array
 from collections.abc import Callable
 from typing import Any
 
@@ -91,8 +91,12 @@ def _fingerprint(series: list[float]) -> bytes:
     if not series:
         return b"\x00empty"
     try:
-        return struct.pack(f"{len(series)}d", *series)
-    except (struct.error, TypeError):
+        # array(...).tobytes() serializes the whole series without expanding it
+        # into positional args (struct.pack(fmt, *series) would materialize one
+        # arg per element — costly for large cohorts). Same order-and-value
+        # sensitivity, C-contiguous double bytes.
+        return array("d", series).tobytes()
+    except (TypeError, ValueError, OverflowError):
         # Non-float-coercible input (shouldn't happen for persisted daily returns,
         # but never let a fingerprint failure crash the caller) — falls back to a
         # coarser summary that still changes whenever length/edges do.

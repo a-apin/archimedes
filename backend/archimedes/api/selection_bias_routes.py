@@ -408,13 +408,13 @@ async def evaluate_rigor_gate(
             )
         return computed
 
-    # cache_if=lambda v: bool(v): `strategies` is non-empty here (checked
+    # cache_if=bool: `strategies` is non-empty here (checked
     # above), so `_compute()` always appends one result per strategy today —
     # but a hard guard against ever memoizing an empty list matches
     # strategies_routes.py's `_live_rigor_results_for_strategies` (same failure
     # class: an empty result must never get "sticky" for the TTL) and costs
     # nothing when `_compute()` returns its normal non-empty list.
-    results = get_or_compute(cache_key, _compute, cache_if=lambda v: bool(v))
+    results = get_or_compute(cache_key, _compute, cache_if=bool)
 
     passing = sum(1 for r in results if r.passes_all)
     return RigorGateResponse(

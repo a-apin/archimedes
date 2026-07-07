@@ -314,7 +314,7 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
     what a cache miss would have computed. ``rigor_cache.get_or_compute`` fails
     open (any cache-layer error falls back to calling the compute closure
     directly), so a cache bug can only make a request slow, never wrong. It also
-    never caches the ``{}`` failure sentinel (``cache_if=lambda v: bool(v)``) so
+    never caches the ``{}`` failure sentinel (``cache_if=bool``) so
     a transient cohort-compute failure can't strand every strategy on stale
     fallback fields for the full TTL.
     """
@@ -411,14 +411,14 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
                 logger.warning("live rigor gate failed for %s in batch (numbers → stale fallback): %s", s.id, exc)
         return computed
 
-    # cache_if=lambda v: bool(v): `_compute()` returns `{}` on a transient
+    # cache_if=bool: `_compute()` returns `{}` on a transient
     # cohort-context compute failure (see the `except Exception` above), and an
     # empty dict must never be memoized — caching it would make that transient
     # failure "sticky" for the full TTL, serving every strategy's stale
     # fallback fields long after the underlying failure has passed (Copilot
     # review, PR #1040). The live `{}` is still returned to THIS caller either
     # way; only whether it's written to the store for the NEXT caller changes.
-    return get_or_compute(cache_key, _compute, cache_if=lambda v: bool(v))
+    return get_or_compute(cache_key, _compute, cache_if=bool)
 
 
 def _load_strategy_code_safe_local(strategy: Strategy) -> str | None:

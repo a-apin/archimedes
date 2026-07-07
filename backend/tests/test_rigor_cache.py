@@ -374,13 +374,13 @@ def test_get_or_compute_cache_if_false_does_not_cache_the_result():
         calls["n"] += 1
         return {}  # falsy — the failure-sentinel shape this predicate guards against
 
-    result = rigor_cache.get_or_compute("k-cache-if", _compute, cache_if=lambda v: bool(v))
+    result = rigor_cache.get_or_compute("k-cache-if", _compute, cache_if=bool)
     assert result == {}
     assert calls["n"] == 1
     assert "k-cache-if" not in rigor_cache._store, "a falsy result must never be written to the store"
 
     # Second call: still a miss (nothing was cached), so compute_fn runs again.
-    rigor_cache.get_or_compute("k-cache-if", _compute, cache_if=lambda v: bool(v))
+    rigor_cache.get_or_compute("k-cache-if", _compute, cache_if=bool)
     assert calls["n"] == 2, "an un-cached falsy result must force recompute on the next call"
 
 
@@ -394,8 +394,8 @@ def test_get_or_compute_cache_if_true_caches_normally():
         calls["n"] += 1
         return {"strategy": "real result"}
 
-    first = rigor_cache.get_or_compute("k-cache-if-true", _compute, cache_if=lambda v: bool(v))
-    second = rigor_cache.get_or_compute("k-cache-if-true", _compute, cache_if=lambda v: bool(v))
+    first = rigor_cache.get_or_compute("k-cache-if-true", _compute, cache_if=bool)
+    second = rigor_cache.get_or_compute("k-cache-if-true", _compute, cache_if=bool)
     assert first == second == {"strategy": "real result"}
     assert calls["n"] == 1, "a truthy result under cache_if must still be cached (second call is a hit)"
 
