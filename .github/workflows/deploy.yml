@@ -10,8 +10,8 @@
 #   Population runbook: infra/iam/README.md § "SSM Parameter Store — app secrets".
 #
 # Pipeline (issue #1039 — "build-in-CI is not redundant with Fargate, it is its
-# prerequisite"): this workflow has TWO jobs, gated on the SAME DEPLOY_ENABLED
-# flag so the whole pipeline is one on/off switch:
+# prerequisite"): this workflow has THREE jobs, gated on the SAME
+# DEPLOY_ENABLED flag so the whole pipeline is one on/off switch:
 #
 #   build-and-push   Builds the backend image (backend/Dockerfile) and the
 #                    nginx/frontend image (nginx/Dockerfile) on the CI runner,
@@ -21,11 +21,17 @@
 #                    a `backend` container) — a bad image is caught HERE,
 #                    before it ever reaches ECR or a serving host — then tags
 #                    both <commit-sha> + latest and pushes to ECR.
-#   deploy           (needs: build-and-push) SSMs the EC2 box: pulls the
-#                    just-pushed <commit-sha> image from ECR and runs
-#                    `docker compose up -d --force-recreate` — NO docker build
-#                    ever runs on the serving host. This is the P1 "stop the
-#                    bleeding" interim from #1039: it ends the
+#   migrate          (needs: build-and-push) Runs `alembic upgrade head` as a
+#                    one-off ECS Fargate task, ordered BEFORE `deploy` — the
+#                    #1039 P4 / #1028 Phase A shared migrate stage. Alembic
+#                    hasn't landed on this branch yet (see the job's own
+#                    comment), so today this is a safe, loud no-op; it
+#                    self-activates the moment `backend/alembic.ini` exists.
+#   deploy           (needs: [build-and-push, migrate]) SSMs the EC2 box:
+#                    pulls the just-pushed <commit-sha> image from ECR and
+#                    runs `docker compose up -d --force-recreate` — NO docker
+#                    build ever runs on the serving host. This is the P1
+#                    "stop the bleeding" interim from #1039: it ends the
 #                    docker-compose-build-on-a-4GB-serving-host OOM class that
 #                    caused 3 production outages on 2026-07-06 (#1001), ahead
 #                    of the full ECS Fargate cutover (later phases of #1039).
@@ -222,18 +228,123 @@ jobs:
           docker push "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}"
           docker push "$ECR_REGISTRY/$NGINX_ECR_REPO:latest"
 
-  deploy:
+  migrate:
     needs: build-and-push
+    name: Alembic migrate (pre-rollout, one-off ECS task)
+    # Same gate as build-and-push/deploy — see the header comment for why
+    # this is one on/off switch for the whole pipeline.
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Issue #1039 P4 (shared with #1028 Phase A): run `alembic upgrade
+      # head` as an ordered, pre-rollout ECS one-off task — BEFORE any new
+      # task serves traffic — replacing today's `docker compose exec ...
+      # migrate` AFTER `up` race (impossible on Fargate anyway: there is no
+      # long-lived box to `exec` into after the fact). As of this PR, #1028
+      # Phase A has not landed Alembic yet (backend/migrations/ is
+      # hand-rolled timestamped .sql + archimedes.db.init_db()'s idempotent
+      # create_all + ADD COLUMN IF NOT EXISTS patches — see that module's
+      # docstring). This step detects that and no-ops loudly rather than
+      # either (a) failing the whole pipeline on a stage with nothing to do
+      # yet, or (b) silently pretending to run a migration that doesn't
+      # exist. The moment `backend/alembic.ini` lands on a branch, this
+      # activates itself with zero further pipeline changes.
+      - name: Check whether Alembic has landed on this branch
+        id: check
+        run: |
+          if [ -f backend/alembic.ini ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "backend/alembic.ini found — running 'alembic upgrade head' as a pre-rollout ECS task."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "NO-OP: backend/alembic.ini not present on this branch yet (#1028 Phase A hasn't landed the migrate stage). Schema changes still land via archimedes.db.init_db()'s idempotent create_all + ADD COLUMN IF NOT EXISTS patches at container startup. Skipping the ECS migrate task cleanly (not a failure)."
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.check.outputs.present == 'true'
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b  # v6.2.1
+        with:
+          role-to-assume: arn:aws:iam::037613907429:role/archimedes-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run `alembic upgrade head` as a one-off Fargate task
+        if: steps.check.outputs.present == 'true'
+        env:
+          # Matches infra/ecs.tf's `${var.project_name}-cluster` /
+          # `${var.project_name}-backend` with the default `project_name =
+          # "archimedes"` (infra/variables.tf) — same literal-constant
+          # pattern as EC2_INSTANCE_ID / ECR_REGISTRY above, not a new
+          # cross-job variable.
+          ECS_CLUSTER: archimedes-cluster
+          ECS_TASK_FAMILY: archimedes-backend
+        run: |
+          set -euo pipefail
+
+          # Reuse the LIVE service's own network configuration (private
+          # subnets + the ecs_backend security group, infra/ecs.tf) rather
+          # than hardcoding subnet/SG ids here — those only exist post
+          # `terraform apply` (issue #1039 chunk 2) and are Terraform-managed,
+          # not CI-managed. Fails closed with a clear message if the service
+          # doesn't exist yet (i.e. Alembic landed before Dan applied the
+          # Terraform) rather than a bare AWS API error deep in run-task.
+          NET_CONFIG=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" --services "$ECS_TASK_FAMILY" \
+            --query 'services[0].networkConfiguration' --output json 2>/dev/null || echo "")
+          if [ -z "$NET_CONFIG" ] || [ "$NET_CONFIG" = "null" ]; then
+            echo "::error::ECS service '$ECS_TASK_FAMILY' not found in cluster '$ECS_CLUSTER'. Apply the ECS Terraform in infra/ (issue #1039 chunk 2, infra/ecs.tf) before Alembic can run its pre-rollout migrate task — see infra/runbooks/ecs-fargate-cutover.md."
+            exit 1
+          fi
+
+          # `python -m alembic`, not the `alembic` console script:
+          # backend/Dockerfile installs deps via `pip install --target=/deps`
+          # (a PYTHONPATH-based layout, not a real venv/site-packages
+          # install), so console-script entry points under /deps/bin are not
+          # on PATH. `python -m` resolves purely via PYTHONPATH (already set
+          # to /deps:/app in the image) and works identically either way.
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "$ECS_TASK_FAMILY" \
+            --launch-type FARGATE \
+            --network-configuration "$NET_CONFIG" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"backend\",\"command\":[\"python\",\"-m\",\"alembic\",\"upgrade\",\"head\"]}]}" \
+            --query 'tasks[0].taskArn' --output text)
+
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+            echo "::error::ecs run-task did not return a task ARN — see the command output above."
+            exit 1
+          fi
+          echo "Migrate task: $TASK_ARN — waiting for it to stop..."
+
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN"
+
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[?name==`backend`].exitCode | [0]' --output text)
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::alembic upgrade head failed (container exit code ${EXIT_CODE}) — see CloudWatch Logs (/archimedes/app, ecs-* stream) for detail. Blocking deploy: a new task must never serve before schema is current (#1039 acceptance criterion 5)."
+            exit 1
+          fi
+          echo "alembic upgrade head OK — schema is current; safe for new tasks to serve."
+
+  deploy:
+    needs: [build-and-push, migrate]
     name: Deploy
     # Gated behind an explicit opt-in repo variable (also enforced transitively
-    # via `needs: build-and-push`, which carries the same `if:` — kept explicit
-    # here too so this job's own skip reason is legible in the Actions UI
-    # without following the dependency graph). The stack is LIVE again on
-    # the new account (037613907429 / us-east-1, instance i-01803d3abc271d39b),
-    # but the gate stays OFF until the migration PR (#716) merges and the OIDC
-    # role + trust policy are confirmed, so a stray push to main can't deploy
-    # mid-migration. With DEPLOY_ENABLED unset, both jobs are SKIPPED (neutral,
-    # keeps the Actions history green); set DEPLOY_ENABLED=true to enable.
+    # via `needs: [build-and-push, migrate]`, which carry the same `if:` —
+    # kept explicit here too so this job's own skip reason is legible in the
+    # Actions UI without following the dependency graph). The stack is LIVE
+    # again on the new account (037613907429 / us-east-1, instance
+    # i-01803d3abc271d39b), but the gate stays OFF until the migration PR
+    # (#716) merges and the OIDC role + trust policy are confirmed, so a
+    # stray push to main can't deploy mid-migration. With DEPLOY_ENABLED
+    # unset, all three jobs are SKIPPED (neutral, keeps the Actions history
+    # green); set DEPLOY_ENABLED=true to enable. `migrate` gating `deploy`
+    # is the #1039 P4 acceptance criterion: a new task must never serve
+    # before schema is current.
     if: ${{ vars.DEPLOY_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 35  # SSM 30min + AWS API overhead + buffer

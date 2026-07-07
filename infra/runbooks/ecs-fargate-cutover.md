@@ -1,6 +1,10 @@
 # ECS Fargate Cutover Runbook — Archimedes (issue #1039)
 
-> **Status:** Authored 2026-07-06 (build-chunk 2/4 of #1039, `terraform-ecs`).
+> **Status:** Authored 2026-07-06 (build-chunk 2/4 of #1039, `terraform-ecs`);
+> updated 2026-07-07 (build-chunk 3/4, `migrate-config` — AURORA_MASTER_PASSWORD
+> / EMAIL_ENCRYPTION_KEY wired as ECS secrets, PLATFORM_ADMIN_WALLETS /
+> ARCHIMEDES_TREASURY_WALLET wired as ECS env, and the Alembic pre-rollout
+> migrate stage added to `.github/workflows/deploy.yml`).
 > **Not yet applied, not yet drilled.** Written against `infra/ecr.tf` +
 > `infra/ecs.tf` on the `dbrowneup/1039-fargate-infra` epic branch. No
 > `terraform apply`, ALB cutover, or EC2 decommission has happened — those are
@@ -46,11 +50,49 @@ this is not new information, just gathered in one place):
    (`terraform output aurora_endpoint` / `redis_endpoint` give the host
    parts; `terraform output -raw database_url` gives the full string with
    password already substituted, if you'd rather copy it directly.)
+   `AURORA_MASTER_PASSWORD` / `EMAIL_ENCRYPTION_KEY` themselves need **no**
+   seeding step — build-chunk 3 (`migrate-config`) wired them as ECS
+   `secrets` too, and both already exist live in SSM
+   (`infra/scripts/setup-ssm-secrets.sh`, predating this epic).
 
-A fourth, non-blocking gap: **oracle/agent/kb-runner** (the background
-daemons) have no Fargate service in this chunk — they need their own
-(singleton, no-ALB) ECS services before the EC2 instance can actually be
-decommissioned (#1039 P6). Tracked as a residual, not silently dropped.
+Two more gaps are worth knowing about but do **not** block a launch (no seeding,
+no code fix required for the service to come up healthy):
+
+- **`platform_admin_wallets` / `archimedes_treasury_wallet` Terraform
+  variables default to empty.** Build-chunk 3 wired `PLATFORM_ADMIN_WALLETS`
+  / `ARCHIMEDES_TREASURY_WALLET` as plain (non-secret) ECS task-definition
+  env, sourced from these two new `variables.tf` entries — set them before
+  apply if you want the admin-wallet publish bypass / marketplace publish
+  live on Fargate from day one:
+  ```bash
+  export TF_VAR_platform_admin_wallets="0xabc...,0xdef..."
+  export TF_VAR_archimedes_treasury_wallet="0x123..."
+  ```
+  Left unset, both features stay off (matching `.env.example`'s own empty
+  `ARCHIMEDES_TREASURY_WALLET` default) — a safe no-op, not a launch failure.
+- **oracle/agent/kb-runner** (the background daemons) have no Fargate service
+  in this chunk — they need their own (singleton, no-ALB) ECS services
+  before the EC2 instance can actually be decommissioned (#1039 P6). Tracked
+  as a residual, not silently dropped.
+
+### Alembic pre-rollout migrate stage (#1039 P4, build-chunk 3)
+
+`.github/workflows/deploy.yml` gained a `migrate` job (`needs: build-and-push`;
+`deploy` now `needs: [build-and-push, migrate]`) that runs `alembic upgrade
+head` as a one-off `aws ecs run-task` against this chunk's cluster/task
+definition — but **only if `backend/alembic.ini` exists on the checked-out
+ref**. As of this PR, #1028 Phase A hasn't landed Alembic yet
+(`backend/migrations/` is still hand-rolled timestamped `.sql` +
+`archimedes.db.init_db()`'s idempotent `create_all` / `ADD COLUMN IF NOT
+EXISTS` patches), so the job detects that and no-ops loudly (a clear log
+line, exit 0) rather than either failing the pipeline on a stage with
+nothing to do yet, or silently pretending to run a migration that doesn't
+exist. The moment `backend/alembic.ini` lands on this branch, the step
+activates itself — no further pipeline change needed. It reuses the LIVE
+ECS service's own `networkConfiguration` (private subnets + `ecs_backend`
+security group) via `aws ecs describe-services` rather than hardcoding
+subnet/SG ids, so it also fails closed with a clear message if Alembic
+lands before `terraform apply` has run.
 
 ---
 

@@ -40,11 +40,14 @@
 #    boot but fail to find strategies/corpus data at these paths.
 # 3. `DATABASE_URL` / `REDIS_URL` (below, via ECS `secrets`) resolve from
 #    SSM parameters `/archimedes/prod/DATABASE_URL` and
-#    `/archimedes/prod/REDIS_URL`, which do not exist yet — config
-#    consolidation (#1039 P5) is the chunk that seeds them (extend a local
-#    secrets.env and run `infra/scripts/seed-ssm-secrets.sh`, same mechanism
-#    already used for AURORA_MASTER_PASSWORD / EMAIL_ENCRYPTION_KEY). Until
-#    seeded, ECS will fail to launch tasks with a secret-resolution error.
+#    `/archimedes/prod/REDIS_URL`, which do not exist yet — seed them the
+#    same way AURORA_MASTER_PASSWORD / EMAIL_ENCRYPTION_KEY already are
+#    (extend a local secrets.env and run `infra/scripts/seed-ssm-secrets.sh`
+#    — operator step, see infra/runbooks/ecs-fargate-cutover.md). Until
+#    seeded, ECS will fail to launch tasks with a secret-resolution error on
+#    these two specifically — AURORA_MASTER_PASSWORD / EMAIL_ENCRYPTION_KEY
+#    (config consolidation, #1039 P5, this chunk) are already live in SSM and
+#    resolve without any further action.
 # 4. `oracle_runner` / `agent_runner` / `kb_runner` (docker-compose services
 #    `oracle`, `agent`, `kb-runner`) are NOT covered by this file. They are
 #    singleton background daemons, not ALB-fronted request handlers, and
@@ -427,15 +430,36 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "ARC_AMM_ROUTER_ADDRESS", value = "0xd5b829f9d364a8bbe1caf6c8b19cb05371b178f4" },
         { name = "ARC_VAULT_FACTORY_ADDRESS", value = "0xca873414070844aeb98b0bf1051f81969c79cc32" },
         { name = "ARC_REASONING_TRACE_REGISTRY_ADDRESS", value = "0x42d8a23edb897cbee203e9fa197eb05ab5106ca6" },
-        { name = "ARC_ASSET_REGISTRY_ADDRESS", value = "0x2d44550711137916df6175587d17886281a0fbc7" }
+        { name = "ARC_ASSET_REGISTRY_ADDRESS", value = "0x2d44550711137916df6175587d17886281a0fbc7" },
+        # Config consolidation (#1039 P5): public wallet addresses, sourced
+        # from Terraform variables (TF_VAR_*, see variables.tf) rather than
+        # hardcoded here or read off a box .env file. Empty defaults disable
+        # the admin-wallet publish bypass / marketplace publish respectively
+        # until Dan supplies real values.
+        { name = "PLATFORM_ADMIN_WALLETS", value = var.platform_admin_wallets },
+        { name = "ARCHIMEDES_TREASURY_WALLET", value = var.archimedes_treasury_wallet }
       ]
 
-      # KNOWN GAP #3 (see file header): these two SSM parameters don't exist
-      # yet — #1039 P5 (config consolidation) seeds them via
-      # infra/scripts/seed-ssm-secrets.sh. Until then, tasks fail to launch.
+      # KNOWN GAP #3 (see file header) — NARROWED by #1039 P5 (config
+      # consolidation, this chunk): AURORA_MASTER_PASSWORD and
+      # EMAIL_ENCRYPTION_KEY are wired below and resolve immediately — both
+      # already exist live in SSM (infra/scripts/setup-ssm-secrets.sh already
+      # seeds them, predating this chunk). DATABASE_URL / REDIS_URL remain the
+      # open gap: those two SSM parameters don't exist yet, seeded the same
+      # way via infra/scripts/seed-ssm-secrets.sh (operator step, documented
+      # in infra/runbooks/ecs-fargate-cutover.md). Until seeded, ECS fails to
+      # launch tasks with a secret-resolution error on those two only.
       secrets = [
         { name = "DATABASE_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/DATABASE_URL" },
-        { name = "REDIS_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/REDIS_URL" }
+        { name = "REDIS_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/REDIS_URL" },
+        # Already live in SSM (setup-ssm-secrets.sh, predates #1039) — no
+        # seeding step needed for these two, unlike DATABASE_URL/REDIS_URL
+        # above. Resolved by the execution role at task launch, same as the
+        # box's runtime `secrets_service.load_ssm_secrets()` fetch today, but
+        # deterministic: the app process never starts without them, rather
+        # than depending on a best-effort in-process SSM fetch.
+        { name = "AURORA_MASTER_PASSWORD", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/AURORA_MASTER_PASSWORD" },
+        { name = "EMAIL_ENCRYPTION_KEY", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/EMAIL_ENCRYPTION_KEY" }
       ]
 
       logConfiguration = {

@@ -96,3 +96,26 @@ variable "backend_image_tag" {
   type        = string
   default     = "latest"
 }
+
+# ── Config consolidation (issue #1039 P5) ──────────────────────────────────
+# Public wallet addresses (not secrets — no private key material), but
+# operator-specific and NOT baked into the image or a box `.env` file. Set at
+# `terraform apply` time (TF_VAR_platform_admin_wallets /
+# TF_VAR_archimedes_treasury_wallet) so they land as first-class, IaC-tracked
+# ECS task-definition environment values — the same "config lives in one
+# place, not a box file" goal SSM SecureStrings serve for the actual secrets
+# below. Empty defaults keep both features off (no admin-wallet bypass, no
+# marketplace publish) until Dan supplies real values, matching the
+# ARCHIMEDES_TREASURY_WALLET default in `.env.example`.
+
+variable "platform_admin_wallets" {
+  description = "Space/comma-separated wallet addresses allowed to publish `is_example` strategies to the marketplace (backend/archimedes/models/strategy_generators.py:wallet_can_publish; issue #1037). Public addresses, not secrets."
+  type        = string
+  default     = ""
+}
+
+variable "archimedes_treasury_wallet" {
+  description = "Platform revenue-share wallet address (marketplace publish 10% split, PR #958). Public address, not a secret. Publishing 503s (backend/archimedes/api/marketplace_routes.py) until this is set."
+  type        = string
+  default     = ""
+}
