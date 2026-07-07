@@ -49,6 +49,26 @@ def insert_backtest_if_missing(
     )
     session.add(row)
     session.flush()
+
+    # Invalidate the live rigor-gate cache (#library-load-latency): a genuinely
+    # new backtest row means this strategy's persisted daily returns just
+    # changed, so any cached rigor-gate computation over the old cohort is now
+    # stale-in-waiting. rigor_cache.cohort_key already changes the moment the
+    # underlying returns change, which is what makes the cache safe even
+    # WITHOUT this call — this just tightens the window between "new backtest
+    # written" and "next Library read recomputes live" from up to the cache's
+    # TTL down to ~0. This is every writer path funneling through the single
+    # insert point (generation_pipeline.py, run_backtests.py,
+    # seed_backtests_from_artifacts.py all call insert_backtest_if_missing), so
+    # one hook here covers all of them. Best-effort: never let a cache-clear
+    # failure block a real backtest write from committing.
+    try:
+        from archimedes.services import rigor_cache
+
+        rigor_cache.clear()
+    except Exception as exc:
+        logger.warning("rigor_cache invalidation failed after new backtest row (non-fatal): %s", exc)
+
     return row, True
 
 

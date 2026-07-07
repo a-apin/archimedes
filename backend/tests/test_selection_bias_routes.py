@@ -800,6 +800,61 @@ async def test_library_pbo_does_not_change_verdict_or_pbo_score(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_library_pbo_stays_consistent_between_top_level_and_per_strategy_on_cache_hit(monkeypatch):
+    """Regression test (Copilot review, PR #1040): ``get_or_compute`` may return a
+    CACHED list of ``StrategyRigorResult`` objects whose ``library_pbo`` reflects
+    an earlier request, while the top-level ``library_pbo`` on the response is
+    always freshly computed via ``_library_pbo_payload()``. Without reconciling
+    the two, a cache HIT could serve an internally inconsistent response
+    (top-level != some per-strategy ``library_pbo``). Call the gate endpoint
+    twice with the SAME underlying returns/code (so the rigor_cache
+    ``cohort_key`` is identical -> the second call is guaranteed to be a cache
+    hit) but a DIFFERENT ``_library_pbo_payload`` mock each time, and assert
+    every per-strategy ``library_pbo`` always matches the top-level one — on
+    both the cache-priming call and the cache-hit call."""
+    from archimedes.api import selection_bias_routes as routes
+    from archimedes.main import app
+
+    async def _run_once():
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            return (await client.get("/api/selection-bias/gate")).json()
+
+    def _assert_internally_consistent(data):
+        top = data["library_pbo"]
+        for strat in data["strategies"]:
+            assert strat["library_pbo"] == top, (
+                f"strategy {strat['strategy_id']}'s library_pbo {strat['library_pbo']} "
+                f"disagrees with the top-level library_pbo {top}"
+            )
+
+    # Call A: primes the rigor_cache (this cohort has not been computed yet in
+    # this test) with library_pbo forced to a concrete value.
+    monkeypatch.setattr(
+        routes,
+        "_library_pbo_payload",
+        lambda: routes.LibraryPbo(value=0.42, data_vintage="2026-06-11", selection_set_size=22),
+    )
+    data_a = await _run_once()
+    _assert_internally_consistent(data_a)
+
+    # Call B: SAME underlying returns/code (nothing else changed) -> the exact
+    # same rigor_cache cohort_key -> `results` from get_or_compute is a CACHE
+    # HIT carrying run-A's per-strategy library_pbo (0.42) unless the route
+    # reconciles it against the freshly-computed top-level value. The
+    # top-level library_pbo is recomputed as "unavailable" (None) this time —
+    # the two must still agree.
+    monkeypatch.setattr(
+        routes,
+        "_library_pbo_payload",
+        lambda: routes.LibraryPbo(value=None, source="unavailable"),
+    )
+    data_b = await _run_once()
+    _assert_internally_consistent(data_b)
+    assert data_b["library_pbo"]["value"] is None
+    assert data_b["library_pbo"]["source"] == "unavailable"
+
+
+@pytest.mark.asyncio
 async def test_run_rigor_gate_called_without_library_pbo_kwarg(monkeypatch):
     """The gate verdict path must be provably unchanged: run_rigor_gate is called
     WITHOUT a library_pbo= argument (passing it would alter criterion 4 = option 3,
@@ -1039,3 +1094,78 @@ class TestDegenerateSeriesExcludedFromCohort:
         assert resp.status_code == 200
         num_trials_seen = {kwargs["num_trials"] for kwargs in captured_kwargs}
         assert num_trials_seen == {1}, "only 1 real series survives both filters"
+
+
+class TestCacheKeyReactsToStrategyCodeChange:
+    """Copilot review, PR #1040: the /api/selection-bias/gate cache key
+    (rigor_cache.cohort_key + strictness) previously fingerprinted only
+    persisted returns, but run_rigor_gate's look-ahead audit also depends on
+    strategy_code (loaded from s.strategy_code_path). Editing a strategy's code
+    without touching its returns therefore served a STALE cached look-ahead
+    verdict/passes_all for up to the TTL. Proves the fix: run_rigor_gate reruns
+    when a strategy's strategy_code_hash changes, even with byte-identical
+    persisted returns.
+    """
+
+    @staticmethod
+    def _real_series(seed: int, n: int = 300) -> list[float]:
+        return np.random.default_rng(seed).normal(0.001, 0.01, n).tolist()
+
+    @pytest.mark.asyncio
+    async def test_code_hash_change_busts_cache_with_unchanged_returns(self, monkeypatch):
+        from archimedes.api import selection_bias_routes as routes
+        from archimedes.main import app
+        from archimedes.services.rigor_evaluator import run_rigor_gate as real_run_rigor_gate
+
+        strategies = routes._provider().list_strategies()
+        assert len(strategies) >= 1, "need >=1 curated strategy for this cohort"
+        target = strategies[0]
+        original_hash = target.strategy_code_hash
+
+        returns = {s.id: self._real_series(abs(hash(s.id)) % 10_000) for s in strategies}
+        monkeypatch.setattr(
+            "archimedes.services.backtest_repository.get_all_daily_returns",
+            lambda session, ids: dict(returns),
+        )
+
+        call_count = {"n": 0}
+
+        def _spy(*args, **kwargs):
+            call_count["n"] += 1
+            return real_run_rigor_gate(*args, **kwargs)
+
+        monkeypatch.setattr(routes, "run_rigor_gate", _spy)
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp1 = await client.get("/api/selection-bias/gate")
+            assert resp1.status_code == 200
+            first_calls = call_count["n"]
+            assert first_calls > 0, "first call must run the live gate"
+
+            # Second call: everything unchanged (same returns, same code) — pure
+            # cache hit, no new run_rigor_gate invocations.
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp2 = await client.get("/api/selection-bias/gate")
+            assert resp2.status_code == 200
+            assert call_count["n"] == first_calls, "unchanged returns+code must be a cache hit"
+
+            # Simulate a code edit on `target`: persisted returns are UNCHANGED,
+            # only its code hash differs (mirrors what LocalStrategyProvider.refresh()
+            # would compute after the underlying file's contents actually changed).
+            target.strategy_code_hash = f"{original_hash}-edited"
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp3 = await client.get("/api/selection-bias/gate")
+            assert resp3.status_code == 200
+            assert call_count["n"] > first_calls, (
+                "a strategy's strategy_code_hash changing (with byte-identical "
+                "returns) must bust the /api/selection-bias/gate cache key and "
+                "rerun run_rigor_gate — otherwise a stale look-ahead verdict can "
+                "be served for up to the TTL after a real code edit"
+            )
+        finally:
+            # `_provider()` is a process-lifetime lru_cache singleton (shared
+            # across the whole test session) — restore the mutated attribute so
+            # this test can't leak state into any other test.
+            target.strategy_code_hash = original_hash

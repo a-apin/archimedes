@@ -225,147 +225,208 @@ async def evaluate_rigor_gate(
     init_db()
 
     strategy_ids = [s.id for s in strategies]
-    strategy_code_map: dict[str, str | None] = {}
 
     # Load real returns from DB
     with get_session() as session:
         returns_by_strategy = get_all_daily_returns(session, strategy_ids)
 
-    for s in strategies:
-        code = _load_strategy_code(s.strategy_code_path) if s.strategy_code_path else None
-        strategy_code_map[s.id] = code
+    # ── Perf (Library page load latency, ~8-10s measured for this route) ──
+    # Everything below this point — code loads for the look-ahead audit, cohort
+    # PBO + average correlation, and one run_rigor_gate call per strategy (plus
+    # its DB rigor-fields write-back) — is memoized in services.rigor_cache keyed
+    # on a data-version token (rigor_cache.cohort_key + strictness, since the
+    # strictness level changes which profile run_rigor_gate grades against). The
+    # DB read above is NEVER cached — it always runs live, so the key reacts the
+    # instant persisted returns change. This is honest caching: a cache hit
+    # serves exactly the same StrategyRigorResult list a cache miss would have
+    # computed, not a fake or stale one. rigor_cache.get_or_compute fails open —
+    # any cache-layer error falls back to calling the compute closure directly —
+    # so a cache bug can only make a request slow, never wrong.
+    #
+    # code_versions folds each strategy's strategy_code_hash into the key
+    # (Copilot review, PR #1040): run_rigor_gate's look-ahead audit below reads
+    # strategy_code_map[s.id], which is loaded FROM s.strategy_code_path — so the
+    # cached result depends on strategy code, not just returns + strictness. A
+    # key built from returns+strictness alone could keep serving a stale
+    # look-ahead verdict/passes_all after a code edit even though returns are
+    # unchanged. strategy_code_hash is already computed onto the Strategy object
+    # by LocalStrategyProvider, so reading it here is free — no extra I/O on the
+    # request path.
+    #
+    # NOTE: on a cache HIT the per-strategy DB rigor-fields write-back
+    # (update_rigor_gate_fields) below does NOT re-run. That write-back is
+    # idempotent — it re-persists the exact numbers already written the first
+    # time this cohort+strictness combination was computed — so skipping it on a
+    # hit changes no served or stored value; it just skips a redundant write. The
+    # moment underlying returns change, the cache key changes and the write-back
+    # resumes on the next (now-live) call.
+    from archimedes.services.rigor_cache import cohort_key, get_or_compute
 
-    # Strategies with no real backtest data report all gate fields as MISSING
-    # (handled in the per-strategy loop below). Do NOT synthesize returns from
-    # stub_sharpe — DSR would trivially pass because the series was constructed
-    # to hit exactly that Sharpe, creating a circular validation that is
-    # meaningless. The stubs remain available for UI display (portfolio page)
-    # but must not feed into the rigor gate.
+    code_versions = {s.id: getattr(s, "strategy_code_hash", None) for s in strategies}
+    cache_key = f"selection_bias_gate:strictness={strictness}:" + cohort_key(
+        strategy_ids, returns_by_strategy, code_versions
+    )
 
-    # Compute PBO across all strategies that have returns. Exclude zero-variance
-    # (degenerate/placeholder-flat) series BEFORE they can inflate num_trials or
-    # dilute avg_correlation (#868): a flat daily_returns series (e.g. a stub row
-    # that was never replaced with a real backtest) has no informational content,
-    # but counting it toward the multiple-testing correction still stiffens DSR
-    # for every REAL strategy in the cohort. Mirrors the exact degeneracy test
-    # _rigor_helpers._sharpe_dsr_inputs already uses (np.ptp(arr) == 0 — peak-to-
-    # peak range zero) so "degenerate" means the same thing everywhere in the
-    # gate. This only trims the cohort-level context (num_trials/avg_correlation/
-    # pbo_scores below); the per-strategy gate loop still runs every strategy
-    # (including degenerate ones) against its own returns via
-    # returns_by_strategy.get(s.id, []) so a degenerate strategy still correctly
-    # reports MISSING/FAIL on its own row instead of silently disappearing.
-    valid_returns = {
-        k: v for k, v in returns_by_strategy.items() if len(v) >= 10 and float(np.ptp(np.asarray(v, dtype=float))) > 0.0
-    }
-    pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
+    def _compute() -> list[StrategyRigorResult]:
+        strategy_code_map: dict[str, str | None] = {}
+        for s in strategies:
+            code = _load_strategy_code(s.strategy_code_path) if s.strategy_code_path else None
+            strategy_code_map[s.id] = code
 
-    # num_trials = library size here (#770). This route grades the EXISTING persisted
-    # library, so the selection set is the library itself — there is no fresh
-    # N-candidate society pool to add (that additive correction, N + library_size,
-    # applies only on the live society generation path in generation_pipeline.py).
-    # #820 unified the live and fusion generation paths on that additive count;
-    # this route staying on library-size alone is the deliberate exception, not
-    # a fourth convention that slipped through.
-    num_trials = max(len(valid_returns), 1)
+        # Strategies with no real backtest data report all gate fields as MISSING
+        # (handled in the per-strategy loop below). Do NOT synthesize returns from
+        # stub_sharpe — DSR would trivially pass because the series was constructed
+        # to hit exactly that Sharpe, creating a circular validation that is
+        # meaningless. The stubs remain available for UI display (portfolio page)
+        # but must not feed into the rigor gate.
 
-    # The strategy library is the multiple-testing selection set; correlated
-    # strategies (overlapping assets/signals) carry fewer independent trials, so
-    # the DSR effective-N correction relaxes the penalty via N_eff = N/(1+(N-1)ρ̄).
-    avg_correlation = compute_average_pairwise_correlation(valid_returns) if len(valid_returns) >= 2 else 0.0
+        # Compute PBO across all strategies that have returns. Exclude zero-variance
+        # (degenerate/placeholder-flat) series BEFORE they can inflate num_trials or
+        # dilute avg_correlation (#868): a flat daily_returns series (e.g. a stub row
+        # that was never replaced with a real backtest) has no informational content,
+        # but counting it toward the multiple-testing correction still stiffens DSR
+        # for every REAL strategy in the cohort. Mirrors the exact degeneracy test
+        # _rigor_helpers._sharpe_dsr_inputs already uses (np.ptp(arr) == 0 — peak-to-
+        # peak range zero) so "degenerate" means the same thing everywhere in the
+        # gate. This only trims the cohort-level context (num_trials/avg_correlation/
+        # pbo_scores below); the per-strategy gate loop still runs every strategy
+        # (including degenerate ones) against its own returns via
+        # returns_by_strategy.get(s.id, []) so a degenerate strategy still correctly
+        # reports MISSING/FAIL on its own row instead of silently disappearing.
+        valid_returns = {
+            k: v
+            for k, v in returns_by_strategy.items()
+            if len(v) >= 10 and float(np.ptp(np.asarray(v, dtype=float))) > 0.0
+        }
+        pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
 
-    # Run rigor gate for each strategy
-    results: list[StrategyRigorResult] = []
-    for s in strategies:
-        daily_returns = returns_by_strategy.get(s.id, [])
+        # num_trials = library size here (#770). This route grades the EXISTING persisted
+        # library, so the selection set is the library itself — there is no fresh
+        # N-candidate society pool to add (that additive correction, N + library_size,
+        # applies only on the live society generation path in generation_pipeline.py).
+        # #820 unified the live and fusion generation paths on that additive count;
+        # this route staying on library-size alone is the deliberate exception, not
+        # a fourth convention that slipped through.
+        num_trials = max(len(valid_returns), 1)
 
-        if len(daily_returns) < 10:
-            results.append(
+        # The strategy library is the multiple-testing selection set; correlated
+        # strategies (overlapping assets/signals) carry fewer independent trials, so
+        # the DSR effective-N correction relaxes the penalty via N_eff = N/(1+(N-1)ρ̄).
+        avg_correlation = compute_average_pairwise_correlation(valid_returns) if len(valid_returns) >= 2 else 0.0
+
+        # Run rigor gate for each strategy
+        computed: list[StrategyRigorResult] = []
+        for s in strategies:
+            daily_returns = returns_by_strategy.get(s.id, [])
+
+            if len(daily_returns) < 10:
+                computed.append(
+                    StrategyRigorResult(
+                        strategy_id=s.id,
+                        strategy_name=s.paper_title,
+                        passes_all=False,
+                        gate_details=RigorGateDetail(
+                            dsr="MISSING (no backtest data)",
+                            pbo="MISSING (no backtest data)",
+                            oos_sharpe="MISSING (no backtest data)",
+                            look_ahead="MISSING (no code)",
+                        ),
+                        library_pbo=library_pbo,
+                        strictness_level=strictness,
+                        min_passing_level=None,
+                        blocked_by_floor=False,
+                    )
+                )
+                continue
+
+            # in_sample_sharpe is left None on purpose: run_rigor_gate derives it
+            # from the first 70% of `daily_returns`, the same series whose last 30%
+            # produces oos_sharpe. Passing the *full-sample* backtest Sharpe here
+            # (the previous `bt_map[s.id].sharpe_ratio`) made the OOS/IS cliff check
+            # trivially passable — a bad OOS tail drags the full-sample denominator
+            # down, inflating the ratio (see rigor_evaluator.run_rigor_gate's own
+            # warning at the IS-slice fallback). Let the gate compute the honest
+            # first-70% in-sample denominator instead of overriding it.
+            in_sample_sharpe = None
+
+            # cv_returns_matrix intentionally omitted — CPCV requires a 2-D array
+            # of per-combinatorial-split OOS returns that the analytics-engine does
+            # not yet produce.  run_rigor_gate() reports cpcv as an explicit NOT_RUN
+            # status with the reason (#771), not a bare "MISSING".
+            gate_result = run_rigor_gate(
+                strategy_id=s.id,
+                daily_returns=daily_returns,
+                num_trials=num_trials,
+                pbo_scores=pbo_scores,
+                strategy_code=strategy_code_map.get(s.id),
+                in_sample_sharpe=in_sample_sharpe,
+                paper_claimed_sharpe=s.paper_claimed_sharpe,
+                average_correlation=avg_correlation,
+                strictness_level=strictness,
+            )
+
+            # Persist rigor gate results to DB
+            with get_session() as session:
+                update_rigor_gate_fields(
+                    session,
+                    s.id,
+                    deflated_sharpe_ratio=gate_result.deflated_sharpe,
+                    dsr_p_value=gate_result.dsr_p_value,
+                    num_trials_in_selection=num_trials,
+                    pbo_score=gate_result.pbo_score,
+                    out_of_sample_sharpe=gate_result.oos_sharpe,
+                    look_ahead_audit_passed=gate_result.look_ahead_passed,
+                )
+                session.commit()
+
+            details = gate_result.gate_details
+            computed.append(
                 StrategyRigorResult(
                     strategy_id=s.id,
                     strategy_name=s.paper_title,
-                    passes_all=False,
+                    passes_all=gate_result.passes_all,
                     gate_details=RigorGateDetail(
-                        dsr="MISSING (no backtest data)",
-                        pbo="MISSING (no backtest data)",
-                        oos_sharpe="MISSING (no backtest data)",
-                        look_ahead="MISSING (no code)",
+                        dsr=details.get("dsr", "MISSING"),
+                        pbo=details.get("pbo", "MISSING"),
+                        oos_sharpe=details.get("oos_sharpe", "MISSING"),
+                        look_ahead=details.get("look_ahead", "MISSING"),
+                        cpcv=details.get("cpcv", "MISSING"),
+                        dsr_convention=details.get("dsr_convention", "MISSING"),
+                        iid=details.get("iid", "MISSING"),
+                        regime_robustness=details.get("regime_robustness", "MISSING"),
                     ),
+                    deflated_sharpe=gate_result.deflated_sharpe,
+                    dsr_p_value=gate_result.dsr_p_value,
+                    pbo_score=gate_result.pbo_score,
+                    oos_sharpe=gate_result.oos_sharpe,
+                    in_sample_sharpe=gate_result.in_sample_sharpe,
                     library_pbo=library_pbo,
                     strictness_level=strictness,
-                    min_passing_level=None,
-                    blocked_by_floor=False,
+                    min_passing_level=gate_result.min_passing_level,
+                    blocked_by_floor=gate_result.blocked_by_floor,
                 )
             )
-            continue
+        return computed
 
-        # in_sample_sharpe is left None on purpose: run_rigor_gate derives it
-        # from the first 70% of `daily_returns`, the same series whose last 30%
-        # produces oos_sharpe. Passing the *full-sample* backtest Sharpe here
-        # (the previous `bt_map[s.id].sharpe_ratio`) made the OOS/IS cliff check
-        # trivially passable — a bad OOS tail drags the full-sample denominator
-        # down, inflating the ratio (see rigor_evaluator.run_rigor_gate's own
-        # warning at the IS-slice fallback). Let the gate compute the honest
-        # first-70% in-sample denominator instead of overriding it.
-        in_sample_sharpe = None
+    # cache_if=bool: `strategies` is non-empty here (checked
+    # above), so `_compute()` always appends one result per strategy today —
+    # but a hard guard against ever memoizing an empty list matches
+    # strategies_routes.py's `_live_rigor_results_for_strategies` (same failure
+    # class: an empty result must never get "sticky" for the TTL) and costs
+    # nothing when `_compute()` returns its normal non-empty list.
+    results = get_or_compute(cache_key, _compute, cache_if=bool)
 
-        # cv_returns_matrix intentionally omitted — CPCV requires a 2-D array
-        # of per-combinatorial-split OOS returns that the analytics-engine does
-        # not yet produce.  run_rigor_gate() reports cpcv as an explicit NOT_RUN
-        # status with the reason (#771), not a bare "MISSING".
-        gate_result = run_rigor_gate(
-            strategy_id=s.id,
-            daily_returns=daily_returns,
-            num_trials=num_trials,
-            pbo_scores=pbo_scores,
-            strategy_code=strategy_code_map.get(s.id),
-            in_sample_sharpe=in_sample_sharpe,
-            paper_claimed_sharpe=s.paper_claimed_sharpe,
-            average_correlation=avg_correlation,
-            strictness_level=strictness,
-        )
-
-        # Persist rigor gate results to DB
-        with get_session() as session:
-            update_rigor_gate_fields(
-                session,
-                s.id,
-                deflated_sharpe_ratio=gate_result.deflated_sharpe,
-                dsr_p_value=gate_result.dsr_p_value,
-                num_trials_in_selection=num_trials,
-                pbo_score=gate_result.pbo_score,
-                out_of_sample_sharpe=gate_result.oos_sharpe,
-                look_ahead_audit_passed=gate_result.look_ahead_passed,
-            )
-            session.commit()
-
-        details = gate_result.gate_details
-        results.append(
-            StrategyRigorResult(
-                strategy_id=s.id,
-                strategy_name=s.paper_title,
-                passes_all=gate_result.passes_all,
-                gate_details=RigorGateDetail(
-                    dsr=details.get("dsr", "MISSING"),
-                    pbo=details.get("pbo", "MISSING"),
-                    oos_sharpe=details.get("oos_sharpe", "MISSING"),
-                    look_ahead=details.get("look_ahead", "MISSING"),
-                    cpcv=details.get("cpcv", "MISSING"),
-                    dsr_convention=details.get("dsr_convention", "MISSING"),
-                    iid=details.get("iid", "MISSING"),
-                    regime_robustness=details.get("regime_robustness", "MISSING"),
-                ),
-                deflated_sharpe=gate_result.deflated_sharpe,
-                dsr_p_value=gate_result.dsr_p_value,
-                pbo_score=gate_result.pbo_score,
-                oos_sharpe=gate_result.oos_sharpe,
-                in_sample_sharpe=gate_result.in_sample_sharpe,
-                library_pbo=library_pbo,
-                strictness_level=strictness,
-                min_passing_level=gate_result.min_passing_level,
-                blocked_by_floor=gate_result.blocked_by_floor,
-            )
-        )
+    # Copilot review (PR #1040): on a rigor_cache HIT, `results` are memoized
+    # StrategyRigorResult objects whose `library_pbo` reflects whatever was
+    # current at cache-WRITE time. `library_pbo` (above, line ~211) is always
+    # freshly computed for THIS request. Without this reconciliation, a cache
+    # hit could serve a response where the top-level `library_pbo` and each
+    # per-strategy `result.library_pbo` disagree — an internally inconsistent
+    # response. Rebuild (never mutate the cached objects in place, since
+    # `results` may be the exact list object shared with a concurrent
+    # reader of the same cache entry) with the fresh payload so top-level and
+    # per-strategy always agree, on both cache hits and misses.
+    results = [r.model_copy(update={"library_pbo": library_pbo}) for r in results]
 
     passing = sum(1 for r in results if r.passes_all)
     return RigorGateResponse(
