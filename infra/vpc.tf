@@ -172,12 +172,12 @@ resource "aws_security_group" "nat" {
 }
 
 resource "aws_instance" "nat" {
-  count                = 2
-  ami                  = data.aws_ami.fck_nat.id
-  instance_type        = "t4g.nano"
-  subnet_id            = aws_subnet.public[count.index].id
+  count                  = 2
+  ami                    = data.aws_ami.fck_nat.id
+  instance_type          = "t4g.nano"
+  subnet_id              = aws_subnet.public[count.index].id
   vpc_security_group_ids = [aws_security_group.nat.id]
-  source_dest_check    = false # Required for NAT
+  source_dest_check      = false # Required for NAT
 
   tags = {
     Name    = "${var.project_name}-nat-${local.azs[count.index]}"
