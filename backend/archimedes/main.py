@@ -160,10 +160,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 if session.query(StrategyRecord).filter_by(id=s.id).first():
                     continue
                 content_hash = "0x" + hashlib.sha256(("example:" + s.id).encode()).hexdigest()
-                papers_list = [
-                    {"arxiv_id": p.arxiv_id, "title": p.title, "authors": p.authors}
-                    for p in s.papers
-                ]
+                papers_list = [{"arxiv_id": p.arxiv_id, "title": p.title, "authors": p.authors} for p in s.papers]
                 record = StrategyRecord(
                     id=s.id,
                     content_hash=content_hash,
