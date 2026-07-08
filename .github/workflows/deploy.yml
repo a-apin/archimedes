@@ -32,19 +32,20 @@
 #                    before it ever reaches ECR or a serving host — then tags
 #                    both <commit-sha> + latest and pushes to ECR.
 #   migrate          (needs: build-and-push) Runs `alembic upgrade head` as a
-#                    one-off ECS Fargate task, ordered BEFORE `deploy` — the
-#                    #1039 P4 / #1028 Phase A shared migrate stage. Alembic
-#                    hasn't landed on this branch yet (see the job's own
-#                    comment), so today this is a safe, loud no-op; it
-#                    self-activates the moment `backend/alembic.ini` exists.
-#   deploy           (needs: [build-and-push, migrate]) SSMs the EC2 box:
-#                    pulls the just-pushed <commit-sha> image from ECR and
-#                    runs `docker compose up -d --force-recreate` — NO docker
-#                    build ever runs on the serving host. This is the P1
-#                    "stop the bleeding" interim from #1039: it ends the
-#                    docker-compose-build-on-a-4GB-serving-host OOM class that
-#                    caused 3 production outages on 2026-07-06 (#1001), ahead
-#                    of the full ECS Fargate cutover (later phases of #1039).
+#                    one-off ECS Fargate task, ordered BEFORE `deploy-ecs` — the
+#                    #1039 P4 / #1028 Phase A shared migrate stage. Fails closed
+#                    if the schema can't reach head, so a new task never serves
+#                    an out-of-date DB.
+#   deploy-ecs       (needs: [build-and-push, migrate]) Registers a new ECS task
+#                    definition revision pointing at the just-pushed <commit-sha>
+#                    image and force-redeploys the Fargate service behind the
+#                    existing ALB. NO docker build ever runs on a serving host.
+#                    (The legacy `deploy` job — SSM into the EC2 box + `docker
+#                    compose up` — was RETIRED in the #1039 observability
+#                    fast-follow: post-cutover the box is detached from the ALB,
+#                    so auto-deploying to it was pointless and its broken step
+#                    reddened every run. The box stays running as a rollback
+#                    window until Phase 8 decommission.)
 #
 # ECR repos expected: `archimedes-backend` (shared by the backend/oracle/agent/
 # kb-runner services — same image, different `command:` override, exactly as
@@ -65,7 +66,7 @@
 #     (also grants ECR push, scoped to repository/archimedes* — see
 #     infra/scripts/setup-github-oidc.sh)
 #   EC2_INSTANCE_ID — i-01803d3abc271d39b
-#   DEPLOY_ENABLED — gate flag; both jobs below run ONLY when this repo
+#   DEPLOY_ENABLED — gate flag; all three jobs below run ONLY when this repo
 #     variable equals 'true'. Unset/false → skipped (neutral, not failed). The
 #     stack was rebuilt on a NEW account (037613907429 / us-east-1) and is LIVE
 #     again at archimedes-arc.com (2026-06-24), so the deploy target exists. This
@@ -142,7 +143,9 @@ jobs:
         # analytics-engine/ + data/corpus + contracts/abis + the committed
         # gmm_model.pkl — assets Fargate can't get from a host volume. The root
         # .dockerignore keeps the context lean (.git / submodules / node_modules).
-        run: docker build -t archimedes-backend:ci -f backend/Dockerfile .
+        # --build-arg GIT_SHA stamps the commit into the image → /health "version"
+        # (issue #1039 observability fast-follow).
+        run: docker build -t archimedes-backend:ci -f backend/Dockerfile --build-arg GIT_SHA="${{ github.sha }}" .
 
       - name: Build nginx image
         # Env-parity fix (PR #1041 correctness pass, 2026-07-07): this is NOT
@@ -243,6 +246,37 @@ jobs:
             exit 1
           fi
           echo "backend /health OK (against Postgres)"
+
+          # Rich-health gate (issue #1039): GET-200 is NOT enough. A strategy-less
+          # or gmm-less image still answers 200 while silently degraded — the exact
+          # regression that shipped a mock/degraded Fargate build past this step.
+          # Assert the IMAGE-BAKED features are live. (risk_data is intentionally
+          # NOT asserted here: this throwaway Postgres is empty, so risk_data=mock
+          # is correct in CI — it's validated post-deploy against Aurora.)
+          HEALTH="$(curl -fsS http://localhost:8000/health)"
+          regime="$(printf '%s' "$HEALTH" | jq -r '.regime_detector // "MISSING"')"
+          scount="$(printf '%s' "$HEALTH" | jq -r '.strategy_count // "MISSING"')"
+          version="$(printf '%s' "$HEALTH" | jq -r '.version // "MISSING"')"
+          fail=0
+          # Fail CLOSED: require regime == "live". A missing/null/"unknown"/"degraded"
+          # value (probe crash OR missing gmm_model.pkl) must NOT slip through on a
+          # soft "!= degraded" check.
+          if [ "$regime" != "live" ]; then
+            echo "::error::rich-health gate: regime_detector='$regime' (expected 'live' — gmm_model.pkl missing from image, or the probe failed)"; fail=1
+          fi
+          # strategy_count must be a positive integer (MISSING/0/non-numeric all fail).
+          if ! printf '%s' "$scount" | grep -qE '^[0-9]+$' || [ "$scount" -le 0 ]; then
+            echo "::error::rich-health gate: strategy_count='$scount' (expected > 0 — analytics-engine/strategies missing from image?)"; fail=1
+          fi
+          # The build passed --build-arg GIT_SHA=<github.sha>, so version MUST be a
+          # real SHA here. MISSING/empty/"dev"/"null" means the GIT_SHA build-arg
+          # wiring regressed and prod would ship an unstamped image.
+          case "$version" in
+            ""|MISSING|dev|null)
+              echo "::error::rich-health gate: version='$version' (expected the build SHA — GIT_SHA build-arg wiring regressed)"; fail=1 ;;
+          esac
+          [ "$fail" = 0 ] || exit 1
+          echo "rich-health gate OK: regime=$regime strategy_count=$scount version=$version"
 
       - name: Validate nginx image boots + proxies (GET / and /health)
         # Runs on the same user-defined docker network as the backend
@@ -457,157 +491,6 @@ jobs:
             exit 1
           fi
           echo "alembic_migrate_preflight OK — schema is current (stamped + upgraded to head); safe for new tasks to serve."
-
-  deploy:
-    needs: [build-and-push, migrate]
-    name: Deploy
-    # Gated behind an explicit opt-in repo variable (also enforced transitively
-    # via `needs: [build-and-push, migrate]`, which carry the same `if:` —
-    # kept explicit here too so this job's own skip reason is legible in the
-    # Actions UI without following the dependency graph). The stack is LIVE
-    # again on the new account (037613907429 / us-east-1, instance
-    # i-01803d3abc271d39b), but the gate stays OFF until the migration PR
-    # (#716) merges and the OIDC role + trust policy are confirmed, so a
-    # stray push to main can't deploy mid-migration. With DEPLOY_ENABLED
-    # unset, all three jobs are SKIPPED (neutral, keeps the Actions history
-    # green); set DEPLOY_ENABLED=true to enable. `migrate` gating `deploy`
-    # is the #1039 P4 acceptance criterion: a new task must never serve
-    # before schema is current.
-    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 35  # SSM 30min + AWS API overhead + buffer
-
-    steps:
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b  # v6.2.1
-        with:
-          role-to-assume: arn:aws:iam::037613907429:role/archimedes-github-deploy
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Deploy via SSM SendCommand
-        run: |
-          # Build the deploy script as a single string for SSM
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$EC2_INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --timeout-seconds 1800 \
-            --parameters commands='[
-              "#!/bin/bash",
-              "set -eux",
-              "export HOME=/root",
-              "# Issue #1039 C3: two rapid merges to main can queue two overlapping",
-              "# SSM SendCommand invocations on the SAME box, both racing through",
-              "# `docker compose up --force-recreate` below — the loser can hit",
-              "# mid-recreate container-name conflicts or a half-swapped stack. An",
-              "# flock on a fd (not `flock -c \"...\"` wrapping the whole body as one",
-              "# string, which would need re-escaping this entire multi-hundred-line",
-              "# script through the JSON array below) holds for the rest of THIS",
-              "# script'"'"'s process lifetime and releases automatically on exit —",
-              "# a second concurrent SSM command blocks here for up to 1500s (the",
-              "# document'"'"'s own --timeout-seconds budget) rather than racing.",
-              "exec 200>/var/run/archimedes-deploy.lock",
-              "flock -w 1500 200 || { echo '"'"'ERROR_DEPLOY_LOCKED: another deploy is already running on this box (timed out after 1500s waiting for the lock).'"'"'; exit 1; }",
-              "cd /opt/archimedes",
-              "git config --global --add safe.directory /opt/archimedes",
-              "mkdir -p analytics-engine/artifacts",
-              "sudo chown -R ubuntu:ubuntu analytics-engine/artifacts/ 2>/dev/null || true",
-              "git fetch origin main",
-              "git reset --hard origin/main",
-              "df -h / | tail -1 | awk '"'"'{print \"DISK_BEFORE: \"$0}'"'"'",
-              "docker container prune -f 2>/dev/null || true",
-              "docker image prune -af 2>/dev/null || true",
-              "df -h / | tail -1 | awk '"'"'{print \"DISK_AFTER_PRUNE: \"$0}'"'"'",
-              "# Pull-model (audit 2026-06-13 #5): secrets are NO LONGER injected from",
-              "# CI, so no secret value enters the SSM command body / CloudTrail. The",
-              "# backend reads LLM_*/EMAIL_ENCRYPTION_KEY from SSM Parameter Store at",
-              "# startup via its instance role (services/secrets_service.load_ssm_secrets);",
-              "# the box-local, gitignored .env (untouched by git reset) carries any",
-              "# RUNTIME values not yet in SSM. NOTE: this box now PULLS its images",
-              "# (below) rather than building them locally, so the box .env can no",
-              "# longer supply build-time frontend values like VITE_CIRCLE_CLIENT_KEY —",
-              "# that must be a GitHub Actions repo secret consumed by the",
-              "# build-and-push job's nginx build-arg (see this workflow file's header",
-              "# comment and the 'Build nginx image' step). See infra/iam/README.md",
-              "# for the SSM population runbook.",
-              "grep -q '"'"'^PUBLIC_DOMAIN='"'"' .env || echo '"'"'PUBLIC_DOMAIN=https://archimedes-arc.com'"'"' >> .env",
-              "# P1 interim (issue #1039): PULL the image the build-and-push job above",
-              "# already built + validated + pushed to ECR — NEVER build on this serving",
-              "# host again. This is what stops the docker-compose-build OOM that caused",
-              "# 3 outages on 2026-07-06 (#1001). Requires awscli + an ECR-pull-capable",
-              "# instance role on this box (archimedes-backend-role — issue #1039 chunk",
-              "# 2, infra/ec2_iam.tf, NOT applied as of this PR); fails closed below with",
-              "# an explicit message rather than falling back to a local build.",
-              "grep -q '"'"'^ECR_REGISTRY='"'"' .env && sed -i '"'"'s#^ECR_REGISTRY=.*#ECR_REGISTRY=${{ env.ECR_REGISTRY }}#'"'"' .env || echo '"'"'ECR_REGISTRY=${{ env.ECR_REGISTRY }}'"'"' >> .env",
-              "grep -q '"'"'^IMAGE_TAG='"'"' .env && sed -i '"'"'s#^IMAGE_TAG=.*#IMAGE_TAG=${{ github.sha }}#'"'"' .env || echo '"'"'IMAGE_TAG=${{ github.sha }}'"'"' >> .env",
-              "# Issue #1043 gated oracle/agent/kb-runner in docker-compose.yml behind a",
-              "# runners compose profile. This deploy runs a bare docker compose up with",
-              "# no -f and no COMPOSE_FILE, so it needs COMPOSE_PROFILES=runners set in .env",
-              "# or those three services STOP on this deploy; local docker compose up stays",
-              "# inert by default since it does not set this box-local .env value.",
-              "if grep -q '"'"'^COMPOSE_PROFILES='"'"' .env; then grep -qE '"'"'^COMPOSE_PROFILES=([^#]*,)?runners(,|$)'"'"' .env || sed -i '"'"'s/^COMPOSE_PROFILES=.*/&,runners/'"'"' .env; else echo '"'"'COMPOSE_PROFILES=runners'"'"' >> .env; fi",
-              "command -v aws >/dev/null 2>&1 || { echo '"'"'ERROR_NO_AWSCLI_ON_BOX: install awscli on this instance and grant archimedes-backend-role ECR pull permissions (see infra/ec2_iam.tf, issue #1039 chunk 2, and docs/deployment.md).'"'"'; exit 1; }",
-              "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }} || { echo '"'"'ERROR_ECR_LOGIN_FAILED: verify archimedes-backend-role (EC2 instance role) has ecr:GetAuthorizationToken (infra/ec2_iam.tf).'"'"'; exit 1; }",
-              "docker compose pull || { echo '"'"'ERROR_ECR_PULL_FAILED: verify the archimedes-backend/archimedes-nginx ECR repos exist (terraform apply in infra/, issue #1039 chunk 2) and that tag ${{ github.sha }} was pushed by the build-and-push job.'"'"'; exit 1; }",
-              "# Remove orphan containers left by an interrupted --force-recreate.",
-              "# Docker renames the old container to <hex>_<name> before deleting it; if a",
-              "# run is interrupted mid-recreate the orphan survives, and the next recreate",
-              "# hits a name Conflict and fails the whole deploy (run 28382331990: the",
-              "# oracle orphan fbdabd2fa619_archimedes-oracle-1). The prior",
-              "# `docker ps --filter name=^...` never matched it because the filter anchor",
-              "# is unreliable against the slash-prefixed names Docker stores (/<hex>_...).",
-              "# Grep the clean `--format {{.Names}}` output (no leading slash) so ^ fires.",
-              "docker ps -a --format '"'"'{{.Names}}'"'"' | grep -E '"'"'^[0-9a-f]+_archimedes-'"'"' | xargs -r docker rm -f 2>/dev/null || true",
-              "docker compose up -d --force-recreate --remove-orphans",
-              "docker image prune -f",
-              "docker compose exec -T backend python -m archimedes.scripts.seed_backtests_from_artifacts || echo WARN_SEED_SKIP",
-              "docker compose exec -T backend python scripts/import_backtest_fixtures.py tests/fixtures/backtest_fixtures_snapshot.json || echo WARN_FIXTURES_SKIP",
-              "docker compose exec -dT backend python -m archimedes.scripts.hydrate_corpus || echo WARN_HYDRATE_SKIP",
-              "docker compose exec -T backend python -c '"'"'import asyncio; from archimedes.services.amm_bootstrap import bootstrap_amm_liquidity; r=asyncio.run(bootstrap_amm_liquidity()); print(dict(r))'"'"' || echo WARN_BOOTSTRAP_SKIP",
-              "for i in $(seq 1 24); do if docker compose exec -T backend python -c '"'"'import urllib.request; r=urllib.request.urlopen(\"http://localhost:8000/health\", timeout=5); print(r.read().decode()[:80])'"'"'; then echo HEALTH_OK after ${i}x5s; break; fi; if [ $i -eq 24 ]; then echo HEALTH_TIMEOUT after 120s; exit 1; fi; sleep 5; done",
-              "echo DEPLOY_COMPLETE"
-            ]' \
-            --region "$AWS_REGION" \
-            --query 'Command.CommandId' \
-            --output text)
-
-          echo "SSM Command ID: $COMMAND_ID"
-
-          # Poll for completion (180 × 10s = 30 min, matches SSM --timeout-seconds 1800)
-          for i in $(seq 1 180); do
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$EC2_INSTANCE_ID" \
-              --region "$AWS_REGION" \
-              --query 'Status' \
-              --output text 2>/dev/null || echo "Pending")
-
-            if [ "$STATUS" = "Success" ]; then
-              echo "✅ Deploy succeeded"
-              # Print output
-              aws ssm get-command-invocation \
-                --command-id "$COMMAND_ID" \
-                --instance-id "$EC2_INSTANCE_ID" \
-                --region "$AWS_REGION" \
-                --query 'StandardOutputContent' \
-                --output text | tail -20
-              exit 0
-            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "TimedOut" ] || [ "$STATUS" = "Cancelled" ]; then
-              echo "❌ Deploy $STATUS"
-              aws ssm get-command-invocation \
-                --command-id "$COMMAND_ID" \
-                --instance-id "$EC2_INSTANCE_ID" \
-                --region "$AWS_REGION" \
-                --query '{Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
-                --output json | tail -50
-              exit 1
-            fi
-
-            echo "Status: $STATUS (attempt $i/60)"
-            sleep 10
-          done
-
-          echo "❌ Deploy timed out waiting for SSM command"
-          exit 1
 
   deploy-ecs:
     needs: [build-and-push, migrate]

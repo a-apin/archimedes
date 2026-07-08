@@ -575,6 +575,20 @@ async def health():
     except Exception:
         risk_data_reason = "import failed"
 
+    # Strategy-library presence (issue #1039). count_strategy_files() is a cheap
+    # directory file count (NO provider construction → no filesystem refresh, DB
+    # backtest load, or unified-table sync side effect — /health is hit by the ALB
+    # every 30s). 0 here means the curated library is missing from the image — the
+    # exact regression that shipped a strategy-less Fargate build (→ risk_data=mock,
+    # empty Explore). CI asserts > 0.
+    strategy_count = 0
+    try:
+        from archimedes.services.strategy_provider import count_strategy_files
+
+        strategy_count = count_strategy_files()
+    except Exception:
+        logger.debug("strategy count read failed", exc_info=True)
+
     # Human-vs-agent traction counts (issue #428). Fail-safe: get_counts
     # returns (0, 0) when Redis is unreachable, so /health never degrades on it.
     # NOTE: these are cumulative per-request tallies (site traffic, NOT users).
@@ -645,6 +659,10 @@ async def health():
     return {
         "status": "ok" if connected else "degraded",
         "service": "archimedes-backend",
+        # Build provenance (issue #1039): the git SHA stamped in at image-build
+        # time (deploy.yml --build-arg GIT_SHA). "Which code is live?" in one glance
+        # — the question that turned the Fargate cutover into an hour of forensics.
+        "version": os.getenv("ARCHIMEDES_GIT_SHA", "dev"),
         "chain_connected": connected,
         # human_count / agent_count are cumulative per-request tallies (site
         # traffic, NOT users). real_users is the honest distinct-user count.
@@ -679,6 +697,9 @@ async def health():
         "regime_detector_reason": regime_detector_reason,
         "risk_data": risk_data_status,
         "risk_data_reason": risk_data_reason,
+        # Strategy-library presence (issue #1039) — 0 means the image is missing
+        # analytics-engine/strategies (the Fargate-cutover regression). CI gates on > 0.
+        "strategy_count": strategy_count,
     }
 
 

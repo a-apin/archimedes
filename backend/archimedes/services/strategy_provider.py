@@ -645,28 +645,32 @@ class LocalStrategyProvider:
         return None
 
 
-def default_provider(repo_root: Path | None = None) -> LocalStrategyProvider:
-    """Resolve the strategies directory robustly across host and container.
+def resolve_strategies_dir(repo_root: Path | None = None) -> Path:
+    """Resolve the strategies directory robustly across host and container —
+    WITHOUT constructing a provider.
 
     Priority:
       1. explicit ``repo_root`` arg (tests)
-      2. ``ARCHIMEDES_STRATEGIES_DIR`` env var — the deployment override;
-         set it (or bind-mount to it) in docker-compose / EC2 so the
-         backend image does not have to vendor the strategy corpus
+      2. ``ARCHIMEDES_STRATEGIES_DIR`` env var — the deployment override
       3. first existing candidate among the known host repo layout and
          container-plausible mount points
 
-    The original ``parents[3]`` math only holds for the host checkout
-    layout — in the backend image ``__file__`` is ``/app/...`` so it
-    resolved to a nonexistent ``/analytics-engine/strategies``. This keeps
-    host dev identical while making the deployed path configurable.
+    Factored out of ``default_provider`` (issue #1039) so cheap callers — the
+    ``/health`` ``strategy_count`` probe — can locate the corpus without paying
+    for ``LocalStrategyProvider`` construction (filesystem refresh + DB backtest
+    load + a one-time unified-table sync side effect on every call).
+
+    The original ``parents[3]`` math only holds for the host checkout layout —
+    in the backend image ``__file__`` is ``/app/...`` so it resolved to a
+    nonexistent ``/analytics-engine/strategies``. This keeps host dev identical
+    while making the deployed path configurable.
     """
     if repo_root is not None:
-        return LocalStrategyProvider(repo_root / "analytics-engine" / "strategies")
+        return repo_root / "analytics-engine" / "strategies"
 
     env_dir = os.getenv("ARCHIMEDES_STRATEGIES_DIR")
     if env_dir:
-        return LocalStrategyProvider(Path(env_dir))
+        return Path(env_dir)
 
     here = Path(__file__).resolve()
     candidates = [
@@ -676,7 +680,32 @@ def default_provider(repo_root: Path | None = None) -> LocalStrategyProvider:
     ]
     for candidate in candidates:
         if candidate.exists():
-            return LocalStrategyProvider(candidate)
-    # None found: fall back to the host-layout path so the warning log
-    # names a sensible location rather than an arbitrary container root.
-    return LocalStrategyProvider(candidates[0])
+            return candidate
+    # None found: fall back to the host-layout path so the warning log names a
+    # sensible location rather than an arbitrary container root.
+    return candidates[0]
+
+
+def count_strategy_files() -> int:
+    """Cheap count of baked strategy files in the resolved strategies dir.
+
+    Counts ``*.py`` (excluding dunder helpers like ``__init__``), mirroring how
+    ``LocalStrategyProvider`` discovers strategies (``glob("*.py")``) — but with
+    NO filesystem refresh, DB load, or table sync. Used by ``/health`` to detect
+    whether the strategy corpus is baked into the image: ``0`` means it is
+    missing from the build (the Fargate-cutover regression, issue #1039).
+    """
+    d = resolve_strategies_dir()
+    if not d.exists():
+        return 0
+    return sum(1 for p in d.glob("*.py") if not p.name.startswith("_"))
+
+
+def default_provider(repo_root: Path | None = None) -> LocalStrategyProvider:
+    """Construct a ``LocalStrategyProvider`` over the resolved strategies dir.
+
+    Directory resolution lives in ``resolve_strategies_dir`` (shared with the
+    cheap ``count_strategy_files`` probe). See that function for the resolution
+    priority and the container-vs-host path rationale.
+    """
+    return LocalStrategyProvider(resolve_strategies_dir(repo_root))

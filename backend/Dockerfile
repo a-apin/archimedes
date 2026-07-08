@@ -73,6 +73,12 @@ RUN HF_HUB_OFFLINE=0 PYTHONPATH=/deps python -c \
     "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['MINILM_MODEL'])" \
     && chown -R nonroot:nonroot /app/model_cache
 
+# Build provenance (issue #1039): stamp the git SHA in at build time so /health
+# reports it as "version" — "which code is live" in one glance. deploy.yml passes
+# --build-arg GIT_SHA=${{ github.sha }}; defaults to "dev" for local builds.
+ARG GIT_SHA=dev
+ENV ARCHIMEDES_GIT_SHA=${GIT_SHA}
+
 ENV PYTHONPATH=/deps:/app
 WORKDIR /app
 
