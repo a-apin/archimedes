@@ -78,15 +78,17 @@ class TestCommit:
             trace = _make_trace()
             trace.compute_hash()
             claimed = 2_000_000_000
+            trade_id = b"\x11" * 32
 
-            trace_id, tx, block = asyncio.run(publisher.commit(trace, claimed, b"\x01"))
+            trace_id, tx, block = asyncio.run(publisher.commit(trace, claimed, trade_id, b"\x01"))
 
             assert (trace_id, tx, block) == (42, "0xCOMMIT", 100)
             _, kwargs = mock_signer.execute_contract.call_args
-            assert kwargs["abi_function"] == "commit(address,bytes32,uint64,bytes)"
-            # vault, contentHash, claimedExecutionTime (as str), intent
+            assert kwargs["abi_function"] == "commit(address,bytes32,uint64,bytes32,bytes)"
+            # vault, contentHash, claimedExecutionTime (as str), tradeId, intent
             assert kwargs["abi_params"][0] == trace.vault_address
             assert kwargs["abi_params"][2] == str(claimed)
+            assert kwargs["abi_params"][3] == "0x" + trade_id.hex()
 
     def test_commit_parses_trace_id_from_event(self, supported_loader):
         with (
@@ -100,7 +102,9 @@ class TestCommit:
 
             trace = _make_trace()
             trace.compute_hash()
-            trace_id, _, _ = asyncio.run(TracePublisher(loader=supported_loader).commit(trace, 2_000_000_000))
+            trace_id, _, _ = asyncio.run(
+                TracePublisher(loader=supported_loader).commit(trace, 2_000_000_000, b"\x22" * 32)
+            )
             assert trace_id == 42  # decoded from TraceCommitted, not the getTracesByVault fallback
 
     def test_commit_returns_none_when_registry_pre_v1_5(self, unsupported_loader):
@@ -114,7 +118,7 @@ class TestCommit:
 
             trace = _make_trace()
             trace.compute_hash()
-            result = asyncio.run(TracePublisher(loader=unsupported_loader).commit(trace, 2_000_000_000))
+            result = asyncio.run(TracePublisher(loader=unsupported_loader).commit(trace, 2_000_000_000, b"\x33" * 32))
             assert result == (None, None, None)
 
 

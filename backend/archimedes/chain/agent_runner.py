@@ -39,7 +39,7 @@ import uuid
 from datetime import UTC, datetime
 
 from archimedes.chain.client import chain_client
-from archimedes.chain.executor import InsufficientLiquidityError, chain_executor
+from archimedes.chain.executor import InsufficientLiquidityError, chain_executor, compute_trade_id
 from archimedes.chain.oracle_updater import OracleUpdater
 from archimedes.chain.provenance_publisher import pin_public_provenance
 from archimedes.chain.trace_publisher import trace_publisher
@@ -704,6 +704,89 @@ class StrategyRunner:
             return
 
         # ── Commit-Reveal Flow ────────────────────────────────────
+        # Phase 0: SIZE — build the EXACT on-chain trade arrays (tokensIn,
+        # amountsIn, tokensOut, amountsOut) BEFORE committing, and derive the
+        # tradeId Vault.rebalance() will independently recompute from them
+        # (keccak256(abi.encode(...)) — Vault.sol). This must happen before
+        # the commit and the SAME arrays must be reused (not recomputed) for
+        # execute_trades(): SELL-leg sizing reads a live oracle price, so two
+        # independent builds could read two different prices and mint two
+        # different tradeIds — the on-chain recompute would then miss the
+        # commitment and rebalance() reverts (#588 / commit-before-trade guard).
+        trade_arrays: tuple[list[str], list[int], list[str], list[int]] | None = None
+        trade_id: bytes | None = None
+
+        if not DRY_RUN:
+            try:
+                trade_arrays = await chain_executor.build_trade_arrays(vault_address, trades)
+            except InsufficientLiquidityError as e:
+                logger.warning(
+                    "[tick %s] Vault %s: swap skipped — thin pool: %s; will retry next tick",
+                    tick_id,
+                    vault_address[:10],
+                    e,
+                )
+                await self._publish_trace(
+                    vault_address,
+                    DecisionType.SKIP,
+                    "insufficient_liquidity",
+                    portfolio,
+                    [],
+                    all_signals,
+                    market_regime,
+                    consensus,
+                    tick_id,
+                    f"Swap skipped — thin pool: {e}",
+                )
+                return
+            except Exception as e:
+                logger.error(
+                    "[tick %s] Trade sizing FAILED for %s: %s",
+                    tick_id,
+                    vault_address[:10],
+                    e,
+                )
+                await self._publish_trace(
+                    vault_address,
+                    DecisionType.SKIP,
+                    "execution_failed",
+                    portfolio,
+                    [],
+                    all_signals,
+                    market_regime,
+                    consensus,
+                    tick_id,
+                    f"Trade sizing failed: {e}",
+                    error=str(e),
+                )
+                return
+
+            tokens_in, amounts_in, tokens_out, amounts_out = trade_arrays
+            if not tokens_in and not tokens_out:
+                # Mirrors #925: nothing left to swap once cash/USDC legs and
+                # zero-value legs are filtered out. Skip before ever committing —
+                # there is no trade to bind a tradeId to.
+                logger.info(
+                    "[tick %s] SKIP rebalance for %s: no non-cash legs after filtering",
+                    tick_id,
+                    vault_address[:10],
+                )
+                await self._publish_trace(
+                    vault_address,
+                    DecisionType.SKIP,
+                    "no_tradeable_legs",
+                    portfolio,
+                    [],
+                    all_signals,
+                    market_regime,
+                    consensus,
+                    tick_id,
+                    "No non-cash legs after filtering — nothing to trade.",
+                )
+                return
+
+            trade_id = compute_trade_id(tokens_in, amounts_in, tokens_out, amounts_out)
+
         # Phase 1: COMMIT — compute hash and anchor on-chain BEFORE trade
         reasoning = self._build_reasoning(all_signals, market_regime, consensus, trades, portfolio)
 
@@ -732,9 +815,46 @@ class StrategyRunner:
             reasoning,
             portfolio,
             targets,
+            trade_id,
         )
 
-        # Phase 2: TRADE — execute the rebalance
+        # ── Commit-Reveal guard: if the registry supports commit-reveal but the
+        # commit above did NOT land (commit_tx is None), submitting the trade
+        # anyway would revert on-chain post-#588-redeploy ("no matching
+        # commitment") — wasting gas and leaving an unrevealed commitment
+        # attempt. Short-circuit with a SKIP trace instead of proceeding to
+        # Phase 2. Gated on the SAME `not DRY_RUN` condition the commit path
+        # uses above, so DRY_RUN (where trade_id/commit_tx are always None by
+        # design) is unaffected. Registries that don't support commit-reveal
+        # (legacy publishTrace-only) keep the old proceed-to-trade behavior —
+        # this only blocks when commit-reveal IS supported and the commit failed.
+        if not DRY_RUN and trace_publisher.supports_commit_reveal() and commit_tx is None:
+            logger.warning(
+                "[tick %s] Vault %s: commit-reveal supported but commit FAILED "
+                "(commit_tx is None) — skipping trade to avoid an on-chain revert "
+                "against a missing commitment.",
+                tick_id,
+                vault_address[:10],
+            )
+            await self._publish_trace(
+                vault_address,
+                DecisionType.SKIP,
+                "commit_failed",
+                portfolio,
+                [],
+                all_signals,
+                market_regime,
+                consensus,
+                tick_id,
+                "Commit-reveal supported but commit failed — skipping trade to avoid "
+                "an on-chain revert against a missing commitment.",
+                commit_tx=commit_tx,
+                commit_block=commit_block,
+            )
+            return
+
+        # Phase 2: TRADE — execute the rebalance, submitting the SAME arrays
+        # (trade_arrays) the tradeId above was derived from — never recomputed.
         if DRY_RUN:
             logger.info("[tick %s] DRY RUN — skipping on-chain execution", tick_id)
             tx_hashes: list[str] = []
@@ -768,7 +888,7 @@ class StrategyRunner:
             return
         else:
             try:
-                tx_hashes = await chain_executor.execute_trades(vault_address, trades)
+                tx_hashes = await chain_executor.execute_trades(vault_address, trades, trade_arrays=trade_arrays)
                 # Get trade block number from first tx
                 trade_block = None
                 if tx_hashes:
@@ -787,6 +907,9 @@ class StrategyRunner:
                 )
                 await self.state.save_last_rebalance(vault_address)
             except InsufficientLiquidityError as e:
+                # Defensive fallback — liquidity was already validated in the SIZE
+                # phase above with the same trade_arrays, so this should not
+                # normally trigger when trade_arrays is provided to execute_trades.
                 logger.warning(
                     "[tick %s] Vault %s: swap skipped — thin pool: %s; will retry next tick",
                     tick_id,
@@ -939,13 +1062,15 @@ class StrategyRunner:
         reasoning: str,
         portfolio: Portfolio,
         targets: list[TargetAllocation],
+        trade_id: bytes | None,
     ) -> tuple[ReasoningTrace, int | None, str | None, int | None, int | None]:
         """Commit phase: anchor the trace hash on-chain BEFORE the trade executes.
 
         Builds the canonical trace ONCE and commits its keccak256 via the registry's
-        real ``commit()`` (with claimedExecutionTime) so the same bytes can be revealed
-        after settlement and the on-chain hash binding holds. Falls back to the v1
-        ``publishTrace`` anchor when the deployed registry is pre-v1.5 (#588 redeploy).
+        real ``commit()`` (with claimedExecutionTime and tradeId) so the same bytes
+        can be revealed after settlement and the on-chain hash binding holds. Falls
+        back to the v1 ``publishTrace`` anchor when the deployed registry is pre-v1.5
+        (#588 redeploy).
 
         Every hashed field — including ``portfolio_after`` — is FINAL here: mutating
         any of them after this point changes ``canonical_json()`` and the on-chain
@@ -953,6 +1078,13 @@ class StrategyRunner:
         "Hash mismatch" (#903). ``portfolio_after`` therefore records the *intended*
         post-trade allocation (deterministic, known pre-trade); actual settlement tx
         hashes live in non-hashed fields and the off-chain record only.
+
+        Args:
+            trade_id: 32-byte tradeId (``executor.compute_trade_id``) derived from the
+                EXACT arrays that will be submitted to ``execute_trades()`` for this
+                rebalance — required on the real commit-reveal path (the caller
+                computes it in the SIZE phase before calling this). Only ``None`` on
+                the DRY_RUN path, where no on-chain commit is made at all.
 
         Returns (trace, on_chain_trace_id, commit_tx_hash, commit_block_number,
         claimed_execution_time). The trace is always returned so reveal() can submit
@@ -1017,8 +1149,16 @@ class StrategyRunner:
 
         try:
             if trace_publisher.supports_commit_reveal():
+                if trade_id is None:
+                    # Invariant violation: the real commit-reveal path always
+                    # supplies a trade_id (computed in the SIZE phase before this
+                    # method is called on the non-DRY_RUN path). Fail loud rather
+                    # than let trace_publisher.commit() reject an empty tradeId
+                    # silently or bind a wrong one.
+                    logger.error("[tick %s] COMMIT FAILED: trade_id missing on real commit-reveal path", tick_id)
+                    return trace, None, None, None, None
                 trace_id, commit_tx, commit_block = await trace_publisher.commit(
-                    trace, claimed_execution_time, intent_summary
+                    trace, claimed_execution_time, trade_id, intent_summary
                 )
                 if commit_tx:
                     logger.info(
