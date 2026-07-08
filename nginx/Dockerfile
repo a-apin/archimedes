@@ -27,4 +27,9 @@ RUN npm run build
 # box (`Server: nginx/1.31.2`) — never downgrade prod. Bump this tag deliberately. (#780)
 FROM nginxinc/nginx-unprivileged:1.31.2-alpine
 COPY --from=ui-build /app/dist /usr/share/nginx/html
-COPY nginx/nginx.conf /etc/nginx/conf.d/default.conf
+# Land the config as a TEMPLATE: the nginx image's docker-entrypoint
+# (20-envsubst-on-templates.sh) renders /etc/nginx/templates/*.template →
+# /etc/nginx/conf.d/*.conf at startup, substituting the NGINX_* env vars
+# (see nginx.conf's upstream block). NGINX_ENVSUBST_FILTER=^NGINX_ (set per-env)
+# restricts substitution to our own vars so nginx's own $variables are untouched.
+COPY nginx/nginx.conf /etc/nginx/templates/default.conf.template

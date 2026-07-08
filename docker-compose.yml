@@ -101,6 +101,14 @@ services:
         VITE_CIRCLE_CLIENT_URL: ${VITE_CIRCLE_CLIENT_URL:-https://modular-sdk.circle.com/v1/rpc/w3s/buidl}
         VITE_API_BASE: ${VITE_API_BASE:-}
     restart: unless-stopped
+    environment:
+      # Render the runtime-agnostic nginx template (see nginx.conf's upstream
+      # block). In compose, Docker's embedded DNS (127.0.0.11) resolves the
+      # `backend` service name at runtime.
+      NGINX_ENVSUBST_FILTER: "^NGINX_"
+      NGINX_RESOLVER_LINE: "resolver 127.0.0.11 valid=10s ipv6=off;"
+      NGINX_BACKEND_UPSTREAM: "backend:8000"
+      NGINX_UPSTREAM_RESOLVE: "resolve"
     ports:
       # TLS terminates upstream at CloudFront + the ALB; nginx serves plain
       # HTTP on :8080. No :443/8443 mapping and no cert mounts — the
