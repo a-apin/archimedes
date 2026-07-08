@@ -318,6 +318,99 @@ class TestPublishTrace:
         assert len(saved["trace_hash"].removeprefix("0x")) == 64
 
 
+# ── commit-reveal guard: failed commit must block the trade ───
+# (PR #1045 Copilot review, comment 2 — FUNDS-CRITICAL: if the registry
+# supports commit-reveal but the commit itself fails, Phase 2 must not
+# submit the rebalance — post-#588-redeploy that reverts on-chain with
+# "no matching commitment", wasting gas and leaving an unrevealed
+# commitment attempt.)
+
+
+class TestCommitRevealGuardBlocksTradeOnFailedCommit:
+    async def test_failed_commit_skips_trade_when_commit_reveal_supported(self, runner_env, monkeypatch):
+        runner, m = runner_env
+        # Exercise the LIVE (non-DRY_RUN) path — the guard is gated on the same
+        # `not DRY_RUN` condition the commit path uses.
+        monkeypatch.setattr("archimedes.chain.agent_runner.DRY_RUN", False)
+
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        # Phase 0 SIZE succeeds with valid on-chain arrays...
+        m["executor"].build_trade_arrays = AsyncMock(return_value=(["0x" + "11" * 20], [600_000000], [], []))
+        # ...but Phase 2 must never be reached: submitting now would revert
+        # on-chain against a missing commitment (#588 commit-before-trade guard).
+        m["executor"].execute_trades = AsyncMock(side_effect=AssertionError("execute_trades must not be called"))
+
+        # Registry supports commit-reveal, but the commit itself fails.
+        m["publisher"].supports_commit_reveal = MagicMock(return_value=True)
+        m["publisher"].commit = AsyncMock(return_value=(None, None, None))
+        # The SKIP trace this guard publishes still anchors via the legacy publishTrace path.
+        m["publisher"].publish = AsyncMock(return_value=None)
+
+        runner._get_vault_strategy_ids = MagicMock(return_value=None)
+
+        await runner.tick()
+
+        m["executor"].execute_trades.assert_not_called()
+        m["state"].save_trace.assert_awaited()
+        saved = m["state"].save_trace.await_args.args[0]
+        assert saved["decision_type"] == "skip"
+        assert saved["trigger"] == "commit_failed"
+
+    async def test_dry_run_unaffected_by_guard(self, runner_env):
+        """DRY_RUN never reaches a real commit (trade_id/commit_tx are None by
+        design) — the guard must not block the DRY_RUN simulate path."""
+        runner, m = runner_env  # runner_env fixture forces DRY_RUN=True
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        m["publisher"].supports_commit_reveal = MagicMock(return_value=True)
+        runner._get_vault_strategy_ids = MagicMock(return_value=None)
+
+        await runner.tick()
+
+        # DRY_RUN skips the SIZE phase entirely (no trade_arrays built) and
+        # proceeds through the normal "DRY RUN — skipping on-chain execution"
+        # branch — the new guard must not introduce a SKIP where none existed.
+        m["executor"].build_trade_arrays.assert_not_called()
+        m["state"].save_trace.assert_awaited()
+        saved = m["state"].save_trace.await_args.args[0]
+        assert saved["decision_type"] == "rebalance"
+
+    async def test_legacy_registry_without_commit_reveal_still_trades(self, runner_env, monkeypatch):
+        """If the registry does NOT support commit-reveal (legacy publishTrace-only
+        anchor), the old proceed-to-trade behavior must remain — the guard only
+        blocks when commit-reveal IS supported and the commit failed. Here even
+        the legacy publishTrace anchor itself fails (commit_tx ends up None, same
+        as the failed-commit case above) to prove the guard's gate is really on
+        `supports_commit_reveal()`, not merely on `commit_tx is None`."""
+        runner, m = runner_env
+        monkeypatch.setattr("archimedes.chain.agent_runner.DRY_RUN", False)
+
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        m["executor"].build_trade_arrays = AsyncMock(return_value=(["0x" + "11" * 20], [600_000000], [], []))
+        m["executor"].execute_trades = AsyncMock(return_value=["0xtradetx"])
+
+        # Pre-#588 registry: no commit()/reveal() exposed at all — and the
+        # publishTrace fallback anchor also fails, so commit_tx is None too.
+        m["publisher"].supports_commit_reveal = MagicMock(return_value=False)
+        m["publisher"].publish = AsyncMock(return_value=None)
+
+        runner._get_vault_strategy_ids = MagicMock(return_value=None)
+
+        await runner.tick()
+
+        # Trade proceeds exactly as before commit-reveal existed — the guard
+        # does not fire because supports_commit_reveal() is False.
+        m["executor"].execute_trades.assert_awaited_once()
+
+
 # ── run() loop body ───────────────────────────────────────────
 
 

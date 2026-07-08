@@ -169,6 +169,9 @@ class TracePublisher:
         if not trade_id or len(trade_id) != 32:
             raise ValueError(f"trade_id must be 32 bytes, got {len(trade_id) if trade_id else 0}")
 
+        if trade_id == b"\x00" * 32:
+            raise ValueError("trade_id must be non-zero (bytes32(0) is rejected on-chain)")
+
         content_hash = trace.trace_hash or trace.compute_hash()
         content_hash_bytes = bytes.fromhex(content_hash.removeprefix("0x"))  # 32 bytes
         vault_addr = chain_client.to_checksum(trace.vault_address)

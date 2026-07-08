@@ -777,6 +777,41 @@ class StrategyRunner:
             trade_id,
         )
 
+        # ── Commit-Reveal guard: if the registry supports commit-reveal but the
+        # commit above did NOT land (commit_tx is None), submitting the trade
+        # anyway would revert on-chain post-#588-redeploy ("no matching
+        # commitment") — wasting gas and leaving an unrevealed commitment
+        # attempt. Short-circuit with a SKIP trace instead of proceeding to
+        # Phase 2. Gated on the SAME `not DRY_RUN` condition the commit path
+        # uses above, so DRY_RUN (where trade_id/commit_tx are always None by
+        # design) is unaffected. Registries that don't support commit-reveal
+        # (legacy publishTrace-only) keep the old proceed-to-trade behavior —
+        # this only blocks when commit-reveal IS supported and the commit failed.
+        if not DRY_RUN and trace_publisher.supports_commit_reveal() and commit_tx is None:
+            logger.warning(
+                "[tick %s] Vault %s: commit-reveal supported but commit FAILED "
+                "(commit_tx is None) — skipping trade to avoid an on-chain revert "
+                "against a missing commitment.",
+                tick_id,
+                vault_address[:10],
+            )
+            await self._publish_trace(
+                vault_address,
+                DecisionType.SKIP,
+                "commit_failed",
+                portfolio,
+                [],
+                all_signals,
+                market_regime,
+                consensus,
+                tick_id,
+                "Commit-reveal supported but commit failed — skipping trade to avoid "
+                "an on-chain revert against a missing commitment.",
+                commit_tx=commit_tx,
+                commit_block=commit_block,
+            )
+            return
+
         # Phase 2: TRADE — execute the rebalance, submitting the SAME arrays
         # (trade_arrays) the tradeId above was derived from — never recomputed.
         if DRY_RUN:

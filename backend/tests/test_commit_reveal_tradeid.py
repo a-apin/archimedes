@@ -289,3 +289,18 @@ class TestTracePublisherCommitWithTradeId:
 
         with pytest.raises(ValueError, match="32 bytes"):
             asyncio.run(publisher.commit(trace, 2_000_000_000, b"\x01\x02"))
+
+    def test_commit_rejects_all_zero_trade_id(self, supported_loader):
+        """Copilot review, PR #1045 comment 1: an all-zero 32-byte trade_id
+        (bytes32(0)) passes the length guard above but the contract itself
+        rejects bytes32(0) — the commit would revert at submission time and
+        (post-#588-redeploy) the rebalance would fail on a missing commitment.
+        Reject it loudly here instead, on both the Circle and raw-key paths
+        (this check runs before either path branches)."""
+        from archimedes.chain.trace_publisher import TracePublisher
+
+        publisher = TracePublisher(loader=supported_loader)
+        trace = _make_trace()
+
+        with pytest.raises(ValueError, match="non-zero"):
+            asyncio.run(publisher.commit(trace, 2_000_000_000, b"\x00" * 32))
