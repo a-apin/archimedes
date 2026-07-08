@@ -396,7 +396,12 @@ jobs:
           # step below fails closed with a clear error if this still contains
           # a placeholder rather than silently passing an invalid config to
           # `aws ecs run-task`.
-          ECS_MIGRATE_NETWORK_CONFIGURATION: '{"awsvpcConfiguration":{"subnets":["REPLACE_WITH_PRIVATE_SUBNET_IDS"],"securityGroups":["REPLACE_WITH_ECS_BACKEND_SECURITY_GROUP_ID"],"assignPublicIp":"DISABLED"}}'
+          # Real value from `terraform output -raw ecs_migrate_network_configuration`
+          # (infra/, after the Fargate cutover apply — issue #1039 B2). Private
+          # subnets + the ecs_backend SG, no public IP (migrate reaches Aurora over
+          # the VPC). Update if aws_subnet.private / aws_security_group.ecs_backend
+          # are ever recreated with new IDs.
+          ECS_MIGRATE_NETWORK_CONFIGURATION: '{"awsvpcConfiguration":{"subnets":["subnet-0f412b89a025ca15b","subnet-010efb75b1093ba92"],"securityGroups":["sg-0f21c2773901a14e7"],"assignPublicIp":"DISABLED"}}'
         run: |
           set -euo pipefail
 
