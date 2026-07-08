@@ -179,11 +179,38 @@ jobs:
             --build-arg VITE_CIRCLE_CLIENT_URL="$VITE_CIRCLE_CLIENT_URL" \
             --build-arg VITE_API_BASE="$VITE_API_BASE"
 
-      - name: Validate backend image boots (GET /health)
+      - name: Validate backend image boots (GET /health) against a real Postgres
+        # Boot the image the way it runs in PROD — against Postgres, not the
+        # SQLite fallback. Two reasons the old SQLite boot was wrong: (1) the
+        # image runs as `nonroot` and /app is root-owned, so the SQLite default
+        # (/app/archimedes_chat.db) can't be created ("unable to open database
+        # file") — a latent bug this validation surfaces; (2) SQLite is not the
+        # prod path anyway. Stand up a throwaway Postgres on the same
+        # user-defined network, apply the schema with the SAME migrate command
+        # the Fargate ECS migrate task runs (alembic pre-flight), then boot the
+        # backend against it. /health calls get_paper_count(), so the schema
+        # must exist first (init_db skips create_all on Postgres — Alembic owns
+        # it, #1028). Requiring DATABASE_URL in prod + a writable SQLite
+        # fallback for tests/local is tracked in #1044.
         run: |
           set -euo pipefail
           docker network create archimedes-ci
-          docker run -d --name backend --network archimedes-ci -p 8000:8000 archimedes-backend:ci
+          docker run -d --name pg --network archimedes-ci \
+            -e POSTGRES_USER=archimedes -e POSTGRES_PASSWORD=ci -e POSTGRES_DB=archimedes \
+            postgres:18-alpine
+          echo "waiting for Postgres to accept connections..."
+          for _ in $(seq 1 30); do
+            if docker exec pg pg_isready -U archimedes -d archimedes >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          DB_URL="postgresql://archimedes:ci@pg:5432/archimedes"
+          # Apply the schema exactly as the prod ECS migrate task does (a fresh
+          # DB → `alembic upgrade head` from the baseline). Also validates the
+          # migrate pre-flight itself, which the real cutover depends on.
+          docker run --rm --network archimedes-ci -e DATABASE_URL="$DB_URL" \
+            archimedes-backend:ci python -m archimedes.scripts.alembic_migrate_preflight
+          docker run -d --name backend --network archimedes-ci -e DATABASE_URL="$DB_URL" \
+            -p 8000:8000 archimedes-backend:ci
           ok=""
           for _ in $(seq 1 40); do
             if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
@@ -195,9 +222,10 @@ jobs:
           if [ -z "$ok" ]; then
             echo "::error::backend image failed to answer GET /health within 120s — see logs below"
             docker logs backend || true
+            docker logs pg || true
             exit 1
           fi
-          echo "backend /health OK"
+          echo "backend /health OK (against Postgres)"
 
       - name: Validate nginx image boots + proxies (GET / and /health)
         # Runs on the same user-defined docker network as the backend
@@ -227,7 +255,7 @@ jobs:
       - name: Teardown validation containers
         if: always()
         run: |
-          docker rm -f backend nginx-validate 2>/dev/null || true
+          docker rm -f backend nginx-validate pg 2>/dev/null || true
           docker network rm archimedes-ci 2>/dev/null || true
 
       - name: Configure AWS credentials (OIDC)
