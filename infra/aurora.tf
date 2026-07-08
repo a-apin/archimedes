@@ -107,6 +107,19 @@ resource "aws_rds_cluster" "main" {
   tags = {
     Project = var.project_name
   }
+
+  # Do NOT let terraform rotate the master password as a side effect of other
+  # cluster applies (e.g. the 16.4 -> 18.3 engine upgrade). The password is
+  # bootstrapped once at creation from TF_VAR_aurora_master_password. If that env
+  # var drifts from the live value at plan time, terraform shows a spurious
+  # `~ master_password` diff and an apply would RESET the live password —
+  # breaking the backend's DATABASE_URL (seeded in SSM) and taking prod down.
+  # Ignoring it decouples the password from every other cluster change. To
+  # deliberately rotate, do it out-of-band (aws rds modify-db-cluster) and update
+  # the SSM DATABASE_URL / AURORA_MASTER_PASSWORD params in lockstep. (#777/#1039)
+  lifecycle {
+    ignore_changes = [master_password]
+  }
 }
 
 resource "aws_rds_cluster_instance" "main" {
