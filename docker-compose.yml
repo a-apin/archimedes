@@ -123,8 +123,8 @@ services:
   oracle:
     image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     # #1043 — gated behind the `runners` profile; see the file-header note.
     # A bare local `docker compose up` does NOT start this. It is also a
     # funds-adjacent exactly-once singleton at the application layer
@@ -160,8 +160,8 @@ services:
   agent:
     image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     # #1043 — gated behind the `runners` profile; see the file-header note.
     profiles: ["runners"]
     restart: unless-stopped
@@ -201,8 +201,8 @@ services:
   backend:
     image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     # NO host port binding — backend is only reachable via nginx reverse proxy.
     # This ensures all rate limits, CORS, security headers, and the docs gate
@@ -272,8 +272,8 @@ services:
     image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
     profiles: ["runners"]
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     command: ["python", "-m", "archimedes.services.kb_runner"]
     environment:

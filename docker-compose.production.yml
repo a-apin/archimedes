@@ -60,8 +60,8 @@ services:
   backend:
     image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     # NO host port binding — backend is only reachable via nginx reverse proxy.
     expose:
