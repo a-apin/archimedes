@@ -59,18 +59,16 @@ class TestCreatePool:
     def test_non_owner_cannot_create_pool(self, splitter, accounts):
         """Only owner may call createPool (D6 §2.2)."""
         pool_id = b"pool-2".ljust(32, b"\x00")
-        with boa.env.prank(accounts["attacker"]):
-            with pytest.raises(boa.BoaError, match="only owner"):
-                splitter.createPool(pool_id, accounts["creator"], accounts["platform"])
+        with boa.env.prank(accounts["attacker"]), pytest.raises(boa.BoaError, match="only owner"):
+            splitter.createPool(pool_id, accounts["creator"], accounts["platform"])
 
     def test_cannot_recreate_existing_pool(self, splitter, accounts):
         """createPool reverts if pool_id already active (D6 §2.2)."""
         pool_id = b"pool-3".ljust(32, b"\x00")
         with boa.env.prank(accounts["owner"]):
             splitter.createPool(pool_id, accounts["creator"], accounts["platform"])
-        with boa.env.prank(accounts["owner"]):
-            with pytest.raises(boa.BoaError, match="pool already exists"):
-                splitter.createPool(pool_id, accounts["creator"], accounts["platform"])
+        with boa.env.prank(accounts["owner"]), pytest.raises(boa.BoaError, match="pool already exists"):
+            splitter.createPool(pool_id, accounts["creator"], accounts["platform"])
 
     def test_create_pool_emits_event(self, splitter, accounts):
         """PoolCreated event has correct indexed fields."""
@@ -127,9 +125,8 @@ class TestDepositToPool:
             splitter.createPool(pool_id, accounts["creator"], accounts["platform"])
             splitter.deactivatePool(pool_id)
 
-        with boa.env.prank(accounts["funder"]):
-            with pytest.raises(boa.BoaError, match="pool not active"):
-                splitter.depositToPool(pool_id, 100 * 10**6)
+        with boa.env.prank(accounts["funder"]), pytest.raises(boa.BoaError, match="pool not active"):
+            splitter.depositToPool(pool_id, 100 * 10**6)
 
     def test_deposit_zero_amount_reverts(self, splitter, usdc, accounts):
         """Depositing zero must revert."""
@@ -137,9 +134,8 @@ class TestDepositToPool:
         with boa.env.prank(accounts["owner"]):
             splitter.createPool(pool_id, accounts["creator"], accounts["platform"])
 
-        with boa.env.prank(accounts["funder"]):
-            with pytest.raises(boa.BoaError, match="amount must be positive"):
-                splitter.depositToPool(pool_id, 0)
+        with boa.env.prank(accounts["funder"]), pytest.raises(boa.BoaError, match="amount must be positive"):
+            splitter.depositToPool(pool_id, 0)
 
     def test_deposit_transfers_usdc(self, splitter, usdc, accounts):
         """USDC is actually pulled from the depositor (real transfer)."""
@@ -294,9 +290,8 @@ class TestWithdraw:
     def test_nonexistent_pool_reverts_withdraw(self, splitter, accounts):
         """Withdrawing from a pool that was never created must revert."""
         pool_id = b"pool-nonexist".ljust(32, b"\x00")
-        with boa.env.prank(accounts["creator"]):
-            with pytest.raises(boa.BoaError, match="pool does not exist"):
-                splitter.withdraw(pool_id, 100 * 10**6)
+        with boa.env.prank(accounts["creator"]), pytest.raises(boa.BoaError, match="pool does not exist"):
+            splitter.withdraw(pool_id, 100 * 10**6)
 
     def test_withdraw_zero_amount_reverts(self, splitter, usdc, accounts):
         """Withdrawing zero must revert."""
@@ -308,9 +303,8 @@ class TestWithdraw:
             usdc.approve(splitter.address, 100 * 10**6)
             splitter.depositToPool(pool_id, 100 * 10**6)
 
-        with boa.env.prank(accounts["creator"]):
-            with pytest.raises(boa.BoaError, match="amount must be positive"):
-                splitter.withdraw(pool_id, 0)
+        with boa.env.prank(accounts["creator"]), pytest.raises(boa.BoaError, match="amount must be positive"):
+            splitter.withdraw(pool_id, 0)
 
     def test_withdraw_emits_split_event(self, splitter, usdc, accounts):
         """PaymentSplit event logged with correct shares."""
@@ -429,9 +423,8 @@ class TestDeactivatePool:
         with boa.env.prank(accounts["owner"]):
             splitter.createPool(pool_id, accounts["creator"], accounts["platform"])
 
-        with boa.env.prank(accounts["attacker"]):
-            with pytest.raises(boa.BoaError, match="only owner"):
-                splitter.deactivatePool(pool_id)
+        with boa.env.prank(accounts["attacker"]), pytest.raises(boa.BoaError, match="only owner"):
+            splitter.deactivatePool(pool_id)
 
 
 # ═══════════════════════════════════════════════════════════════════════
