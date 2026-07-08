@@ -1433,7 +1433,20 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
         content_hash = hashlib.sha256(artifact_json.encode("utf-8")).hexdigest()
         # The live gate is the single source of truth: re-grade the REAL returns so the
         # persisted passes_rigor_gate matches what verdicts_for_strategies computes.
-        live = verdict_from_returns(strategy_id, returns, num_trials=int(num_trials))
+        # look_ahead_audit_passed threads the closed-DSL self-attestation computed
+        # above (result.look_ahead_audit_passed, from rv["lookahead_audit_passed"])
+        # through to the gate. Without this, strategy_code=None (this path has no
+        # inspectable source for the AST audit) left the gate's look_ahead_passed
+        # unconditionally False — an always-on floor failure that blocked deploy at
+        # EVERY strictness level regardless of DSR/PBO/OOS, no matter how strong the
+        # strategy. See live_rigor_gate.verdict_from_returns's docstring for why this
+        # matches the accepted DSL self-attestation policy (fusion_evaluator.py).
+        live = verdict_from_returns(
+            strategy_id,
+            returns,
+            num_trials=int(num_trials),
+            look_ahead_audit_passed=result.look_ahead_audit_passed,
+        )
 
         with get_session() as session:
             insert_backtest_if_missing(

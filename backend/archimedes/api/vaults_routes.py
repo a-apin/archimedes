@@ -95,18 +95,28 @@ def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
     return False, False
 
 
-def _deployable_levels(strategy_ids: list[str]) -> dict[str, tuple[bool, int | None, bool]]:
+def _deployable_levels(
+    strategy_ids: list[str], request: Request | None = None
+) -> dict[str, tuple[bool, int | None, bool]]:
     """``{id: (found, min_passing_level, blocked_by_floor)}`` at the chosen level.
 
     Curated strategies get a LIVE per-level verdict computed over the whole-library
     cohort (``verdicts_for_strategies``), so the multiple-testing correction is
     the same one the badge uses — the strictness slider genuinely re-grades them.
-    Generated strategies fall back to their persisted level-1 badge (min level 1
-    if the badge holds, else ``None``): the slider does not loosen generated
-    deploys in this version, because a generated strategy's look-ahead provenance
-    is a closed-DSL self-attestation, not the AST audit the live re-grade runs, so
-    re-grading it here would be apples-to-oranges. This is fail-safe (a generated
-    strategy that fails its badge simply can't be deployed at a looser level yet).
+
+    Generated strategies consult their OWN per-strategy ladder
+    (``selection_bias_routes._generated_strategy_rigor`` — the same helper the
+    Strategy Passport's ``GET /gate/{id}`` reads, graded on the strategy's own
+    persisted num_trials/pbo/look-ahead, never merged into the curated cohort).
+    Previously this branch only offered a badge-gated fallback (min level 1 if
+    the badge held, else ``None``) that never consulted the real ladder, so a
+    generated strategy could show "deployable @ Balanced" on the passport yet
+    still 422 here at the exact same strictness — the server-side enforcement
+    disagreeing with what the user was shown. Falls back to the old badge-only
+    check when ``request`` isn't available (internal/legacy callers) or the id
+    doesn't resolve to a visible ``strategy_store`` row (unowned/unpublished —
+    #850 ownership gating; existence stays hidden either way, mirrored here as
+    "not found, not deployable").
 
     Never raises: any resolution failure degrades an id to not-deployable.
     """
@@ -135,13 +145,35 @@ def _deployable_levels(strategy_ids: list[str]) -> dict[str, tuple[bool, int | N
             # Curated but the verdict batch failed — fail closed (found, not deployable).
             out[sid] = (True, None, False)
         else:
-            # Generated (or unknown): badge-gated fallback.
-            found, passes_badge = _strategy_rigor_status(sid)
-            out[sid] = (found, (STRICTEST_LEVEL if passes_badge else None), False)
+            # Generated (or unknown): consult its own per-strategy ladder so this
+            # agrees with the passport. `_generated_strategy_rigor` already runs
+            # the ownership gate (#850) — a None here means "not found or not
+            # visible to this caller", not just "no ladder available".
+            rigor_result = None
+            if request is not None:
+                try:
+                    from archimedes.api.selection_bias_routes import _generated_strategy_rigor
+
+                    rigor_result = _generated_strategy_rigor(sid, request, STRICTEST_LEVEL)
+                except Exception:
+                    logger.exception(
+                        "deploy gate: generated-strategy ladder failed for %s — falling back to badge",
+                        sanitize_log_value(sid),
+                    )
+                    rigor_result = None
+            if rigor_result is not None:
+                out[sid] = (True, rigor_result.min_passing_level, rigor_result.blocked_by_floor)
+            else:
+                # No request context, or the id didn't resolve to a visible
+                # strategy_store row — the pre-existing badge-gated fallback.
+                found, passes_badge = _strategy_rigor_status(sid)
+                out[sid] = (found, (STRICTEST_LEVEL if passes_badge else None), False)
     return out
 
 
-def _assert_strategies_pass_rigor(strategy_ids: list[str], strictness_level: int = STRICTEST_LEVEL) -> None:
+def _assert_strategies_pass_rigor(
+    strategy_ids: list[str], strictness_level: int = STRICTEST_LEVEL, request: Request | None = None
+) -> None:
     """Fail-closed deploy precondition (#818): every strategy bound to a vault must
     resolve and pass the rigor gate at the caller's chosen ``strictness_level``.
     Raises 422 otherwise. The frontend Deploy gate (#782) is defense-in-depth;
@@ -152,6 +184,11 @@ def _assert_strategies_pass_rigor(strategy_ids: list[str], strictness_level: int
     trade statistical confidence for breadth, never admit a broken/curve-fit
     strategy. A strategy with no computed verdict (placeholder) is correctly
     refused.
+
+    ``request`` (optional) is threaded through to ``_deployable_levels`` so a
+    generated strategy's own per-strategy ladder — rather than the coarse
+    badge-only fallback — backs the looser-than-badge branch below. Omitted by
+    callers that only ever exercise the badge-level fast path (the default).
     """
     level = clamp_level(strictness_level)
 
@@ -174,7 +211,7 @@ def _assert_strategies_pass_rigor(strategy_ids: list[str], strictness_level: int
         return
 
     # Looser-than-badge level: consult the live per-level ladder.
-    levels = _deployable_levels(strategy_ids)
+    levels = _deployable_levels(strategy_ids, request)
     for sid in strategy_ids:
         found, min_level, blocked = levels.get(sid, (False, None, False))
         if not found:
@@ -238,7 +275,9 @@ async def create_vault(
     # passed the rigor gate AT THE REQUESTED STRICTNESS, BEFORE spending gas. The
     # #782 frontend Deploy gate is defense-in-depth; this is the guarantee a
     # direct/non-UI API call can't bypass. Always-on floors hold at every level.
-    _assert_strategies_pass_rigor(req.strategy_ids, req.strictness_level)
+    # `request` is threaded through so a generated strategy's own per-strategy
+    # ladder (not just its badge) backs a looser-than-badge strictness choice.
+    _assert_strategies_pass_rigor(req.strategy_ids, req.strictness_level, request=request)
 
     try:
         vault_address = await chain_executor.create_vault(
@@ -303,7 +342,7 @@ async def get_vault_detail(address: str):
 @limiter.limit("10/minute")
 async def store_vault_metadata(
     req: VaultMetadataRequest,
-    request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
+    request: Request,
     response: Response,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     wallet: str = Depends(require_verified_wallet),
 ):
@@ -339,7 +378,7 @@ async def store_vault_metadata(
     # strictness. Always-on floors hold at every level, so the link can never
     # bind a look-ahead-biased / OOS-negative / worse-than-coin-flip strategy.
     if req.strategy_ids:
-        _assert_strategies_pass_rigor(req.strategy_ids, req.strictness_level)
+        _assert_strategies_pass_rigor(req.strategy_ids, req.strictness_level, request=request)
 
     from archimedes.db import get_session
 
@@ -405,7 +444,7 @@ async def get_vault_metadata(address: str):
 async def derive_vault_allocations(
     address: str,  # noqa: ARG001 — path param routes the request; not referenced in body
     req: SetAllocationsRequest,
-    request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
+    request: Request,
     response: Response,  # noqa: ARG001 — reserved for slowapi rate-limit headers
     wallet: str = Depends(require_verified_wallet),  # noqa: ARG001 — SIWE gate (#917): auth required, wallet unused in body
 ):
@@ -464,7 +503,7 @@ async def derive_vault_allocations(
     deployable_ids: set[str] | None = None
     lvl = clamp_level(req.strictness_level)
     if lvl > STRICTEST_LEVEL:
-        levels = _deployable_levels([s.id for s in strategies])
+        levels = _deployable_levels([s.id for s in strategies], request)
         deployable_ids = {
             sid for sid, (found, ml, _blocked) in levels.items() if found and ml is not None and ml <= lvl
         }

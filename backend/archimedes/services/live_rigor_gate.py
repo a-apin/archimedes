@@ -143,6 +143,7 @@ def verdict_from_returns(
     strategy_code: str | None = None,
     paper_claimed_sharpe: float | None = None,
     average_correlation: float = 0.0,
+    look_ahead_audit_passed: bool | None = None,
 ) -> RigorGateVerdict:
     """Compute the live tri-state verdict from a strategy's persisted returns.
 
@@ -157,6 +158,23 @@ def verdict_from_returns(
     (``E_max_N=0``) and collapsed DSR to a plain Sharpe test, so an unspecified
     trial count silently ran the badge undeflated. Callers holding cohort context
     (``verdicts_for_strategies``, the generation pipeline) still pass it explicitly.
+
+    ``look_ahead_audit_passed=None`` (the default) leaves the look-ahead leg to
+    ``run_rigor_gate``'s own AST-audit-over-``strategy_code`` path — the right
+    behavior for curated strategies (``verdicts_for_strategies``, which passes
+    real cited source). Callers whose "code" is a closed DSL spec rather than
+    inspectable source (the fusion/DSL-generation path) have nothing for the AST
+    audit to run against, so ``strategy_code=None`` there would otherwise force
+    ``look_ahead_passed=False`` unconditionally — failing the always-on
+    look-ahead floor (``blocked_by_floor=True``) at every strictness level
+    regardless of DSR/PBO/OOS. Passing the pipeline's own closed-DSL
+    self-attestation through here (already enforced pre-evaluation by
+    ``validate_strategy_spec`` rejecting any spec with ``look_ahead_safe=False``)
+    matches the accepted policy in ``fusion_evaluator.py``'s
+    ``look_ahead_clean = True`` / "self-attested, not source-audited" framing —
+    it is NOT the independent AST audit, and is surfaced as such in
+    ``gate_details``, but it is the same admitted trust boundary already used
+    elsewhere in this codebase for exactly this class of strategy.
     """
     if not daily_returns or len(daily_returns) < _MIN_RETURNS_FOR_GATE:
         return RigorGateVerdict.pending()
@@ -181,6 +199,7 @@ def verdict_from_returns(
             in_sample_sharpe=None,
             paper_claimed_sharpe=paper_claimed_sharpe,
             average_correlation=average_correlation,
+            look_ahead_audit_passed=look_ahead_audit_passed,
         )
     except Exception as exc:  # never let the badge crash the library list
         logger.warning("live rigor gate failed for %s (badge → pending): %s", strategy_id, exc)
