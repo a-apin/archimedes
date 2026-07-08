@@ -57,7 +57,24 @@ resource "aws_rds_cluster" "main" {
   cluster_identifier = "${var.project_name}-aurora"
   engine             = "aurora-postgresql"
   engine_mode        = "provisioned" # Serverless v2 uses provisioned mode + serverless_v2_scaling_configuration
-  engine_version     = "16.4"
+  engine_version     = "18.3"
+  # 16.4 -> 18.3 is a direct major-version upgrade target (verified against the live
+  # account: `aws rds describe-db-engine-versions --engine aurora-postgresql
+  # --engine-version 16.4 --query ValidUpgradeTarget` lists 18.3 directly, no 17.x hop
+  # needed). Major upgrades require this flag or `terraform apply` rejects the version
+  # bump outright. Aurora moves the cluster to the `aurora-postgresql18` DEFAULT
+  # parameter family automatically on upgrade; we don't hand-manage a custom parameter
+  # group (no aws_rds_cluster_parameter_group resource exists in this file), so there's
+  # nothing else to bump here.
+  allow_major_version_upgrade = true
+  # `apply_immediately` defaults to false on this resource, which would otherwise queue
+  # an engine_version change for the NEXT MAINTENANCE WINDOW instead of applying it when
+  # `terraform apply` runs — the opposite of what the PR description's operator runbook
+  # promises ("apply in a deliberate window"). Setting this to true makes modifications
+  # (this one and future ones) land exactly when `terraform apply` is run, not silently
+  # at some unplanned window — required for a live-funds cluster where the operator needs
+  # to control exactly when downtime happens.
+  apply_immediately = true
 
   database_name   = "archimedes"
   master_username = "archimedes"

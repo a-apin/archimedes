@@ -53,7 +53,13 @@ services:
   # the full self-contained stack; the same command in prod (no localdb profile)
   # runs the app tier against managed stores. See docs/deployment.md.
   postgres:
-    image: postgres:16-alpine
+    # Bumped 16-alpine -> 18-alpine (#777) to match prod Aurora's 18.3 major version.
+    # BREAKING for existing local envs: Postgres refuses to start on a data directory
+    # that a previous major version initialized. If your local `pgdata` volume was
+    # created under the old 16-alpine image, remove it before starting this image:
+    #   docker compose down -v          # drops the pgdata volume (loses local-only data)
+    #   docker compose --profile localdb up -d --build
+    image: postgres:18-alpine
     profiles: ["localdb"]
     restart: unless-stopped
     environment:
