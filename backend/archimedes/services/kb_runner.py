@@ -79,14 +79,27 @@ class _SyncLeaseClient:
         self._release_script = self._client.register_script(_LEASE_RELEASE_LUA)
 
     def acquire(self, runner_name: str, ttl_ms: int) -> str | None:
+        """Win-then-fence, mirroring ``AgentStateStore.acquire_lease`` exactly
+        (#1046 review): only a winner of the ``SET NX`` consumes a fence
+        number, so a non-holder retrying this in a loop does not burn fence
+        values on every failed attempt. See the async version's docstring in
+        ``redis_state.py`` for the full step-by-step rationale, including the
+        ``XX``-guarded overwrite for the rare expire-in-between race.
+        """
         from archimedes.services.redis_state import KEY_LEASE_FENCING_SUFFIX, KEY_LEASE_PREFIX
 
         key = f"{KEY_LEASE_PREFIX}{runner_name}"
         fencing_key = f"{KEY_LEASE_PREFIX}{runner_name}{KEY_LEASE_FENCING_SUFFIX}"
+
+        holder_uuid = str(uuid.uuid4())
+        acquired = self._client.set(key, holder_uuid, nx=True, px=ttl_ms)
+        if not acquired:
+            return None
+
         fence = self._client.incr(fencing_key)
-        token = f"{uuid.uuid4()}:{fence}"
-        acquired = self._client.set(key, token, nx=True, px=ttl_ms)
-        return token if acquired else None
+        token = f"{holder_uuid}:{fence}"
+        overwritten = self._client.set(key, token, px=ttl_ms, xx=True)
+        return token if overwritten else None
 
     def renew(self, runner_name: str, token: str, ttl_ms: int) -> bool:
         from archimedes.services.redis_state import KEY_LEASE_PREFIX
@@ -127,24 +140,39 @@ def _run_pipeline_with_lease() -> None:
 
     logger.info("kb_runner: lease acquired — triggering pipeline")
     stop_renew = threading.Event()
+    # Set by the renewal thread the instant it can no longer PROVE this
+    # process still holds the lease — either a definitive CAS loss (someone
+    # else's fence/token is now in the key) or an error that leaves renewal
+    # unconfirmed (e.g. a Redis blip). Both are treated the same, fail-closed
+    # way: run_pipeline() below checks this and refuses to write manifest.json
+    # if it is set, so a run whose lease expired mid-flight cannot clobber the
+    # authoritative instance's manifest with a lost-update race (#1046 review).
+    lease_lost = threading.Event()
 
     def _renew_loop() -> None:
         while not stop_renew.wait(LEASE_RENEW_INTERVAL_S):
             try:
                 if not client.renew(RUNNER_NAME, token, LEASE_TTL_MS):
                     logger.error("kb_runner: lease renew compare-and-set FAILED — lease lost mid-run")
+                    lease_lost.set()
             except Exception:
-                logger.exception("kb_runner: lease renew errored")
+                logger.exception("kb_runner: lease renew errored — cannot confirm the lease is still held")
+                lease_lost.set()
 
     renew_thread = threading.Thread(target=_renew_loop, name="kb-lease-renew", daemon=True)
     renew_thread.start()
     try:
         from archimedes.scripts.run_kb_pipeline import run_pipeline
 
-        run_pipeline()
+        run_pipeline(lease_lost=lease_lost)
     finally:
         stop_renew.set()
         renew_thread.join(timeout=5)
+        if lease_lost.is_set():
+            # Not provably ours anymore — still safe to call (release_lease is
+            # a compare-and-delete no-op against a token we no longer hold),
+            # but log distinctly so this case is visible in the runner logs.
+            logger.warning("kb_runner: lease was lost during this run — releasing (likely a no-op)")
         try:
             client.release(RUNNER_NAME, token)
         except Exception:

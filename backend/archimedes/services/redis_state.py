@@ -213,10 +213,25 @@ class AgentStateStore:
         Returns a fencing token ``"<uuid4>:<fence>"`` on success, or ``None``
         if another live copy already holds the lease. ``fence`` is a
         monotonically increasing per-runner counter (``INCR`` on a dedicated
-        key) folded into the token so every acquisition attempt gets a
-        unique, ordered identity — useful for audit/log correlation,
-        independent of the NX check itself (which is what actually enforces
-        exclusivity).
+        key) folded into the token so every acquisition WIN gets a unique,
+        ordered identity — useful for audit/log correlation, independent of
+        the NX check itself (which is what actually enforces exclusivity).
+
+        Win-then-fence, in that order (PR #1046 review): a non-leader
+        retrying acquire in a loop must not burn fence numbers on every
+        failed attempt, so the fence is only ever consumed by whoever
+        actually wins the NX. Sequence:
+          1. ``SET key <uuid4> NX PX ttl_ms`` — the real exclusivity check.
+             Lose → return ``None`` immediately, no fence consumed.
+          2. Win → ``INCR`` the dedicated fencing key and fold it into the
+             final token.
+          3. ``SET key <uuid4>:<fence> PX ttl_ms XX`` — overwrite the
+             placeholder we just wrote with the real token. ``XX`` guards
+             the rare race where our own lease already expired between
+             steps 1 and 3 (only plausible with a pathologically short
+             ``ttl_ms``, e.g. in tests): if the key no longer exists (or was
+             re-won by someone else in that window) the ``XX`` write fails
+             and we return ``None`` rather than resurrecting/clobbering it.
 
         The returned token must be passed to ``renew_lease`` / ``release_lease``
         so only the current owner can mutate the lease.
@@ -224,10 +239,16 @@ class AgentStateStore:
         r = await self._get_redis()
         key = f"{KEY_LEASE_PREFIX}{runner_name}"
         fencing_key = f"{KEY_LEASE_PREFIX}{runner_name}{KEY_LEASE_FENCING_SUFFIX}"
+
+        holder_uuid = str(uuid.uuid4())
+        acquired = await r.set(key, holder_uuid, nx=True, px=ttl_ms)
+        if not acquired:
+            return None
+
         fence = await r.incr(fencing_key)
-        token = f"{uuid.uuid4()}:{fence}"
-        acquired = await r.set(key, token, nx=True, px=ttl_ms)
-        return token if acquired else None
+        token = f"{holder_uuid}:{fence}"
+        overwritten = await r.set(key, token, px=ttl_ms, xx=True)
+        return token if overwritten else None
 
     async def renew_lease(self, runner_name: str, token: str, ttl_ms: int) -> bool:
         """Extend the lease TTL — ONLY if *token* still matches the stored owner.

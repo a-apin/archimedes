@@ -7,17 +7,21 @@ infinite `time.sleep` loop and is excluded by the `if __name__` guard.
 Added 2026-05-24 as part of the #147 coverage-gate lift. Extended 2026-07-07
 (#1043) with the sync exactly-once lease path (`_SyncLeaseClient`,
 `_run_pipeline_with_lease`) — see backend/tests/test_runner_lease.py for the
-async (oracle_runner/agent_runner) counterpart.
+async (oracle_runner/agent_runner) counterpart. Further extended 2026-07-07
+(PR #1046 review) with the `lease_lost` mid-run manifest-write guard in
+`archimedes.scripts.run_kb_pipeline.run_pipeline`.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import fakeredis
 import pytest
+from archimedes.scripts.run_kb_pipeline import run_pipeline
 from archimedes.services import kb_runner
 
 
@@ -172,3 +176,94 @@ class TestRunPipelineWithLease:
         ):
             kb_runner._run_pipeline_with_lease()
         assert fake_sync_redis.get("archimedes:leader:kb_runner") is None
+
+
+class TestRunPipelineLeaseLostGuard:
+    """PR #1046 review comment 2 — a lease lost mid-run must not let this
+    instance clobber the authoritative instance's manifest.json.
+
+    Direct, deterministic coverage of run_kb_pipeline.run_pipeline()'s
+    ``lease_lost`` guard: whether the Event was set before or during the
+    call, run_pipeline() must see it and refuse to write manifest.json.
+    """
+
+    def test_lease_lost_prevents_manifest_write(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("KB_PIPELINE_ENABLED", raising=False)
+        lease_lost = threading.Event()
+        lease_lost.set()
+
+        manifest = run_pipeline(artifact_dir=tmp_path, lease_lost=lease_lost)
+
+        assert not (tmp_path / "manifest.json").exists()
+        # Still returns a manifest dict to the caller — only the WRITE is guarded.
+        assert manifest["status"].startswith("skipped")
+
+    def test_lease_not_lost_writes_manifest_normally(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("KB_PIPELINE_ENABLED", raising=False)
+        lease_lost = threading.Event()  # never set
+
+        manifest = run_pipeline(artifact_dir=tmp_path, lease_lost=lease_lost)
+
+        written = tmp_path / "manifest.json"
+        assert written.exists()
+        assert json.loads(written.read_text()) == manifest
+
+    def test_no_lease_lost_event_passed_still_writes_manifest(self, tmp_path, monkeypatch):
+        """Backward-compatible default: callers that don't pass ``lease_lost``
+        (e.g. the CLI entry point in ``main()``) keep the old unguarded behavior."""
+        monkeypatch.delenv("KB_PIPELINE_ENABLED", raising=False)
+
+        run_pipeline(artifact_dir=tmp_path)
+
+        assert (tmp_path / "manifest.json").exists()
+
+    def test_lease_lost_before_the_enabled_pipeline_stage_aborts_early(self, tmp_path, monkeypatch):
+        """With KB_PIPELINE_ENABLED set, a lease already lost must abort BEFORE
+        the (multi-GB-model) real pipeline stage even starts — a cooperative
+        checkpoint, not just a final guard-the-write."""
+        monkeypatch.setenv("KB_PIPELINE_ENABLED", "1")
+        lease_lost = threading.Event()
+        lease_lost.set()
+
+        manifest = run_pipeline(artifact_dir=tmp_path, lease_lost=lease_lost)
+
+        assert not (tmp_path / "manifest.json").exists()
+        assert "aborted" in manifest["status"]
+
+
+class TestLeaseLostMidRunIntegration:
+    """PR #1046 review comment 2 — full integration of the renewal thread's
+    failure signal reaching run_pipeline()'s guard.
+
+    Event-synchronized (no sleep-based polling): the mocked "pipeline" body
+    blocks until the renewal thread has actually recorded a CAS failure,
+    then calls through to the real run_pipeline() so the manifest-write
+    guard is exercised against a genuinely mid-run lease loss.
+    """
+
+    def test_renew_failure_mid_run_prevents_manifest_write(self, fake_sync_redis, tmp_path, monkeypatch):
+        monkeypatch.setattr(kb_runner, "ARTIFACT_DIR", tmp_path)
+        # Fire the renewal loop's first tick almost immediately instead of
+        # waiting the production ~10 minutes.
+        monkeypatch.setattr(kb_runner, "LEASE_RENEW_INTERVAL_S", 0.01)
+        monkeypatch.delenv("KB_PIPELINE_ENABLED", raising=False)
+
+        def _failing_renew(self, runner_name, token, ttl_ms):
+            return False  # simulate a lost CAS — someone else now holds the lease
+
+        monkeypatch.setattr(kb_runner._SyncLeaseClient, "renew", _failing_renew)
+
+        def _pipeline_body(*, lease_lost=None, **_):
+            # Block "mid-run" until the renewal thread has genuinely set
+            # lease_lost itself — waiting on the Event directly (rather than
+            # a side-channel flag set from inside the mocked renew()) avoids
+            # a race against _renew_loop's own post-renew bookkeeping, which
+            # runs a moment AFTER renew() returns.
+            assert lease_lost is not None
+            assert lease_lost.wait(timeout=2), "lease_lost was never set"
+            return run_pipeline(artifact_dir=tmp_path, lease_lost=lease_lost)
+
+        with patch("archimedes.scripts.run_kb_pipeline.run_pipeline", side_effect=_pipeline_body):
+            kb_runner._run_pipeline_with_lease()
+
+        assert not (tmp_path / "manifest.json").exists()
