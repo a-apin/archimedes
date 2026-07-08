@@ -29,7 +29,7 @@ resource "aws_ecr_repository" "backend" {
 
   tags = {
     Project = var.project_name
-    Purpose = "backend + oracle + agent + kb-runner (one image, different CMD overrides)"
+    Purpose = "backend + oracle + agent + kb-runner - one shared image with different CMD overrides"
   }
 }
 
