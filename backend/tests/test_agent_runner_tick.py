@@ -414,6 +414,16 @@ class TestCommitRevealGuardBlocksTradeOnFailedCommit:
 # ── run() loop body ───────────────────────────────────────────
 
 
+def _fake_lease(*, is_valid: bool = True) -> MagicMock:
+    """A RunnerLeaseGuard stub that is always already-acquired and valid (#1043)."""
+    lease = MagicMock()
+    lease.acquire_forever = AsyncMock(return_value=None)
+    lease.start_renewal = MagicMock()
+    lease.install_sigterm_release = MagicMock()
+    lease.is_valid = is_valid
+    return lease
+
+
 class TestRunLoop:
     async def test_run_executes_one_tick_then_sleeps(self, runner_env, monkeypatch):
         runner, m = runner_env
@@ -426,6 +436,7 @@ class TestRunLoop:
         with (
             patch("archimedes.chain.agent_runner.StrategyRunner", return_value=runner),
             patch("archimedes.chain.agent_runner.chain_client", m["client"]),
+            patch("archimedes.chain.agent_runner.RunnerLeaseGuard", return_value=_fake_lease()),
             patch("archimedes.chain.agent_runner.asyncio.sleep", AsyncMock(side_effect=_Stop)),
         ):
             runner.tick = AsyncMock()
@@ -435,3 +446,31 @@ class TestRunLoop:
             with pytest.raises(_Stop):
                 await run()
             runner.tick.assert_awaited_once()
+
+    async def test_run_wires_lease_onto_runner_before_ticking(self, runner_env, monkeypatch):
+        """run() blocks on acquire_forever() and wires the lease BEFORE the loop starts (#1043)."""
+        runner, m = runner_env
+        m["client"].is_connected = AsyncMock(return_value=True)
+
+        class _Stop(Exception):
+            pass
+
+        lease = _fake_lease()
+        with (
+            patch("archimedes.chain.agent_runner.StrategyRunner", return_value=runner),
+            patch("archimedes.chain.agent_runner.chain_client", m["client"]),
+            patch("archimedes.chain.agent_runner.RunnerLeaseGuard", return_value=lease),
+            patch("archimedes.chain.agent_runner.asyncio.sleep", AsyncMock(side_effect=_Stop)),
+        ):
+            runner.tick = AsyncMock()
+            runner.state.save_heartbeat = AsyncMock()
+            from archimedes.chain.agent_runner import run
+
+            with pytest.raises(_Stop):
+                await run()
+
+        lease.acquire_forever.assert_awaited_once()
+        lease.start_renewal.assert_called_once()
+        lease.install_sigterm_release.assert_called_once()
+        assert runner.lease is lease
+        runner.tick.assert_awaited_once()

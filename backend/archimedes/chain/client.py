@@ -10,6 +10,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from aiohttp import ClientTimeout
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from pydantic_settings import BaseSettings
@@ -96,6 +97,15 @@ class ChainSettings(BaseSettings):
     # RPC
     arc_rpc_url: str = "https://rpc.testnet.arc.network"
     chain_id: int = 5042002  # Arc testnet chain ID (0x4cef52)
+    # Connect+read timeout for the AsyncHTTPProvider (N2 — dead-egress detection).
+    # A blackholed NAT (e.g. a NAT instance down, see infra/cloudwatch.tf's
+    # per-NAT StatusCheckFailed alarm) otherwise hangs the RPC call with no
+    # timeout at all, which can exceed /health's own health-check budget (the
+    # ECS task healthCheck timeout is 5s — infra/ecs.tf) and gets a perfectly
+    # healthy app process killed for an RPC-layer problem. 3s leaves headroom
+    # inside that 5s budget for /health's other work (DB, corpus, LLM probes).
+    # ARC_RPC_TIMEOUT_SECONDS overrides.
+    rpc_timeout_seconds: float = 3.0
 
     # Agent account (the address that calls rebalance, publishes traces, etc.)
     agent_private_key: str = ""
@@ -169,7 +179,17 @@ class ChainClient:
 
     def __init__(self, settings: ChainSettings | None = None):
         self.settings = settings or ChainSettings()
-        self.w3 = AsyncWeb3(AsyncHTTPProvider(self.settings.arc_rpc_url))
+        # request_kwargs={"timeout": ClientTimeout(...)} — NOT a bare number:
+        # aiohttp's ClientSession._request coerces a bare number fine on the
+        # request itself, but web3's HTTPSessionManager.async_cache_and_return_session
+        # separately accesses `request_timeout.total` on its own session-eviction
+        # path, which requires an actual ClientTimeout instance (see N2).
+        self.w3 = AsyncWeb3(
+            AsyncHTTPProvider(
+                self.settings.arc_rpc_url,
+                request_kwargs={"timeout": ClientTimeout(total=self.settings.rpc_timeout_seconds)},
+            )
+        )
 
         # Arc uses POA consensus — add the middleware
         self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)

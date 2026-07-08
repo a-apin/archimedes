@@ -189,6 +189,35 @@ is a team decision (Chuan, as repo admin, owns it).
 > These runbooks are **authored, not drilled.** Run a game-day (see the DR
 > drill checklist) before trusting the measured RTO/RPO.
 
+## ECS Fargate (issue #1039)
+
+- **`ecr.tf`** — the two private ECR repos CI (build-chunk 1) already pushes
+  to (`archimedes-backend`, `archimedes-nginx`), each with a lifecycle policy
+  (expire untagged after 1 day; keep the last 15 tagged images).
+- **`ecs.tf`** — ECS cluster, the `archimedes-backend` task definition
+  (nginx + backend, one Fargate task, `awsvpc` mode) and service (registered
+  into the **existing** `archimedes-backend-tg` target group via a data
+  source — `alb.tf` itself is untouched except one additive security-group
+  egress rule), CPU-based Application Auto Scaling (min/max via
+  `ecs_service_min_count` / `ecs_service_max_count`), and the task
+  execution/task IAM roles + an additive inline policy on the existing
+  out-of-band `archimedes-github-deploy` CI role.
+- **`runbooks/ecs-fargate-cutover.md`** — the full ordered operator runbook:
+  the three blockers that must close before this actually serves traffic;
+  what `terraform apply` does the instant it runs (starts live blue/green
+  traffic against the same target group — read before applying); a staged
+  apply order (ECR first, then seed a real image, then the ECS
+  cluster/service); how to seed ECR with the first image (CI trigger or a
+  manual break-glass push); swinging the ALB target from the EC2 instance to
+  the ECS service; dedicated verification drills for zero-downtime rollouts,
+  self-heal (kill a task, time the <2 min recovery), and `ecs
+  execute-command`; and the EC2 decommission sequence (gated on the
+  oracle/agent/kb-runner daemons getting their own Fargate home first).
+
+> **Authored 2026-07-06, not yet `terraform plan`-verified against live AWS
+> (no credentials in this environment) — `terraform validate`/`fmt` only.**
+> Same review-then-apply posture as the rest of this section.
+
 ## Per-deploy artifacts
 
 - **`deploy_output.json`** (repo root) is written by

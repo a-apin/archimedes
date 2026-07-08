@@ -73,6 +73,61 @@ step is an Aurora cross-region automated-backup replication
 (`aws rds start-db-instance-automated-backups-replication`) into a DR region,
 plus Terraform parameterized on region.
 
+### 5. NAT instance down (issue #1039 N1)
+**Detect:** `archimedes-nat-status-check-failed-<0|1>` alarm (see
+`infra/cloudwatch.tf` — `StatusCheckFailed_System`, 2×1min evaluation
+periods) fires to the SNS topic, or ECS/EC2 resources in that NAT's AZ
+private subnet (10.0.10.0/24 for AZ 0 / NAT-0, 10.0.11.0/24 for AZ 1 /
+NAT-1 — `vpc.tf`) start failing outbound calls: ECR image pulls timing out,
+Bedrock/Arc RPC calls hanging (the `HEALTH_CHAIN_DISCONNECTED` log line +
+`archimedes-chain-disconnected` alarm, issue #1039 N2, are one visible
+symptom if the affected subnet's tasks can't reach Arc RPC), SSM Parameter
+Store secret resolution failing at task launch. **A single NAT instance
+outage affects only ITS OWN AZ's private subnet** — the other AZ's NAT +
+subnet keep working; this is a partial-capacity degradation, not a full
+outage (ECS/ALB keep routing to the healthy AZ's tasks).
+
+**Respond:**
+1. Identify which NAT is down and confirm via the alarm + target health:
+   ```bash
+   aws ec2 describe-instances --filters "Name=tag:Name,Values=archimedes-nat-*" \
+     --query 'Reservations[*].Instances[*].{id:InstanceId,state:State.Name,az:Placement.AvailabilityZone}' \
+     --output table
+   aws cloudwatch describe-alarms --alarm-name-prefix archimedes-nat-status-check-failed \
+     --query 'MetricAlarms[*].{name:AlarmName,state:StateValue}'
+   ```
+2. **A hardware-level system status check failure (what the N1 alarm
+   monitors) self-heals automatically** — the alarm's own `alarm_actions`
+   includes `arn:aws:automate:<region>:ec2:recover`, which AWS attempts
+   without any human action (same-instance-ID, same private IP — routes
+   don't need touching). Give it a few minutes and re-check `describe-alarms`
+   for the state returning to `OK`.
+3. **If the instance is merely `stopped`** (an operator action, or a
+   recovery attempt that didn't auto-restart it) rather than genuinely
+   impaired, start it directly — cheaper and faster than a Terraform apply:
+   ```bash
+   aws ec2 start-instances --instance-ids <nat-instance-id>
+   aws ec2 wait instance-running --instance-ids <nat-instance-id>
+   ```
+4. **If the instance is gone / terminated / recovery genuinely failed**,
+   recreate it from Terraform (targeted, so nothing else in the VPC is
+   touched):
+   ```bash
+   cd infra && terraform plan -target='aws_instance.nat[0]'   # or [1] for the other AZ
+   terraform apply -target='aws_instance.nat[0]'
+   ```
+   `aws_route.private_nat` (`vpc.tf`) points at
+   `aws_instance.nat[*].primary_network_interface_id` — a NEW instance gets a
+   NEW ENI, so this targeted apply also updates the affected private route
+   table's default route to the new NAT automatically; no separate route fix
+   needed. Confirm affected-AZ tasks regain egress (a fresh ECR pull or a
+   `/health` check with `chain_connected: true` on a task in that subnet)
+   before considering this resolved.
+
+See `infra/runbooks/ecs-fargate-cutover.md` § "NAT-kill drill" (Phase 6) for
+a rehearsal of the detect step (stop-instance, watch the alarm, restart)
+against a live NAT before trusting this playbook.
+
 ---
 
 ## Restore-order dependency
@@ -96,6 +151,12 @@ enforces it, but for `-target` restores follow it manually):
 - [ ] **Alarm drill:** stop the backend container; confirm
       `archimedes-alb-unhealthy-hosts` fires to the SNS topic and the subscribed
       email/Slack receives it.
+- [ ] **NAT-kill drill (issue #1039 N1, § "NAT instance down" above):** stop
+      one NAT instance, confirm `archimedes-nat-status-check-failed-<n>` fires
+      to the SNS topic within its 2-min evaluation window, confirm the OTHER
+      AZ's tasks are unaffected, restart the instance, confirm the alarm
+      clears. Time it. Shared drill script:
+      `infra/runbooks/ecs-fargate-cutover.md` § "NAT-kill drill" (Phase 6).
 
 Record actual measured RTO/RPO here after the first drill and revise the targets
 above to reality.

@@ -14,6 +14,19 @@ Env:
     AGENT_DRY_RUN           — if "true", skip on-chain execution (default: false)
     AGENT_VAULT_ADDRESSES   — comma-separated vault addresses to manage
     AGENT_USDC_FLOOR        — minimum USDC allocation, 0.0–1.0 (default: 0.20)
+    AGENT_LEASE_TTL_MS      — exactly-once lease TTL (default: 180000 = 3min)
+    AGENT_LEASE_RENEW_S     — lease renewal interval (default: 50s, ~ttl/3)
+
+Exactly-once (#1043): this runner is a funds-adjacent singleton whose
+rebalance is NOT idempotent (it issues absolute swap amounts, not deltas) —
+two live copies rebalancing the same vault concurrently could double-trade
+it. On startup it blocks until it holds a Redis lease (``RunnerLeaseGuard``);
+a second copy simply waits. The lease is renewed on an INDEPENDENT
+background schedule (never gated on tick completion — a single tick can run
+minutes), and every on-chain write (trade execution, commit, reveal) is
+gated on the lease still being held — if it's lost mid-tick, this runner
+fails closed (skips the write, keeps retrying) rather than risking a
+duplicate rebalance.
 """
 
 from __future__ import annotations
@@ -44,6 +57,7 @@ from archimedes.models.trace import DecisionType, ReasoningTrace
 from archimedes.services.gmm_regime_detector import GmmRegimeDetector
 from archimedes.services.portfolio_constructor import PortfolioConstructor
 from archimedes.services.redis_state import AgentStateStore
+from archimedes.services.runner_lease import RunnerLeaseGuard
 from archimedes.services.source_tracker import build_consulted_hashes
 from archimedes.services.strategy_provider import default_provider
 from archimedes.services.strategy_signal_evaluator import (
@@ -63,6 +77,11 @@ INTERVAL = int(os.getenv("AGENT_INTERVAL_SECONDS", "300"))
 DRY_RUN = os.getenv("AGENT_DRY_RUN", "false").lower() == "true"
 EXPLICIT_VAULTS = os.getenv("AGENT_VAULT_ADDRESSES", "")
 USDC_FLOOR = float(os.getenv("AGENT_USDC_FLOOR", "0.20"))
+
+# Exactly-once lease (#1043)
+RUNNER_NAME = "agent_runner"
+LEASE_TTL_MS = int(os.getenv("AGENT_LEASE_TTL_MS", "180000"))  # 3 min
+LEASE_RENEW_INTERVAL_S = int(os.getenv("AGENT_LEASE_RENEW_S", "50"))  # ~ttl/3
 
 # Drift threshold for rebalance trigger
 _DRIFT_THRESHOLD = 0.15
@@ -169,6 +188,25 @@ class StrategyRunner:
         # Dedup: track last reasoning per vault to avoid publishing identical traces
         self._last_reasoning: dict[str, str] = {}  # vault_address → reasoning text
         self._last_reasoning_count: dict[str, int] = {}  # vault_address → repeat count
+        # Exactly-once lease (#1043). Wired by run() for the real process
+        # loop; left None for direct/unit-test construction, in which case
+        # on-chain writes are NOT gated (matches every pre-#1043 test's
+        # expectations — the real gate only exists once run() wires a live
+        # RunnerLeaseGuard, which is the only codepath where a second
+        # concurrent copy of this process can actually exist).
+        self.lease: RunnerLeaseGuard | None = None
+
+    @property
+    def _lease_ok(self) -> bool:
+        """Fail-closed gate for every on-chain WRITE (#1043).
+
+        True when no lease is wired (unit tests, direct construction) OR the
+        wired lease currently believes it is held. False the instant a real
+        lease is lost — the only way to get a wired-but-invalid lease is via
+        the real ``run()`` loop, so this can never silently disable writes
+        for a test that never opted into lease coordination.
+        """
+        return self.lease is None or self.lease.is_valid
 
     async def tick(self) -> None:
         """Run one full strategy evaluation cycle."""
@@ -433,7 +471,10 @@ class StrategyRunner:
             from archimedes.models.chat import VaultMetadata
 
             with get_session() as session:
-                meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == vault_address).first()
+                # Casing fix (issue #1028): stored lowercase — see
+                # vaults_routes.store_vault_metadata; vault_address here comes
+                # from the on-chain (EIP-55 checksummed) vault list.
+                meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == vault_address.lower()).first()
                 if meta is None:
                     return None
                 ids = meta.get_strategy_ids()
@@ -818,6 +859,33 @@ class StrategyRunner:
             logger.info("[tick %s] DRY RUN — skipping on-chain execution", tick_id)
             tx_hashes: list[str] = []
             trade_block = None
+        elif not self._lease_ok:
+            # #1043 fail-closed: the exactly-once lease is not currently held
+            # (lost mid-tick, or never acquired) — this is NOT idempotent
+            # (absolute swap amounts), so a second live copy trading the same
+            # drift would double-execute. Skip the write, log loudly, and let
+            # the next tick retry once the lease guard has re-acquired.
+            logger.error(
+                "[tick %s] LEASE NOT HELD — skipping trade execution for vault %s this cycle "
+                "(fail-closed; rebalance is not idempotent)",
+                tick_id,
+                vault_address[:10],
+            )
+            await self._publish_trace(
+                vault_address,
+                DecisionType.SKIP,
+                "lease_not_held",
+                portfolio,
+                [],
+                all_signals,
+                market_regime,
+                consensus,
+                tick_id,
+                "Exactly-once lease not held — trade execution skipped this cycle (fail-closed).",
+                commit_tx=commit_tx,
+                commit_block=commit_block,
+            )
+            return
         else:
             try:
                 tx_hashes = await chain_executor.execute_trades(vault_address, trades, trade_arrays=trade_arrays)
@@ -1064,6 +1132,18 @@ class StrategyRunner:
             logger.info("[tick %s] DRY RUN — skipping on-chain commit", tick_id)
             return trace, None, None, None, None
 
+        if not self._lease_ok:
+            # #1043 fail-closed: no provable exclusivity — do not anchor a
+            # commit that a second live copy might also anchor. The trace is
+            # still returned (built + hashed) so the caller's flow continues
+            # normally; only the ON-CHAIN write is skipped.
+            logger.error(
+                "[tick %s] LEASE NOT HELD — skipping on-chain COMMIT this cycle "
+                "(fail-closed; will retry once the lease is re-acquired)",
+                tick_id,
+            )
+            return trace, None, None, None, None
+
         claimed_execution_time = int(datetime.now(UTC).timestamp()) + self._COMMIT_EXECUTION_LEAD_S
         intent_summary = f"{trace.decision_type.value}:{len(trades)}".encode()
 
@@ -1161,6 +1241,11 @@ class StrategyRunner:
                 logger.error("[tick %s] IPFS pin FAILED (continuing hash-only): %s", tick_id, e)
 
             # ── 2. Reveal on-chain, anchoring the CID as the storage pointer ──
+            # #1043: gated on the lease AFTER the claimedExecutionTime wait
+            # (below) so a loss that happens DURING that wait — which can run
+            # up to ~_COMMIT_EXECUTION_LEAD_S + skew seconds, independent of
+            # the renewal loop's own clock — is caught before the write, not
+            # just at the top of the tick.
             try:
                 if trace_id is not None and trace_publisher.supports_commit_reveal():
                     if claimed_execution_time is not None:
@@ -1172,10 +1257,17 @@ class StrategyRunner:
                                 wait_s,
                             )
                             await asyncio.sleep(wait_s)
-                    reveal_tx, reveal_block = await trace_publisher.reveal(
-                        trace_id, trace, storage_pointer=ipfs_cid or ""
-                    )
-                else:
+                    if self._lease_ok:
+                        reveal_tx, reveal_block = await trace_publisher.reveal(
+                            trace_id, trace, storage_pointer=ipfs_cid or ""
+                        )
+                    else:
+                        logger.error(
+                            "[tick %s] LEASE NOT HELD — skipping on-chain REVEAL this cycle "
+                            "(fail-closed; the commit stays unrevealed until a fresh cycle)",
+                            tick_id,
+                        )
+                elif self._lease_ok:
                     # Pre-v1.5 registry: anchor the canonical content via publishTrace.
                     reveal_tx = await trace_publisher.publish(trace)
                     if reveal_tx:
@@ -1186,6 +1278,12 @@ class StrategyRunner:
                             reveal_block = receipt.blockNumber
                         except Exception:
                             logger.debug("reveal receipt block lookup failed", exc_info=True)
+                else:
+                    logger.error(
+                        "[tick %s] LEASE NOT HELD — skipping on-chain REVEAL (publishTrace fallback) "
+                        "this cycle (fail-closed)",
+                        tick_id,
+                    )
                 if reveal_tx:
                     logger.info(
                         "[tick %s] REVEAL anchored: tx=%s block=%s cid=%s",
@@ -1462,7 +1560,17 @@ async def run() -> None:
     logger.info("  usdc_floor: %.0f%%", USDC_FLOOR * 100)
     logger.info("  chain_connected: %s", await chain_client.is_connected())
 
+    # Exactly-once lease (#1043): block here until this process holds it — a
+    # second live copy simply waits. Only wired onto the runner AFTER
+    # acquisition, so tick() never sees a not-yet-acquired lease as "held".
+    lease = RunnerLeaseGuard(RUNNER_NAME, LEASE_TTL_MS, LEASE_RENEW_INTERVAL_S)
+    logger.info("Acquiring exactly-once lease (%s)…", RUNNER_NAME)
+    await lease.acquire_forever()
+    lease.start_renewal()
+    lease.install_sigterm_release()
+
     runner = StrategyRunner()
+    runner.lease = lease
 
     while True:
         await runner.tick()
