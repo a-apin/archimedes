@@ -194,10 +194,12 @@ jobs:
         # fallback for tests/local is tracked in #1044.
         run: |
           set -euo pipefail
-          # Idempotent: `docker network create` errors (and, under `set -e`,
-          # aborts the step) if the network survived a prior attempt on the
-          # same runner. Tolerate an already-existing network.
-          docker network create archimedes-ci 2>/dev/null || true
+          # Idempotent, but ONLY tolerate "already exists": inspect first and
+          # create only when the network is missing — so a leftover network
+          # from a prior attempt on the same runner doesn't abort the step
+          # under `set -e`, while a REAL `docker network create` failure still
+          # stops the step with its original error (not swallowed by `|| true`).
+          docker network inspect archimedes-ci >/dev/null 2>&1 || docker network create archimedes-ci
           docker run -d --name pg --network archimedes-ci \
             -e POSTGRES_USER=archimedes -e POSTGRES_PASSWORD=ci -e POSTGRES_DB=archimedes \
             postgres:18-alpine
