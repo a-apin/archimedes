@@ -16,7 +16,17 @@
 > chain_connected alarm; N3 NAT AMI-drift guard; a free S3 Gateway endpoint;
 > C1 CI now redeploys Fargate itself; C2 corrects the rollback doc; C3 guards
 > against a concurrent SSM deploy race; R1 reorders Phase 8's decommission
-> gate and adds a NAT-outage scenario to the disaster-recovery runbook).
+> gate and adds a NAT-outage scenario to the disaster-recovery runbook);
+> updated again 2026-07-07 (build-chunk 6, `env-parity` — PR #1041
+> correctness pass: closed two runtime/build env-parity gaps the Fargate task
+> would otherwise have shipped without — `infra/ecs.tf`'s backend
+> `environment` block was missing `LLM_PROVIDER`/`LLM_BEDROCK_MODEL`/
+> `PRICE_SOURCE` (the prod box gets these from a box-local `.env` Fargate has
+> no equivalent of), and `.github/workflows/deploy.yml`'s nginx build shipped
+> with empty `VITE_*` build-args (no Circle client key baked into the served
+> bundle); added the PRE-CUTOVER ENV-PARITY CHECKLIST as a hard gate before
+> Phase 4; and locked in **Option C — hard cutover, no parallel-traffic
+> soak** as the chosen cutover strategy, rewriting Phase 4 accordingly).
 > **Not yet applied, not yet drilled.** Written against `infra/ecr.tf` +
 > `infra/ecs.tf` on the `dbrowneup/1039-fargate-infra` epic branch. No
 > `terraform apply`, ALB cutover, or EC2 decommission has happened — those are
@@ -179,6 +189,12 @@ multiple healthy targets round-robins across all of them. In practice:
   i.e. the failure mode is "no-op," not "outage," as long as
   `deployment_circuit_breaker` and the ALB health check are both in place
   (they are, in `ecs.tf`/`alb.tf`).
+- **This automatic blend is a brief, incidental side effect of Stage 2b's
+  apply, not a deliberate soak window.** Under the chosen Option C cutover
+  (see Phase 4), the gap between Stage 2b and the ALB swing is just "run
+  Phase 3 + the pre-cutover env-parity checklist," not an open-ended period
+  of blended traffic — don't read this section as license to leave both
+  targets live for days.
 
 ---
 
@@ -416,11 +432,104 @@ Do not proceed to Phase 4 until `runningCount == desiredCount` and the
 
 ---
 
-## Phase 4 — Swing the ALB target from EC2 to the ECS service
+## PRE-CUTOVER ENV-PARITY CHECKLIST — hard gate before Phase 4
 
-This is the cutover itself — fully Dan's call, not automated anywhere. Once
-Fargate is verified healthy (Phase 3) and has carried real blended traffic
-(alongside the EC2 target) for a soak period Dan is comfortable with:
+**Added 2026-07-07 (build-chunk 6, `env-parity` — PR #1041 correctness pass).**
+Phase 3's health check only proves the Fargate task's process is up and
+answering `/health` — it says nothing about whether the task's *configuration*
+is actually complete. This PR closed two real gaps found by exactly that
+failure mode (`infra/ecs.tf`'s backend `environment` block was missing
+`LLM_PROVIDER`/`LLM_BEDROCK_MODEL`/`PRICE_SOURCE`, all of which the prod EC2
+box gets from a box-local `.env` Fargate has no equivalent of; and
+`.github/workflows/deploy.yml`'s nginx build shipped with empty `VITE_*`
+build-args, so the served bundle had no Circle client key). The checklist
+below is the standing gate against the *next* one — **do not proceed to
+Phase 4 until every check here passes.**
+
+1. **Runtime env vars actually resolve on the REGISTERED task definition**
+   (not just what's authored in `ecs.tf` — confirm what Terraform actually
+   applied):
+   ```bash
+   aws ecs describe-task-definition --task-definition archimedes-backend \
+     --query 'taskDefinition.containerDefinitions[?name==`backend`].environment | [0]' \
+     --output json > /tmp/backend-env.json
+
+   for kv in \
+     'LLM_PROVIDER=bedrock_converse' \
+     'LLM_BEDROCK_MODEL=amazon.nova-micro-v1:0' \
+     'PRICE_SOURCE=cascade' \
+     'ARCHIMEDES_FUSION_ENABLED=true'; do
+     name="${kv%%=*}"; want="${kv#*=}"
+     got=$(jq -r --arg n "$name" '.[] | select(.name==$n) | .value' /tmp/backend-env.json)
+     [ "$got" = "$want" ] && echo "OK: $name=$got" \
+       || { echo "FAIL: $name resolved to '${got:-<missing>}', expected '$want'"; exit 1; }
+   done
+
+   # PUBLIC_DOMAIN is templated (https://${var.domain_name}), not a fixed
+   # literal — assert non-empty and scheme-qualified (main.py's CORS + SIWE
+   # checks both compare against a scheme-qualified origin):
+   domain=$(jq -r '.[] | select(.name=="PUBLIC_DOMAIN") | .value' /tmp/backend-env.json)
+   [[ "$domain" == https://* ]] && echo "OK: PUBLIC_DOMAIN=$domain" \
+     || { echo "FAIL: PUBLIC_DOMAIN missing or not https://-qualified"; exit 1; }
+   ```
+2. **The four SSM secrets are wired in the task def AND actually exist in
+   SSM** (a `secrets` entry whose `valueFrom` points at a parameter that
+   doesn't exist fails at task LAUNCH, not at `describe-task-definition` —
+   this check must hit SSM directly, not just read the task def back):
+   ```bash
+   aws ecs describe-task-definition --task-definition archimedes-backend \
+     --query 'taskDefinition.containerDefinitions[?name==`backend`].secrets | [0]' \
+     --output table
+
+   for p in DATABASE_URL REDIS_URL EMAIL_ENCRYPTION_KEY AURORA_MASTER_PASSWORD; do
+     aws ssm get-parameter --name "/archimedes/prod/$p" --query 'Parameter.Name' \
+       --output text >/dev/null 2>&1 \
+       && echo "OK: SSM /archimedes/prod/$p exists" \
+       || { echo "FAIL: SSM /archimedes/prod/$p is MISSING — see Phase 0 blocker 3"; exit 1; }
+   done
+   ```
+3. **The served nginx bundle actually has the Circle client key baked in.**
+   This is invisible to `describe-task-definition` — `VITE_CIRCLE_CLIENT_KEY`
+   is compiled into the static JS by Vite at BUILD time (`nginx/Dockerfile`'s
+   `ui-build` stage), never read from a runtime env var or SSM secret. Verify
+   the ECR image the task definition actually references was built with a
+   real key:
+   ```bash
+   # Requires the real VITE_CIRCLE_CLIENT_KEY value (the same value set as the
+   # GitHub repo secret — `gh secret list` only proves the secret EXISTS, it
+   # never reveals the value; pull the real value from wherever Dan stored it,
+   # e.g. 1Password, per README "Security notes").
+   BUNDLE_JS=$(curl -sS https://archimedes-arc.com/ | grep -oE '/assets/index-[A-Za-z0-9]+\.js' | head -1)
+   curl -sS "https://archimedes-arc.com${BUNDLE_JS}" | grep -c "<the real VITE_CIRCLE_CLIENT_KEY value>"
+   # expect: >= 1 (the literal key string appears in the minified bundle). A
+   # result of 0 means this image was built with an empty/placeholder key —
+   # the GH repo secret is missing/misnamed, or was added AFTER this image was
+   # already built (see deploy.yml's "Build nginx image" step) — rebuild +
+   # re-push before proceeding.
+
+   # No-secret-needed fallback (same practice docs/deployment-runbook.md § 4
+   # already uses): load https://archimedes-arc.com in a browser and confirm
+   # the "Connect Wallet" button renders with zero console errors — the
+   # Circle SDK no-ops/throws silently on an empty key, so a rendering button
+   # is strong (not airtight) evidence the key made it into the bundle.
+   ```
+
+If any check above fails, **stop** — fix the gap (env var, SSM parameter, or
+rebuild the image with the missing build-arg) and re-verify before touching
+the ALB target in Phase 4.
+
+---
+
+## Phase 4 — Cut over: swing the ALB target from EC2 to Fargate (Option C — hard cutover, no soak)
+
+**Decided 2026-07-07: Option C.** Dan will NOT run a parallel-traffic soak.
+Once Fargate is verified healthy (Phase 3) **and** the pre-cutover env-parity
+checklist above is fully green, cut over immediately: flip the ALB target,
+verify, and fix forward anything that surfaces — rather than blending traffic
+for days first. The EC2 box stays running (not terminated) for one deploy
+cycle afterward as a short, bounded rollback window (step 3 below, and
+"Rollback" further down) — there is no open-ended blended-traffic period
+beyond that.
 
 1. Remove (or comment out, then `terraform apply`) `alb.tf`'s
    `aws_lb_target_group_attachment.backend` — this is the ONE line that
@@ -432,22 +541,26 @@ Fargate is verified healthy (Phase 3) and has carried real blended traffic
                      # aws_lb_target_group_attachment.backend — nothing else
    terraform apply
    ```
-2. Confirm 100% of target-group traffic is Fargate-only:
+2. Confirm 100% of target-group traffic is Fargate-only, right after the
+   apply (Option C: no waiting period here):
    ```bash
    aws elbv2 describe-target-health \
      --target-group-arn "$(aws elbv2 describe-target-groups \
         --names archimedes-backend-tg --query 'TargetGroups[0].TargetGroupArn' --output text)"
    # expect: only `ip`-type (Fargate ENI) targets, zero `instance`-type entries
    ```
-3. Retire `deploy.yml`'s SSM box-pull path (the build-chunk-1 interim) —
-   replace with a CI step that registers a new task-definition revision +
-   calls `aws ecs update-service --force-new-deployment` (uses the
-   `archimedes-ecs-deploy` IAM policy this chunk already attached to
-   `archimedes-github-deploy`).
-4. Only after step 2 is confirmed for at least one full deploy cycle,
-   proceed to Phase 8 (EC2 decommission) — don't terminate the instance in
-   the same sitting as the ALB swing; let it sit idle-but-attached-to-nothing
-   for one deploy cycle as a zero-cost rollback path (see "Rollback" below).
+   Then immediately smoke-test the live domain end-to-end — not just
+   `/health`: log in, open Generate, confirm the wallet-connect UI renders.
+   This is the fastest way to catch anything the checklist above missed.
+   (`deploy.yml`'s `deploy-ecs` job, issue #1039 C1, already redeploys
+   Fargate on every push to `main` — no new CI step is needed at this point;
+   the EC2 SSM `deploy` job is retired later, at Phase 8 step 2, once the box
+   itself is gone.)
+3. Leave the EC2 instance running, attached-to-nothing, for **one full
+   deploy cycle** (not multiple days) — a short, bounded rollback window, not
+   an open-ended soak. Only after that one cycle confirms Fargate is taking
+   every deploy cleanly, proceed to Phase 8 (EC2 decommission). Don't
+   terminate the instance in the same sitting as the ALB swing.
 
 ---
 
@@ -653,9 +766,10 @@ step 1's gate is still red.**
    `ACTIVE`, or `running < desired` — STOP. Do not proceed to step 2 or 3.
    (These singleton services aren't provisioned by this PR — see the note at
    the top of this file: they're pending cost sign-off as a follow-up.)
-2. Remove the now-dead `EC2_INSTANCE_ID` / SSM-deploy path from `deploy.yml`
-   entirely (Phase 4 step 3 already replaced its function; this step is
-   just deleting the now-unreachable code, not changing behavior).
+2. Remove the now-dead `EC2_INSTANCE_ID` / SSM `deploy` job from `deploy.yml`
+   entirely — the `deploy-ecs` job (issue #1039 C1) has independently
+   redeployed Fargate on every push since before Phase 4 ran, so this step is
+   purely deleting the now-unreachable EC2 code path, not changing behavior.
 3. **Only now, last:** terminate `aws_instance.archimedes` (remove from
    `main.tf`, `terraform apply`). Aurora/ElastiCache/ALB/WAF/CloudFront/
    Route 53 are all unaffected; this chunk never touched them.
@@ -668,6 +782,10 @@ Because the EC2 target stays attached to `archimedes-backend-tg` throughout
 Phases 1–4, the cheapest rollback during the cutover window is simply:
 drain Fargate to zero tasks so the ALB serves 100% of traffic from the
 still-healthy EC2 target, with no DNS change and no ALB reconfiguration.
+Under the Option C hard cutover (Phase 4), this window is short and
+bounded — Stage 2a/2b + Phase 3 verification + the pre-cutover env-parity
+checklist, not a multi-day soak — but the mechanism below is exactly the
+same regardless of how long that window ends up being.
 
 **This MUST be done via the AWS CLI against the live service, NOT by
 changing `var.ecs_service_desired_count` and re-running `terraform apply`**
