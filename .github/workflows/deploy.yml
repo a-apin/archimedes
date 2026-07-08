@@ -194,15 +194,26 @@ jobs:
         # fallback for tests/local is tracked in #1044.
         run: |
           set -euo pipefail
-          docker network create archimedes-ci
+          # Idempotent: `docker network create` errors (and, under `set -e`,
+          # aborts the step) if the network survived a prior attempt on the
+          # same runner. Tolerate an already-existing network.
+          docker network create archimedes-ci 2>/dev/null || true
           docker run -d --name pg --network archimedes-ci \
             -e POSTGRES_USER=archimedes -e POSTGRES_PASSWORD=ci -e POSTGRES_DB=archimedes \
             postgres:18-alpine
           echo "waiting for Postgres to accept connections..."
+          pg_ready=""
           for _ in $(seq 1 30); do
-            if docker exec pg pg_isready -U archimedes -d archimedes >/dev/null 2>&1; then break; fi
+            if docker exec pg pg_isready -U archimedes -d archimedes >/dev/null 2>&1; then pg_ready=1; break; fi
             sleep 2
           done
+          # Fail loudly instead of proceeding to a migrate that would surface a
+          # harder-to-debug connection error if Postgres never came up.
+          if [ -z "$pg_ready" ]; then
+            echo "::error::Postgres did not become ready within 60s — see logs below"
+            docker logs pg || true
+            exit 1
+          fi
           DB_URL="postgresql://archimedes:ci@pg:5432/archimedes"
           # Apply the schema exactly as the prod ECS migrate task does (a fresh
           # DB → `alembic upgrade head` from the baseline). Also validates the
