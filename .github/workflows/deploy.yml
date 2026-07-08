@@ -3,11 +3,21 @@
 # Authentication: OIDC federation (GitHub → AWS IAM role assumption).
 # No long-lived AWS access keys in GitHub Secrets.
 #
-# Secrets: PULL-MODEL — this workflow no longer carries any application secret.
-#   App secrets (LLM_PROVIDER/LLM_AUTH_TOKEN/LLM_BASE_URL, EMAIL_ENCRYPTION_KEY,
-#   VITE_CIRCLE_CLIENT_KEY) live in AWS SSM Parameter Store under /archimedes/prod/*
-#   and are read by the EC2 instance role at runtime, never injected from CI.
-#   Population runbook: infra/iam/README.md § "SSM Parameter Store — app secrets".
+# Secrets: PULL-MODEL for RUNTIME app secrets — this workflow injects no
+#   runtime secret into either deploy target. LLM_PROVIDER/LLM_AUTH_TOKEN/
+#   LLM_BASE_URL/EMAIL_ENCRYPTION_KEY live in AWS SSM Parameter Store under
+#   /archimedes/prod/* and are read at runtime (the EC2 instance role today;
+#   the ECS task execution role's `secrets` block, infra/ecs.tf, once Fargate
+#   is live). Population runbook: infra/iam/README.md § "SSM Parameter Store
+#   — app secrets".
+#   ONE EXCEPTION — VITE_CIRCLE_CLIENT_KEY (+ VITE_CIRCLE_CLIENT_URL /
+#   VITE_API_BASE) is a BUILD-TIME frontend value: Vite bakes it into the
+#   static JS bundle during `npm run build` (nginx/Dockerfile's `ui-build`
+#   stage), so no runtime env var or SSM read can supply it after the fact —
+#   it MUST be a Docker `--build-arg` on the "Build nginx image" step below,
+#   sourced from a GitHub Actions repo secret/variable (fine to store there:
+#   it's a Circle TEST client key that ships inside the public browser bundle
+#   by design, not a backend secret). See that step's own comment for detail.
 #
 # Pipeline (issue #1039 — "build-in-CI is not redundant with Fargate, it is its
 # prerequisite"): this workflow has THREE jobs, gated on the SAME
@@ -131,11 +141,43 @@ jobs:
         run: docker build -t archimedes-backend:ci -f backend/Dockerfile backend
 
       - name: Build nginx image
-        # VITE_* build-args are left at their Dockerfile defaults (empty) —
-        # this is a boot/smoke validation image, not the artifact served in
-        # prod; the pushed tag is rebuilt identically either way since the
-        # box never bakes secrets into the image (see docker-compose.yml).
-        run: docker build -t archimedes-nginx:ci -f nginx/Dockerfile .
+        # Env-parity fix (PR #1041 correctness pass, 2026-07-07): this is NOT
+        # just a boot/smoke validation image — the SAME `:ci`-tagged image
+        # built here is tagged + pushed to ECR verbatim below ("Tag + push
+        # nginx image"; no separate rebuild happens for the push), and BOTH
+        # live deploy targets (the EC2 box's `docker compose pull`, #1039 P1,
+        # and the Fargate `deploy-ecs` job) serve whatever landed in ECR —
+        # never a locally-rebuilt image. Leaving VITE_* build-args at the
+        # Dockerfile's empty defaults (the prior state of this step) means
+        # the shipped JS bundle has no Circle client key baked in and the
+        # wallet / passkey / Circle SDK UI breaks on every real deploy, not
+        # just Fargate. `VITE_CIRCLE_CLIENT_KEY` is a Circle TEST client key
+        # that ships inside the browser bundle by design (Circle's own docs
+        # treat it as public, embeddable config, not a backend secret) — a
+        # repo secret or variable is fine for it either way.
+        #
+        # *** ACTION REQUIRED (Dan): add the `VITE_CIRCLE_CLIENT_KEY` repo
+        # secret (Settings → Secrets and variables → Actions → Secrets, repo
+        # `a-apin/archimedes`) before the first real image build after this
+        # PR merges — until then this build-arg resolves to an empty string
+        # (same as today) and the wallet UI ships broken. ***
+        #
+        # `VITE_CIRCLE_CLIENT_URL` falls back to the known default Circle
+        # Modular SDK RPC URL (matches `nginx/Dockerfile`'s own ARG default)
+        # if the `VITE_CIRCLE_CLIENT_URL` repo VARIABLE is unset — set it
+        # explicitly only if Circle ever issues a different endpoint.
+        # `VITE_API_BASE` has no fallback here (empty = same-origin API calls,
+        # matching the Dockerfile default) — set the `VITE_API_BASE` repo
+        # variable only if the frontend must call a different origin.
+        env:
+          VITE_CIRCLE_CLIENT_KEY: ${{ secrets.VITE_CIRCLE_CLIENT_KEY }}
+          VITE_CIRCLE_CLIENT_URL: ${{ vars.VITE_CIRCLE_CLIENT_URL || 'https://modular-sdk.circle.com/v1/rpc/w3s/buidl' }}
+          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
+        run: |
+          docker build -t archimedes-nginx:ci -f nginx/Dockerfile . \
+            --build-arg VITE_CIRCLE_CLIENT_KEY="$VITE_CIRCLE_CLIENT_KEY" \
+            --build-arg VITE_CIRCLE_CLIENT_URL="$VITE_CIRCLE_CLIENT_URL" \
+            --build-arg VITE_API_BASE="$VITE_API_BASE"
 
       - name: Validate backend image boots (GET /health)
         run: |
@@ -422,8 +464,13 @@ jobs:
               "# backend reads LLM_*/EMAIL_ENCRYPTION_KEY from SSM Parameter Store at",
               "# startup via its instance role (services/secrets_service.load_ssm_secrets);",
               "# the box-local, gitignored .env (untouched by git reset) carries any",
-              "# values not yet in SSM, incl. the build-time VITE_CIRCLE_CLIENT_KEY. See",
-              "# infra/iam/README.md for the SSM population runbook.",
+              "# RUNTIME values not yet in SSM. NOTE: this box now PULLS its images",
+              "# (below) rather than building them locally, so the box .env can no",
+              "# longer supply build-time frontend values like VITE_CIRCLE_CLIENT_KEY —",
+              "# that must be a GitHub Actions repo secret consumed by the",
+              "# build-and-push job's nginx build-arg (see this workflow file's header",
+              "# comment and the 'Build nginx image' step). See infra/iam/README.md",
+              "# for the SSM population runbook.",
               "grep -q '"'"'^PUBLIC_DOMAIN='"'"' .env || echo '"'"'PUBLIC_DOMAIN=https://archimedes-arc.com'"'"' >> .env",
               "# P1 interim (issue #1039): PULL the image the build-and-push job above",
               "# already built + validated + pushed to ECR — NEVER build on this serving",
