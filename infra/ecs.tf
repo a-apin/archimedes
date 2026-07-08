@@ -135,7 +135,7 @@ resource "aws_security_group" "ecs_backend" {
   # avoid-the-SG-cycle rationale main.tf's `aws_security_group.archimedes`
   # documents for its own CIDR-based rule.
   ingress {
-    description = "HTTP from ALB (nginx container port), restricted to the ALB's public subnet CIDRs"
+    description = "HTTP from ALB (nginx container port), restricted to the ALB public subnet CIDRs"
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
