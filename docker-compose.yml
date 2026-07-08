@@ -11,7 +11,7 @@ services:
   # the full self-contained stack; the same command in prod (no localdb profile)
   # runs the app tier against managed stores. See docs/deployment.md.
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     profiles: ["localdb"]
     restart: unless-stopped
     environment:

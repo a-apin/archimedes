@@ -57,7 +57,19 @@ resource "aws_rds_cluster" "main" {
   cluster_identifier = "${var.project_name}-aurora"
   engine             = "aurora-postgresql"
   engine_mode        = "provisioned" # Serverless v2 uses provisioned mode + serverless_v2_scaling_configuration
-  engine_version     = "16.4"
+  engine_version     = "18.3"
+  # 16.4 -> 18.3 is a direct major-version upgrade target (verified against the live
+  # account: `aws rds describe-db-engine-versions --engine aurora-postgresql
+  # --engine-version 16.4 --query ValidUpgradeTarget` lists 18.3 directly, no 17.x hop
+  # needed). Major upgrades require this flag or `terraform apply` rejects the version
+  # bump outright. Applying this against the LIVE cluster performs the in-place major
+  # upgrade with a few minutes of downtime — see the PR description's operator runbook
+  # before running `terraform apply` against prod. Aurora moves the cluster to the
+  # `aurora-postgresql18` DEFAULT parameter family automatically on upgrade; we don't
+  # hand-manage a custom parameter group (see aws_db_subnet_group.aurora / cluster below
+  # — no aws_rds_cluster_parameter_group resource exists in this file), so there's
+  # nothing else to bump here.
+  allow_major_version_upgrade = true
 
   database_name   = "archimedes"
   master_username = "archimedes"
