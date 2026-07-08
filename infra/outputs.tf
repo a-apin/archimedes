@@ -111,3 +111,77 @@ output "backend_asg_name" {
   description = "Backend auto-scaling group name (null unless the optional ASG tier is enabled via backend_ami_id)"
   value       = one(aws_autoscaling_group.backend[*].name)
 }
+
+# ── ECS Fargate outputs (issue #1039) ─────────────────────────────────────
+
+output "ecr_backend_repository_url" {
+  description = "ECR repository URL for the archimedes-backend image (backend + oracle + agent + kb-runner)"
+  value       = aws_ecr_repository.backend.repository_url
+}
+
+output "ecr_nginx_repository_url" {
+  description = "ECR repository URL for the archimedes-nginx image"
+  value       = aws_ecr_repository.nginx.repository_url
+}
+
+output "ecs_cluster_name" {
+  description = "ECS cluster name"
+  value       = aws_ecs_cluster.main.name
+}
+
+output "ecs_cluster_arn" {
+  description = "ECS cluster ARN"
+  value       = aws_ecs_cluster.main.arn
+}
+
+output "ecs_service_name" {
+  description = "ECS service name (behind the existing archimedes-backend-tg target group)"
+  value       = aws_ecs_service.backend.name
+}
+
+output "ecs_task_definition_family" {
+  description = "ECS task definition family (register new revisions against this family for CI deploys)"
+  value       = aws_ecs_task_definition.backend.family
+}
+
+output "ecs_task_execution_role_arn" {
+  description = "ECS task execution role ARN (image pull, log shipping, secrets resolution)"
+  value       = aws_iam_role.ecs_task_execution.arn
+}
+
+output "ecs_task_role_arn" {
+  description = "ECS task role ARN (application runtime permissions — SSM read, Bedrock invoke, ECS Exec channel)"
+  value       = aws_iam_role.ecs_task.arn
+}
+
+output "ecs_exec_shell_command" {
+  description = "Template for shelling into a running backend task via ECS Exec (fill in the task id from `aws ecs list-tasks --cluster <ecs_cluster_name> --service-name <ecs_service_name>`)"
+  value       = "aws ecs execute-command --cluster ${aws_ecs_cluster.main.name} --task <task-id> --container backend --interactive --command \"/bin/sh\""
+}
+
+output "ecs_migrate_task_definition_family" {
+  description = "ECS task definition family for the one-off Alembic migrate task (infra/ecs_migrate.tf) — distinct from ecs_task_definition_family (the SERVICE family, backend+nginx). .github/workflows/deploy.yml's migrate job's ECS_MIGRATE_TASK_FAMILY literal must match this value."
+  value       = aws_ecs_task_definition.migrate.family
+}
+
+# Static awsvpcConfiguration for `aws ecs run-task --network-configuration`
+# against the migrate task family (issue #1039 B2). Sourced from aws_subnet.private
+# (vpc.tf) + aws_security_group.ecs_backend (ecs.tf) — BOTH exist independently of
+# aws_ecs_service.backend, unlike the `aws ecs describe-services archimedes-backend`
+# call deploy.yml's migrate job previously used, which by definition can't resolve
+# until the service (which the migrate task must run BEFORE) already exists. Run
+# `terraform output -raw ecs_migrate_network_configuration` after applying
+# aws_subnet.private + aws_security_group.ecs_backend and paste the result into
+# .github/workflows/deploy.yml's ECS_MIGRATE_NETWORK_CONFIGURATION literal — same
+# "CI can't run terraform output" literal-constant pattern as ECS_CLUSTER /
+# ECS_MIGRATE_TASK_FAMILY there.
+output "ecs_migrate_network_configuration" {
+  description = "Static awsvpcConfiguration JSON for `aws ecs run-task --network-configuration` against the migrate task family. Copy into .github/workflows/deploy.yml's ECS_MIGRATE_NETWORK_CONFIGURATION literal (issue #1039 B2)."
+  value = jsonencode({
+    awsvpcConfiguration = {
+      subnets        = aws_subnet.private[*].id
+      securityGroups = [aws_security_group.ecs_backend.id]
+      assignPublicIp = "DISABLED"
+    }
+  })
+}

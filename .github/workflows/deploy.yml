@@ -1,24 +1,77 @@
-# Archimedes — Deploy to EC2 via SSM (no SSH keys)
+# Archimedes — Build (CI) → ECR → Deploy to EC2 via SSM (no SSH keys)
 #
 # Authentication: OIDC federation (GitHub → AWS IAM role assumption).
 # No long-lived AWS access keys in GitHub Secrets.
 #
-# Secrets: PULL-MODEL — this workflow no longer carries any application secret.
-#   App secrets (LLM_PROVIDER/LLM_AUTH_TOKEN/LLM_BASE_URL, EMAIL_ENCRYPTION_KEY,
-#   VITE_CIRCLE_CLIENT_KEY) live in AWS SSM Parameter Store under /archimedes/prod/*
-#   and are read by the EC2 instance role at runtime, never injected from CI.
-#   Population runbook: infra/iam/README.md § "SSM Parameter Store — app secrets".
+# Secrets: PULL-MODEL for RUNTIME app secrets — this workflow injects no
+#   runtime secret into either deploy target. LLM_PROVIDER/LLM_AUTH_TOKEN/
+#   LLM_BASE_URL/EMAIL_ENCRYPTION_KEY live in AWS SSM Parameter Store under
+#   /archimedes/prod/* and are read at runtime (the EC2 instance role today;
+#   the ECS task execution role's `secrets` block, infra/ecs.tf, once Fargate
+#   is live). Population runbook: infra/iam/README.md § "SSM Parameter Store
+#   — app secrets".
+#   ONE EXCEPTION — VITE_CIRCLE_CLIENT_KEY (+ VITE_CIRCLE_CLIENT_URL /
+#   VITE_API_BASE) is a BUILD-TIME frontend value: Vite bakes it into the
+#   static JS bundle during `npm run build` (nginx/Dockerfile's `ui-build`
+#   stage), so no runtime env var or SSM read can supply it after the fact —
+#   it MUST be a Docker `--build-arg` on the "Build nginx image" step below,
+#   sourced from a GitHub Actions repo secret/variable (fine to store there:
+#   it's a Circle TEST client key that ships inside the public browser bundle
+#   by design, not a backend secret). See that step's own comment for detail.
+#
+# Pipeline (issue #1039 — "build-in-CI is not redundant with Fargate, it is its
+# prerequisite"): this workflow has THREE jobs, gated on the SAME
+# DEPLOY_ENABLED flag so the whole pipeline is one on/off switch:
+#
+#   build-and-push   Builds the backend image (backend/Dockerfile) and the
+#                    nginx/frontend image (nginx/Dockerfile) on the CI runner,
+#                    boots each in a throwaway container and curls /health
+#                    (backend directly; nginx through its reverse-proxy path,
+#                    which also exercises the docker-network DNS resolution to
+#                    a `backend` container) — a bad image is caught HERE,
+#                    before it ever reaches ECR or a serving host — then tags
+#                    both <commit-sha> + latest and pushes to ECR.
+#   migrate          (needs: build-and-push) Runs `alembic upgrade head` as a
+#                    one-off ECS Fargate task, ordered BEFORE `deploy` — the
+#                    #1039 P4 / #1028 Phase A shared migrate stage. Alembic
+#                    hasn't landed on this branch yet (see the job's own
+#                    comment), so today this is a safe, loud no-op; it
+#                    self-activates the moment `backend/alembic.ini` exists.
+#   deploy           (needs: [build-and-push, migrate]) SSMs the EC2 box:
+#                    pulls the just-pushed <commit-sha> image from ECR and
+#                    runs `docker compose up -d --force-recreate` — NO docker
+#                    build ever runs on the serving host. This is the P1
+#                    "stop the bleeding" interim from #1039: it ends the
+#                    docker-compose-build-on-a-4GB-serving-host OOM class that
+#                    caused 3 production outages on 2026-07-06 (#1001), ahead
+#                    of the full ECS Fargate cutover (later phases of #1039).
+#
+# ECR repos expected: `archimedes-backend` (shared by the backend/oracle/agent/
+# kb-runner services — same image, different `command:` override, exactly as
+# today) and `archimedes-nginx`. Provisioned by Terraform (issue #1039 chunk 2,
+# infra/ecr.tf — not part of this PR); build-and-push fails with a clear
+# `::error::` if a repo doesn't exist yet rather than a bare AWS API error.
+#
+# Box-side prerequisite (NOT applied by this PR — tracked in #1039 chunk 2):
+# the EC2 instance role (`archimedes-backend-role`) needs
+# ecr:GetAuthorizationToken + ecr:BatchGetImage + ecr:GetDownloadUrl +
+# ecr:BatchCheckLayerAvailability on repository/archimedes*, and the box needs
+# `awscli` installed, so `docker compose pull` can authenticate to ECR. The
+# deploy step fails closed with an explicit error if either is missing — see
+# docs/deployment.md § "Production deploy flow".
 #
 # Required GitHub Variables (or hardcoded below):
 #   AWS_ROLE_ARN — arn:aws:iam::037613907429:role/archimedes-github-deploy
+#     (also grants ECR push, scoped to repository/archimedes* — see
+#     infra/scripts/setup-github-oidc.sh)
 #   EC2_INSTANCE_ID — i-01803d3abc271d39b
-#   DEPLOY_ENABLED — gate flag; the deploy job runs ONLY when this repo variable
-#     equals 'true'. Unset/false → the job is skipped (neutral, not failed). The
+#   DEPLOY_ENABLED — gate flag; both jobs below run ONLY when this repo
+#     variable equals 'true'. Unset/false → skipped (neutral, not failed). The
 #     stack was rebuilt on a NEW account (037613907429 / us-east-1) and is LIVE
 #     again at archimedes-arc.com (2026-06-24), so the deploy target exists. This
 #     gate is kept OFF until the migration PR (#716) merges + the OIDC role/trust
 #     are confirmed; flip DEPLOY_ENABLED=true (Settings → Secrets and variables →
-#     Actions → Variables) to make merges to main auto-deploy.
+#     Actions → Variables) to make merges to main auto-build + push + deploy.
 #
 # ─── KNOWN SECURITY DEBT ───
 #
@@ -29,7 +82,10 @@
 #    now reads LLM_*/EMAIL_ENCRYPTION_KEY from SSM Parameter Store via its EC2
 #    instance role at container start (services/secrets_service.load_ssm_secrets,
 #    IAM in infra/iam/archimedes-backend-policy.json). The deploy script no longer
-#    touches secrets, so no secret value enters any AWS audit surface.
+#    touches secrets, so no secret value enters any AWS audit surface. The new
+#    ECR docker-login below preserves this: it authenticates via the box's own
+#    IAM instance role (a short-lived STS-vended token), never a literal
+#    secret/password flowing through the SSM command body.
 #
 # 2. OUT-OF-BAND IAM RESOURCES NOT TERRAFORMED.
 #    `archimedes-github-deploy`, `AWSSystemsManagerDefaultEC2InstanceManagementRole`,
@@ -45,7 +101,7 @@
 #    Verify with: aws iam get-role --role-name archimedes-github-deploy
 #    and inspect AssumeRolePolicyDocument's Condition block.
 
-name: Deploy to EC2
+name: Build, Push & Deploy
 
 on:
   push:
@@ -63,17 +119,302 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
+  ECR_REGISTRY: 037613907429.dkr.ecr.us-east-1.amazonaws.com
+  BACKEND_ECR_REPO: archimedes-backend
+  NGINX_ECR_REPO: archimedes-nginx
   EC2_INSTANCE_ID: i-01803d3abc271d39b
 
 jobs:
+  build-and-push:
+    name: Build, validate + push to ECR
+    # Same gate as `deploy` below — see the header comment. Kept OFF until
+    # DEPLOY_ENABLED=true so a stray push to main doesn't start pushing images
+    # to an ECR repo that Terraform (issue #1039 chunk 2) hasn't created yet.
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30  # torch/sentence-transformers install + model bake + multi-GB ECR push
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build backend image
+        run: docker build -t archimedes-backend:ci -f backend/Dockerfile backend
+
+      - name: Build nginx image
+        # Env-parity fix (PR #1041 correctness pass, 2026-07-07): this is NOT
+        # just a boot/smoke validation image — the SAME `:ci`-tagged image
+        # built here is tagged + pushed to ECR verbatim below ("Tag + push
+        # nginx image"; no separate rebuild happens for the push), and BOTH
+        # live deploy targets (the EC2 box's `docker compose pull`, #1039 P1,
+        # and the Fargate `deploy-ecs` job) serve whatever landed in ECR —
+        # never a locally-rebuilt image. Leaving VITE_* build-args at the
+        # Dockerfile's empty defaults (the prior state of this step) means
+        # the shipped JS bundle has no Circle client key baked in and the
+        # wallet / passkey / Circle SDK UI breaks on every real deploy, not
+        # just Fargate. `VITE_CIRCLE_CLIENT_KEY` is a Circle TEST client key
+        # that ships inside the browser bundle by design (Circle's own docs
+        # treat it as public, embeddable config, not a backend secret) — a
+        # repo secret or variable is fine for it either way.
+        #
+        # *** ACTION REQUIRED (Dan): add the `VITE_CIRCLE_CLIENT_KEY` repo
+        # secret (Settings → Secrets and variables → Actions → Secrets, repo
+        # `a-apin/archimedes`) before the first real image build after this
+        # PR merges — until then this build-arg resolves to an empty string
+        # (same as today) and the wallet UI ships broken. ***
+        #
+        # `VITE_CIRCLE_CLIENT_URL` falls back to the known default Circle
+        # Modular SDK RPC URL (matches `nginx/Dockerfile`'s own ARG default)
+        # if the `VITE_CIRCLE_CLIENT_URL` repo VARIABLE is unset — set it
+        # explicitly only if Circle ever issues a different endpoint.
+        # `VITE_API_BASE` has no fallback here (empty = same-origin API calls,
+        # matching the Dockerfile default) — set the `VITE_API_BASE` repo
+        # variable only if the frontend must call a different origin.
+        env:
+          VITE_CIRCLE_CLIENT_KEY: ${{ secrets.VITE_CIRCLE_CLIENT_KEY }}
+          VITE_CIRCLE_CLIENT_URL: ${{ vars.VITE_CIRCLE_CLIENT_URL || 'https://modular-sdk.circle.com/v1/rpc/w3s/buidl' }}
+          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
+        run: |
+          docker build -t archimedes-nginx:ci -f nginx/Dockerfile . \
+            --build-arg VITE_CIRCLE_CLIENT_KEY="$VITE_CIRCLE_CLIENT_KEY" \
+            --build-arg VITE_CIRCLE_CLIENT_URL="$VITE_CIRCLE_CLIENT_URL" \
+            --build-arg VITE_API_BASE="$VITE_API_BASE"
+
+      - name: Validate backend image boots (GET /health)
+        run: |
+          set -euo pipefail
+          docker network create archimedes-ci
+          docker run -d --name backend --network archimedes-ci -p 8000:8000 archimedes-backend:ci
+          ok=""
+          for _ in $(seq 1 40); do
+            if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 3
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::backend image failed to answer GET /health within 120s — see logs below"
+            docker logs backend || true
+            exit 1
+          fi
+          echo "backend /health OK"
+
+      - name: Validate nginx image boots + proxies (GET / and /health)
+        # Runs on the same user-defined docker network as the backend
+        # container above (container name `backend`, matching nginx.conf's
+        # `upstream backend_api { server backend:8000 resolve; }`) so this
+        # also exercises the runtime DNS re-resolution path, not just a
+        # standalone nginx boot.
+        run: |
+          set -euo pipefail
+          docker run -d --name nginx-validate --network archimedes-ci -p 18080:8080 archimedes-nginx:ci
+          ok=""
+          for _ in $(seq 1 40); do
+            if curl -fsS http://localhost:18080/ >/dev/null 2>&1 && curl -fsS http://localhost:18080/health >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 3
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::nginx image failed to serve / and proxy /health within 120s — see logs below"
+            docker logs nginx-validate || true
+            docker logs backend || true
+            exit 1
+          fi
+          echo "nginx / + /health OK"
+
+      - name: Teardown validation containers
+        if: always()
+        run: |
+          docker rm -f backend nginx-validate 2>/dev/null || true
+          docker network rm archimedes-ci 2>/dev/null || true
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b  # v6.2.1
+        with:
+          role-to-assume: arn:aws:iam::037613907429:role/archimedes-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64  # v2.1.6
+
+      - name: Verify ECR repositories exist
+        # Fails clearly instead of letting `docker push` surface a bare
+        # "repository does not exist" AWS API error. The repos are Terraform
+        # resources (issue #1039 chunk 2, infra/ecr.tf) not yet applied as of
+        # this PR — this is the intended failure mode until Dan runs
+        # `terraform apply` in infra/ (see infra/README.md).
+        run: |
+          set -euo pipefail
+          for repo in "$BACKEND_ECR_REPO" "$NGINX_ECR_REPO"; do
+            if ! aws ecr describe-repositories --repository-names "$repo" --region "$AWS_REGION" >/dev/null 2>&1; then
+              echo "::error::ECR repository '$repo' does not exist yet. Apply the ECR Terraform in infra/ (issue #1039 chunk 2) before enabling DEPLOY_ENABLED — see infra/README.md."
+              exit 1
+            fi
+          done
+
+      - name: Tag + push backend image
+        run: |
+          set -euo pipefail
+          docker tag archimedes-backend:ci "$ECR_REGISTRY/$BACKEND_ECR_REPO:${{ github.sha }}"
+          docker tag archimedes-backend:ci "$ECR_REGISTRY/$BACKEND_ECR_REPO:latest"
+          docker push "$ECR_REGISTRY/$BACKEND_ECR_REPO:${{ github.sha }}"
+          docker push "$ECR_REGISTRY/$BACKEND_ECR_REPO:latest"
+
+      - name: Tag + push nginx image
+        run: |
+          set -euo pipefail
+          docker tag archimedes-nginx:ci "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}"
+          docker tag archimedes-nginx:ci "$ECR_REGISTRY/$NGINX_ECR_REPO:latest"
+          docker push "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}"
+          docker push "$ECR_REGISTRY/$NGINX_ECR_REPO:latest"
+
+  migrate:
+    needs: build-and-push
+    name: Alembic migrate (pre-rollout, one-off ECS task)
+    # Same gate as build-and-push/deploy — see the header comment for why
+    # this is one on/off switch for the whole pipeline.
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Issue #1039 P4 (shared with #1028 Phase A): run `alembic upgrade
+      # head` as an ordered, pre-rollout ECS one-off task — BEFORE any new
+      # task serves traffic — replacing today's `docker compose exec ...
+      # migrate` AFTER `up` race (impossible on Fargate anyway: there is no
+      # long-lived box to `exec` into after the fact). As of this PR, #1028
+      # Phase A has not landed Alembic yet (backend/migrations/ is
+      # hand-rolled timestamped .sql + archimedes.db.init_db()'s idempotent
+      # create_all + ADD COLUMN IF NOT EXISTS patches — see that module's
+      # docstring). This step detects that and no-ops loudly rather than
+      # either (a) failing the whole pipeline on a stage with nothing to do
+      # yet, or (b) silently pretending to run a migration that doesn't
+      # exist. The moment `backend/alembic.ini` lands on a branch, this
+      # activates itself with zero further pipeline changes.
+      - name: Check whether Alembic has landed on this branch
+        id: check
+        run: |
+          if [ -f backend/alembic.ini ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "backend/alembic.ini found — running 'alembic upgrade head' as a pre-rollout ECS task."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "NO-OP: backend/alembic.ini not present on this branch yet (#1028 Phase A hasn't landed the migrate stage). Schema changes still land via archimedes.db.init_db()'s idempotent create_all + ADD COLUMN IF NOT EXISTS patches at container startup. Skipping the ECS migrate task cleanly (not a failure)."
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.check.outputs.present == 'true'
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b  # v6.2.1
+        with:
+          role-to-assume: arn:aws:iam::037613907429:role/archimedes-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run `alembic upgrade head` as a one-off Fargate task
+        if: steps.check.outputs.present == 'true'
+        env:
+          # Matches infra/ecs.tf's `${var.project_name}-cluster` with the
+          # default `project_name = "archimedes"` (infra/variables.tf) — same
+          # literal-constant pattern as EC2_INSTANCE_ID / ECR_REGISTRY above,
+          # not a new cross-job variable.
+          ECS_CLUSTER: archimedes-cluster
+          # The dedicated one-off migrate task-def family (infra/ecs_migrate.tf,
+          # `aws_ecs_task_definition.migrate`, family = "${var.project_name}-migrate")
+          # — single container, no nginx sidecar, no healthCheck/dependsOn to
+          # stall on while Alembic runs. Kept in sync with Terraform via the
+          # `ecs_migrate_task_definition_family` output (infra/outputs.tf);
+          # this literal is the CI-side half of that sync contract.
+          ECS_MIGRATE_TASK_FAMILY: archimedes-migrate
+          # STATIC --network-configuration (issue #1039 B2). Deliberately NOT
+          # fetched via `aws ecs describe-services archimedes-backend`: that
+          # call can only succeed once `aws_ecs_service.backend` (ecs.tf)
+          # already exists, but the migrate task's entire reason to exist is
+          # to run BEFORE that service is created — see
+          # infra/runbooks/ecs-fargate-cutover.md Phase 1 ("run migrate to
+          # exit 0 before the Stage-2 terraform apply that creates the
+          # service"). A describe-services-sourced config can therefore never
+          # actually satisfy that ordering; it can only ever run after, which
+          # was the bug. Sourced instead from `aws_subnet.private` (vpc.tf)
+          # + `aws_security_group.ecs_backend` (ecs.tf) — both exist
+          # independently of the service. Run `terraform output -raw
+          # ecs_migrate_network_configuration` (infra/outputs.tf) after
+          # applying those two resources and paste the result here, replacing
+          # the REPLACE_WITH_* placeholders below — same literal-constant
+          # pattern as ECS_CLUSTER / ECS_MIGRATE_TASK_FAMILY above. The run
+          # step below fails closed with a clear error if this still contains
+          # a placeholder rather than silently passing an invalid config to
+          # `aws ecs run-task`.
+          ECS_MIGRATE_NETWORK_CONFIGURATION: '{"awsvpcConfiguration":{"subnets":["REPLACE_WITH_PRIVATE_SUBNET_IDS"],"securityGroups":["REPLACE_WITH_ECS_BACKEND_SECURITY_GROUP_ID"],"assignPublicIp":"DISABLED"}}'
+        run: |
+          set -euo pipefail
+
+          if [[ "$ECS_MIGRATE_NETWORK_CONFIGURATION" == *REPLACE_WITH_* ]]; then
+            echo "::error::ECS_MIGRATE_NETWORK_CONFIGURATION in .github/workflows/deploy.yml still has REPLACE_WITH_* placeholders. Run 'terraform output -raw ecs_migrate_network_configuration' in infra/ (after applying aws_subnet.private + aws_security_group.ecs_backend) and paste the real value in — see infra/runbooks/ecs-fargate-cutover.md Phase 1 (issue #1039 B2)."
+            exit 1
+          fi
+
+          # Runs `archimedes.scripts.alembic_migrate_preflight`, NOT a bare
+          # `python -m alembic upgrade head` (issue #1039 B3 — MANDATORY, see
+          # infra/runbooks/ecs-fargate-cutover.md): prod Aurora has no
+          # `alembic_version` table today (its schema was built by
+          # `create_all()` + hand-rolled ALTER patches, not Alembic), so a
+          # bare `upgrade head` against it fails "relation ... already
+          # exists" on the baseline revision. The pre-flight script stamps
+          # the baseline (`af9c6a9376e4`) first — idempotently, a no-op once
+          # `alembic_version` exists — then runs `upgrade head` for real. Uses
+          # `python -m` (not the `alembic` console script): backend/Dockerfile
+          # installs deps via `pip install --target=/deps` (a PYTHONPATH-based
+          # layout, not a real venv/site-packages install), so console-script
+          # entry points under /deps/bin are not on PATH; `python -m` resolves
+          # purely via PYTHONPATH (already set to /deps:/app in the image).
+          #
+          # Runs against ECS_MIGRATE_TASK_FAMILY (the dedicated single-
+          # container task def, infra/ecs_migrate.tf), using the STATIC
+          # ECS_MIGRATE_NETWORK_CONFIGURATION from the env block above — NOT
+          # the service's family or a describe-services lookup.
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "$ECS_MIGRATE_TASK_FAMILY" \
+            --launch-type FARGATE \
+            --network-configuration "$ECS_MIGRATE_NETWORK_CONFIGURATION" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"migrate\",\"command\":[\"python\",\"-m\",\"archimedes.scripts.alembic_migrate_preflight\"]}]}" \
+            --query 'tasks[0].taskArn' --output text)
+
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+            echo "::error::ecs run-task did not return a task ARN — see the command output above."
+            exit 1
+          fi
+          echo "Migrate task: $TASK_ARN — waiting for it to stop..."
+
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN"
+
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[?name==`migrate`].exitCode | [0]' --output text)
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::alembic_migrate_preflight failed (container exit code ${EXIT_CODE}) — see CloudWatch Logs (/archimedes/app, ecs-migrate-* stream) for detail. Blocking deploy: a new task must never serve before schema is current (#1039 acceptance criterion 5)."
+            exit 1
+          fi
+          echo "alembic_migrate_preflight OK — schema is current (stamped + upgraded to head); safe for new tasks to serve."
+
   deploy:
+    needs: [build-and-push, migrate]
     name: Deploy
-    # Gated behind an explicit opt-in repo variable. The stack is LIVE again on
-    # the new account (037613907429 / us-east-1, instance i-01803d3abc271d39b),
-    # but the gate stays OFF until the migration PR (#716) merges and the OIDC
-    # role + trust policy are confirmed, so a stray push to main can't deploy
-    # mid-migration. With DEPLOY_ENABLED unset, this job is SKIPPED (neutral,
-    # keeps the Actions history green); set DEPLOY_ENABLED=true to enable.
+    # Gated behind an explicit opt-in repo variable (also enforced transitively
+    # via `needs: [build-and-push, migrate]`, which carry the same `if:` —
+    # kept explicit here too so this job's own skip reason is legible in the
+    # Actions UI without following the dependency graph). The stack is LIVE
+    # again on the new account (037613907429 / us-east-1, instance
+    # i-01803d3abc271d39b), but the gate stays OFF until the migration PR
+    # (#716) merges and the OIDC role + trust policy are confirmed, so a
+    # stray push to main can't deploy mid-migration. With DEPLOY_ENABLED
+    # unset, all three jobs are SKIPPED (neutral, keeps the Actions history
+    # green); set DEPLOY_ENABLED=true to enable. `migrate` gating `deploy`
+    # is the #1039 P4 acceptance criterion: a new task must never serve
+    # before schema is current.
     if: ${{ vars.DEPLOY_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 35  # SSM 30min + AWS API overhead + buffer
@@ -96,6 +437,18 @@ jobs:
               "#!/bin/bash",
               "set -eux",
               "export HOME=/root",
+              "# Issue #1039 C3: two rapid merges to main can queue two overlapping",
+              "# SSM SendCommand invocations on the SAME box, both racing through",
+              "# `docker compose up --force-recreate` below — the loser can hit",
+              "# mid-recreate container-name conflicts or a half-swapped stack. An",
+              "# flock on a fd (not `flock -c \"...\"` wrapping the whole body as one",
+              "# string, which would need re-escaping this entire multi-hundred-line",
+              "# script through the JSON array below) holds for the rest of THIS",
+              "# script'"'"'s process lifetime and releases automatically on exit —",
+              "# a second concurrent SSM command blocks here for up to 1500s (the",
+              "# document'"'"'s own --timeout-seconds budget) rather than racing.",
+              "exec 200>/var/run/archimedes-deploy.lock",
+              "flock -w 1500 200 || { echo '"'"'ERROR_DEPLOY_LOCKED: another deploy is already running on this box (timed out after 1500s waiting for the lock).'"'"'; exit 1; }",
               "cd /opt/archimedes",
               "git config --global --add safe.directory /opt/archimedes",
               "mkdir -p analytics-engine/artifacts",
@@ -111,16 +464,32 @@ jobs:
               "# backend reads LLM_*/EMAIL_ENCRYPTION_KEY from SSM Parameter Store at",
               "# startup via its instance role (services/secrets_service.load_ssm_secrets);",
               "# the box-local, gitignored .env (untouched by git reset) carries any",
-              "# values not yet in SSM, incl. the build-time VITE_CIRCLE_CLIENT_KEY. See",
-              "# infra/iam/README.md for the SSM population runbook.",
+              "# RUNTIME values not yet in SSM. NOTE: this box now PULLS its images",
+              "# (below) rather than building them locally, so the box .env can no",
+              "# longer supply build-time frontend values like VITE_CIRCLE_CLIENT_KEY —",
+              "# that must be a GitHub Actions repo secret consumed by the",
+              "# build-and-push job's nginx build-arg (see this workflow file's header",
+              "# comment and the 'Build nginx image' step). See infra/iam/README.md",
+              "# for the SSM population runbook.",
               "grep -q '"'"'^PUBLIC_DOMAIN='"'"' .env || echo '"'"'PUBLIC_DOMAIN=https://archimedes-arc.com'"'"' >> .env",
+              "# P1 interim (issue #1039): PULL the image the build-and-push job above",
+              "# already built + validated + pushed to ECR — NEVER build on this serving",
+              "# host again. This is what stops the docker-compose-build OOM that caused",
+              "# 3 outages on 2026-07-06 (#1001). Requires awscli + an ECR-pull-capable",
+              "# instance role on this box (archimedes-backend-role — issue #1039 chunk",
+              "# 2, infra/ec2_iam.tf, NOT applied as of this PR); fails closed below with",
+              "# an explicit message rather than falling back to a local build.",
+              "grep -q '"'"'^ECR_REGISTRY='"'"' .env && sed -i '"'"'s#^ECR_REGISTRY=.*#ECR_REGISTRY=${{ env.ECR_REGISTRY }}#'"'"' .env || echo '"'"'ECR_REGISTRY=${{ env.ECR_REGISTRY }}'"'"' >> .env",
+              "grep -q '"'"'^IMAGE_TAG='"'"' .env && sed -i '"'"'s#^IMAGE_TAG=.*#IMAGE_TAG=${{ github.sha }}#'"'"' .env || echo '"'"'IMAGE_TAG=${{ github.sha }}'"'"' >> .env",
               "# Issue #1043 gated oracle/agent/kb-runner in docker-compose.yml behind a",
               "# runners compose profile. This deploy runs a bare docker compose up with",
               "# no -f and no COMPOSE_FILE, so it needs COMPOSE_PROFILES=runners set in .env",
               "# or those three services STOP on this deploy; local docker compose up stays",
               "# inert by default since it does not set this box-local .env value.",
               "if grep -q '"'"'^COMPOSE_PROFILES='"'"' .env; then grep -qE '"'"'^COMPOSE_PROFILES=([^#]*,)?runners(,|$)'"'"' .env || sed -i '"'"'s/^COMPOSE_PROFILES=.*/&,runners/'"'"' .env; else echo '"'"'COMPOSE_PROFILES=runners'"'"' >> .env; fi",
-              "docker compose build",
+              "command -v aws >/dev/null 2>&1 || { echo '"'"'ERROR_NO_AWSCLI_ON_BOX: install awscli on this instance and grant archimedes-backend-role ECR pull permissions (see infra/ec2_iam.tf, issue #1039 chunk 2, and docs/deployment.md).'"'"'; exit 1; }",
+              "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }} || { echo '"'"'ERROR_ECR_LOGIN_FAILED: verify archimedes-backend-role (EC2 instance role) has ecr:GetAuthorizationToken (infra/ec2_iam.tf).'"'"'; exit 1; }",
+              "docker compose pull || { echo '"'"'ERROR_ECR_PULL_FAILED: verify the archimedes-backend/archimedes-nginx ECR repos exist (terraform apply in infra/, issue #1039 chunk 2) and that tag ${{ github.sha }} was pushed by the build-and-push job.'"'"'; exit 1; }",
               "# Remove orphan containers left by an interrupted --force-recreate.",
               "# Docker renames the old container to <hex>_<name> before deleting it; if a",
               "# run is interrupted mid-recreate the orphan survives, and the next recreate",
@@ -181,3 +550,111 @@ jobs:
 
           echo "❌ Deploy timed out waiting for SSM command"
           exit 1
+
+  deploy-ecs:
+    needs: [build-and-push, migrate]
+    name: Deploy (ECS Fargate)
+    # Issue #1039 C1: CI never redeployed Fargate — build-and-push pushed a
+    # fresh image to ECR, but nothing ever pointed the ECS service at it, so
+    # every deploy after the Fargate cutover would silently keep serving
+    # whatever image tag Terraform bootstrapped the service with. This job
+    # is that missing piece: it registers a new task-definition revision
+    # carrying this commit's image tags and force-redeploys the service.
+    #
+    # Same gate + ordering as the EC2 `deploy` job above (needs the same two
+    # upstream jobs, same DEPLOY_ENABLED flag, kept explicit here for the
+    # same "legible in the Actions UI" reason) — the two deploy targets are
+    # independent siblings, not a chain, so a slow/failing EC2 SSM deploy
+    # never blocks the ECS redeploy or vice versa. Both currently serve
+    # LIVE traffic side by side off the same target group during the
+    # EC2-to-Fargate cutover window (see infra/runbooks/ecs-fargate-cutover.md
+    # "What `terraform apply` actually does") — every deploy MUST update
+    # both, or the two targets silently drift onto different code.
+    #
+    # Self-activating, same convention as the `migrate` job: `aws_ecs_service.
+    # backend` (infra/ecs.tf) is authored but NOT YET APPLIED as of this PR
+    # (Stage 2b in the cutover runbook, still Dan's pending AWS operation) —
+    # this job detects that with `aws ecs describe-services` and no-ops
+    # loudly (clear log line, exit 0) rather than failing every deploy on a
+    # service that doesn't exist yet. The moment Stage 2b is applied, this
+    # activates itself with zero further pipeline changes.
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b  # v6.2.1
+        with:
+          role-to-assume: arn:aws:iam::037613907429:role/archimedes-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check whether the ECS service exists yet
+        id: check
+        env:
+          ECS_CLUSTER: archimedes-cluster
+          ECS_SERVICE: archimedes-backend
+        run: |
+          set -euo pipefail
+          STATUS=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].status' --output text 2>/dev/null || echo "")
+          if [ "$STATUS" = "ACTIVE" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "ECS service '$ECS_SERVICE' is ACTIVE — registering a new task-definition revision and redeploying."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "NO-OP: ECS service '$ECS_SERVICE' not found/ACTIVE in cluster '$ECS_CLUSTER' — the Fargate cutover (infra/runbooks/ecs-fargate-cutover.md Stage 2b) hasn't been applied yet. The EC2 deploy above remains the live path; skipping cleanly (not a failure)."
+          fi
+
+      - name: Register a new task-definition revision + force-redeploy the service
+        if: steps.check.outputs.present == 'true'
+        env:
+          ECS_CLUSTER: archimedes-cluster
+          ECS_SERVICE: archimedes-backend
+          # The SERVICE task-def family (infra/ecs.tf's aws_ecs_task_definition.backend,
+          # `${var.project_name}-backend`) — distinct from ECS_MIGRATE_TASK_FAMILY
+          # above, which boots a single container with no HTTP surface. This one
+          # boots the real nginx+backend pair the ALB target group routes to.
+          ECS_TASK_FAMILY: archimedes-backend
+        run: |
+          set -euo pipefail
+
+          # Fetch the CURRENTLY REGISTERED task definition for this family —
+          # not `aws_ecs_task_definition.backend`'s Terraform-authored JSON —
+          # so every other field (cpu/memory/roles/secrets/log config/env)
+          # carries forward unchanged; only the two container images below
+          # are freshly pushed. Matches the same "reuse infra Terraform
+          # already applied" spirit as the migrate job's static network
+          # config (B2) — this job never re-derives infra config CI has no
+          # business owning.
+          aws ecs describe-task-definition --task-definition "$ECS_TASK_FAMILY" \
+            --query 'taskDefinition' > current-task-def.json
+
+          jq --arg backend_image "$ECR_REGISTRY/$BACKEND_ECR_REPO:${{ github.sha }}" \
+             --arg nginx_image "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}" '
+            .containerDefinitions = (.containerDefinitions | map(
+              if .name == "backend" then .image = $backend_image
+              elif .name == "nginx" then .image = $nginx_image
+              else . end
+            )) |
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+          ' current-task-def.json > new-task-def.json
+
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://new-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          if [ -z "$NEW_TASK_DEF_ARN" ] || [ "$NEW_TASK_DEF_ARN" = "None" ]; then
+            echo "::error::ecs register-task-definition did not return a task definition ARN — see the command output above."
+            exit 1
+          fi
+          echo "Registered $NEW_TASK_DEF_ARN"
+
+          # --force-new-deployment: the service's own lifecycle.ignore_changes
+          # = [task_definition, desired_count] (infra/ecs.tf) means Terraform
+          # never reverts this out-of-band update on a later apply.
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --task-definition "$NEW_TASK_DEF_ARN" --force-new-deployment >/dev/null
+
+          echo "Waiting for the ECS service to reach steady state (deployment_circuit_breaker will auto-rollback a bad revision)..."
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          echo "✅ ECS deploy complete — $ECS_SERVICE is stable on $NEW_TASK_DEF_ARN"

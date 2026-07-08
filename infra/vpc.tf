@@ -131,6 +131,28 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[count.index].id
 }
 
+# ── S3 Gateway VPC endpoint (FREE — $0, no ENI, no hourly charge) ──────────
+# ECR stores image layers in S3, so `docker pull` from ECR (the ECS task
+# startup path, ecr.tf) transits S3 even though the request is issued against
+# an ecr.<region>.amazonaws.com hostname. A Gateway endpoint adds a prefix-list
+# route to the private route tables so that S3 traffic goes directly to S3 over
+# the AWS network instead of out through a NAT instance — meaning ECS image
+# pulls (and anything else in the private subnets talking to S3) keep working
+# even during the exact NAT-instance outage N1/N3 above defend against. Gateway
+# type (not Interface) is what makes this free: it's a route-table entry, not a
+# billed ENI+hourly-charge PrivateLink endpoint.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = aws_route_table.private[*].id
+
+  tags = {
+    Name    = "${var.project_name}-s3-endpoint"
+    Project = var.project_name
+  }
+}
+
 # ── NAT Instances (fck-nat, t4g.nano, one per AZ) ───────────
 
 data "aws_ami" "fck_nat" {
@@ -172,15 +194,25 @@ resource "aws_security_group" "nat" {
 }
 
 resource "aws_instance" "nat" {
-  count                = 2
-  ami                  = data.aws_ami.fck_nat.id
-  instance_type        = "t4g.nano"
-  subnet_id            = aws_subnet.public[count.index].id
+  count                  = 2
+  ami                    = data.aws_ami.fck_nat.id
+  instance_type          = "t4g.nano"
+  subnet_id              = aws_subnet.public[count.index].id
   vpc_security_group_ids = [aws_security_group.nat.id]
-  source_dest_check    = false # Required for NAT
+  source_dest_check      = false # Required for NAT
 
   tags = {
     Name    = "${var.project_name}-nat-${local.azs[count.index]}"
     Project = var.project_name
+  }
+
+  lifecycle {
+    # Same rationale as aws_instance.archimedes (main.tf): data.aws_ami.fck_nat
+    # is `most_recent = true`, so an unrelated `terraform apply` picking up a
+    # newly-published fck-nat AMI would otherwise destroy-recreate a LIVE NAT
+    # instance — taking down both private subnets' egress (ECR pulls, Bedrock,
+    # Arc RPC, Aurora/ElastiCache client traffic) for the recreate window, on
+    # a plan that had nothing to do with NAT (issue #1039 N3).
+    ignore_changes = [ami]
   }
 }

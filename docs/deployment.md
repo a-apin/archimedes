@@ -50,11 +50,52 @@ fixes) safe.
 
 ## Production deploy flow (`deploy.yml`)
 
-Push to `main` → (gated on `DEPLOY_ENABLED=true`) → OIDC into AWS → SSM
-`SendCommand` on the EC2: `git reset --hard origin/main` (the gitignored `.env`
-is **untouched**, so the managed-store URLs persist), `docker compose build`,
-`docker compose up -d --force-recreate --remove-orphans`, then seed/hydrate/AMM
-bootstrap + a `/health` check.
+**Updated 2026-07-06 (issue #1039, P1 — "stop the bleeding"); updated
+2026-07-07 (#1039 P4, build-chunk 3 — Alembic migrate stage).** Building the
+image on the serving host (`docker compose build`) was the root cause of 3
+production outages on 2026-07-06, all OOM: a build on top of a running stack
+overruns the 2 vCPU / 4 GB box, the OOM killer takes out the SSM agent +
+backend, and there's no registry to roll back to. The pipeline is now
+build-in-CI → push to ECR → migrate → pull-on-box:
+
+1. Push to `main` → (gated on `DEPLOY_ENABLED=true`) → the `build-and-push`
+   job builds the backend image (`backend/Dockerfile`) and the nginx/frontend
+   image (`nginx/Dockerfile`) on the **CI runner**, boots each in a throwaway
+   container and curls `/health` (nginx through its full reverse-proxy path,
+   including runtime DNS resolution to a `backend` container) — a broken
+   image is caught **here**, before it ever reaches ECR or the serving host —
+   then tags both `<commit-sha>` and `latest` and pushes to ECR
+   (`archimedes-backend`, `archimedes-nginx`).
+2. The `migrate` job (needs: `build-and-push`) runs `alembic upgrade head` as
+   a one-off ECS Fargate task, **before** `deploy` — the ordered pre-rollout
+   migrate stage from #1039 P4 (shared with #1028 Phase A). As of this PR,
+   Alembic hasn't landed yet (`backend/migrations/` is still hand-rolled
+   `.sql` + `archimedes.db.init_db()`'s idempotent patches), so the job
+   detects `backend/alembic.ini`'s absence and no-ops loudly rather than
+   failing or faking a migration — see the job's own comments in `deploy.yml`
+   and `infra/runbooks/ecs-fargate-cutover.md` § "Alembic pre-rollout migrate
+   stage" for the full mechanics.
+3. The `deploy` job (needs: `[build-and-push, migrate]`) OIDCs into AWS and
+   SSMs the EC2: `git reset --hard origin/main` (the gitignored `.env` is
+   **untouched**, so the managed-store URLs persist), sets
+   `ECR_REGISTRY`/`IMAGE_TAG` in `.env`, logs the box in to ECR via its own
+   instance role, then `docker compose pull && docker compose up -d
+   --force-recreate --remove-orphans` — **no `docker build` ever runs on the
+   serving host** — then seed/hydrate/AMM bootstrap + a `/health` check.
+
+`docker-compose.yml`'s app-tier services (`nginx`, `backend`, `oracle`,
+`agent`, `kb-runner`) now carry an explicit `image:` (in addition to the
+existing `build:`, unchanged for local dev) pointing at the ECR-hosted tag —
+see the comment block at the top of that file.
+
+**Known residual (not closed by this PR — tracked as issue #1039 chunk 2):**
+the EC2 instance role (`archimedes-backend-role`) does not yet have ECR pull
+permissions (`ecr:GetAuthorizationToken`, `ecr:BatchGetImage`,
+`ecr:GetDownloadUrl`, `ecr:BatchCheckLayerAvailability`), and the box does not
+yet have `awscli` installed. Until both land (Terraform in `infra/ec2_iam.tf`
++ `infra/README.md`), the deploy step's `docker login`/`docker compose pull`
+fails closed with an explicit `ERROR_ECR_LOGIN_FAILED` / `ERROR_ECR_PULL_FAILED`
+message rather than silently falling back to a local build.
 
 ## One-time step on the live box (after merging this change)
 

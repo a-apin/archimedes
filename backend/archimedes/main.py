@@ -505,6 +505,14 @@ async def health():
     from archimedes.services.llm_backend import make_llm_backend
 
     connected = await chain_client.is_connected()
+    if not connected:
+        # N2 (infra #1039): /health's status code is deliberately unchanged (still
+        # 200 — see the module docstring above and infra/runbooks) so a transient
+        # Arc RPC blip can't cascade the whole ECS service down. But "degraded but
+        # HTTP 200" is silent by default, so log loudly here — a CloudWatch Logs
+        # metric filter on this exact string (infra/cloudwatch.tf) turns repeated
+        # occurrences into a paging alarm without touching the response contract.
+        logger.warning("HEALTH_CHAIN_DISCONNECTED: chain_connected=false (Arc RPC unreachable or timed out)")
     corpus = load_corpus()
     _fusion_on = fusion_enabled()
     backend = make_llm_backend()

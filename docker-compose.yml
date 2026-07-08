@@ -1,6 +1,27 @@
 # Archimedes — Docker Compose for production deployment on EC2
 # Usage: docker compose up --build -d
 #
+# Image refs (issue #1039, P1 — "stop the bleeding"): the app-tier services
+# below (nginx, backend, oracle, agent, kb-runner) now carry an explicit
+# `image:` in addition to `build:`. This is what lets `docker compose pull`
+# do something useful — without an `image:` key, compose has nothing to pull
+# and a bare `docker compose pull && up -d` would silently no-op, still
+# forcing a local `--build` (the exact OOM-on-serving-host failure mode this
+# issue exists to kill; see #1001). `build:` is left in place on purpose so
+# local dev (`docker compose up --build -d`) is completely unaffected — it
+# builds fresh from the Dockerfile and tags the image with the same name the
+# `image:` key declares, purely a local tag, no registry push happens unless
+# you explicitly run `docker compose push`.
+#
+# ECR_REGISTRY / IMAGE_TAG are read from `.env` (or the shell env); the
+# defaults below point at the live account/region and `:latest`. CI
+# (.github/workflows/deploy.yml, `build-and-push` job) builds + validates +
+# pushes both `archimedes-backend` and `archimedes-nginx` to ECR tagged by
+# commit SHA *and* `latest`; the box's deploy step sets IMAGE_TAG to the
+# deployed commit SHA before `docker compose pull`, so `latest` is a fallback
+# for anyone pulling by hand. See docs/deployment.md § "Production deploy
+# flow" and infra/README.md for the ECR repos (Terraform, issue #1039 chunk 2).
+#
 # ── Compose profiles in this file (two independent gates) ──────────────────
 #   `localdb` — postgres + redis, LOCAL DEV ONLY (see the "Data stores" note
 #     just below). PRODUCTION's box .env has historically omitted
@@ -22,7 +43,6 @@
 #     `docker compose up` (demo/UI work), so it doesn't accidentally spin up
 #     a second live copy racing whatever the operator already has running
 #     elsewhere.
-
 services:
   # ---------- Data stores (LOCAL ONLY — see profiles note) ----------
   # postgres + redis run ONLY when the `localdb` profile is active
@@ -63,6 +83,7 @@ services:
 
   # ---------- Reverse proxy + Frontend ----------
   nginx:
+    image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-nginx:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: nginx/Dockerfile
@@ -86,6 +107,7 @@ services:
 
   # ---------- Oracle (price feeder) ----------
   oracle:
+    image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -122,6 +144,7 @@ services:
 
   # ---------- Strategy Agent (autonomous portfolio runner) ----------
   agent:
+    image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -162,6 +185,7 @@ services:
 
   # ---------- Backend API ----------
   backend:
+    image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -231,6 +255,7 @@ services:
   #
   # #1043 — gated behind the `runners` profile; see the file-header note.
   kb-runner:
+    image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
     profiles: ["runners"]
     build:
       context: ./backend

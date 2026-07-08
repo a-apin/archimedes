@@ -300,6 +300,49 @@ resource "aws_cloudwatch_metric_alarm" "nat_egress_anomaly" {
   tags                = { Project = var.project_name }
 }
 
+# NAT health + auto-recovery (issue #1039 N1). Mirrors the app box's own
+# `ec2_status_check_failed` alarm above (same alarm-name suffix pattern,
+# SNS action, tags), with two deliberate deltas from an exact mirror:
+#
+# 1. Metric is `StatusCheckFailed_System`, NOT the combined `StatusCheckFailed`
+#    the app box alarm uses. This isn't stylistic — it's an AWS hard
+#    requirement: "The recover action can be used only with
+#    StatusCheckFailed_System, not with StatusCheckFailed_Instance." (AWS docs,
+#    Add recover actions to Amazon CloudWatch alarms). The combined
+#    StatusCheckFailed metric is Max(_System, _Instance), so an alarm on it
+#    would fail to accept the ec2:recover action outright — using it here would
+#    be a change that looks right but silently can't do the one thing this
+#    alarm exists for. t4g.nano (the NAT instance type, vpc.tf) is in AWS's
+#    supported-instance-type list for CloudWatch action based recovery.
+# 2. `evaluation_periods = 2` (not 3, the app box's value) — AWS's own
+#    recommendation for recover alarms specifically ("we recommend that you
+#    set recover alarms to two evaluation periods of one minute each"), to
+#    avoid a race condition if a reboot alarm with the same period count is
+#    ever added alongside it later.
+#
+# BOTH actions fire on the SAME alarm_actions list: the SNS topic (so a human
+# is paged the moment a NAT goes unhealthy, exactly like every other alarm in
+# this file) AND the `ec2:recover` automate ARN (so AWS attempts to migrate
+# the instance off failed hardware without waiting on that human) — self-heal
+# and visibility are not mutually exclusive.
+resource "aws_cloudwatch_metric_alarm" "nat_status_check_failed" {
+  count               = length(aws_instance.nat)
+  alarm_name          = "${var.project_name}-nat-status-check-failed-${count.index}"
+  alarm_description   = "NAT instance ${count.index} system status check failed — host unhealthy, auto-recovering onto new hardware."
+  namespace           = "AWS/EC2"
+  metric_name         = "StatusCheckFailed_System"
+  statistic           = "Maximum"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  period              = 60
+  evaluation_periods  = 2
+  dimensions          = { InstanceId = aws_instance.nat[count.index].id }
+  alarm_actions       = [aws_sns_topic.alerts.arn, "arn:aws:automate:${var.aws_region}:ec2:recover"]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "breaching"
+  tags                = { Project = var.project_name }
+}
+
 # ALB 5xx error RATE > 1% sustained 5 min. Uses a metric-math expression:
 # 100 * target-5xx / request-count. This is distinct from the existing
 # absolute-count alarm (alb_5xx_high) — a rate alarm catches degradation that
@@ -923,6 +966,47 @@ resource "aws_cloudwatch_log_group" "nginx" {
   name              = "/archimedes/nginx"
   retention_in_days = 90
   tags              = { Project = var.project_name }
+}
+
+# ── Dead-egress detection — chain_connected health signal (issue #1039 N2) ──
+#
+# Deliberately does NOT flip /health's HTTP status code on chain-down (that
+# risks cascading the whole ECS service on a transient Arc RPC blip — the ALB
+# target-group health check and ECS's own container healthCheck both key off
+# /health's status code, so a 5xx there would drain/kill tasks over an RPC-only
+# problem). Instead: backend/archimedes/main.py's `/health` handler logs a
+# loud, greppable WARNING (`HEALTH_CHAIN_DISCONNECTED`) whenever
+# `chain_connected` is false while still returning HTTP 200 — a "degraded but
+# healthy" task keeps serving traffic (correct) while this filter+alarm pair
+# makes that degraded state page a human instead of silently sitting in the
+# JSON body of a response nobody is reading.
+resource "aws_cloudwatch_log_metric_filter" "chain_disconnected" {
+  name           = "${var.project_name}-chain-disconnected"
+  log_group_name = aws_cloudwatch_log_group.app.name
+  pattern        = "\"HEALTH_CHAIN_DISCONNECTED\""
+
+  metric_transformation {
+    name          = "ChainDisconnectedCount"
+    namespace     = "Archimedes/Health"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "chain_disconnected_alarm" {
+  alarm_name          = "${var.project_name}-chain-disconnected"
+  alarm_description   = "/health reported chain_connected=false 3+ times in 5 min — Arc RPC unreachable (dead NAT egress or upstream RPC outage) on a task that is still serving HTTP 200."
+  namespace           = aws_cloudwatch_log_metric_filter.chain_disconnected.metric_transformation[0].namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.chain_disconnected.metric_transformation[0].name
+  statistic           = "Sum"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 3
+  period              = 300
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  tags                = { Project = var.project_name }
 }
 
 # ── Outputs ──────────────────────────────────────────────────────────────────

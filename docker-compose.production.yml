@@ -22,6 +22,15 @@
 # Required env (from .env, sourced from SSM at boot — NEVER baked into the AMI):
 #   DATABASE_URL=postgresql://archimedes:<pw>@<aurora-endpoint>:5432/archimedes
 #   REDIS_URL=rediss://<elasticache-endpoint>:6379/0
+#
+# Image refs (config consolidation, issue #1039 P5): both services below now
+# carry an explicit `image:` (ECR-hosted) alongside `build:`, mirroring the
+# same addition already made to docker-compose.yml (issue #1039 P1) — so
+# `docker compose pull` has something to pull instead of always needing
+# `--build` on this tier's instances too. `build:` stays so the documented
+# `--build` usage above (and any local exercising of this file) is
+# unaffected. ECR_REGISTRY / IMAGE_TAG read from `.env` / the shell env, same
+# defaults as docker-compose.yml — see docs/deployment.md.
 
 services:
   # ---------- Reverse proxy + Frontend ----------
@@ -29,6 +38,7 @@ services:
   # terminates TLS and forwards plain HTTP to the instance on port 80 → 8080.
   # nginx does NOT terminate TLS in this tier (the ALB does).
   nginx:
+    image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-nginx:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: nginx/Dockerfile
@@ -48,6 +58,7 @@ services:
 
   # ---------- Backend API ----------
   backend:
+    image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
     build:
       context: ./backend
       dockerfile: Dockerfile
