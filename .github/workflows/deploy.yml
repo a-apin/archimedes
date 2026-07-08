@@ -114,7 +114,7 @@ jobs:
               "# values not yet in SSM, incl. the build-time VITE_CIRCLE_CLIENT_KEY. See",
               "# infra/iam/README.md for the SSM population runbook.",
               "grep -q '"'"'^PUBLIC_DOMAIN='"'"' .env || echo '"'"'PUBLIC_DOMAIN=https://archimedes-arc.com'"'"' >> .env",
-              "# PR #1046 gated oracle/agent/kb-runner in docker-compose.yml behind a",
+              "# Issue #1043 gated oracle/agent/kb-runner in docker-compose.yml behind a",
               "# runners compose profile. This deploy runs a bare docker compose up with",
               "# no -f and no COMPOSE_FILE, so it needs COMPOSE_PROFILES=runners set in .env",
               "# or those three services STOP on this deploy; local docker compose up stays",

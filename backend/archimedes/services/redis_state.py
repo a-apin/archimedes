@@ -51,6 +51,30 @@ KEY_SIWE_NONCE_PREFIX = "archimedes:auth:nonce:"
 KEY_LEASE_PREFIX = "archimedes:leader:"
 KEY_LEASE_FENCING_SUFFIX = ":fencing"
 
+# Lua: acquire the lease ATOMICALLY (single EVAL — no other command can
+# interleave between the sub-steps). This is the exclusivity primitive.
+#   KEYS[1] = lock key, KEYS[2] = fencing counter key
+#   ARGV[1] = holder uuid, ARGV[2] = ttl_ms
+# The whole thing runs atomically, which is what makes it correct: a naive
+# client-side `SET NX` → `INCR` → `SET XX` (an earlier revision, PR #1046
+# review) has a clobber race — if the lease TTL expires between the NX and
+# the finalize, another runner can win the key and the finalize's `XX`
+# (existence-only) write silently overwrites the NEW owner, violating
+# exclusivity for a funds-adjacent singleton. Doing SET-NX + INCR + finalize
+# inside ONE script removes the gap entirely: nothing can acquire the key
+# between our NX win and our token write. INCR still fires only on a win, so
+# a losing retry loop never burns fence numbers.
+_LEASE_ACQUIRE_LUA = """
+if redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", ARGV[2]) then
+    local fence = redis.call("INCR", KEYS[2])
+    local token = ARGV[1] .. ":" .. fence
+    redis.call("SET", KEYS[1], token, "PX", ARGV[2])
+    return token
+else
+    return false
+end
+"""
+
 # Lua: renew a lease's TTL — ONLY if the caller's token still matches the
 # stored owner (compare-and-set). Re-issuing SET with PX (rather than
 # PEXPIRE) keeps the value identical to a fresh acquire while proving
@@ -97,6 +121,7 @@ class AgentStateStore:
     def __init__(self, url: str | None = None) -> None:
         self._url = url or REDIS_URL
         self._redis: aioredis.Redis | None = None
+        self._lease_acquire_script = None  # lazy-registered atomic acquire+fence Lua script
         self._lease_renew_script = None  # lazy-registered compare-and-set Lua script
         self._lease_release_script = None  # lazy-registered compare-and-delete Lua script
 
@@ -209,29 +234,22 @@ class AgentStateStore:
     async def acquire_lease(self, runner_name: str, ttl_ms: int) -> str | None:
         """Attempt to acquire the exactly-once lease for *runner_name*.
 
-        Uses ``SET key token NX PX ttl_ms`` — atomic acquire-with-expiry.
         Returns a fencing token ``"<uuid4>:<fence>"`` on success, or ``None``
         if another live copy already holds the lease. ``fence`` is a
-        monotonically increasing per-runner counter (``INCR`` on a dedicated
-        key) folded into the token so every acquisition WIN gets a unique,
-        ordered identity — useful for audit/log correlation, independent of
-        the NX check itself (which is what actually enforces exclusivity).
+        monotonically increasing per-runner counter folded into the token so
+        every acquisition WIN gets a unique, ordered identity — useful for
+        audit/log correlation, independent of the ``SET NX`` that actually
+        enforces exclusivity.
 
-        Win-then-fence, in that order (PR #1046 review): a non-leader
-        retrying acquire in a loop must not burn fence numbers on every
-        failed attempt, so the fence is only ever consumed by whoever
-        actually wins the NX. Sequence:
-          1. ``SET key <uuid4> NX PX ttl_ms`` — the real exclusivity check.
-             Lose → return ``None`` immediately, no fence consumed.
-          2. Win → ``INCR`` the dedicated fencing key and fold it into the
-             final token.
-          3. ``SET key <uuid4>:<fence> PX ttl_ms XX`` — overwrite the
-             placeholder we just wrote with the real token. ``XX`` guards
-             the rare race where our own lease already expired between
-             steps 1 and 3 (only plausible with a pathologically short
-             ``ttl_ms``, e.g. in tests): if the key no longer exists (or was
-             re-won by someone else in that window) the ``XX`` write fails
-             and we return ``None`` rather than resurrecting/clobbering it.
+        The acquire runs as a SINGLE atomic Lua script (``_LEASE_ACQUIRE_LUA``):
+        ``SET NX`` (the exclusivity check) + ``INCR`` (fence, only on a win) +
+        the final token write, with no window for another process to interleave.
+        This is deliberately NOT a client-side ``SET NX`` → ``INCR`` → ``SET XX``
+        sequence: that has a clobber race (if the TTL lapses between the NX and
+        the finalize, the existence-only ``XX`` write can overwrite a lease a
+        DIFFERENT runner just won — fatal for a funds-adjacent singleton). The
+        atomic script closes that gap and still only consumes a fence on a win,
+        so a losing retry loop never burns fence numbers.
 
         The returned token must be passed to ``renew_lease`` / ``release_lease``
         so only the current owner can mutate the lease.
@@ -239,16 +257,12 @@ class AgentStateStore:
         r = await self._get_redis()
         key = f"{KEY_LEASE_PREFIX}{runner_name}"
         fencing_key = f"{KEY_LEASE_PREFIX}{runner_name}{KEY_LEASE_FENCING_SUFFIX}"
+        if self._lease_acquire_script is None:
+            self._lease_acquire_script = r.register_script(_LEASE_ACQUIRE_LUA)
 
         holder_uuid = str(uuid.uuid4())
-        acquired = await r.set(key, holder_uuid, nx=True, px=ttl_ms)
-        if not acquired:
-            return None
-
-        fence = await r.incr(fencing_key)
-        token = f"{holder_uuid}:{fence}"
-        overwritten = await r.set(key, token, px=ttl_ms, xx=True)
-        return token if overwritten else None
+        token = await self._lease_acquire_script(keys=[key, fencing_key], args=[holder_uuid, str(ttl_ms)])
+        return token if token else None
 
     async def renew_lease(self, runner_name: str, token: str, ttl_ms: int) -> bool:
         """Extend the lease TTL — ONLY if *token* still matches the stored owner.

@@ -72,19 +72,25 @@ class _SyncLeaseClient:
         # for callers that don't need the sync path.
         import redis as sync_redis
 
-        from archimedes.services.redis_state import _LEASE_RELEASE_LUA, _LEASE_RENEW_LUA, REDIS_URL
+        from archimedes.services.redis_state import (
+            _LEASE_ACQUIRE_LUA,
+            _LEASE_RELEASE_LUA,
+            _LEASE_RENEW_LUA,
+            REDIS_URL,
+        )
 
         self._client = sync_redis.Redis.from_url(url or REDIS_URL, decode_responses=True)
+        self._acquire_script = self._client.register_script(_LEASE_ACQUIRE_LUA)
         self._renew_script = self._client.register_script(_LEASE_RENEW_LUA)
         self._release_script = self._client.register_script(_LEASE_RELEASE_LUA)
 
     def acquire(self, runner_name: str, ttl_ms: int) -> str | None:
-        """Win-then-fence, mirroring ``AgentStateStore.acquire_lease`` exactly
-        (#1046 review): only a winner of the ``SET NX`` consumes a fence
-        number, so a non-holder retrying this in a loop does not burn fence
-        values on every failed attempt. See the async version's docstring in
-        ``redis_state.py`` for the full step-by-step rationale, including the
-        ``XX``-guarded overwrite for the rare expire-in-between race.
+        """Acquire the lease via the SAME atomic Lua script the async path uses
+        (``_LEASE_ACQUIRE_LUA``): ``SET NX`` + ``INCR`` fence + token write in
+        one EVAL, so a lease taken here is indistinguishable on the wire from
+        one taken by the async runners, and there is no client-side
+        ``NX``→``INCR``→``XX`` clobber race (see the async ``acquire_lease``
+        docstring in ``redis_state.py``). Fence is consumed only on a win.
         """
         from archimedes.services.redis_state import KEY_LEASE_FENCING_SUFFIX, KEY_LEASE_PREFIX
 
@@ -92,14 +98,8 @@ class _SyncLeaseClient:
         fencing_key = f"{KEY_LEASE_PREFIX}{runner_name}{KEY_LEASE_FENCING_SUFFIX}"
 
         holder_uuid = str(uuid.uuid4())
-        acquired = self._client.set(key, holder_uuid, nx=True, px=ttl_ms)
-        if not acquired:
-            return None
-
-        fence = self._client.incr(fencing_key)
-        token = f"{holder_uuid}:{fence}"
-        overwritten = self._client.set(key, token, px=ttl_ms, xx=True)
-        return token if overwritten else None
+        token = self._acquire_script(keys=[key, fencing_key], args=[holder_uuid, str(ttl_ms)])
+        return token if token else None
 
     def renew(self, runner_name: str, token: str, ttl_ms: int) -> bool:
         from archimedes.services.redis_state import KEY_LEASE_PREFIX

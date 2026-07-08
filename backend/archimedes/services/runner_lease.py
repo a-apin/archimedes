@@ -83,8 +83,11 @@ class RunnerLeaseGuard:
         attempt = 0
         while True:
             attempt += 1
+            errored = False
             try:
                 token = await self.store.acquire_lease(self.runner_name, self.ttl_ms)
+            except asyncio.CancelledError:
+                raise  # never swallow shutdown/cancellation
             except Exception:
                 logger.exception(
                     "[lease:%s] acquire attempt %d errored (Redis unreachable?) — retrying in %.0fs",
@@ -93,6 +96,7 @@ class RunnerLeaseGuard:
                     self.acquire_retry_s,
                 )
                 token = None
+                errored = True
 
             if token is not None:
                 self._token = token
@@ -100,12 +104,17 @@ class RunnerLeaseGuard:
                 logger.info("[lease:%s] acquired (token=%s)", self.runner_name, token)
                 return
 
-            logger.info(
-                "[lease:%s] held elsewhere — waiting (attempt %d, retry in %.0fs)",
-                self.runner_name,
-                attempt,
-                self.acquire_retry_s,
-            )
+            # Only call it "held elsewhere" when the acquire genuinely returned
+            # None (lease held by another copy); an errored attempt already
+            # logged its own reason just above — don't double-log a misleading
+            # cause.
+            if not errored:
+                logger.info(
+                    "[lease:%s] held elsewhere — waiting (attempt %d, retry in %.0fs)",
+                    self.runner_name,
+                    attempt,
+                    self.acquire_retry_s,
+                )
             await asyncio.sleep(self.acquire_retry_s)
 
     def start_renewal(self) -> asyncio.Task:
@@ -131,25 +140,34 @@ class RunnerLeaseGuard:
         this loop or the caller's tick loop.
         """
         if self._token is not None:
+            renew_errored = False
             try:
                 ok = await self.store.renew_lease(self.runner_name, self._token, self.ttl_ms)
+            except asyncio.CancelledError:
+                raise  # never swallow shutdown/cancellation
             except Exception:
                 logger.exception(
                     "[lease:%s] renew errored (Redis unreachable?) — treating lease as LOST (fail closed)",
                     self.runner_name,
                 )
                 ok = False
+                renew_errored = True
 
             if ok:
                 logger.debug("[lease:%s] renewed", self.runner_name)
                 self._lease_valid = True
                 return
 
-            logger.error(
-                "[lease:%s] renew compare-and-set FAILED — lease lost to another holder; "
-                "on-chain writes are SKIPPED until it is re-acquired",
-                self.runner_name,
-            )
+            # Distinguish the two failure causes: a clean CAS-false means the
+            # lease was genuinely lost to another holder; an exception means
+            # Redis was unreachable (already logged above). Both fail closed,
+            # but only the CAS-false case should claim "lost to another holder".
+            if not renew_errored:
+                logger.error(
+                    "[lease:%s] renew compare-and-set FAILED — lease lost to another holder; "
+                    "on-chain writes are SKIPPED until it is re-acquired",
+                    self.runner_name,
+                )
             self._lease_valid = False
             self._token = None
 
@@ -158,6 +176,8 @@ class RunnerLeaseGuard:
         # it, the NEXT renewal tick retries.
         try:
             token = await self.store.acquire_lease(self.runner_name, self.ttl_ms)
+        except asyncio.CancelledError:
+            raise  # never swallow shutdown/cancellation
         except Exception:
             logger.exception("[lease:%s] re-acquire attempt errored", self.runner_name)
             token = None
