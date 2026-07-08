@@ -43,6 +43,50 @@ def splitter_addr():
     return "0xSplitter0000000000000000000000000000000001"
 
 
+# ── PAYMENTS_DRY_RUN guard (issue: manual withdraw endpoint bypassed dry-run) ──
+# Every fund-moving method must be an inert no-op under dry-run, moving no real
+# value and never touching a signer/executor/RPC. The guard lives in the sweeper
+# so no caller can forget it.
+
+
+async def test_dry_run_sweep_publisher_is_noop(settings, pub):
+    """Under PAYMENTS_DRY_RUN, sweep_publisher moves no value — no signer/executor touched."""
+    sweeper = SettlementSweeper(settings, payments_dry_run=True)
+    sweeper._get_signer = MagicMock(side_effect=AssertionError("signer must not run under dry-run"))
+    sweeper._get_executor = MagicMock(side_effect=AssertionError("executor must not run under dry-run"))
+    result = await sweeper.sweep_publisher(pub)
+    assert result is None
+    sweeper._get_signer.assert_not_called()
+    sweeper._get_executor.assert_not_called()
+
+
+async def test_dry_run_withdraw_publisher_returns_none_without_chain_call(settings, pub):
+    """Stage C (PaymentSplitter.withdraw) is skipped entirely under dry-run."""
+    sweeper = SettlementSweeper(settings, payments_dry_run=True)
+    sweeper._get_executor = MagicMock(side_effect=AssertionError("executor must not run under dry-run"))
+    tx = await sweeper.withdraw_publisher(pub, 5_000_000)
+    assert tx is None
+    sweeper._get_executor.assert_not_called()
+
+
+async def test_dry_run_withdraw_subscriber_returns_none_without_chain_call(settings):
+    """Subscriber DCW return-transfer is skipped entirely under dry-run."""
+    sweeper = SettlementSweeper(settings, payments_dry_run=True)
+    sweeper._get_executor = MagicMock(side_effect=AssertionError("executor must not run under dry-run"))
+    sweeper._usdc_balance_of = MagicMock(side_effect=AssertionError("balance read must not run under dry-run"))
+    tx = await sweeper.withdraw_subscriber(
+        circle_wallet_id="w-1", dcw_address="0xdcw", to_wallet="0xto", sub_id="sub-1"
+    )
+    assert tx is None
+    sweeper._get_executor.assert_not_called()
+
+
+def test_sweeper_defaults_to_live_mode(settings):
+    """Constructing without the flag keeps live behavior (backwards-compatible)."""
+    assert SettlementSweeper(settings)._payments_dry_run is False
+    assert SettlementSweeper(settings, payments_dry_run=True)._payments_dry_run is True
+
+
 # ── Stage A: Gateway balance below threshold → no withdraw ──────────────
 
 

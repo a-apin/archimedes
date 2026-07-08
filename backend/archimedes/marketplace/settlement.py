@@ -43,8 +43,13 @@ class SettlementSweeper:
     so the Circle SDK client is initialised once per publisher.
     """
 
-    def __init__(self, settings):
+    def __init__(self, settings, payments_dry_run: bool = False):
         self._settings = settings
+        # Fail-safe: when dry-run is on, every fund-moving method short-circuits so
+        # NO caller can move real value. Gating lives HERE (not only at call sites)
+        # so a future caller can't forget it — the manual withdraw endpoint (M1')
+        # did exactly that, bypassing PAYMENTS_DRY_RUN on a real on-chain path.
+        self._payments_dry_run = payments_dry_run
         self._signers: dict[str, CircleWalletSigner] = {}
         self._executors: dict[str, CircleTxExecutor] = {}
 
@@ -67,6 +72,11 @@ class SettlementSweeper:
     async def sweep_publisher(self, pub) -> None:
         """Run both sweep stages for *pub*.  Each stage is independently
         try/except'd so one failure never blocks the other."""
+        if self._payments_dry_run:
+            logger.info(
+                "[%s] sweep_publisher: PAYMENTS_DRY_RUN — skipping real settlement", getattr(pub, "strategy_id", "?")
+            )
+            return
         if not pub.agent_wallet_id or not pub.gateway_seller_address:
             logger.warning(
                 "Skipping sweep for %s — missing agent_wallet_id or gateway_seller_address",
@@ -186,6 +196,13 @@ class SettlementSweeper:
         Callable regardless of pool.active (D6 §2.5); caller no longer needs to be
         pool.creator/platform (see PaymentSplitter.vy withdraw docstring, changed 2026-07-03).
         """
+        if self._payments_dry_run:
+            logger.info(
+                "[%s] withdraw_publisher: PAYMENTS_DRY_RUN — skipping real withdraw of %d raw",
+                getattr(pub, "strategy_id", "?"),
+                amount_raw,
+            )
+            return None
         try:
             executor = self._get_executor(pub.agent_wallet_id, pub.gateway_seller_address)
             splitter = self._settings.payment_splitter_address
@@ -220,6 +237,9 @@ class SettlementSweeper:
         always completes; a failed sweep leaves the balance recoverable by a
         later retry.
         """
+        if self._payments_dry_run:
+            logger.info("withdraw_subscriber: PAYMENTS_DRY_RUN — skipping real return for sub %s", sub_id)
+            return None
         if not circle_wallet_id or not dcw_address or not to_wallet:
             return None
         try:
