@@ -237,6 +237,13 @@ class TestRootAndHealth:
         data = resp.json()
         assert data["service"] == "archimedes-backend"
         assert "status" in data
+        # Observability fields (issue #1039): build provenance ("version" = git
+        # SHA baked at build time, or "dev" locally) + strategy-library presence
+        # ("strategy_count"). Both are surfaced on /health and gated in CI so a
+        # strategy-less / gmm-less image can't ship silently degraded again.
+        assert "version" in data
+        assert "strategy_count" in data
+        assert isinstance(data["strategy_count"], int)
 
 
 # NOTE: TestFrontierRoutes and TestCorrelationRoutes were removed in the wake
