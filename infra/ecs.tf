@@ -448,6 +448,23 @@ resource "aws_ecs_task_definition" "backend" {
         # against scheme-qualified origins. var.domain_name is the bare host.
         { name = "PUBLIC_DOMAIN", value = "https://${var.domain_name}" },
         { name = "ARCHIMEDES_FUSION_ENABLED", value = "true" },
+        # Runtime env-parity fix (PR #1041 correctness pass, 2026-07-07): the
+        # prod EC2 box sets these three via docker-compose's `env_file: .env`
+        # (docker-compose.yml's `backend` service) — a box-local, gitignored
+        # file this ECS task definition has NO equivalent of. Verified missing
+        # from both this `environment` block AND from SSM (`/archimedes/prod/`
+        # today holds only AURORA_MASTER_PASSWORD + EMAIL_ENCRYPTION_KEY) —
+        # left unset, `services/llm_backend.py` falls through to "no LLM
+        # backend configured" (every LLM-backed route fails) and
+        # `services/price_source.py` silently reverts to its `yfinance`-only
+        # default instead of the live Pyth→yfinance→admin cascade. Not
+        # secrets — same non-secret-config precedent as the ARC_* contract
+        # addresses and PUBLIC_DOMAIN above — so hardcoded here rather than
+        # routed through SSM. See infra/runbooks/ecs-fargate-cutover.md's
+        # pre-cutover env-parity checklist for the verification command.
+        { name = "LLM_PROVIDER", value = "bedrock_converse" },
+        { name = "LLM_BEDROCK_MODEL", value = "amazon.nova-micro-v1:0" },
+        { name = "PRICE_SOURCE", value = "cascade" },
         # KNOWN GAP #2 (see file header): these three paths have no Fargate
         # equivalent of the docker-compose host bind mount yet.
         { name = "ARCHIMEDES_STRATEGIES_DIR", value = "/app/analytics-engine/strategies" },
