@@ -248,7 +248,15 @@ jobs:
         # standalone nginx boot.
         run: |
           set -euo pipefail
-          docker run -d --name nginx-validate --network archimedes-ci -p 18080:8080 archimedes-nginx:ci
+          # Docker-network path (a `backend` container on archimedes-ci) → set
+          # the Docker-DNS NGINX_* values that render nginx.conf's upstream, same
+          # as docker-compose. (Fargate sets the localhost values in ecs.tf.)
+          docker run -d --name nginx-validate --network archimedes-ci -p 18080:8080 \
+            -e NGINX_ENVSUBST_FILTER='^NGINX_' \
+            -e NGINX_RESOLVER_LINE='resolver 127.0.0.11 valid=10s ipv6=off;' \
+            -e NGINX_BACKEND_UPSTREAM='backend:8000' \
+            -e NGINX_UPSTREAM_RESOLVE='resolve' \
+            archimedes-nginx:ci
           ok=""
           for _ in $(seq 1 40); do
             if curl -fsS http://localhost:18080/ >/dev/null 2>&1 && curl -fsS http://localhost:18080/health >/dev/null 2>&1; then

@@ -521,14 +521,24 @@ resource "aws_ecs_task_definition" "backend" {
       image     = "${aws_ecr_repository.nginx.repository_url}:${var.backend_image_tag}"
       essential = true
 
+      # Render the runtime-agnostic nginx template (nginx.conf's upstream block).
+      # In Fargate awsvpc the nginx + backend containers share the task's network
+      # namespace (localhost) and there is NO Docker embedded DNS at 127.0.0.11 —
+      # so the backend is reached at 127.0.0.1:8000 with an empty resolver line
+      # and no `resolve` param. (Compose/local set the Docker-DNS values instead;
+      # see docker-compose.yml.) Fixes the awsvpc 502-on-/health that made the
+      # ALB target-group health check fail — was formerly "KNOWN GAP #1".
+      environment = [
+        { name = "NGINX_ENVSUBST_FILTER", value = "^NGINX_" },
+        { name = "NGINX_RESOLVER_LINE", value = "" },
+        { name = "NGINX_BACKEND_UPSTREAM", value = "127.0.0.1:8000" },
+        { name = "NGINX_UPSTREAM_RESOLVE", value = "" },
+      ]
+
       portMappings = [
         { containerPort = 8080, protocol = "tcp" } # the ALB target — matches archimedes-backend-tg's traffic-port health check
       ]
 
-      # KNOWN GAP #1 (see file header): nginx.conf's `server backend:8000` is
-      # a docker-compose-bridge-network DNS name that does not resolve in
-      # ECS awsvpc mode — must become `localhost:8000` before this actually
-      # proxies successfully.
       dependsOn = [
         { containerName = "backend", condition = "HEALTHY" }
       ]
