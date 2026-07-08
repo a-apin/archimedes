@@ -41,3 +41,11 @@ ui/node_modules/
 
 # Submodules (large reference trees, not needed in the runtime image)
 submodules/
+
+# arXiv corpus cached binaries — large + git-ignored (.gitignore tracks only the
+# manifest + README). The backend image build context is the repo root (#1039)
+# and `COPY data/corpus …` would otherwise bake a developer's populated local
+# pdfs/ + text/ (potentially GBs) into the image. Only the manifest is needed at
+# runtime; the binaries never are. Mirrors .gitignore data/corpus/{pdfs,text}/.
+data/corpus/pdfs/
+data/corpus/text/
