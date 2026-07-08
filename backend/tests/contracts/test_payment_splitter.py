@@ -283,9 +283,8 @@ class TestWithdraw:
             usdc.approve(splitter.address, deposit)
             splitter.depositToPool(pool_id, deposit)
 
-        with boa.env.prank(accounts["creator"]):
-            with pytest.raises(boa.BoaError, match="amount exceeds held balance"):
-                splitter.withdraw(pool_id, deposit + 1)
+        with boa.env.prank(accounts["creator"]), pytest.raises(boa.BoaError, match="amount exceeds held balance"):
+            splitter.withdraw(pool_id, deposit + 1)
 
     def test_nonexistent_pool_reverts_withdraw(self, splitter, accounts):
         """Withdrawing from a pool that was never created must revert."""

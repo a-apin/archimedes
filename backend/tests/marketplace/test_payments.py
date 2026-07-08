@@ -32,7 +32,7 @@ def test_fee_to_price_negative_raises():
 
 @pytest.mark.asyncio
 async def test_charge_zero_amount_is_paid_without_network():
-    with patch.object(payments, "get_gateway_middleware") as mw:
+    with patch.object(payments, "get_gateway_middleware"):
         ok = await payments.charge(
             sub_id="0x" + "11" * 32,
             wallet_id=WALLET_ID,

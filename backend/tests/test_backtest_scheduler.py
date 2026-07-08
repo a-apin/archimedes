@@ -9,6 +9,7 @@ DB, run_backtests monkeypatched (never yfinance), TESTING guard respected.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime, timedelta
 
 import archimedes.db as _db
@@ -137,10 +138,8 @@ async def test_loop_runs_refresh_when_stale(monkeypatch):
             break
         await asyncio.sleep(0.01)
     task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass  # expected: cancellation is the loop's normal teardown path
     assert calls, "the loop must invoke the shared run_backtests implementation when stale"
 
 
@@ -166,10 +165,8 @@ async def test_loop_survives_refresh_failure(monkeypatch):
     await asyncio.sleep(0.05)  # give the exception path time to run
     assert not task.done(), "a failed refresh must never kill the loop"
     task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass  # expected: cancellation is the loop's normal teardown path
 
 
 def test_unresolved_missing_backs_off(monkeypatch):

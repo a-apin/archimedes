@@ -10,7 +10,7 @@ import logging
 import os
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 
 from archimedes.api.auth_siwe import require_verified_wallet
@@ -44,7 +44,6 @@ def _get_market(request: Request) -> MarketService:
 @limiter.limit("3/minute")
 async def publish_strategy(
     request: Request,
-    response: Response,
     body: dict,
     wallet: str = Depends(require_verified_wallet),
 ):
@@ -254,7 +253,6 @@ async def publish_strategy(
 @limiter.limit("5/minute")
 async def subscribe_strategy(
     request: Request,
-    response: Response,
     body: dict,
     wallet: str = Depends(require_verified_wallet),
 ):
@@ -435,7 +433,6 @@ async def subscribe_strategy(
 @limiter.limit("10/minute")
 async def unsubscribe_strategy(
     request: Request,
-    response: Response,
     strategy_id: str,
     wallet: str = Depends(require_verified_wallet),
 ):
@@ -497,7 +494,6 @@ async def unsubscribe_strategy(
 @limiter.limit("10/minute")
 async def stop_publish(
     request: Request,
-    response: Response,
     strategy_id: str,
     wallet: str = Depends(require_verified_wallet),
 ):
@@ -561,7 +557,7 @@ async def stop_publish(
 
 @marketplace_router.get("/published")
 @limiter.limit("30/minute")
-async def list_published(request: Request, response: Response):
+async def list_published(request: Request):
     """List all running publishers with subscriber counts."""
     market = _get_market(request)
 
@@ -673,7 +669,7 @@ async def withdraw_publisher_earnings(
 
 @marketplace_router.get("/published/{strategy_id}")
 @limiter.limit("30/minute")
-async def get_strategy_detail(request: Request, response: Response, strategy_id: str):
+async def get_strategy_detail(request: Request, strategy_id: str):
     """Get one published strategy + subscriber summaries + recent events."""
     market = _get_market(request)
 

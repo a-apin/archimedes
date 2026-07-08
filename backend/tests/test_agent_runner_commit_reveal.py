@@ -272,16 +272,16 @@ class TestTraceResponseClaimGuard:
     def _resp(**kw):
         from archimedes.api.schemas import TraceResponse
 
-        base = dict(
-            id="t",
-            vault_address="0xv",
-            decision_type="rebalance",
-            trigger="x",
-            timestamp="2026-06-29T00:00:00Z",
-            reasoning="r",
-            confidence=0.5,
-            trace_hash="ab",
-        )
+        base = {
+            "id": "t",
+            "vault_address": "0xv",
+            "decision_type": "rebalance",
+            "trigger": "x",
+            "timestamp": "2026-06-29T00:00:00Z",
+            "reasoning": "r",
+            "confidence": 0.5,
+            "trace_hash": "ab",
+        }
         base.update(kw)
         return TraceResponse(**base)
 

@@ -625,7 +625,7 @@ def test_cohort_key_changes_when_any_series_changes():
     k1 = rigor_cache.cohort_key(["a", "b"], returns)
 
     mutated = dict(returns)
-    mutated["a"] = _series(1)[:-1] + [0.999]  # tweak one strategy's series
+    mutated["a"] = [*_series(1)[:-1], 0.999]  # tweak one strategy's series
     k2 = rigor_cache.cohort_key(["a", "b"], mutated)
     assert k1 != k2
 

@@ -57,7 +57,7 @@ def test_claim_settlement_intent_lifecycle():
     svc = _svc()
     # Unique tick_id per test — assertions are scoped to this logical charge so
     # they never depend on cross-test DB isolation.
-    key = dict(strategy_id="strat_a", tick_id="lifecycle:1", sub_id="0x" + "cc" * 32, step="rebalance")
+    key = {"strategy_id": "strat_a", "tick_id": "lifecycle:1", "sub_id": "0x" + "cc" * 32, "step": "rebalance"}
 
     assert svc._claim_settlement_intent(**key) == "claimed"
     # A second claim for the same logical charge is blocked (pending in-flight).
