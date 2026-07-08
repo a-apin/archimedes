@@ -17,6 +17,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    ForeignKey,
     Index,
     String,
     Text,
@@ -34,7 +35,11 @@ class StrategyRecord(Base):
 
     __tablename__ = "strategy_store"
 
-    id = Column(String(64), primary_key=True)
+    # Width normalized to VARCHAR(128) (issue #1028) to match the
+    # marketplace/billing tables' strategy_id columns (already VARCHAR(128))
+    # ahead of a future cross-table FK. Actual id values are content_hash[:16]
+    # (16 chars) so this is headroom, not a live-data change.
+    id = Column(String(128), primary_key=True)
     content_hash = Column(String(66), nullable=False)  # keccak256, 0x-prefixed
 
     # Generation provenance
@@ -56,10 +61,15 @@ class StrategyRecord(Base):
     # Ownership + visibility (per-user strategies, private-until-published).
     # owner_wallet is ALWAYS the SIWE-derived wallet bound server-side (mirrors
     # VaultMetadata.creator_address) — never a client-supplied value. Stored
-    # lowercase. NULL = legacy/anonymous row. is_published is a dormant flag
-    # (nothing flips it yet — the publish flow is a future marketplace hop);
-    # unpublished non-example rows are visible only to their owner.
-    owner_wallet = Column(String(42), nullable=True, index=True)
+    # lowercase. NULL = legacy/anonymous row (backfilled to the D7 'system'
+    # identity in the issue #1028 migration; the column itself stays nullable
+    # so this ORM's own anonymous-row semantics — see upsert_strategy below —
+    # are unchanged). is_published is a dormant flag (nothing flips it yet —
+    # the publish flow is a future marketplace hop); unpublished non-example
+    # rows are visible only to their owner.
+    # FK retrofit (issue #1028, D1): every non-NULL value must be a known
+    # identity.
+    owner_wallet = Column(String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True, index=True)
     is_published = Column(Boolean, nullable=False, default=False)
 
     # On-chain registration (populated when strategy passes rigor gate)

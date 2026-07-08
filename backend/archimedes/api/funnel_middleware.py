@@ -4,18 +4,29 @@ Two pieces, both fail-safe so they can never turn a request into a 5xx:
 
 1. ``ensure_visitor_id_middleware`` — guarantees every visitor carries a stable,
    anonymous ``archimedes_vid`` cookie and exposes it as ``request.state.visitor_id``.
-   The id is a random opaque token (no PII, no wallet linkage); it exists only so
-   the funnel can join ``landed → generation_started → wallet_connected →
-   vault_deployed`` for the *same* browser and report distinct-visitor drop-off.
-   The cookie is HttpOnly: the SPA never needs to read it (it rides along on the
-   same-origin beacon POST automatically), and the server-side emit points read
-   it off ``request.state``.
+   The id is a random opaque token (no PII); it exists only so the funnel can
+   join ``landed → generation_started → wallet_connected → vault_deployed`` for
+   the *same* browser and report distinct-visitor drop-off. The cookie is
+   HttpOnly: the SPA never needs to read it (it rides along on the same-origin
+   beacon POST automatically), and the server-side emit points read it off
+   ``request.state``.
 
 2. ``record_funnel(request, stage)`` — the helper the route handlers call at the
    three server-authoritative transitions (generation start, SIWE verify, vault
    deploy). Reads the visitor id off ``request.state`` and writes one HLL entry
    via ``FunnelStore``. Swallows everything — instrumentation must be invisible
    to the request it measures.
+
+**#787 superseded / rewritten (issue #1028, D2a):** this module's "no wallet
+linkage" scope is PRE-AUTH ONLY. #787 originally blinded the funnel to wallets
+even after a SIWE verify — that blanket rule was the over-extension: standard
+analytics practice links a visitor id to an identity at the exact moment it's
+proven, not never. That post-auth linkage now happens in
+``archimedes.api.auth_siwe.verify_signature`` via
+``archimedes.services.identity_events.emit_identity_event`` (an
+``identity_events`` row carrying both ``vid`` and ``wallet``), NOT in this
+module. Everything in THIS file stays anonymous-only, unchanged — the vid
+cookie and ``record_funnel``'s HLL writes never see a wallet.
 """
 
 from __future__ import annotations

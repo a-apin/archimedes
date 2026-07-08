@@ -21,6 +21,28 @@
 # deployed commit SHA before `docker compose pull`, so `latest` is a fallback
 # for anyone pulling by hand. See docs/deployment.md § "Production deploy
 # flow" and infra/README.md for the ECR repos (Terraform, issue #1039 chunk 2).
+#
+# ── Compose profiles in this file (two independent gates) ──────────────────
+#   `localdb` — postgres + redis, LOCAL DEV ONLY (see the "Data stores" note
+#     just below). PRODUCTION's box .env has historically omitted
+#     COMPOSE_PROFILES entirely, so these never start there — the app talks
+#     to managed Aurora + ElastiCache via DATABASE_URL / REDIS_URL instead.
+#   `runners` — oracle / agent / kb-runner (#1043). These are funds-adjacent
+#     exactly-once singletons (see services/runner_lease.py) — a bare local
+#     `docker compose up` (demo/UI work) should NOT spin up a second live
+#     copy racing whatever the operator already has running elsewhere. They
+#     start ONLY when `runners` is in COMPOSE_PROFILES.
+#     *** OPERATOR NOTE ***
+#     This file doubles as the box's actual production compose file
+#     (deploy.yml runs `docker compose up -d` against it). The production
+#     box's own .env is SELF-HEALED automatically by
+#     .github/workflows/deploy.yml on every deploy — it idempotently ensures
+#     `runners` is present in COMPOSE_PROFILES there, so oracle/agent/
+#     kb-runner keep starting with no manual step required. `runners` is off
+#     by default here (this file / .env.example) only for LOCAL
+#     `docker compose up` (demo/UI work), so it doesn't accidentally spin up
+#     a second live copy racing whatever the operator already has running
+#     elsewhere.
 services:
   # ---------- Data stores (LOCAL ONLY — see profiles note) ----------
   # postgres + redis run ONLY when the `localdb` profile is active
@@ -89,6 +111,13 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    # #1043 — gated behind the `runners` profile; see the file-header note.
+    # A bare local `docker compose up` does NOT start this. It is also a
+    # funds-adjacent exactly-once singleton at the application layer
+    # (services/runner_lease.py) — this profile gate is a SEPARATE,
+    # belt-and-suspenders control for "don't even start a second copy
+    # locally", not a substitute for the Redis lease.
+    profiles: ["runners"]
     restart: unless-stopped
     command: ["python", "-m", "archimedes.chain.oracle_runner"]
     environment:
@@ -119,6 +148,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    # #1043 — gated behind the `runners` profile; see the file-header note.
+    profiles: ["runners"]
     restart: unless-stopped
     command: ["python", "-m", "archimedes.chain.agent_runner"]
     environment:
@@ -221,8 +252,11 @@ services:
   # unset until the dedicated image with the ~6 GB of model weights ships;
   # the runner simply logs "needs_rerun=False" between ticks meanwhile.
   # See docs/specs/kb-integration-spec.md.
+  #
+  # #1043 — gated behind the `runners` profile; see the file-header note.
   kb-runner:
     image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
+    profiles: ["runners"]
     build:
       context: ./backend
       dockerfile: Dockerfile

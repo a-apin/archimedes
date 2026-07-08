@@ -82,7 +82,15 @@ class VaultService:
 
                 session = get_session()
                 try:
-                    rows = session.query(VaultMetadata).filter(VaultMetadata.vault_address.in_(vault_addresses)).all()
+                    # Casing fix (issue #1028): vault_metadata.vault_address is
+                    # stored lowercase (see vaults_routes.store_vault_metadata);
+                    # the on-chain addresses in vault_addresses are EIP-55
+                    # checksummed, so normalize before the IN() lookup.
+                    rows = (
+                        session.query(VaultMetadata)
+                        .filter(VaultMetadata.vault_address.in_([a.lower() for a in vault_addresses]))
+                        .all()
+                    )
                     metadata_by_address = {m.vault_address: m for m in rows}
                 finally:
                     session.close()
@@ -94,7 +102,7 @@ class VaultService:
         for addr in vault_addresses:
             try:
                 metrics = await chain_executor.get_vault_metrics(addr)
-                summary = self._metrics_to_summary(metrics, meta=metadata_by_address.get(addr))
+                summary = self._metrics_to_summary(metrics, meta=metadata_by_address.get(addr.lower()))
                 if tier is not None and summary.tier != tier:
                     continue
                 summaries.append(summary)
@@ -418,7 +426,8 @@ class VaultService:
 
             session = get_session()
             try:
-                meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == address).first()
+                # Casing fix (issue #1028): stored lowercase — see store_vault_metadata.
+                meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == address.lower()).first()
                 if meta:
                     return meta.name, meta.symbol
             finally:

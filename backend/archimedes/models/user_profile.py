@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, Column, DateTime, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text
 
 from archimedes.models.chat import Base
 
@@ -22,7 +22,11 @@ class UserProfile(Base):
 
     __tablename__ = "user_profiles"
 
-    wallet_address = Column(String(42), primary_key=True)  # 0x-prefixed EVM address
+    # FK retrofit (issue #1028, D1): a profile can only exist for a wallet
+    # already known to the identity anchor.
+    wallet_address = Column(
+        String(42), ForeignKey("wallet_identities.wallet_address"), primary_key=True
+    )  # 0x-prefixed EVM address
     display_name = Column(String(128), nullable=True)
     email = Column(String(256), nullable=True)
     interests = Column(Text, nullable=True, default="[]")  # JSON list of strings
