@@ -25,6 +25,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timedelta
@@ -129,6 +130,16 @@ def _address_from_siwe_message(message: str) -> str | None:
         addr = lines[1].strip()
         if addr.startswith("0x") and len(addr) == 42:
             return addr.lower()
+    return None
+
+
+def _canonical_wallet_or_none(wallet: str) -> str | None:
+    """Return strict lowercase 0x-prefixed 40-hex wallet, else None."""
+    if not isinstance(wallet, str):
+        return None
+    w = wallet.strip().lower()
+    if re.fullmatch(r"0x[a-f0-9]{40}", w):
+        return w
     return None
 
 
@@ -392,7 +403,9 @@ async def verify_signature(request: Request, response: Response):
     else:
         raise HTTPException(status_code=401, detail="Invalid signature")
 
-    recovered_lower = verified_wallet
+    recovered_lower = _canonical_wallet_or_none(verified_wallet)
+    if not recovered_lower:
+        raise HTTPException(status_code=401, detail="Invalid signature")
 
     # Issue session cookie
     now = time.time()
