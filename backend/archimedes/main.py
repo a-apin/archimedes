@@ -575,15 +575,17 @@ async def health():
     except Exception:
         risk_data_reason = "import failed"
 
-    # Strategy-library presence (issue #1039). The provider reads the curated
-    # library from analytics-engine/strategies, baked into the image. 0 here means
-    # the library is missing from the build — the exact regression that shipped a
-    # strategy-less Fargate image (→ risk_data=mock, empty Explore). CI asserts > 0.
+    # Strategy-library presence (issue #1039). count_strategy_files() is a cheap
+    # directory file count (NO provider construction → no filesystem refresh, DB
+    # backtest load, or unified-table sync side effect — /health is hit by the ALB
+    # every 30s). 0 here means the curated library is missing from the image — the
+    # exact regression that shipped a strategy-less Fargate build (→ risk_data=mock,
+    # empty Explore). CI asserts > 0.
     strategy_count = 0
     try:
-        from archimedes.services.strategy_provider import default_provider
+        from archimedes.services.strategy_provider import count_strategy_files
 
-        strategy_count = len(list(default_provider().list_strategies()))
+        strategy_count = count_strategy_files()
     except Exception:
         logger.debug("strategy count read failed", exc_info=True)
 

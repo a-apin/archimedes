@@ -254,16 +254,27 @@ jobs:
           # NOT asserted here: this throwaway Postgres is empty, so risk_data=mock
           # is correct in CI — it's validated post-deploy against Aurora.)
           HEALTH="$(curl -fsS http://localhost:8000/health)"
-          regime="$(printf '%s' "$HEALTH" | jq -r '.regime_detector')"
-          scount="$(printf '%s' "$HEALTH" | jq -r '.strategy_count // 0')"
-          version="$(printf '%s' "$HEALTH" | jq -r '.version')"
+          regime="$(printf '%s' "$HEALTH" | jq -r '.regime_detector // "MISSING"')"
+          scount="$(printf '%s' "$HEALTH" | jq -r '.strategy_count // "MISSING"')"
+          version="$(printf '%s' "$HEALTH" | jq -r '.version // "MISSING"')"
           fail=0
-          if [ "$regime" = "degraded" ]; then
-            echo "::error::rich-health gate: regime_detector=degraded (gmm_model.pkl missing from image?)"; fail=1
+          # Fail CLOSED: require regime == "live". A missing/null/"unknown"/"degraded"
+          # value (probe crash OR missing gmm_model.pkl) must NOT slip through on a
+          # soft "!= degraded" check.
+          if [ "$regime" != "live" ]; then
+            echo "::error::rich-health gate: regime_detector='$regime' (expected 'live' — gmm_model.pkl missing from image, or the probe failed)"; fail=1
           fi
-          if ! [ "$scount" -gt 0 ] 2>/dev/null; then
-            echo "::error::rich-health gate: strategy_count=$scount (analytics-engine/strategies missing from image?)"; fail=1
+          # strategy_count must be a positive integer (MISSING/0/non-numeric all fail).
+          if ! printf '%s' "$scount" | grep -qE '^[0-9]+$' || [ "$scount" -le 0 ]; then
+            echo "::error::rich-health gate: strategy_count='$scount' (expected > 0 — analytics-engine/strategies missing from image?)"; fail=1
           fi
+          # The build passed --build-arg GIT_SHA=<github.sha>, so version MUST be a
+          # real SHA here. MISSING/empty/"dev"/"null" means the GIT_SHA build-arg
+          # wiring regressed and prod would ship an unstamped image.
+          case "$version" in
+            ""|MISSING|dev|null)
+              echo "::error::rich-health gate: version='$version' (expected the build SHA — GIT_SHA build-arg wiring regressed)"; fail=1 ;;
+          esac
           [ "$fail" = 0 ] || exit 1
           echo "rich-health gate OK: regime=$regime strategy_count=$scount version=$version"
 
