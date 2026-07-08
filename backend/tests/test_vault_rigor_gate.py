@@ -155,3 +155,46 @@ async def test_create_vault_proceeds_when_rigor_passes():
     assert body["vault_address"] == "0xVaultDeployedAddress"
     assert body["strategy_ids"] == ["passing"]
     mock_create.assert_awaited_once()  # gate let it through → gas spent
+
+
+async def test_create_vault_writes_the_identity_ledger_vault_created_event():
+    """Issue #1028 (D2): the SIWE-verified deployer's ``vault_created`` event
+    lands in the ledger — the bottom-of-funnel identity write, unlike
+    Generate's flag-gated one, since ``require_verified_wallet`` always
+    identifies the caller here."""
+    from archimedes.db import get_session
+    from archimedes.main import app
+    from archimedes.models.identity import IdentityEvent, WalletIdentity
+    from httpx import ASGITransport, AsyncClient
+
+    wallet = "0x" + "de" * 20  # matches _override_verified_wallet's lowercased form
+
+    with (
+        _override_verified_wallet(app, wallet=wallet),
+        patch(f"{V}._strategy_rigor_status", return_value=(True, True)),
+        patch(f"{V}.chain_executor.create_vault", new=AsyncMock(return_value="0xLedgerVaultAddress")),
+        patch("archimedes.api.funnel_middleware.record_funnel", new=AsyncMock()),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/vaults/create",
+                json={"name": "V", "symbol": "V", "strategy_ids": ["passing"]},
+            )
+    assert resp.status_code == 200
+
+    session = get_session()
+    try:
+        events = session.query(IdentityEvent).filter(IdentityEvent.wallet == wallet).all()
+        shapes = [(e.event_type, e.actor_class, e.meta) for e in events]
+    finally:
+        session.query(IdentityEvent).filter(IdentityEvent.wallet == wallet).delete(synchronize_session=False)
+        session.query(WalletIdentity).filter(WalletIdentity.wallet_address == wallet).delete(synchronize_session=False)
+        session.commit()
+        session.close()
+
+    matching = [s for s in shapes if s[0] == "vault_created"]
+    assert len(matching) == 1
+    _, actor_class, meta = matching[0]
+    assert actor_class == "human"
+    assert meta["vault_address"] == "0xLedgerVaultAddress"
+    assert meta["strategy_ids"] == ["passing"]

@@ -471,7 +471,10 @@ class StrategyRunner:
             from archimedes.models.chat import VaultMetadata
 
             with get_session() as session:
-                meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == vault_address).first()
+                # Casing fix (issue #1028): stored lowercase — see
+                # vaults_routes.store_vault_metadata; vault_address here comes
+                # from the on-chain (EIP-55 checksummed) vault list.
+                meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == vault_address.lower()).first()
                 if meta is None:
                     return None
                 ids = meta.get_strategy_ids()

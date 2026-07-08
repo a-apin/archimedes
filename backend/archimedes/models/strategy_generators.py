@@ -11,9 +11,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Index, Integer, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.orm import Session
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from archimedes.models.chat import Base
 
@@ -22,8 +21,12 @@ class StrategyGenerator(Base):
     __tablename__ = "strategy_generators"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    wallet_address: Mapped[str] = mapped_column(String(42), nullable=False, index=True)
+    # Width normalized to VARCHAR(128) (issue #1028) to match strategy_store.id.
+    strategy_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # FK retrofit (issue #1028, D1): every generator wallet must be a known identity.
+    wallet_address: Mapped[str] = mapped_column(
+        String(42), ForeignKey("wallet_identities.wallet_address"), nullable=False, index=True
+    )
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )

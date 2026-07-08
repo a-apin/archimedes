@@ -45,6 +45,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from archimedes.api.generate_schemas import GenerateBrief
+from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import JobStore, get_job_store
 
 logger = logging.getLogger(__name__)
@@ -1164,6 +1165,21 @@ async def run_generation(
             strategy_id=strategy_id,
             all_strategy_ids=strategy_ids,
             served_model=served_model,
+        )
+
+        # Identity ledger (#1028, D2): only an IDENTIFIED run is ledgered — an
+        # anonymous generation (owner_wallet=None) has nothing to anchor a row
+        # to (D2a: pre-auth stays anonymous). Fail-safe; never affects the job.
+        emit_identity_event(
+            wallet=owner_wallet,
+            event_type="generation_completed",
+            actor_class="human",
+            meta={
+                "job_id": job_id,
+                "best_candidate_id": best.candidate_id,
+                "best_strategy_id": strategy_id,
+                "served_model": served_model,
+            },
         )
 
     except asyncio.CancelledError:

@@ -263,6 +263,17 @@ async def create_vault(
 
     await record_funnel(request, "vault_deployed")
 
+    # Identity ledger (#1028, D2): `wallet` here is SIWE-verified (required_verified_wallet
+    # dependency) — always identified, unlike the anonymous-tolerant Generate path.
+    from archimedes.services.identity_events import emit_identity_event
+
+    emit_identity_event(
+        wallet=wallet,
+        event_type="vault_created",
+        actor_class="human",
+        meta={"vault_address": vault_address, "strategy_ids": req.strategy_ids},
+    )
+
     return VaultCreateResponse(vault_address=vault_address, strategy_ids=req.strategy_ids)
 
 
@@ -305,10 +316,17 @@ async def store_vault_metadata(
     where the first authenticated writer could claim `creator_address` on any
     vault that had no metadata row yet.
     """
+    # Casing fix (issue #1028): the on-chain vault address is EIP-55
+    # checksummed (mixed case); chat_messages.vault_address is always stored
+    # lowercase (chat_service.py), so the two could never join without this.
+    # Normalize once, use everywhere below — the on-chain call is
+    # case-insensitive so this doesn't change chain behavior.
+    vault_address = req.vault_address.lower()
+
     # Ownership gate first, before any rigor compute or DB work: only the vault's
     # on-chain owner may write its metadata. A read failure fails closed (503) —
     # we never let an unverifiable caller claim a vault.
-    on_chain_owner = await chain_executor.get_vault_owner(req.vault_address)
+    on_chain_owner = await chain_executor.get_vault_owner(vault_address)
     if on_chain_owner is None:
         raise HTTPException(status_code=503, detail="Could not verify vault ownership on-chain; try again shortly.")
     if on_chain_owner.lower() != wallet.lower():
@@ -327,9 +345,9 @@ async def store_vault_metadata(
 
     session = get_session()
     try:
-        meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == req.vault_address).first()
+        meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == vault_address).first()
         if meta is None:
-            meta = VaultMetadata(vault_address=req.vault_address)
+            meta = VaultMetadata(vault_address=vault_address)
             session.add(meta)
 
         meta.name = req.name
@@ -373,7 +391,8 @@ async def get_vault_metadata(address: str):
 
     session = get_session()
     try:
-        meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == address).first()
+        # Casing fix (issue #1028): stored lowercase — see store_vault_metadata.
+        meta = session.query(VaultMetadata).filter(VaultMetadata.vault_address == address.lower()).first()
         if meta is None:
             raise HTTPException(status_code=404, detail="No metadata for this vault")
         return VaultMetadataResponse(**meta.to_dict())

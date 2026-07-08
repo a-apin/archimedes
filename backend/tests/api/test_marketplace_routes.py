@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
+import pytest
 from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.marketplace_routes import marketplace_router
 from archimedes.db import Base, engine
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 TEST_WALLET = "0x0000000000000000000000000000000000000001"
 
@@ -378,3 +377,103 @@ def test_unsubscribe_triggers_refund_and_returns_tx(client, app):
     # The subscriber's own SIWE wallet is the withdrawal recipient.
     kwargs = app.state.market.refund_subscriber.await_args.kwargs
     assert kwargs["to_wallet"] == TEST_WALLET
+
+
+# ─── Identity ledger (issue #1028, D1a/D2/D3) ──────────────────────────────
+# _setup_db creates+drops all tables around EACH test in this file, so these
+# assertions can be absolute (not delta-based) — no shared-process residue
+# from other tests, unlike files that use the process-wide default engine.
+
+
+def test_publish_registers_dcw_and_ledgers_strategy_published(client):
+    """Publish provisions a Circle DCW (gateway_seller_address) — it must be
+    registered in controlled_wallets (D1a), controller-linked to the
+    publisher's own wallet, and the publish itself must ledger a
+    strategy_published event (D2) against that same wallet."""
+    from archimedes.db import get_session
+    from archimedes.models.identity import ControlledWallet, IdentityEvent
+
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": "0xvault_ledger"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    with get_session() as session:
+        dcw = session.get(ControlledWallet, "0x0000000000000000000000000000000000000999")
+        assert dcw is not None
+        assert dcw.wallet_class == "publisher_settlement"
+        assert dcw.controller_wallet == TEST_WALLET
+        assert dcw.key_binding == "test-agent-wallet-uuid"
+
+        events = session.query(IdentityEvent).filter(IdentityEvent.wallet == TEST_WALLET).all()
+        matching = [e for e in events if e.event_type == "strategy_published"]
+        assert len(matching) == 1
+        assert matching[0].actor_class == "human"
+        assert matching[0].meta["strategy_id"] == "test_strat"
+
+
+def test_subscribe_registers_dcw_and_ledgers_marketplace_subscribed(client):
+    """Subscribe provisions a Circle DCW (ephemeral_wallet) — registered in
+    controlled_wallets (D1a) and controller-linked to the subscriber; the
+    subscribe itself ledgers a marketplace_subscribed event (D2)."""
+    from archimedes.db import get_session
+    from archimedes.models.identity import ControlledWallet, IdentityEvent
+
+    pub = client.post("/api/marketplace/publish", json={"strategy_id": "test_strat", "vault_address": "0xvault"})
+    assert pub.status_code == 200, pub.text
+
+    dcw_address = "0x0000000000000000000000000000000000000eee"
+    with patch(
+        "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+        new=AsyncMock(return_value=("sub-wallet-uuid", dcw_address)),
+    ):
+        resp = client.post(
+            "/api/marketplace/subscribe",
+            json={"strategy_id": "test_strat", "sub_id": "0x" + "ab" * 32, "ephemeral_wallet": "0xeph"},
+        )
+    assert resp.status_code == 200, resp.text
+
+    with get_session() as session:
+        dcw = session.get(ControlledWallet, dcw_address)
+        assert dcw is not None
+        assert dcw.wallet_class == "subscriber_payment"
+        assert dcw.controller_wallet == TEST_WALLET
+        assert dcw.key_binding == "sub-wallet-uuid"
+
+        events = session.query(IdentityEvent).filter(IdentityEvent.wallet == TEST_WALLET).all()
+        matching = [e for e in events if e.event_type == "marketplace_subscribed"]
+        assert len(matching) == 1
+        assert matching[0].meta["strategy_id"] == "test_strat"
+        assert matching[0].meta["sub_id"] == "0x" + "ab" * 32
+
+
+def test_unsubscribe_ledgers_marketplace_unsubscribed(client, app):
+    """Unsubscribe ledgers a marketplace_unsubscribed event (D2) against the
+    subscriber's own wallet, carrying the refund tx in meta."""
+    from archimedes.db import get_session
+    from archimedes.models.identity import IdentityEvent
+
+    pub = client.post("/api/marketplace/publish", json={"strategy_id": "refund_strat", "vault_address": "0xv"})
+    assert pub.status_code == 200
+
+    with patch(
+        "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+        new=AsyncMock(return_value=("w-9", "0x0000000000000000000000000000000000000ee9")),
+    ):
+        sub = client.post(
+            "/api/marketplace/subscribe",
+            json={"strategy_id": "refund_strat", "sub_id": "0x" + "ee" * 32, "ephemeral_wallet": "0xeph"},
+        )
+    assert sub.status_code == 200, sub.text
+
+    app.state.market.refund_subscriber = AsyncMock(return_value="0xrefundtx")
+    un = client.request("DELETE", "/api/marketplace/subscribe/refund_strat")
+    assert un.status_code == 200, un.text
+
+    with get_session() as session:
+        events = session.query(IdentityEvent).filter(IdentityEvent.wallet == TEST_WALLET).all()
+        matching = [e for e in events if e.event_type == "marketplace_unsubscribed"]
+        assert len(matching) == 1
+        assert matching[0].meta["strategy_id"] == "refund_strat"
+        assert matching[0].meta["refund_tx"] == "0xrefundtx"
