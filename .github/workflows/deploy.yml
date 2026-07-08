@@ -119,7 +119,7 @@ jobs:
               "# no -f and no COMPOSE_FILE, so it needs COMPOSE_PROFILES=runners set in .env",
               "# or those three services STOP on this deploy; local docker compose up stays",
               "# inert by default since it does not set this box-local .env value.",
-              "grep -q '"'"'^COMPOSE_PROFILES='"'"' .env || echo '"'"'COMPOSE_PROFILES=runners'"'"' >> .env",
+              "if grep -q '"'"'^COMPOSE_PROFILES='"'"' .env; then grep -qE '"'"'^COMPOSE_PROFILES=([^#]*,)?runners(,|$)'"'"' .env || sed -i '"'"'s/^COMPOSE_PROFILES=.*/&,runners/'"'"' .env; else echo '"'"'COMPOSE_PROFILES=runners'"'"' >> .env; fi",
               "docker compose build",
               "# Remove orphan containers left by an interrupted --force-recreate.",
               "# Docker renames the old container to <hex>_<name> before deleting it; if a",

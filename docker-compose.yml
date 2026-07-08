@@ -11,14 +11,17 @@
 #     `docker compose up` (demo/UI work) should NOT spin up a second live
 #     copy racing whatever the operator already has running elsewhere. They
 #     start ONLY when `runners` is in COMPOSE_PROFILES.
-#     *** OPERATOR NOTE — READ BEFORE THE FIRST DEPLOY AFTER THIS CHANGE ***
+#     *** OPERATOR NOTE ***
 #     This file doubles as the box's actual production compose file
-#     (deploy.yml runs `docker compose up -d` against it). Before/at that
-#     first deploy, the box's own .env MUST have `runners` added to
-#     COMPOSE_PROFILES (e.g. `COMPOSE_PROFILES=runners`, since prod omits
-#     `localdb`) or oracle/agent/kb-runner will silently stop starting —
-#     prices stop updating, vaults stop rebalancing, corpus stops refreshing.
-#     This is a required manual coordination step; it is NOT automated here.
+#     (deploy.yml runs `docker compose up -d` against it). The production
+#     box's own .env is SELF-HEALED automatically by
+#     .github/workflows/deploy.yml on every deploy — it idempotently ensures
+#     `runners` is present in COMPOSE_PROFILES there, so oracle/agent/
+#     kb-runner keep starting with no manual step required. `runners` is off
+#     by default here (this file / .env.example) only for LOCAL
+#     `docker compose up` (demo/UI work), so it doesn't accidentally spin up
+#     a second live copy racing whatever the operator already has running
+#     elsewhere.
 
 services:
   # ---------- Data stores (LOCAL ONLY — see profiles note) ----------

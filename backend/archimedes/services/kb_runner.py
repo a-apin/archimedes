@@ -164,7 +164,11 @@ def _run_pipeline_with_lease() -> None:
     try:
         from archimedes.scripts.run_kb_pipeline import run_pipeline
 
-        run_pipeline(lease_lost=lease_lost)
+        # Explicit pass (not relying on run_pipeline's own default) — both
+        # currently resolve to KB_ARTIFACT_DIR, but this keeps the coupling
+        # visible and avoids silent divergence if either default changes
+        # (#1046 review).
+        run_pipeline(artifact_dir=ARTIFACT_DIR, lease_lost=lease_lost)
     finally:
         stop_renew.set()
         renew_thread.join(timeout=5)
