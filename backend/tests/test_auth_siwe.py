@@ -19,6 +19,7 @@ from archimedes.api.auth_siwe import (
     _NONCE_TTL_SECONDS,
     _SESSION_TTL_SECONDS,
     _address_from_siwe_message,
+    _canonical_wallet_or_none,
     _pending_nonces,
     _resolve_session_secret,
     _sign_session,
@@ -27,6 +28,45 @@ from archimedes.api.auth_siwe import (
     require_verified_wallet,
 )
 from httpx import ASGITransport, AsyncClient
+
+
+class TestCanonicalWalletOrNone:
+    """`_canonical_wallet_or_none` guards the value that flows into the signed
+    session cookie (code-scanning alert #8: cookie built from user input). It
+    must accept ONLY a strict ``0x`` + 40-hex wallet (lowercased, trimmed) and
+    reject everything else — including injection payloads."""
+
+    def test_accepts_lowercase_hex(self):
+        w = "0x" + "0123456789abcdef0123456789abcdef01234567"
+        assert _canonical_wallet_or_none(w) == w
+
+    def test_lowercases_checksummed_input(self):
+        checksummed = "0x" + "0123456789ABCDEF0123456789abcdef01234567"
+        assert _canonical_wallet_or_none(checksummed) == checksummed.lower()
+
+    def test_strips_surrounding_whitespace(self):
+        w = "0x" + "b" * 40
+        assert _canonical_wallet_or_none(f"  {w}\n") == w
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "0x",
+            "0x" + "0" * 39,  # too short
+            "0x" + "0" * 41,  # too long
+            "0x" + "g" * 40,  # non-hex char
+            "0" * 40,  # missing 0x prefix
+            "0x" + "0" * 40 + "; Path=/; Domain=evil.com",  # cookie-injection payload
+            "0x" + "0" * 40 + "\r\nSet-Cookie: evil=1",  # CRLF header-injection payload
+        ],
+    )
+    def test_rejects_malformed_and_injection(self, bad):
+        assert _canonical_wallet_or_none(bad) is None
+
+    def test_rejects_non_string(self):
+        assert _canonical_wallet_or_none(None) is None
+        assert _canonical_wallet_or_none(12345) is None
 
 
 class TestResolveSessionSecret:
