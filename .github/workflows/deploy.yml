@@ -138,7 +138,11 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Build backend image
-        run: docker build -t archimedes-backend:ci -f backend/Dockerfile backend
+        # Build context is the REPO ROOT (issue #1039) so the image can bundle
+        # analytics-engine/ + data/corpus + contracts/abis + the committed
+        # gmm_model.pkl — assets Fargate can't get from a host volume. The root
+        # .dockerignore keeps the context lean (.git / submodules / node_modules).
+        run: docker build -t archimedes-backend:ci -f backend/Dockerfile .
 
       - name: Build nginx image
         # Env-parity fix (PR #1041 correctness pass, 2026-07-07): this is NOT

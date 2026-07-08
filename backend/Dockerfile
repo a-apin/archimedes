@@ -10,7 +10,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libpq-dev git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# Build context is the REPO ROOT (not ./backend) as of issue #1039 — see the
+# runtime COPYs below for why. Paths are therefore repo-relative.
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --target=/deps -r requirements.txt
 
 # Stage 2: runtime — python:3.12-slim without build tools, running as nonroot.
@@ -21,7 +23,26 @@ FROM python:3.12-slim
 RUN useradd --system --no-create-home --uid 1001 nonroot
 
 COPY --from=builder /deps /deps
-COPY . /app
+
+# Self-contained image (issue #1039). On Fargate there are NO host volumes, so
+# everything docker-compose used to supply as bind mounts must be baked in.
+# The build context is the repo root (deploy.yml / docker-compose.yml pass `.`).
+#   - backend/                     → /app                (the FastAPI package;
+#                                     includes services/gmm_model.pkl, now committed)
+#   - analytics-engine/strategies/ → the curated strategy library (provider reads
+#                                     these files; without them list_strategies()==0
+#                                     → risk_data=mock + empty library)
+#   - analytics-engine/src/        → fetch_ohlcv etc.; without it real-data
+#                                     backtests fall back to synthetic
+#   - analytics-engine/artifacts/  → backtest artifact JSONs (seed source)
+#   - data/corpus/                 → corpus manifest
+#   - contracts/abis/              → on-chain ABIs (chain client reads /contracts/abis)
+COPY backend /app
+COPY analytics-engine/strategies /app/analytics-engine/strategies
+COPY analytics-engine/src /app/analytics-engine/src
+COPY analytics-engine/artifacts /app/analytics-engine/artifacts
+COPY data/corpus /app/data/corpus
+COPY contracts/abis /contracts/abis
 
 # Pre-create rw volume mount points with nonroot ownership.
 # Docker copies these dirs into named volumes on first initialisation, so the
