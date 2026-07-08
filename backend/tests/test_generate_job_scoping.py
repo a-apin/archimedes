@@ -100,6 +100,70 @@ def test_start_with_session_202_when_gated(gate_on):
     assert store.enqueue.await_args.kwargs["payload"]["owner_wallet"] == _OWNER.lower()
 
 
+def test_start_with_session_writes_the_identity_ledger_generation_started_event(gate_on):
+    """Issue #1028 (D2/D2a): only an IDENTIFIED start is ledgered — a
+    SIWE-verified caller's ``generation_started`` event must land in
+    ``identity_events`` (the fire-and-forget pipeline itself is stubbed via
+    ``_patched``, matching this file's existing hermetic precedent).
+
+    Delta-based (not an absolute count) — ``_OWNER`` is reused by
+    ``test_start_with_session_202_when_gated`` above in the same shared
+    test-process DB, matching this whole suite's established convention
+    (see ``test_identity_metrics.py``'s module docstring)."""
+    from archimedes.db import get_session
+    from archimedes.models.identity import IdentityEvent
+
+    wallet = _OWNER.lower()
+
+    def _matching_events() -> list[tuple[str, str]]:
+        session = get_session()
+        try:
+            events = session.query(IdentityEvent).filter(
+                IdentityEvent.wallet == wallet, IdentityEvent.event_type == "generation_started"
+            )
+            return [(e.event_type, e.actor_class) for e in events]
+        finally:
+            session.close()
+
+    before = _matching_events()
+
+    store = _mock_store(None)
+    p1, p2 = _patched(store)
+    with p1, p2:
+        resp = _client().post("/api/generate/start", json=_START_BODY, cookies=_cookies(_OWNER))
+    assert resp.status_code == 202, resp.text
+
+    after = _matching_events()
+    assert len(after) == len(before) + 1
+    assert after[-1][1] == "human"
+
+
+def test_start_anonymous_when_open_does_not_ledger_an_event(gate_off):
+    """D2a: an anonymous request (flag off, no session) has no wallet to
+    anchor a row to — it must stay on the anonymous funnel (Redis HLL), NOT
+    the identity ledger."""
+    from archimedes.db import get_session
+    from archimedes.models.identity import IdentityEvent
+
+    session = get_session()
+    try:
+        before = session.query(IdentityEvent).filter(IdentityEvent.event_type == "generation_started").count()
+    finally:
+        session.close()
+
+    p1, p2 = _patched(_mock_store(None))
+    with p1, p2:
+        resp = _client().post("/api/generate/start", json=_START_BODY)
+    assert resp.status_code == 202, resp.text
+
+    session = get_session()
+    try:
+        after = session.query(IdentityEvent).filter(IdentityEvent.event_type == "generation_started").count()
+    finally:
+        session.close()
+    assert after == before
+
+
 def test_stream_anonymous_401_when_gated(gate_on):
     p1, p2 = _patched(_mock_store(_OWNER.lower()))
     with p1, p2:

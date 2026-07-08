@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,13 +47,37 @@ def _kb_submodule_path() -> Path:
     return here.parents[3] / "submodules" / "KnowledgeBase"
 
 
-def run_pipeline(*, corpus_dir: Path | None = None, artifact_dir: Path | None = None) -> dict:
+def run_pipeline(
+    *,
+    corpus_dir: Path | None = None,
+    artifact_dir: Path | None = None,
+    lease_lost: threading.Event | None = None,
+) -> dict:
     """Run the full KB pipeline. Returns a manifest dict.
 
     The actual model-call code is gated behind ``KB_PIPELINE_ENABLED`` until
     the dedicated container with SPECTER2/REBEL/SciSpacy weights is built
     out. Without the flag we still write an empty manifest so the runner's
     "have we ever run?" check has a stable target.
+
+    ``lease_lost`` (#1046 review, exactly-once #1043): a ``threading.Event``
+    the caller's independent renewal thread sets the instant it can no
+    longer prove this process still holds the runner lease (CAS loss, or an
+    error that leaves renewal unconfirmed). When set, this function still
+    computes and returns a manifest dict (so the caller's return value stays
+    informative) but REFUSES TO WRITE manifest.json — a run whose lease
+    already lapsed must not clobber the authoritative instance's manifest
+    with a lost-update race, since another kb_runner copy may already be
+    running its own pipeline under a fresh lease.
+
+    This is a guard-the-write strategy rather than a fully cooperative
+    mid-pipeline abort because today's real pipeline invocation below is
+    still a skeleton (raises ``NotImplementedError``) with exactly one
+    finalization step — the manifest write. It IS checked as an early
+    cooperative-abort checkpoint before that (currently unimplemented, ~6GB
+    of model weights) stage begins, so once the real SPECTER2/HDBSCAN/REBEL
+    stages are wired in, prefer adding further ``lease_lost`` checks at their
+    natural checkpoints rather than relying solely on this final guard.
     """
     corpus_dir = corpus_dir or DEFAULT_CORPUS_DIR
     artifact_dir = artifact_dir or DEFAULT_ARTIFACT_DIR
@@ -72,9 +97,32 @@ def run_pipeline(*, corpus_dir: Path | None = None, artifact_dir: Path | None = 
             "kg_edge_count": 0,
             "status": "skipped — set KB_PIPELINE_ENABLED=1 to invoke the full pipeline",
         }
+        if lease_lost is not None and lease_lost.is_set():
+            logger.error(
+                "kb_pipeline: lease lost during this run — refusing to write manifest.json "
+                "(another kb_runner copy may already hold a fresh lease and be running its "
+                "own pipeline; writing now would risk a lost-update race on the authoritative "
+                "manifest)"
+            )
+            return manifest
         (artifact_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
         logger.info("kb_pipeline: skipped (KB_PIPELINE_ENABLED not set)")
         return manifest
+
+    if lease_lost is not None and lease_lost.is_set():
+        logger.error(
+            "kb_pipeline: lease already lost before the real pipeline stage started — "
+            "aborting without running the multi-GB model pipeline or writing a manifest"
+        )
+        return {
+            "run_ts": started_iso,
+            "duration_s": 0.0,
+            "paper_count": 0,
+            "cluster_count": 0,
+            "kg_node_count": 0,
+            "kg_edge_count": 0,
+            "status": "aborted — lease lost before pipeline start",
+        }
 
     # Real pipeline path — gated by feature flag. Invocation pattern lives in
     # kb-integration-spec.md § "Pipeline invocation". Adding to sys.path so

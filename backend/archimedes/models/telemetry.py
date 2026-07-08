@@ -25,10 +25,20 @@ class MetricsResponse(BaseModel):
     """Public traction counter — humans vs agents over the live deployment.
 
     Served by ``GET /api/metrics``. The ``*_count`` / ``total_requests`` fields are
-    **cumulative per-request tallies (site traffic, NOT users)** — monotonic totals
-    since the Redis counters were last reset (deploy / flush). ``real_users`` is the
-    honest distinct-user number (wallet rows in ``user_profiles``) surfaced adjacent
-    so the traffic tallies can never be read as a user count (issue #830).
+    **cumulative per-request tallies (site traffic, NOT users, NOT visitors)** —
+    lifetime totals since ``epoch_started_at``. ``real_users`` is the honest
+    distinct-identity number (human wallets anchored in ``wallet_identities``)
+    surfaced adjacent so the traffic tallies can never be read as a user count
+    (issue #830, superseded by #1028 D1/AC1 — see ``services/user_stats.py``).
+
+    **D8 (issue #1028):** these request tallies are retained (real traffic,
+    worth keeping) but are now snapshotted to Postgres on every read
+    (``services/request_snapshot_store.py``), so a Redis restart on the box
+    does not zero them — Redis is the fast live counter, Postgres is the
+    durable floor. ``epoch_started_at`` is when durable snapshotting began
+    (counts from before that instant are the un-reconcilable fossil
+    Redis-only era); ``epoch_resets`` is how many Redis resets have been
+    absorbed since without losing the running total.
     """
 
     human_count: int = Field(..., description="Human-UA REQUESTS (cumulative, site traffic — NOT users).")
@@ -36,7 +46,18 @@ class MetricsResponse(BaseModel):
     total_requests: int = Field(..., description="human_count + agent_count (cumulative requests — NOT users).")
     real_users: int = Field(
         default=0,
-        description="Distinct users = wallet rows in user_profiles. The honest distinct-user count (issue #830).",
+        description=(
+            "Distinct real users = human wallets in wallet_identities "
+            "(issue #1028 AC1). The honest distinct-identity count."
+        ),
+    )
+    epoch_started_at: str | None = Field(
+        default=None,
+        description="ISO-8601 UTC timestamp durable (Postgres-snapshotted) request counting began (D8).",
+    )
+    epoch_resets: int | None = Field(
+        default=None,
+        description="Count of Redis resets absorbed into the durable total since epoch_started_at (D8).",
     )
     timestamp: str = Field(..., description="ISO-8601 UTC timestamp this snapshot was read.")
 
@@ -56,14 +77,61 @@ class FunnelStageCount(BaseModel):
 
 
 class FunnelResponse(BaseModel):
-    """Distinct-visitor conversion funnel over the live deployment (issue #787).
+    """Conversion funnel over the live deployment (issue #787, extended by #1028).
 
-    Served by ``GET /api/metrics/funnel``. Stages are ordered
-    ``landed -> generation_started -> wallet_connected -> vault_deployed``.
+    Served by ``GET /api/metrics/funnel``. Two sources, selected by the
+    ``source`` query param:
+
+    - ``source=visitor`` (default, unchanged from #787) — anonymous
+      browser-id HLL counts in Redis. Stages: ``landed -> wallet_connected ->
+      generation_started -> vault_deployed``. Pre-auth by construction (D2a):
+      this is a fossil instrument kept for the top-of-funnel ``landed`` stage,
+      which has no wallet to key on.
+    - ``source=identity`` (issue #1028, AC3) — distinct HUMAN WALLET counts
+      recomputed live from ``identity_events`` alone, no Redis/HLL involved.
+      Stages: ``wallet_connected -> generation_started -> vault_deployed``
+      (mapped from the ledger's ``auth_verified`` / ``generation_started`` /
+      ``vault_created`` event types). ``human_only=True`` (default) applies
+      AC3's exact exclusion (``actor_class NOT IN ('operator_dogfood',
+      'agent')``) so dogfooding/agent traffic doesn't inflate the honest
+      human funnel.
     """
 
     window: str = Field(..., description='"all-time" or the ISO date (YYYY-MM-DD) the counts are for.')
+    source: str = Field(default="visitor", description='"visitor" (Redis/HLL, fossil) or "identity" (ledger, honest).')
     stages: list[FunnelStageCount] = Field(..., description="Ordered funnel stages with counts + ratios.")
+    timestamp: str = Field(..., description="ISO-8601 UTC timestamp this snapshot was read.")
+
+
+class WalletIdentityOut(BaseModel):
+    """One anchored human wallet (issue #1028 AC1)."""
+
+    wallet_address: str = Field(..., description="Lowercased SIWE-verified wallet address.")
+    actor_class: str = Field(..., description="Always 'human' on this endpoint (see /api/metrics/wallets filter).")
+    first_seen_at: str = Field(..., description="ISO-8601 UTC — first time this wallet was anchored.")
+    last_auth_at: str | None = Field(default=None, description="ISO-8601 UTC — most recent SIWE verification.")
+
+
+class WalletsResponse(BaseModel):
+    """Enumerable human-wallet list backing the /api/metrics real_users count (AC1)."""
+
+    real_users: int = Field(..., description="count(*) FROM wallet_identities WHERE actor_class='human'.")
+    wallets: list[WalletIdentityOut] = Field(..., description="The wallets behind that count, oldest-first.")
+    timestamp: str = Field(..., description="ISO-8601 UTC timestamp this snapshot was read.")
+
+
+class WalletConnectionOut(BaseModel):
+    """One wallet's first SIWE verification (issue #1028 AC2)."""
+
+    wallet: str = Field(..., description="Lowercased SIWE-verified wallet address.")
+    connected_at: str = Field(..., description="ISO-8601 UTC — min(occurred_at) over its auth_verified events.")
+
+
+class WalletConnectionsResponse(BaseModel):
+    """ "Which wallets connected, and when" — issue #1028 AC2, impossible before the ledger."""
+
+    count: int = Field(..., description="Number of distinct wallets that have ever completed SIWE verification.")
+    connections: list[WalletConnectionOut] = Field(..., description="Earliest-first.")
     timestamp: str = Field(..., description="ISO-8601 UTC timestamp this snapshot was read.")
 
 

@@ -72,6 +72,14 @@ it). The headlines a fresh session needs:
   (CloudFront → nginx → EC2). The prod stack was **rebuilt on Dan's own AWS account
   (`037613907429` / `us-east-1`)**, decoupled from the prior shared account. **GitHub Actions
   auto-deploy is re-pointed and ON** — every merge to `main` rebuilds + redeploys.
+  **EC2 → ECS Fargate migration (#1039) is authored, not applied:** three
+  production OOM outages on 2026-07-06 (build-on-the-serving-host, #1001) locked
+  the decision to move compute to Fargate behind the *same* ALB/WAF/Aurora/
+  ElastiCache; the Terraform + CI pipeline live on `dbrowneup/1039-fargate-infra`,
+  with the cutover ordered step-by-step in
+  [`infra/runbooks/ecs-fargate-cutover.md`](infra/runbooks/ecs-fargate-cutover.md) —
+  `terraform apply` + the ALB target swing + EC2 decommission are Dan's AWS
+  operations, still pending as of this revision.
 - **LLM.** **AWS Bedrock is the live LLM** — **Amazon Nova Micro** default via a multi-provider
   **Converse** backend, with a model cost-picker on the Generate page. (GLM is removed from prod;
   BYOK and a local-Ollama single-user path are preserved.) `response.model` is the
@@ -405,6 +413,14 @@ they actually shipped (Day 4):
   merge to `main` rebuilds + redeploys. Live at
   [`https://archimedes-arc.com/`](https://archimedes-arc.com/). (Aurora + ElastiCache TF is
   provisioned but the cutover off in-stack Postgres/Redis is still pending — roadmap T3.5.)
+  **ECS Fargate migration (issue #1039, decided 2026-07-06 after the 2026-07-06 OOM
+  outage chain — #1001) has its IaC + CI pipeline authored on `dbrowneup/1039-fargate-infra`:**
+  build-in-CI → ECR → Fargate on the *existing* ALB/WAF/Aurora/ElastiCache, replacing
+  the build-on-the-serving-host `deploy.yml` path above. **Not yet applied, not yet
+  cut over** — that's Dan's AWS operation, ordered step-by-step in
+  [`infra/runbooks/ecs-fargate-cutover.md`](infra/runbooks/ecs-fargate-cutover.md).
+  Until that runbook is executed, the EC2/docker-compose description above remains
+  the accurate live picture.
 
 ## Scope — the headline commitments
 

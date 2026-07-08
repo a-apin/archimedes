@@ -14,6 +14,14 @@ Design notes:
     increment path returns silently; the read path returns zeros.
   - ``total`` is derived (humans + agents) on read rather than stored, so a
     crash between two INCRs can never desync a stored total from its parts.
+
+**Redis's role, demoted (D8, issue #1028):** these counters are the fast LIVE
+tally, not the durable record. ``api/metrics_routes.get_metrics`` reconciles
+every read against a Postgres snapshot
+(``services/request_snapshot_store.py``) so the lifetime request total
+survives a Redis restart — Redis itself is now cache-tier for this
+instrument, same as it is for nonces and rate-limit buckets elsewhere in the
+codebase, not the source of truth.
 """
 
 from __future__ import annotations
@@ -76,6 +84,25 @@ class TelemetryStore:
         except Exception as exc:
             logger.debug("telemetry read failed: %s", exc)
             return 0, 0
+
+    async def get_counts_or_none(self) -> tuple[int, int] | None:
+        """Return ``(human_count, agent_count)``, or ``None`` if Redis is unreachable.
+
+        Unlike ``get_counts``, this does NOT collapse a Redis outage to
+        ``(0, 0)`` — a genuine "Redis says zero" and "Redis didn't answer" are
+        different facts, and D8 (issue #1028) needs to tell them apart: a
+        caller can fall back to the durable Postgres snapshot
+        (``services/request_snapshot_store.py``) on ``None`` instead of
+        reporting a false zero. Never raises.
+        """
+        try:
+            r = await self._get_redis()
+            humans = await r.get(KEY_HUMANS)
+            agents = await r.get(KEY_AGENTS)
+            return int(humans or 0), int(agents or 0)
+        except Exception as exc:
+            logger.debug("telemetry read failed (Redis unreachable): %s", exc)
+            return None
 
     # ─── Lifecycle ────────────────────────────────────────────────
 
