@@ -9,9 +9,8 @@ Contracts changed (contracts/vyper/PaymentSplitter.vy):
   - Event argument style: kwargs (vyper ^0.4.1 best-practice)
 """
 
-import pytest
 import boa
-
+import pytest
 
 # ═══════════════════════════════════════════════════════════════════════
 # DEPLOYMENT

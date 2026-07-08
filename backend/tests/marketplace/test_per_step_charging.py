@@ -10,11 +10,9 @@ from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from archimedes.marketplace.service import MarketService, Publisher, Subscriber
 from archimedes.marketplace.tick_registry import HaltSource, TickStep
 from archimedes.services.strategy_signal_evaluator import StrategySignals
-
 
 # ── helpers ─────────────────────────────────────────────────────────────
 

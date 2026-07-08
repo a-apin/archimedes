@@ -24,7 +24,6 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-
 # ── DB isolation fixture ────────────────────────────────────────────────────
 
 
@@ -184,10 +183,9 @@ class TestDsrPValuePlumbing:
 
     def _make_session(self, tmp_path):
         """Return a fresh SQLAlchemy session backed by an in-memory SQLite DB."""
+        from archimedes.models.chat import Base
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-
-        from archimedes.models.chat import Base
 
         engine = create_engine(f"sqlite:///{tmp_path}/dsr_test.db")
         Base.metadata.create_all(engine)
@@ -357,10 +355,9 @@ class TestUniverseSourcePlumbing:
     """
 
     def _make_session(self, tmp_path):
+        from archimedes.models.chat import Base
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-
-        from archimedes.models.chat import Base
 
         engine = create_engine(f"sqlite:///{tmp_path}/universe_source_test.db")
         Base.metadata.create_all(engine)

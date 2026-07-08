@@ -13,10 +13,8 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from archimedes.marketplace.service import MarketService, Publisher, Subscriber
 from archimedes.models.marketplace import MarketplaceAgent
-
 
 # ── to_dict() notice logic (no DB, pure model test) ────────────────────────
 

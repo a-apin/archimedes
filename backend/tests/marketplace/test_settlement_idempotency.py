@@ -12,7 +12,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from archimedes.db import Base, engine, get_session
 from archimedes.marketplace.service import MarketService, Publisher, Subscriber
 from archimedes.marketplace.tick_registry import TickStep

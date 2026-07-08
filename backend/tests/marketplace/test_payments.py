@@ -4,7 +4,6 @@ module boundary — no live facilitator calls in CI."""
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from archimedes.marketplace import payments
 
 WALLET_ID = "wallet-abc-123"

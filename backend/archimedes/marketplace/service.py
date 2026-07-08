@@ -13,8 +13,8 @@ import json
 import logging
 import os
 import time
-from datetime import UTC, datetime
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 
 from sqlalchemy.exc import IntegrityError
 
@@ -26,11 +26,11 @@ from archimedes.chain.v_check import VCheck
 from archimedes.db import get_session
 from archimedes.interfaces.math import IRegimeDetector
 from archimedes.marketplace import payments
-from archimedes.marketplace.state import MarketState
 from archimedes.marketplace.settlement import SettlementSweeper
+from archimedes.marketplace.state import MarketState
 from archimedes.marketplace.tick_registry import (
-    HaltSource,
     PIPELINE_STEPS,
+    HaltSource,
     SubscriberTickRecord,
     TickStep,
 )

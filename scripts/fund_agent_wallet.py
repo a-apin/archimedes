@@ -41,7 +41,6 @@ import json
 import os
 import sys
 import time
-
 from decimal import ROUND_DOWN, Decimal
 
 import httpx

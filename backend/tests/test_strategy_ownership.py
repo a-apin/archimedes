@@ -20,8 +20,8 @@ import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import pytest
 import archimedes.db as db
+import pytest
 from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
 from httpx import ASGITransport, AsyncClient
 
