@@ -1,0 +1,23 @@
+# Archimedes (archimedes-arc.com) — agentic trading, grounded in research, settled on Arc.
+# AI agents: start at /llms.txt for a curated, low-token entry point into the programmatic
+# /api/* surface (SIWE auth, strategy generation, rigor verdicts). Also see
+# /.well-known/agent.json and /api/agent/manifest for machine-readable discovery.
+
+# AI-search crawlers — explicitly welcome. Citations from these are good for us.
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+# Everyone else
+User-agent: *
+Allow: /
+
+Sitemap: https://archimedes-arc.com/sitemap.xml
