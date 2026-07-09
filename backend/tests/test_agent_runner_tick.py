@@ -197,6 +197,203 @@ class TestTickPipeline:
         assert m["eval"].aggregate_signals.call_count >= 2
 
 
+# ── generated-strategy rebalance (rebalancer decouple, Part A #1 of
+# docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md) ───
+
+
+def _gen_signals(strategy_id: str = "gen_001", asset: str = "sSPY", weight: float = 0.7) -> StrategySignals:
+    """Signals a generated strategy's DSL spec would produce — distinct
+    strategy_id from ``_signals()``'s curated ``faber_001`` so tests can tell
+    the two evaluate_strategies() calls (curated vs. generated) apart."""
+    return StrategySignals(
+        strategy_id=strategy_id,
+        strategy_name="Generated DSL Strategy",
+        paper_title="Generated DSL Strategy",
+        signals=[
+            AssetSignal(
+                strategy_id=strategy_id,
+                strategy_name="Generated DSL Strategy",
+                asset=asset,
+                signal=Signal.LONG,
+                weight=weight,
+                reason="dsl entry condition met",
+            )
+        ],
+        paper_arxiv_id="",
+    )
+
+
+class TestGeneratedStrategyRebalance:
+    """A vault bound to a GENERATED strategy_id must now be rebalanced using
+    its own persisted DSL spec (strategy_store.strategy_spec) — previously
+    ``all_signals`` was curated-only, so a generated-strategy vault's scoped
+    signals were always empty and the vault was silently skipped.
+
+    DB fixture follows the proven rebind pattern from
+    test_selection_bias_generated_gate.py: db.engine/SessionLocal are
+    module-level globals created once at import, so monkeypatch.setenv alone
+    doesn't repoint them — both must be rebound to a fresh per-test sqlite.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _use_tmp_db(self, tmp_path, monkeypatch):
+        import archimedes.db as db
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        url = f"sqlite:///{tmp_path / 'gen_rebalance.db'}"
+        monkeypatch.setenv("DATABASE_URL", url)
+        eng = create_engine(url, connect_args={"check_same_thread": False})
+        monkeypatch.setattr(db, "engine", eng)
+        monkeypatch.setattr(db, "SessionLocal", sessionmaker(bind=eng, autocommit=False, autoflush=False))
+        db.init_db()
+        yield
+
+    @staticmethod
+    def _seed_strategy(strategy_id: str, *, raw_spec: str | None) -> None:
+        """Insert a StrategyRecord directly (bypassing upsert_strategy) so a
+        test can seed a deliberately-corrupt ``strategy_spec`` column value —
+        ``raw_spec`` is stored VERBATIM (already-serialized text or None),
+        not JSON-encoded here."""
+        import archimedes.db as db
+        from archimedes.models.strategy_store import StrategyRecord
+
+        with db.get_session() as session:
+            session.add(
+                StrategyRecord(
+                    id=strategy_id,
+                    content_hash=("0x" + strategy_id).ljust(66, "0"),
+                    generation_method="debate",
+                    source_papers="[]",
+                    strategy_name="Generated DSL Strategy",
+                    thesis="test thesis",
+                    asset_universe='["SPY"]',
+                    risk_profile="moderate",
+                    status="live",
+                    strategy_spec=raw_spec,
+                )
+            )
+            session.commit()
+
+    async def test_generated_strategy_vault_now_reaches_process_vault(self, runner_env):
+        """The core fix: a vault scoped to a generated strategy_id with a
+        VALID persisted spec now yields scoped signals and is processed —
+        not silently skipped."""
+        import json
+
+        from archimedes.services.strategy_dsl import FABER_2007_SPEC
+
+        runner, m = runner_env
+        self._seed_strategy("gen_001", raw_spec=json.dumps(FABER_2007_SPEC))
+
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xGenVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        runner._get_vault_strategy_ids = MagicMock(return_value=["gen_001"])
+
+        def _eval_side_effect(strategies, _synth_assets, *_a, **_kw):
+            ids = {getattr(s, "id", None) for s in strategies}
+            return [_gen_signals()] if "gen_001" in ids else [_signals()]
+
+        m["eval"].evaluate_strategies.side_effect = _eval_side_effect
+
+        process_vault_spy = AsyncMock(wraps=runner._process_vault)
+        runner._process_vault = process_vault_spy
+
+        await runner.tick()
+
+        process_vault_spy.assert_awaited_once()
+        vault_addr, targets, scoped_signals = process_vault_spy.await_args.args[:3]
+        assert vault_addr == "0xGenVault"
+        assert any(t.weight > 0 for t in targets), "generated-strategy vault got no non-zero targets"
+        assert any(ss.strategy_id == "gen_001" for ss in scoped_signals)
+
+    async def test_generated_strategy_without_spec_is_still_skipped(self, runner_env):
+        """Control: a generated strategy_id bound to a vault but persisted
+        WITHOUT a spec (legacy row, or pre-this-feature) is still skipped —
+        the fix only unblocks ids that actually carry a persisted spec."""
+        runner, m = runner_env
+        self._seed_strategy("gen_002", raw_spec=None)
+
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xGenVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        runner._get_vault_strategy_ids = MagicMock(return_value=["gen_002"])
+
+        process_vault_spy = AsyncMock(wraps=runner._process_vault)
+        runner._process_vault = process_vault_spy
+
+        await runner.tick()
+
+        # No spec to evaluate → no scoped signals → vault skipped, same as
+        # the pre-fix behavior for every generated-strategy vault.
+        process_vault_spy.assert_not_awaited()
+        m["executor"].read_portfolio.assert_not_called()
+
+    async def test_corrupt_spec_json_is_skipped_per_record_curated_vault_unaffected(self, runner_env):
+        """Fail-safe: a generated strategy_id whose persisted strategy_spec
+        is NOT valid JSON (corrupt row) must not raise out of tick() — it's
+        logged and skipped — and a second, legacy (unscoped) vault in the
+        SAME tick still processes normally."""
+        runner, m = runner_env
+        self._seed_strategy("gen_003", raw_spec="{not valid json at all")
+
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xGenVault", "0xLegacyVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        # gen vault scoped to the corrupt id; legacy vault has no metadata.
+        runner._get_vault_strategy_ids = MagicMock(side_effect=lambda addr: ["gen_003"] if addr == "0xGenVault" else None)
+
+        process_vault_spy = AsyncMock(wraps=runner._process_vault)
+        runner._process_vault = process_vault_spy
+
+        await runner.tick()  # must not raise
+
+        # The corrupt-spec vault never got scoped signals — skipped.
+        processed_addrs = {c.args[0] for c in process_vault_spy.await_args_list}
+        assert "0xGenVault" not in processed_addrs
+        # The legacy vault (global-consensus fallback) still processed.
+        assert "0xLegacyVault" in processed_addrs
+
+    async def test_evaluator_exception_on_generated_call_does_not_break_tick(self, runner_env):
+        """Fail-safe (belt-and-suspenders): even if the evaluator itself
+        raises while grading a generated strategy (not just a bad row), the
+        whole generated-signal load+eval is wrapped — tick() completes and
+        curated/legacy vaults still process."""
+        import json
+
+        from archimedes.services.strategy_dsl import FABER_2007_SPEC
+
+        runner, m = runner_env
+        self._seed_strategy("gen_004", raw_spec=json.dumps(FABER_2007_SPEC))
+
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xGenVault", "0xLegacyVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        runner._get_vault_strategy_ids = MagicMock(side_effect=lambda addr: ["gen_004"] if addr == "0xGenVault" else None)
+
+        def _eval_side_effect(strategies, _synth_assets, *_a, **_kw):
+            ids = {getattr(s, "id", None) for s in strategies}
+            if "gen_004" in ids:
+                raise RuntimeError("boom — simulated evaluator failure")
+            return [_signals()]
+
+        m["eval"].evaluate_strategies.side_effect = _eval_side_effect
+
+        process_vault_spy = AsyncMock(wraps=runner._process_vault)
+        runner._process_vault = process_vault_spy
+
+        await runner.tick()  # must not raise
+
+        processed_addrs = {c.args[0] for c in process_vault_spy.await_args_list}
+        assert "0xGenVault" not in processed_addrs
+        assert "0xLegacyVault" in processed_addrs
+
+
 # ── vault discovery ───────────────────────────────────────────
 
 

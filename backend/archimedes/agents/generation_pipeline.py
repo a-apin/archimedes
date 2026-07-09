@@ -253,6 +253,15 @@ class _CandidateResult:
     # buy-and-hold agent/fixture path derives its universe from the user's
     # portfolio weights directly, not from a model suggestion).
     universe_source: str = "full"
+    # The validated DSL spec dict (rebalancer decouple, Part A #1 of
+    # docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md) — the SAME
+    # dict ``proposal.strategy_spec`` carries and ``evaluate_fusion_spec``
+    # graded. Persisted verbatim onto the StrategyRecord (see
+    # ``_persist_candidate``) so the live agent runner can later load and
+    # evaluate a deployed generated strategy's OWN spec, not just its weight
+    # vector. None on the fixture/buy-and-hold-weights path (there is no DSL
+    # spec to carry — it re-derives its universe from ``weights`` instead).
+    strategy_spec: dict[str, Any] | None = None
 
 
 def _is_deployable(c: _CandidateResult) -> bool:
@@ -1240,6 +1249,11 @@ async def _persist_candidate(
                 provenance_hash=trace_hash,
                 is_example=False,
                 owner_wallet=owner_wallet,
+                # Rebalancer decouple (Part A #1): persist the candidate's own
+                # validated DSL spec so a vault later deployed from this
+                # strategy can be autonomously rebalanced by the agent runner.
+                # None on the fixture/buy-and-hold path — nothing to persist.
+                strategy_spec=c.strategy_spec,
             )
             # Stamp the generating wallet so wallet_can_publish() returns True
             # for this wallet/strategy pair (D5 publish gate).
