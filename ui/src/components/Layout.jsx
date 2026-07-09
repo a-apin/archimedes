@@ -30,7 +30,7 @@ const NAV = [
     { id: 'generate', label: 'Generate', icon: 'i-lucide-sparkles' },
     { id: 'library',  label: 'Library',  icon: 'i-lucide-line-chart' },
     // Quant Lab hidden from nav for the livestream — renders synthetic sample data;
-    // route/component intact, reachable by direct URL. Re-enable + wire to live data: see tracking issue.
+    // route/component intact, reachable by direct URL. Re-enable + wire to live data: see issue #1060.
   ]},
   { group: 'Position', items: [
     { id: 'portfolio', label: 'Portfolio', icon: 'i-lucide-layout-dashboard' },
