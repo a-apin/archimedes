@@ -1746,11 +1746,18 @@ def _generated_strategy_responses(session, caller: str | None) -> list[StrategyR
 
 def _public_generated_strategy_responses(session) -> list[StrategyResponse]:
     """GENERATED strategies visible on PUBLIC, unauthenticated surfaces (the
-    leaderboard). No wallet context exists here, so ownership never grants
-    visibility — only ``is_published`` or a rigor-passing ``"live"`` promotion
-    does. ``upsert_strategy`` (models/strategy_store.py) only ever sets
-    ``status="live"`` once the rigor verdict actually passes, so this never
-    surfaces an unpublished/unproven candidate on a public ranking.
+    leaderboard). No wallet context exists here, so visibility requires the
+    OWNER to have opted in by PUBLISHING — ``is_published`` ONLY.
+
+    ``status`` is deliberately NOT a visibility criterion: ``upsert_strategy``
+    sets ``status="live"`` on ANY strategy whose rigor passes, published or not,
+    so keying off it would leak a user's PRIVATE (unpublished) strategy — its
+    name + metrics — onto a public ranking the moment it passed rigor. Publish
+    is the consent signal, not rigor. (#850 privacy principle.)
+
+    NOTE: ``is_published`` is currently a dormant flag — the publish flow does
+    not yet flip it — so this is intentionally inert in prod until that wiring
+    lands (tracked as a follow-up). Inert-but-safe beats leaky.
     """
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.passport_loader import list_passports
@@ -1767,7 +1774,7 @@ def _public_generated_strategy_responses(session) -> list[StrategyResponse]:
             .all()
         )
     }
-    visible = [r for r in records if r.id in published_ids or (r.status or "") == "live"]
+    visible = [r for r in records if r.id in published_ids]
     return [_passport_to_strategy_response(r, session) for r in visible]
 
 

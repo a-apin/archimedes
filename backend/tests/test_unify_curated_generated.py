@@ -144,13 +144,15 @@ async def test_leaderboard_includes_published_generated_strategy():
 
 @pytest.mark.asyncio
 async def test_leaderboard_hides_unpublished_generated_strategy():
-    """A private, non-owned generated strategy never leaks onto the public board
-    — the public endpoint has no wallet context, so it must never surface an
-    unpublished/unproven ("candidate") row.
+    """A private, UNPUBLISHED generated strategy never leaks onto the public
+    board — even after it PASSES rigor. `upsert_strategy` sets status="live" on
+    any rigor-passing row, published or not, so a private-but-live strategy is
+    the real leak case: publish (not rigor) is the consent signal (#850).
     """
     _mk_wallet(_W_OWNER)
-    _mk_strategy("gen-priv-1", owner=_W_OWNER, published=False, status="candidate")
-    _mk_passport("gen-priv-1", owner=_W_OWNER, status="candidate", passes=False, sharpe=None)
+    # Private (published=False) but rigor-passing (status="live") — the exact leak.
+    _mk_strategy("gen-priv-1", owner=_W_OWNER, published=False, status="live")
+    _mk_passport("gen-priv-1", owner=_W_OWNER, status="live", passes=True, sharpe=1.5, dsr=0.96, oos=1.3, pbo=0.1)
 
     from archimedes.main import app
 
