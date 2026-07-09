@@ -2276,6 +2276,9 @@ async def _run_fusion_job(job_id: str) -> None:
                     "fusion_reasoning": result.fusion_reasoning,
                     "novelty_rationale": result.novelty_rationale,
                 },
+                # SIWE-derived owner threaded from the job payload (stamped at
+                # enqueue time by generate_strategy — never client-supplied).
+                owner_wallet=payload.get("owner_wallet"),
             )
         except Exception:
             pass  # Non-blocking per spec
@@ -2336,6 +2339,9 @@ async def construct_strategy(
                 "risk_notes": proposal.risk_notes,
                 "regime": proposal.regime,
             },
+            # SIWE-derived owner (gate_generation) — None when
+            # REQUIRE_SIWE_FOR_GENERATION is off (local dev/demo opt-out).
+            owner_wallet=_wallet,
         )
     except Exception:
         pass  # Non-blocking per spec

@@ -61,8 +61,16 @@ def persist_proposal(
     regime_tag: str | None = None,
     parent_proposal_id: str | None = None,
     extra: dict | None = None,
+    owner_wallet: str | None = None,
 ) -> str | None:
     """Persist a proposal row. Returns the proposal ID or None on failure.
+
+    ``owner_wallet`` is the SIWE-derived wallet (never client-supplied) —
+    threaded from the call site's own verified session / job payload. Stored
+    lowercased for case-insensitive matching against the caller wallet the
+    owner-scoped read path (``proposals_routes.py``) compares against. ``None``
+    means anonymous/unattributed generation — those rows are private to NO
+    ONE once persisted (the owner-scoped query never matches a NULL column).
 
     Non-blocking: catches all DB errors, logs them, returns None.
     """
@@ -72,6 +80,7 @@ def persist_proposal(
 
         papers = papers or []
         proposal_id = uuid.uuid4().hex[:16]
+        owner_wallet = owner_wallet.lower() if owner_wallet else None
 
         canonical = _canonicalize_payload(intent, strategy_spec, papers, rigor_verdict, agent, extra)
         content_hash = _compute_keccak256(canonical)
@@ -102,10 +111,19 @@ def persist_proposal(
                 .first()
             )
             if existing:
+                changed = False
                 # Update verdict if changed
                 if verdict != existing.verdict:
                     existing.verdict = verdict
                     existing.trust_level = trust_level
+                    changed = True
+                # Backfill ownership on a dedup hit (mirrors
+                # strategy_store.upsert_strategy): never overwrite an existing
+                # owner, only attach one to a previously-anonymous row.
+                if owner_wallet and not existing.owner_wallet:
+                    existing.owner_wallet = owner_wallet
+                    changed = True
+                if changed:
                     existing.updated_at = datetime.now(UTC)
                     session.commit()
                 return existing.proposal_id
@@ -120,6 +138,7 @@ def persist_proposal(
                 content_hash=content_hash,
                 agent=agent,
                 regime_tag=regime_tag,
+                owner_wallet=owner_wallet,
                 payload=json.dumps(payload, ensure_ascii=False),
             )
             session.add(row)
@@ -145,8 +164,18 @@ def query_proposals(
     since: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    owner_wallet: str | None = None,
 ) -> tuple[list[dict], int]:
     """Query proposals with filtering and pagination.
+
+    ``owner_wallet``, when given, scopes the query to rows whose stored
+    ``owner_wallet`` exactly (case-insensitively) matches — pushed into the
+    SQL ``WHERE`` clause, not filtered in Python after a fetch-all. A NULL
+    ``owner_wallet`` column (legacy, pre-ownership rows) never satisfies this
+    equality filter, so those rows are returned to no caller. Callers that
+    omit ``owner_wallet`` get the unscoped query — internal/trusted use only;
+    every HTTP-facing caller (``proposals_routes.py``) must pass the SIWE
+    session wallet here.
 
     Returns (proposals, total_count).
     """
@@ -157,6 +186,11 @@ def query_proposals(
         with get_session() as session:
             q = session.query(StrategyProposal)
 
+            # `is not None` (not truthiness): only an OMITTED owner_wallet (None)
+            # gets the unscoped internal query. An empty string "" is an explicit
+            # (empty) scope that matches no rows — never a silent scope bypass.
+            if owner_wallet is not None:
+                q = q.filter(StrategyProposal.owner_wallet == owner_wallet.lower())
             if verdict:
                 q = q.filter(StrategyProposal.verdict == verdict)
             if agent:
@@ -177,19 +211,27 @@ def query_proposals(
         return [], 0
 
 
-def get_siblings(generation_id: str) -> list[dict]:
-    """Get all proposals from the same generation (for 'considered alternatives')."""
+def get_siblings(generation_id: str, *, owner_wallet: str | None = None) -> list[dict]:
+    """Get all proposals from the same generation (for 'considered alternatives').
+
+    ``owner_wallet``, when given, scopes to rows owned by that wallet
+    (case-insensitive, pushed into the SQL filter — see ``query_proposals``
+    docstring for the same NULL-never-matches guarantee). Omitting it returns
+    the unscoped sibling set — internal/trusted use only; the HTTP-facing
+    caller (``proposals_routes.py``) must always pass the SIWE session wallet.
+    """
     try:
         from archimedes.db import get_session
         from archimedes.models.strategy_proposal import StrategyProposal
 
         with get_session() as session:
-            rows = (
-                session.query(StrategyProposal)
-                .filter(StrategyProposal.generation_id == generation_id)
-                .order_by(StrategyProposal.created_at.asc())
-                .all()
-            )
+            q = session.query(StrategyProposal).filter(StrategyProposal.generation_id == generation_id)
+            # `is not None` (not truthiness): an empty string "" is an explicit
+            # empty scope (matches no rows), never a silent unscoped bypass — only
+            # an omitted owner_wallet (None) gets the unscoped internal query.
+            if owner_wallet is not None:
+                q = q.filter(StrategyProposal.owner_wallet == owner_wallet.lower())
+            rows = q.order_by(StrategyProposal.created_at.asc()).all()
             return [r.to_dict() for r in rows]
 
     except Exception as exc:

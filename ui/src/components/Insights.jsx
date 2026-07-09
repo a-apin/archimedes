@@ -1,24 +1,35 @@
 import { useState, useEffect, useCallback } from 'react'
 import { apiGet } from '../api'
-import { checkSession } from '../siwe'
 
-// Insights — the public conversion + traction dashboard (#787, #830).
+// Insights — the public conversion + traction dashboard (#787, #830, #854).
 //
 // Renders the live conversion instruments as a human-readable dashboard instead
-// of raw JSON. Everything on the PUBLIC tab is PII-free by design:
+// of raw JSON. Public-only, PII-free by design — the cost/ops dashboard is a
+// SEPARATE, SIWE + platform-admin-gated surface
+// (backend/archimedes/api/metrics_private_routes.py, GET
+// /api/metrics/private/cost) and is intentionally NOT rendered anywhere in this
+// component:
 //   - Traction: human vs agent REQUEST counts (honestly labelled — these are
 //     cumulative request tallies, bot-inflated, NOT unique users) + the honest
-//     distinct real-users (wallet) count alongside them.
+//     distinct real-users (wallet) count alongside them. "Real users (wallets)"
+//     is a distinct-DB-row, all-time count; it is a DIFFERENT population from
+//     the funnel's "Connected Wallet" below (distinct anonymous visitor
+//     SESSIONS that reached that step) — the two numbers are not expected to
+//     match, and the copy says so explicitly rather than leaving readers to
+//     guess.
 //   - Conversion funnel: distinct visitors through landed → wallet_connected →
 //     generation_started → vault_deployed, with step-conversion %.
 //   - Visitor insights: distinct visitors by country + device, drawn from the
-//     SAME JS-gated `landed` beacon population as the funnel (#830) — geo/device
-//     count agrees with the funnel `landed` count by construction. Geography is
-//     `ZZ` until Dan's CloudFront terraform apply lands (#795).
-//
-// The INTERNAL tab (cost / ops) is SIWE-gated: it only renders the private
-// dashboard when the viewer holds a valid session, and its cards read the
-// SIWE-gated /api/metrics/private/* endpoints (401 when anonymous).
+//     SAME JS-gated `landed` beacon population as the funnel, attributed once
+//     per visitor (issue #854 finding #6: a Redis SADD first-seen gate in
+//     services/visitor_insights_store.py). This is INTENDED to sum to the
+//     funnel's `landed` count going forward, but the underlying HyperLogLog
+//     counters are append-only — visits recorded before the attribution gate
+//     shipped (2026-07-03) remain baked into the all-time totals and can't be
+//     retroactively de-duplicated without an operator resetting the Redis
+//     keys. The UI states this as a directional relationship, not an exact
+//     equality, until that reset happens. Geography is `ZZ` until Dan's
+//     CloudFront terraform apply lands (#795).
 
 const FUNNEL_LABELS = {
   landed: 'Landed',
@@ -58,11 +69,6 @@ export default function Insights() {
   const [error, setError] = useState(null)
   const [visitorsError, setVisitorsError] = useState(null)
 
-  // SIWE session drives the private (cost/ops) tab. Anonymous viewers only ever
-  // see the public dashboard; the internal cards read SIWE-gated endpoints.
-  const [session, setSession] = useState({ authenticated: false, wallet: null })
-  const [tab, setTab] = useState('public')
-
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -92,9 +98,10 @@ export default function Insights() {
   }, [])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { checkSession().then(setSession).catch(() => {}) }, [])
 
-  const landed = funnel?.stages?.find(s => s.stage === 'landed')?.distinct_visitors ?? 0
+  // null (not 0) when the funnel hasn't loaded / failed — so "Distinct visitors"
+  // renders an honest "—" (unknown) rather than a misleading "0".
+  const landed = funnel ? (funnel.stages?.find(s => s.stage === 'landed')?.distinct_visitors ?? 0) : null
   const totalDevices = visitors ? Object.values(visitors.devices || {}).reduce((a, b) => a + b, 0) : 0
   const maxCountry = visitors?.countries?.[0]?.distinct_visitors ?? 0
 
@@ -110,182 +117,117 @@ export default function Insights() {
         Live conversion instruments for our (un-promoted) traffic. Read-only, PII-free.
       </p>
 
-      {/* Public / Internal tabs — Internal is SIWE-gated. */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <TabButton active={tab === 'public'} onClick={() => setTab('public')}>Public</TabButton>
-        <TabButton active={tab === 'internal'} onClick={() => setTab('internal')}>
-          Internal {session.authenticated ? '' : '🔒'}
-        </TabButton>
-      </div>
-
       {error && (
         <div style={{ ...card, borderColor: 'var(--negative-bd)', color: 'var(--negative)', marginBottom: 16 }}>
           Couldn’t load metrics: {error}
         </div>
       )}
 
-      {tab === 'internal' ? (
-        <InternalDashboard session={session} />
-      ) : (
-        <>
-          {/* ── Traction ── */}
-          <section style={{ ...card, marginBottom: 16 }}>
-            <h2 style={{ marginTop: 0, fontSize: 16 }}>Traction — requests &amp; users</h2>
-            <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
-              <Stat label="Human-UA requests" value={metrics?.human_count} />
-              <Stat label="Agent / bot requests" value={metrics?.agent_count} />
-              <Stat label="Total requests" value={metrics?.total_requests} />
-              <Stat label="Real users (wallets)" value={metrics?.real_users} accent="#3fb56b" />
-            </div>
-            <p style={{ color: 'var(--text-2)', fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
-              ⚠️ The request counts are <strong>cumulative request counts</strong>, not unique users — and the
-              “human” bucket is inflated by browser-UA bots. <strong>Real users</strong> is the honest distinct
-              count (wallet rows). The funnel below (distinct visitors, JS-gated so crawlers drop out) is the
-              clean visitor signal.
-            </p>
-          </section>
+      {/* ── Real people (the honest headline) — distinct people first; raw request
+          volume is demoted to a footnote because it's bot-inflated server hits, not people. */}
+      <section style={{ ...card, marginBottom: 16 }}>
+        <h2 style={{ marginTop: 0, fontSize: 16 }}>Real people</h2>
+        <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
+          <Stat label="Distinct visitors" value={landed} accent="#5b9dff" />
+          <Stat label="Real users (wallets)" value={metrics?.real_users} accent="#3fb56b" />
+        </div>
+        <p style={{ color: 'var(--text-2)', fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
+          The honest “how many people” numbers. <strong>Distinct visitors</strong> = unique people who loaded
+          the app (JS-gated, so crawlers and bots drop out — this is the funnel’s <em>Landed</em> count below).
+          <strong> Real users</strong> = distinct wallet addresses that have signed in, all-time. (These differ
+          from the funnel’s “Connected Wallet”, which counts anonymous visitor <em>sessions</em> that reached
+          wallet-connect — one person can be several sessions across devices or repeat visits.)
+        </p>
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--glass-border)', fontSize: 12, color: 'var(--text-3)' }}>
+          <strong style={{ color: 'var(--text-2)' }}>Raw request volume</strong> — server hits, <em>not</em> people
+          (cumulative all-time, heavily bot-inflated; kept only as an infra signal):{' '}
+          {metrics?.total_requests?.toLocaleString() ?? '—'} total ·{' '}
+          {metrics?.human_count?.toLocaleString() ?? '—'} browser-UA ·{' '}
+          {metrics?.agent_count?.toLocaleString() ?? '—'} agent/bot.
+        </div>
+      </section>
 
-          {/* ── Conversion funnel ── */}
-          <section style={{ ...card, marginBottom: 16 }}>
-            <h2 style={{ marginTop: 0, fontSize: 16 }}>Conversion funnel — distinct visitors</h2>
-            {!funnel ? (
-              <Empty>Loading…</Empty>
-            ) : landed === 0 ? (
-              <Empty>No visitors recorded yet. The funnel started collecting when it deployed today.</Empty>
-            ) : (
-              <div style={{ display: 'grid', gap: 14 }}>
-                {funnel.stages.map((s, i) => (
-                  <div key={s.stage}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 5 }}>
-                      <span>{FUNNEL_LABELS[s.stage] || s.stage}</span>
-                      <span style={{ color: 'var(--text-2)' }}>
-                        <strong style={{ color: 'var(--text-1)' }}>{s.distinct_visitors}</strong>
-                        {i > 0 && <> · {(s.step_conversion * 100).toFixed(0)}% of prev</>}
-                      </span>
+      {/* ── Conversion funnel ── */}
+      <section style={{ ...card, marginBottom: 16 }}>
+        <h2 style={{ marginTop: 0, fontSize: 16 }}>Conversion funnel — distinct visitors</h2>
+        {loading && !funnel ? (
+          <Empty>Loading…</Empty>
+        ) : !funnel ? (
+          <Empty>Couldn’t load the funnel{error ? `: ${error}` : '.'}</Empty>
+        ) : landed === 0 ? (
+          <Empty>No visitors recorded yet. The funnel started collecting when it deployed today.</Empty>
+        ) : (
+          <div style={{ display: 'grid', gap: 14 }}>
+            {funnel.stages.map((s, i) => (
+              <div key={s.stage}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 5 }}>
+                  <span>{FUNNEL_LABELS[s.stage] || s.stage}</span>
+                  <span style={{ color: 'var(--text-2)' }}>
+                    <strong style={{ color: 'var(--text-1)' }}>{s.distinct_visitors}</strong>
+                    {i > 0 && <> · {(s.step_conversion * 100).toFixed(0)}% of prev</>}
+                  </span>
+                </div>
+                <Bar pct={s.pct_of_landed * 100} color={i === 0 ? '#5b9dff' : s.distinct_visitors > 0 ? '#3fb56b' : '#3a3f4b'} />
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* ── Visitor insights (geo + device) ── */}
+      <section style={card}>
+        <h2 style={{ marginTop: 0, fontSize: 16 }}>Who’s visiting — geography &amp; device</h2>
+        <p style={{ color: 'var(--text-2)', fontSize: 12.5, marginTop: 0, marginBottom: 14 }}>
+          Same JS-gated <strong>landed</strong> population as the funnel, attributed once per visitor so a
+          repeat visit doesn’t get double-counted. These sums are designed to track the funnel’s{' '}
+          <em>Landed</em> number above, but may not match it exactly — both are HyperLogLog estimates, and
+          visits recorded before once-per-visitor attribution shipped can still show up in the all-time
+          totals. Treat this as directional, not a precise reconciliation. Country shows{' '}
+          <code>ZZ</code> (unknown / not provided) until CloudFront forwards the visitor's country.
+        </p>
+        {loading && !visitors && !visitorsError ? (
+          <Empty>Loading visitor insights…</Empty>
+        ) : visitorsError ? (
+          <Empty>Couldn’t load visitor insights: {visitorsError}</Empty>
+        ) : !visitors || ((visitors.countries?.length ?? 0) === 0 && totalDevices === 0) ? (
+          <Empty>No visitors recorded yet.</Empty>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 24 }}>
+            <div>
+              <h3 style={{ fontSize: 13, color: 'var(--text-2)', margin: '0 0 10px' }}>Top countries</h3>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {(visitors.countries || []).slice(0, 8).map(c => (
+                  <div key={c.code}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+                      <span>{COUNTRY_NAMES[c.code] || c.code}</span>
+                      <strong>{c.distinct_visitors}</strong>
                     </div>
-                    <Bar pct={s.pct_of_landed * 100} color={i === 0 ? '#5b9dff' : s.distinct_visitors > 0 ? '#3fb56b' : '#3a3f4b'} />
+                    <Bar pct={maxCountry ? (c.distinct_visitors / maxCountry) * 100 : 0} color="#7c6cff" />
                   </div>
                 ))}
               </div>
-            )}
-          </section>
-
-          {/* ── Visitor insights (geo + device) ── */}
-          <section style={card}>
-            <h2 style={{ marginTop: 0, fontSize: 16 }}>Who’s visiting — geography &amp; device</h2>
-            <p style={{ color: 'var(--text-2)', fontSize: 12.5, marginTop: 0, marginBottom: 14 }}>
-              Same JS-gated <strong>landed</strong> population as the funnel — distinct visitors, attributed once
-              per visitor, so these counts reconcile with the funnel’s <em>Landed</em> number. Country shows{' '}
-              <code>ZZ</code> (unknown / not provided) until CloudFront forwards the visitor's country.
-            </p>
-            {loading && !visitors && !visitorsError ? (
-              <Empty>Loading visitor insights…</Empty>
-            ) : visitorsError ? (
-              <Empty>Couldn’t load visitor insights: {visitorsError}</Empty>
-            ) : !visitors || ((visitors.countries?.length ?? 0) === 0 && totalDevices === 0) ? (
-              <Empty>No visitors recorded yet.</Empty>
-            ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 24 }}>
-                <div>
-                  <h3 style={{ fontSize: 13, color: 'var(--text-2)', margin: '0 0 10px' }}>Top countries</h3>
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    {(visitors.countries || []).slice(0, 8).map(c => (
-                      <div key={c.code}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
-                          <span>{COUNTRY_NAMES[c.code] || c.code}</span>
-                          <strong>{c.distinct_visitors}</strong>
-                        </div>
-                        <Bar pct={maxCountry ? (c.distinct_visitors / maxCountry) * 100 : 0} color="#7c6cff" />
+            </div>
+            <div>
+              <h3 style={{ fontSize: 13, color: 'var(--text-2)', margin: '0 0 10px' }}>Device</h3>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {Object.entries(visitors.devices || {})
+                  .filter(([, n]) => n > 0)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([dev, n]) => (
+                    <div key={dev}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+                        <span>{DEVICE_LABELS[dev] || dev}</span>
+                        <strong>{n}</strong>
                       </div>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <h3 style={{ fontSize: 13, color: 'var(--text-2)', margin: '0 0 10px' }}>Device</h3>
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    {Object.entries(visitors.devices || {})
-                      .filter(([, n]) => n > 0)
-                      .sort((a, b) => b[1] - a[1])
-                      .map(([dev, n]) => (
-                        <div key={dev}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
-                            <span>{DEVICE_LABELS[dev] || dev}</span>
-                            <strong>{n}</strong>
-                          </div>
-                          <Bar pct={totalDevices ? (n / totalDevices) * 100 : 0} color="#3fb56b" />
-                        </div>
-                      ))}
-                  </div>
-                </div>
+                      <Bar pct={totalDevices ? (n / totalDevices) * 100 : 0} color="#3fb56b" />
+                    </div>
+                  ))}
               </div>
-            )}
-          </section>
-        </>
-      )}
-    </div>
-  )
-}
-
-// ── Internal (SIWE-gated) cost/ops dashboard ────────────────────────────────
-
-function InternalDashboard({ session }) {
-  const [cost, setCost] = useState(null)
-  const [err, setErr] = useState(null)
-
-  useEffect(() => {
-    if (!session.authenticated) return
-    apiGet('/api/metrics/private/cost').then(setCost).catch(e => setErr(String(e.message || e)))
-  }, [session.authenticated])
-
-  if (!session.authenticated) {
-    return (
-      <section style={card}>
-        <h2 style={{ marginTop: 0, fontSize: 16 }}>Internal — cost &amp; ops 🔒</h2>
-        <Empty>
-          Sign in with your wallet to view the internal cost / ops dashboard. Bedrock spend, infra
-          cost, and ops health are SIWE-gated — the public tab stays PII- and cost-free by design.
-        </Empty>
+            </div>
+          </div>
+        )}
       </section>
-    )
-  }
-
-  return (
-    <section style={card}>
-      <h2 style={{ marginTop: 0, fontSize: 16 }}>Internal — cost &amp; ops</h2>
-      {err && <div style={{ color: 'var(--negative)', fontSize: 13, marginBottom: 12 }}>Couldn’t load: {err}</div>}
-      <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
-        <Stat label="Real users (wallets)" value={cost?.real_users} accent="#3fb56b" />
-        <Stat label="Bedrock / mo (USD)" value={cost?.bedrock_monthly_usd} />
-        <Stat label="Infra / mo (USD)" value={cost?.infra_monthly_usd} />
-        <Stat label="Cost / user (USD)" value={cost?.cost_per_user_usd} />
-      </div>
-      <p style={{ color: 'var(--text-2)', fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
-        {cost?.source === 'draft'
-          ? 'Draft placeholders — live Bedrock/infra billing wiring is roadmap work. Any $/user or $/gen figure is derived from real users (wallets) or generations, never the request tallies (#830).'
-          : 'Per-user / per-generation figures are derived from real users or generations, never the request tallies (#830).'}
-      </p>
-    </section>
-  )
-}
-
-function TabButton({ active, onClick, children }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        fontSize: 13,
-        padding: '6px 14px',
-        borderRadius: 8,
-        cursor: 'pointer',
-        border: '1px solid var(--glass-border)',
-        background: active ? 'var(--surface-1)' : 'transparent',
-        color: active ? 'var(--text-1)' : 'var(--text-2)',
-        fontWeight: active ? 700 : 400,
-      }}
-    >
-      {children}
-    </button>
+    </div>
   )
 }
 
