@@ -345,7 +345,9 @@ class TestGeneratedStrategyRebalance:
         m["executor"].set_token_oracles = AsyncMock()
         m["executor"].set_target_allocations = AsyncMock()
         # gen vault scoped to the corrupt id; legacy vault has no metadata.
-        runner._get_vault_strategy_ids = MagicMock(side_effect=lambda addr: ["gen_003"] if addr == "0xGenVault" else None)
+        runner._get_vault_strategy_ids = MagicMock(
+            side_effect=lambda addr: ["gen_003"] if addr == "0xGenVault" else None
+        )
 
         process_vault_spy = AsyncMock(wraps=runner._process_vault)
         runner._process_vault = process_vault_spy
@@ -374,7 +376,9 @@ class TestGeneratedStrategyRebalance:
         m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
         m["executor"].set_token_oracles = AsyncMock()
         m["executor"].set_target_allocations = AsyncMock()
-        runner._get_vault_strategy_ids = MagicMock(side_effect=lambda addr: ["gen_004"] if addr == "0xGenVault" else None)
+        runner._get_vault_strategy_ids = MagicMock(
+            side_effect=lambda addr: ["gen_004"] if addr == "0xGenVault" else None
+        )
 
         def _eval_side_effect(strategies, _synth_assets, *_a, **_kw):
             ids = {getattr(s, "id", None) for s in strategies}
