@@ -10,10 +10,15 @@ that failed the gate or was never validated.
 from __future__ import annotations
 
 import contextlib
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from archimedes.api.vaults_routes import _assert_strategies_pass_rigor, _strategy_rigor_status
+from archimedes.api.vaults_routes import (
+    _assert_strategies_pass_rigor,
+    _strategy_record_visible,
+    _strategy_rigor_status,
+)
 from fastapi import HTTPException
 
 V = "archimedes.api.vaults_routes"
@@ -198,3 +203,158 @@ async def test_create_vault_writes_the_identity_ledger_vault_created_event():
     assert actor_class == "human"
     assert meta["vault_address"] == "0xLedgerVaultAddress"
     assert meta["strategy_ids"] == ["passing"]
+
+
+# ── _strategy_record_visible (#1073) ──────────────────────────────────────
+
+_OWNER = "0x000000000000000000000000000000000000dEaD"
+_OTHER = "0x0000000000000000000000000000000000000BAD"
+
+
+@contextlib.contextmanager
+def _private_strategy_record(sid: str, *, owner: str):
+    """Create a private (non-example, unpublished) StrategyRecord owned by
+    `owner`, yield, then delete it — mirrors the identity-ledger test's
+    real-DB-with-cleanup pattern above rather than a tmp-sqlite swap, since
+    this file has no per-test DB fixture."""
+    from archimedes.db import get_session, init_db
+    from archimedes.models.strategy_store import StrategyRecord
+
+    init_db()
+    session = get_session()
+    try:
+        session.add(
+            StrategyRecord(
+                id=sid,
+                content_hash=("0x" + sid).ljust(66, "0"),
+                generation_method="fusion",
+                source_papers="[]",
+                strategy_name="Private Test Strategy",
+                thesis="test thesis",
+                asset_universe="[]",
+                risk_profile="moderate",
+                status="candidate",
+                is_example=False,
+                owner_wallet=owner.lower(),
+                is_published=False,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    try:
+        yield
+    finally:
+        session = get_session()
+        try:
+            session.query(StrategyRecord).filter_by(id=sid).delete(synchronize_session=False)
+            session.commit()
+        finally:
+            session.close()
+
+
+class _FakeRequest:
+    """Minimal stand-in for a FastAPI Request carrying a SIWE session cookie,
+    for calling `_strategy_record_visible` directly without a real HTTP call."""
+
+    def __init__(self, wallet: str | None):
+        self._wallet = wallet
+
+    @property
+    def cookies(self):
+        if self._wallet is None:
+            return {}
+        from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
+
+        return {_COOKIE_NAME: _sign_session(self._wallet, time.time())}
+
+
+def test_strategy_record_visible_none_when_no_record():
+    assert _strategy_record_visible("no-such-strategy-id", _FakeRequest(_OWNER)) is None
+
+
+def test_strategy_record_visible_true_for_owner():
+    sid = "priv-visible-owner"
+    with _private_strategy_record(sid, owner=_OWNER):
+        assert _strategy_record_visible(sid, _FakeRequest(_OWNER)) is True
+
+
+def test_strategy_record_visible_false_for_non_owner():
+    sid = "priv-visible-nonowner"
+    with _private_strategy_record(sid, owner=_OWNER):
+        assert _strategy_record_visible(sid, _FakeRequest(_OTHER)) is False
+
+
+def test_strategy_record_visible_false_for_anonymous():
+    sid = "priv-visible-anon"
+    with _private_strategy_record(sid, owner=_OWNER):
+        assert _strategy_record_visible(sid, _FakeRequest(None)) is False
+
+
+# ── HTTP: strictest-level fast path is ownership-gated (#1073) ────────────
+
+
+def _siwe_cookies(wallet: str) -> dict[str, str]:
+    """Real signed SIWE session cookie (same helper shape as
+    test_strategy_ownership.py / test_user_routes.py). Needed here (rather
+    than the `require_verified_wallet` dependency override above) because
+    `_strategy_record_visible` reads the wallet directly off the request
+    cookie via `get_verified_wallet(request)`, not via the FastAPI dependency."""
+    from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
+
+    return {_COOKIE_NAME: _sign_session(wallet, time.time())}
+
+
+async def test_create_vault_hides_private_strategy_from_non_owner():
+    """A non-owner deploying a vault bound to a private generated strategy's
+    id gets 422 not-found — even though the (ownership-blind) passport badge
+    would say it passes. This is the #1073 regression: the badge alone can't
+    be trusted at the strictest-level fast path once a request is present."""
+    from archimedes.main import app
+    from httpx import ASGITransport, AsyncClient
+
+    sid = "priv-deploy-nonowner"
+    with (
+        _private_strategy_record(sid, owner=_OWNER),
+        patch(f"{V}._strategy_rigor_status", return_value=(True, True)),
+        patch(f"{V}.chain_executor.create_vault") as mock_create,
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", cookies=_siwe_cookies(_OTHER)
+        ) as client:
+            resp = await client.post(
+                "/api/vaults/create",
+                json={"name": "V", "symbol": "V", "strategy_ids": [sid]},
+            )
+
+    assert resp.status_code == 422
+    assert "not found" in resp.json()["detail"]
+    mock_create.assert_not_called()  # never spent gas — ownership gate fired first
+
+
+async def test_create_vault_allows_owner_to_deploy_private_strategy():
+    """Complementary happy path: the strategy's OWNER deploying the same
+    private strategy id is unaffected by the new ownership check."""
+    from archimedes.main import app
+    from httpx import ASGITransport, AsyncClient
+
+    sid = "priv-deploy-owner"
+    with (
+        _private_strategy_record(sid, owner=_OWNER),
+        patch(f"{V}._strategy_rigor_status", return_value=(True, True)),
+        patch(f"{V}.chain_executor.create_vault", new=AsyncMock(return_value="0xOwnerDeployedAddress")) as mock_create,
+        patch("archimedes.api.funnel_middleware.record_funnel", new=AsyncMock()),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", cookies=_siwe_cookies(_OWNER)
+        ) as client:
+            resp = await client.post(
+                "/api/vaults/create",
+                json={"name": "V", "symbol": "V", "strategy_ids": [sid]},
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["vault_address"] == "0xOwnerDeployedAddress"
+    mock_create.assert_awaited_once()  # owner → gate lets it through

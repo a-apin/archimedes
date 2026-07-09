@@ -95,6 +95,38 @@ def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
     return False, False
 
 
+def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
+    """``None`` if no ``StrategyRecord`` exists for ``strategy_id``; otherwise
+    whether that record is visible to the caller identified by ``request``.
+
+    Reuses the ``#850`` ownership rule verbatim (copied from
+    ``selection_bias_routes._generated_strategy_rigor``, itself copied from
+    ``strategies_routes.get_strategy``): a non-example, unpublished
+    ``strategy_store`` row is visible only to its ``owner_wallet``. Curated
+    strategies (no ``StrategyRecord`` row at all) fall outside this check
+    entirely — they return ``None`` here and are resolved via the passport
+    badge instead, unchanged.
+
+    Used to close the strictest-level deploy fast path (#1073): the badge
+    (``_strategy_rigor_status``) is not ownership-gated, so without this check
+    a caller who knows a private generated strategy's id could learn its
+    deployability and deploy a vault bound to it.
+    """
+    from archimedes.api.auth_siwe import get_verified_wallet
+    from archimedes.db import get_session, init_db
+    from archimedes.models.strategy_store import StrategyRecord
+
+    init_db()
+    with get_session() as session:
+        row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+        if row is None:
+            return None
+        if row.is_example or row.is_published:
+            return True
+        caller = get_verified_wallet(request)
+        return bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
+
+
 def _deployable_levels(
     strategy_ids: list[str], request: Request | None = None
 ) -> dict[str, tuple[bool, int | None, bool]]:
@@ -205,6 +237,18 @@ def _assert_strategies_pass_rigor(
     # the default deploy path unchanged for callers that don't opt into strictness.
     if level <= STRICTEST_LEVEL:
         for sid in strategy_ids:
+            # Ownership gate (#1073): `_strategy_rigor_status` below resolves the
+            # passport badge without regard to ownership, so a private/unpublished
+            # generated strategy would otherwise be deployable by anyone who knows
+            # its id. Reject BEFORE consulting the badge when a request is present
+            # and the id resolves to a StrategyRecord not visible to this caller.
+            # `visible is None` means "no StrategyRecord at all" (curated strategy,
+            # or unknown id) — falls through to the badge unchanged either way.
+            if request is not None:
+                visible = _strategy_record_visible(sid, request)
+                if visible is False:
+                    raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
+
             found, passes = _strategy_rigor_status(sid)
             if not found:
                 raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
