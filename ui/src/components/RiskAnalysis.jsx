@@ -43,7 +43,7 @@ function buildDefaultData() {
 }
 
 // ─── VaR / CVaR stat cards ──────────────────────────────────
-function VaRPanel({ returns, cvarData }) {
+function VaRPanel({ returns, cvarData, sample }) {
   // Computed from local mock returns (fallback)
   const localStats = useMemo(
     () => ({
@@ -124,7 +124,7 @@ function VaRPanel({ returns, cvarData }) {
     <div className="card-elevated" style={{ padding: 24, marginBottom: 20 }}>
       <div className="label mb-3">
         Value-at-Risk &amp; Conditional VaR
-        {!useBackend && <SampleDataBadge />}
+        {!useBackend && sample && <SampleDataBadge />}
       </div>
       <div className="risk-stat-grid">
         {cards.map((c) => (
@@ -522,7 +522,7 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
           Risk Analysis
         </h2>
         <p className="body">
-          Tail-risk, drawdown, and correlation diagnostics for the active portfolio. These are the
+          Tail-risk, drawdown, and correlation diagnostics. These are the
           loss-side counterparts to the return-side metrics on the Advisor — rigor means making the
           downside as legible as the upside.
         </p>
@@ -543,7 +543,7 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
         </div>
       )}
 
-      <VaRPanel returns={data.returns} cvarData={cvarData} />
+      <VaRPanel returns={data.returns} cvarData={cvarData} sample={returnsProp == null} />
       <GreeksPanel greeksData={greeksData} />
       <DrawdownPlot returns={data.returns} sample={returnsProp == null} />
       <RollingSharpePlot returns={data.returns} sample={returnsProp == null} />

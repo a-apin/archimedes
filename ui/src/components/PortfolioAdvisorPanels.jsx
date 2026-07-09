@@ -178,8 +178,11 @@ function EfficientFrontier({ points, sample }) {
         ))}
       </svg>
       <p className="caption" style={{ marginTop: 8, color: 'var(--text-4)', lineHeight: 1.5 }}>
-        Each dot is a candidate allocation; the purple curve is the efficient frontier (max return per unit
-        of risk). The green dot is the max-Sharpe (tangency) portfolio at{' '}
+        {sample
+          ? 'Each dot is a candidate allocation; '
+          : 'Each dot is a library strategy, annualized from its persisted backtest returns; '}
+        the purple curve is the efficient frontier (max return per unit
+        of risk). The green dot is the max-Sharpe (tangency) {sample ? 'portfolio' : 'strategy'} at{' '}
         <span className="mono">{fmtPct(optimal.ret)}</span> return /{' '}
         <span className="mono">{fmtPct(optimal.risk)}</span> risk.
       </p>
