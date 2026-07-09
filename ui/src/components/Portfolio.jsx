@@ -216,12 +216,12 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         <div className="card-flat p-4">
           <div className="label mb-2">Wallet USDC</div>
-          <div className="text-[1.6rem] font-bold">{fmtUsd(walletUsdc)}</div>
+          <div className="font-bold acct-stat-value">{fmtUsd(walletUsdc)}</div>
           <div className="caption mt-1.5">Idle — ready to deploy</div>
         </div>
         <div className="card-flat p-4">
           <div className="label mb-2">Vault AUM</div>
-          <div className="text-[1.6rem] font-bold">{fmtUsd(yourAum)}</div>
+          <div className="font-bold acct-stat-value">{fmtUsd(yourAum)}</div>
           <div className="caption mt-1.5">
             Across {userVaults.length} {userVaults.length === 1 ? 'vault' : 'vaults'}
           </div>
@@ -231,7 +231,7 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
           title="Unrealized PnL is the current value of your vault shares minus the 1:1 USDC basis they were minted at. Approximate while shares were minted at PPS≈1.0 (true for new vaults; drifts as PPS does)."
         >
           <div className="label mb-2">Unrealized PnL</div>
-          <div className="text-[1.6rem] font-bold" style={{ color: pnlColor(aggregatePnlUsdc) }}>
+          <div className="font-bold acct-stat-value" style={{ color: pnlColor(aggregatePnlUsdc) }}>
             {fmtUsd(aggregatePnlUsdc)}
           </div>
           <div className="caption mt-1.5" style={{ color: pnlColor(aggregatePnlPct) }}>
@@ -240,7 +240,7 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
         </div>
         <div className="card-flat p-4">
           <div className="label mb-2">Agent</div>
-          <div className="flex items-center gap-2 font-bold text-[1.6rem]">
+          <div className="flex items-center gap-2 font-bold acct-stat-value">
             <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${agentStatus?.alive ? 'bg-[var(--positive)] shadow-[0_0_6px_var(--positive)]' : 'bg-[var(--negative)]'}`} />
             {agentStatus?.alive ? 'Alive' : 'Offline'}
           </div>

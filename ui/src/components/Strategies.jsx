@@ -482,125 +482,15 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
       {open && (
         <tr className="lib-row-detail">
           <td colSpan={8} style={{ padding: '12px 18px', background: 'var(--glass)' }}>
-            <div className="text-[0.82rem]" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 18 }}>
-              <div>
-                <div className="label mb-2">Methodology</div>
-                <div className="body">{s.methodology_summary || '—'}</div>
-              </div>
-              <div>
-                {(s.papers || []).length > 1 ? (
-                  <>
-                    <div className="label mb-2">
-                      Fused from {s.papers.length} papers
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      {s.papers.map((p, idx) => (
-                        <div key={p.arxiv_id || idx}>
-                          <div className="body" style={{ fontStyle: 'italic' }}>
-                            "{p.title || p.arxiv_id || '—'}"
-                          </div>
-                          {p.arxiv_id && (
-                            <a
-                              href={`https://arxiv.org/abs/${p.arxiv_id}`}
-                              target="_blank" rel="noreferrer"
-                              style={{ color: 'var(--accent)', fontSize: '0.75rem', marginTop: 3, display: 'inline-block' }}
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              arxiv:{p.arxiv_id} ↗
-                            </a>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="label mb-2">Source paper</div>
-                    <div className="body">"{s.paper_title}"</div>
-                    <div className="caption mt-2">
-                      {s.paper_authors?.slice(0, 3).join(', ')}{s.paper_authors?.length > 3 ? ' et al.' : ''}
-                      {s.paper_year ? ` (${s.paper_year})` : ''}
-                      {s.paper_venue ? ` · ${s.paper_venue}` : ''}
-                    </div>
-                    {s.paper_arxiv_id && (
-                      <a
-                        href={`https://arxiv.org/abs/${s.paper_arxiv_id}`}
-                        target="_blank" rel="noreferrer"
-                        style={{ color: 'var(--accent)', fontSize: '0.78rem', marginTop: 6, display: 'inline-block' }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        arxiv:{s.paper_arxiv_id} ↗
-                      </a>
-                    )}
-                  </>
-                )}
-              </div>
-              <div>
-                <div className="label mb-2 flex items-center gap-2">
-                  Rigor metrics
-                  {onOpenRigorExplainer && (
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); onOpenRigorExplainer() }}
-                      className="rigor-help-btn"
-                      aria-label="What is the rigor gate?"
-                      title="What is the rigor gate?"
-                    >
-                      ?
-                    </button>
-                  )}
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-                  <div><div className="caption">DSR</div><div className="mono" style={{ fontWeight: 700 }}>{fmt(s.deflated_sharpe_ratio)}</div></div>
-                  <div><div className="caption">PBO</div><div className="mono" style={{ fontWeight: 700 }}>{fmtPct(s.pbo_score)}</div></div>
-                  <div><div className="caption">OOS Sharpe</div><div className="mono" style={{ fontWeight: 700 }}>{fmt(s.out_of_sample_sharpe)}</div></div>
-                </div>
-                {s.paper_claimed_sharpe != null && (
-                  <div className="caption mt-2">
-                    Paper claim: <strong>{fmt(s.paper_claimed_sharpe)}</strong> · Backtest: <strong>{fmt(s.sharpe_ratio)}</strong>
-                    {s.sharpe_ratio != null && (() => {
-                      const ratio = s.paper_claimed_sharpe > 0.01 ? s.sharpe_ratio / s.paper_claimed_sharpe : null
-                      return (
-                        <span className={ratio != null && ratio >= 0.5 ? 'positive' : 'negative'} style={{ marginLeft: 6 }}>
-                          ({ratio != null ? `${(ratio * 100).toFixed(0)}%` : '—'})
-                        </span>
-                      )
-                    })()}
-                  </div>
-                )}
-                {years != null && (
-                  <div className="caption mt-1.5">
-                    Window: <span className="mono">{startStr} → {endStr}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-            <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {onOpenPassport && (
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={(e) => { e.stopPropagation(); onOpenPassport(s.id) }}
-                  title="Open the full strategy passport"
-                >
-                  Open Passport →
-                </button>
-              )}
-              {extraActions?.(s)}
-              <button
-                className="btn btn-outline btn-sm"
-                onClick={(e) => { e.stopPropagation(); downloadStrategy(s, 'json') }}
-                title="Download this strategy as JSON"
-              >
-                Export JSON
-              </button>
-              <button
-                className="btn btn-outline btn-sm"
-                onClick={(e) => { e.stopPropagation(); downloadStrategy(s, 'csv') }}
-                title="Download this strategy as CSV"
-              >
-                Export CSV
-              </button>
-            </div>
+            <StrategyDetailContent
+              s={s}
+              onOpenRigorExplainer={onOpenRigorExplainer}
+              onOpenPassport={onOpenPassport}
+              extraActions={extraActions}
+              years={years}
+              startStr={startStr}
+              endStr={endStr}
+            />
           </td>
         </tr>
       )}
@@ -608,16 +498,220 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
   )
 }
 
+// Shared "expanded" detail content — methodology / source paper(s) / rigor
+// metrics / export actions. Used by both the desktop table row's expanded
+// <tr> and the mobile card list's expanded panel, so the two layouts never
+// drift out of sync with each other.
+function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraActions, years, startStr, endStr }) {
+  return (
+    <>
+      <div className="text-[0.82rem]" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 18 }}>
+        <div>
+          <div className="label mb-2">Methodology</div>
+          <div className="body">{s.methodology_summary || '—'}</div>
+        </div>
+        <div>
+          {(s.papers || []).length > 1 ? (
+            <>
+              <div className="label mb-2">
+                Fused from {s.papers.length} papers
+              </div>
+              <div className="flex flex-col gap-2">
+                {s.papers.map((p, idx) => (
+                  <div key={p.arxiv_id || idx}>
+                    <div className="body" style={{ fontStyle: 'italic' }}>
+                      "{p.title || p.arxiv_id || '—'}"
+                    </div>
+                    {p.arxiv_id && (
+                      <a
+                        href={`https://arxiv.org/abs/${p.arxiv_id}`}
+                        target="_blank" rel="noreferrer"
+                        style={{ color: 'var(--accent)', fontSize: '0.75rem', marginTop: 3, display: 'inline-block' }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        arxiv:{p.arxiv_id} ↗
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="label mb-2">Source paper</div>
+              <div className="body">"{s.paper_title}"</div>
+              <div className="caption mt-2">
+                {s.paper_authors?.slice(0, 3).join(', ')}{s.paper_authors?.length > 3 ? ' et al.' : ''}
+                {s.paper_year ? ` (${s.paper_year})` : ''}
+                {s.paper_venue ? ` · ${s.paper_venue}` : ''}
+              </div>
+              {s.paper_arxiv_id && (
+                <a
+                  href={`https://arxiv.org/abs/${s.paper_arxiv_id}`}
+                  target="_blank" rel="noreferrer"
+                  style={{ color: 'var(--accent)', fontSize: '0.78rem', marginTop: 6, display: 'inline-block' }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  arxiv:{s.paper_arxiv_id} ↗
+                </a>
+              )}
+            </>
+          )}
+        </div>
+        <div>
+          <div className="label mb-2 flex items-center gap-2">
+            Rigor metrics
+            {onOpenRigorExplainer && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onOpenRigorExplainer() }}
+                className="rigor-help-btn"
+                aria-label="What is the rigor gate?"
+                title="What is the rigor gate?"
+              >
+                ?
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+            <div><div className="caption">DSR</div><div className="mono" style={{ fontWeight: 700 }}>{fmt(s.deflated_sharpe_ratio)}</div></div>
+            <div><div className="caption">PBO</div><div className="mono" style={{ fontWeight: 700 }}>{fmtPct(s.pbo_score)}</div></div>
+            <div><div className="caption">OOS Sharpe</div><div className="mono" style={{ fontWeight: 700 }}>{fmt(s.out_of_sample_sharpe)}</div></div>
+          </div>
+          {s.paper_claimed_sharpe != null && (
+            <div className="caption mt-2">
+              Paper claim: <strong>{fmt(s.paper_claimed_sharpe)}</strong> · Backtest: <strong>{fmt(s.sharpe_ratio)}</strong>
+              {s.sharpe_ratio != null && (() => {
+                const ratio = s.paper_claimed_sharpe > 0.01 ? s.sharpe_ratio / s.paper_claimed_sharpe : null
+                return (
+                  <span className={ratio != null && ratio >= 0.5 ? 'positive' : 'negative'} style={{ marginLeft: 6 }}>
+                    ({ratio != null ? `${(ratio * 100).toFixed(0)}%` : '—'})
+                  </span>
+                )
+              })()}
+            </div>
+          )}
+          {years != null && (
+            <div className="caption mt-1.5">
+              Window: <span className="mono">{startStr} → {endStr}</span>
+            </div>
+          )}
+        </div>
+      </div>
+      <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {onOpenPassport && (
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={(e) => { e.stopPropagation(); onOpenPassport(s.id) }}
+            title="Open the full strategy passport"
+          >
+            Open Passport →
+          </button>
+        )}
+        {extraActions?.(s)}
+        <button
+          className="btn btn-outline btn-sm"
+          onClick={(e) => { e.stopPropagation(); downloadStrategy(s, 'json') }}
+          title="Download this strategy as JSON"
+        >
+          Export JSON
+        </button>
+        <button
+          className="btn btn-outline btn-sm"
+          onClick={(e) => { e.stopPropagation(); downloadStrategy(s, 'csv') }}
+          title="Download this strategy as CSV"
+        >
+          Export CSV
+        </button>
+      </div>
+    </>
+  )
+}
+
+// ── Library Cards (mobile) ──────────────────────────────────────
+//
+// Same data as StrategyRow, collapsed into a stacked label:value card.
+// Visibility is toggled with a plain CSS media query (.lib-table-wrap /
+// .lib-cards in App.css) rather than a UnoCSS `hidden md:block` utility —
+// the prior attempt at a card layout used UnoCSS's `hidden` utility, which
+// this build doesn't generate, so both views rendered simultaneously on
+// desktop and every strategy showed twice. A plain media query has no such
+// build-tool dependency.
+function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, deploy, level, extraActions }) {
+  const [open, setOpen] = useState(isHighlighted)
+  const cardRef = useRef(null)
+  const years = periodInYears(s.backtest_start, s.backtest_end)
+  const startStr = (s.backtest_start || '').slice(0, 10)
+  const endStr = (s.backtest_end || '').slice(0, 10)
+  const driftFlag = s.drift_detected === true
+
+  useEffect(() => {
+    if (isHighlighted && cardRef.current) {
+      cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [isHighlighted])
+
+  return (
+    <div
+      ref={cardRef}
+      className="lib-card"
+      style={isHighlighted ? { background: 'rgba(255,209,102,0.10)', outline: '1px solid var(--accent)' } : undefined}
+      onClick={() => setOpen(o => !o)}
+    >
+      <div className="lib-card-header">
+        <span className={`${open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'} w-3.5 h-3.5 text-[var(--text-4)] flex-shrink-0`} />
+        <div className="lib-card-title">
+          {s.paper_title}
+          {(s.papers || []).length > 1 && (
+            <span className="tag tag-accent" style={{ fontSize: '0.66rem', marginLeft: 6 }} title={`Fused from ${s.papers.length} papers`}>
+              {s.papers.length} papers
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="lib-card-badges">
+        <span
+          className={`tag ${statusTag(s.status, s.passes_rigor_gate)}`}
+          title={s.status === 'pending_backtest' ? 'Generated but the rigor gate has not scored real metrics yet — DSR / PBO / OOS Sharpe pending a backtest run.' : undefined}
+        >
+          {statusLabel(s.status, s.passes_rigor_gate)}
+        </span>
+        {driftFlag && <span className="i-lucide-alert-triangle w-3.5 h-3.5 text-[#f59e0b]" title="Drift detected" />}
+        <DeployabilityChip deploy={deploy} level={level} />
+      </div>
+      <div className="lib-card-stats">
+        <div><div className="caption">Sharpe</div><div className="mono">{fmt(s.sharpe_ratio)}</div></div>
+        <div><div className="caption">CAGR</div><div className="mono positive">{fmtPct(s.cagr)}</div></div>
+        <div><div className="caption">Max DD</div><div className="mono negative">{s.max_drawdown != null ? `−${fmtPct(s.max_drawdown)}` : '—'}</div></div>
+      </div>
+      {open && (
+        <div className="lib-card-detail" onClick={(e) => e.stopPropagation()}>
+          <StrategyDetailContent
+            s={s}
+            onOpenRigorExplainer={onOpenRigorExplainer}
+            onOpenPassport={onOpenPassport}
+            extraActions={extraActions}
+            years={years}
+            startStr={startStr}
+            endStr={endStr}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigorExplainer, onOpenPassport, deployMap, level, extraActions }) {
   if (!strategies.length) return emptyState
   return (
     <>
-      {/* Table — renders on every screen size; horizontal-scrolls on narrow
-          viewports. We previously kept a separate mobile card list with
-          `md:hidden`, but UnoCSS doesn't generate the `hidden` utility in
-          this build, so both views rendered on desktop and the page showed
-          every strategy twice. One table beats one duplicate. */}
-      <div className="overflow-x-auto rounded-lg border border-[var(--glass-border)]">
+      {/* Table — visible ≥769px, horizontal-scrolls if it still doesn't fit.
+          Card list below is the mobile-native replacement (≤768px). Visibility
+          is toggled by a plain CSS media query (App.css .lib-table-wrap /
+          .lib-cards) — NOT a UnoCSS `hidden` utility, which this build
+          doesn't generate (both views rendered on desktop in the prior
+          attempt and every strategy showed twice). */}
+      <div className="lib-table-wrap overflow-x-auto rounded-lg border border-[var(--glass-border)]">
         <table className="lib-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
           <thead>
             <tr style={{ background: 'var(--glass)', textAlign: 'left', borderBottom: '1px solid var(--glass-border)' }}>
@@ -646,6 +740,21 @@ function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigo
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="lib-cards">
+        {strategies.map(s => (
+          <StrategyCard
+            key={s.id}
+            s={s}
+            isHighlighted={highlightStrategyId && s.id === highlightStrategyId}
+            onOpenRigorExplainer={onOpenRigorExplainer}
+            onOpenPassport={onOpenPassport}
+            deploy={deployMap?.[s.id]}
+            level={level}
+            extraActions={extraActions}
+          />
+        ))}
       </div>
     </>
   )

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import WalletConnect from './WalletConnect'
 import Breadcrumbs from './Breadcrumbs'
 import WelcomeProfileModal from './WelcomeProfileModal'
@@ -75,7 +75,25 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
   const [showWelcomeModal, setShowWelcomeModal] = useState(false)
   const [showEditProfile, setShowEditProfile] = useState(false)
   const [theme, setTheme] = useState(getStoredTheme)
+  const hamburgerRef = useRef(null)
   const blockLabel = Object.keys(NEW_CONTRACTS).length ? 'Arc · Testnet live' : 'Arc · Connecting'
+
+  // Lock body scroll while the mobile nav drawer is open — otherwise the
+  // page content underneath can still scroll behind the fixed overlay/drawer,
+  // which reads as janky rather than a clean modal-style drawer.
+  useEffect(() => {
+    if (!menuOpen) return
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = prevOverflow }
+  }, [menuOpen])
+
+  const closeMenu = () => {
+    setMenuOpen(false)
+    // Return focus to the hamburger button on close for keyboard/screen-reader
+    // parity — otherwise focus is dropped when the drawer unmounts/hides.
+    hamburgerRef.current?.focus()
+  }
 
   const toggleTheme = () => {
     const next = theme === 'light' ? 'dark' : 'light'
@@ -140,7 +158,7 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
       {menuOpen && (
         <div
           className="fixed inset-0 sidebar-overlay"
-          onClick={() => setMenuOpen(false)}
+          onClick={closeMenu}
           aria-hidden="true"
         />
       )}
@@ -160,7 +178,7 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
             </div>
             <button
               className="sidebar-close-btn"
-              onClick={() => setMenuOpen(false)}
+              onClick={closeMenu}
               aria-label="Close menu"
             >
               <span className="i-lucide-x" style={{width:16,height:16}} />
@@ -211,6 +229,7 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
           {/* Left: hamburger (mobile) + breadcrumbs */}
           <div className="flex items-center gap-3">
             <button
+              ref={hamburgerRef}
               className={`hamburger-btn${menuOpen ? ' open' : ''}`}
               onClick={() => setMenuOpen(v => !v)}
               aria-label="Toggle navigation"

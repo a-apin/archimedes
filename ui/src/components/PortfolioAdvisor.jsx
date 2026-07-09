@@ -330,7 +330,7 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
 
           {/* Risk decomposition + correlation pairs */}
           {(data.risk_decomposition?.length > 0 || data.correlation_pairs?.length > 0) && (
-            <div className="card-flat" style={{ padding: 20, marginBottom: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+            <div className="card-flat risk-decomp-grid" style={{ padding: 20, marginBottom: 20, gap: 24 }}>
               {data.risk_decomposition?.length > 0 && (
                 <div>
                   <div className="label mb-3">Variance Decomposition</div>

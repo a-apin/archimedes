@@ -185,7 +185,7 @@ export default function Insights() {
             ) : !visitors || ((visitors.countries?.length ?? 0) === 0 && totalDevices === 0) ? (
               <Empty>No visitors recorded yet.</Empty>
             ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 24 }}>
+              <div className="insights-two-col">
                 <div>
                   <h3 style={{ fontSize: 13, color: 'var(--text-2)', margin: '0 0 10px' }}>Top countries</h3>
                   <div style={{ display: 'grid', gap: 10 }}>
