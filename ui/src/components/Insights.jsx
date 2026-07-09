@@ -121,24 +121,28 @@ export default function Insights() {
         </div>
       )}
 
-      {/* ── Traction ── */}
+      {/* ── Real people (the honest headline) — distinct people first; raw request
+          volume is demoted to a footnote because it's bot-inflated server hits, not people. */}
       <section style={{ ...card, marginBottom: 16 }}>
-        <h2 style={{ marginTop: 0, fontSize: 16 }}>Traction — requests &amp; users</h2>
+        <h2 style={{ marginTop: 0, fontSize: 16 }}>Real people</h2>
         <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
-          <Stat label="Human-UA requests" value={metrics?.human_count} />
-          <Stat label="Agent / bot requests" value={metrics?.agent_count} />
-          <Stat label="Total requests" value={metrics?.total_requests} />
+          <Stat label="Distinct visitors" value={landed} accent="#5b9dff" />
           <Stat label="Real users (wallets)" value={metrics?.real_users} accent="#3fb56b" />
         </div>
         <p style={{ color: 'var(--text-2)', fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
-          ⚠️ The request counts are <strong>cumulative request counts</strong>, not unique users — and the
-          “human” bucket is inflated by browser-UA bots. <strong>Real users (wallets)</strong> is the honest
-          distinct count of wallet addresses in our database, all-time. It is <em>not</em> the same number as
-          “Connected Wallet” in the funnel below — that counts distinct <em>visitor sessions</em> (anonymous,
-          cookie-based) that reached the wallet-connect step, so one real wallet can show up as several
-          sessions across devices, browsers, or repeat visits. The two numbers measure different things by
-          design; seeing them differ is expected, not a bug.
+          The honest “how many people” numbers. <strong>Distinct visitors</strong> = unique people who loaded
+          the app (JS-gated, so crawlers and bots drop out — this is the funnel’s <em>Landed</em> count below).
+          <strong> Real users</strong> = distinct wallet addresses that have signed in, all-time. (These differ
+          from the funnel’s “Connected Wallet”, which counts anonymous visitor <em>sessions</em> that reached
+          wallet-connect — one person can be several sessions across devices or repeat visits.)
         </p>
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--glass-border)', fontSize: 12, color: 'var(--text-3)' }}>
+          <strong style={{ color: 'var(--text-2)' }}>Raw request volume</strong> — server hits, <em>not</em> people
+          (cumulative all-time, heavily bot-inflated; kept only as an infra signal):{' '}
+          {metrics?.total_requests?.toLocaleString() ?? '—'} total ·{' '}
+          {metrics?.human_count?.toLocaleString() ?? '—'} browser-UA ·{' '}
+          {metrics?.agent_count?.toLocaleString() ?? '—'} agent/bot.
+        </div>
       </section>
 
       {/* ── Conversion funnel ── */}
