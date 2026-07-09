@@ -127,12 +127,12 @@ export default function Leaderboard() {
         {SORT_OPTIONS.map(o => (
           <button key={o.id} type="button" onClick={() => setSortBy(o.id)}
             className={`tag-tab ${sortBy === o.id ? 'tag-accent' : 'tag-muted'}`}
-            style={{ cursor: 'pointer', border: 'none', padding: '4px 10px', borderRadius: 14, fontSize: 12 }}>
+            style={{ cursor: 'pointer', border: 'none', borderRadius: 14, fontSize: 12 }}>
             {o.label}
           </button>
         ))}
         <button type="button" onClick={() => setOrder(o => o === 'desc' ? 'asc' : 'desc')}
-          className="tag-tab tag-muted" style={{ cursor: 'pointer', border: 'none', padding: '4px 10px', borderRadius: 14, fontSize: 12 }}
+          className="tag-tab tag-muted" style={{ cursor: 'pointer', border: 'none', borderRadius: 14, fontSize: 12 }}
           title="Toggle sort direction">
           {order === 'desc' ? '↓ desc' : '↑ asc'}
         </button>

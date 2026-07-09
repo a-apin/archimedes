@@ -4,6 +4,7 @@ import Breadcrumbs from './Breadcrumbs'
 import WelcomeProfileModal from './WelcomeProfileModal'
 import { NEW_CONTRACTS, getStoredWalletName } from '../config'
 import { getStoredTheme, applyTheme } from '../theme'
+import { lockBodyScroll, unlockBodyScroll } from '../utils/scrollLock'
 
 // Sidebar groups separate Home (anchor / landing) from the three product-state
 // bands. Empty group label is intentional for the Home entry — it renders as a
@@ -81,11 +82,19 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
   // Lock body scroll while the mobile nav drawer is open — otherwise the
   // page content underneath can still scroll behind the fixed overlay/drawer,
   // which reads as janky rather than a clean modal-style drawer.
+  //
+  // Uses the shared ref-counted lock (utils/scrollLock.js) rather than
+  // saving/restoring document.body.style.overflow directly: AssetModal.jsx
+  // can be open at the same time as this drawer, and a naive save/restore
+  // in either place can wrongly re-enable scroll while the other is still
+  // open (whichever closes first "restores" a stale value). The counter
+  // only clears overflow once every locker has released it. AssetModal.jsx
+  // isn't touched here — it keeps its own independent lock for now — but
+  // this same helper is available for it to adopt.
   useEffect(() => {
     if (!menuOpen) return
-    const prevOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = prevOverflow }
+    lockBodyScroll()
+    return () => unlockBodyScroll()
   }, [menuOpen])
 
   const closeMenu = () => {

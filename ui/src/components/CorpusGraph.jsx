@@ -36,6 +36,13 @@ export default function CorpusGraph() {
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
+    // ResizeObserver isn't available everywhere (older browsers, some test
+    // runners/jsdom) — fall back to a one-time width read from the
+    // container's current layout instead of throwing.
+    if (typeof ResizeObserver === 'undefined') {
+      setContainerWidth(el.offsetWidth || 800)
+      return
+    }
     const ro = new ResizeObserver(entries => {
       const w = entries[0]?.contentRect?.width
       if (w) setContainerWidth(w)

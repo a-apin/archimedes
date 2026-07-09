@@ -657,6 +657,15 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
       className="lib-card"
       style={isHighlighted ? { background: 'rgba(255,209,102,0.10)', outline: '1px solid var(--accent)' } : undefined}
       onClick={() => setOpen(o => !o)}
+      role="button"
+      tabIndex={0}
+      aria-expanded={open}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          if (e.key === ' ') e.preventDefault()
+          setOpen(o => !o)
+        }
+      }}
     >
       <div className="lib-card-header">
         <span className={`${open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'} w-3.5 h-3.5 text-[var(--text-4)] flex-shrink-0`} />
