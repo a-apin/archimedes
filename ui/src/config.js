@@ -727,12 +727,17 @@ export const ASSETS = [
   { id: 'NIKKEI', name: 'Nikkei ETF', sym: 'sNKY',    icon: 'i-lucide-bar-chart-2',           oracle: '0xcd34a4103ad64a3cf729b1b1a58295ccc957fcee', vault: '0xb26029ca37c09400ca921f00fc541cd42143b508', token: '0x445b8f0f827a0d384d1b8ccf18cbc6ec8a543376' },
 ]
 
-// New contract addresses — set these after deploying via deploy-new.mjs
+// Core contract addresses — T3.2 redeploy 2026-07-09 (chain 5042002). Matches
+// infra/ecs.tf's backend task env (the BE half) — one authoritative set, converging
+// the prior FE/BE split-brain. Per-synth token/oracle addresses are NOT here: the FE
+// reads those from GET /api/explore/assets (the BE serves all 281 from the deploy-
+// address SSOT), so the synth universe can't drift from the backend.
 export const NEW_CONTRACTS = {
-  ammRouter:       '0x090f8E245F2831b81c9ff21661FBd0cb1383f82D',
-  vaultFactory:    '0x32A3e0D0a8215D77e3B92fa6d9b4Dbe19f255671',
-  traceRegistry:   '0x44bD55c0DdF757e584a41fb7F3B6a47b4C5982ba',
-  assetRegistry:   '0x79fc95A10E8240116006084439B650BA9e72F3cA',
-  // paymentSplitter: source is contracts/src/PaymentSplitter.sol (deployed at T3.2).
-  paymentSplitter:     '0x0000000000000000000000000000000000000000',
+  ammRouter:       '0x03df6c79f4e573ce793cdaa187719d1f15df24dc',
+  vaultFactory:    '0x404d18a906abbdf7bed5cf798c1dc5399c563987',
+  traceRegistry:   '0x9d81bfbfadb683cf77acda480e94e64088012847',
+  assetRegistry:   '0x32c28231202626fbd8cf87caf42b01d973dc96c8',
+  paymentSplitter: '0x69697D64e6ABD4dd7febc4dB7F017e9Cf4a9A1a7',
+  strategyRegistry: '0x283a2E42a06bb9BBA5e6613957C473D8AE7d4219',
+  syntheticFactory: '0x295b176aecc3be722827c49827794ee7ee707815',
 }
