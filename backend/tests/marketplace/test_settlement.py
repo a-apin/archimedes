@@ -49,6 +49,7 @@ def splitter_addr():
 # so no caller can forget it.
 
 
+@pytest.mark.asyncio
 async def test_dry_run_sweep_publisher_is_noop(settings, pub):
     """Under PAYMENTS_DRY_RUN, sweep_publisher moves no value — no signer/executor touched."""
     sweeper = SettlementSweeper(settings, payments_dry_run=True)
@@ -60,6 +61,7 @@ async def test_dry_run_sweep_publisher_is_noop(settings, pub):
     sweeper._get_executor.assert_not_called()
 
 
+@pytest.mark.asyncio
 async def test_dry_run_withdraw_publisher_returns_none_without_chain_call(settings, pub):
     """Stage C (PaymentSplitter.withdraw) is skipped entirely under dry-run."""
     sweeper = SettlementSweeper(settings, payments_dry_run=True)
@@ -69,6 +71,7 @@ async def test_dry_run_withdraw_publisher_returns_none_without_chain_call(settin
     sweeper._get_executor.assert_not_called()
 
 
+@pytest.mark.asyncio
 async def test_dry_run_withdraw_subscriber_returns_none_without_chain_call(settings):
     """Subscriber DCW return-transfer is skipped entirely under dry-run."""
     sweeper = SettlementSweeper(settings, payments_dry_run=True)
