@@ -30,17 +30,6 @@ def _treasury_wallet(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _mock_strategy_provider():
-    """Patch strategy_provider.get_strategy to return a truthy value for test IDs."""
-    with patch("archimedes.api.marketplace_routes.strategy_provider") as mock:
-        # strategy_provider is the lru_cache'd FACTORY (post-#863 lazy
-        # singleton) — routes call strategy_provider().get_strategy(...).
-        # Yield the inner provider so tests configure .get_strategy directly.
-        mock.return_value.get_strategy.return_value = MagicMock(id="test_strat")
-        yield mock.return_value
-
-
-@pytest.fixture(autouse=True)
 def _seed_strategy_records(_setup_db):
     """Insert minimal StrategyRecord rows so the D5 ownership check doesn't 404.
 
@@ -51,7 +40,15 @@ def _seed_strategy_records(_setup_db):
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
 
-    _STRATEGY_IDS = ["test_strat", "dup_strat", "check_pool", "dup_sid_strat", "redact_strat", "refund_strat"]
+    _STRATEGY_IDS = [
+        "test_strat",
+        "dup_strat",
+        "check_pool",
+        "dup_sid_strat",
+        "redact_strat",
+        "refund_strat",
+        "gen_strat",
+    ]
     with get_session() as session:
         for i, sid in enumerate(_STRATEGY_IDS):
             if session.query(StrategyRecord).filter_by(id=sid).first() is None:
@@ -134,14 +131,42 @@ def client(app):
     return TestClient(app)
 
 
-def test_publish_rejects_unknown_strategy(client, _mock_strategy_provider):
-    """Publish with a non-existent strategy_id returns 404."""
-    _mock_strategy_provider.get_strategy.return_value = None
+def test_publish_rejects_unknown_strategy(client):
+    """Publish with a strategy_id that has no StrategyRecord returns 404.
+
+    Existence is validated against StrategyRecord (not the curated-only, file-backed
+    LocalStrategyProvider), so an id that was never generated or seeded 404s. "nonexistent"
+    is deliberately absent from _seed_strategy_records.
+    """
     resp = client.post(
         "/api/marketplace/publish",
         json={"strategy_id": "nonexistent", "vault_address": "0xvault"},
     )
     assert resp.status_code == 404, resp.text
+
+
+def test_publish_generated_strategy_not_in_curated_provider(client):
+    """A GENERATED strategy (is_example=False, not a curated file id) must be publishable.
+
+    Regression: publish previously gated on strategy_provider().get_strategy() — the
+    curated-only file provider — BEFORE the real StrategyRecord check, so every generated
+    strategy 404'd "Strategy not found". "gen_strat" is seeded as a StrategyRecord with
+    is_example=False and is not a curated file id, so a 200 here proves existence resolves
+    from StrategyRecord, not the file provider.
+    """
+    # The test name's premise, made explicit: gen_strat is genuinely absent from the
+    # curated file provider — so the 200 below can only come from the StrategyRecord path.
+    from archimedes.api._route_helpers import strategy_provider
+
+    assert strategy_provider().get_strategy("gen_strat") is None
+
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "gen_strat", "vault_address": "0xvault_gen"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["strategy_id"] == "gen_strat"
+    assert resp.json()["role"] == "publisher"
 
 
 def test_publish_creates_publisher_row(client):
