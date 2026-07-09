@@ -3,12 +3,17 @@ import { createPortal } from 'react-dom'
 import DepositFlow from './DepositFlow'
 import {
   getWalletClient,
+  getConnectedProvider,
+  getSmartAccount,
+  getSmartAccountClient,
   publicClient,
   VAULT_ABI,
   VAULT_FACTORY_ABI,
   NEW_CONTRACTS,
+  CIRCLE_PROVIDER_ID,
 } from '../config'
 import { decodeEventLog } from 'viem'
+import { executeUserOp, encodeCall } from '../circle-tx-executor'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -18,6 +23,33 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 // persists vault metadata (off-chain) via POST /api/vaults/metadata so the
 // strategy↔vault link survives reloads. On success, hands off to DepositFlow
 // for the 3-step approve→deposit→allocate.
+//
+// Wallet routing (#1089): EOA wallets sign each call via viem writeContract;
+// passkey/Circle Modular Wallets sign via the bundler (executeUserOp). Unlike
+// DepositFlow's passkey path, createVault + setAgent canNOT be batched into
+// one user op — setAgent's target is the new vault's address, which only
+// exists after createVault has executed (plain CREATE inside the factory, no
+// precomputable CREATE2 address). So both wallet types take two sequential
+// signs here; sendContractCall just picks the right signer per call.
+function sendContractCall({ address, abi, functionName, args }) {
+  if (getConnectedProvider() === CIRCLE_PROVIDER_ID) {
+    const smartAccount = getSmartAccount()
+    const client = getSmartAccountClient()
+    if (!smartAccount || !client) {
+      throw new Error('Passkey wallet not initialized — please reconnect.')
+    }
+    return executeUserOp({
+      smartAccount,
+      client,
+      calls: [encodeCall({ address, abi, functionName, args })],
+    }).then(out => ({ hash: out.txHash, logs: out.receipt.logs }))
+  }
+  return getWalletClient().then(async walletClient => {
+    const hash = await walletClient.writeContract({ address, abi, functionName, args })
+    const receipt = await publicClient.waitForTransactionReceipt({ hash })
+    return { hash, logs: receipt.logs }
+  })
+}
 
 function nowPlusDays(days) {
   const d = new Date()
@@ -28,6 +60,10 @@ function nowPlusDays(days) {
 }
 
 export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel = 1, onClose, onDeployed }) {
+  // Passkey wallets confirm via WebAuthn, not a wallet extension popup —
+  // the button copy below should say so rather than "(sign in wallet)".
+  const signSuffix = getConnectedProvider() === CIRCLE_PROVIDER_ID ? '(confirm passkey)' : '(sign in wallet)'
+
   // Esc closes modal (Issue #338)
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && onClose) onClose() }
@@ -87,7 +123,7 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
 
   // Authorize the autonomous agent on the vault. Returns null on success, or an
   // error message on failure — the caller surfaces it rather than swallowing it.
-  const authorizeAgent = async (vaultAddress, walletClient) => {
+  const authorizeAgent = async (vaultAddress) => {
     try {
       // Read the factory's configured agent address
       const agentAddr = await publicClient.readContract({
@@ -96,13 +132,12 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
         functionName: 'agentAddress',
       })
       if (agentAddr && agentAddr !== '0x' + '0'.repeat(40)) {
-        const setAgentHash = await walletClient.writeContract({
+        await sendContractCall({
           address: vaultAddress,
           abi: VAULT_ABI,
           functionName: 'setAgent',
           args: [agentAddr],
         })
-        await publicClient.waitForTransactionReceipt({ hash: setAgentHash })
       }
       return null
     } catch (agentErr) {
@@ -116,8 +151,7 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
     if (!agentPending?.address) return
     setSubmitting(true)
     setDeployPhase('authorizing')
-    const walletClient = await getWalletClient()
-    const agentErr = await authorizeAgent(agentPending.address, walletClient)
+    const agentErr = await authorizeAgent(agentPending.address)
     setDeployPhase('')
     setSubmitting(false)
     if (agentErr) {
@@ -150,21 +184,18 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
     }
     setSubmitting(true)
     try {
-      const walletClient = await getWalletClient()
-
       // Step 1: Client-side createVault — user signs, so creator == user wallet
       setDeployPhase('creating')
-      const createHash = await walletClient.writeContract({
+      const { logs } = await sendContractCall({
         address: NEW_CONTRACTS.vaultFactory,
         abi: VAULT_FACTORY_ABI,
         functionName: 'createVault',
         args: [name, symbol, 0, 0, agentAssisted],
       })
 
-      // Wait for receipt and extract vault address from VaultCreated event
-      const receipt = await publicClient.waitForTransactionReceipt({ hash: createHash })
+      // Extract vault address from the VaultCreated event
       let vaultAddress = null
-      for (const log of receipt.logs) {
+      for (const log of logs) {
         try {
           const decoded = decodeEventLog({
             abi: VAULT_FACTORY_ABI,
@@ -184,7 +215,7 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
       let agentErr = null
       if (agentAssisted) {
         setDeployPhase('authorizing')
-        agentErr = await authorizeAgent(vaultAddress, walletClient)
+        agentErr = await authorizeAgent(vaultAddress)
       }
 
       // Step 3: Persist off-chain metadata (strategy↔vault link, creator wallet).
@@ -276,7 +307,7 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
               onClick={handleRetryAgent}
               disabled={submitting}
             >
-              {submitting ? 'Authorizing agent… (sign in wallet)' : 'Retry setAgent'}
+              {submitting ? `Authorizing agent… ${signSuffix}` : 'Retry setAgent'}
             </button>
           </div>
         </div>
@@ -403,8 +434,8 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
             title={!walletAddr ? 'Connect wallet to deploy' : ''}
           >
             {submitting
-              ? (deployPhase === 'creating' ? 'Creating vault… (sign in wallet)'
-                : deployPhase === 'authorizing' ? 'Authorizing agent… (sign in wallet)'
+              ? (deployPhase === 'creating' ? `Creating vault… ${signSuffix}`
+                : deployPhase === 'authorizing' ? `Authorizing agent… ${signSuffix}`
                 : deployPhase === 'metadata' ? 'Saving metadata…'
                 : 'Deploying…')
               : 'Create Vault'}
