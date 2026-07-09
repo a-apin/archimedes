@@ -733,18 +733,18 @@ async def _run_debate_leaderboard(
     if not prov_clean:
         raise DebateUnavailable("debate: all candidates failed provenance (cited outside the embargo+decay surface)")
 
-    # Step 3b — C-rigor (A1, aligned with #770/#811 + Önder's #820): num_trials =
-    # _society_num_trials(library_size, pool_size) = library + N, NOT pool_size alone,
-    # so the debate "passing" badge is not more permissive than the live path. pool_size
-    # (the full conformant proposed count) is the selection set; C-prov only culls which
-    # survivors are backtested. When #820 lands the shared helper, read from that source.
-    num_trials = await asyncio.to_thread(lambda: _society_num_trials(_library_size(), pool_size))
+    # Step 3b — C-rigor: num_trials = _society_num_trials(pool_size) = the strategy's
+    # OWN candidate pool (N), NOT N + library_size. A strategy's rigor depends only on
+    # itself, never on the library it joins (decouple #2, reverses #770/#811/#820 —
+    # needs Önder's sign-off). pool_size (the full conformant proposed count) is the
+    # selection set; C-prov only culls which survivors are backtested.
+    num_trials = _society_num_trials(pool_size)
     await emit.emit("agent_iteration", candidate_id=candidate_id, iteration_n=2, max_iterations=4)
     await emit.emit(
         "tool_called",
         candidate_id=candidate_id,
         tool_name="evaluate_fusion_spec",
-        args_summary=f"backtest ×{len(prov_clean)}, num_trials={num_trials} (library+pool, #770/#820)",
+        args_summary=f"backtest ×{len(prov_clean)}, num_trials={num_trials} (own pool, decouple #2)",
     )
     rigor_results = await _critic_rigor(prov_clean, num_trials)
     if not rigor_results:

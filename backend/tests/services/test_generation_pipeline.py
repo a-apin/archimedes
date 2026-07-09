@@ -989,7 +989,8 @@ async def test_debate_critic_rigor_num_trials_matches_society_formula(tmp_path, 
 
     monkeypatch.setattr(gp, "_validate_brief", _pv)
 
-    # Fixed library_size so _society_num_trials(library, pool) is computable.
+    # library_size only sizes the fake provider's list — decouple #2 means it must
+    # NOT affect num_trials (which is the strategy's own pool_size).
     library_size = 4
 
     class _FakeStrategy:
@@ -1049,7 +1050,7 @@ async def test_debate_critic_rigor_num_trials_matches_society_formula(tmp_path, 
     )
 
     assert captured_num_trials, "evaluate_fusion_spec was never called — debate C-rigor did not run"
-    expected = gp._society_num_trials(library_size, pool_size)
+    expected = gp._society_num_trials(pool_size)  # own pool only — NOT library+pool
     assert all(n == expected for n in captured_num_trials), (
         f"debate num_trials {captured_num_trials} != formula {expected} "
         f"(library_size={library_size}, pool_size={pool_size})"

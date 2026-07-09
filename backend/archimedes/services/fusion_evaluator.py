@@ -594,19 +594,16 @@ def run_dsl_backtest_portfolio_variants(
 
 
 def _default_num_trials() -> int:
-    """Fallback selection-set size: the curated strategy library's count.
+    """Self-contained default selection-set size = 1 (decouple #2, Dan's principle).
 
-    Mirrors the pattern in ``generation_pipeline.run_generation`` — a lazy
-    import (avoids a module-load-time dependency on the DB-backed provider)
-    inside a try/except, with a safe ``1`` fallback if the provider is
-    unavailable (e.g. in a hermetic unit test with no DB).
+    A strategy's rigor depends ONLY on itself, never on the curated library's count.
+    With no explicit caller-supplied selection count, a single fusion-generated
+    strategy is one trial — NOT the library size (the prior behavior). Its own
+    parameter-variant grid, when present, is layered on separately in
+    ``apply_rigor_gate`` (the ``max(num_trials, len(variants))`` below), which is
+    genuinely part of the strategy's own selection process.
     """
-    try:
-        from archimedes.services.strategy_provider import default_provider
-
-        return max(1, len(default_provider().list_strategies()))
-    except Exception:
-        return 1
+    return 1
 
 
 def apply_rigor_gate(
@@ -626,10 +623,10 @@ def apply_rigor_gate(
     When ``variants_metrics`` is provided with >= 2 entries, real CSCV PBO
     is computed from the variant returns matrix and attached to the verdict.
 
-    ``num_trials``, when ``None`` (the default), falls back to the curated
-    strategy library's size via ``_default_num_trials()`` — the real
-    multiple-testing selection set a fusion-generated strategy is being
-    compared against, rather than an arbitrary placeholder (audit 06-14, Q4).
+    ``num_trials``, when ``None`` (the default), falls back to a self-contained
+    ``1`` via ``_default_num_trials()`` — a strategy is graded on its own selection
+    set, never deflated by the curated library's count (decouple #2). The caller
+    passes an explicit count when the strategy came from a real N-candidate pool.
     """
     if num_trials is None:
         num_trials = _default_num_trials()

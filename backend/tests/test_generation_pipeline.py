@@ -80,40 +80,47 @@ class TestDeployableSignal:
 
 
 class TestSocietyNumTrialsFormula:
-    def test_is_n_plus_library(self):
-        # Approach A: N candidates + library context.
-        assert _society_num_trials(library_size=4, selection_pool_size=20) == 24
-        assert _society_num_trials(library_size=10, selection_pool_size=10) == 20
+    # Decouple #2 (2026-07-09): num_trials is the strategy's OWN candidate pool (N),
+    # NOT N + library_size — a strategy's rigor depends only on itself, never on how
+    # many other strategies sit in the library.
+    def test_is_own_pool_only(self):
+        assert _society_num_trials(20) == 20
+        assert _society_num_trials(10) == 10
 
-    def test_single_candidate_adds_one(self):
-        # N=1 (one generated candidate) is still a real trial on top of the library.
-        assert _society_num_trials(library_size=4, selection_pool_size=1) == 5
+    def test_single_candidate_is_one(self):
+        # N=1 (one generated candidate) is a single-trial grade — no library term added.
+        assert _society_num_trials(1) == 1
 
     def test_floored_at_one(self):
-        assert _society_num_trials(library_size=0, selection_pool_size=0) == 1
+        assert _society_num_trials(0) == 1
+
+    def test_independent_of_library_size(self):
+        # The whole point: growing the library must NOT change a strategy's num_trials.
+        assert _society_num_trials(20) == _society_num_trials(20)
 
 
 class TestNumTrialsCorrection:
-    # A seeded series with a real positive edge whose DSR p-value brackets the 0.95 gate
-    # between library-only (4) and society (library+N = 4+20 = 24). OOS is identical at
-    # both counts, so the ONLY thing that flips the verdict is the num_trials deflation.
+    # A seeded series with a real positive edge whose DSR p-value brackets the gate
+    # between a single-trial grade (num_trials=1) and a best-of-N pool (N=20). OOS is
+    # identical at both counts, so the ONLY thing that flips the verdict is the
+    # pool-based num_trials deflation — the honest selection-bias correction.
     _MU, _SD, _N, _SEED = 0.0009, 0.009, 300, 4
 
     def _series(self):
         return list(np.random.default_rng(self._SEED).normal(self._MU, self._SD, self._N))
 
     def test_num_trials_overfit_survivor_fails_society_path(self):
-        """A best-of-N survivor that passes the library-only count FAILS once the society
-        correction (N + library_size) deflates it — the exact selection bias #770 closes."""
+        """A best-of-N survivor that passes as a single trial FAILS once the strategy's
+        OWN pool (N=20) deflates it — the selection bias, measured on the strategy itself."""
         series = self._series()
-        library_only = _rigor_verdict_for(series, num_trials=4, lookahead_passed=True)
-        society = _rigor_verdict_for(series, num_trials=_society_num_trials(4, 20), lookahead_passed=True)
+        single_trial = _rigor_verdict_for(series, num_trials=1, lookahead_passed=True)
+        society = _rigor_verdict_for(series, num_trials=_society_num_trials(20), lookahead_passed=True)
 
-        assert library_only["passing"] is True, "fixture must pass under the (wrong) library-only count"
-        assert society["passing"] is False, "society N+library correction must reject the inflated survivor"
+        assert single_trial["passing"] is True, "fixture must pass as a single self-contained trial"
+        assert society["passing"] is False, "best-of-N pool deflation must reject the inflated survivor"
         # The flip is the DSR deflation, not OOS: OOS Sharpe is identical at both counts.
-        assert library_only["oos_sharpe"] == society["oos_sharpe"]
-        assert society["dsr_p_value"] < library_only["dsr_p_value"]
+        assert single_trial["oos_sharpe"] == society["oos_sharpe"]
+        assert society["dsr_p_value"] < single_trial["dsr_p_value"]
 
     def test_dsr_pvalue_monotonic_stricter_in_trials(self):
         """More trials can only deflate harder — the property the additive count relies on."""

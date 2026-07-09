@@ -932,17 +932,16 @@ class TestFusionEvaluatorIntegration:
         _no_redis_job_store,
         _no_redis_agent_state,
     ):
-        """#820: the direct-fusion job route must deflate for the SAME selection
-        set as the society/live paths — ``_society_num_trials(library, pool=1)``
-        — not ``evaluate_fusion_spec``'s library-size-only default. The spy
-        captures the kwarg then raises; the job's non-fatal eval path tolerates
-        that, so no FusionEvalResult needs fabricating."""
+        """Decouple #2: the direct-fusion job route must deflate for the SAME
+        selection set as the society/live paths — ``_society_num_trials(pool=1)``,
+        the strategy's OWN pool, NOT the library size. The spy captures the kwarg
+        then raises; the job's non-fatal eval path tolerates that, so no
+        FusionEvalResult needs fabricating."""
         from archimedes.agents.generation_pipeline import _society_num_trials
         from archimedes.agents.strategy_fusion import FusionBrief, FusionProposal
         from archimedes.api.strategies_routes import _run_fusion_job
         from archimedes.models.portfolio import RiskProfile
         from archimedes.services.strategy_dsl import FABER_2007_SPEC
-        from archimedes.services.strategy_provider import default_provider
 
         mock_proposal = FusionProposal(
             status="ok",
@@ -970,7 +969,7 @@ class TestFusionEvaluatorIntegration:
             captured["num_trials"] = num_trials
             raise RuntimeError("spy: captured num_trials; eval is non-fatal")
 
-        expected = _society_num_trials(len(default_provider().list_strategies()), 1)
+        expected = _society_num_trials(1)  # own pool of 1, library-independent
 
         job_id = "test-job-num-trials"
         self._seed_job(

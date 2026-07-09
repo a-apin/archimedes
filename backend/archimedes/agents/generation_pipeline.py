@@ -636,15 +636,22 @@ async def _run_fixture_candidate(
     )
 
 
-def _society_num_trials(library_size: int, selection_pool_size: int) -> int:
-    """Effective DSR multiple-testing trial count on the agentic society path (#770).
+def _society_num_trials(selection_pool_size: int) -> int:
+    """Effective DSR multiple-testing trial count on the agentic society path.
 
-    The winner survived selection from ``selection_pool_size`` (N) generated candidates
-    AND is promoted into a library of ``library_size`` — two independent selection layers,
-    so the deflation count is their SUM (approach A, Bailey & López de Prado 2014). See
-    ``docs/specs/selection-bias-corrections-spec.md`` § 1.3 addendum. Floored at 1.
+    A strategy's rigor must depend ONLY on that strategy — never on how many OTHER
+    strategies happen to sit in the library (Dan's principle, 2026-07-09). The trial
+    count that deflates this winner's Sharpe is therefore the size of ITS OWN
+    selection set: the ``selection_pool_size`` (N) generated candidates it was chosen
+    from — NOT ``N + library_size``. Promoting a strategy into a bigger library must
+    not retroactively change its Deflated Sharpe. Floored at 1.
+
+    NOTE: this REVERSES the ``N + library_size`` additive convention from #770/#811/#820
+    (which treated the library as a second selection layer). See the decouple plan in
+    ``docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md`` Part A #2.
+    Needs Önder's sign-off (portfolio math) — it changes DSR p-values.
     """
-    return max(1, library_size + selection_pool_size)
+    return max(1, selection_pool_size)
 
 
 class FusionUnavailable(Exception):
@@ -871,20 +878,17 @@ async def run_generation(
             except Exception as exc:
                 logger.warning("could not build per-job agent for model %r (%s); using default", model, exc)
                 job_agent = None
-        # Library is the candidate pool the agent reasons over; surface it so
-        # the UI can show "agent is considering N papers". Its size also feeds
-        # the DSR multiple-testing correction below (selection-bias-corrections-
-        # spec.md § 1.3) — num_trials must be the size of the selection set the
-        # winner was chosen from, not 1.
+        # Library = the candidate pool the agent reasons over; surface it so the UI
+        # can show "agent is considering N papers". The DSR multiple-testing count is
+        # the strategy's OWN candidate pool (computed per-candidate below), NOT the
+        # library size — a strategy's rigor depends only on itself (decouple #2).
         try:
             from archimedes.services.strategy_provider import default_provider
 
             lib = default_provider().list_strategies()
             arxiv_ids = [s.paper_arxiv_id for s in lib if getattr(s, "paper_arxiv_id", None)]
-            library_size = max(1, len(lib))
         except Exception:
             arxiv_ids = []
-            library_size = 1
         await emit.emit(
             "candidates_selected",
             candidate_count=len(regimes),
@@ -1064,9 +1068,10 @@ async def run_generation(
         _static_skip = ("fusion", "debate", "debate_abstain")
         await asyncio.gather(
             *[
-                # num_trials = N candidates + library context (#770), not library alone.
+                # num_trials = the strategy's OWN candidate pool (N), never the library
+                # size — a strategy's rigor depends only on itself (decouple #2).
                 _backtest_and_persist(
-                    c, strategy_ids[c.candidate_id], emit, _society_num_trials(library_size, n_candidates)
+                    c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates)
                 )
                 for c in candidates
                 if c.generation_method not in _static_skip and c.candidate_id in strategy_ids
@@ -1081,7 +1086,7 @@ async def run_generation(
         await asyncio.gather(
             *[
                 _persist_real_returns(
-                    c, strategy_ids[c.candidate_id], emit, _society_num_trials(library_size, n_candidates)
+                    c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates)
                 )
                 for c in candidates
                 if c.has_real_rigor and c.return_series and c.candidate_id in strategy_ids
