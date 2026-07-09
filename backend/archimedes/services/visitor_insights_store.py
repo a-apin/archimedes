@@ -27,6 +27,22 @@ wallet count in ``user_profiles``.
 Mirrors ``services/funnel_store.py`` / ``telemetry_store.py``: same
 ``redis.asyncio`` convention and **fail-safe by construction** — every method
 swallows Redis errors; instrumentation never turns a request into a 5xx.
+
+Known caveat (Insights-page reconciliation follow-up, post-#854): the
+first-seen-only attribution gate below (``:attributed`` SADD) only prevents
+NEW double-counting from the moment it shipped (2026-07-03). The
+``:country:total:*`` / ``:device:total:*`` HyperLogLog keys are append-only —
+visits recorded before the gate existed (when every landed beacon re-bucketed
+the visitor, so a visitor whose apparent country/device varied across visits —
+VPN, mobile vs. desktop — inflated multiple buckets) remain permanently baked
+into the all-time totals. That pre-existing skew is why the live country/device
+sums can still run ahead of the funnel's ``landed`` count even with this gate in
+place; it is a stale-data problem, not a logic bug, and can only be fully
+resolved by an operator deleting the ``archimedes:visitors:*`` keys (a Redis
+counter reset) so the totals start accumulating exclusively under the
+first-seen gate. The Insights UI states the relationship as directional
+("designed to track… may not match exactly") rather than promising exact
+equality, precisely because of this.
 """
 
 from __future__ import annotations
