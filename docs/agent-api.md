@@ -1,8 +1,10 @@
 # Agent API — driving the Archimedes journey programmatically
 
-> Status: slice 2 (agent-auth: programmatic SIWE + wallet-required generation).
-> Tracks [issue #788](https://github.com/a-apin/archimedes/issues/788).
-> DEPLOY + MONITOR remain pending the #588 contract-redeploy keystone.
+> Status: slice 2 complete — agent-auth (programmatic SIWE + wallet-required
+> generation) plus DEPLOY + MONITOR. Tracks
+> [issue #788](https://github.com/a-apin/archimedes/issues/788). `--deploy`
+> still defaults to a DRY RUN pending the #588 contract-redeploy keystone —
+> see "DEPLOY — create a vault" below for why.
 
 Archimedes ships one human interface: a passkey/wallet React SPA. AI agents — the
 "new citizens" of the Agora thesis — can't drive a browser passkey, so today they
@@ -203,11 +205,17 @@ Ownerless jobs (created while gating was off) stay readable by any
 the historical open behavior. Browser `EventSource` sends cookies on
 same-origin requests, so the SSE stream authenticates without client changes.
 
-### Funding an agent wallet (USDC is gas on Arc)
+### Funding an agent wallet (USDC is gas on Arc) — a DIFFERENT deploy path
 
-An agent EOA needs native USDC before it can DEPLOY (chain 5042002 uses USDC as
-gas). Two options via [`scripts/fund_agent_wallet.py`](../scripts/fund_agent_wallet.py)
-(dry-run by default; `--execute` to send):
+The `POST /api/vaults/create` DEPLOY path below needs **no funding on the
+agent wallet** — the backend's own signer pays gas (see "DEPLOY" for why).
+`fund_agent_wallet.py` is for a separate, not-yet-built path: an agent
+signing `createVault` itself, client-side, the way the browser UI's
+`CreateVaultModal` does. That path — if built — would need the agent EOA to
+hold native USDC (chain 5042002 uses USDC as gas) before it could submit a
+transaction. Two options via
+[`scripts/fund_agent_wallet.py`](../scripts/fund_agent_wallet.py) (dry-run by
+default; `--execute` to send):
 
 ```bash
 # a) treasury transfer — native-USDC value transfer from DEV_WALLET_PRIVATE_KEY (.env):
@@ -218,10 +226,116 @@ python scripts/fund_agent_wallet.py --to 0x<agent-wallet> --amount 5 --execute
 python scripts/fund_agent_wallet.py --to 0x<agent-wallet> --mode faucet --execute
 ```
 
-### Still pending — DEPLOY + MONITOR
+## Slice 2 continued — DEPLOY + MONITOR
 
-- **Deploy:** with the SIWE session, call the wallet-gated `POST /api/vaults/create`.
-- **Monitor:** read the vault back via `GET /api/vaults/{address}/health`.
+### DEPLOY — create a vault from the generated strategy
 
-Tracked in [#788](https://github.com/a-apin/archimedes/issues/788). Do not land any
-contract-touching agent work before the #588 contract-redeploy keystone.
+With the SIWE session established, call the wallet-gated `POST
+/api/vaults/create`. Reference implementation:
+`build_vault_create_payload` / `step_deploy` in
+[`scripts/agent_journey.py`](../scripts/agent_journey.py).
+
+```http
+POST /api/vaults/create
+Content-Type: application/json
+Cookie: archimedes_session=...
+
+{
+  "name": "Agent Journey 2026-07-10 12:00",
+  "symbol": "AGTJRN",
+  "management_fee_bps": 0,
+  "performance_fee_bps": 0,
+  "agent_assisted": true,
+  "strategy_ids": ["<the winning strategy_id from RIGOR / LIVE GATE above>"],
+  "strictness_level": 1
+}
+```
+
+Response `200`:
+```json
+{ "vault_address": "0x...", "strategy_ids": ["..."] }
+```
+
+**Who pays gas — not the agent wallet.** The backend's own signer creates the
+vault on-chain, then transfers `Ownable` ownership to the caller's SIWE
+wallet and pins the backend as the rebalance-only agent (`owner == you`,
+`agent == backend`; see `create_vault` in
+[`vaults_routes.py`](../backend/archimedes/api/vaults_routes.py)). See
+"Funding an agent wallet" above for the (different, not-yet-built) path that
+would need agent-wallet funding.
+
+**Server-side rigor gate is authoritative (#818, `_assert_strategies_pass_rigor`
+in `vaults_routes.py`).** Every `strategy_ids` entry must pass the live rigor
+gate at the requested `strictness_level`, checked **before** any gas is
+spent, or the call returns **422** — enforced independently of the client, so
+no caller (agent or human) can route around it. The reference client mirrors
+this client-side: `step_deploy` refuses to call the endpoint at all — no
+request sent — unless the winning candidate's LIVE GATE read above is
+`deployable: true`. **Never weaken or skip that check to force a deploy.**
+
+`--deploy` defaults to a **DRY RUN**: the harness prints the exact payload
+and sends nothing. Pass `--deploy` to actually call the endpoint. Default OFF
+because, as of this writing, the contract suite was just redeployed (T3.2,
+2026-07-09) and issue [#588](https://github.com/a-apin/archimedes/issues/588)
+(whether the repo's cached ABI matches the live deployed bytecode) is still
+open — no vault, agent or human, had been created against the new deployment
+at the time this shipped.
+
+### MONITOR — read vault health back
+
+```http
+GET /api/vaults/{address}/health
+```
+
+No auth required. Safe for any address, including one nothing is deployed
+behind yet — it reads Redis-backed snapshot/heartbeat state keyed by address
+string, not a chain existence check, so an unknown address returns an
+empty-ish snapshot rather than erroring.
+
+```json
+{
+  "vault_address": "0x...",
+  "agent_alive": true,
+  "last_heartbeat": "2026-07-10T11:58:00+00:00",
+  "last_rebalance": "2026-07-09T12:00:00+00:00",
+  "rebalance_age_seconds": 86400.0,
+  "aum_trend_pct": 1.23,
+  "snapshot_count": 42,
+  "latest_snapshot": { "...": "most recent AUM/holdings snapshot, or null" },
+  "sharpe_drift": { "available": false, "reason": "baseline_backtest_sharpe_unavailable" },
+  "recent_events": [ "...vault-scoped or regime_change/agent_error events, newest 5..." ]
+}
+```
+
+### CLI flags for DEPLOY + MONITOR
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--deploy` | off | actually POST to `/api/vaults/create` (else dry run — see above) |
+| `--vault-name` | `Agent Journey <UTC timestamp>` | vault name (≤ 64 chars) |
+| `--vault-symbol` | `AGTJRN` | vault symbol (≤ 16 chars) |
+| `--management-fee-bps` | `0` | management fee, basis points (0–1000) |
+| `--performance-fee-bps` | `0` | performance fee, basis points (0–3000) |
+| `--strictness-level` | `1` | rigor strictness for deploy (1 = strictest/safest … 5 = most permissive; the always-on correctness floors hold at every level) |
+| `--monitor-address` | none | `GET /api/vaults/{address}/health` for an existing vault, independent of deploying one this run |
+
+```bash
+# full journey including a REAL deploy (spends the backend signer's testnet gas):
+python scripts/agent_journey.py --ephemeral --deploy
+
+# health check only, no generation, no auth:
+python scripts/agent_journey.py --no-auth --read-only --monitor-address 0x<vault-address>
+```
+
+### What's NOT covered here
+
+Tracked in [#788](https://github.com/a-apin/archimedes/issues/788), but out of
+scope for this document / the harness: the issue's funnel/telemetry
+acceptance line ("the agent path is reflected in the funnel/telemetry as
+`agent_type`") is only partly built. `/api/metrics` already classifies
+traffic as human/internal-agent/external-agent
+(`telemetry_middleware.py`), but the conversion funnel itself (`FunnelStore`,
+[#787](https://github.com/a-apin/archimedes/issues/787)) records
+distinct-visitor counts per stage only — `landed`, `wallet_connected`,
+`generation_started`, `vault_deployed` are not currently segmented by
+`agent_type`. Segmenting the funnel by `agent_type` remains open work.
