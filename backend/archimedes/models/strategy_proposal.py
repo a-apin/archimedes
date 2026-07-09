@@ -51,6 +51,16 @@ class StrategyProposal(Base):
     # Regime tag (nullable — only populated when regime is known)
     regime_tag = Column(String(16), nullable=True)
 
+    # SIWE-derived owner wallet, lowercased (never client-supplied — threaded
+    # server-side from persist_proposal callers). NULL on rows written before
+    # this column existed (legacy) — those rows are private to NO ONE; the
+    # owner-scoped read path (proposals_routes.py) filters on an exact
+    # non-NULL match, so NULL never satisfies any caller's filter (privacy
+    # leak fix — every user's proposals, including rejected candidates with
+    # their private intent/strategy_spec/rigor_verdict, were previously
+    # readable by anyone via the unauthenticated GET /api/proposals/).
+    owner_wallet = Column(String(42), nullable=True, index=True)
+
     # Full proposal payload as JSONB
     payload = Column(Text, nullable=False, default="{}")
 
@@ -83,6 +93,7 @@ class StrategyProposal(Base):
             "content_hash": self.content_hash,
             "agent": self.agent,
             "regime_tag": self.regime_tag,
+            "owner_wallet": self.owner_wallet,
             "payload": json.loads(self.payload) if self.payload else {},
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
