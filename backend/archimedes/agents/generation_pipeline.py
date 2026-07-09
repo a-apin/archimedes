@@ -1129,6 +1129,7 @@ async def run_generation(
                         if cand is best
                         else (cand.rigor_verdict or {}).get("reason") or "outranked by the society leader",
                     },
+                    owner_wallet=owner_wallet,
                 )
         except Exception:
             pass  # Non-blocking per spec
