@@ -620,8 +620,8 @@ class LocalStrategyProvider:
         CANDIDATE: it still needs human curation and the selection-bias
         gate before it can be promoted past CANDIDATE.
 
-        Lazy import: arxiv_pipeline → strategy_architect → this module, so
-        importing at call time avoids a circular import at module load.
+        Lazy import: avoids a circular import at module load (arxiv_pipeline
+        imports this module).
         """
         from archimedes.services.arxiv_pipeline import extract_strategy
 

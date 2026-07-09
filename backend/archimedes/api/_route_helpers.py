@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 from functools import lru_cache
 
-from archimedes.agents.strategy_architect import StrategyArchitect, default_architect
 from archimedes.chain.oracle_updater import OracleUpdater
 from archimedes.services.asset_service import AssetService
 from archimedes.services.config_service import ConfigService
@@ -40,24 +39,6 @@ def strategy_provider() -> LocalStrategyProvider:
     is sufficient rather than two. Call sites: ``strategy_provider().foo()``.
     """
     return default_provider()
-
-
-@lru_cache(maxsize=1)
-def architect() -> StrategyArchitect:
-    """Lazily-constructed, cached strategy architect.
-
-    Same import-time-construction hazard as ``strategy_provider()`` above,
-    one layer removed: ``default_architect()`` builds a ``StrategyArchitect``
-    with no explicit ``provider``, which falls back to its own eager
-    ``default_provider()`` call in ``StrategyArchitect.__init__``
-    (``archimedes/agents/strategy_architect.py``) — the same DB read that
-    races ``init_db()``. Fixing ``strategy_provider()`` alone would leave
-    this second, independently-cached ``LocalStrategyProvider`` instance
-    (reachable via ``architect().propose`` in the interactive "design me a
-    portfolio" flow) stale after a backfill + restart. Call sites:
-    ``architect().foo()``.
-    """
-    return default_architect()
 
 
 async def persist_trace_off_chain(trace) -> None:

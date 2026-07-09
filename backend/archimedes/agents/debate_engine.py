@@ -328,7 +328,7 @@ async def _debate_round(pool: list[Any], model: str | None, emit: _Emitter, cand
     (sort-before-hash). Any failure (no backend, unparseable output) degrades to a
     neutral entry; the whole round is skipped if no backend is available.
     """
-    from archimedes.agents.strategy_architect import extract_json
+    from archimedes.agents.generation_json import extract_json
     from archimedes.services.llm_backend import make_llm_backend
 
     names = "; ".join(p.strategy_name for p in pool[:5] if p.strategy_name)

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from archimedes.agents.strategy_architect import (
+from archimedes.agents.generation_json import (
     ArchitectProposal,
     StrategySelection,
 )
