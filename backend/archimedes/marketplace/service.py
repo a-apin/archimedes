@@ -205,7 +205,7 @@ class MarketService:
         self._stop = asyncio.Event()
         # Regime detection (same pattern as agent_runner)
         self.oracle = OracleUpdater()
-        self._sweeper = SettlementSweeper(self.settings)
+        self._sweeper = SettlementSweeper(self.settings, payments_dry_run=payments_dry_run)
         self.regime_detector: IRegimeDetector = GmmRegimeDetector(fallback=VixRegimeDetector())
         # Position sizer — throttles raw weights by regime + consensus
         self.portfolio_constructor: PortfolioConstructor = PortfolioConstructor()

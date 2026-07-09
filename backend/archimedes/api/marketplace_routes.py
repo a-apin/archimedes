@@ -642,6 +642,13 @@ async def withdraw_publisher_earnings(
     if pub is None:
         raise HTTPException(status_code=404, detail="No publisher row found for this strategy/wallet")
 
+    # Fail-safe: no real settlement while PAYMENTS_DRY_RUN is on. The sweeper
+    # methods also short-circuit under dry-run (defense in depth); return here so
+    # the API responds with an honest no-op rather than a misleading 502 when
+    # withdraw_publisher returns None.
+    if market.payments_dry_run:
+        return {"status": "dry_run_noop", "detail": "PAYMENTS_DRY_RUN enabled — no on-chain settlement performed."}
+
     sweeper = market._sweeper
     await sweeper.sweep_publisher(pub)  # Stage A + B, refresh pool state
 
