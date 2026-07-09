@@ -154,6 +154,12 @@ def test_publish_generated_strategy_not_in_curated_provider(client):
     is_example=False and is not a curated file id, so a 200 here proves existence resolves
     from StrategyRecord, not the file provider.
     """
+    # The test name's premise, made explicit: gen_strat is genuinely absent from the
+    # curated file provider — so the 200 below can only come from the StrategyRecord path.
+    from archimedes.api._route_helpers import strategy_provider
+
+    assert strategy_provider().get_strategy("gen_strat") is None
+
     resp = client.post(
         "/api/marketplace/publish",
         json={"strategy_id": "gen_strat", "vault_address": "0xvault_gen"},
