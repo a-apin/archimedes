@@ -470,12 +470,26 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "ARCHIMEDES_STRATEGIES_DIR", value = "/app/analytics-engine/strategies" },
         { name = "ARCHIMEDES_CORPUS_MANIFEST", value = "/app/data/corpus/manifest.jsonl" },
         { name = "KB_ARTIFACT_DIR", value = "/app/data/corpus-artifact" },
-        # Deployed Arc testnet contract addresses — same defaults as
-        # docker-compose.yml's backend service; not secrets.
-        { name = "ARC_AMM_ROUTER_ADDRESS", value = "0xd5b829f9d364a8bbe1caf6c8b19cb05371b178f4" },
-        { name = "ARC_VAULT_FACTORY_ADDRESS", value = "0xca873414070844aeb98b0bf1051f81969c79cc32" },
-        { name = "ARC_REASONING_TRACE_REGISTRY_ADDRESS", value = "0x42d8a23edb897cbee203e9fa197eb05ab5106ca6" },
-        { name = "ARC_ASSET_REGISTRY_ADDRESS", value = "0x2d44550711137916df6175587d17886281a0fbc7" },
+        # Deployed Arc testnet contract addresses — T3.2 redeploy 2026-07-09
+        # (deployer 0x03AaB3C91873f0Ec606c1Ed7528FE4CDCD6a4092, chain 5042002).
+        # One authoritative set; converges the prior FE/BE split-brain. Not secrets.
+        { name = "ARC_AMM_ROUTER_ADDRESS", value = "0x03df6c79f4e573ce793cdaa187719d1f15df24dc" },
+        { name = "ARC_VAULT_FACTORY_ADDRESS", value = "0x404d18a906abbdf7bed5cf798c1dc5399c563987" },
+        { name = "ARC_REASONING_TRACE_REGISTRY_ADDRESS", value = "0x9d81bfbfadb683cf77acda480e94e64088012847" },
+        { name = "ARC_ASSET_REGISTRY_ADDRESS", value = "0x32c28231202626fbd8cf87caf42b01d973dc96c8" },
+        { name = "ARC_SYNTHETIC_FACTORY_ADDRESS", value = "0x295b176aecc3be722827c49827794ee7ee707815" },
+        # Marketplace contracts (publish path) — T3.2.
+        { name = "ARC_STRATEGY_REGISTRY_ADDRESS", value = "0x283a2E42a06bb9BBA5e6613957C473D8AE7d4219" },
+        { name = "ARC_PAYMENT_SPLITTER_ADDRESS", value = "0x69697D64e6ABD4dd7febc4dB7F017e9Cf4a9A1a7" },
+        # Demo synths (token + oracle) — override stale committed defaults so the
+        # backend resolves them to the new deployment. Full 281-synth convergence
+        # (_SYNTH_DEFAULTS in chain/client.py) is a follow-up backend PR.
+        { name = "ARC_SSPY_ADDRESS", value = "0xc71c4a7ce89bf45d90b0a56eed9cd842eebf2d5e" },
+        { name = "ARC_SSPY_ORACLE_ADDRESS", value = "0x0c3270ee60f7144cdb95541101e6f6fa3b8061d7" },
+        { name = "ARC_SBTC_ADDRESS", value = "0xa6ddc0ace2b9a6a305d5aedef7432c4e48be35dc" },
+        { name = "ARC_SBTC_ORACLE_ADDRESS", value = "0x40c895c92515f0d73ed6ce6b4e8a8960cba765a9" },
+        { name = "ARC_SETH_ADDRESS", value = "0x27f8678029c1f1ead7a9734fc9ab51eaff3613da" },
+        { name = "ARC_SETH_ORACLE_ADDRESS", value = "0xaa79e025a44ddbd095a5f9242ec8585ab6f02a82" },
         # Config consolidation (#1039 P5): public wallet addresses, sourced
         # from Terraform variables (TF_VAR_*, see variables.tf) rather than
         # hardcoded here or read off a box .env file. Empty defaults disable
