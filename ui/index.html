@@ -21,6 +21,30 @@
         } catch (e) {}
       })();
     </script>
+    <!-- Static JSON-LD for non-JS fetchers (search engines, AI agents/crawlers). Additive
+         only -- does not affect rendering or existing meta/OG tags above. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Archimedes",
+        "applicationCategory": "FinanceApplication",
+        "description": "Tell Archimedes what you want in plain English. It fuses your intent with the quant-finance literature, live market data, and statistical rigor \u2014 into an autonomous trading strategy that runs in a non-custodial vault on Arc, with every decision hashed and verifiable on-chain.",
+        "url": "https://archimedes-arc.com/",
+        "operatingSystem": "Web",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "potentialAction": {
+          "@type": "Action",
+          "name": "Generate strategy",
+          "description": "Describe an investment intent in plain English and get back a research-grounded, rigor-gated portfolio strategy.",
+          "target": "https://archimedes-arc.com/#/generate"
+        }
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
