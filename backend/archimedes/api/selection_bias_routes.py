@@ -510,6 +510,16 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
         # run_rigor_gate treats fail-closed (criterion 4 FAILs rather than
         # silently passing) — exactly the same fail-closed contract the curated
         # path relies on.
+        #
+        # NOTE: pbo_library_size is intentionally left unset (None) below. That
+        # parameter powers run_rigor_gate's PBO power-floor, which RELAXES
+        # criterion 4 when the PBO estimate is drawn from too small a cohort to be
+        # trustworthy. A single generated strategy has no such cohort, and we hold
+        # Dan's principle that a strategy's rigor must be measured on ITS OWN
+        # context — so we deliberately grant no cohort-size relaxation here. The
+        # effect is strictly CONSERVATIVE (a generated strategy's persisted PBO is
+        # judged on its face, never softened by a library-size argument it doesn't
+        # have) — consistent with "never weaken the gate", not an oversight.
         latest = latest_backtests_by_strategy(session, [strategy_id]).get(strategy_id)
         num_trials = latest.num_trials_in_selection if latest and latest.num_trials_in_selection else 1
         persisted_pbo = latest.pbo_score if latest else None

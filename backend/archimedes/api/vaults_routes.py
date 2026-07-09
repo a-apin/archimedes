@@ -163,9 +163,17 @@ def _deployable_levels(
                     rigor_result = None
             if rigor_result is not None:
                 out[sid] = (True, rigor_result.min_passing_level, rigor_result.blocked_by_floor)
+            elif request is not None:
+                # request present → `_generated_strategy_rigor` already applied the
+                # #850 ownership gate, so a None means "absent OR not visible to
+                # this caller". Do NOT fall back to the non-ownership-gated badge —
+                # that would leak a private strategy's deployability. Match this
+                # function's docstring: not found, not deployable (existence stays
+                # hidden either way).
+                out[sid] = (False, None, False)
             else:
-                # No request context, or the id didn't resolve to a visible
-                # strategy_store row — the pre-existing badge-gated fallback.
+                # No request context (internal/legacy caller) — the pre-existing
+                # badge-gated fallback.
                 found, passes_badge = _strategy_rigor_status(sid)
                 out[sid] = (found, (STRICTEST_LEVEL if passes_badge else None), False)
     return out
@@ -186,16 +194,23 @@ def _assert_strategies_pass_rigor(
     refused.
 
     ``request`` (optional) is threaded through to ``_deployable_levels`` so a
-    generated strategy's own per-strategy ladder — rather than the coarse
-    badge-only fallback — backs the looser-than-badge branch below. Omitted by
-    callers that only ever exercise the badge-level fast path (the default).
+    generated strategy's own ownership-gated per-strategy ladder — rather than the
+    coarse, non-ownership-gated badge — backs the check whenever a request is
+    present (every real HTTP deploy). Only request-less internal/legacy callers
+    take the badge-only fast path.
     """
     level = clamp_level(strictness_level)
 
-    # Fast, exact badge path at the strictest level: a badge-fail can never pass
-    # level 1, so no live per-level ladder computation is needed. This also keeps
-    # the default deploy path unchanged for callers that don't opt into strictness.
-    if level <= STRICTEST_LEVEL:
+    # Fast, exact badge path at the strictest level — ONLY for callers with no
+    # request context (internal/legacy). A badge-fail can never pass the strictest
+    # level, so no live per-level ladder is needed there. When a request IS present
+    # (every real HTTP deploy — create_vault always passes it) we fall through to
+    # the ownership-gated `_deployable_levels` below, so a generated strategy
+    # invisible to the caller is refused rather than revealed via the ungated
+    # badge. Curated strategies grade identically either way (verdicts_for_strategies
+    # uses the same library-cohort correction as the badge), so this closes the
+    # generated-strategy ownership bypass without changing curated deploy behavior.
+    if level <= STRICTEST_LEVEL and request is None:
         for sid in strategy_ids:
             found, passes = _strategy_rigor_status(sid)
             if not found:
