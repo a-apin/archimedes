@@ -439,10 +439,134 @@ async def evaluate_rigor_gate(
     )
 
 
+def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: int) -> StrategyRigorResult | None:
+    """Grade a GENERATED (DB-persisted) strategy on its OWN persisted context.
+
+    ``evaluate_rigor_gate`` only knows about the curated, filesystem-backed
+    ``LocalStrategyProvider`` cohort, so ``GET /gate/{id}`` 404s for every
+    fusion/architect-generated strategy — the Strategy Passport's Deploy button
+    and Rigor Strictness slider are dead for them. This closes that gap WITHOUT
+    folding the strategy into the curated cohort computation: merging it in would
+    inflate ``num_trials`` for every curated strategy (a real strategy the
+    curated multiple-testing correction never accounted for), leak a private
+    strategy's existence/shape into a public cohort computation, and turn a
+    single-strategy request into an O(library) recompute. Instead this grades
+    the strategy on its OWN persisted ``num_trials_in_selection`` / ``pbo_score``
+    / ``look_ahead_audit_passed`` — the exact numbers already written by the
+    generation pipeline (``update_rigor_gate_fields`` / the DSL-fusion insert
+    path) — via the same ``run_rigor_gate`` primitive the curated path uses.
+
+    Ownership (security-critical — copied verbatim from
+    ``strategies_routes.get_strategy``'s #850 pattern): a non-example,
+    unpublished ``strategy_store`` row is visible only to its ``owner_wallet``.
+    Returns ``None`` for BOTH "no such strategy" and "exists but not visible to
+    this caller" so the route 404s either way — existence must never leak to a
+    non-owner via a different response shape.
+
+    Returns a MISSING-shaped result (mirroring the curated "no backtest data"
+    branch above) when the strategy exists, is visible, but has fewer than 10
+    persisted daily returns — the honest "Pending Backtest" case, not a 404.
+    """
+    from archimedes.api.auth_siwe import get_verified_wallet
+    from archimedes.db import get_session, init_db
+    from archimedes.models.strategy_store import StrategyRecord
+    from archimedes.services.backtest_repository import get_daily_returns, latest_backtests_by_strategy
+
+    init_db()
+    with get_session() as session:
+        row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+        if row is None:
+            return None
+        if not row.is_example and not row.is_published:
+            caller = get_verified_wallet(request)
+            is_owner = bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
+            if not is_owner:
+                return None
+
+        strategy_name = row.strategy_name
+        daily_returns = get_daily_returns(session, strategy_id)
+
+        if len(daily_returns) < 10:
+            return StrategyRigorResult(
+                strategy_id=strategy_id,
+                strategy_name=strategy_name,
+                passes_all=False,
+                gate_details=RigorGateDetail(
+                    dsr="MISSING (no backtest data)",
+                    pbo="MISSING (no backtest data)",
+                    oos_sharpe="MISSING (no backtest data)",
+                    look_ahead="MISSING (no code)",
+                ),
+                library_pbo=_library_pbo_payload(),
+                strictness_level=strictness,
+                min_passing_level=None,
+                blocked_by_floor=False,
+            )
+
+        # Persisted context from the latest backtest row — never recomputed
+        # against any cohort (curated or otherwise). A missing num_trials
+        # defaults to 1 (run_rigor_gate's own documented "genuinely single-trial"
+        # fallback, logged loudly there); a missing pbo_score stays None, which
+        # run_rigor_gate treats fail-closed (criterion 4 FAILs rather than
+        # silently passing) — exactly the same fail-closed contract the curated
+        # path relies on.
+        #
+        # NOTE: pbo_library_size is intentionally left unset (None) below. That
+        # parameter powers run_rigor_gate's PBO power-floor, which RELAXES
+        # criterion 4 when the PBO estimate is drawn from too small a cohort to be
+        # trustworthy. A single generated strategy has no such cohort, and we hold
+        # Dan's principle that a strategy's rigor must be measured on ITS OWN
+        # context — so we deliberately grant no cohort-size relaxation here. The
+        # effect is strictly CONSERVATIVE (a generated strategy's persisted PBO is
+        # judged on its face, never softened by a library-size argument it doesn't
+        # have) — consistent with "never weaken the gate", not an oversight.
+        latest = latest_backtests_by_strategy(session, [strategy_id]).get(strategy_id)
+        num_trials = latest.num_trials_in_selection if latest and latest.num_trials_in_selection else 1
+        persisted_pbo = latest.pbo_score if latest else None
+        persisted_look_ahead = bool(latest.look_ahead_audit_passed) if latest else False
+
+    gate_result = run_rigor_gate(
+        strategy_id=strategy_id,
+        daily_returns=daily_returns,
+        num_trials=num_trials,
+        library_pbo=persisted_pbo,
+        look_ahead_audit_passed=persisted_look_ahead,
+        in_sample_sharpe=None,
+        average_correlation=0.0,
+        strictness_level=strictness,
+    )
+
+    details = gate_result.gate_details
+    return StrategyRigorResult(
+        strategy_id=strategy_id,
+        strategy_name=strategy_name,
+        passes_all=gate_result.passes_all,
+        gate_details=RigorGateDetail(
+            dsr=details.get("dsr", "MISSING"),
+            pbo=details.get("pbo", "MISSING"),
+            oos_sharpe=details.get("oos_sharpe", "MISSING"),
+            look_ahead=details.get("look_ahead", "MISSING"),
+            cpcv=details.get("cpcv", "MISSING"),
+            dsr_convention=details.get("dsr_convention", "MISSING"),
+            iid=details.get("iid", "MISSING"),
+            regime_robustness=details.get("regime_robustness", "MISSING"),
+        ),
+        deflated_sharpe=gate_result.deflated_sharpe,
+        dsr_p_value=gate_result.dsr_p_value,
+        pbo_score=gate_result.pbo_score,
+        oos_sharpe=gate_result.oos_sharpe,
+        in_sample_sharpe=gate_result.in_sample_sharpe,
+        library_pbo=_library_pbo_payload(),
+        strictness_level=strictness,
+        min_passing_level=gate_result.min_passing_level,
+        blocked_by_floor=gate_result.blocked_by_floor,
+    )
+
+
 @selection_bias_router.get("/gate/{strategy_id}", response_model=StrategyRigorResult)
 @limiter.limit("10/minute")
 async def evaluate_strategy_rigor(
-    request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
+    request: Request,
     strategy_id: str,
     strictness: int = Query(DEFAULT_LEVEL, ge=STRICTEST_LEVEL, le=LOOSEST_LEVEL),
 ):
@@ -450,9 +574,18 @@ async def evaluate_strategy_rigor(
 
     The response's ``passes_all`` reflects ``strictness``; ``min_passing_level``
     tells the passport the lowest level at which the strategy is deployable.
+
+    Tries the curated ``LocalStrategyProvider`` cohort first (unchanged
+    behavior); when the id isn't curated, falls through to
+    ``_generated_strategy_rigor`` so fusion/architect-generated strategies grade
+    on their own persisted context instead of 404ing outright (#deploy-gate).
     """
     strategy = _provider().get_strategy(strategy_id)
     if strategy is None:
+        generated = _generated_strategy_rigor(strategy_id, request, strictness)
+        if generated is not None:
+            return generated
+
         from fastapi import HTTPException
 
         raise HTTPException(status_code=404, detail="Strategy not found")
