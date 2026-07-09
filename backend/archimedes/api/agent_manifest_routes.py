@@ -12,7 +12,8 @@ system health). This file's "agent" is an external AI agent consuming the produc
 user. Same URL prefix (``/api/agent``), different concept — kept in separate modules so
 neither docstring has to disambiguate the other's meaning inline.
 
-Honesty note (mirrors docs/agent-api.md): READ / AUTH / GENERATE / RIGOR are live today.
+Honesty note (mirrors docs/agent-api.md): READ / AUTH / GENERATE — including the rigor
+readback surfaced under the generate group (there is no separate ``rigor`` group) — are live today.
 DEPLOY, and the marketplace PUBLISH/SUBSCRIBE + MONITOR endpoints that depend on a
 deployed vault, are real routes but not yet wired for agent-driven end-to-end use --
 they land with the T3.2 contract redeploy (issue #588). Never advertise these as
