@@ -123,11 +123,13 @@ class TestVerdictFromReturns:
 
 
 class TestDefaultNumTrials:
-    """#902: an unspecified num_trials must never silently run undeflated."""
+    """Decouple #2: an unspecified num_trials defaults to a self-contained 1 —
+    never derived from the curated library's count."""
 
-    def test_default_num_trials_derives_library_size(self, monkeypatch):
-        # The default resolves to the count of library strategies with enough
-        # persisted returns — NOT 1 (which zeroes the DSR deflation).
+    def test_verdict_from_returns_defers_to_default_num_trials(self, monkeypatch):
+        # verdict_from_returns still delegates to _default_num_trials() when the
+        # caller passes nothing — this pins the indirection, independent of what
+        # _default_num_trials() itself resolves to.
         from archimedes.services import live_rigor_gate
 
         captured = {}
@@ -142,17 +144,18 @@ class TestDefaultNumTrials:
         verdict_from_returns("a", _passing_series(0), strategy_code=_CLEAN_CODE)
         assert captured["num_trials"] == 7
 
-    def test_default_num_trials_fail_safe_is_not_one(self, monkeypatch):
-        # When the library size cannot be derived, the fallback must lean toward
-        # MORE deflation (a conservative floor), never num_trials=1.
+    def test_default_num_trials_is_self_contained_one(self, monkeypatch):
+        # A strategy's rigor depends ONLY on itself — _default_num_trials() must
+        # always resolve to 1, regardless of the curated library's size or
+        # whether the strategy provider is even reachable (decouple #2 removed
+        # the library-size lookup entirely, so this must not touch it at all).
         from archimedes.services import live_rigor_gate
 
         def _boom():
-            raise RuntimeError("no provider")
+            raise AssertionError("_default_num_trials must not consult the strategy provider")
 
         monkeypatch.setattr("archimedes.services.strategy_provider.default_provider", _boom)
-        assert live_rigor_gate._default_num_trials() == live_rigor_gate._FALLBACK_NUM_TRIALS
-        assert live_rigor_gate._FALLBACK_NUM_TRIALS > 1
+        assert live_rigor_gate._default_num_trials() == 1
 
     def test_explicit_num_trials_still_wins(self, monkeypatch):
         from archimedes.services import live_rigor_gate
@@ -282,16 +285,30 @@ async def test_library_badge_equals_live_gate_verdict_on_persisted_returns(monke
         "archimedes.services.backtest_repository.get_all_daily_returns",
         lambda session, ids: dict(returns),
     )
-    # Make the look-ahead audit deterministic (clean code → pass) for both.
+    # Make the look-ahead audit deterministic (clean code → pass) for both. The
+    # served badge on GET /api/strategies/ comes from _live_rigor_results_for_
+    # strategies (#868), which reads its OWN local loader — patch both loaders
+    # so this test and test_leaderboard_numeric_fields_equal_live_gate_on_
+    # persisted_returns (below) see identical code. Only patching the
+    # live_rigor_gate loader left the served badge reading REAL (uncontrolled)
+    # strategy source, a gap that stayed masked while num_trials=len(cohort)
+    # deflation dominated passes_all; it surfaces now that num_trials=1
+    # (decouple #2) makes DSR pass easily and the look-ahead leg decide.
     monkeypatch.setattr(
         "archimedes.services.live_rigor_gate._load_strategy_code_safe",
         lambda strategy: _CLEAN_CODE,
     )
+    monkeypatch.setattr(
+        "archimedes.api.strategies_routes._load_strategy_code_safe_local",
+        lambda strategy: _CLEAN_CODE,
+    )
 
-    # Independently reproduce the route's library context.
+    # Independently reproduce the route's cohort context. num_trials is
+    # self-contained (1, decouple #2) — it does NOT come from this cohort;
+    # only PBO/avg_correlation are cohort-derived.
     valid = {k: v for k, v in returns.items() if len(v) >= 10}
     pbo_scores = compute_pbo(valid) if len(valid) >= 2 else {}
-    num_trials = max(len(valid), 1)
+    num_trials = 1
     avg_corr = compute_average_pairwise_correlation(valid) if len(valid) >= 2 else 0.0
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -499,11 +516,12 @@ async def test_leaderboard_numeric_fields_equal_live_gate_on_persisted_returns(m
         lambda strategy: _CLEAN_CODE,
     )
 
-    # Independently reproduce the route's library context (same recipe as
+    # Independently reproduce the route's cohort context (same recipe as
     # test_library_badge_equals_live_gate_verdict_on_persisted_returns).
+    # num_trials is self-contained (1, decouple #2), not cohort-derived.
     valid = {k: v for k, v in returns.items() if len(v) >= 10}
     pbo_scores = compute_pbo(valid) if len(valid) >= 2 else {}
-    num_trials = max(len(valid), 1)
+    num_trials = 1
     avg_corr = compute_average_pairwise_correlation(valid) if len(valid) >= 2 else 0.0
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

@@ -241,8 +241,9 @@ class _CandidateResult:
     # downstream buy-and-hold backtest step is skipped — it would clobber the
     # already-computed fusion metrics with a different, weight-less read).
     has_real_rigor: bool = False
-    # The society num_trials (#770, N + library_size) this candidate's DSR was
-    # first computed with. Recorded so the post-loop correlation patch (#822)
+    # The society num_trials (``_society_num_trials(N)``, decouple #2 — the
+    # candidate's OWN pool, never the library) this candidate's DSR was first
+    # computed with. Recorded so the post-loop correlation patch (#822)
     # recomputes DSR at the SAME trial count — only the average_correlation term
     # changes, never the deflation count itself. 0 on the fixture/fusion paths,
     # which don't run the buy-and-hold DSR patch.
@@ -330,10 +331,11 @@ def _rigor_verdict_for(
     emitter + frontend) doesn't care which path produced the verdict.
 
     ``num_trials`` is the multiple-testing count fed to the Deflated Sharpe
-    Ratio — per ``selection-bias-corrections-spec.md`` § 1.3 this is the size
-    of the strategy universe the winner was selected from (the curated library),
-    NOT 1. With ``num_trials=1`` the DSR expectation-of-max term collapses to 0
-    and the ratio is undeflated, which silently defeats the gate.
+    Ratio — the candidate's OWN N-candidate selection pool it was chosen from
+    (``_society_num_trials(N)``, decouple #2), NEVER the curated library's
+    count. With ``num_trials=1`` the DSR expectation-of-max term collapses to
+    0 and the ratio is undeflated — correct only when the caller genuinely has
+    no selection pool larger than 1.
 
     ``average_correlation`` is the mean pairwise correlation among the
     ``num_trials`` society candidates (approach B, issue #822). Defaults to
@@ -1502,8 +1504,9 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         strategy_id: The DB id returned by :func:`_persist_candidate`.
         emit: The SSE emitter to surface backtest progress to the UI.
         num_trials: Effective trial count for the DSR multiple-testing correction —
-            N generated candidates + curated-library size on the society path (#770),
-            fed to ``backtest_portfolio`` as ``num_trials_for_dsr``.
+            the candidate's OWN N-candidate selection pool on the society path
+            (``_society_num_trials(N)``, decouple #2 — never the curated-library
+            size), fed to ``backtest_portfolio`` as ``num_trials_for_dsr``.
     """
     # Fixture mode (offline tests, no-LLM environments) — skip the network
     # round-trip. The test suite covers this function's behavior via direct
@@ -1546,10 +1549,10 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         from archimedes.services.portfolio_backtester import backtest_portfolio
 
         # Run the actual backtest. Raises on insufficient data / fetch failure.
-        # num_trials_for_dsr = N candidates + curated-library size (#770,
-        # selection-bias-corrections-spec.md § 1.3) — the DSR multiple-testing
-        # correction for the full selection set: the N-candidate society search
-        # this winner survived PLUS the library it joins, not library alone.
+        # num_trials_for_dsr = the candidate's OWN N-candidate society-search pool
+        # (``_society_num_trials(N)``, decouple #2) — the DSR multiple-testing
+        # correction for the selection set this winner survived, never the
+        # curated library it happens to join.
         result, artifact = backtest_portfolio(
             strategy_id=strategy_id,
             weights=c.weights,

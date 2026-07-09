@@ -221,12 +221,12 @@ def _live_verdict_for_one(s: Strategy) -> RigorGateVerdict:
 
     Used by the single-strategy fetch path (``get_strategy``). Delegates to
     ``verdicts_for_strategies`` over the FULL library so the verdict is computed
-    with the library-wide cohort context — num_trials = library size, cohort PBO,
-    avg correlation (#902). The old per-strategy path ran ``num_trials=1``, which
-    zeroes the DSR multiple-testing deflation and let the detail view disagree
-    with the (properly deflated) list badge for the same strategy. No real
-    returns → ``pending``, never a fixture value. Never raises: any failure
-    degrades to ``pending`` (fail-closed badge).
+    with the same cohort PBO + avg correlation context the list badge uses,
+    keeping the detail view consistent with the list. ``num_trials`` is
+    self-contained (1 per strategy, decouple #2) — it does NOT come from the
+    library size; only PBO/avg_correlation are cohort-derived. No real returns
+    → ``pending``, never a fixture value. Never raises: any failure degrades to
+    ``pending`` (fail-closed badge).
     """
     try:
         cohort = _library_cohort_including(s)
@@ -237,11 +237,12 @@ def _live_verdict_for_one(s: Strategy) -> RigorGateVerdict:
 
 
 def _library_cohort_including(s: Strategy) -> list[Strategy]:
-    """The full library selection set, guaranteed to contain ``s``.
+    """The full library cohort, guaranteed to contain ``s``.
 
-    The library IS the multiple-testing cohort for a single-strategy grade
-    (#902); ``s`` is appended only if the provider list somehow misses it
-    (e.g. a just-generated strategy not yet listed).
+    This cohort feeds cohort-scoped PBO + avg_correlation ONLY — it must NOT
+    drive ``num_trials`` (self-contained at 1 per strategy, decouple #2). ``s``
+    is appended only if the provider list somehow misses it (e.g. a
+    just-generated strategy not yet listed).
     """
     try:
         cohort = list(strategy_provider().list_strategies())
@@ -263,13 +264,12 @@ def _live_rigor_result_for_one(s: Strategy) -> RigorGateResult | None:
     ``bt.dsr_p_value`` fixture fields — otherwise the leaderboard can show
     numbers that disagree with what ``GET /api/selection-bias/gate`` computes
     for the same strategy right now. Delegates to
-    ``_live_rigor_results_for_strategies`` over the FULL library (#902) so the
-    single fetch carries the same cohort context (num_trials = library size,
-    cohort PBO, avg correlation) as the list — the old per-strategy path ran
-    ``num_trials=1``, zeroing the DSR multiple-testing deflation. Returns
-    ``None`` on no/insufficient persisted returns or any failure — the caller
-    must fall back to the stale fixture fields rather than fabricate a number,
-    matching the fail-closed badge contract.
+    ``_live_rigor_results_for_strategies`` over the FULL library so the single
+    fetch carries the same cohort PBO + avg correlation context as the list.
+    ``num_trials`` is self-contained (1, decouple #2) — it does NOT come from
+    the library size. Returns ``None`` on no/insufficient persisted returns or
+    any failure — the caller must fall back to the stale fixture fields rather
+    than fabricate a number, matching the fail-closed badge contract.
     """
     try:
         cohort = _library_cohort_including(s)
@@ -288,13 +288,15 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
     ``GET /api/selection-bias/gate`` computes for the same strategy right now
     (not the stale ``s.dsr_p_value``/``bt.dsr_p_value`` fixture fields), so this
     mirrors that route's cohort context exactly: real persisted returns from
-    the DB, zero-variance series excluded before they can inflate num_trials or
-    dilute avg_correlation (same fix as #868's selection_bias_routes.py change),
-    cohort PBO + avg-correlation over the survivors, one ``run_rigor_gate`` call
-    per strategy. Strategies with no/insufficient persisted returns or a
-    degenerate series are simply absent from the returned dict — the caller
-    falls back to the stale fixture fields for those ids (fail-closed: no
-    fabricated number for a strategy the live gate cannot evaluate).
+    the DB, zero-variance series excluded before they can dilute avg_correlation
+    (same fix as #868's selection_bias_routes.py change), cohort PBO +
+    avg-correlation over the survivors, one ``run_rigor_gate`` call per
+    strategy. ``num_trials`` is self-contained (1 per strategy, decouple #2) —
+    it is NOT derived from this cohort. Strategies with no/insufficient
+    persisted returns or a degenerate series are simply absent from the
+    returned dict — the caller falls back to the stale fixture fields for
+    those ids (fail-closed: no fabricated number for a strategy the live gate
+    cannot evaluate).
 
     Any DB or cohort-compute failure degrades to ``{}`` (every id falls back to
     the stale fields) rather than raising into the library-list response.
@@ -356,8 +358,8 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
 
         # Exclude zero-variance (degenerate/placeholder-flat) series from the cohort
         # context — same fix as selection_bias_routes.py's valid_returns filter
-        # (#868), so num_trials/avg_correlation/pbo_scores here match that route's
-        # library-wide gate exactly rather than drifting apart on this input.
+        # (#868), so avg_correlation/pbo_scores here match that route's cohort gate
+        # exactly rather than drifting apart on this input.
         valid_returns = {
             k: v
             for k, v in returns_by_strategy.items()
@@ -366,7 +368,10 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
 
         try:
             pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
-            num_trials = max(len(valid_returns), 1)
+            # num_trials = 1: each strategy is graded on ITS OWN Sharpe, never
+            # deflated by how many OTHER strategies sit in the library (decouple
+            # #2). PBO/avg_correlation stay cohort-wide (out of scope here).
+            num_trials = 1
             avg_correlation = compute_average_pairwise_correlation(valid_returns) if len(valid_returns) >= 2 else 0.0
         except Exception as exc:
             logger.warning("live rigor result batch: cohort-context compute failed (all → stale fallback): %s", exc)
@@ -385,8 +390,9 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
             if len(daily_returns) < 10:
                 continue  # No sufficient returns — caller falls back to stale fields
             if s.id in valid_returns:
-                # Non-degenerate series: run with the full cohort context so
-                # num_trials / pbo_scores / avg_correlation match the library gate.
+                # Non-degenerate series: num_trials is self-contained (1, decouple
+                # #2); pbo_scores / avg_correlation still come from the cohort so
+                # they match the library gate.
                 gate_kwargs: dict = {
                     "num_trials": num_trials,
                     "pbo_scores": pbo_scores,
@@ -394,9 +400,10 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
                 }
             else:
                 # Degenerate (zero-variance) series: excluded from cohort context to
-                # prevent inflating num_trials or diluting avg_correlation (#868), but
-                # the strategy still runs its own gate so the caller gets a live "fail"
-                # verdict rather than falling back to a stale fixture value.
+                # prevent diluting avg_correlation (#868); num_trials is self-contained
+                # (1) either way, but the strategy still runs its own gate so the
+                # caller gets a live "fail" verdict rather than falling back to a
+                # stale fixture value.
                 gate_kwargs = {"num_trials": 1, "pbo_scores": {}, "average_correlation": 0.0}
             try:
                 computed[s.id] = run_rigor_gate(
@@ -2059,19 +2066,20 @@ async def _run_fusion_job(job_id: str) -> None:
                 from archimedes.agents.generation_pipeline import _society_num_trials
                 from archimedes.services.fusion_evaluator import evaluate_fusion_spec
                 from archimedes.services.fusion_market_data import real_data_enabled
-                from archimedes.services.strategy_provider import default_provider
 
-                # #820: same deflation denominator as the society/live paths —
-                # library + pool (pool=1 here: a single direct-fusion candidate).
-                # Without this, evaluate_fusion_spec falls back to its
-                # library-size-only default and this route under-deflates
-                # relative to every other generation path.
-                library_size = len(default_provider().list_strategies())
+                # Decouple #2: num_trials = the strategy's OWN selection pool, NOT
+                # the curated library's count. A single direct-fusion job proposes
+                # exactly one candidate spec (pool=1) — no N-candidate search
+                # happens on this route — so the self-contained trial count is
+                # _society_num_trials(1) == 1. Passed explicitly (not left as
+                # None) so this route's deflation matches the same formula the
+                # society/live generation paths use, without reaching for the
+                # library size the way the old ``library_size + pool`` term did.
                 eval_result = await asyncio.to_thread(
                     evaluate_fusion_spec,
                     result.strategy_spec,
                     use_real_data=real_data_enabled(),
-                    num_trials=_society_num_trials(library_size, 1),
+                    num_trials=_society_num_trials(1),
                 )
             except Exception as _eval_exc:
                 import logging as _logging

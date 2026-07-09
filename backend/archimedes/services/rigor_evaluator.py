@@ -815,13 +815,20 @@ def run_rigor_gate(
             explicitly if that path should ever gate on the floor too.
     """
     if num_trials == 1:
-        # Loud on purpose (#902): num_trials=1 zeroes E[max SR] and collapses DSR
-        # to a plain "Sharpe > 0" test — the exact silent-undeflation failure mode
-        # that made the badge weaker than claimed. Legitimate only for a genuinely
-        # single-trial context, never for grading a library member.
+        # Loud on purpose (#902, reworded for decouple #2): num_trials=1 zeroes
+        # E[max SR] and collapses DSR to a plain "Sharpe > 0" test. This is the
+        # CORRECT, expected value for a strategy graded on its own self-contained
+        # selection set (a curated single-paper strategy, or a strategy with no
+        # real N-candidate search behind it) — a strategy's rigor depends ONLY on
+        # itself, never on the count of other strategies in the library (Dan's
+        # principle). The warning stays as a diagnostic breadcrumb: if a caller
+        # meant to pass the strategy's OWN selection-pool size (its N generated
+        # candidates or parameter-variant grid) and forgot, this line is the tell.
         logger.warning(
             "Rigor gate [%s]: num_trials=1 — DSR runs UNDEFLATED (no multiple-testing correction). "
-            "Pass num_trials=len(strategy_library) for a meaningful deflated verdict.",
+            "Correct for a self-contained strategy; if this strategy has its own real selection "
+            "set (an N-candidate generation pool or parameter-variant grid), pass that count "
+            "explicitly instead — never the curated library's size.",
             strategy_id,
         )
 

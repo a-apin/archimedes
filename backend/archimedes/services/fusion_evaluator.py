@@ -774,7 +774,7 @@ def evaluate_fusion_spec(
     """Full pipeline: validate → interpret → backtest → rigor gate.
 
     ``num_trials=None`` (the default) defers to ``apply_rigor_gate``'s own
-    fallback (the curated library size) — see ``_default_num_trials``.
+    self-contained fallback of ``1`` (decouple #2) — see ``_default_num_trials``.
 
     ``use_real_data=True`` (the live generate/debate paths) fetches real daily
     OHLCV for the spec's asset universe via ``fusion_market_data`` and runs the
