@@ -49,8 +49,8 @@
 Real-data backtests run cleanly in this environment. Verified directly:
 
 ```
-python -c "import yfinance as yf; yf.download('SPY', start='2004-01-02', end='2026-05-01', ...)"
-→ 5617 real daily bars, 2004-01-02 .. 2026-04-30
+python -c "import yfinance as yf; d = yf.download('SPY', start='2004-01-02', end='2026-05-01', auto_adjust=False, progress=False); print(len(d), d.index[0].date(), d.index[-1].date())"
+→ 5617 2004-01-02 2026-04-30
 ```
 
 30 symbols needed for this pass (the 5-asset macro universe, BIL, the 26-ETF
