@@ -18,6 +18,7 @@ import {
   rollingSharpe,
   seededRng,
 } from '../utils/riskMath'
+import SampleDataBadge from './SampleDataBadge'
 import './BacktestVisualizer.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
@@ -95,7 +96,7 @@ function EquityDrawdownChart({ returns, oosStartFrac }) {
 }
 
 // ─── Walk-forward IS/OOS band visualizer ────────────────────
-function WalkForwardBands({ folds }) {
+function WalkForwardBands({ folds, sample }) {
   const W = 720
   const H = 90
   const PAD_L = 8
@@ -105,7 +106,10 @@ function WalkForwardBands({ folds }) {
 
   return (
     <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
-      <div className="label mb-2">Walk-Forward Validation (IS / OOS folds)</div>
+      <div className="label mb-2">
+        Walk-Forward Validation (IS / OOS folds)
+        {sample && <SampleDataBadge />}
+      </div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Walk-forward in-sample and out-of-sample folds" style={{ display: 'block' }}>
         {folds.map((f, i) => {
           const x = PAD_L + i * segW
@@ -151,7 +155,7 @@ function WalkForwardBands({ folds }) {
 }
 
 // ─── Trade / rebalance log with date filter ─────────────────
-function TradeLog({ trades }) {
+function TradeLog({ trades, sample }) {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
 
@@ -166,7 +170,10 @@ function TradeLog({ trades }) {
   return (
     <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-        <div className="label mb-0">Trade / Rebalance Log</div>
+        <div className="label mb-0">
+          Trade / Rebalance Log
+          {sample && <SampleDataBadge />}
+        </div>
         <div className="bv-filter">
           <label className="caption">
             From <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -217,8 +224,10 @@ function TradeLog({ trades }) {
         </table>
       </div>
       <p className="caption" style={{ marginTop: 8, color: 'var(--text-4)' }}>
-        Showing {filtered.length} of {trades.length} rebalance events. Each row corresponds to an on-chain
-        rebalance whose reasoning trace is anchored on Arc.
+        Showing {filtered.length} of {trades.length} rebalance events.
+        {sample
+          ? ' These rows are generated samples that demonstrate the log format — no real trades happened.'
+          : ' Each row corresponds to an on-chain rebalance whose reasoning trace is anchored on Arc.'}
       </p>
     </div>
   )
@@ -463,6 +472,12 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
 
   const sensRatio = sweepData?.sensitivity_ratio ?? null
 
+  // Per-section sample flags (#1060): true while a section still renders the
+  // mock scaffold; flips off as soon as real data arrives via props or API.
+  const foldsAreSample = result?.folds == null
+  const sweepIsSample = sweepData == null && result?.sweep == null
+  const tradesAreSample = result?.trades == null
+
   return (
     <div>
       <div style={{ maxWidth: 680, marginBottom: 28 }}>
@@ -493,11 +508,14 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
           </p>
         </div>
       )}
-      <WalkForwardBands folds={data.folds} />
+      <WalkForwardBands folds={data.folds} sample={foldsAreSample} />
 
       {/* Parameter sweep section */}
       <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
-        <div className="label mb-3">Parameter Sweep ({sweepForHeatmap.metric ?? 'metric'} by parameter pair)</div>
+        <div className="label mb-3">
+          Parameter Sweep ({sweepForHeatmap.metric ?? 'metric'} by parameter pair)
+          {sweepIsSample && <SampleDataBadge />}
+        </div>
 
         {strategyId && (
           <div className="bv-sweep-controls" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
@@ -580,7 +598,7 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
         </p>
       </div>
 
-      <TradeLog trades={data.trades} />
+      <TradeLog trades={data.trades} sample={tradesAreSample} />
       {realReturns && <RollingStatBand returns={realReturns} window={60} />}
     </div>
   )
