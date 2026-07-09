@@ -34,7 +34,7 @@ the review named in the code has not happened.
 
 ## Index
 
-Eighteen records. Status and date are authoritative in each ADR's front-matter block;
+Nineteen records. Status and date are authoritative in each ADR's front-matter block;
 this table mirrors them.
 
 | ADR | Status | Date | Owner | Decision |
@@ -56,6 +56,7 @@ this table mirrors them.
 | [`ec2-to-ecs-fargate-cutover.md`](ec2-to-ecs-fargate-cutover.md) | Accepted | 2026-07-09 | Dan Browne | Why the serving tier moved from one docker-compose EC2 box to an **ECS Fargate** service behind the existing ALB (#1039, #1056–#1059) |
 | [`debate-society-sole-generation-pipeline.md`](debate-society-sole-generation-pipeline.md) | Accepted | 2026-07-09 | Dan Browne | Why the **debate society is the only generation path** — no routing tree, no flag, no silent fallback (#1064/#1074) |
 | [`num-trials-self-containment.md`](num-trials-self-containment.md) | **Accepted, pending quant sign-off** | 2026-07-09 | Dan Browne (quant reviewer: Önder Akkaya) | Why a strategy's DSR trial count depends **only on that strategy** — never `N + library_size`; curated single-paper strategies grade at `num_trials = 1` |
+| [`corpus-rag-kg-hybrid-build-path.md`](corpus-rag-kg-hybrid-build-path.md) | **Direction decided (HYBRID), follow-ups open** | 2026-07-10 | Dan Browne (scoping pass: Önder Akkaya) | Why the corpus RAG/KG layer is **HYBRID** — custom KnowledgeBase pipeline as spine, optional Bedrock KB bridge, no Neptune — and how that decomposes into follow-up issues (#778 Part B) |
 | [`aurora-postgres-alembic-datastore.md`](aurora-postgres-alembic-datastore.md) | Accepted | 2026-07-28 | Dan Browne | Why **Aurora PostgreSQL Serverless v2 (18.3)** is the system of record, **Alembic** the only schema-change mechanism, **Redis 7.1** ephemeral-only |
 
 ### Open review debt
