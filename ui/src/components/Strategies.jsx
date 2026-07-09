@@ -76,7 +76,7 @@ function statusTag(status, passesRigor) {
 }
 
 function statusLabel(status, passesRigor) {
-  if (status === 'live' && passesRigor === false) return 'Live (rigor failed)'
+  if (status === 'live' && passesRigor === false) return 'Reference only — gate failed'
   if (status === 'pending_backtest') return 'Pending Backtest'
   if (!status) return 'Candidate'
   return status.charAt(0).toUpperCase() + status.slice(1)
