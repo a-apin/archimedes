@@ -227,16 +227,23 @@ class TracePublisher:
     ) -> tuple[int | None, str | None, int | None]:
         """Resolve the on-chain trace_id + block from a commit tx receipt.
 
-        Decodes the TraceCommitted event to read the auto-incremented trace_id; falls
-        back to getTracesByVault()[-1] if the event can't be decoded.
+        Decodes the TraceCommitted event to read the auto-incremented trace_id.
+        Falls back to getTracesByVault()[-1] only when the receipt confirms the
+        tx succeeded (status == 1) but the event couldn't be decoded. A confirmed
+        revert (status == 0) skips the fallback and leaves trace_id=None instead —
+        a reverted tx has no meaningful logs, and the fallback would otherwise
+        silently hand back some other, unrelated trace_id already on record for
+        the vault as if it belonged to this failed commit.
         """
         trace.commit_tx_hash = tx_hash
         registry = self.loader.trace_registry
         block_num = None
         trace_id = None
+        reverted = False
         try:
             receipt = await chain_client.w3.eth.get_transaction_receipt(tx_hash)
             block_num = receipt.blockNumber
+            reverted = receipt.status == 0
             for log in receipt.logs:
                 try:
                     decoded = registry.events.TraceCommitted().process_log(log)
@@ -247,8 +254,11 @@ class TracePublisher:
         except Exception as e:
             logger.warning(f"Cannot read commit receipt: {e}")
 
-        if trace_id is None:
-            # Fallback: newest trace id for the vault.
+        if trace_id is None and not reverted:
+            # Fallback: newest trace id for the vault. Skipped on a confirmed
+            # revert (reverted=True, see docstring). If the receipt fetch above
+            # failed, `reverted` is still its initial False, so this still runs —
+            # unchanged from before the revert check was added.
             try:
                 ids = await registry.functions.getTracesByVault(vault_addr).call()
                 trace_id = int(ids[-1]) if ids else None

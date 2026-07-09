@@ -122,6 +122,76 @@ class TestCommit:
             assert result == (None, None, None)
 
 
+class TestFinalizeCommitRevertHandling:
+    """#714 follow-up: a reverted commit must never surface a stale trace_id.
+
+    ``getTracesByVault()[-1]`` is a reasonable last-resort guess ONLY when the
+    receipt confirms the tx succeeded but the ``TraceCommitted`` event couldn't be
+    decoded. A confirmed revert (``status == 0`` — the #1047-class failure mode:
+    the client builds a call shape the deployed bytecode doesn't expose) must
+    short-circuit straight to ``trace_id=None`` instead, or the fallback would
+    silently hand back an unrelated, already-committed trace's id.
+    """
+
+    def test_reverted_commit_does_not_fall_back_to_stale_trace_id(self, supported_loader):
+        with (
+            patch("archimedes.chain.trace_publisher.circle_signer") as mock_signer,
+            patch("archimedes.chain.trace_publisher.chain_client") as mock_client,
+        ):
+            mock_signer.is_configured = True
+            mock_signer.execute_contract = AsyncMock(return_value="0xREVERTED")
+            mock_client.to_checksum = lambda x: x
+            mock_client.settings = MagicMock(reasoning_trace_registry_address="0xregistry", chain_id=5042002)
+            mock_client.w3.eth.get_transaction_receipt = AsyncMock(
+                return_value=MagicMock(blockNumber=100, status=0, logs=[])
+            )
+            # If the buggy fallback fired, it would return this id — belonging to
+            # some earlier, unrelated commit for the same vault.
+            supported_loader.trace_registry.functions.getTracesByVault.return_value.call = AsyncMock(return_value=[999])
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            trace = _make_trace()
+            trace.compute_hash()
+            trace_id, tx, block = asyncio.run(
+                TracePublisher(loader=supported_loader).commit(trace, 2_000_000_000, b"\x44" * 32)
+            )
+
+            assert trace_id is None  # NOT 999 — the confirmed revert must not be masked
+            assert tx == "0xREVERTED"  # tx hash still recorded for the diagnostic trail
+            assert block == 100
+            supported_loader.trace_registry.functions.getTracesByVault.assert_not_called()
+
+    def test_successful_commit_with_undecodable_event_still_uses_fallback(self, supported_loader):
+        """Regression guard: only a confirmed revert skips the fallback — a
+        genuinely successful receipt (status=1) whose event can't be decoded
+        should still use getTracesByVault() as before."""
+        with (
+            patch("archimedes.chain.trace_publisher.circle_signer") as mock_signer,
+            patch("archimedes.chain.trace_publisher.chain_client") as mock_client,
+        ):
+            mock_signer.is_configured = True
+            mock_signer.execute_contract = AsyncMock(return_value="0xOK")
+            mock_client.to_checksum = lambda x: x
+            mock_client.settings = MagicMock(reasoning_trace_registry_address="0xregistry", chain_id=5042002)
+            mock_client.w3.eth.get_transaction_receipt = AsyncMock(
+                return_value=MagicMock(blockNumber=101, status=1, logs=[])  # no logs -> event decode finds nothing
+            )
+            supported_loader.trace_registry.functions.getTracesByVault.return_value.call = AsyncMock(
+                return_value=[7, 8, 9]
+            )
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            trace = _make_trace()
+            trace.compute_hash()
+            trace_id, tx, block = asyncio.run(
+                TracePublisher(loader=supported_loader).commit(trace, 2_000_000_000, b"\x55" * 32)
+            )
+
+            assert trace_id == 9  # last element of the fallback lookup
+            assert tx == "0xOK"
+            assert block == 101
+
+
 class TestReveal:
     def test_reveal_circle_path_calls_correct_abi(self, supported_loader):
         with (
