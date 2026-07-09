@@ -67,9 +67,6 @@ class SyntheticSpec:
     stork_asset_id: str | None = None
     chainlink_feed: str | None = None
     oracle_tier: str = "admin"
-    # Deprecated boolean retained for backward compat with any pre-#759 SSOT /
-    # doc code that reads it; derived from `chainlink_feed is not None` at load.
-    chainlink_covered: bool = False
 
     @property
     def price_int(self) -> int:
@@ -94,10 +91,6 @@ def _load_universe() -> dict[str, SyntheticSpec]:
         pyth = spec.get("pyth_feed_id")
         stork = spec.get("stork_asset_id")
         chainlink = spec.get("chainlink_feed")
-        # `chainlink_covered` is kept only for back-compat; the honest signal is
-        # whether a chainlink_feed is configured (null everywhere while Arc has
-        # no price Data Feeds). Fall back to the legacy bool if present.
-        chainlink_covered = chainlink is not None or bool(spec.get("chainlink_covered", False))
         universe[symbol] = SyntheticSpec(
             symbol=symbol,
             name=spec["name"],
@@ -109,7 +102,6 @@ def _load_universe() -> dict[str, SyntheticSpec]:
             stork_asset_id=str(stork) if stork else None,
             chainlink_feed=str(chainlink) if chainlink else None,
             oracle_tier=str(spec.get("oracle_tier") or _derive_oracle_tier(pyth, stork, chainlink)),
-            chainlink_covered=chainlink_covered,
         )
     return universe
 
@@ -161,8 +153,3 @@ def synthetics_for_deploy() -> list[tuple[str, str, int]]:
     return [
         (spec.name, spec.symbol, spec.price_int) for spec in sorted(SYNTHETIC_UNIVERSE.values(), key=lambda s: s.symbol)
     ]
-
-
-def chainlink_covered_synths() -> list[str]:
-    """Synth symbols whose underlying has a Chainlink data feed."""
-    return sorted(s for s, spec in SYNTHETIC_UNIVERSE.items() if spec.chainlink_covered)

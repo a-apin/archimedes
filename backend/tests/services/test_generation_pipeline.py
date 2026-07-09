@@ -308,9 +308,8 @@ def test_pick_pipeline_always_debate_after_cutover(monkeypatch):
     # test_debate_engine.py::test_pick_pipeline_is_debate_unconditionally.
     from archimedes.agents import generation_pipeline as gp
 
-    brief = GenerateBrief(intent="trend-following", risk_appetite="moderate")
     for override in (None, "fusion", "architect", "agent", "debate"):
-        name, reason = gp._pick_pipeline(brief, mode_override=override)
+        name, reason = gp._pick_pipeline(mode_override=override)
         assert name == "debate", f"override {override!r} routed off the society (got {name!r})"
         assert "debate" in reason.lower() or "Phase-3" in reason
 
