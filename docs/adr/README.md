@@ -1,11 +1,12 @@
 # Architecture Decision Records
 
 > **Status:** Day-10 (2026-05-22; updated 2026-06-27 — Phase-7 back-fill of historical
-> decisions). Ten ADRs. The ADR pattern is: capture a non-trivial technical decision
-> once, with the alternatives considered and the reasoning, so future contributors can
-> understand the choice without needing to relitigate it. The records below were written
-> as decisions landed; the 2026-06-27 batch back-fills decisions that shipped before the
-> ADR habit was established (each cites the PR/commit/spec it documents).
+> decisions; updated 2026-07-10 — corpus RAG/KG hybrid build path). Eleven ADRs. The
+> ADR pattern is: capture a non-trivial technical decision once, with the alternatives
+> considered and the reasoning, so future contributors can understand the choice
+> without needing to relitigate it. The records below were written as decisions
+> landed; the 2026-06-27 batch back-fills decisions that shipped before the ADR habit
+> was established (each cites the PR/commit/spec it documents).
 
 ## Index
 
@@ -21,6 +22,7 @@
 | [`fusion-primary-generation.md`](fusion-primary-generation.md) | Why strategy generation is **fusion-primary** (paper-grounded), not free-form LLM (#751) |
 | [`glm-to-bedrock-llm-migration.md`](glm-to-bedrock-llm-migration.md) | Why the live LLM moved from **GLM to AWS Bedrock** (Nova Micro default, Converse backend) (#717) |
 | [`portfolio-constructor-consolidation.md`](portfolio-constructor-consolidation.md) | Why legacy constructors were retired and a **dual-signal** (regime × consensus) sizer activated (#131, #662) |
+| [`corpus-rag-kg-hybrid-build-path.md`](corpus-rag-kg-hybrid-build-path.md) | Why the corpus RAG/KG layer is **HYBRID** — custom KnowledgeBase pipeline as spine, optional Bedrock KB bridge, no Neptune — and how that decomposes into follow-up issues (#778 Part B) |
 
 ## When to add an ADR
 
