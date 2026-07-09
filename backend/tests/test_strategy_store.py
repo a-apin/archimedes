@@ -268,6 +268,28 @@ class TestToDict:
         assert r.strategy_spec is None
         assert r.to_dict()["strategy_spec"] is None
 
+    def test_corrupt_spec_json_returns_none_not_raise(self, session):
+        """Copilot review on #1076: to_dict() must not raise
+        json.JSONDecodeError on a corrupt strategy_spec column — a single bad
+        row shouldn't 500 an API response (api/strategies_routes.py calls
+        record.to_dict() directly on a passport lookup). Decodes
+        defensively, returning None — the same fallback convention as
+        VaultMetadata.get_strategy_ids() (models/chat.py)."""
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Corrupt Spec",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            strategy_spec=DSL_SPEC,
+        )
+        # Simulate a corrupt DB row — bypasses upsert_strategy's json.dumps,
+        # which would never itself write invalid JSON.
+        r.strategy_spec = "{not valid json at all"
+        d = r.to_dict()  # must not raise
+        assert d["strategy_spec"] is None
+
 
 class TestStrategySpecPersistence:
     """Rebalancer decouple (Part A #1): strategy_spec persistence + backfill."""
@@ -296,6 +318,25 @@ class TestStrategySpecPersistence:
             asset_universe=["SPY"],
         )
         assert r.strategy_spec is None
+
+    def test_insert_with_explicit_empty_dict_spec_is_persisted_not_dropped(self, session):
+        """Copilot review on #1076: the insert branch used a truthiness check
+        (`if strategy_spec else None`), which silently dropped an explicitly-
+        provided empty dict ({}) by storing NULL — treating "provided but
+        empty" the same as "not provided at all". `is not None` (matching the
+        backfill branch a few lines up) must persist it as the literal "{}",
+        not NULL."""
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Empty Spec Explicitly Provided",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            strategy_spec={},
+        )
+        assert r.strategy_spec == "{}"
+        assert r.strategy_spec is not None
 
     def test_content_hash_match_backfills_missing_spec(self, session):
         """Same content, first call with no spec, second call WITH a spec —

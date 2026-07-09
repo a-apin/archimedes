@@ -113,6 +113,25 @@ class StrategyRecord(Base):
         Index("ix_strategy_generation", "generation_method"),
     )
 
+    def _decode_strategy_spec(self) -> dict | None:
+        """Defensively decode ``strategy_spec`` for ``to_dict()``.
+
+        Mirrors ``VaultMetadata.get_strategy_ids()`` (models/chat.py): a
+        corrupt/non-JSON column value must not raise out of a dict-shaping
+        method that's reachable straight from API routes (e.g.
+        ``strategies_routes.py`` calling ``record.to_dict()``) — a single bad
+        row shouldn't 500 the whole response. Falls back to ``None``,
+        matching the ``dict | None`` contract every other reader of this
+        field (``upsert_strategy``, ``to_strategy_passport``) already uses.
+        """
+        if not self.strategy_spec:
+            return None
+        try:
+            return json.loads(self.strategy_spec)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("strategy %s: corrupt strategy_spec JSON — returning None", self.id)
+            return None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -124,7 +143,7 @@ class StrategyRecord(Base):
             "thesis": self.thesis,
             "asset_universe": json.loads(self.asset_universe),
             "risk_profile": self.risk_profile,
-            "strategy_spec": json.loads(self.strategy_spec) if self.strategy_spec else None,
+            "strategy_spec": self._decode_strategy_spec(),
             "status": self.status,
             "rigor_verdict": json.loads(self.rigor_verdict) if self.rigor_verdict else None,
             "is_example": self.is_example,
@@ -274,7 +293,11 @@ def upsert_strategy(
         provenance_hash=provenance_hash,
         is_example=is_example,
         owner_wallet=owner_wallet,
-        strategy_spec=json.dumps(strategy_spec) if strategy_spec else None,
+        # `is not None` (not truthiness) — consistent with the backfill branch
+        # above, which also treats "present vs None" as the distinction. A
+        # bare truthiness check would silently drop an explicitly-provided
+        # empty dict ({}) by storing NULL instead of the serialized "{}".
+        strategy_spec=json.dumps(strategy_spec) if strategy_spec is not None else None,
     )
     if rigor_verdict:
         # Same transition rule as the upsert-existing branch above

@@ -340,11 +340,22 @@ class StrategyRunner:
             # Fail-safe: a broken/invalid generated spec (bad JSON, DB error,
             # unexpected shape) must never break the curated tick or the
             # per-vault loop — logged and swallowed, never raised.
+            #
+            # Cache each vault's bound strategy_ids here so step 6's per-vault
+            # loop below can reuse it instead of re-querying VaultMetadata a
+            # second time per vault per tick (`_get_vault_strategy_ids` opens
+            # its own DB session per call). Built unconditionally, ahead of
+            # the try/except: `_get_vault_strategy_ids` already never raises
+            # (its own internal try/except returns None on failure), so this
+            # comprehension can't be short-circuited by the exception handler
+            # below — every vault's entry is guaranteed to land in the cache.
+            vault_strategy_ids_cache: dict[str, list[str] | None] = {
+                vault_addr: self._get_vault_strategy_ids(vault_addr) for vault_addr in vaults
+            }
             try:
                 curated_ids = {ss.strategy_id for ss in all_signals}
                 bound_ids: set[str] = set()
-                for vault_addr in vaults:
-                    vault_ids = self._get_vault_strategy_ids(vault_addr)
+                for vault_ids in vault_strategy_ids_cache.values():
                     if vault_ids:
                         bound_ids.update(vault_ids)
                 generated_ids = bound_ids - curated_ids
@@ -371,8 +382,9 @@ class StrategyRunner:
             # 6. Process each vault with per-vault strategy scoping (Issue #307)
             for vault_addr in vaults:
                 try:
-                    # Per-vault scoping: each vault executes only its selected strategies
-                    vault_strategy_ids = self._get_vault_strategy_ids(vault_addr)
+                    # Per-vault scoping: each vault executes only its selected
+                    # strategies (looked up once, above, and cached for reuse here).
+                    vault_strategy_ids = vault_strategy_ids_cache.get(vault_addr)
 
                     if vault_strategy_ids is None:
                         # Legacy vault (deployed before strategy-selection flow
