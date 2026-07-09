@@ -99,7 +99,9 @@ export default function Insights() {
 
   useEffect(() => { load() }, [load])
 
-  const landed = funnel?.stages?.find(s => s.stage === 'landed')?.distinct_visitors ?? 0
+  // null (not 0) when the funnel hasn't loaded / failed — so "Distinct visitors"
+  // renders an honest "—" (unknown) rather than a misleading "0".
+  const landed = funnel ? (funnel.stages?.find(s => s.stage === 'landed')?.distinct_visitors ?? 0) : null
   const totalDevices = visitors ? Object.values(visitors.devices || {}).reduce((a, b) => a + b, 0) : 0
   const maxCountry = visitors?.countries?.[0]?.distinct_visitors ?? 0
 
@@ -148,8 +150,10 @@ export default function Insights() {
       {/* ── Conversion funnel ── */}
       <section style={{ ...card, marginBottom: 16 }}>
         <h2 style={{ marginTop: 0, fontSize: 16 }}>Conversion funnel — distinct visitors</h2>
-        {!funnel ? (
+        {loading && !funnel ? (
           <Empty>Loading…</Empty>
+        ) : !funnel ? (
+          <Empty>Couldn’t load the funnel{error ? `: ${error}` : '.'}</Empty>
         ) : landed === 0 ? (
           <Empty>No visitors recorded yet. The funnel started collecting when it deployed today.</Empty>
         ) : (
