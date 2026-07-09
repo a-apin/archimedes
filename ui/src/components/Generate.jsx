@@ -181,6 +181,23 @@ export default function Generate({ onNavigate, walletAddr }) {
 
       {/* ── 2. BRIEF INPUT + SUBMIT ── */}
       <div className="card p-5 mb-4">
+        {/* Strategy name — promoted from Advanced options so it's seen before the brief */}
+        <div className="mb-3">
+          <div className="label mb-1">Strategy name (optional)</div>
+          <input
+            type="text"
+            value={strategyName}
+            onChange={e => setStrategyName(e.target.value)}
+            placeholder="Leave blank — backend auto-derives a name"
+            maxLength={80}
+            className="chat-input w-full px-2.5 py-1.5"
+            disabled={starting}
+          />
+          <p className="caption mt-1" style={{ color: 'var(--text-3)' }}>
+            Short and memorable — leave blank to auto-name. {strategyName.length}/80
+          </p>
+        </div>
+
         <div className="label mb-1">Your brief</div>
         <p className="caption mb-2" style={{ color: 'var(--text-3)' }}>
           A good brief names concrete assets or classes, a mechanism (momentum /
@@ -252,7 +269,7 @@ export default function Generate({ onNavigate, walletAddr }) {
               className={`${advancedOpen ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'} w-3.5 h-3.5`}
             />
             Advanced options
-            {(selectedAssets.length > 0 || strategyName || riskAppetite !== 'moderate' || depth !== 5) && (
+            {(selectedAssets.length > 0 || riskAppetite !== 'moderate' || depth !== 5) && (
               <span className="tag tag-accent" style={{ fontSize: '0.7rem', padding: '1px 6px' }}>
                 active
               </span>
@@ -290,20 +307,6 @@ export default function Generate({ onNavigate, walletAddr }) {
                     ))}
                   </select>
                 </label>
-              </div>
-
-              {/* Strategy name */}
-              <div className="mb-3">
-                <div className="label mb-1" style={{ fontSize: '0.82rem' }}>Strategy name (optional)</div>
-                <input
-                  type="text"
-                  value={strategyName}
-                  onChange={e => setStrategyName(e.target.value)}
-                  placeholder="Leave blank — backend auto-derives a name"
-                  maxLength={80}
-                  className="chat-input w-full px-2.5 py-1.5"
-                  disabled={starting}
-                />
               </div>
 
               {/* Asset picker */}
