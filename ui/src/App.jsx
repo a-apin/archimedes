@@ -19,7 +19,6 @@ import BacktestVisualizer from './components/BacktestVisualizer'
 import VaultDetail from './components/VaultDetail'
 import OnboardingTour, { hasCompletedOnboarding } from './components/OnboardingTour'
 import WalletGate from './components/WalletGate'
-import MobileBanner from './components/MobileBanner'
 import MarketplacePage from './components/MarketplacePage'
 import StrategyDetailPage from './components/StrategyDetailPage'
 import PublishPage from './components/PublishPage'
@@ -323,7 +322,6 @@ export default function App() {
 
   return (
     <>
-      <MobileBanner />
       <Layout
         page={page}
         setPage={navigateToPage}

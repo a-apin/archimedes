@@ -25,8 +25,32 @@ export default function CorpusGraph() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [hoverNode, setHoverNode] = useState(null)
+  const [containerWidth, setContainerWidth] = useState(800)
   const containerRef = useRef(null)
   const fgRef = useRef(null)
+
+  // Track the container's actual width so the canvas always matches it —
+  // both on first paint (in case the ref attaches after the first data-ready
+  // render) and on resize/rotation, instead of locking in a stale/fallback
+  // width forever.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    // ResizeObserver isn't available everywhere (older browsers, some test
+    // runners/jsdom) — fall back to a one-time width read from the
+    // container's current layout instead of throwing.
+    if (typeof ResizeObserver === 'undefined') {
+      setContainerWidth(el.offsetWidth || 800)
+      return
+    }
+    const ro = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect?.width
+      if (w) setContainerWidth(w)
+    })
+    ro.observe(el)
+    setContainerWidth(el.offsetWidth || 800)
+    return () => ro.disconnect()
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -175,15 +199,19 @@ export default function CorpusGraph() {
         nodeRelSize={1}
         warmupTicks={50}
         cooldownTicks={100}
-        width={containerRef.current?.offsetWidth || 800}
+        width={containerWidth}
         height={500}
       />
 
-      {/* Legend */}
+      {/* Legend — shrinks on narrow containers so it doesn't permanently
+          cover most of the graph on a phone-width viewport. */}
       <div className="corpus-graph-legend" style={{
         position: 'absolute', top: 48, right: 12,
-        background: 'rgba(10,10,16,0.85)', borderRadius: 8, padding: '10px 14px',
-        border: '1px solid var(--glass-border)', fontSize: '0.78rem', maxWidth: 200,
+        background: 'rgba(10,10,16,0.85)', borderRadius: 8,
+        padding: containerWidth < 480 ? '8px 10px' : '10px 14px',
+        border: '1px solid var(--glass-border)',
+        fontSize: containerWidth < 480 ? '0.68rem' : '0.78rem',
+        maxWidth: containerWidth < 480 ? 120 : 200,
       }}>
         <div className="caption mb-1 uppercase tracking-wider" style={{ color: 'var(--text-4)' }}>Clusters</div>
         {legendClusters.map(([cluster, color]) => (

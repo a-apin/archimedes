@@ -276,14 +276,8 @@ function MemoryPillar() {
         {MEMORY_LAYERS.map(m => (
           <div
             key={m.tag}
-            className="card-flat"
-            style={{
-              padding: '12px 16px',
-              display: 'grid',
-              gridTemplateColumns: 'auto 1fr 1fr 1fr',
-              gap: 16,
-              alignItems: 'center',
-            }}
+            className="card-flat memory-row"
+            style={{ padding: '12px 16px' }}
           >
             <span
               className="font-bold"

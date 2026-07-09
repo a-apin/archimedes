@@ -187,7 +187,7 @@ function CatalogTab({ papers, total, page, loading, search, setSearch, categoryF
         <CustomSelect
           value={categoryFilter}
           onChange={v => { setCategoryFilter(v); setPage(1) }}
-          style={{ width: 180 }}
+          className="catalog-filter"
           options={[{ value: '', label: 'All Categories' }, ...categories.map(c => ({ value: c.name, label: `${c.label || c.name} (${c.count})` }))]}
         />
       </div>
@@ -202,14 +202,8 @@ function CatalogTab({ papers, total, page, loading, search, setSearch, categoryF
                 ellipsis instead of wrapping. */}
             <table
               className="lib-table"
-              style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', tableLayout: 'fixed' }}
+              style={{ minWidth: 560, borderCollapse: 'collapse', fontSize: '0.82rem' }}
             >
-              <colgroup>
-                <col style={{ width: '20%' }} />
-                <col style={{ width: '6%' }} />
-                <col />
-                <col style={{ width: '15%' }} />
-              </colgroup>
               <thead>
                 <tr style={{ background: 'var(--glass)', textAlign: 'left', borderBottom: '1px solid var(--glass-border)' }}>
                   <th style={{ padding: '7px 12px', whiteSpace: 'nowrap' }}>Authors</th>

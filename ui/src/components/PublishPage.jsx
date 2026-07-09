@@ -278,13 +278,13 @@ export default function PublishPage({ onNavigate }) {
 
         <div className="flex gap-2 mb-4">
           <button
-            className={`tag ${activeTab === 'generated' ? 'tag-accent' : 'tag-muted'}`}
+            className={`tag tag-tab ${activeTab === 'generated' ? 'tag-accent' : 'tag-muted'}`}
             onClick={() => setActiveTab('generated')}
           >
             Generated
           </button>
           <button
-            className={`tag ${activeTab === 'examples' ? 'tag-accent' : 'tag-muted'}`}
+            className={`tag tag-tab ${activeTab === 'examples' ? 'tag-accent' : 'tag-muted'}`}
             onClick={() => setActiveTab('examples')}
           >
             Examples
