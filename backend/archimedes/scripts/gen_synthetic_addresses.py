@@ -48,23 +48,20 @@ def build(manifest_dir: Path) -> dict[str, dict[str, str]]:
     tokens = _read_tsv(manifest_dir / "synth-tokens.tsv")
     oracles = _read_tsv(manifest_dir / "synth-oracles.tsv")
 
-    # Parity: manifest ↔ SSOT must agree exactly.
-    missing_from_manifest = sorted(ssot - set(tokens))
-    extra_in_manifest = sorted(set(tokens) - ssot)
-    if missing_from_manifest or extra_in_manifest:
-        raise SystemExit(
-            "SSOT/manifest divergence — fix before wiring addresses:\n"
-            f"  SSOT symbols with no deployed token: {missing_from_manifest}\n"
-            f"  deployed tokens not in the SSOT: {extra_in_manifest}"
-        )
+    # Parity: BOTH the token AND oracle manifests must agree EXACTLY with the SSOT.
+    # A missing token or oracle (or an extra) means the deploy and the SSOT disagree,
+    # which must be fixed before wiring — never silently drop a field.
+    problems: list[str] = []
+    for label, deployed in (("token", set(tokens)), ("oracle", set(oracles))):
+        if ssot - deployed:
+            problems.append(f"  SSOT symbols with no deployed {label}: {sorted(ssot - deployed)}")
+        if deployed - ssot:
+            problems.append(f"  deployed {label}s not in the SSOT: {sorted(deployed - ssot)}")
+    if problems:
+        raise SystemExit("SSOT/manifest divergence — fix before wiring addresses:\n" + "\n".join(problems))
 
-    addrs: dict[str, dict[str, str]] = {}
-    for sym in sorted(ssot):
-        entry: dict[str, str] = {"token": tokens[sym]}
-        if sym in oracles:
-            entry["oracle"] = oracles[sym]
-        addrs[sym] = entry
-    return addrs
+    # Parity guaranteed above ⇒ every synth has BOTH a token and an oracle.
+    return {sym: {"token": tokens[sym], "oracle": oracles[sym]} for sym in sorted(ssot)}
 
 
 def main() -> int:

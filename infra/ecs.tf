@@ -481,15 +481,11 @@ resource "aws_ecs_task_definition" "backend" {
         # Marketplace contracts (publish path) — T3.2.
         { name = "ARC_STRATEGY_REGISTRY_ADDRESS", value = "0x283a2E42a06bb9BBA5e6613957C473D8AE7d4219" },
         { name = "ARC_PAYMENT_SPLITTER_ADDRESS", value = "0x69697D64e6ABD4dd7febc4dB7F017e9Cf4a9A1a7" },
-        # Demo synths (token + oracle) — override stale committed defaults so the
-        # backend resolves them to the new deployment. Full 281-synth convergence
-        # (_SYNTH_DEFAULTS in chain/client.py) is a follow-up backend PR.
-        { name = "ARC_SSPY_ADDRESS", value = "0xc71c4a7ce89bf45d90b0a56eed9cd842eebf2d5e" },
-        { name = "ARC_SSPY_ORACLE_ADDRESS", value = "0x0c3270ee60f7144cdb95541101e6f6fa3b8061d7" },
-        { name = "ARC_SBTC_ADDRESS", value = "0xa6ddc0ace2b9a6a305d5aedef7432c4e48be35dc" },
-        { name = "ARC_SBTC_ORACLE_ADDRESS", value = "0x40c895c92515f0d73ed6ce6b4e8a8960cba765a9" },
-        { name = "ARC_SETH_ADDRESS", value = "0x27f8678029c1f1ead7a9734fc9ab51eaff3613da" },
-        { name = "ARC_SETH_ORACLE_ADDRESS", value = "0xaa79e025a44ddbd095a5f9242ec8585ab6f02a82" },
+        # Per-synth token/oracle addresses are NOT set here: the backend resolves all
+        # 281 from the committed deploy-address SSOT baked into the image
+        # (backend/archimedes/data/synthetic_addresses.json, regenerated per redeploy by
+        # scripts/gen_synthetic_addresses.py). ARC_<SYMBOL>_ADDRESS env still overrides
+        # any single synth if ever needed, but the whole set no longer needs pinning here.
         # Config consolidation (#1039 P5): public wallet addresses, sourced
         # from Terraform variables (TF_VAR_*, see variables.tf) rather than
         # hardcoded here or read off a box .env file. Empty defaults disable
