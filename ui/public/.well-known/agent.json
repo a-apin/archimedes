@@ -1,0 +1,58 @@
+{
+  "schema": "a2a-agent-card (informal, simplified)",
+  "name": "Archimedes",
+  "description": "Agentic trading, grounded in research — settled on Arc. Turns a natural-language investment intent into a research-grounded, rigor-gated portfolio strategy, executed in a non-custodial USDC vault on the Arc testnet (chain ID 5042002).",
+  "url": "https://archimedes-arc.com",
+  "version": "0.1.0",
+  "provider": {
+    "organization": "Archimedes",
+    "url": "https://archimedes-arc.com"
+  },
+  "documentationUrl": "https://github.com/a-apin/archimedes/blob/main/docs/agent-api.md",
+  "service": {
+    "endpoint": "https://archimedes-arc.com/api",
+    "manifest": "https://archimedes-arc.com/api/agent/manifest",
+    "protocols": ["REST+JSON", "Server-Sent Events (generation streaming)"]
+  },
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false
+  },
+  "authentication": {
+    "schemes": ["SIWE"],
+    "description": "Sign-In with Ethereum (EIP-4361) via a programmatic EOA — no browser or passkey required. GET /api/auth/nonce, then POST /api/auth/verify.",
+    "chainId": 5042002
+  },
+  "skills": [
+    {
+      "id": "generate-strategy",
+      "name": "Generate strategy",
+      "description": "Turn a natural-language investment intent into a rigor-gated portfolio strategy (DSR / PBO / walk-forward OOS), grounded in the quantitative-finance research corpus.",
+      "status": "live"
+    },
+    {
+      "id": "deploy-vault",
+      "name": "Deploy vault",
+      "description": "Execute a generated, rigor-passing strategy into a non-custodial USDC vault on Arc.",
+      "status": "landing with the T3.2 redeploy (#588)"
+    },
+    {
+      "id": "monitor",
+      "name": "Monitor",
+      "description": "Read a deployed vault's live health, allocations, and performance.",
+      "status": "landing with the T3.2 redeploy (#588)"
+    },
+    {
+      "id": "publish",
+      "name": "Publish",
+      "description": "Publish a strategy to the nanopayment marketplace for other agents or users to subscribe to.",
+      "status": "landing with the T3.2 redeploy (#588)"
+    },
+    {
+      "id": "subscribe",
+      "name": "Subscribe",
+      "description": "Subscribe to a published strategy via sub-cent USDC nanopayments (x402 / Circle Gateway).",
+      "status": "landing with the T3.2 redeploy (#588)"
+    }
+  ]
+}

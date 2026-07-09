@@ -1,15 +1,36 @@
 """Tests for strategy_proposals episodic memory (Issue #165).
 
 Covers: ORM model, strategy_memory write path, proposals API endpoint.
+
+The API endpoint tests (``TestProposalsAPI``) were updated for the
+`dbrowneup/proposals-owner-scope` privacy fix: ``GET /api/proposals/`` and
+``GET /api/proposals/{generation_id}/siblings`` now require a verified SIWE
+session and scope to the caller's own ``owner_wallet``. Fuller ownership
+coverage (cross-user isolation, legacy NULL-owner rows, siblings scoping)
+lives in ``tests/test_proposals_ownership.py``; this file's own API tests are
+adapted just enough to keep exercising list/filter/siblings under the new
+auth-required shape.
 """
 
 from __future__ import annotations
 
+import time
 from datetime import UTC
 from unittest.mock import patch
 
 import pytest
+from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
 from fastapi.testclient import TestClient
+
+_WALLET = "0xAAAA000000000000000000000000000000000A"
+
+
+def _siwe_cookies(wallet: str) -> dict[str, str]:
+    """Valid signed SIWE session cookie for `wallet` (same helper shape as
+    test_strategy_ownership.py / test_user_routes.py — a real signed session,
+    not header spoofing)."""
+    return {_COOKIE_NAME: _sign_session(wallet, time.time())}
+
 
 # ── ORM model tests ──────────────────────────────────────────────────────
 
@@ -37,6 +58,7 @@ class TestStrategyProposalModel:
             content_hash="0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
             agent="fusion",
             regime_tag="bull",
+            owner_wallet="0xabc0000000000000000000000000000000000a",
             payload='{"intent": "test"}',
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
@@ -44,6 +66,7 @@ class TestStrategyProposalModel:
         d = row.to_dict()
         assert d["id"] == "abc123"
         assert d["generation_id"] == "gen_001"
+        assert d["owner_wallet"] == "0xabc0000000000000000000000000000000000a"
         assert d["verdict"] == "rigor_pass"
         assert d["trust_level"] == "VALIDATED"
         assert d["agent"] == "fusion"
@@ -101,6 +124,48 @@ class TestStrategyMemory:
         )
         assert proposal_id is not None
         assert len(proposal_id) == 16
+
+    def test_persist_proposal_stamps_owner_wallet_lowercased(self):
+        """persist_proposal(owner_wallet=...) stamps the column, lowercased —
+        case-insensitive matching depends on the stored value always being
+        lowercase (dbrowneup/proposals-owner-scope)."""
+        from archimedes import db as db_mod
+        from archimedes.models.strategy_proposal import StrategyProposal
+        from archimedes.services.strategy_memory import persist_proposal
+
+        mixed_case_wallet = "0xAbCDEF0000000000000000000000000000000A"
+
+        proposal_id = persist_proposal(
+            generation_id="gen_owner_stamp",
+            agent="fusion",
+            intent="owner stamping test",
+            owner_wallet=mixed_case_wallet,
+        )
+        assert proposal_id is not None
+
+        with db_mod.get_session() as session:
+            row = session.query(StrategyProposal).filter_by(proposal_id=proposal_id).one()
+            assert row.owner_wallet == mixed_case_wallet.lower()
+
+    def test_persist_proposal_no_owner_stays_null(self):
+        """Omitting owner_wallet (anonymous generation) leaves the column
+        NULL — must not default to an empty string or any other falsy-but-
+        present sentinel, since the owner-scoped filter's NULL-never-matches
+        guarantee depends on it being a real SQL NULL."""
+        from archimedes import db as db_mod
+        from archimedes.models.strategy_proposal import StrategyProposal
+        from archimedes.services.strategy_memory import persist_proposal
+
+        proposal_id = persist_proposal(
+            generation_id="gen_owner_none",
+            agent="fusion",
+            intent="anonymous generation test",
+        )
+        assert proposal_id is not None
+
+        with db_mod.get_session() as session:
+            row = session.query(StrategyProposal).filter_by(proposal_id=proposal_id).one()
+            assert row.owner_wallet is None
 
     def test_persist_proposal_rigor_fail(self):
         from archimedes.services.strategy_memory import persist_proposal
@@ -263,12 +328,20 @@ class TestProposalsAPI:
 
         return TestClient(app)
 
-    def test_list_proposals_empty(self, client):
+    def test_list_proposals_unauthenticated_401(self, client):
+        """dbrowneup/proposals-owner-scope: the endpoint used to be wide open
+        and return every user's proposals. It must now 401 without a
+        verified SIWE session."""
         resp = client.get("/api/proposals")
+        assert resp.status_code == 401
+
+    def test_list_proposals_empty(self, client):
+        resp = client.get("/api/proposals/", cookies=_siwe_cookies(_WALLET))
         assert resp.status_code == 200
         data = resp.json()
         assert "proposals" in data
         assert "total" in data
+        assert data["total"] == 0
 
     def test_list_proposals_after_persist(self, client):
         from archimedes.services.strategy_memory import persist_proposal
@@ -277,8 +350,9 @@ class TestProposalsAPI:
             generation_id="gen_api_test",
             agent="fusion",
             intent="api test proposal",
+            owner_wallet=_WALLET,
         )
-        resp = client.get("/api/proposals")
+        resp = client.get("/api/proposals/", cookies=_siwe_cookies(_WALLET))
         assert resp.status_code == 200
         data = resp.json()
         assert data["total"] >= 1
@@ -291,19 +365,25 @@ class TestProposalsAPI:
             agent="fusion",
             intent="failing proposal",
             rigor_verdict={"passing": False},
+            owner_wallet=_WALLET,
         )
-        resp = client.get("/api/proposals?verdict=rigor_fail")
+        resp = client.get("/api/proposals/?verdict=rigor_fail", cookies=_siwe_cookies(_WALLET))
         assert resp.status_code == 200
         data = resp.json()
+        assert data["proposals"], "expected the seeded rigor_fail proposal back for its owner"
         assert all(p["verdict"] == "rigor_fail" for p in data["proposals"])
+
+    def test_siblings_endpoint_unauthenticated_401(self, client):
+        resp = client.get("/api/proposals/gen_sib_api/siblings")
+        assert resp.status_code == 401
 
     def test_siblings_endpoint(self, client):
         from archimedes.services.strategy_memory import persist_proposal
 
         gid = "gen_sib_api"
-        persist_proposal(generation_id=gid, agent="fusion", intent="sib api 1")
-        persist_proposal(generation_id=gid, agent="architect", intent="sib api 2")
-        resp = client.get(f"/api/proposals/{gid}/siblings")
+        persist_proposal(generation_id=gid, agent="fusion", intent="sib api 1", owner_wallet=_WALLET)
+        persist_proposal(generation_id=gid, agent="architect", intent="sib api 2", owner_wallet=_WALLET)
+        resp = client.get(f"/api/proposals/{gid}/siblings", cookies=_siwe_cookies(_WALLET))
         assert resp.status_code == 200
         data = resp.json()
         assert data["generation_id"] == gid

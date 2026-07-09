@@ -32,6 +32,7 @@ load_ssm_secrets()
 
 # Shared rate limiter (Redis-backed, falls back to in-memory).
 # Defined in a separate module to avoid circular imports with route modules.
+from archimedes.api.agent_manifest_routes import agent_manifest_router
 from archimedes.api.auth_siwe import auth_router
 from archimedes.api.chat_routes import chat_router
 from archimedes.api.corpus_routes import corpus_router
@@ -465,6 +466,7 @@ init_db()
 
 # Wire all routers
 app.include_router(assets_router)
+app.include_router(agent_manifest_router)
 app.include_router(vaults_router)
 app.include_router(strategies_router)
 app.include_router(traces_router)
@@ -802,4 +804,9 @@ async def root():
         "name": "Archimedes",
         "tagline": "Agentic trading, grounded in research — settled on Arc.",
         "docs": _docs_url or "disabled (production)",
+        # Agent-discoverability pointers (additive, backwards-compatible — see /llms.txt
+        # and docs/agent-api.md for the full agent-facing contract).
+        "llms_txt": "/llms.txt",
+        "agent_manifest": "/api/agent/manifest",
+        "agent_docs": "see /llms.txt",
     }
