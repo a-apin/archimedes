@@ -26,6 +26,8 @@ PARAMS=(
   LLM_BASE_URL             # LLM endpoint base URL
   EMAIL_ENCRYPTION_KEY     # at-rest encryption key for stored user emails
   AURORA_MASTER_PASSWORD   # DB master password (mirror TF_VAR_aurora_master_password)
+  DATABASE_URL             # Aurora connection URL — consumed by the backend Fargate task (ecs.tf secrets) AND the relocated oracle/agent runners (fetch-secrets.sh); ecs.tf's header flags this as not-yet-seeded
+  REDIS_URL                # ElastiCache connection URL — same two consumers; same not-yet-seeded gap
   # --- Forthcoming, as features land (roadmap T1.x) ---
   PINATA_JWT               # IPFS pinning for reasoning-trace provenance (T1.4)
   CIRCLE_API_KEY           # Circle wallets / Gateway nanopayments (T1.2) — also the oracle+agent Circle DCW signer (#1065)
@@ -39,8 +41,17 @@ PARAMS=(
   WALLET_ADDRESS           # that wallet's EVM address (public, informational)
   INTERNAL_AGENT_API_KEY   # X-Internal-Agent-Key shared secret, agent runner -> backend internal API
   ARC_AGENT_PRIVATE_KEY    # raw-key agent signer FALLBACK (chain/executor.py) — only if not using Circle DCW for the agent (decision #1)
-  ARC_STRATEGY_REGISTRY_ADDRESS  # StrategyRegistry — changes at every contract redeploy (T3.2), so SSM-sourced, not hardcoded
-  ARC_PAYMENT_SPLITTER_ADDRESS   # PaymentSplitter (marketplace payouts) — same rationale
+  # ALL mutable ARC_*_ADDRESS values are SSM-sourced (never hardcoded): they
+  # change at every contract redeploy (T3.2), so the runner reads them from
+  # here via fetch-secrets.sh → --env-file (single source of truth; the
+  # systemd units pass NO `-e ARC_*_ADDRESS` flag that could override them,
+  # and a missing address fails the container closed rather than signing a
+  # dead contract). Seed every new address in ONE `--apply` at T3.2.
+  ARC_VAULT_FACTORY_ADDRESS           # VaultFactory — oracle + agent runner (fetch-secrets.sh)
+  ARC_AMM_ROUTER_ADDRESS              # AMMRouter — agent runner rebalance path (fetch-secrets.sh)
+  ARC_REASONING_TRACE_REGISTRY_ADDRESS # ReasoningTraceRegistry — oracle + agent runner (fetch-secrets.sh)
+  ARC_STRATEGY_REGISTRY_ADDRESS       # StrategyRegistry — changes at every contract redeploy (T3.2), so SSM-sourced, not hardcoded
+  ARC_PAYMENT_SPLITTER_ADDRESS        # PaymentSplitter (marketplace payouts) — same rationale
 )
 # NOTE: VITE_CIRCLE_CLIENT_KEY is a BUILD-TIME secret baked into the UI bundle at
 # `docker compose build` — it lives in the box-local .env (seeded by user-data.sh),

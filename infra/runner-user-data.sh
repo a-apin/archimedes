@@ -80,12 +80,28 @@ chmod 700 /opt/archimedes-runners
 # standalone (non-FastAPI) process where there is no in-process SSM fetch to
 # reuse. Pulls the WHOLE prefix (DATABASE_URL, REDIS_URL,
 # AURORA_MASTER_PASSWORD, EMAIL_ENCRYPTION_KEY, CIRCLE_*, WALLET_ID,
-# WALLET_ADDRESS, INTERNAL_AGENT_API_KEY, ARC_AGENT_PRIVATE_KEY,
+# WALLET_ADDRESS, INTERNAL_AGENT_API_KEY, ARC_AGENT_PRIVATE_KEY, and ALL of
+# the ARC_*_ADDRESS contract addresses — ARC_VAULT_FACTORY_ADDRESS,
+# ARC_AMM_ROUTER_ADDRESS, ARC_REASONING_TRACE_REGISTRY_ADDRESS,
 # ARC_STRATEGY_REGISTRY_ADDRESS, ARC_PAYMENT_SPLITTER_ADDRESS, ...) into ONE
 # env file consumed by BOTH containers — harmless unused vars in either
 # container's env, and avoids maintaining two divergent per-service param
 # lists here. NEVER logs a value, only parameter NAMES (matches
 # setup-ssm-secrets.sh's own norm).
+#
+# SINGLE SOURCE OF TRUTH FOR CONTRACT ADDRESSES (correctness, coordinator
+# review): the ARC_*_ADDRESS values are pulled from SSM here and are the ONLY
+# place they come from — the systemd units below pass NO `-e ARC_*_ADDRESS`
+# flag, deliberately. A `docker run -e KEY=VAL` flag OVERRIDES the
+# `--env-file`, so a hardcoded literal `-e ARC_VAULT_FACTORY_ADDRESS=0x...`
+# would pin the runner to whatever address was baked into this bootstrap
+# script, silently defeating a T3.2 re-seed in SSM and making the runner sign
+# against a DEAD contract. Sourcing them here instead means Dan re-seeds every
+# new address in ONE step at T3.2 (`setup-ssm-secrets.sh --apply`) and both
+# runners pick them up on their next `systemctl restart`, no bootstrap edit.
+# This is also fail-CLOSED: a missing/empty address in SSM → the container
+# raises loudly at startup rather than silently transacting on a stale/wrong
+# contract, the correct posture for a funds-adjacent runner.
 #
 # KNOWN LIMITATION: docker's --env-file format is `KEY=VALUE` per line, no
 # shell expansion, and treats a line starting with `#` as a comment — a
@@ -141,6 +157,12 @@ chmod 700 /opt/archimedes-runners/ecr-login.sh
 # ── systemd units — one per singleton runner. Both:
 #   - pull the SAME archimedes-backend image (never build on-box)
 #   - refresh secrets from SSM on every (re)start (ExecStartPre)
+#   - pass ONLY static, non-redeploy-variable config as `-e` flags
+#     (AWS_REGION, ORACLE_INTERVAL_SECONDS/AGENT_INTERVAL_SECONDS,
+#     AGENT_DRY_RUN). Every mutable ARC_*_ADDRESS contract address comes from
+#     the SSM-sourced --env-file instead — NEVER as an `-e` flag, which would
+#     override the env-file and re-hardcode a soon-to-be-stale address (see
+#     the fetch-secrets.sh preamble above for the full rationale).
 #   - ship stdout/stderr to the /archimedes/runners CloudWatch log group via
 #     docker's native `awslogs` log driver (uses the instance role's
 #     credentials automatically — no CloudWatch agent needed)
@@ -172,8 +194,6 @@ ExecStart=/usr/bin/docker run --rm --name archimedes-oracle \
   --env-file /opt/archimedes-runners/runner.env \
   -e AWS_REGION=${aws_region} \
   -e ORACLE_INTERVAL_SECONDS=60 \
-  -e ARC_VAULT_FACTORY_ADDRESS=0xca873414070844aeb98b0bf1051f81969c79cc32 \
-  -e ARC_REASONING_TRACE_REGISTRY_ADDRESS=0x42d8a23edb897cbee203e9fa197eb05ab5106ca6 \
   --log-driver=awslogs \
   --log-opt awslogs-region=${aws_region} \
   --log-opt awslogs-group=${log_group_name} \
@@ -207,9 +227,6 @@ ExecStart=/usr/bin/docker run --rm --name archimedes-agent \
   -e AWS_REGION=${aws_region} \
   -e AGENT_INTERVAL_SECONDS=300 \
   -e AGENT_DRY_RUN=false \
-  -e ARC_VAULT_FACTORY_ADDRESS=0xca873414070844aeb98b0bf1051f81969c79cc32 \
-  -e ARC_AMM_ROUTER_ADDRESS=0xd5b829f9d364a8bbe1caf6c8b19cb05371b178f4 \
-  -e ARC_REASONING_TRACE_REGISTRY_ADDRESS=0x42d8a23edb897cbee203e9fa197eb05ab5106ca6 \
   --log-driver=awslogs \
   --log-opt awslogs-region=${aws_region} \
   --log-opt awslogs-group=${log_group_name} \
