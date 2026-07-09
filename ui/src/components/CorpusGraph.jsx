@@ -28,6 +28,10 @@ export default function CorpusGraph() {
   const [containerWidth, setContainerWidth] = useState(800)
   const containerRef = useRef(null)
   const fgRef = useRef(null)
+  // Tracks whether the initial zoom-to-fit has run, so a later re-fetch
+  // (e.g. a future filter/search feature) can re-frame the graph instead
+  // of being silently skipped forever.
+  const didInitialFit = useRef(false)
 
   // Track the container's actual width so the canvas always matches it —
   // both on first paint (in case the ref attaches after the first data-ready
@@ -61,10 +65,24 @@ export default function CorpusGraph() {
         if (!r.ok) throw new Error(r.statusText)
         return r.json()
       })
-      .then(d => { if (!cancelled) setData(d) })
+      .then(d => { if (!cancelled) { didInitialFit.current = false; setData(d) } })
       .catch(e => { if (!cancelled) setError(e.message || 'Failed to load graph') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
+  }, [])
+
+  // Frame the full point cloud once the graph has settled, instead of
+  // opening on whatever the default d3 transform happens to be — on a
+  // 1000-point UMAP scatter that default is often zoomed too far in/out
+  // to be useful on first paint.
+  const handleEngineStop = useCallback(() => {
+    if (didInitialFit.current) return
+    didInitialFit.current = true
+    fgRef.current?.zoomToFit(400, 40)
+  }, [])
+
+  const resetView = useCallback(() => {
+    fgRef.current?.zoomToFit(400, 40)
   }, [])
 
   // Build a lookup for cluster → color
@@ -193,6 +211,7 @@ export default function CorpusGraph() {
         nodeCanvasObject={nodeCanvasObject}
         nodePointerAreaPaint={nodePointerAreaPaint}
         onNodeHover={node => setHoverNode(node)}
+        onEngineStop={handleEngineStop}
         linkColor={() => 'rgba(100,100,140,0.08)'}
         linkWidth={0.5}
         backgroundColor="transparent"
@@ -201,7 +220,29 @@ export default function CorpusGraph() {
         cooldownTicks={100}
         width={containerWidth}
         height={500}
+        minZoom={0.3}
+        maxZoom={40}
+        onNodeClick={node => {
+          // Zoom in on the clicked node's neighborhood so a user can jump
+          // straight into a cluster instead of hand-scrolling to it.
+          fgRef.current?.centerAt(node.x, node.y, 400)
+          fgRef.current?.zoom(6, 400)
+        }}
       />
+
+      {/* Reset view — bounded zoom + click-to-zoom-in can leave a user
+          stranded deep inside a cluster with no obvious way back out. */}
+      <button
+        type="button"
+        className="btn btn-outline corpus-graph-reset-view"
+        onClick={resetView}
+        style={{
+          position: 'absolute', top: 8, left: 12,
+          padding: '4px 10px', fontSize: '0.75rem',
+        }}
+      >
+        Reset view
+      </button>
 
       {/* Legend — shrinks on narrow containers so it doesn't permanently
           cover most of the graph on a phone-width viewport. */}

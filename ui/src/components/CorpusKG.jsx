@@ -36,6 +36,13 @@ export default function CorpusKG({ onOpenPaper }) {
   const [hoverEntity, setHoverEntity] = useState(null)
   const svgRef = useRef(null)
 
+  // Zoom/pan state — scale + translation applied to a wrapping <g> so
+  // node/edge/label rendering below is untouched. Wheel zooms around the
+  // cursor position; drag pans. Kept intentionally simple (no d3-zoom dep)
+  // since this is a plain SVG, not a canvas force-graph.
+  const [viewTransform, setViewTransform] = useState({ scale: 1, x: 0, y: 0 })
+  const dragState = useRef(null)
+
   const fetchKG = useCallback(async (q) => {
     setLoading(true)
     setError('')
@@ -58,6 +65,7 @@ export default function CorpusKG({ onOpenPaper }) {
         }))
       }
       setData(raw)
+      setViewTransform({ scale: 1, x: 0, y: 0 })
     } catch (e) {
       setError(e.message || 'Failed to load topic clusters')
     } finally {
@@ -100,6 +108,48 @@ export default function CorpusKG({ onOpenPaper }) {
 
     return { positions, svgW: 800, svgH: 500 }
   }, [data])
+
+  const clampScale = (s) => Math.min(8, Math.max(0.4, s))
+
+  const handleWheel = useCallback((e) => {
+    e.preventDefault()
+    const svg = svgRef.current
+    if (!svg) return
+    const rect = svg.getBoundingClientRect()
+    // Cursor position in viewBox units (before this zoom step).
+    const px = ((e.clientX - rect.left) / rect.width) * layout.svgW
+    const py = ((e.clientY - rect.top) / rect.height) * layout.svgH
+
+    setViewTransform((prev) => {
+      const factor = Math.exp(-e.deltaY * 0.0015)
+      const nextScale = clampScale(prev.scale * factor)
+      // Keep the point under the cursor fixed while scaling.
+      const nx = px - ((px - prev.x) / prev.scale) * nextScale
+      const ny = py - ((py - prev.y) / prev.scale) * nextScale
+      return { scale: nextScale, x: nx, y: ny }
+    })
+  }, [layout.svgW, layout.svgH])
+
+  const handlePointerDown = useCallback((e) => {
+    dragState.current = { startX: e.clientX, startY: e.clientY, origin: viewTransform }
+  }, [viewTransform])
+
+  const handlePointerMove = useCallback((e) => {
+    if (!dragState.current) return
+    const svg = svgRef.current
+    if (!svg) return
+    const rect = svg.getBoundingClientRect()
+    const dx = ((e.clientX - dragState.current.startX) / rect.width) * layout.svgW
+    const dy = ((e.clientY - dragState.current.startY) / rect.height) * layout.svgH
+    const { origin } = dragState.current
+    setViewTransform({ scale: origin.scale, x: origin.x + dx, y: origin.y + dy })
+  }, [layout.svgW, layout.svgH])
+
+  const handlePointerUp = useCallback(() => {
+    dragState.current = null
+  }, [])
+
+  const resetView = useCallback(() => setViewTransform({ scale: 1, x: 0, y: 0 }), [])
 
   // --- Render ---
 
@@ -174,67 +224,77 @@ export default function CorpusKG({ onOpenPaper }) {
       ) : entities.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center' }} className="caption">No entities found.</div>
       ) : (
-        <div style={{ overflow: 'auto', padding: '0 12px 12px' }}>
+        <div style={{ overflow: 'hidden', padding: '0 12px 12px', position: 'relative' }}>
           <svg
             ref={svgRef}
             viewBox={`0 0 ${layout.svgW} ${layout.svgH}`}
-            style={{ width: '100%', maxWidth: 800, height: 500, background: 'rgba(0,0,0,0.15)', borderRadius: 8 }}
+            style={{
+              width: '100%', maxWidth: 800, height: 500, background: 'rgba(0,0,0,0.15)', borderRadius: 8,
+              cursor: 'grab', touchAction: 'none',
+            }}
+            onWheel={handleWheel}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerLeave={handlePointerUp}
           >
-            {/* Edges */}
-            {displayRelations.map((r, i) => {
-              const s = layout.positions[r.source]
-              const t = layout.positions[r.target]
-              if (!s || !t) return null
-              return (
-                <line
-                  key={`edge-${i}`}
-                  x1={s.x} y1={s.y} x2={t.x} y2={t.y}
-                  stroke="rgba(100,100,140,0.15)"
-                  strokeWidth={0.8}
-                />
-              )
-            })}
-
-            {/* Nodes */}
-            {displayEntities.map(e => {
-              const pos = layout.positions[e.id]
-              if (!pos) return null
-              const r = 4 + (connCount[e.id] || 0) / maxConn * 8
-              const color = TYPE_COLORS[e.type] || '#6366f1'
-              const isHovered = hoverEntity === e.id
-              return (
-                <g
-                  key={`node-${e.id}`}
-                  transform={`translate(${pos.x},${pos.y})`}
-                  onMouseEnter={() => setHoverEntity(e.id)}
-                  onMouseLeave={() => setHoverEntity(null)}
-                  style={{ cursor: e.type === 'paper' ? 'pointer' : 'default' }}
-                  onClick={() => e.type === 'paper' && onOpenPaper?.(e.id)}
-                >
-                  <circle
-                    r={isHovered ? r + 3 : r}
-                    fill={color}
-                    opacity={isHovered ? 1 : 0.75}
-                    stroke={isHovered ? '#fff' : 'none'}
-                    strokeWidth={1.5}
+            <g transform={`translate(${viewTransform.x},${viewTransform.y}) scale(${viewTransform.scale})`}>
+              {/* Edges */}
+              {displayRelations.map((r, i) => {
+                const s = layout.positions[r.source]
+                const t = layout.positions[r.target]
+                if (!s || !t) return null
+                return (
+                  <line
+                    key={`edge-${i}`}
+                    x1={s.x} y1={s.y} x2={t.x} y2={t.y}
+                    stroke="rgba(100,100,140,0.15)"
+                    strokeWidth={0.8}
                   />
-                  {/* Label on hover or for high-degree nodes */}
-                  {(isHovered || (connCount[e.id] || 0) > maxConn * 0.3) && (
-                    <text
-                      x={r + 4}
-                      y={4}
-                      fontSize={10}
-                      fill={isHovered ? '#fff' : 'var(--text-3)'}
-                      fontFamily="system-ui"
-                    >
-                      {e.label?.length > 35 ? `${e.label.slice(0, 35)}…` : e.label}
-                    </text>
-                  )}
-                </g>
-              )
-            })}
+                )
+              })}
 
-            {/* Legend */}
+              {/* Nodes */}
+              {displayEntities.map(e => {
+                const pos = layout.positions[e.id]
+                if (!pos) return null
+                const r = 4 + (connCount[e.id] || 0) / maxConn * 8
+                const color = TYPE_COLORS[e.type] || '#6366f1'
+                const isHovered = hoverEntity === e.id
+                return (
+                  <g
+                    key={`node-${e.id}`}
+                    transform={`translate(${pos.x},${pos.y})`}
+                    onMouseEnter={() => setHoverEntity(e.id)}
+                    onMouseLeave={() => setHoverEntity(null)}
+                    style={{ cursor: e.type === 'paper' ? 'pointer' : 'default' }}
+                    onClick={() => e.type === 'paper' && onOpenPaper?.(e.id)}
+                  >
+                    <circle
+                      r={isHovered ? r + 3 : r}
+                      fill={color}
+                      opacity={isHovered ? 1 : 0.75}
+                      stroke={isHovered ? '#fff' : 'none'}
+                      strokeWidth={1.5}
+                    />
+                    {/* Label on hover or for high-degree nodes */}
+                    {(isHovered || (connCount[e.id] || 0) > maxConn * 0.3) && (
+                      <text
+                        x={r + 4}
+                        y={4}
+                        fontSize={10}
+                        fill={isHovered ? '#fff' : 'var(--text-3)'}
+                        fontFamily="system-ui"
+                      >
+                        {e.label?.length > 35 ? `${e.label.slice(0, 35)}…` : e.label}
+                      </text>
+                    )}
+                  </g>
+                )
+              })}
+            </g>
+
+            {/* Legend — stays fixed in screen space, outside the zoom/pan group */}
             <g transform={`translate(12, 12)`}>
               {Object.keys(TYPE_ICONS).map((type, i) => (
                 <g key={type} transform={`translate(0, ${i * 18})`}>
@@ -246,6 +306,15 @@ export default function CorpusKG({ onOpenPaper }) {
               ))}
             </g>
           </svg>
+
+          <button
+            type="button"
+            className="btn btn-outline corpus-kg-reset-view"
+            onClick={resetView}
+            style={{ position: 'absolute', top: 8, right: 20, padding: '4px 10px', fontSize: '0.75rem' }}
+          >
+            Reset view
+          </button>
         </div>
       )}
 
