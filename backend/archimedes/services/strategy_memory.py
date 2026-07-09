@@ -186,7 +186,10 @@ def query_proposals(
         with get_session() as session:
             q = session.query(StrategyProposal)
 
-            if owner_wallet:
+            # `is not None` (not truthiness): only an OMITTED owner_wallet (None)
+            # gets the unscoped internal query. An empty string "" is an explicit
+            # (empty) scope that matches no rows — never a silent scope bypass.
+            if owner_wallet is not None:
                 q = q.filter(StrategyProposal.owner_wallet == owner_wallet.lower())
             if verdict:
                 q = q.filter(StrategyProposal.verdict == verdict)
@@ -223,7 +226,10 @@ def get_siblings(generation_id: str, *, owner_wallet: str | None = None) -> list
 
         with get_session() as session:
             q = session.query(StrategyProposal).filter(StrategyProposal.generation_id == generation_id)
-            if owner_wallet:
+            # `is not None` (not truthiness): an empty string "" is an explicit
+            # empty scope (matches no rows), never a silent unscoped bypass — only
+            # an omitted owner_wallet (None) gets the unscoped internal query.
+            if owner_wallet is not None:
                 q = q.filter(StrategyProposal.owner_wallet == owner_wallet.lower())
             rows = q.order_by(StrategyProposal.created_at.asc()).all()
             return [r.to_dict() for r in rows]

@@ -67,10 +67,11 @@ async def get_proposal_siblings(generation_id: str, wallet: str = Depends(requir
     """Get all proposals from the same generation — 'considered alternatives'.
 
     Owner-scoped: 401 without a verified SIWE session; a generation owned by
-    another wallet (or a legacy NULL-owner generation) returns an empty
-    sibling list rather than 403/404 — existence of another user's generation
-    stays unconfirmed, mirroring the 404-not-403 pattern used elsewhere in
-    this codebase for owner-gated resources.
+    another wallet (or a legacy NULL-owner generation) returns HTTP 200 with an
+    empty sibling list — never a 403 or 404. Returning an empty list rather than
+    an error keeps the existence of another user's generation unconfirmed, the
+    same non-disclosure goal as the 404-not-403 convention used elsewhere for
+    owner-gated resources.
     """
     from archimedes.services.strategy_memory import get_siblings
 
