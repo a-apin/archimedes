@@ -74,6 +74,12 @@ class FunnelStageCount(BaseModel):
     distinct_visitors: int = Field(..., description="Distinct visitors that reached this stage (HLL estimate).")
     pct_of_landed: float = Field(..., description="distinct_visitors / landed, as a fraction (0.0-1.0).")
     step_conversion: float = Field(..., description="distinct_visitors / previous-stage count (0.0-1.0).")
+    by_agent_type: dict[str, int] = Field(
+        default_factory=dict,
+        description="distinct_visitors at this stage, broken out by agent_type ('internal'/'external'/'human') "
+        "so agent conversion can be measured separately from human (issue #788). Empty for source=identity, "
+        "which has no per-request agent_type.",
+    )
 
 
 class FunnelResponse(BaseModel):
