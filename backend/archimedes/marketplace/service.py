@@ -25,7 +25,7 @@ from archimedes.chain.oracle_updater import OracleUpdater
 from archimedes.chain.v_check import VCheck
 from archimedes.db import get_session
 from archimedes.interfaces.math import IRegimeDetector
-from archimedes.marketplace import payments
+from archimedes.marketplace import payments, spend_cap
 from archimedes.marketplace.settlement import SettlementSweeper
 from archimedes.marketplace.state import MarketState
 from archimedes.marketplace.tick_registry import (
@@ -623,7 +623,9 @@ class MarketService:
 
         async def _one(sub):
             async with sem:
-                paid = await self._charge_one(pub, sub, strategy_id, tick_id, TickStep.REBALANCE, action_count)
+                paid, halt_reason_override = await self._charge_one(
+                    pub, sub, strategy_id, tick_id, TickStep.REBALANCE, action_count
+                )
                 if not paid:
                     self._defer_subscriber(pub, sub)
                     await self.record_subscriber_tick(
@@ -635,7 +637,7 @@ class MarketService:
                             step_reached=TickStep.REBALANCE,
                             halted=True,
                             halt_source=HaltSource.PAYMENT,
-                            halt_reason="could not afford rebalance",
+                            halt_reason=halt_reason_override or "could not afford rebalance",
                             charged=False,
                             action_count=action_count,
                         )
@@ -820,22 +822,45 @@ class MarketService:
         except Exception:
             logger.exception("Failed to finalize settlement intent %s / %s / %s", strategy_id, tick_id, sub_id)
 
-    async def _charge_one(self, pub, sub, strategy_id, tick_id, step: TickStep, action_count: int) -> bool:
+    async def _charge_one(
+        self, pub, sub, strategy_id, tick_id, step: TickStep, action_count: int
+    ) -> tuple[bool, str | None]:
+        """Returns (paid, halt_reason_override). halt_reason_override is only set
+        when this method refuses the charge for a reason more specific than the
+        caller's own generic "could not afford X" message (currently: only the
+        #713 spend cap) — callers should prefer it over their default message
+        when it isn't None."""
         if self.payments_dry_run:
-            return True
+            return True, None
         if not pub.gateway_seller_address:
             logger.warning("[%s] no gateway_seller_address for pub %s — unpaid", tick_id, strategy_id)
-            return False
+            return False, None
         if not sub.circle_wallet_id:
             logger.warning("[%s] no circle_wallet_id for sub %s — unpaid", tick_id, sub.sub_id)
-            return False
+            return False, None
+
+        # Spend-cap guard (#713): per subscriber WALLET (not sub_id — one wallet
+        # can run several subscriptions and the cap is meant to bound total
+        # exposure, not let it multiply per subscription). Checked before the
+        # idempotency claim below so an over-cap charge never consumes a
+        # settlement-intent slot for a charge that isn't going to happen.
+        pending_raw = action_count * FLAT_FEE_PER_ACTION
+        if await spend_cap.is_over_cap(sub.subscriber_wallet, pending_raw):
+            logger.info(
+                "[%s] sub %s (wallet %s) at/over 24h spend cap — refusing charge for step %s",
+                tick_id,
+                sub.sub_id,
+                sub.subscriber_wallet[:10],
+                step.value,
+            )
+            return False, "24h spend cap reached"
 
         # Idempotency guard (x402 is NOT crash-retry-idempotent — a retry signs a
         # fresh EIP-3009 nonce that settles as a new payment). Claim the logical
         # charge BEFORE settling so a crash/retry cannot double-charge.
         claim = self._claim_settlement_intent(strategy_id, tick_id, sub.sub_id, step.value)
         if claim == "already_settled":
-            return True  # this exact (strategy, tick, sub, step) already paid
+            return True, None  # this exact (strategy, tick, sub, step) already paid
         if claim == "in_flight":
             logger.warning(
                 "[%s] settlement intent already in-flight for sub %s step %s — skipping to avoid double-charge",
@@ -843,7 +868,7 @@ class MarketService:
                 sub.sub_id,
                 step.value,
             )
-            return False
+            return False, None
 
         paid = await payments.charge(
             sub_id=sub.sub_id,
@@ -857,7 +882,11 @@ class MarketService:
             step=step.value,
         )
         self._finalize_settlement_intent(strategy_id, tick_id, sub.sub_id, step.value, settled=paid)
-        return paid
+        if paid:
+            await spend_cap.record_charge_usdc(
+                sub.subscriber_wallet, charge_id=f"{tick_id}:{step.value}", amount_raw=pending_raw
+            )
+        return paid, None
 
     # F6.6 — charge all active subscribers for one pipeline step
     # Batched into groups of CHARGE_BATCH_SIZE for concurrent Circle signing.
@@ -869,9 +898,11 @@ class MarketService:
                 *[self._charge_one(pub, s, strategy_id, tick_id, step, action_count=1) for s in chunk],
                 return_exceptions=True,
             )
-            for sub, paid in zip(chunk, results, strict=True):  # results == gather(over chunk) → same length
-                if isinstance(paid, Exception):
-                    paid = False
+            for sub, result in zip(chunk, results, strict=True):  # results == gather(over chunk) → same length
+                if isinstance(result, Exception):
+                    paid, halt_reason_override = False, None
+                else:
+                    paid, halt_reason_override = result
                 if paid:
                     await self.record_subscriber_tick(
                         SubscriberTickRecord(
@@ -897,7 +928,7 @@ class MarketService:
                             step_reached=step,
                             halted=True,
                             halt_source=HaltSource.PAYMENT,
-                            halt_reason=f"could not afford {step.value}",
+                            halt_reason=halt_reason_override or f"could not afford {step.value}",
                             charged=False,
                             action_count=1,
                         )
@@ -1112,7 +1143,8 @@ class MarketService:
         action_count: int,
     ) -> bool:
         """Legacy delegate — replaced by _charge_one.  Kept for test compat."""
-        return await self._charge_one(pub, sub, strategy_id, tick_id, TickStep.LOAD_STRATEGY, action_count)
+        paid, _ = await self._charge_one(pub, sub, strategy_id, tick_id, TickStep.LOAD_STRATEGY, action_count)
+        return paid
 
     async def _record_liability(self, sub: Subscriber, strategy_id: str, tick_id: str, action_count: int) -> None:
         """Record a charge-succeeded/mirror-failed liability. Best-effort:
