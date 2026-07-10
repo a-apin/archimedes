@@ -264,10 +264,14 @@ def test_subscribe_under_spend_cap_still_succeeds(client):
     )
     assert resp.status_code == 200, resp.text
 
-    resp = client.post(
-        "/api/marketplace/subscribe",
-        json={"strategy_id": "test_strat", "sub_id": "0x" + "f1" * 32, "ephemeral_wallet": "0xeph"},
-    )
+    with patch(
+        "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+        new=AsyncMock(return_value=("w-cap-ok", "0x0000000000000000000000000000000000000ee9")),
+    ):
+        resp = client.post(
+            "/api/marketplace/subscribe",
+            json={"strategy_id": "test_strat", "sub_id": "0x" + "f1" * 32, "ephemeral_wallet": "0xeph"},
+        )
     assert resp.status_code == 200, resp.text
 
 
