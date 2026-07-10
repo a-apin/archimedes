@@ -80,9 +80,11 @@ async def get_24h_spend_usdc(subscriber_wallet: str) -> Decimal:
     """Sum of USDC actually charged to *subscriber_wallet* in the trailing 24h.
 
     Prunes expired entries first (ZREMRANGEBYSCORE), so this is always the
-    live rolling total, not a stale snapshot. Never raises — a Redis failure
-    here should not itself block or corrupt a charge decision; callers treat
-    an exception as "cap unknown" (see is_over_cap).
+    live rolling total, not a stale snapshot. Does NOT itself catch Redis
+    errors — a connection failure propagates to the caller. is_over_cap is
+    the fail-open boundary: it wraps this call in a try/except and treats
+    any exception as "cap unknown", degrading to False (allow the charge)
+    rather than blocking a charge decision on a Redis outage.
     """
     r = await _get_store()._get_redis()
     key = _key(subscriber_wallet)
@@ -145,7 +147,9 @@ async def is_over_cap(subscriber_wallet: str, additional_amount_raw: int = 0) ->
     try:
         current = await get_24h_spend_usdc(subscriber_wallet)
     except Exception:
-        logger.exception("Spend-cap check failed for wallet %s — failing open (allowing the charge)", subscriber_wallet[:10])
+        logger.exception(
+            "Spend-cap check failed for wallet %s — failing open (allowing the charge)", subscriber_wallet[:10]
+        )
         return False
     additional = _raw_to_usdc(additional_amount_raw) if additional_amount_raw else Decimal(0)
     return (current + additional) >= cap

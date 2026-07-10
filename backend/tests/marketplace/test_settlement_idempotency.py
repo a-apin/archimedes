@@ -24,6 +24,17 @@ from archimedes.models.marketplace import SettlementIntent
 # without restoring it (issue #1100).
 
 
+@pytest.fixture(autouse=True)
+def _spend_cap_default_not_over():
+    """_charge_one checks spend_cap.is_over_cap before every charge (#713).
+    Default every test in this file to "not over cap" so none of them reach
+    out to a real Redis connection (fails open, but still a live-Redis
+    attempt this suite should not depend on) — the spend-cap section below
+    overrides this per-test to exercise the refusal path."""
+    with patch("archimedes.marketplace.service.spend_cap.is_over_cap", new=AsyncMock(return_value=False)):
+        yield
+
+
 def _svc(dry_run: bool = False) -> MarketService:
     return MarketService(interval_seconds=9999, payments_dry_run=dry_run, paper_trading=True)
 
@@ -77,13 +88,15 @@ async def test_charge_one_settles_once_then_skips_on_retry():
     pub, sub = _pub(), _sub()
     tick = "settle-once:1"
     with patch("archimedes.marketplace.payments.charge", new=AsyncMock(return_value=True)) as m_charge:
-        first = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
-        second = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
+        first_paid, first_override = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
+        second_paid, second_override = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
 
-    assert first is True
+    assert first_paid is True
+    assert first_override is None
     # The retry of the SAME (strategy, tick, sub, step) returns paid WITHOUT a
     # second settle — the idempotency guard prevented a double charge.
-    assert second is True
+    assert second_paid is True
+    assert second_override is None
     assert m_charge.await_count == 1
 
 
@@ -98,9 +111,10 @@ async def test_charge_one_in_flight_pending_does_not_recharge():
     svc._claim_settlement_intent("strat_a", tick, sub.sub_id, TickStep.REBALANCE.value)
 
     with patch("archimedes.marketplace.payments.charge", new=AsyncMock(return_value=True)) as m_charge:
-        result = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
+        paid, halt_reason_override = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
 
-    assert result is False
+    assert paid is False
+    assert halt_reason_override is None
     m_charge.assert_not_awaited()
 
 
@@ -109,12 +123,111 @@ async def test_charge_one_dry_run_never_claims_or_charges():
     pub, sub = _pub(), _sub()
     tick = "dry-run:1"
     with patch("archimedes.marketplace.payments.charge", new=AsyncMock(return_value=True)) as m_charge:
-        assert await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1) is True
+        paid, halt_reason_override = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
+    assert paid is True
+    assert halt_reason_override is None
     m_charge.assert_not_awaited()
     # Scoped to THIS charge's key (never claims under dry-run) — independent of
     # any rows other tests may have left in a shared DB.
     with get_session() as session:
         assert session.query(SettlementIntent).filter_by(tick_id=tick).count() == 0
+
+
+# ── #713 — spend cap ───────────────────────────────────────────────────────
+
+
+async def test_charge_one_refuses_when_over_spend_cap():
+    """A subscriber wallet at/over its rolling 24h spend cap is refused with
+    the specific override reason, BEFORE the settlement-intent claim, and
+    never reaches payments.charge — an over-cap charge must not consume a
+    settlement-intent slot for a charge that isn't going to happen."""
+    from archimedes.marketplace.service import FLAT_FEE_PER_ACTION
+
+    svc = _svc()
+    pub, sub = _pub(), _sub()
+    tick = "spend-cap:1"
+    action_count = 1
+    with (
+        patch("archimedes.marketplace.service.spend_cap.is_over_cap", new=AsyncMock(return_value=True)) as m_over_cap,
+        patch("archimedes.marketplace.payments.charge", new=AsyncMock(return_value=True)) as m_charge,
+    ):
+        paid, halt_reason_override = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, action_count)
+
+    assert paid is False
+    assert halt_reason_override == "24h spend cap reached"
+    m_charge.assert_not_awaited()
+    m_over_cap.assert_awaited_once_with(sub.subscriber_wallet, action_count * FLAT_FEE_PER_ACTION)
+
+    # No settlement-intent slot was claimed for this (strategy, tick, sub, step) —
+    # the spend-cap refusal happens BEFORE _claim_settlement_intent, so a later
+    # legitimate charge attempt for the same key still sees a clean slate.
+    with get_session() as session:
+        assert (
+            session.query(SettlementIntent)
+            .filter_by(strategy_id="strat_a", tick_id=tick, sub_id=sub.sub_id, step=TickStep.REBALANCE.value)
+            .first()
+            is None
+        )
+
+
+async def test_charge_one_under_cap_proceeds_normally():
+    """Sanity-checks the mock boundary the opposite way: when spend_cap
+    reports NOT over cap, the charge proceeds and records spend as usual —
+    guards against an accidentally-inverted cap check."""
+    svc = _svc()
+    pub, sub = _pub(), _sub()
+    tick = "spend-cap:2"
+    with (
+        patch("archimedes.marketplace.service.spend_cap.is_over_cap", new=AsyncMock(return_value=False)),
+        patch("archimedes.marketplace.payments.charge", new=AsyncMock(return_value=True)) as m_charge,
+        patch("archimedes.marketplace.service.spend_cap.record_charge_usdc", new=AsyncMock()) as m_record,
+    ):
+        paid, halt_reason_override = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
+
+    assert paid is True
+    assert halt_reason_override is None
+    m_charge.assert_awaited_once()
+    m_record.assert_awaited_once()
+
+
+async def test_charge_one_records_spend_with_correct_wallet_and_amount():
+    """A successful charge records spend against the SUBSCRIBER wallet (not
+    sub_id) for action_count * FLAT_FEE_PER_ACTION raw units — the exact
+    amount payments.charge was invoked for."""
+    from archimedes.marketplace.service import FLAT_FEE_PER_ACTION
+
+    svc = _svc()
+    pub, sub = _pub(), _sub()
+    tick = "spend-cap:3"
+    action_count = 3
+    with (
+        patch("archimedes.marketplace.service.spend_cap.is_over_cap", new=AsyncMock(return_value=False)),
+        patch("archimedes.marketplace.payments.charge", new=AsyncMock(return_value=True)),
+        patch("archimedes.marketplace.service.spend_cap.record_charge_usdc", new=AsyncMock()) as m_record,
+    ):
+        paid, _ = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, action_count)
+
+    assert paid is True
+    m_record.assert_awaited_once()
+    assert m_record.await_args.args[0] == sub.subscriber_wallet
+    assert m_record.await_args.kwargs["amount_raw"] == action_count * FLAT_FEE_PER_ACTION
+
+
+async def test_charge_one_does_not_record_spend_when_charge_fails():
+    """record_charge_usdc must only fire on a SUCCESSFUL charge — a failed
+    payments.charge must not inflate the wallet's rolling spend total."""
+    svc = _svc()
+    pub, sub = _pub(), _sub()
+    tick = "spend-cap:4"
+    with (
+        patch("archimedes.marketplace.service.spend_cap.is_over_cap", new=AsyncMock(return_value=False)),
+        patch("archimedes.marketplace.payments.charge", new=AsyncMock(return_value=False)),
+        patch("archimedes.marketplace.service.spend_cap.record_charge_usdc", new=AsyncMock()) as m_record,
+    ):
+        paid, _ = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
+
+    assert paid is False
+    m_record.assert_not_awaited()
 
 
 # ── #8 — auto-withdraw on unsubscribe ─────────────────────────────────────

@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.limiter import limiter
 from archimedes.db import get_session
+from archimedes.marketplace import spend_cap
 from archimedes.marketplace.encoding import derive_pool_id, to_bytes32
 from archimedes.marketplace.service import MarketService, Subscriber
 from archimedes.models.marketplace import MarketplaceAgent
@@ -332,6 +333,25 @@ async def subscribe_strategy(
         )
         if sub_id_taken is not None:
             raise HTTPException(status_code=409, detail="sub_id already in use")
+
+    # 2c. Spend-cap guard (#713): refuse a NEW subscription for a wallet
+    # already at/over its rolling 24h marketplace spend cap. This is the one
+    # place in the subscribe path building a synchronous HTTP response for a
+    # specific wallet, so it's the natural spot for a literal 429 — the
+    # charge-time enforcement in MarketService._charge_one is the more
+    # operationally important guard (it stops further charges on EXISTING
+    # subscriptions) but runs in a background tick loop and cannot itself
+    # produce an HTTP response. No additional_amount_raw here — this checks
+    # current standing only, not a specific pending charge.
+    if await spend_cap.is_over_cap(wallet.lower()):
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": "This wallet is at its rolling 24h marketplace spend cap — try subscribing again once the window clears.",
+                "reason": "marketplace_spend_cap_reached",
+                "cap_usdc": str(spend_cap.spend_cap_usdc()),
+            },
+        )
 
     # 3. Use the server-derived pool_id for storage (D-POOL)
     pool_id = derive_pool_id(strategy_id, pub_row.creator_wallet)
