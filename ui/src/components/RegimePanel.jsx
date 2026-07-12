@@ -1,5 +1,5 @@
 import { apiGet } from '../api'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { regimeMeta, regimeLabel, REGIME_ORDER } from '../regime'
 
 
@@ -88,22 +88,33 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
   const [fetchedRegime, setFetchedRegime] = useState(null)
   const [loading, setLoading] = useState(regimeProp == null)
   const [failed, setFailed] = useState(false)
+  // Tracks the most recently *started* request so a slow, superseded call
+  // (e.g. an in-flight auto-fetch that loses a race with a manual Retry
+  // click) can't overwrite state after a newer one has already resolved.
+  const requestIdRef = useRef(0)
 
   const fetchRegime = useCallback(() => {
-    let cancelled = false
+    const requestId = ++requestIdRef.current
     setLoading(true)
     setFailed(false)
     const timeout = setTimeout(() => {
-      if (cancelled) return
+      if (requestIdRef.current !== requestId) return
       setLoading(false)
       setFailed(true)
       console.error('Regime fetch timed out after', FETCH_TIMEOUT_MS, 'ms')
     }, FETCH_TIMEOUT_MS)
     apiGet('/api/regime/current')
-      .then(data => { clearTimeout(timeout); if (!cancelled) { setFetchedRegime(data); setFailed(false) } })
-      .catch(err => { clearTimeout(timeout); if (!cancelled) setFailed(true); console.error('Regime fetch failed:', err) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+      .then(data => {
+        clearTimeout(timeout)
+        if (requestIdRef.current === requestId) { setFetchedRegime(data); setFailed(false) }
+      })
+      .catch(err => {
+        clearTimeout(timeout)
+        if (requestIdRef.current === requestId) setFailed(true)
+        console.error('Regime fetch failed:', err)
+      })
+      .finally(() => { if (requestIdRef.current === requestId) setLoading(false) })
+    return () => { if (requestIdRef.current === requestId) requestIdRef.current += 1 }
   }, [])
 
   useEffect(() => {
