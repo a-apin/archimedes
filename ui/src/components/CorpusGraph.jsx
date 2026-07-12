@@ -10,6 +10,11 @@ const CLUSTER_PALETTE = [
   '#e879f9', '#22d3ee', '#fb923c', '#a3e635', '#f472b6',
 ]
 
+// Client-side safety net: the backend doesn't currently enforce the
+// `sample` query param, so a future full-corpus response can't overwhelm
+// the force-graph render. Mirrors CorpusKG.jsx's MAX_ENTITIES cap.
+const MAX_GRAPH_POINTS = 1000
+
 /**
  * SPECTER2 similarity force-directed graph.
  *
@@ -26,15 +31,20 @@ export default function CorpusGraph() {
   const [error, setError] = useState('')
   const [hoverNode, setHoverNode] = useState(null)
   const [containerWidth, setContainerWidth] = useState(800)
-  const containerRef = useRef(null)
+  // The wrapper div only mounts once data has loaded (the loading/error/empty
+  // states render before it), so a plain useRef + useEffect(..., []) would see
+  // containerRef.current as null on the one time the effect runs and never
+  // retry. A callback ref fires exactly when the node attaches (including
+  // after that later render), which is what we need here.
+  const [containerNode, setContainerNode] = useState(null)
+  const containerRef = useCallback(node => setContainerNode(node), [])
   const fgRef = useRef(null)
 
   // Track the container's actual width so the canvas always matches it —
-  // both on first paint (in case the ref attaches after the first data-ready
-  // render) and on resize/rotation, instead of locking in a stale/fallback
-  // width forever.
+  // both on mount and on resize/rotation, instead of locking in a stale/
+  // fallback width forever.
   useEffect(() => {
-    const el = containerRef.current
+    const el = containerNode
     if (!el) return
     // ResizeObserver isn't available everywhere (older browsers, some test
     // runners/jsdom) — fall back to a one-time width read from the
@@ -50,7 +60,7 @@ export default function CorpusGraph() {
     ro.observe(el)
     setContainerWidth(el.offsetWidth || 800)
     return () => ro.disconnect()
-  }, [])
+  }, [containerNode])
 
   useEffect(() => {
     let cancelled = false
@@ -83,8 +93,9 @@ export default function CorpusGraph() {
   const graphData = useMemo(() => {
     if (data?.points) {
       // New API: points with pre-computed UMAP x,y
+      const points = data.points.slice(0, MAX_GRAPH_POINTS)
       return {
-        nodes: data.points.map(p => ({
+        nodes: points.map(p => ({
           id: p.arxiv_id,
           label: p.arxiv_id,
           cluster: p.cluster_id || 'default',
@@ -98,19 +109,23 @@ export default function CorpusGraph() {
     }
     // Legacy fallback
     if (!data?.nodes) return { nodes: [], links: [] }
+    const nodes = data.nodes.slice(0, MAX_GRAPH_POINTS)
+    const nodeIds = new Set(nodes.map(n => n.id))
     return {
-      nodes: data.nodes.map(n => ({
+      nodes: nodes.map(n => ({
         id: n.id,
         label: n.title || n.id,
         cluster: n.cluster || 'default',
         val: 2,
         color: clusterColorMap[n.cluster || 'default'] || CLUSTER_PALETTE[0],
       })),
-      links: (data.edges || []).map(e => ({
-        source: e.source,
-        target: e.target,
-        value: e.weight || 1,
-      })),
+      links: (data.edges || [])
+        .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
+        .map(e => ({
+          source: e.source,
+          target: e.target,
+          value: e.weight || 1,
+        })),
     }
   }, [data, clusterColorMap])
 
