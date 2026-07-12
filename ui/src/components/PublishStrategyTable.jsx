@@ -86,11 +86,11 @@ function StrategyRow({ s, onSelect }) {
           <span className="tag tag-muted">{statusLabel(s.status)}</span>
         </td>
         <td className="mono" style={{ textAlign: 'right' }}>{fmt(s.sharpe_ratio)}</td>
-        <td className="mono positive" style={{ textAlign: 'right' }}>{fmtPct(s.cagr)}</td>
+        <td className={`mono ${s.cagr == null ? '' : s.cagr >= 0 ? 'positive' : 'negative'}`} style={{ textAlign: 'right' }}>{fmtPct(s.cagr)}</td>
         <td className="mono negative" style={{ textAlign: 'right' }}>
           {s.max_drawdown != null ? `−${fmtPct(s.max_drawdown)}` : '—'}
         </td>
-        <td className="mono" style={{ textAlign: 'right', color: 'var(--positive)' }}>{fmtUsd(endValue)}</td>
+        <td className="mono" style={{ textAlign: 'right', color: s.cagr == null ? 'var(--text-3)' : s.cagr >= 0 ? 'var(--positive)' : 'var(--negative)' }}>{fmtUsd(endValue)}</td>
         <td style={{ textAlign: 'right', padding: '6px 10px' }}>
           {s.can_publish ? (
             <button

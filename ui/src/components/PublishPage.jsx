@@ -57,11 +57,13 @@ export default function PublishPage({ onNavigate }) {
     if (!vaultMode || !selectedStrategy) return
     const addr = vaultMode === 'create' ? createdVault : existingVault.trim()
     if (!addr) { setVaultBalance(null); return }
+    let cancelled = false
     setCheckingBalance(true)
     usdcBalanceOfRaw(addr)
-      .then(b => setVaultBalance(b))
-      .catch(() => setVaultBalance(null))
-      .finally(() => setCheckingBalance(false))
+      .then(b => { if (!cancelled) setVaultBalance(b) })
+      .catch(() => { if (!cancelled) setVaultBalance(null) })
+      .finally(() => { if (!cancelled) setCheckingBalance(false) })
+    return () => { cancelled = true }
   }, [vaultMode, createdVault, existingVault, selectedStrategy, depositDone])
 
   const resetMenu = () => {
