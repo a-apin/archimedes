@@ -90,22 +90,25 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
   const [failed, setFailed] = useState(false)
 
   const fetchRegime = useCallback(() => {
+    let cancelled = false
     setLoading(true)
     setFailed(false)
     const timeout = setTimeout(() => {
+      if (cancelled) return
       setLoading(false)
       setFailed(true)
       console.error('Regime fetch timed out after', FETCH_TIMEOUT_MS, 'ms')
     }, FETCH_TIMEOUT_MS)
     apiGet('/api/regime/current')
-      .then(data => { clearTimeout(timeout); setFetchedRegime(data); setFailed(false) })
-      .catch(err => { clearTimeout(timeout); setFailed(true); console.error('Regime fetch failed:', err) })
-      .finally(() => setLoading(false))
+      .then(data => { clearTimeout(timeout); if (!cancelled) { setFetchedRegime(data); setFailed(false) } })
+      .catch(err => { clearTimeout(timeout); if (!cancelled) setFailed(true); console.error('Regime fetch failed:', err) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
     if (regimeProp != null) return
-    fetchRegime()
+    return fetchRegime()
   }, [regimeProp, fetchRegime])
 
   const regime = regimeProp ?? fetchedRegime

@@ -23,7 +23,7 @@ function fmt(v, d = 2) {
 }
 
 function AllocationBar({ label, weight, isUsdc, kelly, rigorPassed, isCandidate }) {
-  const pct = (weight * 100).toFixed(1)
+  const pct = (Number.isFinite(weight) ? weight * 100 : 0).toFixed(1)
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
@@ -81,11 +81,13 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
   const [error, setError] = useState('')
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     setError('')
     setData(null)
     apiGet(`/api/strategies/advisor?risk_profile=${selectedProfile}`)
       .then(d => {
+        if (cancelled) return
         // Backend may return 200 with an `error` body (e.g. when no
         // strategies are available) — surface that as a user-facing error
         // rather than rendering a half-empty card.
@@ -95,8 +97,9 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
           setData(d)
         }
       })
-      .catch(e => setError(e.message || 'Failed to load advisor'))
-      .finally(() => setLoading(false))
+      .catch(e => { if (!cancelled) setError(e.message || 'Failed to load advisor') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [selectedProfile])
 
   const regime = data?.regime ?? 'unknown'
@@ -365,8 +368,8 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
                       {data.correlation_pairs.map((p, i) => (
                         <tr key={i}>
                           <td className="mono" style={{ fontSize: '0.72rem' }}>{p.a} ⟷ {p.b}</td>
-                          <td className="text-right mono" style={{ color: Math.abs(p.corr) > 0.6 ? 'var(--warning)' : 'inherit' }}>
-                            {p.corr > 0 ? '+' : ''}{p.corr.toFixed(2)}
+                          <td className="text-right mono" style={{ color: Number.isFinite(p.corr) && Math.abs(p.corr) > 0.6 ? 'var(--warning)' : 'inherit' }}>
+                            {Number.isFinite(p.corr) ? `${p.corr > 0 ? '+' : ''}${fmt(p.corr)}` : '—'}
                           </td>
                         </tr>
                       ))}
