@@ -67,7 +67,7 @@ eth-account>=0.13.7
 eth-utils>=6.0.0
 cryptography>=49.0.0
 # direct import in marketplace/encoding.py (derive_pool_id); do not rely on web3 transitive
-eth-abi>=5.0.0
+eth-abi>=5.2.0
 
 ## Rate limiting
 slowapi>=0.1.10
