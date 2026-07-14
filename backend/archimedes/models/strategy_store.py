@@ -184,7 +184,10 @@ class StrategyRecord(Base):
             papers=papers,
             methodology_summary=self.thesis or "",
             asset_universe=json.loads(self.asset_universe) if self.asset_universe else [],
-            strategy_spec=json.loads(self.strategy_spec) if self.strategy_spec else None,
+            # Same defensive decode as to_dict(): a corrupt spec column must
+            # degrade to None (spec-less strategy) rather than raise out of a
+            # dataclass adapter that future call sites may not wrap (review).
+            strategy_spec=self._decode_strategy_spec(),
         )
 
 
