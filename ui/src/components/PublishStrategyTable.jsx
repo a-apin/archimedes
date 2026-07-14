@@ -86,11 +86,15 @@ function StrategyRow({ s, onSelect }) {
           <span className="tag tag-muted">{statusLabel(s.status)}</span>
         </td>
         <td className="mono" style={{ textAlign: 'right' }}>{fmt(s.sharpe_ratio)}</td>
-        <td className={`mono ${s.cagr == null ? '' : s.cagr >= 0 ? 'positive' : 'negative'}`} style={{ textAlign: 'right' }}>{fmtPct(s.cagr)}</td>
+        {/* Color/class checks use Number.isFinite to match what fmtPct/fmtUsd
+            actually render — a NaN/Infinity CAGR renders "—" and must not
+            carry a positive/negative color (review). Math.abs on drawdown
+            avoids a double negative when the backend ships it signed. */}
+        <td className={`mono ${!Number.isFinite(s.cagr) ? '' : s.cagr >= 0 ? 'positive' : 'negative'}`} style={{ textAlign: 'right' }}>{fmtPct(s.cagr)}</td>
         <td className="mono negative" style={{ textAlign: 'right' }}>
-          {s.max_drawdown != null ? `−${fmtPct(s.max_drawdown)}` : '—'}
+          {s.max_drawdown != null ? `−${fmtPct(Math.abs(s.max_drawdown))}` : '—'}
         </td>
-        <td className="mono" style={{ textAlign: 'right', color: s.cagr == null ? 'var(--text-3)' : s.cagr >= 0 ? 'var(--positive)' : 'var(--negative)' }}>{fmtUsd(endValue)}</td>
+        <td className="mono" style={{ textAlign: 'right', color: !Number.isFinite(s.cagr) ? 'var(--text-3)' : s.cagr >= 0 ? 'var(--positive)' : 'var(--negative)' }}>{fmtUsd(endValue)}</td>
         <td style={{ textAlign: 'right', padding: '6px 10px' }}>
           {s.can_publish ? (
             <button

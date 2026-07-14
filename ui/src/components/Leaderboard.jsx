@@ -191,7 +191,7 @@ export default function Leaderboard() {
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmt(e.sharpe_ratio)}</td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmtPct(e.cagr)}</td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap', color: 'var(--negative)' }}>
-                    {e.max_drawdown != null ? `−${fmtPct(e.max_drawdown)}` : '—'}
+                    {e.max_drawdown != null ? `−${fmtPct(Math.abs(e.max_drawdown))}` : '—'}
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
                     {rigorBadge(e)}
