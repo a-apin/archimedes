@@ -839,25 +839,13 @@ class MarketService:
             logger.warning("[%s] no circle_wallet_id for sub %s — unpaid", tick_id, sub.sub_id)
             return False, None
 
-        # Spend-cap guard (#713): per subscriber WALLET (not sub_id — one wallet
-        # can run several subscriptions and the cap is meant to bound total
-        # exposure, not let it multiply per subscription). Checked before the
-        # idempotency claim below so an over-cap charge never consumes a
-        # settlement-intent slot for a charge that isn't going to happen.
-        pending_raw = action_count * FLAT_FEE_PER_ACTION
-        if await spend_cap.is_over_cap(sub.subscriber_wallet, pending_raw):
-            logger.info(
-                "[%s] sub %s (wallet %s) at/over 24h spend cap — refusing charge for step %s",
-                tick_id,
-                sub.sub_id,
-                sub.subscriber_wallet[:10],
-                step.value,
-            )
-            return False, "24h spend cap reached"
-
         # Idempotency guard (x402 is NOT crash-retry-idempotent — a retry signs a
         # fresh EIP-3009 nonce that settles as a new payment). Claim the logical
-        # charge BEFORE settling so a crash/retry cannot double-charge.
+        # charge BEFORE settling so a crash/retry cannot double-charge. This also
+        # gates the spend-cap reservation below: it guarantees we reach that
+        # reservation at most once per logical charge, so a crash-retry of an
+        # already-settled charge short-circuits here first instead of trying to
+        # reserve the same amount twice (see try_reserve_usdc's docstring).
         claim = self._claim_settlement_intent(strategy_id, tick_id, sub.sub_id, step.value)
         if claim == "already_settled":
             return True, None  # this exact (strategy, tick, sub, step) already paid
@@ -869,6 +857,27 @@ class MarketService:
                 step.value,
             )
             return False, None
+
+        # Spend-cap guard (#713): per subscriber WALLET (not sub_id — one wallet
+        # can run several subscriptions and the cap is meant to bound total
+        # exposure, not let it multiply per subscription). Reserved atomically,
+        # immediately before payments.charge() — a separate check-then-record
+        # (the original design) is a TOCTOU race: N concurrent charges near the
+        # cap could all read "under cap" before any of them recorded anything,
+        # so all N would proceed and blow through the cap by up to N times a
+        # single charge (#1099 review). Released below if the charge fails.
+        pending_raw = action_count * FLAT_FEE_PER_ACTION
+        charge_id = f"{tick_id}:{step.value}"
+        if not await spend_cap.try_reserve_usdc(sub.subscriber_wallet, pending_raw, charge_id):
+            logger.info(
+                "[%s] sub %s (wallet %s) at/over 24h spend cap — refusing charge for step %s",
+                tick_id,
+                sub.sub_id,
+                sub.subscriber_wallet[:10],
+                step.value,
+            )
+            self._finalize_settlement_intent(strategy_id, tick_id, sub.sub_id, step.value, settled=False)
+            return False, "24h spend cap reached"
 
         paid = await payments.charge(
             sub_id=sub.sub_id,
@@ -882,10 +891,8 @@ class MarketService:
             step=step.value,
         )
         self._finalize_settlement_intent(strategy_id, tick_id, sub.sub_id, step.value, settled=paid)
-        if paid:
-            await spend_cap.record_charge_usdc(
-                sub.subscriber_wallet, charge_id=f"{tick_id}:{step.value}", amount_raw=pending_raw
-            )
+        if not paid:
+            await spend_cap.release_reservation(sub.subscriber_wallet, charge_id, pending_raw)
         return paid, None
 
     # F6.6 — charge all active subscribers for one pipeline step
