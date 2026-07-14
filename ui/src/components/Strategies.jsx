@@ -76,7 +76,11 @@ function statusTag(status, passesRigor) {
 }
 
 function statusLabel(status, passesRigor) {
-  if (status === 'live' && passesRigor === false) return 'Reference only — gate failed'
+  // status 'live' means "active in at least one portfolio" (models/strategy.py)
+  // while passes_rigor_gate is the CONTINUOUSLY re-derived verdict — a live
+  // strategy can be failing the gate right now. The label must say both
+  // truths; "Reference only" would deny the live-ness (claim integrity).
+  if (status === 'live' && passesRigor === false) return 'Live — rigor gate failing'
   if (status === 'pending_backtest') return 'Pending Backtest'
   if (!status) return 'Candidate'
   return status.charAt(0).toUpperCase() + status.slice(1)
