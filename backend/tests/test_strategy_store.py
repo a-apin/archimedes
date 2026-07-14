@@ -33,6 +33,20 @@ PAPERS_B = [
     {"arxiv_id": "2401.99999", "sha256": "def456"},
 ]
 
+# A validated DSL spec (same shape strategy_dsl.FABER_2007_SPEC exercises,
+# reused here rather than importing the module — this file's tests are about
+# persistence, not DSL validation itself).
+DSL_SPEC = {
+    "name": "SMA-200 Tactical Allocation",
+    "asset_universe": ["SPY"],
+    "rebalance_frequency": "monthly",
+    "entry": {"gt": ["close", "sma_200"]},
+    "exit": {"lt": ["close", "sma_200"]},
+    "position_sizing": {"type": "full_invested_when_in_market"},
+    "source_arxiv_ids": ["0706.1497"],
+    "look_ahead_safe": True,
+}
+
 
 class TestContentHash:
     def test_deterministic(self):
@@ -239,3 +253,188 @@ class TestToDict:
         assert d["asset_universe"] == ["SPY", "TSLA"]
         assert d["risk_profile"] == "aggressive"
         assert d["status"] == "candidate"
+
+    def test_no_spec_is_null(self, session):
+        """A candidate persisted without a DSL spec (fixture/buy-and-hold
+        path) round-trips strategy_spec as None, not an empty dict."""
+        r = upsert_strategy(
+            session,
+            generation_method="portfolio_agent_streaming",
+            strategy_name="No Spec",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+        )
+        assert r.strategy_spec is None
+        assert r.to_dict()["strategy_spec"] is None
+
+    def test_corrupt_spec_json_returns_none_not_raise(self, session):
+        """Copilot review on #1076: to_dict() must not raise
+        json.JSONDecodeError on a corrupt strategy_spec column — a single bad
+        row shouldn't 500 an API response (api/strategies_routes.py calls
+        record.to_dict() directly on a passport lookup). Decodes
+        defensively, returning None — the same fallback convention as
+        VaultMetadata.get_strategy_ids() (models/chat.py)."""
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Corrupt Spec",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            strategy_spec=DSL_SPEC,
+        )
+        # Simulate a corrupt DB row — bypasses upsert_strategy's json.dumps,
+        # which would never itself write invalid JSON.
+        r.strategy_spec = "{not valid json at all"
+        d = r.to_dict()  # must not raise
+        assert d["strategy_spec"] is None
+
+
+class TestStrategySpecPersistence:
+    """Rebalancer decouple (Part A #1): strategy_spec persistence + backfill."""
+
+    def test_insert_with_spec_persists_and_round_trips(self, session):
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Faber SMA200 Clone",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            strategy_spec=DSL_SPEC,
+        )
+        assert r.strategy_spec is not None
+        assert json.loads(r.strategy_spec) == DSL_SPEC
+        assert r.to_dict()["strategy_spec"] == DSL_SPEC
+
+    def test_insert_without_spec_is_null(self, session):
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="No Spec Debate",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+        )
+        assert r.strategy_spec is None
+
+    def test_insert_with_explicit_empty_dict_spec_is_persisted_not_dropped(self, session):
+        """Copilot review on #1076: the insert branch used a truthiness check
+        (`if strategy_spec else None`), which silently dropped an explicitly-
+        provided empty dict ({}) by storing NULL — treating "provided but
+        empty" the same as "not provided at all". `is not None` (matching the
+        backfill branch a few lines up) must persist it as the literal "{}",
+        not NULL."""
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Empty Spec Explicitly Provided",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            strategy_spec={},
+        )
+        assert r.strategy_spec == "{}"
+        assert r.strategy_spec is not None
+
+    def test_content_hash_match_backfills_missing_spec(self, session):
+        """Same content, first call with no spec, second call WITH a spec —
+        the existing row is backfilled (never a duplicate row)."""
+        r1 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Backfill Me",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+        )
+        assert r1.strategy_spec is None
+
+        r2 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Backfill Me",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            strategy_spec=DSL_SPEC,
+        )
+        assert r1.id == r2.id
+        assert session.query(StrategyRecord).count() == 1
+        assert json.loads(r2.strategy_spec) == DSL_SPEC
+
+    def test_content_hash_match_never_overwrites_existing_spec(self, session):
+        """A row that already has a spec keeps it — a later upsert (even with
+        a DIFFERENT spec dict) never clobbers the persisted one."""
+        r1 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Keep My Spec",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            strategy_spec=DSL_SPEC,
+        )
+        other_spec = {**DSL_SPEC, "name": "A different spec"}
+        r2 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Keep My Spec",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            strategy_spec=other_spec,
+        )
+        assert r1.id == r2.id
+        assert json.loads(r2.strategy_spec) == DSL_SPEC  # unchanged, not other_spec
+
+
+class TestToStrategyPassport:
+    """StrategyRecord -> StrategyPassport adapter (used by the live agent
+    runner to evaluate a generated strategy's own DSL spec)."""
+
+    def test_adapts_id_universe_and_spec(self, session):
+        from archimedes.models.strategy import StrategyPassport
+
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Faber Clone",
+            thesis="Momentum thesis",
+            source_papers=[{"arxiv_id": "0706.1497", "title": "A Quantitative Approach"}],
+            asset_universe=["SPY"],
+            strategy_spec=DSL_SPEC,
+        )
+        passport = r.to_strategy_passport()
+        assert isinstance(passport, StrategyPassport)
+        assert passport.id == r.id
+        assert passport.asset_universe == ["SPY"]
+        assert passport.strategy_spec == DSL_SPEC
+        assert passport.paper_arxiv_id == "0706.1497"
+        assert passport.paper_title == "A Quantitative Approach"
+
+    def test_adapts_with_no_spec(self, session):
+        r = upsert_strategy(
+            session,
+            generation_method="portfolio_agent_streaming",
+            strategy_name="No Spec",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+        )
+        passport = r.to_strategy_passport()
+        assert passport.strategy_spec is None
+
+    def test_adapts_with_no_source_papers_falls_back_to_strategy_name(self, session):
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Nameless Provenance",
+            thesis="X",
+            source_papers=[],
+            asset_universe=["SPY"],
+            strategy_spec=DSL_SPEC,
+        )
+        passport = r.to_strategy_passport()
+        assert passport.paper_title == "Nameless Provenance"

@@ -323,11 +323,76 @@ class StrategyRunner:
 
             logger.info("[tick %s] Managing %d vaults", tick_id, len(vaults))
 
+            # 5b. Rebalancer decouple (Part A #1,
+            # docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md):
+            # `all_signals` above is CURATED-ONLY (self.provider.list_strategies()).
+            # The per-vault scoping below (Issue #307) filters `all_signals` down
+            # to each vault's bound strategy_ids — a vault bound to a GENERATED
+            # strategy_id has never appeared in `all_signals`, so it produced no
+            # scoped signals and was silently skipped ("none produced signals").
+            # Union every managed vault's bound ids (skipping legacy vaults with
+            # no VaultMetadata — None), subtract the curated ids already
+            # evaluated, and load+evaluate any remaining ids that carry a
+            # persisted DSL `strategy_spec` in strategy_store. This does NOT
+            # touch the curated global-ensemble weights/targets computed above —
+            # it only enriches `signals_pool`, the SEPARATE list the per-vault
+            # scoping below reads from. `all_signals` itself must stay
+            # curated-only and immutable past this point: the legacy-vault
+            # (no-VaultMetadata) path passes `all_signals` into _process_vault,
+            # where it feeds _build_reasoning and every _publish_trace call —
+            # extending it in place would let other users' generated-strategy
+            # signals contaminate a legacy vault's published reasoning trace
+            # (a claim-integrity violation, and a leak of private strategy ids
+            # into someone else's on-chain-anchored provenance).
+            # Fail-safe: a broken/invalid generated spec (bad JSON, DB error,
+            # unexpected shape) must never break the curated tick or the
+            # per-vault loop — logged and swallowed, never raised.
+            #
+            # Cache each vault's bound strategy_ids here so step 6's per-vault
+            # loop below can reuse it instead of re-querying VaultMetadata a
+            # second time per vault per tick (`_get_vault_strategy_ids` opens
+            # its own DB session per call). Built unconditionally, ahead of
+            # the try/except: `_get_vault_strategy_ids` already never raises
+            # (its own internal try/except returns None on failure), so this
+            # comprehension can't be short-circuited by the exception handler
+            # below — every vault's entry is guaranteed to land in the cache.
+            vault_strategy_ids_cache: dict[str, list[str] | None] = {
+                vault_addr: self._get_vault_strategy_ids(vault_addr) for vault_addr in vaults
+            }
+            signals_pool: list[StrategySignals] = all_signals
+            try:
+                curated_ids = {ss.strategy_id for ss in all_signals}
+                bound_ids: set[str] = set()
+                for vault_ids in vault_strategy_ids_cache.values():
+                    if vault_ids:
+                        bound_ids.update(vault_ids)
+                generated_ids = bound_ids - curated_ids
+                if generated_ids:
+                    generated_signals = await asyncio.to_thread(
+                        self._load_generated_strategy_signals,
+                        generated_ids,
+                        synth_assets,
+                    )
+                    if generated_signals:
+                        logger.info(
+                            "[tick %s] Loaded %d generated-strategy signal set(s): %s",
+                            tick_id,
+                            len(generated_signals),
+                            ", ".join(ss.strategy_id[:10] for ss in generated_signals),
+                        )
+                        signals_pool = all_signals + generated_signals  # new list — never mutate all_signals
+            except Exception:
+                logger.exception(
+                    "[tick %s] Generated-strategy signal load failed — continuing with curated signals only",
+                    tick_id,
+                )
+
             # 6. Process each vault with per-vault strategy scoping (Issue #307)
             for vault_addr in vaults:
                 try:
-                    # Per-vault scoping: each vault executes only its selected strategies
-                    vault_strategy_ids = self._get_vault_strategy_ids(vault_addr)
+                    # Per-vault scoping: each vault executes only its selected
+                    # strategies (looked up once, above, and cached for reuse here).
+                    vault_strategy_ids = vault_strategy_ids_cache.get(vault_addr)
 
                     if vault_strategy_ids is None:
                         # Legacy vault (deployed before strategy-selection flow
@@ -350,8 +415,9 @@ class StrategyRunner:
                         )
                         continue
 
-                    # Filter signals to this vault's strategies
-                    scoped_signals = [ss for ss in all_signals if ss.strategy_id in vault_strategy_ids]
+                    # Filter signals to this vault's strategies (from the
+                    # generated-enriched pool, not curated-only all_signals)
+                    scoped_signals = [ss for ss in signals_pool if ss.strategy_id in vault_strategy_ids]
 
                     if not scoped_signals:
                         logger.warning(
@@ -385,7 +451,7 @@ class StrategyRunner:
                         tick_id,
                         vault_addr[:10],
                         len(scoped_signals),
-                        len(all_signals),
+                        len(signals_pool),
                         " | ".join(f"{k}={v:.0%}" for k, v in vault_weights.items()),
                     )
 
@@ -482,6 +548,65 @@ class StrategyRunner:
         except Exception as exc:
             logger.debug("_get_vault_strategy_ids(%s) failed: %s", vault_address[:10], exc)
             return None
+
+    def _load_generated_strategy_signals(
+        self, generated_ids: set[str], synth_assets: list[str]
+    ) -> list[StrategySignals]:
+        """Load + evaluate generated strategies bound to a vault (Part A #1).
+
+        Queries ``strategy_store`` for the given ids, keeps only rows that
+        carry a persisted DSL ``strategy_spec`` (a generated strategy
+        persisted before that column existed, or one whose spec text is
+        corrupt, has nothing executable — skipped, same as today's silent
+        skip, just now scoped to exactly the ids that can't be evaluated),
+        adapts each surviving row to a ``StrategyPassport`` via
+        ``StrategyRecord.to_strategy_passport()`` (the same dataclass shape
+        curated strategies flow through — no bespoke carrier needed), and runs
+        them through the SAME ``strategy_evaluator.evaluate_strategies`` the
+        curated strategies use. That evaluator already dispatches on
+        ``strategy.strategy_spec`` into the DSL interpretation path
+        (``_spec_signal``), which itself never raises on an invalid spec — it
+        logs and returns a FLAT signal. Any exception raised here (DB error,
+        malformed JSON, unexpected row shape) is caught PER RECORD so one bad
+        row cannot suppress the other, evaluable, generated strategies; the
+        caller (``tick()``) additionally wraps this whole call for
+        belt-and-suspenders safety.
+
+        Runs synchronously (DB query + yfinance-backed evaluator) — called via
+        ``asyncio.to_thread`` from ``tick()``, matching the curated
+        ``evaluate_strategies`` call above it.
+        """
+        from archimedes.db import get_session
+        from archimedes.models.strategy_store import StrategyRecord
+
+        gen_strategies = []
+        with get_session() as session:
+            records = (
+                session.query(StrategyRecord)
+                .filter(StrategyRecord.id.in_(generated_ids))
+                .filter(StrategyRecord.strategy_spec.isnot(None))
+                .all()
+            )
+            for record in records:
+                try:
+                    passport = record.to_strategy_passport()
+                except Exception:
+                    logger.warning(
+                        "generated strategy %s: failed to adapt to StrategyPassport — skipping",
+                        record.id,
+                        exc_info=True,
+                    )
+                    continue
+                if not passport.strategy_spec:
+                    # Spec text parsed but was empty/falsy (e.g. "{}" or "null")
+                    # — nothing executable, same honest skip as no spec at all.
+                    continue
+                gen_strategies.append(passport)
+
+        if not gen_strategies:
+            return []
+
+        return strategy_evaluator.evaluate_strategies(gen_strategies, synth_assets)
 
     async def _process_vault(
         self,

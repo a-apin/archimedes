@@ -518,6 +518,12 @@ def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _C
         # (user steer / model suggestion / full SSOT fallback). Falls back to
         # "full" for the rare case a proposal predates the field.
         universe_source=getattr(proposal, "universe_source", None) or "full",
+        # Rebalancer decouple (Part A #1): carry the full validated DSL spec
+        # forward (not just the asset_universe slice pulled above) so
+        # _persist_candidate can persist it onto the StrategyRecord — the
+        # live agent runner later loads it to evaluate a deployed generated
+        # strategy under its own signal rule instead of silently skipping it.
+        strategy_spec=spec or None,
     )
 
 

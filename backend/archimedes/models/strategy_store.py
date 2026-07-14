@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Boolean,
@@ -26,6 +26,12 @@ from sqlalchemy import (
 from sqlalchemy.orm import Session
 
 from archimedes.models.chat import Base
+
+if TYPE_CHECKING:
+    # Import only for the forward-reference type annotation on
+    # to_strategy_passport(). Avoids a circular import at runtime (mirrors
+    # models/strategy_passport_record.py's identical guard).
+    from archimedes.models.strategy import StrategyPassport
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +58,16 @@ class StrategyRecord(Base):
     thesis = Column(Text, nullable=False, default="")
     asset_universe = Column(Text, nullable=False, default="[]")  # JSON list
     risk_profile = Column(String(32), nullable=False, default="moderate")
+    # Raw validated DSL spec JSON (rebalancer decouple, Part A #1 of
+    # docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md). Mirrors
+    # ``StrategyPassport.strategy_spec`` — when present, the live signal
+    # evaluator (``strategy_signal_evaluator.evaluate_strategies``)
+    # interprets it directly via the shared DSL condition tree instead of
+    # buy-and-hold/keyword-matching. NULL for curated/example rows (which
+    # carry a ``strategy_code_path`` instead) and for generated rows
+    # persisted before this column existed — the agent runner simply skips
+    # any bound generated strategy_id that has no spec, same as before.
+    strategy_spec = Column(Text, nullable=True)
 
     # Status lifecycle
     status = Column(String(16), nullable=False, default="candidate")  # candidate|live|retired|rejected
@@ -97,6 +113,25 @@ class StrategyRecord(Base):
         Index("ix_strategy_generation", "generation_method"),
     )
 
+    def _decode_strategy_spec(self) -> dict | None:
+        """Defensively decode ``strategy_spec`` for ``to_dict()``.
+
+        Mirrors ``VaultMetadata.get_strategy_ids()`` (models/chat.py): a
+        corrupt/non-JSON column value must not raise out of a dict-shaping
+        method that's reachable straight from API routes (e.g.
+        ``strategies_routes.py`` calling ``record.to_dict()``) — a single bad
+        row shouldn't 500 the whole response. Falls back to ``None``,
+        matching the ``dict | None`` contract every other reader of this
+        field (``upsert_strategy``, ``to_strategy_passport``) already uses.
+        """
+        if not self.strategy_spec:
+            return None
+        try:
+            return json.loads(self.strategy_spec)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("strategy %s: corrupt strategy_spec JSON — returning None", self.id)
+            return None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -108,6 +143,7 @@ class StrategyRecord(Base):
             "thesis": self.thesis,
             "asset_universe": json.loads(self.asset_universe),
             "risk_profile": self.risk_profile,
+            "strategy_spec": self._decode_strategy_spec(),
             "status": self.status,
             "rigor_verdict": json.loads(self.rigor_verdict) if self.rigor_verdict else None,
             "is_example": self.is_example,
@@ -119,6 +155,40 @@ class StrategyRecord(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+    def to_strategy_passport(self) -> StrategyPassport:
+        """Adapt to the ``StrategyPassport`` dataclass (mirrors
+        ``StrategyPassportRecord.to_strategy_passport`` in
+        ``models/strategy_passport_record.py``).
+
+        This is the shape ``strategy_signal_evaluator.evaluate_strategies``
+        and ``PortfolioConstructor`` already accept — curated strategies flow
+        through the SAME dataclass, so a generated ``StrategyRecord`` needs no
+        bespoke duck-typed carrier to be evaluated by the live agent runner
+        (rebalancer decouple, Part A #1). Only the fields the signal/
+        portfolio-construction path actually reads are populated; this is
+        NOT a full passport reconstruction (rigor/backtest columns live on
+        ``strategy_passports`` instead — see ``StrategyPassportRecord``).
+        """
+        from archimedes.models.paper_ref import PaperRef
+        from archimedes.models.strategy import StrategyPassport
+
+        source_papers = json.loads(self.source_papers) if self.source_papers else []
+        papers = [
+            PaperRef(arxiv_id=p.get("arxiv_id"), title=p.get("title") or self.strategy_name or "")
+            for p in source_papers
+        ] or [PaperRef(title=self.strategy_name or "")]
+
+        return StrategyPassport(
+            id=self.id,
+            papers=papers,
+            methodology_summary=self.thesis or "",
+            asset_universe=json.loads(self.asset_universe) if self.asset_universe else [],
+            # Same defensive decode as to_dict(): a corrupt spec column must
+            # degrade to None (spec-less strategy) rather than raise out of a
+            # dataclass adapter that future call sites may not wrap (review).
+            strategy_spec=self._decode_strategy_spec(),
+        )
 
 
 def _compute_content_hash(
@@ -159,12 +229,19 @@ def upsert_strategy(
     provenance_hash: str | None = None,
     is_example: bool = False,
     owner_wallet: str | None = None,
+    strategy_spec: dict | None = None,
 ) -> StrategyRecord:
     """Idempotent upsert: same content → same row, no duplicates.
 
     ``owner_wallet`` must be the SIWE-derived wallet (never client-supplied);
     it is normalized to lowercase. On a content-hash match, ownership is only
     backfilled onto ownerless rows — an existing owner is never overwritten.
+
+    ``strategy_spec`` is the validated DSL spec dict (rebalancer decouple,
+    Part A #1) — JSON-encoded when present, left NULL otherwise. On a
+    content-hash match it is backfilled onto a row that lacks one, the same
+    never-overwrite rule as ownership; an existing non-null spec is never
+    replaced.
     """
     owner_wallet = owner_wallet.lower() if owner_wallet else None
     content_hash = _compute_content_hash(
@@ -180,6 +257,12 @@ def upsert_strategy(
         # Backfill ownership on a legacy/anonymous row; never reassign an owner.
         if owner_wallet and not existing.owner_wallet:
             existing.owner_wallet = owner_wallet
+            existing.updated_at = datetime.now(UTC)
+            session.flush()
+        # Backfill a missing spec onto an existing row; never overwrite one
+        # that's already there.
+        if strategy_spec is not None and not existing.strategy_spec:
+            existing.strategy_spec = json.dumps(strategy_spec)
             existing.updated_at = datetime.now(UTC)
             session.flush()
         # Update status/verdict if provided, but don't duplicate
@@ -213,6 +296,11 @@ def upsert_strategy(
         provenance_hash=provenance_hash,
         is_example=is_example,
         owner_wallet=owner_wallet,
+        # `is not None` (not truthiness) — consistent with the backfill branch
+        # above, which also treats "present vs None" as the distinction. A
+        # bare truthiness check would silently drop an explicitly-provided
+        # empty dict ({}) by storing NULL instead of the serialized "{}".
+        strategy_spec=json.dumps(strategy_spec) if strategy_spec is not None else None,
     )
     if rigor_verdict:
         # Same transition rule as the upsert-existing branch above
