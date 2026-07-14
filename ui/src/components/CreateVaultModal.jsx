@@ -17,6 +17,11 @@ import { executeUserOp, encodeCall } from '../circle-tx-executor'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
+function shortHash(hash) {
+  if (!hash) return ''
+  return `${hash.slice(0, 10)}…${hash.slice(-6)}`
+}
+
 // Opens from StrategyPassport's "Deploy as Vault →" CTA.
 // Client-side vault creation: user signs createVault() + setAgent() directly
 // so vault.creator == user wallet (not the backend operator). After deploy,
@@ -54,6 +59,12 @@ function sendContractCall({ address, abi, functionName, args }) {
   return getWalletClient().then(async walletClient => {
     const hash = await walletClient.writeContract({ address, abi, functionName, args })
     const receipt = await publicClient.waitForTransactionReceipt({ hash })
+    // waitForTransactionReceipt resolves on ANY mined tx, including reverted ones —
+    // it only throws on dropped/replaced txs. Without this check a reverted setAgent()
+    // reads as success and defeats the agentPending retry UI below (#947).
+    if (receipt.status !== 'success') {
+      throw new Error(`${functionName} reverted on-chain (${shortHash(hash)})`)
+    }
     return { hash, logs: receipt.logs }
   })
 }
