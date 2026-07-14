@@ -1,21 +1,24 @@
 """Strategy fusion — multi-paper, user-steered, novelty-seeking synthesis.
 
-A NEW, feature-flagged primitive that sits *beside* `strategy_architect.py`,
-not inside it. The architect selects + weights pre-curated single-paper
-library strategies (the verified-library path that feeds the strategy-passport
-/ reasoning-trace data flow). Fusion does the opposite-direction thing:
-synthesizes a *new* strategy hypothesis by fusing >=2 raw arXiv q-fin papers,
-steered by the user, optimizing for novelty (McLean & Pontiff 2016: published
-alpha decays — the un-decayed edge is combinations not yet in the literature).
+A NEW, feature-flagged primitive that originally sat *beside* the interactive
+Strategy Architect (retired — issue #1064; the debate society is now the sole
+strategy-generation path). The architect used to select + weight pre-curated
+single-paper library strategies (the verified-library path that fed the
+strategy-passport / reasoning-trace data flow). Fusion does the
+opposite-direction thing: synthesizes a *new* strategy hypothesis by fusing
+>=2 raw arXiv q-fin papers, steered by the user, optimizing for novelty
+(McLean & Pontiff 2016: published alpha decays — the un-decayed edge is
+combinations not yet in the literature).
 
 Why a separate, flagged module (owner-decided HARD constraint):
-- `strategy_architect.py` and the construction-trace path are
-  contract-review-grade (the live `ReasoningTraceRegistry`). Fusion is
-  additive, behind `ARCHIMEDES_FUSION_ENABLED` (default OFF), and revertible
-  by deleting this file + its spec. Nothing in the audited flow is touched.
-- The LLM-backend seam, lazy `anthropic` import, `extract_json`, frozen
-  artifact and honest-fallback labelling deliberately mirror the architect so
-  a later route-wiring is a small, familiar diff.
+- The construction-trace path is contract-review-grade (the live
+  `ReasoningTraceRegistry`). Fusion is additive, behind
+  `ARCHIMEDES_FUSION_ENABLED` (default OFF), and revertible by deleting this
+  file + its spec. Nothing in the audited flow is touched.
+- The LLM-backend seam, lazy `anthropic` import, `extract_json` (now in
+  `agents/generation_json.py`), frozen artifact and honest-fallback
+  labelling deliberately mirrored the (now-retired) architect so a later
+  route-wiring was a small, familiar diff.
 
 True-model honesty: our backend is routed through a GLM-backed,
 Anthropic-compatible endpoint. `messages.create(model=...)` gets the
@@ -26,7 +29,7 @@ separately. See `docs/specs/strategy-fusion-spec.md`.
 
 References:
 - `docs/specs/strategy-fusion-spec.md` — the design this implements
-- `backend/archimedes/services/strategy_architect.py` — the seam mirrored here
+- `backend/archimedes/agents/generation_json.py` — the shared `extract_json` seam
 - `backend/archimedes/services/strategy_provider.py` — env-override precedent
 - `backend/archimedes/models/portfolio.py` — RiskProfile, RISK_PROFILE_PARAMS
 """
@@ -42,7 +45,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from archimedes.agents.strategy_architect import extract_json
+from archimedes.agents.generation_json import extract_json
 from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
 from archimedes.services.llm_backend import LLMBackend, make_llm_backend
 from archimedes.services.strategy_dsl import DSLError, validate_strategy_spec
@@ -1085,7 +1088,7 @@ def default_backend(model: str | None = None) -> LLMBackend:
 
 
 def default_fusion(model: str | None = None) -> StrategyFusion:
-    """Factory mirroring `default_architect()`. Not yet route-wired.
+    """Factory used by the fusion job path (`_run_fusion_job` in `strategies_routes.py`).
 
     ``model`` threads the user's selected model through to the lazily-resolved
     backend (A3 seam, T1.1) so ``served_model`` provenance is truthful; ``None``

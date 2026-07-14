@@ -1,7 +1,7 @@
 """Strategy endpoints — /api/strategies/*.
 
 Includes: library listing, signals, frontier, correlation, advisor, stress,
-construct, generate/fusion.
+generate/fusion.
 """
 
 from __future__ import annotations
@@ -16,17 +16,7 @@ from datetime import UTC
 import numpy as np
 from fastapi import APIRouter, Depends, Query, Request, Response
 
-from archimedes.api._route_helpers import (
-    architect,
-    persist_trace_off_chain,
-    strategy_provider,
-)
-from archimedes.api.architect_schemas import (
-    ConstructionSelectionResponse,
-    ConstructionTraceResponse,
-    StrategyConstructionRequest,
-    StrategyConstructionResponse,
-)
+from archimedes.api._route_helpers import strategy_provider
 from archimedes.api.auth_siwe import gate_generation, get_verified_wallet, require_verified_wallet
 from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
@@ -38,13 +28,11 @@ from archimedes.api.schemas import (
     StrategySignalsResponse,
 )
 from archimedes.models.strategy import Strategy, StrategyStatus
-from archimedes.services.construction_trace import build_construction_trace
 from archimedes.services.live_rigor_gate import (
     RigorGateVerdict,
     verdicts_for_strategies,
 )
 from archimedes.services.rigor_evaluator import RigorGateResult
-from archimedes.services.strategy_guardrail import apply_guardrail
 
 logger = logging.getLogger(__name__)
 
@@ -1878,7 +1866,7 @@ async def rename_strategy(
         return {"strategy": row.to_dict()}
 
 
-# ── Strategy generation (fusion / architect) ──────────────────
+# ── Strategy generation (fusion) ────────────────────────────────
 
 
 @strategies_router.post("/generate", status_code=202)
@@ -1890,42 +1878,19 @@ async def generate_strategy(
     risk_appetite: str = "moderate",
     strategic_direction: str = "",
     max_papers: int = 4,
-    mode: str = "fusion",
     _wallet: str | None = Depends(gate_generation),  # 401 when REQUIRE_SIWE_FOR_GENERATION is on
 ):
-    """Queue a strategy generation job. Returns 202 + job_id immediately."""
+    """Queue a strategy generation job. Returns 202 + job_id immediately.
+
+    Direct-fusion path only — the ``mode=fast`` (interactive Strategy
+    Architect) branch was removed in #1064; the debate society
+    (``POST /api/generate/start``) is the sole interactive generation path.
+    """
     from fastapi import HTTPException
 
     from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
     from archimedes.models.portfolio import RiskProfile
     from archimedes.services.job_queue import JobStore
-
-    if mode == "fast":
-        try:
-            proposal = await asyncio.to_thread(
-                architect().propose,
-                strategic_direction or "Generate a strategy",
-                risk_appetite,
-                10000.0,
-                None,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"LLM backend unavailable: {exc}") from exc
-        guardrail = apply_guardrail(proposal)
-        return {
-            "mode": "architect",
-            "status": "ok",
-            "proposal": {
-                "intent": proposal.intent,
-                "model_id": proposal.model_id,
-                "selected": [
-                    {"strategy_id": s.strategy_id, "weight": w, "rationale": s.rationale}
-                    for s, w in zip(proposal.selected, guardrail.strategy_weights.values(), strict=False)
-                ],
-                "overall_reasoning": proposal.overall_reasoning,
-                "usyc_weight": guardrail.usyc_weight,
-            },
-        }
 
     if not fusion_enabled():
         raise HTTPException(
@@ -2300,98 +2265,3 @@ async def _run_fusion_job(job_id: str) -> None:
             await store.update_status(job_id, "failed", error=str(exc))
     finally:
         await store.close()
-
-
-# ── Construct (architect interactive) ─────────────────────────
-
-
-@strategies_router.post("/construct", response_model=StrategyConstructionResponse)
-@limiter.limit("20/minute")
-async def construct_strategy(
-    req: StrategyConstructionRequest,
-    request: Request,  # noqa: ARG001 — required by the slowapi limiter / FastAPI
-    response: Response,  # noqa: ARG001 — kept for FastAPI handler symmetry
-    _wallet: str | None = Depends(gate_generation),
-):
-    """Interactive strategy architect -- the 'design me a portfolio' path."""
-    from fastapi import HTTPException
-
-    try:
-        proposal = await asyncio.to_thread(
-            architect().propose,
-            req.intent,
-            req.risk_profile,
-            req.capital_usdc,
-            req.regime,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"LLM backend unavailable: {exc}") from exc
-    guardrail = apply_guardrail(proposal)
-    trace = build_construction_trace(proposal, guardrail)
-
-    await persist_trace_off_chain(trace)
-
-    # Persist architect proposal to episodic memory (T-PE.8)
-    try:
-        import uuid as _uuid
-
-        from archimedes.services.strategy_memory import persist_proposal
-
-        persist_proposal(
-            generation_id=_uuid.uuid4().hex[:16],
-            agent="architect",
-            intent=req.intent,
-            strategy_spec={
-                "strategy_ids": [s.strategy_id for s in proposal.selected],
-                "weights": guardrail.strategy_weights,
-                "overall_reasoning": proposal.overall_reasoning,
-            },
-            papers=[s.paper_citation for s in proposal.selected if s.paper_citation],
-            extra={
-                "model_id": proposal.model_id,
-                "risk_notes": proposal.risk_notes,
-                "regime": proposal.regime,
-            },
-            # SIWE-derived owner (gate_generation) — None when
-            # REQUIRE_SIWE_FOR_GENERATION is off (local dev/demo opt-out).
-            owner_wallet=_wallet,
-        )
-    except Exception:
-        pass  # Non-blocking per spec
-
-    by_id = {s.strategy_id: s for s in proposal.selected}
-    selected = []
-    for sid, weight in sorted(guardrail.strategy_weights.items()):
-        sel = by_id.get(sid)
-        strat = strategy_provider().get_strategy(sid)
-        selected.append(
-            ConstructionSelectionResponse(
-                strategy_id=sid,
-                paper_title=strat.paper_title if strat else "",
-                weight=weight,
-                rationale=sel.rationale if sel else "",
-                paper_citation=sel.paper_citation if sel else "",
-            )
-        )
-
-    return StrategyConstructionResponse(
-        intent=proposal.intent,
-        risk_profile=proposal.risk_profile,
-        capital_usdc=proposal.capital_usdc,
-        regime=proposal.regime,
-        model_id=proposal.model_id,
-        selected=selected,
-        usyc_weight=guardrail.usyc_weight,
-        overall_reasoning=proposal.overall_reasoning,
-        risk_notes=proposal.risk_notes,
-        guardrail_notes=guardrail.adjustments,
-        trace=ConstructionTraceResponse(
-            id=trace.id,
-            decision_type=trace.decision_type.value,
-            trigger=trace.trigger,
-            timestamp=trace.timestamp.isoformat(),
-            trace_hash=trace.trace_hash,
-            arc_tx_hash=trace.arc_tx_hash,
-            is_anchored=trace.is_anchored,
-        ),
-    )

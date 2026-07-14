@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import uuid
 
-from archimedes.agents.strategy_architect import ArchitectProposal
+from archimedes.agents.generation_json import ArchitectProposal
 from archimedes.models.trace import DecisionType, ReasoningTrace
 from archimedes.services.strategy_guardrail import GuardrailResult
 

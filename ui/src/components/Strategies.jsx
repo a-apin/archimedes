@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import CustomSelect from './CustomSelect'
 // EfficientFrontier + CorrelationMatrix deleted (Issue #383) — synthetic RNG data
 import RigorExplainer from './RigorExplainer'
 import RigorStrictnessControl, { levelLabel } from './RigorStrictnessControl'
@@ -25,14 +24,6 @@ function DeployabilityChip({ deploy, level }) {
   }
   return <span className="tag tag-accent" style={{ fontSize: '0.66rem' }} title={`Raise your strictness to level ${min} to deploy`}>needs {levelLabel(null, min)}</span>
 }
-
-const RISK_PROFILES = [
-  { id: 'fixed_income', label: 'Fixed Income' },
-  { id: 'conservative', label: 'Conservative' },
-  { id: 'moderate', label: 'Moderate' },
-  { id: 'aggressive', label: 'Aggressive' },
-  { id: 'hyper_risky', label: 'Hyper-risky' },
-]
 
 const STATUS_ORDER = ['live', 'validated', 'candidate', 'retired']
 
@@ -118,15 +109,6 @@ export function fmtUsd(n, fractionDigits = 0) {
   })
 }
 
-function WeightBar({ weight, accent }) {
-  return (
-    <div style={{ background: 'var(--glass-hover)', borderRadius: 4, height: 8, overflow: 'hidden' }}>
-      <div style={{ width: `${(weight * 100).toFixed(1)}%`, height: '100%', background: accent || 'var(--accent)' }} />
-    </div>
-  )
-}
-
-
 // ── Strategy Grid Card ────────────────────────────────────────
 
 // Inline period + projected-value line. Shows backtest window, the $1k -> $X
@@ -151,242 +133,6 @@ export function BacktestHorizon({ s, principal = 1000 }) {
   )
 }
 
-
-// ── Strategy Architect form ───────────────────────────────────
-
-// Weighted-average of per-strategy backtest metrics across the architect's
-// selected portfolio. Honest about partial coverage — if a selected strategy
-// is missing a metric, its weight is excluded from that metric's average
-// (renormalized by the weight of strategies that actually contributed)
-// rather than silently treated as a zero contribution, which would deflate
-// the blended result.
-function aggregateMetrics(selected, strategies) {
-  if (!selected?.length || !strategies?.length) return null
-  const byId = Object.fromEntries(strategies.map(s => [s.id, s]))
-  const metrics = ['sharpe_ratio', 'cagr', 'max_drawdown']
-  const out = {}
-  const metricWeight = Object.fromEntries(metrics.map(m => [m, 0]))
-  let totalWeight = 0
-  let anyMissing = false
-  for (const sel of selected) {
-    const row = byId[sel.strategy_id]
-    if (!row) { anyMissing = true; continue }
-    totalWeight += sel.weight
-    for (const m of metrics) {
-      if (row[m] == null) { anyMissing = true; continue }
-      out[m] = (out[m] || 0) + row[m] * sel.weight
-      metricWeight[m] += sel.weight
-    }
-  }
-  if (totalWeight === 0) return null
-  return {
-    sharpe_ratio: metricWeight.sharpe_ratio > 0 ? out.sharpe_ratio / metricWeight.sharpe_ratio : null,
-    cagr: metricWeight.cagr > 0 ? out.cagr / metricWeight.cagr : null,
-    max_drawdown: metricWeight.max_drawdown > 0 ? out.max_drawdown / metricWeight.max_drawdown : null,
-    coverage_weight: totalWeight,
-    partial: anyMissing,
-  }
-}
-
-export function StrategyArchitect({ strategies }) {
-  const [intent, setIntent] = useState(
-    'I have idle USDC and want thoughtful, research-backed growth without stomach-churning drawdowns.',
-  )
-  const [riskProfile, setRiskProfile] = useState('moderate')
-  const [capital, setCapital] = useState(5000)
-  const [result, setResult] = useState(null)
-  const [constructing, setConstructing] = useState(false)
-  const [constructError, setConstructError] = useState('')
-
-  const construct = useCallback(async () => {
-    setConstructing(true)
-    setConstructError('')
-    setResult(null)
-    try {
-      const data = await apiPost('/api/strategies/construct', {
-        intent,
-        risk_profile: riskProfile,
-        capital_usdc: Number(capital),
-      })
-      setResult(data)
-    } catch (e) {
-      setConstructError(e.message || 'Construction failed')
-    } finally {
-      setConstructing(false)
-    }
-  }, [intent, riskProfile, capital])
-
-  const isFallback = result?.model_id === 'canned-fallback'
-
-  return (
-    <div className="max-w-[700px] mx-auto">
-      <h2 className="font-serif text-[1.6rem] mb-2">Strategy Architect</h2>
-      <p className="hint">
-        Describe what you want. The agent selects paper-grounded strategies, weights them
-        under hard risk constraints, and anchors a verifiable reasoning trace.
-      </p>
-
-      <div className="card" style={{ marginTop: 20 }}>
-        <div className="form-group">
-          <label className="label">What do you want from this portfolio?</label>
-          <textarea
-            className="chat-input"
-            style={{ width: '100%', minHeight: 80, resize: 'vertical' }}
-            value={intent}
-            onChange={(e) => setIntent(e.target.value)}
-            placeholder="e.g. steady growth, low drawdowns, trend-following…"
-          />
-        </div>
-        <div className="form-row flex gap-4 flex-wrap mt-3">
-          <div className="form-group">
-            <label className="label">Risk profile</label>
-            <CustomSelect
-              value={riskProfile}
-              onChange={setRiskProfile}
-              options={RISK_PROFILES.map(r => ({ value: r.id, label: r.label }))}
-            />
-          </div>
-          <div className="form-group">
-            <label className="label">Capital (USDC)</label>
-            <input
-              className="chat-input"
-              type="number"
-              min="1"
-              value={capital}
-              onChange={(e) => setCapital(e.target.value)}
-            />
-          </div>
-          <div className="form-group flex items-end">
-            <button className="btn btn-primary" onClick={construct} disabled={constructing || !intent.trim()}>
-              {constructing ? 'Constructing…' : 'Construct portfolio'}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {constructError && (
-        <div className="info-box warning" style={{ marginTop: 16 }}>
-          Construction failed: {constructError}
-        </div>
-      )}
-
-      {result && (
-        <div className="card" style={{ marginTop: 20 }}>
-          {isFallback && (
-            <div className="info-box warning mb-4">
-              <span className="i-lucide-alert-triangle w-3.5 h-3.5 mr-1.5" />
-              Offline fallback (no <code>ANTHROPIC_API_KEY</code>) — equal-weighted,
-              not model reasoning. The guardrail + trace are still real.
-            </div>
-          )}
-          <h3>Proposed portfolio</h3>
-          <p className="hint mt-1">
-            {result.risk_profile} · {Number(result.capital_usdc).toLocaleString()} USDC ·
-            model: <span className="mono">{result.model_id}</span>
-          </p>
-          {(() => {
-            const agg = aggregateMetrics(result.selected, strategies)
-            // Pick the shortest backtest window across selected strategies as the
-            // honest period — projected $→$ can't extrapolate beyond the data we
-            // actually have for the longest-tested strategy.
-            const periods = (result.selected || [])
-              .map(sel => strategies.find(x => x.id === sel.strategy_id))
-              .filter(Boolean)
-              .map(s => periodInYears(s.backtest_start, s.backtest_end))
-              .filter(y => y != null)
-            const minYears = periods.length ? Math.min(...periods) : null
-            const principal = Number(result.capital_usdc) || 0
-            const projEnd = (agg && agg.cagr != null && minYears != null)
-              ? projectedEndValue(principal, agg.cagr, minYears)
-              : null
-            if (!agg) return null
-            return (
-              <div className="card-flat mt-3.5" style={{ padding: 14, background: 'var(--glass)' }}>
-                <div className="label mb-2">Expected portfolio profile (weighted from per-strategy backtests)</div>
-                <div className="grid grid-cols-3 gap-3 mb-2">
-                  <div><div className="caption">Blended Sharpe</div><div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{fmt(agg.sharpe_ratio)}</div></div>
-                  <div><div className="caption">Blended CAGR</div><div className="positive" style={{ fontWeight: 700, fontSize: '1.1rem' }}>{fmtPct(agg.cagr)}</div></div>
-                  <div><div className="caption">Blended Max DD</div><div className="negative" style={{ fontWeight: 700, fontSize: '1.1rem' }}>{agg.max_drawdown != null ? `−${fmtPct(agg.max_drawdown)}` : '—'}</div></div>
-                </div>
-                {minYears != null && projEnd != null && (
-                  <div className="caption" style={{ lineHeight: 1.5 }}>
-                    Over a shared backtest window of <strong>{minYears.toFixed(1)} yrs</strong>,{' '}
-                    <strong>{fmtUsd(principal)}</strong> would have grown to{' '}
-                    <strong style={{ color: 'var(--positive)' }}>{fmtUsd(projEnd)}</strong>{' '}
-                    at the blended CAGR <span style={{ opacity: 0.7 }}>(historical, not a forecast — assumes no rebalance friction)</span>.
-                  </div>
-                )}
-                {agg.partial && (
-                  <div className="caption" style={{ marginTop: 6, color: 'var(--text-4)' }}>
-                    * One or more selected strategies have missing backtest fields; aggregate weighted by available data only.
-                  </div>
-                )}
-              </div>
-            )
-          })()}
-          {result.overall_reasoning && (
-            <p className="mt-3 leading-relaxed">{result.overall_reasoning}</p>
-          )}
-          <div className="mt-4 flex flex-col gap-3.5">
-            {result.selected.map((s) => (
-              <div key={s.strategy_id}>
-                <div className="flex justify-between mb-1">
-                  <strong>{s.paper_title || s.strategy_id}</strong>
-                  <span className="mono">{(s.weight * 100).toFixed(1)}%</span>
-                </div>
-                <WeightBar weight={s.weight} />
-                {s.rationale && <p className="hint mt-1.5">{s.rationale}</p>}
-                {s.paper_citation && (
-                  <p className="caption mt-0.5 flex items-center gap-1">
-                    <span className="i-lucide-file-text" style={{width:12,height:12,flexShrink:0}} />
-                    {s.paper_citation}
-                  </p>
-                )}
-              </div>
-            ))}
-            <div>
-              <div className="flex justify-between mb-1">
-                <strong>USYC (cash-yield sleeve)</strong>
-                <span className="mono">{(result.usyc_weight * 100).toFixed(1)}%</span>
-              </div>
-              <WeightBar weight={result.usyc_weight} accent="#10B981" />
-            </div>
-          </div>
-          {result.risk_notes && (
-            <p className="hint mt-4"><strong>Risk notes:</strong> {result.risk_notes}</p>
-          )}
-          {result.guardrail_notes?.length > 0 && (
-            <div className="mt-4">
-              <div className="label">Guardrail adjustments</div>
-              <ul className="hint mt-1.5 pl-[18px]">
-                {result.guardrail_notes.map((n, i) => <li key={i}>{n}</li>)}
-              </ul>
-            </div>
-          )}
-          {result.trace && (
-            <div className="trace-card flex-col gap-1.5" style={{ marginTop: 18 }}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="trace-id" style={{ fontSize: '0.85rem' }}>
-                  {result.trace.decision_type} · {result.trace.trigger}
-                </span>
-                <span className={`badge ${result.trace.is_anchored ? 'tier-1' : ''}`} style={{ marginLeft: 0, flexShrink: 0 }}>
-                  {result.trace.is_anchored ? 'anchored on-chain' : 'pending anchor'}
-                </span>
-              </div>
-              <code className="mono" style={{ wordBreak: 'break-all', fontSize: '0.72rem', color: 'var(--text-3)', display: 'block' }}>
-                {result.trace.trace_hash}
-              </code>
-              <p className="caption" style={{ margin: 0 }}>
-                SHA-256 of the decision — recompute it from this response to verify.
-                Anchored on Arc via ReasoningTraceRegistry.
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
 
 // ── Library Table ─────────────────────────────────────────────
 
@@ -1158,7 +904,3 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
     </div>
   )
 }
-
-// StrategyArchitect is intentionally NOT rendered here anymore. It moved to the
-// standalone Generate page (/generate), where it belongs per the spine in
-// docs/user-stories.md. It's named-exported so Generate.jsx can import it.

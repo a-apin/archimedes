@@ -209,14 +209,6 @@ async def test_chat_post_rate_limited():
 
 
 @pytest.mark.asyncio
-async def test_strategies_construct_has_rate_limit():
-    """POST /api/strategies/construct has rate limiting decorator."""
-    from archimedes.api.strategies_routes import construct_strategy
-
-    assert construct_strategy is not None
-
-
-@pytest.mark.asyncio
 async def test_strategies_stress_run_has_rate_limit():
     """POST /api/strategies/stress/run has rate limiting decorator."""
     from archimedes.api.strategies_routes import run_stress_test
