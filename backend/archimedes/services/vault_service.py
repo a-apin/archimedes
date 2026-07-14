@@ -264,9 +264,8 @@ class VaultService:
         # (every concurrent request on the worker stalls) if Redis is slow.
         r = None
         try:
-            r = _aioredis.Redis(
-                host=os.getenv("REDIS_HOST", "localhost"),
-                port=int(os.getenv("REDIS_PORT", "6379")),
+            r = _aioredis.from_url(
+                os.getenv("REDIS_URL", "redis://localhost:6379/0"),
                 decode_responses=True,
             )
             await r.ping()

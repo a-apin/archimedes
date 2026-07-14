@@ -232,7 +232,29 @@ async def create_vaults(minted: dict[str, float]) -> list[dict]:
     loader = get_contract_loader()
     vaults: list[dict] = []
 
+    # Idempotency check: a rerun of this script mints fresh collateral-backed
+    # synth tokens (fund_and_allocate_vaults transfers them all out of the
+    # wallet immediately) and would otherwise create duplicate vaults with
+    # identical names/symbols on every rerun. Skip any profile that already
+    # exists on-chain.
+    existing_names: set[str] = set()
+    existing_symbols: set[str] = set()
+    try:
+        existing_addresses = await loader.vault_factory.functions.getVaults().call()
+        for existing_addr in existing_addresses:
+            try:
+                existing_vault = loader.vault(existing_addr)
+                existing_names.add(await existing_vault.functions.name().call())
+                existing_symbols.add(await existing_vault.functions.symbol().call())
+            except Exception:
+                logger.debug("existing vault name/symbol check failed for %s", existing_addr, exc_info=True)
+    except Exception:
+        logger.debug("getVaults() check failed", exc_info=True)
+
     for profile in VAULT_PROFILES:
+        if profile["name"] in existing_names or profile["symbol"] in existing_symbols:
+            print(f"  ⏭️  {profile['name']} ({profile['symbol']}): already exists on-chain — skipping")
+            continue
         try:
             # Create vault via VaultFactory
             tx_hash = await circle_signer.execute_contract(
