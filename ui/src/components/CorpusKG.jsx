@@ -19,6 +19,11 @@ const TYPE_ICONS = {
   method: 'i-lucide-settings',
 }
 
+// Matches the backend's `Query(..., min_length=2)` on /api/corpus/kg/entities —
+// checked client-side so a too-short search shows validation feedback instead
+// of firing a request that 422s.
+const MIN_QUERY_LENGTH = 2
+
 /**
  * Topic Clusters viewer. (Currently renders BERTopic-derived topic clusters
  * across the KB-processed paper subset. Promoted to a real Knowledge Graph
@@ -33,6 +38,7 @@ export default function CorpusKG({ onOpenPaper }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
+  const [validationError, setValidationError] = useState('')
   const [hoverEntity, setHoverEntity] = useState(null)
   const svgRef = useRef(null)
 
@@ -47,9 +53,13 @@ export default function CorpusKG({ onOpenPaper }) {
     setLoading(true)
     setError('')
     try {
-      const searchTerm = q || 'topic'
+      // Trim before the default-fallback check: whitespace-only input must
+      // fall back to 'topic' (not become the literal query and 422), and
+      // stray leading/trailing spaces shouldn't reach the backend (review).
+      const searchTerm = (q || '').trim() || 'topic'
       const res = await fetch(`${API_BASE}/api/corpus/kg/entities?q=${encodeURIComponent(searchTerm)}`)
       if (res.status === 503) throw new Error('KB pipeline still running — first artifact pending')
+      if (res.status === 422) throw new Error(`422: search term must be at least ${MIN_QUERY_LENGTH} characters`)
       if (!res.ok) throw new Error(res.statusText)
       const raw = await res.json()
       // Normalize backend field names to frontend conventions (Issue #345)
@@ -77,7 +87,15 @@ export default function CorpusKG({ onOpenPaper }) {
 
   const handleSearch = (e) => {
     e.preventDefault()
-    fetchKG(query)
+    const trimmed = query.trim()
+    if (trimmed.length > 0 && trimmed.length < MIN_QUERY_LENGTH) {
+      setValidationError(`Enter at least ${MIN_QUERY_LENGTH} characters`)
+      return
+    }
+    setValidationError('')
+    // Pass the TRIMMED value — validation ran on `trimmed`, so the request
+    // must use the same string or validation and request can disagree (review).
+    fetchKG(trimmed)
   }
 
   // Layout: arrange entities in a radial layout by type
@@ -210,15 +228,20 @@ export default function CorpusKG({ onOpenPaper }) {
         <form onSubmit={handleSearch} className="flex gap-2 mb-4">
           <input
             type="text" placeholder="Search entities (author, topic, method)…"
-            value={query} onChange={e => setQuery(e.target.value)}
+            value={query} onChange={e => { setQuery(e.target.value); setValidationError('') }}
             className="chat-input flex-1 p-2.5"
           />
           <button type="submit" className="btn btn-primary">Search</button>
         </form>
+        {validationError && (
+          <div className="caption mb-2" style={{ color: 'var(--text-3)' }}>{validationError}</div>
+        )}
         <div className="info-box warning">
           {error.includes('503') || error.includes('KB pipeline')
             ? 'KB pipeline still running — first artifact pending. The topic clusters will populate once the KG is built.'
-            : `Knowledge graph unavailable: ${error}`}
+            : error.startsWith('422')
+              ? `Search term too short — enter at least ${MIN_QUERY_LENGTH} characters.`
+              : `Knowledge graph unavailable: ${error}`}
         </div>
       </div>
     )
@@ -245,18 +268,29 @@ export default function CorpusKG({ onOpenPaper }) {
   const displayIds = new Set(displayEntities.map(e => e.id))
   const displayRelations = relations.filter(r => displayIds.has(r.source) && displayIds.has(r.target))
 
+  // Full entity behind the current hover, for the tooltip below — looked up
+  // by id rather than trusting the label already baked into the SVG <text>
+  // so the tooltip always shows the complete, untruncated title.
+  // Explicit null check: entity ids are integer PKs — truthiness would
+  // treat a (theoretical) id of 0 as not-hovered (review).
+  const hoveredEntityObj = hoverEntity != null ? entityMap[hoverEntity] : null
+
   return (
     <div className="corpus-kg-wrapper">
       <form onSubmit={handleSearch} className="flex gap-2 mb-4" style={{ padding: '0 12px' }}>
         <input
           type="text" placeholder="Filter by entity (author, topic, category)…"
-          value={query} onChange={e => setQuery(e.target.value)}
+          value={query} onChange={e => { setQuery(e.target.value); setValidationError('') }}
           className="chat-input flex-1 p-2.5"
         />
         <button type="submit" className="btn btn-primary" disabled={loading}>
           {loading ? 'Searching…' : 'Search'}
         </button>
       </form>
+
+      {validationError && (
+        <div className="caption mb-2" style={{ padding: '0 12px', color: 'var(--text-3)' }}>{validationError}</div>
+      )}
 
       {data?.note && (
         <div className="caption" style={{ padding: '4px 12px', color: 'var(--text-4)', fontSize: '0.8rem' }}>
@@ -320,6 +354,9 @@ export default function CorpusKG({ onOpenPaper }) {
                     style={{ cursor: e.type === 'paper' ? 'pointer' : 'default' }}
                     onClick={() => e.type === 'paper' && onOpenPaper?.(e.id)}
                   >
+                    {/* Native SVG tooltip: full, untruncated label as a browser-rendered
+                        title on hover — a fallback alongside the HTML tooltip below. */}
+                    <title>{e.label}</title>
                     <circle
                       r={isHovered ? r + 3 : r}
                       fill={color}
@@ -365,6 +402,29 @@ export default function CorpusKG({ onOpenPaper }) {
           >
             Reset view
           </button>
+
+          {/* Hover tooltip — full, untruncated entity title with strong
+              contrast so it stays readable over a busy/filtered graph. */}
+          {hoveredEntityObj && (
+            <div
+              className="corpus-kg-tooltip"
+              style={{
+                position: 'absolute', bottom: 16, left: 24, zIndex: 5,
+                background: 'rgba(10,10,16,0.95)', borderRadius: 8, padding: '10px 14px',
+                border: '1px solid var(--glass-border)', maxWidth: 420, pointerEvents: 'none',
+              }}
+            >
+              <div
+                className="caption"
+                style={{ color: TYPE_COLORS[hoveredEntityObj.type] || 'var(--text-4)', marginBottom: 4, textTransform: 'capitalize' }}
+              >
+                {hoveredEntityObj.type}
+              </div>
+              <div className="body" style={{ color: '#fff', lineHeight: 1.4, fontSize: '0.95rem', wordBreak: 'break-word' }}>
+                {hoveredEntityObj.label}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
