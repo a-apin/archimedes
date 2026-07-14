@@ -1,0 +1,55 @@
+%% Archimedes — system flow (editable mermaid source; the SVG is the styled deliverable)
+%% Bands: USER → OFF-CHAIN (Archimedes) → ON-CHAIN (Arc testnet, chain 5042002, USDC-as-gas)
+%% Verified against main, 2026-07-14.
+
+flowchart TB
+
+  subgraph YOU["YOU — human or autonomous agent (same API, SIWE auth)"]
+    direction LR
+    U1["① Describe intent<br/>plain-English brief · wallet/passkey sign-in"]
+    U2["② Review the passport<br/>rigor verdict · considered-rejects"]
+    U3["③ Sign the deploy<br/>createVault · setAgent · approve · deposit · allocate"]
+    U4["④ Monitor & verify<br/>recompute hashes vs on-chain anchors"]
+    U5["⑤ Explore & publish<br/>library · leaderboard · marketplace"]
+    U1 --> U2 --> U3 --> U4 --> U5
+  end
+
+  subgraph OFF["ARCHIMEDES — OFF-CHAIN · FastAPI · Bedrock Converse LLM (Nova Micro · BYOK · Ollama) · Aurora Postgres · Redis"]
+    direction TB
+    CORPUS["Research corpus<br/>10,000-paper manifest<br/>keyword filter → MiniLM rerank<br/>outcome embargo · source hashes"]
+    REGIME["Market context<br/>regime detectors (GMM · VIX) · price history"]
+    DEBATE["Debate society — sole generation path<br/>proposers → critics → deterministic backtests → K=1 winner + rejects<br/>must beat buy-and-hold net of cost, else first-class ABSTAIN"]
+    GATE["RIGOR GATE — external to the generator<br/>DSR · PBO · walk-forward OOS · look-ahead audit<br/>computed live on persisted returns — pass / fail / pending"]
+    RUNNER["Agent runner — rebalance loop<br/>read vault state (chain is truth) → evaluate strategy DSL<br/>drift + cost-benefit · V_check → commit → trade → reveal<br/>Circle DCW signer · exactly-once Redis lease"]
+    ORACLE["Oracle runner<br/>per-synth price pushes · Circle DCW · fails closed"]
+    MARKET["Marketplace — x402 rail<br/>publish → on-chain registration · subscribe: HTTP 402 → signed payment<br/>Circle Gateway settles sub-cent USDC → PaymentSplitter sweep<br/>⚠ PAYMENTS_DRY_RUN — settlement simulated until #975"]
+  end
+
+  subgraph ON["ARC TESTNET — ON-CHAIN · chain 5042002 · USDC is gas · 289 contracts (2026-07-09)"]
+    direction LR
+    PO["PriceOracle ×synth<br/>Circle-signed pushes · marks NAV · floors swaps"]
+    AMM["AMMRouter + pools<br/>rebalance swap venue · oracle floor caps slippage"]
+    VAULT["Vault — ERC-4626<br/><b>owner = YOU</b> · agent = rebalance-only<br/>rebalance() requires a prior trace commitment<br/>withdraw: owner-only, always"]
+    RTR["ReasoningTraceRegistry<br/>commit(hash, intent) pre-trade · reveal(content) re-hashed on-chain<br/>commit < trade < reveal"]
+    SR["StrategyRegistry<br/>published strategies"]
+    PS["PaymentSplitter<br/>90/10 USDC split"]
+    SF["SyntheticFactory<br/>281-synth universe"]
+  end
+
+  U1 -- "brief" --> CORPUS
+  CORPUS --> DEBATE
+  REGIME --> DEBATE
+  DEBATE --> GATE
+  GATE -- "strategy passport" --> U2
+  U3 == "your wallet signs on-chain (5 sigs)" ==> VAULT
+  U5 -- "publish / subscribe" --> MARKET
+
+  VAULT -. "read state (truth)" .-> RUNNER
+  RUNNER -- "① commit trace hash" --> RTR
+  RUNNER -- "② rebalance(trades)" --> VAULT
+  RUNNER -- "③ reveal full trace (IPFS pointer)" --> RTR
+  VAULT -- "swaps" --> AMM
+  ORACLE -- "price pushes" --> PO
+  MARKET -- "register + 90/10 fees (USDC)" --> SR
+  MARKET --> PS
+  RTR -. "verify: hash + block order" .-> U4
