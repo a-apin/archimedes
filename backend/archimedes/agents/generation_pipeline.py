@@ -74,26 +74,16 @@ def _llm_available() -> bool:
 
 
 def _pick_pipeline(
-    brief: GenerateBrief,  # noqa: ARG001 — accepted for forward-compat brief-aware routing; current heuristic uses env/corpus only
     mode_override: str | None = None,
 ) -> tuple[str, str]:
-    """Decide which generation pipeline to use based on runtime conditions.
+    """Return the generation pipeline to use: unconditionally ``"debate"``.
 
-    Returns ``(pipeline_name, reason)`` where *pipeline_name* is one of
-    ``"fusion"``, ``"architect"``, or ``"agent"``.
-
-    Decision tree (per issue #167):
-
-    1. **fusion** if the fusion engine is enabled, the corpus has ≥ 20 papers,
-       and an LLM backend is reachable.
-    2. **architect** if the curated library has ≥ 3 strategies that match the
-       brief's inferred asset classes.
-    3. **agent** (SSE streaming portfolio-advisor path) as the fallback.
+    T1.1 Phase-3 cutover: the debate society IS the generation pipeline. The
+    legacy fusion/architect/agent decision tree (issue #167) is retired; a
+    client-sent ``mode_override`` is accepted for API compatibility but no
+    longer routes anything — the society owns candidate generation (spec
+    §Phase-3; #834 flag audit).
     """
-    # ── T1.1 Phase-3 cutover: the debate society IS the generation pipeline. ──
-    # The legacy fusion/architect/agent decision tree is retired; a client-sent
-    # mode override is accepted for API compatibility but no longer routes —
-    # the society owns candidate generation (spec §Phase-3; #834 flag audit).
     if mode_override and mode_override != "debate":
         logger.info("generation: ignoring legacy mode override %r (debate-only cutover)", mode_override)
     return "debate", "debate society is the generation pipeline (T1.1 Phase-3 cutover)"
@@ -805,7 +795,7 @@ async def run_generation(
         )
 
         # ── Auto-route to the best pipeline ──
-        pipeline_name, pipeline_reason = _pick_pipeline(brief, mode_override=mode)
+        pipeline_name, pipeline_reason = _pick_pipeline(mode_override=mode)
 
         # ── T1.1 Phase-3 dispatch: debate is THE runner. ──
         # No silent fallback to the retired single-agent paths: if the society
