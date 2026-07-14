@@ -110,13 +110,17 @@ class FunnelStore:
             return
         try:
             r = await self._get_redis()
-            day_key = f"{_PREFIX}:day:{_today()}:{stage}"
+            # One _today() call for both buckets: two calls straddling a UTC
+            # midnight would file the aggregate and the agent_type split of
+            # the SAME record under different days (review follow-up).
+            today = _today()
+            day_key = f"{_PREFIX}:day:{today}:{stage}"
             pipe = r.pipeline()
             pipe.pfadd(f"{_PREFIX}:total:{stage}", visitor_id)
             pipe.pfadd(day_key, visitor_id)
             pipe.expire(day_key, _DAY_TTL_SECONDS)
             if agent_type in AGENT_TYPES:
-                at_day_key = f"{_PREFIX}:day:{_today()}:{stage}:{agent_type}"
+                at_day_key = f"{_PREFIX}:day:{today}:{stage}:{agent_type}"
                 pipe.pfadd(f"{_PREFIX}:total:{stage}:{agent_type}", visitor_id)
                 pipe.pfadd(at_day_key, visitor_id)
                 pipe.expire(at_day_key, _DAY_TTL_SECONDS)
