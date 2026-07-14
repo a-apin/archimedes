@@ -74,26 +74,16 @@ def _llm_available() -> bool:
 
 
 def _pick_pipeline(
-    brief: GenerateBrief,  # noqa: ARG001 — accepted for forward-compat brief-aware routing; current heuristic uses env/corpus only
     mode_override: str | None = None,
 ) -> tuple[str, str]:
-    """Decide which generation pipeline to use based on runtime conditions.
+    """Return the generation pipeline to use: unconditionally ``"debate"``.
 
-    Returns ``(pipeline_name, reason)`` where *pipeline_name* is one of
-    ``"fusion"``, ``"architect"``, or ``"agent"``.
-
-    Decision tree (per issue #167):
-
-    1. **fusion** if the fusion engine is enabled, the corpus has ≥ 20 papers,
-       and an LLM backend is reachable.
-    2. **architect** if the curated library has ≥ 3 strategies that match the
-       brief's inferred asset classes.
-    3. **agent** (SSE streaming portfolio-advisor path) as the fallback.
+    T1.1 Phase-3 cutover: the debate society IS the generation pipeline. The
+    legacy fusion/architect/agent decision tree (issue #167) is retired; a
+    client-sent ``mode_override`` is accepted for API compatibility but no
+    longer routes anything — the society owns candidate generation (spec
+    §Phase-3; #834 flag audit).
     """
-    # ── T1.1 Phase-3 cutover: the debate society IS the generation pipeline. ──
-    # The legacy fusion/architect/agent decision tree is retired; a client-sent
-    # mode override is accepted for API compatibility but no longer routes —
-    # the society owns candidate generation (spec §Phase-3; #834 flag audit).
     if mode_override and mode_override != "debate":
         logger.info("generation: ignoring legacy mode override %r (debate-only cutover)", mode_override)
     return "debate", "debate society is the generation pipeline (T1.1 Phase-3 cutover)"
@@ -241,8 +231,9 @@ class _CandidateResult:
     # downstream buy-and-hold backtest step is skipped — it would clobber the
     # already-computed fusion metrics with a different, weight-less read).
     has_real_rigor: bool = False
-    # The society num_trials (#770, N + library_size) this candidate's DSR was
-    # first computed with. Recorded so the post-loop correlation patch (#822)
+    # The society num_trials (``_society_num_trials(N)``, decouple #2 — the
+    # candidate's OWN pool, never the library) this candidate's DSR was first
+    # computed with. Recorded so the post-loop correlation patch (#822)
     # recomputes DSR at the SAME trial count — only the average_correlation term
     # changes, never the deflation count itself. 0 on the fixture/fusion paths,
     # which don't run the buy-and-hold DSR patch.
@@ -330,10 +321,11 @@ def _rigor_verdict_for(
     emitter + frontend) doesn't care which path produced the verdict.
 
     ``num_trials`` is the multiple-testing count fed to the Deflated Sharpe
-    Ratio — per ``selection-bias-corrections-spec.md`` § 1.3 this is the size
-    of the strategy universe the winner was selected from (the curated library),
-    NOT 1. With ``num_trials=1`` the DSR expectation-of-max term collapses to 0
-    and the ratio is undeflated, which silently defeats the gate.
+    Ratio — the candidate's OWN N-candidate selection pool it was chosen from
+    (``_society_num_trials(N)``, decouple #2), NEVER the curated library's
+    count. With ``num_trials=1`` the DSR expectation-of-max term collapses to
+    0 and the ratio is undeflated — correct only when the caller genuinely has
+    no selection pool larger than 1.
 
     ``average_correlation`` is the mean pairwise correlation among the
     ``num_trials`` society candidates (approach B, issue #822). Defaults to
@@ -387,6 +379,11 @@ def _rigor_verdict_for(
         "in_sample_sharpe": round(float(in_sample_sharpe), 4) if in_sample_sharpe is not None else None,
         "lookahead_audit_passed": lookahead_passed,
         "passing": passing,
+        # Deflation provenance (#1075): the N actually used and the convention
+        # marker distinguishing post-decouple verdicts from stored pre-change
+        # blobs (formula A included the curated library count; this one never does).
+        "num_trials": int(max(1, num_trials)),
+        "num_trials_convention": "self_contained_v2",
     }
 
 
@@ -636,15 +633,22 @@ async def _run_fixture_candidate(
     )
 
 
-def _society_num_trials(library_size: int, selection_pool_size: int) -> int:
-    """Effective DSR multiple-testing trial count on the agentic society path (#770).
+def _society_num_trials(selection_pool_size: int) -> int:
+    """Effective DSR multiple-testing trial count on the agentic society path.
 
-    The winner survived selection from ``selection_pool_size`` (N) generated candidates
-    AND is promoted into a library of ``library_size`` — two independent selection layers,
-    so the deflation count is their SUM (approach A, Bailey & López de Prado 2014). See
-    ``docs/specs/selection-bias-corrections-spec.md`` § 1.3 addendum. Floored at 1.
+    A strategy's rigor must depend ONLY on that strategy — never on how many OTHER
+    strategies happen to sit in the library (Dan's principle, 2026-07-09). The trial
+    count that deflates this winner's Sharpe is therefore the size of ITS OWN
+    selection set: the ``selection_pool_size`` (N) generated candidates it was chosen
+    from — NOT ``N + library_size``. Promoting a strategy into a bigger library must
+    not retroactively change its Deflated Sharpe. Floored at 1.
+
+    NOTE: this REVERSES the ``N + library_size`` additive convention from #770/#811/#820
+    (which treated the library as a second selection layer). See the decouple plan in
+    ``docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md`` Part A #2.
+    Needs Önder's sign-off (portfolio math) — it changes DSR p-values.
     """
-    return max(1, library_size + selection_pool_size)
+    return max(1, selection_pool_size)
 
 
 class FusionUnavailable(Exception):
@@ -805,7 +809,7 @@ async def run_generation(
         )
 
         # ── Auto-route to the best pipeline ──
-        pipeline_name, pipeline_reason = _pick_pipeline(brief, mode_override=mode)
+        pipeline_name, pipeline_reason = _pick_pipeline(mode_override=mode)
 
         # ── T1.1 Phase-3 dispatch: debate is THE runner. ──
         # No silent fallback to the retired single-agent paths: if the society
@@ -871,20 +875,17 @@ async def run_generation(
             except Exception as exc:
                 logger.warning("could not build per-job agent for model %r (%s); using default", model, exc)
                 job_agent = None
-        # Library is the candidate pool the agent reasons over; surface it so
-        # the UI can show "agent is considering N papers". Its size also feeds
-        # the DSR multiple-testing correction below (selection-bias-corrections-
-        # spec.md § 1.3) — num_trials must be the size of the selection set the
-        # winner was chosen from, not 1.
+        # Library = the candidate pool the agent reasons over; surface it so the UI
+        # can show "agent is considering N papers". The DSR multiple-testing count is
+        # the strategy's OWN candidate pool (computed per-candidate below), NOT the
+        # library size — a strategy's rigor depends only on itself (decouple #2).
         try:
             from archimedes.services.strategy_provider import default_provider
 
             lib = default_provider().list_strategies()
             arxiv_ids = [s.paper_arxiv_id for s in lib if getattr(s, "paper_arxiv_id", None)]
-            library_size = max(1, len(lib))
         except Exception:
             arxiv_ids = []
-            library_size = 1
         await emit.emit(
             "candidates_selected",
             candidate_count=len(regimes),
@@ -1064,10 +1065,9 @@ async def run_generation(
         _static_skip = ("fusion", "debate", "debate_abstain")
         await asyncio.gather(
             *[
-                # num_trials = N candidates + library context (#770), not library alone.
-                _backtest_and_persist(
-                    c, strategy_ids[c.candidate_id], emit, _society_num_trials(library_size, n_candidates)
-                )
+                # num_trials = the strategy's OWN candidate pool (N), never the library
+                # size — a strategy's rigor depends only on itself (decouple #2).
+                _backtest_and_persist(c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates))
                 for c in candidates
                 if c.generation_method not in _static_skip and c.candidate_id in strategy_ids
             ]
@@ -1080,9 +1080,7 @@ async def run_generation(
         # and the server-side create_vault gate (#829) refuses to deploy it.
         await asyncio.gather(
             *[
-                _persist_real_returns(
-                    c, strategy_ids[c.candidate_id], emit, _society_num_trials(library_size, n_candidates)
-                )
+                _persist_real_returns(c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates))
                 for c in candidates
                 if c.has_real_rigor and c.return_series and c.candidate_id in strategy_ids
             ]
@@ -1497,8 +1495,9 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         strategy_id: The DB id returned by :func:`_persist_candidate`.
         emit: The SSE emitter to surface backtest progress to the UI.
         num_trials: Effective trial count for the DSR multiple-testing correction —
-            N generated candidates + curated-library size on the society path (#770),
-            fed to ``backtest_portfolio`` as ``num_trials_for_dsr``.
+            the candidate's OWN N-candidate selection pool on the society path
+            (``_society_num_trials(N)``, decouple #2 — never the curated-library
+            size), fed to ``backtest_portfolio`` as ``num_trials_for_dsr``.
     """
     # Fixture mode (offline tests, no-LLM environments) — skip the network
     # round-trip. The test suite covers this function's behavior via direct
@@ -1541,10 +1540,10 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         from archimedes.services.portfolio_backtester import backtest_portfolio
 
         # Run the actual backtest. Raises on insufficient data / fetch failure.
-        # num_trials_for_dsr = N candidates + curated-library size (#770,
-        # selection-bias-corrections-spec.md § 1.3) — the DSR multiple-testing
-        # correction for the full selection set: the N-candidate society search
-        # this winner survived PLUS the library it joins, not library alone.
+        # num_trials_for_dsr = the candidate's OWN N-candidate society-search pool
+        # (``_society_num_trials(N)``, decouple #2) — the DSR multiple-testing
+        # correction for the selection set this winner survived, never the
+        # curated library it happens to join.
         result, artifact = backtest_portfolio(
             strategy_id=strategy_id,
             weights=c.weights,

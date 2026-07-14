@@ -6,6 +6,8 @@ All contract calls route through this client.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -18,20 +20,36 @@ from web3 import AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.providers import AsyncHTTPProvider
 
-# Committed transitional default addresses for the synths still in the SSOT (#725
-# removed sTSLA/sNVDA — single stocks — so they have NO defaults here; #842 retired
-# sGOLD/sOIL/sNKY from the universe — sGOLD→sGLD/sXAU, sOIL/sNKY dropped — so their
-# stale defaults were removed too, keeping this map an exact subset of ON_CHAIN_SYNTHS).
-# These keep the currently-deployed synths resolvable BEFORE the T3.2 redeploy; at the
-# redeploy, the ARC_<SYMBOL>_ADDRESS env vars override them for the full synth set.
-_SYNTH_DEFAULTS: dict[str, str] = {
-    "sSPY": "0x6fea38dedea0c6bb66ce93e5383c34385d8b889f",
-    "sBTC": "0x317e82be8f7cba6c162ab968fcf695d88e8e0359",
-}
-_ORACLE_DEFAULTS: dict[str, str] = {
-    "sSPY": "0xd8161a8eeab7c7100e2863abe3d5f346b5ff9e52",
-    "sBTC": "0x6cc5f621c4e3b46152e69e5c9873689cbb4a85e8",
-}
+logger = logging.getLogger(__name__)
+
+# Deployed synth token + oracle addresses for the FULL on-chain universe (all 281),
+# loaded from the committed deploy-address SSOT (data/synthetic_addresses.json,
+# regenerated per contract redeploy by scripts/gen_synthetic_addresses.py from the
+# Foundry deploy manifest). Replaces the old hand-maintained 2-entry map so EVERY
+# synth in ON_CHAIN_SYNTHS resolves — the whole 281 become priced + tradable, not just
+# a demo handful. Per-synth ARC_<SYMBOL>_ADDRESS / _ORACLE_ADDRESS env vars still
+# override at runtime (see _resolve_ssot_addresses). Address metadata lives here
+# (per-deploy lifecycle); symbol metadata lives in synthetic_universe.json.
+_ADDRESS_SSOT_PATH = Path(__file__).resolve().parent.parent / "data" / "synthetic_addresses.json"
+
+
+def _load_address_defaults() -> tuple[dict[str, str], dict[str, str]]:
+    """Load ``{symbol: token}`` and ``{symbol: oracle}`` from the deploy-address SSOT.
+
+    Fail-safe: on any read/parse error, returns empty maps + logs an error (the app
+    boots with env-only resolution rather than crashing) — mirrors universe.py's loader.
+    """
+    try:
+        raw = json.loads(_ADDRESS_SSOT_PATH.read_text())
+        tokens = {s: v["token"] for s, v in raw.items() if isinstance(v, dict) and v.get("token")}
+        oracles = {s: v["oracle"] for s, v in raw.items() if isinstance(v, dict) and v.get("oracle")}
+        return tokens, oracles
+    except Exception as exc:  # noqa: BLE001 — never let an address-file issue crash import
+        logger.error("client: could not load %s (%s) — synth addresses resolve from env only", _ADDRESS_SSOT_PATH, exc)
+        return {}, {}
+
+
+_SYNTH_DEFAULTS, _ORACLE_DEFAULTS = _load_address_defaults()
 
 
 def _resolve_ssot_addresses(defaults: dict[str, str], suffix: str) -> dict[str, str]:

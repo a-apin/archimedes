@@ -216,10 +216,12 @@ class TestComputeReturnsAsyncRedis:
     async def test_uses_async_redis_and_awaits_snapshot(self) -> None:
         """Regression for #914: the Redis snapshot path must use the asyncio
         client and await ping/get so it never blocks the event loop. We mock
-        redis.asyncio.Redis with a valid snapshot plus a mocked oracle; the
-        returns must come from the Redis price path (not the deterministic
-        fallback), which only happens if the awaits land. A revert to the sync
-        redis.Redis would miss this patch and fall through to the fallback."""
+        redis.asyncio.from_url (the REDIS_URL-based connection convention used
+        everywhere else in the codebase — see services/redis_state.py) with a
+        valid snapshot plus a mocked oracle; the returns must come from the
+        Redis price path (not the deterministic fallback), which only happens
+        if the awaits land. A revert to the sync redis.Redis would miss this
+        patch and fall through to the fallback."""
         import json
 
         alloc = VaultHolding(symbol="sSPY", token_address="0xT", amount=1.0, value_usdc=1.0, weight_pct=100.0)
@@ -238,7 +240,7 @@ class TestComputeReturnsAsyncRedis:
 
         svc = VaultService()
         with (
-            patch("redis.asyncio.Redis", return_value=fake_redis),
+            patch("redis.asyncio.from_url", return_value=fake_redis),
             patch("archimedes.chain.contracts.get_contract_loader", return_value=loader),
         ):
             result = await svc._compute_returns("0xVault", [alloc])

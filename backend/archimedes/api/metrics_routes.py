@@ -76,6 +76,7 @@ def _build_funnel(
     source: str = "visitor",
     stage_order: Sequence[str] = STAGES,
     stage_label: Mapping[str, str] | None = None,
+    breakdown: Mapping[str, Mapping[str, int]] | None = None,
 ) -> FunnelResponse:
     """Turn an ordered stage->count map into a funnel with ratios.
 
@@ -88,6 +89,11 @@ def _build_funnel(
     (e.g. the identity ledger's ``auth_verified`` -> the funnel's existing
     ``wallet_connected`` label) without changing the ratio math, which always
     runs over the raw, ordered counts.
+
+    ``breakdown`` (optional, issue #788): stage -> {agent_type: count}, surfaced
+    per-stage as ``by_agent_type``. Omitted (e.g. the ``source=identity`` path,
+    which has no per-request agent_type) or missing a stage just yields ``{}``
+    for that stage.
     """
     labels = stage_label or {}
     first = counts.get(stage_order[0], 0) if stage_order else 0
@@ -103,6 +109,7 @@ def _build_funnel(
                 distinct_visitors=n,
                 pct_of_landed=round(pct, 4),
                 step_conversion=round(step, 4),
+                by_agent_type=dict(breakdown[stage]) if breakdown and stage in breakdown else {},
             )
         )
         prev = n
@@ -221,6 +228,14 @@ async def get_funnel(
     'agent')`` exclusion so dogfooding/agent traffic can't inflate the honest
     human funnel; pass ``human_only=false`` to see everyone. Fail-safe: an
     all-zero funnel on any DB error.
+
+    Every stage in the ``source=visitor`` response also carries
+    ``by_agent_type`` (issue #788): the same distinct-visitor count, broken out
+    by the telemetry middleware's classification (``internal``/``external``/
+    ``human``), so agent conversion through the funnel can be measured
+    separately from human conversion. Additive — ``distinct_visitors`` and the
+    ratios are unchanged. Empty per stage on ``source=identity`` (no
+    per-request agent_type there).
     """
     if source == "identity":
         counts = get_identity_funnel(exclude_dogfood=human_only)
@@ -237,13 +252,15 @@ async def get_funnel(
     try:
         if day:
             counts = await store.get_day(day)
+            breakdown = await store.get_day_by_agent_type(day)
             window = day
         else:
             counts = await store.get_totals()
+            breakdown = await store.get_totals_by_agent_type()
             window = "all-time"
     finally:
         await store.close()
-    return _build_funnel(counts, window, source="visitor")
+    return _build_funnel(counts, window, source="visitor", breakdown=breakdown)
 
 
 @metrics_router.post("/metrics/funnel/event")

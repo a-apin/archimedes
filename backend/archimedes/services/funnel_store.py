@@ -26,6 +26,14 @@ Two keyspaces per stage:
   - ``archimedes:funnel:total:<stage>`` — all-time distinct visitors (no TTL).
   - ``archimedes:funnel:day:<YYYY-MM-DD>:<stage>`` — per-day distinct visitors,
     with a TTL so old day-buckets self-expire (no unbounded growth).
+
+Issue #788 — agent-vs-human breakdown: alongside the two keyspaces above, each
+``record()`` call additionally tags the same visitor into a per-``agent_type``
+HLL (``...:<stage>:<agent_type>``, same TTL rules) whenever the caller has a
+classified ``agent_type`` (see ``api/telemetry_middleware.py``). This is
+purely additive — the stage-only aggregate is written and read exactly as
+before, so it stays the source of truth for every existing consumer. The
+breakdown lets the funnel measure agent conversion separately from human.
 """
 
 from __future__ import annotations
@@ -56,6 +64,13 @@ STAGES: tuple[str, ...] = (
 # server-side at the authoritative transition so a client can't inflate them.
 CLIENT_EMITTABLE_STAGES: frozenset[str] = frozenset({"landed"})
 
+# The closed set of classifier verdicts (#788). Mirrors the return values of
+# ``api.telemetry_middleware.classify_request`` — duplicated here rather than
+# imported to keep this services-layer module independent of the api layer.
+# An agent_type outside this set is treated like an unknown stage: no-op on
+# write, not a bogus key.
+AGENT_TYPES: tuple[str, ...] = ("internal", "external", "human")
+
 # Per-day buckets self-expire after this window (90 days of trend history).
 _DAY_TTL_SECONDS = 90 * 24 * 60 * 60
 
@@ -78,21 +93,37 @@ class FunnelStore:
 
     # ─── Record (write path — server-side emit + client beacon) ──────────
 
-    async def record(self, stage: str, visitor_id: str) -> None:
+    async def record(self, stage: str, visitor_id: str, agent_type: str | None = None) -> None:
         """Record that ``visitor_id`` reached ``stage``. Never raises.
 
         No-ops on an unknown stage or an empty visitor id (defensive — a missing
         id must not create a bogus distinct count).
+
+        ``agent_type`` (#788), when it's one of ``AGENT_TYPES``, additionally
+        tags the same visitor into a per-agent_type HLL so agent conversion can
+        be measured separately from human. Omitted or unrecognized values just
+        skip the extra tagging — the stage-only aggregate above is unaffected,
+        so a legacy caller (or one whose request never got classified) records
+        exactly as it did before this parameter existed.
         """
         if stage not in STAGES or not visitor_id:
             return
         try:
             r = await self._get_redis()
-            day_key = f"{_PREFIX}:day:{_today()}:{stage}"
+            # One _today() call for both buckets: two calls straddling a UTC
+            # midnight would file the aggregate and the agent_type split of
+            # the SAME record under different days (review follow-up).
+            today = _today()
+            day_key = f"{_PREFIX}:day:{today}:{stage}"
             pipe = r.pipeline()
             pipe.pfadd(f"{_PREFIX}:total:{stage}", visitor_id)
             pipe.pfadd(day_key, visitor_id)
             pipe.expire(day_key, _DAY_TTL_SECONDS)
+            if agent_type in AGENT_TYPES:
+                at_day_key = f"{_PREFIX}:day:{today}:{stage}:{agent_type}"
+                pipe.pfadd(f"{_PREFIX}:total:{stage}:{agent_type}", visitor_id)
+                pipe.pfadd(at_day_key, visitor_id)
+                pipe.expire(at_day_key, _DAY_TTL_SECONDS)
             await pipe.execute()
         except Exception as exc:
             # Fail-safe: a Redis outage must never break the request it measures.
@@ -121,6 +152,32 @@ class FunnelStore:
                 counts[stage] = int(count or 0)
         except Exception as exc:
             logger.debug("funnel read failed: %s", exc)
+        return counts
+
+    # ─── Read — agent_type breakdown (#788) ───────────────────────────────
+
+    async def get_totals_by_agent_type(self) -> dict[str, dict[str, int]]:
+        """All-time distinct visitors per stage, broken out by agent_type. Zeros on error."""
+        return await self._counts_by_agent_type(f"{_PREFIX}:total:{{stage}}:{{agent_type}}")
+
+    async def get_day_by_agent_type(self, date_str: str | None = None) -> dict[str, dict[str, int]]:
+        """Per-day distinct visitors per stage, broken out by agent_type (defaults to today). Zeros on error."""
+        day = date_str or _today()
+        return await self._counts_by_agent_type(f"{_PREFIX}:day:{day}:{{stage}}:{{agent_type}}")
+
+    async def _counts_by_agent_type(self, key_template: str) -> dict[str, dict[str, int]]:
+        counts: dict[str, dict[str, int]] = {stage: dict.fromkeys(AGENT_TYPES, 0) for stage in STAGES}
+        try:
+            r = await self._get_redis()
+            pipe = r.pipeline()
+            pairs = [(stage, agent_type) for stage in STAGES for agent_type in AGENT_TYPES]
+            for stage, agent_type in pairs:
+                pipe.pfcount(key_template.format(stage=stage, agent_type=agent_type))
+            results = await pipe.execute()
+            for (stage, agent_type), count in zip(pairs, results, strict=False):
+                counts[stage][agent_type] = int(count or 0)
+        except Exception as exc:
+            logger.debug("funnel agent-type read failed: %s", exc)
         return counts
 
     # ─── Lifecycle ───────────────────────────────────────────────────────

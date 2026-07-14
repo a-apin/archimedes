@@ -815,13 +815,19 @@ def run_rigor_gate(
             explicitly if that path should ever gate on the floor too.
     """
     if num_trials == 1:
-        # Loud on purpose (#902): num_trials=1 zeroes E[max SR] and collapses DSR
-        # to a plain "Sharpe > 0" test — the exact silent-undeflation failure mode
-        # that made the badge weaker than claimed. Legitimate only for a genuinely
-        # single-trial context, never for grading a library member.
-        logger.warning(
+        # Debug-level breadcrumb (#902; demoted from WARNING in the #1075
+        # review): num_trials=1 zeroes E[max SR] and collapses DSR to a plain
+        # "Sharpe > 0" test. Pre-decouple that was anomalous and deserved a
+        # loud line; post-decouple-#2 it is the DOCUMENTED DEFAULT for every
+        # curated serving call (list/detail/gate), so at WARNING it would spam
+        # the hot path with non-actionable noise. Kept at debug as the tell
+        # for the one real misuse: a caller with an N-candidate pool or
+        # variant grid that forgot to pass its own count.
+        logger.debug(
             "Rigor gate [%s]: num_trials=1 — DSR runs UNDEFLATED (no multiple-testing correction). "
-            "Pass num_trials=len(strategy_library) for a meaningful deflated verdict.",
+            "Correct for a self-contained strategy; if this strategy has its own real selection "
+            "set (an N-candidate generation pool or parameter-variant grid), pass that count "
+            "explicitly instead — never the curated library's size.",
             strategy_id,
         )
 

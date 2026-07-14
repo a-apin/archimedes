@@ -38,17 +38,19 @@ CORE_ENV_VAR_FOR_FIELD = {
     "strategy_registry_address": "ARC_STRATEGY_REGISTRY_ADDRESS",
 }
 
-# Pinned literals — deliberately NOT imported from the module under test — so an
-# unintended change to a committed default address is CAUGHT, instead of being
-# silently re-read from the same source the assertion compares against (which
-# would make the "defaults are correct" check tautological). (Copilot review #765)
+# Pinned ANCHOR literals — deliberately NOT imported from the module under test — so an
+# unintended change to a committed default address is CAUGHT, instead of being silently
+# re-read from the same source the assertion compares against. Post-T3.2 the committed
+# defaults are the FULL 281-synth deploy-address SSOT (data/synthetic_addresses.json);
+# these two anchors spot-check it. Exhaustive parity/well-formed coverage is in
+# test_synthetic_addresses.py. (Copilot review #765)
 PINNED_SYNTH_DEFAULTS = {
-    "sSPY": "0x6fea38dedea0c6bb66ce93e5383c34385d8b889f",
-    "sBTC": "0x317e82be8f7cba6c162ab968fcf695d88e8e0359",
+    "sSPY": "0xc71c4a7ce89bf45d90b0a56eed9cd842eebf2d5e",
+    "sBTC": "0xa6ddc0ace2b9a6a305d5aedef7432c4e48be35dc",
 }
 PINNED_ORACLE_DEFAULTS = {
-    "sSPY": "0xd8161a8eeab7c7100e2863abe3d5f346b5ff9e52",
-    "sBTC": "0x6cc5f621c4e3b46152e69e5c9873689cbb4a85e8",
+    "sSPY": "0x0c3270ee60f7144cdb95541101e6f6fa3b8061d7",
+    "sBTC": "0x40c895c92515f0d73ed6ce6b4e8a8960cba765a9",
 }
 
 # Any SSOT symbol with no committed default = "undeployed pre-redeploy". Selected
@@ -99,20 +101,20 @@ class TestCoreFields:
 
 class TestSsotSynthMaps:
     def test_maps_use_defaults_for_in_ssot_synths(self, clean_env):
-        """The committed transitional defaults (in-SSOT synths) appear in the maps."""
+        """Post-T3.2 the committed defaults are the FULL 281-synth deploy-address SSOT,
+        so every ON_CHAIN_SYNTHS symbol resolves (not just a demo handful)."""
         s = ChainSettings(_env_file=None)
-        # Pinned-literal check FIRST: catches an accidental change to a committed
-        # default address (the imported-dict loop below can't — it re-reads the
-        # same source it asserts against). EXACT-set equality (not subset) so that
-        # ADDING a new committed default without pinning it here ALSO fails — the
-        # pins can't silently fall behind the module's set. (Copilot #765 r2)
-        assert set(PINNED_SYNTH_DEFAULTS) == set(_SYNTH_DEFAULTS), "pin every committed synth default"
-        assert set(PINNED_ORACLE_DEFAULTS) == set(_ORACLE_DEFAULTS), "pin every committed oracle default"
+        # Anchor pins FIRST: catch an accidental change to a known committed default
+        # (these literals are NOT re-read from the module under test). Exhaustive
+        # parity/well-formedness is asserted in test_synthetic_addresses.py.
         for sym, addr in PINNED_SYNTH_DEFAULTS.items():
             assert s.synth_addresses[sym] == addr, f"{sym} synth default changed unexpectedly"
         for sym, addr in PINNED_ORACLE_DEFAULTS.items():
             assert s.oracle_addresses[sym] == addr, f"{sym} oracle default changed unexpectedly"
-        # Then the full set is present (covers any defaults beyond the pins).
+        # New invariant (address convergence): the maps now cover the WHOLE universe.
+        assert set(s.synth_addresses) == set(ON_CHAIN_SYNTHS)
+        assert set(s.oracle_addresses) == set(ON_CHAIN_SYNTHS)
+        # Every committed default is faithfully surfaced.
         for sym, addr in _SYNTH_DEFAULTS.items():
             assert s.synth_addresses[sym] == addr, f"{sym} synth default missing"
         for sym, addr in _ORACLE_DEFAULTS.items():

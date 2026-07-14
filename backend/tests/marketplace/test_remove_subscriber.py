@@ -10,37 +10,16 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from archimedes import db as archimedes_db
 from archimedes.db import get_session
 from archimedes.marketplace.service import MarketService, Publisher, Subscriber
-from archimedes.models.chat import Base
 from archimedes.models.marketplace import MarketplaceAgent
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-
-@pytest.fixture(autouse=True)
-def _use_tmp_db(tmp_path):
-    """Replace engine with a temp SQLite DB so tests never touch the default
-    archimedes_chat.db (which may have stale rows from other test runs).
-
-    We must mutate the module-level engine directly because DATABASE_URL is
-    evaluated at import time (before this fixture runs), so monkeypatch is
-    ineffective here.
-    """
-    db_path = tmp_path / "test_archimedes.db"
-    archimedes_db.DATABASE_URL = f"sqlite:///{db_path}"
-    archimedes_db.engine = create_engine(
-        archimedes_db.DATABASE_URL,
-        connect_args={"check_same_thread": False},
-    )
-    archimedes_db.SessionLocal = sessionmaker(
-        bind=archimedes_db.engine,
-        autocommit=False,
-        autoflush=False,
-    )
-    Base.metadata.create_all(bind=archimedes_db.engine)
-    yield
+# DB isolation for this file's tests comes from the autouse fixture in
+# backend/tests/marketplace/conftest.py (see tests/db_isolation.py) — it
+# replaces the ad hoc redirect-without-restore fixture that used to live
+# here, which left archimedes.db.engine/SessionLocal permanently pointed at
+# this file's last tmp DB for every test that ran later in the same pytest
+# process (issue #1100).
 
 
 @pytest.fixture

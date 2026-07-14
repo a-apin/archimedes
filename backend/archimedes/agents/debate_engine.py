@@ -18,9 +18,9 @@ checks corpus size. The pipeline:
      deterministic critics do the real culling (the budget trick).
   3. **C-rigor** — backtests EVERY survivor via ``evaluate_fusion_spec``
      (deterministic Python, 0 tokens), each wrapped in try/except (fix A5
-     backstop), with ``num_trials=_society_num_trials(library_size, pool_size)``
-     (#770/#820) so the DSR multiple-testing correction counts both the
-     selection-from-pool search AND the library the winner joins.
+     backstop), with ``num_trials=_society_num_trials(pool_size)`` (decouple
+     #2) so the DSR multiple-testing correction counts only the strategy's
+     OWN selection-from-pool search — never the library it joins.
   4. **C-null** — a survivor must beat the passive null (buy-and-hold) net of
      cost by ``MIN_COST_BENEFIT``. If none clears it → first-class ABSTAIN.
   5. **Synthesizer** — deterministic rank of the survivors → top-N leaderboard.
@@ -107,19 +107,6 @@ def _leaderboard_max() -> int:
         return max(1, min(24, int(os.getenv("DEBATE_LEADERBOARD_MAX", "10"))))
     except ValueError:
         return 10
-
-
-def _library_size() -> int:
-    """Curated strategy-library size — the library-context selection layer for the
-    DSR deflation (mirrors the live path's ``len(strategies)``). Never raises;
-    degrades to 1 (the minimum), which can only UNDER-count, never over-deflate."""
-    try:
-        from archimedes.services.strategy_provider import default_provider
-
-        return max(1, len(default_provider().list_strategies()))
-    except Exception:
-        logger.debug("debate: library-size lookup failed; defaulting to 1", exc_info=True)
-        return 1
 
 
 class DebateUnavailable(FusionUnavailable):
@@ -387,11 +374,11 @@ async def _debate_round(pool: list[Any], model: str | None, emit: _Emitter, cand
 async def _critic_rigor(pool: list[Any], num_trials: int) -> list[tuple[Any, Any]]:
     """Backtest every pooled spec for real; return ``[(proposal, eval_result)]``.
 
-    ``num_trials`` is ``_society_num_trials(library_size, pool_size)`` (library + N,
-    #770/#820), so the DSR deflation counts the selection-from-pool search AND the
-    library the winner joins — not ``pool_size`` alone. Each ``evaluate_fusion_spec``
-    is wrapped in try/except so one bad spec (despite the A5 pre-guard) drops with
-    an honest emit, never aborting the cohort.
+    ``num_trials`` is ``_society_num_trials(pool_size)`` (decouple #2), so the
+    DSR deflation counts only the strategy's OWN selection-from-pool search —
+    never the library it joins. Each ``evaluate_fusion_spec`` is wrapped in
+    try/except so one bad spec (despite the A5 pre-guard) drops with an honest
+    emit, never aborting the cohort.
     """
     from archimedes.services.fusion_evaluator import evaluate_fusion_spec
     from archimedes.services.fusion_market_data import real_data_enabled
@@ -484,7 +471,7 @@ def _rigor_verdict_dict(ev: Any) -> dict[str, Any]:
         "in_sample_sharpe": r.in_sample_sharpe,
         "lookahead_audit_passed": bool(r.look_ahead_clean),
         "look_ahead_label": r.look_ahead_label,
-        "num_trials": int(r.num_trials),  # library + pool_size, #770/#820 (A1)
+        "num_trials": int(r.num_trials),  # own pool_size, decouple #2
         "passing": bool(r.passing),
         "data_source": r.data_source,
         "admissible": bool(ev.admissible),
@@ -733,18 +720,18 @@ async def _run_debate_leaderboard(
     if not prov_clean:
         raise DebateUnavailable("debate: all candidates failed provenance (cited outside the embargo+decay surface)")
 
-    # Step 3b — C-rigor (A1, aligned with #770/#811 + Önder's #820): num_trials =
-    # _society_num_trials(library_size, pool_size) = library + N, NOT pool_size alone,
-    # so the debate "passing" badge is not more permissive than the live path. pool_size
-    # (the full conformant proposed count) is the selection set; C-prov only culls which
-    # survivors are backtested. When #820 lands the shared helper, read from that source.
-    num_trials = await asyncio.to_thread(lambda: _society_num_trials(_library_size(), pool_size))
+    # Step 3b — C-rigor: num_trials = _society_num_trials(pool_size) = the strategy's
+    # OWN candidate pool (N), NOT N + library_size. A strategy's rigor depends only on
+    # itself, never on the library it joins (decouple #2, reverses #770/#811/#820 —
+    # needs Önder's sign-off). pool_size (the full conformant proposed count) is the
+    # selection set; C-prov only culls which survivors are backtested.
+    num_trials = _society_num_trials(pool_size)
     await emit.emit("agent_iteration", candidate_id=candidate_id, iteration_n=2, max_iterations=4)
     await emit.emit(
         "tool_called",
         candidate_id=candidate_id,
         tool_name="evaluate_fusion_spec",
-        args_summary=f"backtest ×{len(prov_clean)}, num_trials={num_trials} (library+pool, #770/#820)",
+        args_summary=f"backtest ×{len(prov_clean)}, num_trials={num_trials} (own pool, decouple #2)",
     )
     rigor_results = await _critic_rigor(prov_clean, num_trials)
     if not rigor_results:
