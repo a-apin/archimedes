@@ -119,6 +119,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Validate the tag BEFORE it is interpolated into the root-run SSM
+          # script below: image_tag is a workflow_dispatch input, and while
+          # dispatch requires repo write access, a crafted value would inject
+          # shell into the runner box (review). Docker tag charset only.
+          if ! [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+            echo "::error::invalid image_tag '$IMAGE_TAG' — must match ^[A-Za-z0-9._-]{1,128}$"
+            exit 1
+          fi
+
           # Unquoted heredoc — $AWS_REGION/$ECR_REGISTRY/$BACKEND_ECR_REPO/
           # $IMAGE_TAG are all REAL shell env vars in THIS runner's
           # environment (workflow-level `env:` + this step's own `env:`

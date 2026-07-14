@@ -63,7 +63,10 @@ systemctl start docker
 # `aws ssm get-parameters-by-path` (fetch-secrets.sh below). Ubuntu's apt
 # `awscli` package is v1 and too old for some SSO/SSM flags; install v2
 # directly from AWS, same as infra/scripts/bake-backend-ami.sh does.
-curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+# Arch-aware: hardcoding x86_64 would break bootstrap (and with it ECR login
+# + secret fetch) the day runner_instance_type moves to Graviton (review).
+ARCH="$(uname -m)"   # x86_64 | aarch64 — matches AWS's installer naming
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o /tmp/awscliv2.zip
 unzip -q /tmp/awscliv2.zip -d /tmp
 /tmp/aws/install
 rm -rf /tmp/awscliv2.zip /tmp/aws
