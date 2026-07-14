@@ -117,7 +117,7 @@ class ChainExecutor:
         # values. Weighting against totalAssets() breaks when the on-chain NAV
         # excludes tokens (e.g. an unwired oracle values a synth at 0 in the
         # contract): USDC alone reads 100% and weights can't sum to 100 (#1080).
-        priced: list[tuple[str, str, int, int, int]] = []
+        valued: list[tuple[str, str, int, int, int, bool]] = []
         for i in range(len(token_addresses)):
             token_addr = token_addresses[i]
             amount = amounts[i]
@@ -129,11 +129,11 @@ class ChainExecutor:
             symbol = await self._get_token_symbol(token_addr)
             decimals = await self._get_token_decimals(token_addr)
 
-            # Calculate USDC value
-            value_usdc = await self._token_to_usdc(token_addr, amount, decimals, total_assets > 0)
-            priced.append((symbol, token_addr, amount, decimals, value_usdc))
+            # Calculate USDC value (was_priced=False → value is 0 by construction)
+            value_usdc, was_priced = await self._token_to_usdc(token_addr, amount, decimals, total_assets > 0)
+            valued.append((symbol, token_addr, amount, decimals, value_usdc, was_priced))
 
-        portfolio_value = sum(value for *_, value in priced)
+        portfolio_value = sum(value for *_, value, _ in valued)
         denominator = portfolio_value if portfolio_value > 0 else total_assets
 
         holdings = [
@@ -143,8 +143,9 @@ class ChainExecutor:
                 amount=amount / 10**decimals if decimals else float(amount),
                 value_usdc=value_usdc / 1e6,  # USDC has 6 decimals
                 weight=value_usdc / denominator if denominator > 0 else 0.0,
+                priced=was_priced,
             )
-            for symbol, token_addr, amount, decimals, value_usdc in priced
+            for symbol, token_addr, amount, decimals, value_usdc, was_priced in valued
         ]
 
         return Portfolio(
@@ -956,18 +957,22 @@ class ChainExecutor:
         except Exception:
             return 18
 
-    async def _token_to_usdc(self, token_address: str, amount: int, decimals: int, use_raw_price: bool = False) -> int:
-        """Estimate USDC value of a token holding.
+    async def _token_to_usdc(
+        self, token_address: str, amount: int, decimals: int, use_raw_price: bool = False
+    ) -> tuple[int, bool]:
+        """Estimate USDC value of a token holding → ``(value_usdc, priced)``.
 
         If use_raw_price is True (stale oracle fallback), uses the raw price()
         getter which doesn't check staleness.
 
-        Returns 0 (with a warning) when no price can be read — never the raw
-        base-unit amount: callers treat the result as 6-decimal USDC, so an
-        18-decimal raw amount inflates the value 10**12x (#1080).
+        Returns ``(0, False)`` (with a warning) when no price can be read —
+        never the raw base-unit amount: callers treat the result as 6-decimal
+        USDC, so an 18-decimal raw amount inflates the value 10**12x (#1080).
+        The ``priced`` flag lets callers distinguish "worth 0" from "value
+        unknown" — a distinction trade sizing depends on (see PortfolioHolding).
         """
         if token_address.lower() == chain_client.settings.usdc_address.lower():
-            return amount
+            return amount, True
 
         # For synth tokens, use the oracle price
         for sym, addr in chain_client.settings.synth_addresses.items():
@@ -977,20 +982,20 @@ class ChainExecutor:
                         oracle = self.loader.oracle_for(sym)
                         price = await oracle.functions.getPrice().call()
                         # USDC value = amount (10**decimals base units) * price (6 dec)
-                        return (amount * price) // (10**decimals)
+                        return (amount * price) // (10**decimals), True
                     except Exception:
                         logger.warning("getPrice() failed for %s — retrying with raw price()", sym)
                 try:
                     # Raw price getter (no staleness check)
                     oracle = self.loader.oracle_for(sym)
                     price = await oracle.functions.price().call()
-                    return (amount * price) // (10**decimals)
+                    return (amount * price) // (10**decimals), True
                 except Exception:
-                    logger.warning("oracle price unavailable for %s — valuing holding at 0", sym)
-                    return 0
+                    logger.warning("oracle price unavailable for %s — valuing holding at 0 (unpriced)", sym)
+                    return 0, False
 
-        logger.warning("no oracle mapping for token %s — valuing holding at 0", token_address)
-        return 0
+        logger.warning("no oracle mapping for token %s — valuing holding at 0 (unpriced)", token_address)
+        return 0, False
 
     async def _safe_total_assets(
         self,
@@ -1020,7 +1025,7 @@ class ChainExecutor:
                 else:
                     # Use raw price() (no staleness check)
                     decimals = await self._get_token_decimals(token_addr)
-                    value = await self._token_to_usdc(token_addr, amount, decimals, use_raw_price=True)
+                    value, _priced = await self._token_to_usdc(token_addr, amount, decimals, use_raw_price=True)
                     nav += value
             return nav
 

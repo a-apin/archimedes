@@ -1005,10 +1005,23 @@ class StrategyRunner:
         current_weights = portfolio.weights_dict
         target_map = {t.symbol: t for t in targets}
 
+        # Holdings whose oracle price couldn't be read report weight 0 BY
+        # CONSTRUCTION (#1080) — the balance is real, the value is unknown.
+        # Trading on that fake 0 would buy more of an unpriceable asset every
+        # tick (current 0 vs target >0, forever) or size a blind sell. Skip.
+        unpriced = {h.symbol for h in portfolio.holdings if not getattr(h, "priced", True)}
+
         trades: list[TradeOrder] = []
         all_symbols = set(target_map.keys()) | set(current_weights.keys())
 
         for sym in all_symbols:
+            if sym in unpriced:
+                logger.warning(
+                    "skipping trade for %s: oracle price unavailable — holding weight is 0 by "
+                    "construction, not truth; refusing to size a trade against it (#1080)",
+                    sym,
+                )
+                continue
             current_w = current_weights.get(sym, 0.0)
             target = target_map.get(sym)
             target_w = target.weight if target else 0.0

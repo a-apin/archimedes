@@ -154,6 +154,10 @@ class TestReadPortfolio:
         assert by_symbol["sTSLA"].weight == 0.0
         assert by_symbol["USDC"].weight == pytest.approx(1.0)
         assert sum(h.weight for h in portfolio.holdings) == pytest.approx(1.0)
+        # The unpriceable holding is flagged so trade sizing can refuse to act
+        # on its fake-zero weight (#1080 review follow-up).
+        assert by_symbol["sTSLA"].priced is False
+        assert by_symbol["USDC"].priced is True
 
     def test_total_assets_revert_falls_back_to_offchain_nav(self, executor, mock_loader):
         vault = mock_loader.vault.return_value
@@ -318,38 +322,39 @@ class TestTokenHelpers:
         assert asyncio.run(executor._get_token_decimals(STSLA)) == 18
 
     def test_token_to_usdc_for_usdc_is_identity(self, executor):
-        assert asyncio.run(executor._token_to_usdc(USDC, 12_345, 6)) == 12_345
+        assert asyncio.run(executor._token_to_usdc(USDC, 12_345, 6)) == (12_345, True)
 
     def test_token_to_usdc_synth_with_getprice(self, executor, mock_loader):
         oracle = mock_loader.oracle_for.return_value
         _vault_fn(oracle, "getPrice", return_value=200_000_000)  # $200 (6 dec)
         # 2 tokens (18 dec) * 200_000_000 / 1e18 = 400_000_000 → $400
         result = asyncio.run(executor._token_to_usdc(STSLA, 2 * 10**18, 18))
-        assert result == 400_000_000
+        assert result == (400_000_000, True)
 
     def test_token_to_usdc_uses_raw_price_when_requested(self, executor, mock_loader):
         oracle = mock_loader.oracle_for.return_value
         _vault_fn(oracle, "price", return_value=100_000_000)
         result = asyncio.run(executor._token_to_usdc(STSLA, 1 * 10**18, 18, use_raw_price=True))
-        assert result == 100_000_000
+        assert result == (100_000_000, True)
 
     def test_token_to_usdc_getprice_revert_falls_back_to_raw_price(self, executor, mock_loader):
         oracle = mock_loader.oracle_for.return_value
         _vault_fn(oracle, "getPrice", side_effect=RuntimeError("StalePrice"))
         _vault_fn(oracle, "price", return_value=100_000_000)
         result = asyncio.run(executor._token_to_usdc(STSLA, 3 * 10**18, 18))
-        assert result == 300_000_000
+        assert result == (300_000_000, True)
 
-    def test_token_to_usdc_synth_unpriceable_returns_zero(self, executor, mock_loader):
-        # Both getters revert → 0, never the raw base-unit amount (#1080).
+    def test_token_to_usdc_synth_unpriceable_returns_zero_unpriced(self, executor, mock_loader):
+        # Both getters revert → (0, priced=False): never the raw base-unit
+        # amount (#1080), and the caller can tell "worth 0" from "unknown".
         oracle = mock_loader.oracle_for.return_value
         _vault_fn(oracle, "getPrice", side_effect=RuntimeError("StalePrice"))
         _vault_fn(oracle, "price", side_effect=RuntimeError("revert"))
-        assert asyncio.run(executor._token_to_usdc(STSLA, 2 * 10**18, 18)) == 0
+        assert asyncio.run(executor._token_to_usdc(STSLA, 2 * 10**18, 18)) == (0, False)
 
-    def test_token_to_usdc_unknown_token_returns_zero(self, executor):
-        # No oracle mapping → 0, never the raw base-unit amount (#1080).
-        assert asyncio.run(executor._token_to_usdc("0x0000000000000000000000000000000000008888", 42, 18)) == 0
+    def test_token_to_usdc_unknown_token_returns_zero_unpriced(self, executor):
+        # No oracle mapping → (0, priced=False), never the raw base-unit amount (#1080).
+        assert asyncio.run(executor._token_to_usdc("0x0000000000000000000000000000000000008888", 42, 18)) == (0, False)
 
 
 class TestParseVaultCreated:
