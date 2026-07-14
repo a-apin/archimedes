@@ -209,6 +209,43 @@ async def test_derive_allocations_sizes_passers_and_excludes_candidates(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_derive_allocations_fallback_splits_remainder_evenly(tmp_path, monkeypatch):
+    """M4: no strategies selected → equal-split fallback must sum to exactly 10000 bps.
+
+    7 synth assets with usdc_floor_pct=25 gives synth_budget_bps=7500, which does
+    NOT divide evenly by 7 (7500 // 7 = 1071, remainder 3) — the case that used to
+    silently drop 3 bps via floor-division.
+    """
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/t.db")
+
+    mock_settings = MagicMock()
+    mock_settings.synth_addresses = {f"sSYN{i}": "0x" + str(i) * 40 for i in range(7)}
+    mock_settings.usdc_address = "0x" + "2" * 40
+
+    from archimedes.api import vaults_routes
+    from archimedes.api.vault_schemas import SetAllocationsRequest
+
+    with (
+        patch.object(vaults_routes, "strategy_provider") as mock_provider,
+        patch("archimedes.chain.client.chain_client") as mock_chain,
+    ):
+        mock_provider.return_value.list_strategies.return_value = []
+        mock_chain.settings = mock_settings
+        req = SetAllocationsRequest(strategy_ids=[], usdc_floor_pct=25.0, risk_profile="moderate")
+        resp = await vaults_routes.derive_vault_allocations.__wrapped__("0x" + "3" * 40, req, MagicMock(), MagicMock())
+
+    assert resp.total_bps == 10000
+    assert resp.strategy_count == 0
+    by_symbol = {a.symbol: a.weight_bps for a in resp.allocations}
+    assert by_symbol["USDC"] == 2500
+    synth_weights = [w for sym, w in by_symbol.items() if sym != "USDC"]
+    assert sum(synth_weights) == 7500
+    assert all(w > 0 for w in synth_weights)
+    assert sorted(synth_weights, reverse=True)[:3] == [1072, 1072, 1072]
+    assert sorted(synth_weights)[:4] == [1071, 1071, 1071, 1071]
+
+
+@pytest.mark.asyncio
 async def test_derive_allocations_requires_siwe_session():
     """#917: derive-allocations is behind the SIWE gate — 401 without a session."""
     from archimedes.main import app
