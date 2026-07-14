@@ -13,9 +13,7 @@ import StrategyPassport from './components/StrategyPassport'
 import CorpusExplorer from './components/CorpusExplorer'
 import Reasoning from './components/Reasoning'
 import Architecture from './components/Architecture'
-import RiskAnalysis from './components/RiskAnalysis'
-import PortfolioAdvisorPanels from './components/PortfolioAdvisorPanels'
-import BacktestVisualizer from './components/BacktestVisualizer'
+import QuantLab from './components/QuantLab'
 import VaultDetail from './components/VaultDetail'
 import OnboardingTour, { hasCompletedOnboarding } from './components/OnboardingTour'
 import WalletGate from './components/WalletGate'
@@ -265,20 +263,14 @@ export default function App() {
       case 'strategy':     return <StrategyPassport strategyId={selectedStrategy} onNavigate={navigateToPage} walletAddr={walletAddr} />
       case 'corpus':       return <CorpusExplorer />
       case 'quant':        return (
-        <div className="quant-lab">
-          <div className="max-w-[720px] mb-6">
-            <h2 className="serif text-[2rem] mb-2.5">Quant Lab</h2>
-            <p className="body">
-              Interactive risk, optimization, and backtest visualizations. These
-              panels render with illustrative sample data until wired to a live
-              vault or backtest — the math (VaR/CVaR, rolling Sharpe, Kelly,
-              drawdown, chronological OOS) is computed client-side from the series shown.
-            </p>
-          </div>
-          <RiskAnalysis />
-          <div className="mt-8"><PortfolioAdvisorPanels /></div>
-          <div className="mt-8"><BacktestVisualizer /></div>
-        </div>
+        <WalletGate
+          walletAddr={walletAddr}
+          pageName="Quant Lab"
+          description="Quant Lab reads your live strategy library, vault holdings, and reasoning traces. Connect a wallet — sign in with a passkey, no extension needed — to analyze your own positions."
+          onConnect={openConnectModal}
+        >
+          <QuantLab />
+        </WalletGate>
       )
       case 'portfolio':    return (
         <WalletGate

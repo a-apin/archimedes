@@ -13,6 +13,7 @@
 import { useState, useMemo } from 'react'
 import { apiPost } from '../api'
 import { kellyFraction, seededRng } from '../utils/riskMath'
+import SampleDataBadge from './SampleDataBadge'
 import './PortfolioAdvisorPanels.css'
 
 // Backed by POST /api/portfolio/optimize (portfolio_routes.py), a thin route
@@ -108,7 +109,7 @@ function OptimizerSelector() {
 }
 
 // ─── Efficient frontier scatter ─────────────────────────────
-function EfficientFrontier({ points }) {
+function EfficientFrontier({ points, sample }) {
   const W = 700
   const H = 280
   const PAD_L = 48
@@ -155,7 +156,10 @@ function EfficientFrontier({ points }) {
 
   return (
     <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
-      <div className="label mb-2">Efficient Frontier</div>
+      <div className="label mb-2">
+        Efficient Frontier
+        {sample && <SampleDataBadge />}
+      </div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Efficient frontier: expected return vs risk" style={{ display: 'block' }}>
         {yTicks.map((t, i) => (
           <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="var(--chart-grid)" strokeWidth="1" />
@@ -184,8 +188,11 @@ function EfficientFrontier({ points }) {
         ))}
       </svg>
       <p className="caption" style={{ marginTop: 8, color: 'var(--text-4)', lineHeight: 1.5 }}>
-        Each dot is a candidate allocation; the purple curve is the efficient frontier (max return per unit
-        of risk). The green dot is the max-Sharpe (tangency) portfolio at{' '}
+        {sample
+          ? 'Each dot is a candidate allocation; '
+          : 'Each dot is a library strategy, annualized from its persisted backtest returns; '}
+        the purple curve is the efficient frontier (max return per unit
+        of risk). The green dot is the max-Sharpe (tangency) {sample ? 'portfolio' : 'strategy'} at{' '}
         <span className="mono">{fmtPct(optimal.ret)}</span> return /{' '}
         <span className="mono">{fmtPct(optimal.risk)}</span> risk.
       </p>
@@ -251,10 +258,13 @@ function KellyWidget() {
 }
 
 // ─── Allocation drift bars (current vs target) ──────────────
-function AllocationDrift({ rows }) {
+function AllocationDrift({ rows, sample }) {
   return (
     <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
-      <div className="label mb-3">Allocation Drift (current vs target)</div>
+      <div className="label mb-3">
+        Allocation Drift (current vs target)
+        {sample && <SampleDataBadge />}
+      </div>
       {rows.map((r) => {
         const drift = r.current - r.target
         const driftColor = Math.abs(drift) < 0.01 ? 'var(--text-3)' : drift > 0 ? '#f59e0b' : '#60a5fa'
@@ -280,9 +290,10 @@ function AllocationDrift({ rows }) {
         )
       })}
       <p className="caption" style={{ marginTop: 6, color: 'var(--text-4)', lineHeight: 1.5 }}>
-        The vertical tick marks each sleeve&apos;s target weight; the bar shows the current weight. Drift
-        beyond a band triggers the agent&apos;s rebalance — every rebalance decision is hashed and anchored
-        on Arc.
+        The vertical tick marks each sleeve&apos;s target weight; the bar shows the current weight.
+        {sample
+          ? ' The sleeves shown here are sample values, not a live book.'
+          : " Drift beyond a band triggers the agent's rebalance — every rebalance decision is hashed and anchored on Arc."}
       </p>
     </div>
   )
@@ -319,15 +330,15 @@ export default function PortfolioAdvisorPanels({ frontierPoints, driftRows } = {
           Optimizer &amp; Sizing
         </h2>
         <p className="body">
-          Choose an allocation method, inspect the efficient frontier, size positions with Kelly, and watch
-          how far the live book has drifted from its targets.
+          Choose an allocation method, inspect the efficient frontier, size positions with Kelly, and track
+          how far a book drifts from its target weights.
         </p>
       </div>
 
       <OptimizerSelector />
-      <EfficientFrontier points={points} />
+      <EfficientFrontier points={points} sample={frontierPoints == null} />
       <KellyWidget />
-      <AllocationDrift rows={rows} />
+      <AllocationDrift rows={rows} sample={driftRows == null} />
     </div>
   )
 }

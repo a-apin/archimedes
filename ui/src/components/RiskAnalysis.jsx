@@ -19,6 +19,7 @@ import {
   correlation,
   mockReturns,
 } from '../utils/riskMath'
+import SampleDataBadge from './SampleDataBadge'
 import './RiskAnalysis.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
@@ -42,7 +43,7 @@ function buildDefaultData() {
 }
 
 // ─── VaR / CVaR stat cards ──────────────────────────────────
-function VaRPanel({ returns, cvarData }) {
+function VaRPanel({ returns, cvarData, sample }) {
   // Computed from local mock returns (fallback)
   const localStats = useMemo(
     () => ({
@@ -121,7 +122,10 @@ function VaRPanel({ returns, cvarData }) {
 
   return (
     <div className="card-elevated" style={{ padding: 24, marginBottom: 20 }}>
-      <div className="label mb-3">Value-at-Risk &amp; Conditional VaR</div>
+      <div className="label mb-3">
+        Value-at-Risk &amp; Conditional VaR
+        {!useBackend && sample && <SampleDataBadge />}
+      </div>
       <div className="risk-stat-grid">
         {cards.map((c) => (
           <div className="risk-stat-card" key={c.label}>
@@ -284,7 +288,7 @@ function GreeksPanel({ greeksData }) {
 }
 
 // ─── Drawdown / underwater area chart ───────────────────────
-function DrawdownPlot({ returns }) {
+function DrawdownPlot({ returns, sample }) {
   const W = 700
   const H = 200
   const PAD_L = 44
@@ -312,7 +316,10 @@ function DrawdownPlot({ returns }) {
 
   return (
     <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
-      <div className="label mb-2">Drawdown (Underwater Plot)</div>
+      <div className="label mb-2">
+        Drawdown (Underwater Plot)
+        {sample && <SampleDataBadge />}
+      </div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Drawdown over time" style={{ display: 'block' }}>
         {yTicks.map((t, i) => (
           <line key={i} x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke="var(--chart-grid)" strokeWidth="1" />
@@ -335,7 +342,7 @@ function DrawdownPlot({ returns }) {
 }
 
 // ─── Rolling Sharpe line chart (30 / 60 / 90d) ──────────────
-function RollingSharpePlot({ returns }) {
+function RollingSharpePlot({ returns, sample }) {
   const W = 700
   const H = 220
   const PAD_L = 44
@@ -374,7 +381,10 @@ function RollingSharpePlot({ returns }) {
   return (
     <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-        <div className="label mb-2">Rolling Sharpe Ratio (annualized)</div>
+        <div className="label mb-2">
+          Rolling Sharpe Ratio (annualized)
+          {sample && <SampleDataBadge />}
+        </div>
         <div style={{ display: 'flex', gap: 14 }}>
           {lines.map((l) => (
             <span key={l.label} className="caption" style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -409,7 +419,7 @@ function RollingSharpePlot({ returns }) {
 }
 
 // ─── Correlation heatmap ────────────────────────────────────
-function CorrelationHeatmap({ assets, series }) {
+function CorrelationHeatmap({ assets, series, sample }) {
   const matrix = useMemo(() => {
     return assets.map((_, i) => assets.map((__, j) => correlation(series[i], series[j])))
   }, [assets, series])
@@ -424,7 +434,10 @@ function CorrelationHeatmap({ assets, series }) {
 
   return (
     <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
-      <div className="label mb-3">Correlation Matrix (daily returns, ρ)</div>
+      <div className="label mb-3">
+        Correlation Matrix (daily returns, ρ)
+        {sample && <SampleDataBadge />}
+      </div>
       <div className="risk-heatmap" style={{ gridTemplateColumns: `auto repeat(${assets.length}, 1fr)` }}>
         <div className="risk-heatmap-corner" />
         {assets.map((a) => (
@@ -509,7 +522,7 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
           Risk Analysis
         </h2>
         <p className="body">
-          Tail-risk, drawdown, and correlation diagnostics for the active portfolio. These are the
+          Tail-risk, drawdown, and correlation diagnostics. These are the
           loss-side counterparts to the return-side metrics on the Advisor — rigor means making the
           downside as legible as the upside.
         </p>
@@ -530,11 +543,11 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
         </div>
       )}
 
-      <VaRPanel returns={data.returns} cvarData={cvarData} />
+      <VaRPanel returns={data.returns} cvarData={cvarData} sample={returnsProp == null} />
       <GreeksPanel greeksData={greeksData} />
-      <DrawdownPlot returns={data.returns} />
-      <RollingSharpePlot returns={data.returns} />
-      <CorrelationHeatmap assets={data.assets} series={data.series} />
+      <DrawdownPlot returns={data.returns} sample={returnsProp == null} />
+      <RollingSharpePlot returns={data.returns} sample={returnsProp == null} />
+      <CorrelationHeatmap assets={data.assets} series={data.series} sample={seriesProp == null} />
     </div>
   )
 }

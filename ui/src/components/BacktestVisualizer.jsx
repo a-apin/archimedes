@@ -17,7 +17,9 @@ import {
   drawdownSeries,
   rollingSharpe,
   seededRng,
+  walkForwardFolds,
 } from '../utils/riskMath'
+import SampleDataBadge from './SampleDataBadge'
 import './BacktestVisualizer.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
@@ -41,9 +43,12 @@ function EquityDrawdownChart({ returns, oosStartFrac }) {
     const n = equity.length
     const eqLo = Math.min(...equity)
     const eqHi = Math.max(...equity)
+    // A flat series (e.g. an all-zero returns row) makes eqHi === eqLo; guard
+    // the span so the scale stays finite instead of NaN-ing every y attribute.
+    const eqSpan = eqHi - eqLo || 1
     const ddLo = Math.min(...dd, -0.01)
     const toX = (i) => PAD_L + (i / Math.max(1, n - 1)) * (W - PAD_L - PAD_R)
-    const toYeq = (v) => PAD_T + (1 - (v - eqLo) / (eqHi - eqLo)) * (H - PAD_T - PAD_B)
+    const toYeq = (v) => PAD_T + (1 - (v - eqLo) / eqSpan) * (H - PAD_T - PAD_B)
     const toYdd = (v) => PAD_T + (v / ddLo) * (H - PAD_T - PAD_B)
     const eqPts = equity.map((v, i) => `${toX(i).toFixed(1)},${toYeq(v).toFixed(1)}`)
     const ddPts = dd.map((v, i) => `${toX(i).toFixed(1)},${toYdd(v).toFixed(1)}`)
@@ -95,7 +100,7 @@ function EquityDrawdownChart({ returns, oosStartFrac }) {
 }
 
 // ─── Walk-forward IS/OOS band visualizer ────────────────────
-function WalkForwardBands({ folds }) {
+function WalkForwardBands({ folds, sample }) {
   const W = 720
   const H = 90
   const PAD_L = 8
@@ -105,7 +110,10 @@ function WalkForwardBands({ folds }) {
 
   return (
     <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
-      <div className="label mb-2">Walk-Forward Validation (IS / OOS folds)</div>
+      <div className="label mb-2">
+        Walk-Forward Validation (IS / OOS folds)
+        {sample && <SampleDataBadge />}
+      </div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Walk-forward in-sample and out-of-sample folds" style={{ display: 'block' }}>
         {folds.map((f, i) => {
           const x = PAD_L + i * segW
@@ -151,7 +159,7 @@ function WalkForwardBands({ folds }) {
 }
 
 // ─── Trade / rebalance log with date filter ─────────────────
-function TradeLog({ trades }) {
+function TradeLog({ trades, sample }) {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
 
@@ -163,10 +171,18 @@ function TradeLog({ trades }) {
     })
   }, [trades, from, to])
 
+  // Real rows from /api/traces carry {amount} (token units); the synthetic
+  // scaffold carries {weightDelta, price}. Column set follows the data so we
+  // never render a fabricated price next to a real trade.
+  const hasAmount = trades.some((t) => t.amount != null)
+
   return (
     <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-        <div className="label mb-0">Trade / Rebalance Log</div>
+        <div className="label mb-0">
+          Trade / Rebalance Log
+          {sample && <SampleDataBadge />}
+        </div>
         <div className="bv-filter">
           <label className="caption">
             From <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -186,8 +202,14 @@ function TradeLog({ trades }) {
               <th>Date</th>
               <th>Action</th>
               <th>Asset</th>
-              <th className="text-right">Weight Δ</th>
-              <th className="text-right">Price</th>
+              {hasAmount ? (
+                <th className="text-right">Amount</th>
+              ) : (
+                <>
+                  <th className="text-right">Weight Δ</th>
+                  <th className="text-right">Price</th>
+                </>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -200,15 +222,21 @@ function TradeLog({ trades }) {
                   </span>
                 </td>
                 <td className="mono" style={{ fontSize: '0.78rem' }}>{t.asset}</td>
-                <td className={`text-right mono ${t.weightDelta > 0 ? 'positive' : t.weightDelta < 0 ? 'negative' : ''}`}>
-                  {t.weightDelta > 0 ? '+' : ''}{(t.weightDelta * 100).toFixed(1)}%
-                </td>
-                <td className="text-right mono">{fmt(t.price)}</td>
+                {hasAmount ? (
+                  <td className="text-right mono">{fmt(t.amount)}</td>
+                ) : (
+                  <>
+                    <td className={`text-right mono ${t.weightDelta > 0 ? 'positive' : t.weightDelta < 0 ? 'negative' : ''}`}>
+                      {t.weightDelta > 0 ? '+' : ''}{(t.weightDelta * 100).toFixed(1)}%
+                    </td>
+                    <td className="text-right mono">{fmt(t.price)}</td>
+                  </>
+                )}
               </tr>
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={5} className="caption" style={{ textAlign: 'center', padding: 16, color: 'var(--text-4)' }}>
+                <td colSpan={hasAmount ? 4 : 5} className="caption" style={{ textAlign: 'center', padding: 16, color: 'var(--text-4)' }}>
                   No trades in the selected date range.
                 </td>
               </tr>
@@ -217,8 +245,10 @@ function TradeLog({ trades }) {
         </table>
       </div>
       <p className="caption" style={{ marginTop: 8, color: 'var(--text-4)' }}>
-        Showing {filtered.length} of {trades.length} rebalance events. Each row corresponds to an on-chain
-        rebalance whose reasoning trace is anchored on Arc.
+        Showing {filtered.length} of {trades.length} rebalance events.
+        {sample
+          ? ' These rows are generated samples that demonstrate the log format — no real trades happened.'
+          : ' Each row comes from a recorded agent rebalance trace.'}
       </p>
     </div>
   )
@@ -327,7 +357,7 @@ const METRIC_OPTIONS = [
   { value: 'calmar_ratio', label: 'Calmar Ratio' },
 ]
 
-export default function BacktestVisualizer({ result, strategyId, weights } = {}) {
+export default function BacktestVisualizer({ result, strategyId, weights, realTrades } = {}) {
   const [sweepData, setSweepData] = useState(null)
   const [sweepLoading, setSweepLoading] = useState(false)
   const [sweepError, setSweepError] = useState('')
@@ -413,15 +443,23 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
     }
   }, [strategyId, propReturns])
 
-  // Mock scaffold for walk-forward/sweep/trade sections (interactive demos).
+  // Real walk-forward folds, computed from the fetched daily returns. Empty
+  // when no real returns exist (or the series is too short for honest folds).
+  const liveFolds = useMemo(
+    () => (realReturns ? walkForwardFolds(realReturns) : []),
+    [realReturns],
+  )
+
+  // Mock scaffold for walk-forward/sweep/trade sections — used only where no
+  // real source resolved; those sections keep their sample badge.
   const data = useMemo(() => {
     const mock = buildMockScaffold()
     return {
-      folds: result?.folds ?? mock.folds,
+      folds: result?.folds ?? (liveFolds.length ? liveFolds : mock.folds),
       sweep: result?.sweep ?? mock.sweep,
-      trades: result?.trades ?? mock.trades,
+      trades: result?.trades ?? realTrades ?? mock.trades,
     }
-  }, [result])
+  }, [result, liveFolds, realTrades])
 
   async function fetchSweep() {
     if (!strategyId || !weights) return
@@ -471,6 +509,12 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
 
   const sensRatio = sweepData?.sensitivity_ratio ?? null
 
+  // Per-section sample flags (#1060): true while a section still renders the
+  // mock scaffold; flips off as soon as real data arrives via props or API.
+  const foldsAreSample = result?.folds == null && liveFolds.length === 0
+  const sweepIsSample = sweepData == null && result?.sweep == null
+  const tradesAreSample = result?.trades == null && realTrades == null
+
   return (
     <div>
       <div style={{ maxWidth: 680, marginBottom: 28 }}>
@@ -501,11 +545,14 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
           </p>
         </div>
       )}
-      <WalkForwardBands folds={data.folds} />
+      <WalkForwardBands folds={data.folds} sample={foldsAreSample} />
 
       {/* Parameter sweep section */}
       <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
-        <div className="label mb-3">Parameter Sweep ({sweepForHeatmap.metric ?? 'metric'} by parameter pair)</div>
+        <div className="label mb-3">
+          Parameter Sweep ({sweepForHeatmap.metric ?? 'metric'} by parameter pair)
+          {sweepIsSample && <SampleDataBadge />}
+        </div>
 
         {strategyId && (
           <div className="bv-sweep-controls" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
@@ -599,7 +646,7 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
         </p>
       </div>
 
-      <TradeLog trades={data.trades} />
+      <TradeLog trades={data.trades} sample={tradesAreSample} />
       {realReturns && <RollingStatBand returns={realReturns} window={60} />}
     </div>
   )
