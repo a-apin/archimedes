@@ -72,13 +72,13 @@ export default function Explore() {
   // grouping the filter pills above already use. Sorted by member count so
   // the largest, most-populated groups surface first.
   const groups = useMemo(() => {
-    const bySymbolClass = new Map()
+    const byAssetClass = new Map()
     for (const a of assets) {
       if (!a.asset_class) continue
-      if (!bySymbolClass.has(a.asset_class)) bySymbolClass.set(a.asset_class, [])
-      bySymbolClass.get(a.asset_class).push(a)
+      if (!byAssetClass.has(a.asset_class)) byAssetClass.set(a.asset_class, [])
+      byAssetClass.get(a.asset_class).push(a)
     }
-    return Array.from(bySymbolClass.entries())
+    return Array.from(byAssetClass.entries())
       .map(([assetClass, members]) => ({ assetClass, members, meta: groupMeta(assetClass) }))
       .sort((a, b) => b.members.length - a.members.length)
   }, [assets])

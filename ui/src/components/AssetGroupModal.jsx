@@ -129,9 +129,10 @@ export default function AssetGroupModal({ assetClass, assets, onClose }) {
     Promise.all(
       aggregateMembers.map(a =>
         fetch(`${API_BASE}/api/explore/assets/${a.symbol}/history?range=${range}`)
-          .then(res => (res.ok ? res.json() : { points: [] }))
-          .then(data => ({ symbol: a.symbol, points: Array.isArray(data.points) ? data.points : [] }))
-          .catch(() => ({ symbol: a.symbol, points: [] }))
+          .then(res => (res.ok
+            ? res.json().then(data => ({ symbol: a.symbol, points: Array.isArray(data.points) ? data.points : [], failed: false }))
+            : { symbol: a.symbol, points: [], failed: true }))
+          .catch(() => ({ symbol: a.symbol, points: [], failed: true }))
       )
     )
       .then(results => {
@@ -140,7 +141,12 @@ export default function AssetGroupModal({ assetClass, assets, onClose }) {
         for (const r of results) bySymbol[r.symbol] = r.points
         setSeriesBySymbol(bySymbol)
         if (results.every(r => r.points.length === 0)) {
-          setError('No historical data available for this group in the selected range.')
+          // Distinguish "backend/network failing" from "genuinely no bars in
+          // this range" — telling a user there's no data when every request
+          // 5xx'd is misleading (review).
+          setError(results.some(r => r.failed)
+            ? 'Could not load history for this group right now — retry shortly.'
+            : 'No historical data available for this group in the selected range.')
         }
       })
       .finally(() => { if (!cancelled) setLoading(false) })

@@ -21,7 +21,16 @@ export function fmtPrice(v) {
  * rather than a dollar price) override the y-axis / label formatting without
  * forking the chart.
  */
-export default function PriceHistoryChart({ points, loading, error, formatValue = fmtPrice }) {
+export default function PriceHistoryChart({
+  points,
+  loading,
+  error,
+  formatValue = fmtPrice,
+  // Callers can restore context lost when this chart was extracted from
+  // AssetModal (e.g. the single-asset modal's more specific 'on this asset'
+  // wording) without forking the component (review).
+  emptyHeadline = 'Historical chart unavailable for the selected range.',
+}) {
   const SVG_W = 720
   const SVG_H = 260
   const PAD_L = 56
@@ -48,7 +57,7 @@ export default function PriceHistoryChart({ points, loading, error, formatValue 
         }}
       >
         <div className="caption" style={{ color: 'var(--text-4)', textAlign: 'center', maxWidth: 380 }}>
-          Historical chart unavailable for the selected range.
+          {emptyHeadline}
           {error ? <><br /><span style={{ fontSize: '0.7rem', opacity: 0.7 }}>{error}</span></> : null}
         </div>
       </div>

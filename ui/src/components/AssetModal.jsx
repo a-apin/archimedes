@@ -181,7 +181,7 @@ export default function AssetModal({ asset, onClose }) {
 
         {/* Chart */}
         <div style={{ marginTop: 10 }}>
-          <PriceHistoryChart points={history} loading={loading} error={error} />
+          <PriceHistoryChart points={history} loading={loading} error={error} emptyHeadline="Historical chart unavailable for this asset in the selected range." />
         </div>
 
         {/* Meta grid: source, last updated, longer-window changes, vol */}
