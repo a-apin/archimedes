@@ -203,11 +203,11 @@ archimedes/
 ├── docs/                 ← design + planning + specs + ADRs + archive (see docs/README.md)
 ├── backend/              ← FastAPI app (Python 3.12) — see docs/chuan-architecture-survey.md
 ├── analytics-engine/     ← backtest engine (uv-managed)
-├── contracts/            ← Solidity (Foundry layout) — 11 contracts deployed on Arc testnet
+├── contracts/            ← Solidity (Foundry layout) — 12 sources → 570 live instances on Arc testnet (T3.2 redeploy 2026-07-09)
 ├── ui/                   ← React 19 + Vite 8 + viem 2.48 (the live frontend)
 ├── nginx/                ← reverse-proxy + UI build container
 ├── wallet-setup/         ← Circle Wallets scripts (oracle wallet, entity-secret rotation)
-├── infra/                ← Terraform (EC2 deploy)
+├── infra/                ← Terraform (ECS Fargate + ALB/WAF + Aurora + ElastiCache; ecs.tf is the live stack)
 └── submodules/           ← context-arc + KnowledgeBase + Linus (git submodules)
 ```
 
@@ -226,9 +226,13 @@ archimedes/
 | On-chain          | Circle SDK (Wallets, Gateway, CCTP) + viem on the UI side                                 |
 | Auth              | SIWE (EIP-4361) — wallet-signature sessions for humans and agents                         |
 | Hackathon CLI     | [arc-canteen](https://github.com/the-canteen-dev/ARC-cli) (RPC proxy + telemetry)         |
-| Deployment        | Docker compose (6-service stack) on EC2; GitHub Actions CI/CD                             |
+| Deployment        | ECS Fargate behind ALB/WAF (build-in-CI → ECR → Fargate); Aurora PostgreSQL + ElastiCache; docker compose = local dev mirror |
 
-Full architecture: [`docs/design.md`](docs/design.md) + [`docs/chuan-architecture-survey.md`](docs/chuan-architecture-survey.md).
+Full architecture: [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/architecture-redesign/ARCHITECTURE-MAP.md)
+(2026-07-14 system map) with the repo-map figure
+[`docs/architecture-redesign/file-tree.svg`](docs/architecture-redesign/file-tree.svg) and dataflow diagram
+[`docs/architecture-redesign/flow-diagram.svg`](docs/architecture-redesign/flow-diagram.svg);
+historical lineage: [`docs/design.md`](docs/design.md) + [`docs/chuan-architecture-survey.md`](docs/chuan-architecture-survey.md).
 
 ## Development workflow
 

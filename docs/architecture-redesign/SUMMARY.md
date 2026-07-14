@@ -11,9 +11,10 @@
 | `file-tree.svg` + `file-tree.md` | Repo map: top-level dirs + ~25 load-bearing files, one-line role each; same visual language |
 | `flow-check.png`, `tree-check.png` | Rendered previews of the two SVGs (for quick review) |
 
-Everything verified read-only against `main` on 2026-07-14; open-PR-dependent facts are
-labeled "landing now" with PR numbers (#1071 runners, #1074 architect removal, #1075
-num_trials, #1076 DSL rebalance, #1099 spend-cap 429 — all confirmed still open today).
+Everything verified read-only against `main` on 2026-07-14. **Refresh (same day, post-train):**
+the 2026-07-14 merge train landed #1071 (runners IaC), #1074 (architect removal), #1075
+(num_trials), #1076 (DSL rebalance) and 30+ more; #1099 (spend-cap 429) remains the one open
+draft. Markers in the map updated accordingly.
 
 ## Key design decisions
 
@@ -40,19 +41,20 @@ num_trials, #1076 DSL rebalance, #1099 spend-cap 429 — all confirmed still ope
 
 - **"Three top-level agents" with a "Rigor Gate" sub-agent inside the generator** — generation
   is the multi-agent **debate society**, the sole path (`agents/generation_pipeline.py`;
-  Strategy Architect removal in open PR #1074), and the rigor gate runs **external** to the
+  Strategy Architect removed, PR #1074 merged 2026-07-14), and the rigor gate runs **external** to the
   generator (CLAUDE.md primitive 5; `services/live_rigor_gate.py`). No K=1/considered-rejects/
   ABSTAIN surface.
 - **"10 Smart contracts deployed on Arc testnet"** — full hardened suite redeployed 2026-07-09:
-  13 contract sources, **289 deployed instances** (incl. 281 per-synth token/oracle/pool sets)
-  on chain 5042002. `PaymentSplitter` and `StrategyRegistry` absent from the page entirely.
+  **12 contract sources → 570 live instances** (8 core singletons + 281 SyntheticTokens + 281
+  AMMPools; census live at `GET /api/config/contracts`) on chain 5042002, plus user vaults
+  minted on demand. `PaymentSplitter` and `StrategyRegistry` absent from the page entirely.
 - **Corpus panel: "keyword/TF-IDF today... embeddings not live"** — MiniLM semantic rerank IS
   live (`services/paper_rag.py`; TF-IDF is only the degraded fallback). The honest gap is
   different: prod hydration is sparse (#778) and the KG artifact is pending. The hardcoded
   category counts (1,360 / 1,292 / …) are manifest-only numbers presented as corpus content.
 - **"60s tick rebalance loop"** — `chain/agent_runner.py` default is **300 s**
   (`AGENT_INTERVAL_SECONDS`); and the loop's current operational reality (stranded runners,
-  relocation PR #1071) isn't reflected anywhere.
+  relocation IaC merged in PR #1071, apply pending #1065) isn't reflected anywhere.
 - **"4 wallet signatures: create → approve → deposit → set allocations"** — the shipped flow is
   `createVault` → `setAgent` (2 sigs) then approve → deposit → allocate (3 more): **5
   signatures** (`CreateVaultModal.jsx:386-388`), plus a second backend-signed
@@ -82,18 +84,24 @@ num_trials, #1076 DSL rebalance, #1099 spend-cap 429 — all confirmed still ope
 
 ## Open questions for Dan
 
-1. **Live-fetch vs. build-time constants** — the proposal assumes live-fetching stats with
-   honest fallbacks. OK to add a small config field exposing `PAYMENTS_DRY_RUN` (and a
-   runner-health flag) so the honesty ledger is self-updating? (Tiny backend diff.)
-2. **How much infra on a public page?** I kept AWS topology to one footnote line
-   (CI → ECR → Fargate) and left ALB/Aurora details to the repo docs. Right altitude?
-3. **Marketplace custody wording** — the draft says "while fee custody moves to a fully
-   non-custodial design" without the word "custodial-interim". Comfortable with that level of
-   detail publicly, or do you want the #975 framing verbatim?
-4. **"289 contracts" vs "13 contracts"** — the big number is impressive but includes per-synth
-   instances; the diagram says "289 contracts · redeployed 2026-07-09" with the synth caveat in
-   the SyntheticFactory box. Prefer the conservative count anywhere?
-5. **Memory pillar** — dropped from the new page (kept the substrate line). If you still want
-   the 6-layer memory story (it's genuinely distinctive), it fits as a collapsible panel under
-   §4; say the word and it goes back with corrected substrates.
-6. **file-tree.svg placement** — proposal says README/deck, not the product page. Agree?
+1. **Live-fetch vs. build-time constants — RESOLVED (Dan, 2026-07-14): live-fetch, yes.**
+   The page live-fetches stats with honest fallbacks, including a small config field exposing
+   `PAYMENTS_DRY_RUN` + a runner-health flag so the honesty ledger is self-updating.
+2. **How much infra on a public page? — RESOLVED (Dan, 2026-07-14): infra is not the story.**
+   One footnote line (CI → ECR → Fargate) stands; the page leads with the agent architecture
+   and the academic/statistical rigor machinery. ALB/Aurora details stay in repo docs.
+3. **Marketplace custody wording — STILL OPEN (awaiting Dan's call; options laid out in the
+   2026-07-14 session report).** Draft keeps the honest-but-soft framing: "subscription fees
+   settle through a Circle-managed wallet while fee custody moves to a fully non-custodial
+   design (#975); vault principal is non-custodial today and always." Alternative is the #958
+   decision-record wording with "custodial-interim" verbatim.
+4. **Contract count — RESOLVED (Dan, 2026-07-14): full breakdown, not one number.** The page
+   lists the census explicitly — 12 sources → 8 core + 281 synths + 281 pools = 570 live
+   instances + on-demand vaults — and derives every count at render time from
+   `GET /api/config/contracts` so it can never rot.
+5. **Memory pillar — RESOLVED (Dan, 2026-07-14): inline where it fits, only if real.** The
+   6-layer story stays out — the memory-first substrate is a decided direction, not shipped
+   code, and the page only claims what runs. The substrate line (episodic `strategy_proposals`
+   compounding + corpus artifacts) stays because those are real today.
+6. **file-tree.svg placement — RESOLVED (Dan, 2026-07-14): README/deck.** README now links
+   the figure from its architecture section (same branch); it stays off the product page.

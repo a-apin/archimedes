@@ -2,7 +2,7 @@
 
 > Commissioned for the Architecture-page redesign. Every claim below is grounded in a file
 > path in the `archimedes` repo (paths relative to `/Users/dbrowne/Desktop/Programming/GitHub/Agora/archimedes/`
-> unless noted). Facts that depend on an **open PR** are marked **[landing — PR #n]** and were
+> unless noted). Facts from the 2026-07-14 merge train are marked **(PR #n, merged 2026-07-14)**; the only still-open PR is noted as such. Facts were
 > verified open on 2026-07-14 (`gh pr view`). Where docs and code disagree, code wins and the
 > disagreement is logged in §9.
 
@@ -26,7 +26,7 @@
                      └──────────────────────────┬───────────────────────────────────┘
                                                 │ web3 (chain/client.py) · Circle DCW signer
                      ┌──────────────────────────▼───────────────────────────────────┐
-   ON-CHAIN          │  Arc testnet (chain 5042002, USDC-as-gas) — 289 contracts    │
+   ON-CHAIN          │  Arc testnet (chain 5042002, USDC-as-gas) — 570 contracts    │
    (Arc testnet)     │  Vault/VaultFactory · ReasoningTraceRegistry (commit-reveal) │
                      │  StrategyRegistry · AMM Router/Pools · SyntheticFactory/     │
                      │  Tokens · per-synth PriceOracles · PaymentSplitter (90/10)   │
@@ -86,8 +86,8 @@ the machine-readable claim-integrity surface the new page should read from.
 | Orchestrator | `agents/generation_pipeline.py` | SSE lifecycle: `job_queued → brief_validated → pipeline_selected("debate") → candidates_selected → candidate_drafted/evaluated → best_selected → trace_hashed → persisted → done`. Debate is the **sole** live pipeline (Phase 3, issue #834); no LLM or empty corpus → explicit `GENERATION_UNAVAILABLE`, never a silent fallback |
 | Debate engine | `agents/debate_engine.py` | Proposer pool (fusion proposals across regime-biased evidence sets) → adversarial bull/bear round (never gates) → **C-rigor**: deterministic backtest of every survivor (`evaluate_fusion_spec`, 0 tokens) with `num_trials` counting pool + library → **C-null**: must beat buy-and-hold net of cost or first-class **ABSTAIN** → K=1 winner + considered-rejects |
 | Fusion proposer | `agents/strategy_fusion.py` | Multi-paper synthesis; `select_candidates` = the keyword/asset-class retrieval stage |
-| Strategy Architect | `agents/strategy_architect.py` | **Obsolete — being removed [landing — PR #1074]**; debate society is the sole generation path |
-| num_trials self-containment | — | DSR multiple-testing count becomes self-contained per strategy **[landing — PR #1075]** |
+| Strategy Architect | `agents/strategy_architect.py` | **Removed (PR #1074, merged 2026-07-14)**; debate society is the sole generation path |
+| num_trials self-containment | — | DSR multiple-testing count is self-contained per strategy (PR #1075, merged 2026-07-14; convention `self_contained_v2`) |
 | Portfolio agent | `agents/portfolio_agent.py` | LLM portfolio advisor; disposition open (T1.1 residual) |
 
 ### 1.4 Services layer — `backend/archimedes/services/` (the ~80-module core; load-bearing subset)
@@ -116,7 +116,7 @@ the machine-readable claim-integrity surface the new page should read from.
 | Contract loader | `chain/contracts.py` | ABIs from `contracts/abis/` |
 | Executor | `chain/executor.py` | Reads portfolio state, executes rebalance trades, creates vaults. Signer: **Circle DCW preferred** (`chain/circle_signer.py`), raw `ARC_AGENT_PRIVATE_KEY` fallback |
 | Trace publisher | `chain/trace_publisher.py` | v1 `publishTrace` (legacy/SKIP path) + v1.5 **commit/reveal** temporal binding |
-| Agent runner | `chain/agent_runner.py` | The rebalance tick loop (default `AGENT_INTERVAL_SECONDS=300`); lease-gated exactly-once; per-vault strategy scoping; V_check gate (line ~687); **commit → trade → reveal** ordering with a commit-guard (lines 700–830). Generated-strategy vaults execute their persisted DSL spec **[landing — PR #1076]** |
+| Agent runner | `chain/agent_runner.py` | The rebalance tick loop (default `AGENT_INTERVAL_SECONDS=300`); lease-gated exactly-once; per-vault strategy scoping; V_check gate (line ~687); **commit → trade → reveal** ordering with a commit-guard (lines 700–830). Generated-strategy vaults execute their persisted DSL spec (PR #1076, merged 2026-07-14) |
 | Oracle runner | `chain/oracle_runner.py`, `chain/oracle_updater.py` | Periodic price pushes to the per-synth `PriceOracle`s; lease-gated, fails closed |
 | Marketplace publisher | `chain/strategy_publisher.py` | On-chain strategy registration (StrategyRegistry) |
 | IPFS provenance | `chain/provenance_publisher.py`, `chain/pinata_client.py` | Off-chain trace storage pointer for reveal |
@@ -130,9 +130,17 @@ Backtesting engine choice: backtrader per `docs/adr/backtrader-vs-vectorbt-decis
 
 ### 1.7 Contracts — `contracts/src/` (Solidity + Foundry; deps as git submodules; `contracts-test.yml` CI)
 
-Full hardened suite **redeployed 2026-07-09** — 289 deployed instances on chain **5042002**
-(core contracts + per-synth token/oracle/pool trios for the 281-synth universe); addresses in
-`ui/src/config.js:742` + `infra/ecs.tf` env; deployer `0x03AaB3...4092`.
+Full hardened suite **redeployed 2026-07-09** on chain **5042002** (deployer
+`0x03AaB3...4092`). The honest census, verifiable live at `GET /api/config/contracts`:
+**12 Solidity sources** in `contracts/src/` compile into **570 live protocol instances** —
+**8 core singletons** (SyntheticFactory, AMMRouter, VaultFactory, AssetRegistry,
+StrategyRegistry, PriceOracle, ReasoningTraceRegistry, PaymentSplitter) + **281 SyntheticToken
+instances** (the tradable universe: crypto, equities, ETFs, FX) + **281 AMMPool instances**
+(one USDC↔synth pool each, created on-chain by `AMMRouter.createPool`) — plus **user Vaults
+minted on demand** via VaultFactory (0 on the fresh redeploy; grows with every deploy click).
+USDC itself is Arc-native (`0x3600...0000`, Circle's, not ours). The earlier "289" headline
+was core + synth tokens only; pools are factory-created children and belong in the count.
+Addresses: `infra/ecs.tf` env + `ui/src/config.js`; SSOT endpoint above.
 
 | Contract | Path | Role / trust property |
 |---|---|---|
@@ -153,7 +161,7 @@ Full hardened suite **redeployed 2026-07-09** — 289 deployed instances on chai
 | Postgres | **Aurora PostgreSQL 18.3** (`infra/aurora.tf`) | `postgres:18-alpine` (`docker-compose.yml`, `localdb` profile) | Strategies + proposals (`models/strategy_store.py`, `models/strategy_proposal.py`), backtests + daily returns (`models/backtest_store.py`, `models/daily_returns_store.py`), traces (`models/trace.py`), corpus (`models/corpus_store.py`, `models/kg.py`), vaults, users/identity, marketplace |
 | Redis | **ElastiCache** (TLS-required, `infra/elasticache.tf`) | `redis` service | SSE job event logs (`services/redis_state.py`), regime state, **runner leases** (`services/runner_lease.py`), marketplace event log (`marketplace/state.py`) |
 | S3 | artifact store (`services/s3_artifact_store.py`) | — | Backtest/KB artifacts |
-| KB artifact volume | named volume `archimedes-corpus-artifact`; **EFS [landing — PR #1071]** | same volume | SPECTER2/HDBSCAN/REBEL artifacts |
+| KB artifact volume | named volume `archimedes-corpus-artifact`; **EFS (IaC merged, PR #1071; terraform apply pending — #1065)** | same volume | SPECTER2/HDBSCAN/REBEL artifacts |
 | SSM Parameter Store | `/archimedes/prod/*` SecureStrings (`infra/scripts/setup-ssm-secrets.sh`) | `.env` | LLM keys, Circle creds, DB/Redis URLs — pull-model, nothing injected by CI |
 
 ### 1.9 Infra + CI/CD — `infra/`, `.github/workflows/`
@@ -185,17 +193,17 @@ Runbook: `infra/runbooks/ecs-fargate-cutover.md`.
 
 **Rebalance loop** (`chain/agent_runner.py`, default 300 s tick, Redis-lease singleton):
 1. Read vault state **from chain** (ground truth — hierarchy of truth; the LLM narrative never overrides it).
-2. Evaluate the strategy's signal rule / persisted DSL spec (`services/strategy_signal_evaluator.py`; generated-strategy DSL execution **[landing — PR #1076]**) → target weights; drift + cost-benefit check.
+2. Evaluate the strategy's signal rule / persisted DSL spec (`services/strategy_signal_evaluator.py`; generated-strategy DSL execution (PR #1076, merged 2026-07-14)) → target weights; drift + cost-benefit check.
 3. **V_check** (`chain/v_check.py`) — inconsistency fails the whole rebalance.
 4. Build the canonical trace and **commit** its keccak hash + trade-intent digest to `ReasoningTraceRegistry` (`chain/trace_publisher.py`); the trade arrays used for the commit are reused verbatim for execution.
 5. `Vault.rebalance(trades)` — **the contract itself reverts if no matching commitment exists** (#589, `contracts/src/Vault.sol:422`); swaps route through `AMMRouter` over per-synth pools with the oracle price floor bounding slippage.
 6. **Reveal**: upload canonical trace JSON (IPFS via `chain/pinata_client.py`), call `reveal(traceId, storagePointer, content)` — the contract recomputes and verifies the hash. Commit block < trade block < reveal block is user-verifiable (`ui/src/components/Reasoning.jsx`).
-7. Honest "hold" decisions are also traced. **Current operational caveat:** the runners are stranded on the detached EC2 box with no deploy path; relocation IaC (oracle+agent → small EC2, kb → scheduled Fargate, EFS) is authored **[landing — PR #1071]**.
+7. Honest "hold" decisions are also traced. **Current operational caveat:** the runners are stranded on the detached EC2 box with no deploy path; relocation IaC (oracle+agent → small EC2, kb → scheduled Fargate, EFS) is merged (PR #1071, 2026-07-14); the `terraform apply` + first runner deploy are pending (#1065).
 
 ## 4. Flow — Marketplace (x402 nanopayments)
 
 1. **Publish** (`POST /api/marketplace/publish`, `api/marketplace_routes.py:43`): strategy registered on-chain (`chain/strategy_publisher.py` → `StrategyRegistry`), a 90/10 `PaymentSplitter` pool created for the creator, publisher loop started (`marketplace/service.py` — in-process monolith, no per-agent containers).
-2. **Subscribe** (`POST /api/marketplace/subscribe`): a Circle Developer-Controlled Wallet is auto-provisioned for the subscriber (`marketplace/wallet_provisioner.py`); per-user spend caps on the subscribe path **[landing — PR #1099]**.
+2. **Subscribe** (`POST /api/marketplace/subscribe`): a Circle Developer-Controlled Wallet is auto-provisioned for the subscriber (`marketplace/wallet_provisioner.py`); per-user spend caps on the subscribe path (PR #1099 — still a draft, the one unlanded piece).
 3. **Charge per action** (`marketplace/payments.py` — the only circlekit import): x402 flow = 402 payment-required → EIP-712 payment header signed with the subscriber's ephemeral key → Circle **Gateway facilitator** verifies + records the micropayment (sub-cent USDC).
 4. **Settlement sweep** (`marketplace/settlement.py`): Stage A Gateway → agent wallet (threshold), Stage B wallet → `PaymentSplitter.depositToPool`, Stage C creator `withdraw` (the Withdraw button).
 5. **Honesty state**: `PAYMENTS_DRY_RUN=true` in prod — the whole flow runs end-to-end **simulated**; real settlement is gated until fee custody migrates to non-custodial (issue #975). Vault principal is never touched by this flow; fee custody is **custodial-INTERIM** by explicit decision (merged #958).
@@ -204,7 +212,7 @@ Runbook: `infra/runbooks/ecs-fargate-cutover.md`.
 
 1. **Seed**: 10,000-paper JSONL manifest → Postgres (`services/corpus_service.py::seed_from_manifest`, boot-time in `main.py:139`).
 2. **Embed at ingest**: title+abstract embeddings are the query-time lookup key (`Agora/docs/CORPUS-AND-MINILM.md`).
-3. **KB pipeline** (`services/kb_runner.py`, own compose service / scheduled-Fargate target [PR #1071]): SPECTER2 embeddings, HDBSCAN clusters, REBEL+SciSpacy knowledge graph → artifacts → `api/corpus_routes.py` (503 until real artifacts exist; `corpus_kg_built` flag in `/health`).
+3. **KB pipeline** (`services/kb_runner.py`, own compose service / scheduled-Fargate target (PR #1071, merged; apply pending)): SPECTER2 embeddings, HDBSCAN clusters, REBEL+SciSpacy knowledge graph → artifacts → `api/corpus_routes.py` (503 until real artifacts exist; `corpus_kg_built` flag in `/health`).
 4. **Retrieval at generate time**: keyword filter → MiniLM rerank (§2.3).
 5. **Honest state**: prod corpus is **sparsely hydrated** — the 10k number is manifest-scale, not fully-ingested-paper count (issue #778). Build decision: **HYBRID** — custom KB spine (Postgres + MiniLM, live now) + optional Bedrock-KB retrieval bridge; Neptune ruled out; a MiniLM-only no-AWS local option exists.
 
@@ -231,8 +239,8 @@ CloudFront ──▶ WAF + ALB ──▶ ECS Fargate task [nginx:8080 → backen
                                Redis (TLS)    (pull-model secrets)
 
 STRANDED (temporary): oracle_runner · agent_runner · kb_runner on the detached-but-running
-EC2 box (no deploy path since #1058 killed the SSM compose path). Relocation IaC authored,
-not applied [landing — PR #1071]: oracle+agent → small dedicated EC2 (stateful, exactly-once);
+EC2 box (no deploy path since #1058 killed the SSM compose path). Relocation IaC merged
+(PR #1071, 2026-07-14), terraform apply pending (#1065): oracle+agent → small dedicated EC2 (stateful, exactly-once);
 kb → scheduled Fargate task; EFS for corpus artifacts.
 ```
 
@@ -258,14 +266,14 @@ kb → scheduled Fargate task; EFS for corpus artifacts.
 
 ## 9. Doc-vs-code disagreements found (flag for cleanup)
 
-1. **`CLAUDE.md` § Tech Stack / Deployment** — still says the EC2/docker-compose stack "remains the accurate live picture" pending the Fargate runbook. Superseded: cutover executed 2026-07-09; Fargate/ALB/Aurora/ElastiCache is live, EC2 detached-but-running. Also "11 contracts deployed" → 13 contract sources, 289 deployed instances (T3.2).
+1. **`CLAUDE.md` § Tech Stack / Deployment** — ~~said the EC2/docker-compose stack "remains the accurate live picture"~~ **fixed 2026-07-14** (same branch as this map): Fargate/ALB/Aurora/ElastiCache is the live picture, EC2 detached-but-running; "11 contracts deployed" corrected to 12 sources / 570 live instances (T3.2 census above).
 2. **`docs/architectural-principles.md`** — "three top-level agents" mermaid + `services/portfolio_agent.py` path. Generation is debate-only now (`agents/generation_pipeline.py`); the file actually lives at `agents/portfolio_agent.py`. The three-agent framing survives only as UI copy on the stale Architecture page.
 3. **`docs/specs/commit-reveal-trace-spec.md`** — cites `backend/archimedes/services/trace_publisher.py`; actual: `backend/archimedes/chain/trace_publisher.py`. Spec status says "proposal / v1.5 hop"; commit-reveal is implemented and contract-enforced (`Vault.sol:422`).
 4. **`docs/user-stories.md`** — "GLM-backed" MVP framing; live LLM is Bedrock/Nova Micro via the Converse seam. Also predates marketplace/leaderboard surfaces.
 5. **`docs/design.md` §6** — vectorbt; superseded by backtrader (noted in `CLAUDE.md` itself, kept for history).
 6. **`docs/specs/ecosystem-design-spec.md`** — `StrategyRegistry → AssetRegistry` replacement; in code both coexist intentionally (noted in `CLAUDE.md:404-406`).
 7. **`.env.example`** — `LLM_PROVIDER=anthropic_compatible` default vs live `bedrock_converse` (tracked as roadmap T3.10).
-8. **`agents/strategy_fusion.py` module docstring** — still describes fusion as "feature-flagged beside strategy_architect, default OFF" and GLM-backed; fusion proposals are now the heart of the sole (debate) pipeline and the architect is being deleted [PR #1074]. Docstring predates the pivot.
+8. **`agents/strategy_fusion.py` module docstring** — still describes fusion as "feature-flagged beside strategy_architect, default OFF" and GLM-backed; fusion proposals are now the heart of the sole (debate) pipeline and the architect was deleted (PR #1074, merged 2026-07-14). Docstring predates the pivot.
 9. **`docs/corpus-architecture.md`** — Day-9 fusion-path framing; retrieval reality is keyword → MiniLM (`services/paper_rag.py`) with the KB pipeline as the artifact layer.
 10. **`ui/src/components/Architecture.jsx`** — the page being replaced; full staleness list in §10 / SUMMARY.md.
 

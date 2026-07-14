@@ -281,7 +281,10 @@ Buttons: **Generate a Strategy →** (primary) · **Explore the Corpus** (outlin
   route. Render skeletons then values; on error render "—" + caption "live value unavailable".
   **Never ship a hardcoded stat number in JSX again.**
 - The §11 table's "rebalance loop" row should key off a health/status flag rather than static
-  text, so the runner-relocation state (PR #1071) self-heals into "Live" when it lands.
+  text, so the runner-relocation state (PR #1071 merged 2026-07-14; terraform apply pending,
+  #1065) self-heals into "Live" when the apply lands. Same principle for contract counts:
+  derive 8 core / 281 synths / 281 pools / N vaults from `GET /api/config/contracts` at render
+  time — decision confirmed by Dan 2026-07-14 (live-fetch: yes).
 - PAYMENTS_DRY_RUN state should come from a config endpoint (add one field to
   `/api/config/*` if absent) so flipping it for #975 updates the page automatically.
 - Keep the in-line acronym tooltip convention from `docs/user-stories.md` (DSR, PBO, OOS get
