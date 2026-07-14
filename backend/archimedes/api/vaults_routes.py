@@ -101,11 +101,13 @@ def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
 
     Reuses the ``#850`` ownership rule verbatim (copied from
     ``selection_bias_routes._generated_strategy_rigor``, itself copied from
-    ``strategies_routes.get_strategy``): a non-example, unpublished
-    ``strategy_store`` row is visible only to its ``owner_wallet``. Curated
-    strategies (no ``StrategyRecord`` row at all) fall outside this check
-    entirely — they return ``None`` here and are resolved via the passport
-    badge instead, unchanged.
+    ``strategies_routes.get_strategy`` — consolidation tracked in #1120): a
+    non-example, unpublished ``strategy_store`` row is visible only to its
+    ``owner_wallet``. Curated strategies are typically seeded into
+    ``strategy_store`` with ``is_example=True`` at startup (``main.py``), so
+    they resolve ``True`` here (visible to everyone); ``None`` (no row at
+    all — an unseeded environment or an unknown id) falls through to the
+    passport badge, which handles both identically to pre-#1073 behavior.
 
     Used to close the strictest-level deploy fast path (#1073): the badge
     (``_strategy_rigor_status``) is not ownership-gated, so without this check
@@ -113,11 +115,14 @@ def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
     deployability and deploy a vault bound to it.
     """
     from archimedes.api.auth_siwe import get_verified_wallet
-    from archimedes.db import get_session, init_db
+    from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
 
     try:
-        init_db()
+        # No init_db() here: the app calls it once at startup (main.py), and
+        # re-running its schema inspection/patch pass per deploy request (× per
+        # strategy id) is wasted DB work on a hot, funds-adjacent path. Direct
+        # test callers create their own schema (see test_vault_rigor_gate.py).
         with get_session() as session:
             row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
             if row is None:
