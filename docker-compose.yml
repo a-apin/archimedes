@@ -59,6 +59,16 @@ services:
     # created under the old 16-alpine image, remove it before starting this image:
     #   docker compose down -v          # drops the pgdata volume (loses local-only data)
     #   docker compose --profile localdb up -d --build
+    #
+    # Mount moved to the PARENT dir, `pgdata18:/var/lib/postgresql` (#1119):
+    # postgres:18-alpine image revisions since ~2026-07 store data in a
+    # major-version-suffixed subdirectory (/var/lib/postgresql/18/docker, for
+    # `pg_upgrade --link` support — docker-library/postgres#1259) and HARD-ERROR
+    # on a mount at the legacy /var/lib/postgresql/data path, which broke every
+    # fresh `docker compose up`. BREAKING again for existing local envs: data in
+    # the old `pgdata` volume (legacy path) is orphaned by this change — for a
+    # disposable local dev DB, `docker compose down -v` and start fresh; to keep
+    # data, copy it into the version-suffixed layout before switching.
     image: postgres:18-alpine
     profiles: ["localdb"]
     restart: unless-stopped
@@ -67,7 +77,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env — no default for security}
       POSTGRES_DB: ${POSTGRES_DB:-archimedes}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata18:/var/lib/postgresql
     # NO host port binding — Postgres is only reachable by other containers
     # on the Docker bridge network. Never expose DB ports to the host/internet.
     healthcheck:
@@ -296,5 +306,7 @@ services:
         required: false
 
 volumes:
-  pgdata:
+  # pgdata (legacy /var/lib/postgresql/data mount) replaced by pgdata18 in
+  # #1119 — see the comment on the postgres service for the migration note.
+  pgdata18:
   archimedes-corpus-artifact:
