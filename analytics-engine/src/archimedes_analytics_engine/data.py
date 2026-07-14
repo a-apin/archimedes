@@ -51,7 +51,10 @@ def fetch_ohlcv(symbol: str, start: str, end: str) -> pd.DataFrame:
     last_exc: Exception | None = None
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            data = yf.download(symbol, start=start, end=end, auto_adjust=False, progress=False)
+            # auto_adjust=True applies yfinance's built-in split/dividend back-adjustment so
+            # corporate actions (e.g. KO's Aug-2012 2-for-1 split) don't show up as spurious
+            # overnight price discontinuities that corrupt pairs-trading signals and PBO.
+            data = yf.download(symbol, start=start, end=end, auto_adjust=True, progress=False)
         except Exception as exc:  # transient network/yfinance error — retry with backoff
             last_exc = exc
             if attempt == _MAX_RETRIES:

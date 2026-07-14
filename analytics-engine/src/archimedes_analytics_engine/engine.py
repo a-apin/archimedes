@@ -68,7 +68,17 @@ class BacktestResult:
     gross_sharpe_ratio : float or None
         Sharpe with commissions added back (slippage is not recoverable).
     look_ahead_audit_passed : bool
-        ``True`` when the broker used neither cheat-on-close nor cheat-on-open.
+        ``True`` when the backtrader broker used neither cheat-on-close nor
+        cheat-on-open execution timing. **This is a broker-execution-timing
+        check only** — it is derived solely from ``cerebro.broker.p.coc`` /
+        ``cerebro.broker.p.coo``, which this engine never sets to ``True``,
+        so the field is unconditionally ``True`` for every run regardless of
+        whether the strategy's own signal logic has a look-ahead bug. It does
+        NOT perform any source-level audit of the strategy code. For a real
+        source-level look-ahead audit, see ``look_ahead_audit()`` in
+        ``backend/archimedes/services/rigor_evaluator.py`` (AST-based, checks
+        the strategy's own code for future-data access), which is a separate
+        system from this analytics engine.
 
     See Also
     --------
@@ -166,7 +176,12 @@ def _compute_sortino(daily_returns: list[float]) -> float | None:
     downside = [r for r in daily_returns if r < 0]
     if not downside:
         return None
-    dd_rms = math.sqrt(sum(r * r for r in downside) / len(downside))
+    # Denominator is the TOTAL sample size (not just the count of negative
+    # days) per the standard Sortino/target-semideviation convention (e.g.
+    # empyrical.downside_risk) — non-negative days contribute 0 to the sum but
+    # still count in the denominator. Dividing by len(downside) alone inflates
+    # the ratio for strategies with a skewed win/loss-day ratio.
+    dd_rms = math.sqrt(sum(r * r for r in downside) / len(daily_returns))
     if dd_rms == 0:
         return None
     return ((mean - RF_DAILY) / dd_rms) * math.sqrt(ANNUALIZATION)
@@ -273,6 +288,16 @@ def _cost_metrics(
 
 
 def _lookahead_audit_passed(cerebro: bt.Cerebro) -> bool:
+    """Check the broker's execution-timing config only.
+
+    NOT a source-level look-ahead audit of the strategy's signal logic — this
+    engine never sets ``coc``/``coo`` to ``True`` anywhere, so this always
+    returns ``True``. It only guards against a future misconfiguration that
+    would let the broker cheat-execute on the same bar's close/open. The real
+    AST-based check of strategy code lives in
+    ``backend/archimedes/services/rigor_evaluator.look_ahead_audit`` — a
+    separate system, not invoked from here.
+    """
     coc = getattr(cerebro.broker.p, "coc", False)
     coo = getattr(cerebro.broker.p, "coo", False)
     return not coc and not coo
