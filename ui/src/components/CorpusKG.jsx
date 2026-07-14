@@ -46,7 +46,10 @@ export default function CorpusKG({ onOpenPaper }) {
     setLoading(true)
     setError('')
     try {
-      const searchTerm = q || 'topic'
+      // Trim before the default-fallback check: whitespace-only input must
+      // fall back to 'topic' (not become the literal query and 422), and
+      // stray leading/trailing spaces shouldn't reach the backend (review).
+      const searchTerm = (q || '').trim() || 'topic'
       const res = await fetch(`${API_BASE}/api/corpus/kg/entities?q=${encodeURIComponent(searchTerm)}`)
       if (res.status === 503) throw new Error('KB pipeline still running — first artifact pending')
       if (res.status === 422) throw new Error(`422: search term must be at least ${MIN_QUERY_LENGTH} characters`)
@@ -82,7 +85,9 @@ export default function CorpusKG({ onOpenPaper }) {
       return
     }
     setValidationError('')
-    fetchKG(query)
+    // Pass the TRIMMED value — validation ran on `trimmed`, so the request
+    // must use the same string or validation and request can disagree (review).
+    fetchKG(trimmed)
   }
 
   // Layout: arrange entities in a radial layout by type
