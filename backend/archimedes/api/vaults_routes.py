@@ -116,15 +116,32 @@ def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
     from archimedes.db import get_session, init_db
     from archimedes.models.strategy_store import StrategyRecord
 
-    init_db()
-    with get_session() as session:
-        row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-        if row is None:
-            return None
-        if row.is_example or row.is_published:
-            return True
-        caller = get_verified_wallet(request)
-        return bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
+    try:
+        init_db()
+        with get_session() as session:
+            row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+            if row is None:
+                return None
+            if row.is_example or row.is_published:
+                return True
+            caller = get_verified_wallet(request)
+            return bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
+    except HTTPException:
+        raise
+    except Exception:
+        # Fail CLOSED. Returning None here would make the gate silently
+        # disappear on a DB error (None means "no record — fall through to the
+        # ownership-blind badge"), i.e. private strategies would become
+        # deployable exactly when the DB is down. Surfacing a raw exception
+        # would 500 past the deploy endpoint's error handling. A 503 blocks
+        # the deploy loudly and recoverably instead.
+        logger.exception(
+            "ownership-visibility lookup failed for %s — failing closed",
+            sanitize_log_value(strategy_id),
+        )
+        raise HTTPException(
+            status_code=503, detail="Strategy ownership check temporarily unavailable — try again."
+        ) from None
 
 
 def _deployable_levels(
