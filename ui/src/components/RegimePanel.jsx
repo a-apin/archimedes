@@ -92,17 +92,23 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
   // (e.g. an in-flight auto-fetch that loses a race with a manual Retry
   // click) can't overwrite state after a newer one has already resolved.
   const requestIdRef = useRef(0)
+  // The pending watchdog timer, so a superseding fetch or an unmount can
+  // clear it — otherwise a superseded request's timer stays pending for up
+  // to FETCH_TIMEOUT_MS doing nothing (review).
+  const timeoutRef = useRef(null)
 
   const fetchRegime = useCallback(() => {
     const requestId = ++requestIdRef.current
     setLoading(true)
     setFailed(false)
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
     const timeout = setTimeout(() => {
       if (requestIdRef.current !== requestId) return
       setLoading(false)
       setFailed(true)
       console.error('Regime fetch timed out after', FETCH_TIMEOUT_MS, 'ms')
     }, FETCH_TIMEOUT_MS)
+    timeoutRef.current = timeout
     apiGet('/api/regime/current')
       .then(data => {
         clearTimeout(timeout)
@@ -121,6 +127,17 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
     if (regimeProp != null) return
     return fetchRegime()
   }, [regimeProp, fetchRegime])
+
+  // Unmount: invalidate ANY in-flight request — including one started by the
+  // manual Retry onClick, which has no effect-cleanup path — and kill the
+  // pending watchdog so neither can setState after unmount (review).
+  useEffect(
+    () => () => {
+      requestIdRef.current += 1
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    },
+    []
+  )
 
   const regime = regimeProp ?? fetchedRegime
 
