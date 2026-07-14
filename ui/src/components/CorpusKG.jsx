@@ -112,6 +112,10 @@ export default function CorpusKG({ onOpenPaper }) {
   const clampScale = (s) => Math.min(8, Math.max(0.4, s))
 
   const handleWheel = useCallback((e) => {
+    // Only effective because the listener is attached natively with
+    // passive:false (see setSvgRef) — React 19 registers the JSX onWheel
+    // prop as a PASSIVE root listener, where preventDefault() is a silent
+    // no-op and the page scrolls while the graph zooms (#431 review).
     e.preventDefault()
     const svg = svgRef.current
     if (!svg) return
@@ -129,6 +133,30 @@ export default function CorpusKG({ onOpenPaper }) {
       return { scale: nextScale, x: nx, y: ny }
     })
   }, [layout.svgW, layout.svgH])
+
+  // Native wheel attachment with passive:false. Two constraints force this
+  // shape: (1) React 19 makes JSX onWheel passive, so preventDefault can't
+  // work through the prop; (2) the <svg> mounts conditionally after data
+  // loads, so a mount-only useEffect would attach to null — a callback ref
+  // attaches/detaches with the element itself (same reasoning as
+  // CorpusGraph's ResizeObserver callback ref).
+  const wheelHandlerRef = useRef(handleWheel)
+  useEffect(() => {
+    wheelHandlerRef.current = handleWheel
+  }, [handleWheel])
+  const wheelCleanupRef = useRef(null)
+  const setSvgRef = useCallback((el) => {
+    if (wheelCleanupRef.current) {
+      wheelCleanupRef.current()
+      wheelCleanupRef.current = null
+    }
+    svgRef.current = el
+    if (el) {
+      const listener = (e) => wheelHandlerRef.current(e)
+      el.addEventListener('wheel', listener, { passive: false })
+      wheelCleanupRef.current = () => el.removeEventListener('wheel', listener)
+    }
+  }, [])
 
   const handlePointerDown = useCallback((e) => {
     dragState.current = { startX: e.clientX, startY: e.clientY, origin: viewTransform }
@@ -226,13 +254,12 @@ export default function CorpusKG({ onOpenPaper }) {
       ) : (
         <div style={{ overflow: 'hidden', padding: '0 12px 12px', position: 'relative' }}>
           <svg
-            ref={svgRef}
+            ref={setSvgRef}
             viewBox={`0 0 ${layout.svgW} ${layout.svgH}`}
             style={{
               width: '100%', maxWidth: 800, height: 500, background: 'rgba(0,0,0,0.15)', borderRadius: 8,
               cursor: 'grab', touchAction: 'none',
             }}
-            onWheel={handleWheel}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
