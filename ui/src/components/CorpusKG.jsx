@@ -111,18 +111,31 @@ export default function CorpusKG({ onOpenPaper }) {
 
   const clampScale = (s) => Math.min(8, Math.max(0.4, s))
 
+  // Map a pointer/wheel event to viewBox coordinates via the SVG's actual
+  // screen CTM. Proportional getBoundingClientRect math breaks whenever the
+  // rendered element's aspect differs from the 800×500 viewBox (width:100% +
+  // fixed height ⇒ preserveAspectRatio letterboxing on most viewports), which
+  // made the zoom anchor drift away from the cursor and pan deltas run fast/
+  // slow (#431 review). The CTM inverse maps through the letterboxing exactly.
+  const clientToViewBox = useCallback((e) => {
+    const svg = svgRef.current
+    if (!svg) return null
+    const ctm = svg.getScreenCTM?.()
+    if (!ctm || typeof DOMPoint === 'undefined') return null
+    return new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse())
+  }, [])
+
   const handleWheel = useCallback((e) => {
     // Only effective because the listener is attached natively with
     // passive:false (see setSvgRef) — React 19 registers the JSX onWheel
     // prop as a PASSIVE root listener, where preventDefault() is a silent
     // no-op and the page scrolls while the graph zooms (#431 review).
     e.preventDefault()
-    const svg = svgRef.current
-    if (!svg) return
-    const rect = svg.getBoundingClientRect()
+    const pt = clientToViewBox(e)
+    if (!pt) return
     // Cursor position in viewBox units (before this zoom step).
-    const px = ((e.clientX - rect.left) / rect.width) * layout.svgW
-    const py = ((e.clientY - rect.top) / rect.height) * layout.svgH
+    const px = pt.x
+    const py = pt.y
 
     setViewTransform((prev) => {
       const factor = Math.exp(-e.deltaY * 0.0015)
@@ -132,7 +145,7 @@ export default function CorpusKG({ onOpenPaper }) {
       const ny = py - ((py - prev.y) / prev.scale) * nextScale
       return { scale: nextScale, x: nx, y: ny }
     })
-  }, [layout.svgW, layout.svgH])
+  }, [clientToViewBox])
 
   // Native wheel attachment with passive:false. Two constraints force this
   // shape: (1) React 19 makes JSX onWheel passive, so preventDefault can't
@@ -159,21 +172,31 @@ export default function CorpusKG({ onOpenPaper }) {
   }, [])
 
   const handlePointerDown = useCallback((e) => {
-    dragState.current = { startX: e.clientX, startY: e.clientY, origin: viewTransform }
-  }, [viewTransform])
+    const startPt = clientToViewBox(e)
+    if (!startPt) return
+    // Capture the pointer so the drag keeps tracking when the cursor leaves
+    // the <svg> mid-pan (without capture, pointermove stops at the edge and
+    // the pan "sticks" — #431 review).
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+    dragState.current = { startX: startPt.x, startY: startPt.y, origin: viewTransform }
+  }, [viewTransform, clientToViewBox])
 
   const handlePointerMove = useCallback((e) => {
     if (!dragState.current) return
-    const svg = svgRef.current
-    if (!svg) return
-    const rect = svg.getBoundingClientRect()
-    const dx = ((e.clientX - dragState.current.startX) / rect.width) * layout.svgW
-    const dy = ((e.clientY - dragState.current.startY) / rect.height) * layout.svgH
+    const pt = clientToViewBox(e)
+    if (!pt) return
+    // Deltas in viewBox units via the same CTM mapping as the zoom anchor —
+    // no letterboxing drift on narrow viewports.
+    const dx = pt.x - dragState.current.startX
+    const dy = pt.y - dragState.current.startY
     const { origin } = dragState.current
     setViewTransform({ scale: origin.scale, x: origin.x + dx, y: origin.y + dy })
-  }, [layout.svgW, layout.svgH])
+  }, [clientToViewBox])
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback((e) => {
+    if (e?.currentTarget?.hasPointerCapture?.(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
     dragState.current = null
   }, [])
 
