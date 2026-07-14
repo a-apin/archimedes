@@ -398,11 +398,13 @@ def build_vault_create_payload(
     strictness_level: int = 1,
 ) -> dict:
     """The exact JSON body ``POST /api/vaults/create`` (``VaultCreateRequest``)
-    expects. Factored out of ``step_deploy`` so a hermetic test can prove this
-    shape is accepted end-to-end by the real route (SIWE + server-side rigor
-    gate + Pydantic binding) without needing an async ASGI context inside the
-    (sync) reference client itself — see
-    ``backend/tests/scripts/test_agent_journey_deploy.py``.
+    expects. Factored out of ``step_deploy`` so a hermetic test can pin this
+    shape against the REAL ``VaultCreateRequest`` Pydantic model (field names
+    + validation ranges) — see
+    ``backend/tests/scripts/test_agent_journey_deploy.py``. The test binds the
+    model directly; it does NOT exercise SIWE or the server-side rigor gate
+    (integration-level concerns covered by the route's own tests in
+    ``backend/tests/test_vault_rigor_gate.py``).
     """
     return {
         "name": name,
@@ -602,7 +604,12 @@ def main() -> int:
         step_read(client)
         if args.read_only:
             if args.monitor_address:
-                step_monitor(client, args.monitor_address)
+                # Health-check-only runs must fail loudly when the GET fails —
+                # exit 0 on a failed monitor would defeat the point of using
+                # this as a probe (review).
+                monitor_ok = step_monitor(client, args.monitor_address)
+                print("\n(read-only — skipping generation)")
+                return 0 if monitor_ok else 1
             print("\n(read-only — skipping generation)")
             return 0
         job_id = step_generate(client, args.intent, args.risk, args.timeout)
@@ -623,13 +630,20 @@ def main() -> int:
             performance_fee_bps=args.performance_fee_bps,
             strictness_level=args.strictness_level,
         )
+        # Requested hard steps must move the exit code (review): a --deploy
+        # run that deployed nothing, or a failed monitor read, is not success.
+        deploy_ok = True
+        if args.deploy and not vault_address:
+            deploy_ok = False
+            print("RESULT: --deploy requested but no vault was deployed — see above.")
+        monitor_ok = True
         monitor_target = vault_address or args.monitor_address
         if monitor_target:
-            step_monitor(client, monitor_target)
+            monitor_ok = step_monitor(client, monitor_target)
         if vault_address:
             print(f"RESULT: vault deployed — {vault_address}")
 
-        return 0 if ok else 1
+        return 0 if (ok and deploy_ok and monitor_ok) else 1
     finally:
         client.close()
 
