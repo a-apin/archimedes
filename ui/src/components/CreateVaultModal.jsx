@@ -193,9 +193,20 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
         args: [name, symbol, 0, 0, agentAssisted],
       })
 
-      // Extract vault address from the VaultCreated event
+      // Extract vault address from the VaultCreated event. Two guards beyond
+      // naive first-match decoding, because on the passkey path `logs` come
+      // from the BUNDLER transaction's receipt, which can contain logs from
+      // OTHER user operations batched into the same bundle:
+      //   1. only consider logs emitted by our VaultFactory address;
+      //   2. prefer the VaultCreated whose creator is this wallet (the smart
+      //      account is the factory's msg.sender on the passkey path), falling
+      //      back to the first factory VaultCreated (EOA receipts only ever
+      //      carry our own tx's logs, so the fallback preserves that path).
       let vaultAddress = null
+      const factoryAddr = NEW_CONTRACTS.vaultFactory?.toLowerCase()
+      const ourWallet = walletAddr?.toLowerCase()
       for (const log of logs) {
+        if (factoryAddr && log.address?.toLowerCase() !== factoryAddr) continue
         try {
           const decoded = decodeEventLog({
             abi: VAULT_FACTORY_ABI,
@@ -203,8 +214,11 @@ export default function CreateVaultModal({ strategy, walletAddr, strictnessLevel
             topics: log.topics,
           })
           if (decoded.eventName === 'VaultCreated') {
-            vaultAddress = decoded.args.vault
-            break
+            if (ourWallet && decoded.args.creator?.toLowerCase() === ourWallet) {
+              vaultAddress = decoded.args.vault
+              break
+            }
+            if (!vaultAddress) vaultAddress = decoded.args.vault
           }
         } catch { /* not our event */ }
       }
