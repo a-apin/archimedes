@@ -254,7 +254,21 @@ async def publish_trace(req: TracePublishRequest, _: None = Depends(require_inte
     try:
         await state.save_trace(off_chain_data)
     except Exception:
+        # WRITE path: unlike the read endpoints' graceful degradation above,
+        # a failed off-chain persist must NOT return 200 — the caller would
+        # get is_anchored=True for a trace whose full reasoning body was never
+        # stored, i.e. an on-chain anchor that can never be re-verified against
+        # its off-chain content (claim-integrity). Fail loudly and retryably;
+        # include the anchor tx so the caller knows the on-chain half landed.
         logger.error("publish_trace: failed to persist off-chain trace data (Redis unavailable?)", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Trace anchored on-chain"
+                + (f" (tx {arc_tx_hash})" if arc_tx_hash else "")
+                + " but off-chain persistence failed — retry publish."
+            ),
+        ) from None
     finally:
         await state.close()
 
