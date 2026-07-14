@@ -42,7 +42,14 @@ function sendContractCall({ address, abi, functionName, args }) {
       smartAccount,
       client,
       calls: [encodeCall({ address, abi, functionName, args })],
-    }).then(out => ({ hash: out.txHash, logs: out.receipt.logs }))
+    }).then(out => ({
+      hash: out.txHash,
+      // executeUserOp only reaches here after receipt.success, so the bundled tx
+      // was mined — out.receipt.receipt (the real TransactionReceipt) always has
+      // .logs. The bundler-reported top-level out.receipt.logs is spec-optional
+      // and not every bundler populates it, so it's a fallback, not the primary.
+      logs: out.receipt.receipt?.logs ?? out.receipt.logs ?? [],
+    }))
   }
   return getWalletClient().then(async walletClient => {
     const hash = await walletClient.writeContract({ address, abi, functionName, args })
