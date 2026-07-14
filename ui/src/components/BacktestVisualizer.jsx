@@ -389,7 +389,15 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
         return res.json()
       })
       .then((data) => {
-        if (!cancelled && data?.daily_returns) setRealReturns(data.daily_returns)
+        if (cancelled) return
+        if (Array.isArray(data?.daily_returns) && data.daily_returns.length > 0) {
+          setRealReturns(data.daily_returns)
+        } else if (data) {
+          // Persisted-but-empty returns are the same honest "no data" state
+          // as a 404 — an empty equity curve is a flat line (NaN in
+          // EquityDrawdownChart's toYeq), not a real backtest.
+          setReturnsNoData(true)
+        }
       })
       .catch((err) => {
         // Abort is not an error state; network/unexpected errors read as no data
@@ -547,11 +555,22 @@ export default function BacktestVisualizer({ result, strategyId, weights } = {})
                 <div className="bv-sweep-head mono" style={{ textAlign: 'right', paddingRight: 8 }}>{r}</div>
                 {sweepForHeatmap.cols.map((c, j) => {
                   const v = sweepForHeatmap.grid[i][j]
-                  const t = (v - sweepForHeatmap.min) / range
-                  const bg = `rgba(192,132,252,${(0.08 + 0.82 * t).toFixed(3)})`
                   const metricName = sweepForHeatmap.metric ?? 'metric'
                   const p1 = sweepForHeatmap.param1Name ?? 'param1'
                   const p2 = sweepForHeatmap.param2Name ?? 'param2'
+                  if (!Number.isFinite(v)) {
+                    return (
+                      <div
+                        key={`${r}-${c}`}
+                        className="bv-sweep-cell mono"
+                        title={`${p1}=${r}, ${p2}=${c} → ${metricName} unavailable`}
+                      >
+                        —
+                      </div>
+                    )
+                  }
+                  const t = (v - sweepForHeatmap.min) / range
+                  const bg = `rgba(192,132,252,${(0.08 + 0.82 * t).toFixed(3)})`
                   return (
                     <div
                       key={`${r}-${c}`}

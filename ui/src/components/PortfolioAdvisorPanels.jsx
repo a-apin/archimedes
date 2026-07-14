@@ -117,6 +117,7 @@ function EfficientFrontier({ points }) {
   const PAD_B = 36
 
   const { plot, frontierPath, optimal, xTicks, yTicks } = useMemo(() => {
+    if (!points.length) return { plot: [], frontierPath: '', optimal: null, xTicks: [], yTicks: [] }
     const xs = points.map((p) => p.risk)
     const ys = points.map((p) => p.ret)
     const xlo = Math.min(...xs) * 0.9
@@ -142,6 +143,15 @@ function EfficientFrontier({ points }) {
     const yt = [ylo, (ylo + yhi) / 2, yhi].map((v) => ({ y: toY(v), label: fmtPct(v) }))
     return { plot: mapped, frontierPath: path, optimal: opt, xTicks: xt, yTicks: yt }
   }, [points])
+
+  if (!optimal) {
+    return (
+      <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>
+        <div className="label mb-2">Efficient Frontier</div>
+        <p className="caption" style={{ color: 'var(--text-4)' }}>No candidate allocations to plot yet.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="card-flat" style={{ padding: 20, marginBottom: 20 }}>

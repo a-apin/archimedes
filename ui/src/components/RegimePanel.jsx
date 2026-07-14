@@ -1,5 +1,5 @@
 import { apiGet } from '../api'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { regimeMeta, regimeLabel, REGIME_ORDER } from '../regime'
 
 
@@ -88,25 +88,56 @@ export default function RegimePanel({ regime: regimeProp = null, compact = false
   const [fetchedRegime, setFetchedRegime] = useState(null)
   const [loading, setLoading] = useState(regimeProp == null)
   const [failed, setFailed] = useState(false)
+  // Tracks the most recently *started* request so a slow, superseded call
+  // (e.g. an in-flight auto-fetch that loses a race with a manual Retry
+  // click) can't overwrite state after a newer one has already resolved.
+  const requestIdRef = useRef(0)
+  // The pending watchdog timer, so a superseding fetch or an unmount can
+  // clear it — otherwise a superseded request's timer stays pending for up
+  // to FETCH_TIMEOUT_MS doing nothing (review).
+  const timeoutRef = useRef(null)
 
   const fetchRegime = useCallback(() => {
+    const requestId = ++requestIdRef.current
     setLoading(true)
     setFailed(false)
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
     const timeout = setTimeout(() => {
+      if (requestIdRef.current !== requestId) return
       setLoading(false)
       setFailed(true)
       console.error('Regime fetch timed out after', FETCH_TIMEOUT_MS, 'ms')
     }, FETCH_TIMEOUT_MS)
+    timeoutRef.current = timeout
     apiGet('/api/regime/current')
-      .then(data => { clearTimeout(timeout); setFetchedRegime(data); setFailed(false) })
-      .catch(err => { clearTimeout(timeout); setFailed(true); console.error('Regime fetch failed:', err) })
-      .finally(() => setLoading(false))
+      .then(data => {
+        clearTimeout(timeout)
+        if (requestIdRef.current === requestId) { setFetchedRegime(data); setFailed(false) }
+      })
+      .catch(err => {
+        clearTimeout(timeout)
+        if (requestIdRef.current === requestId) setFailed(true)
+        console.error('Regime fetch failed:', err)
+      })
+      .finally(() => { if (requestIdRef.current === requestId) setLoading(false) })
+    return () => { if (requestIdRef.current === requestId) requestIdRef.current += 1 }
   }, [])
 
   useEffect(() => {
     if (regimeProp != null) return
-    fetchRegime()
+    return fetchRegime()
   }, [regimeProp, fetchRegime])
+
+  // Unmount: invalidate ANY in-flight request — including one started by the
+  // manual Retry onClick, which has no effect-cleanup path — and kill the
+  // pending watchdog so neither can setState after unmount (review).
+  useEffect(
+    () => () => {
+      requestIdRef.current += 1
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    },
+    []
+  )
 
   const regime = regimeProp ?? fetchedRegime
 
