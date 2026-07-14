@@ -98,7 +98,7 @@ def _mk_passport(
     with db.get_session() as session:
         record = StrategyPassportRecord(
             id=sid,
-            content_hash=("0y" + sid).ljust(66, "0"),
+            content_hash=("0x" + sid).ljust(66, "0"),
             generation_method="fusion",
             methodology_summary="test methodology",
             asset_universe='["SPY", "GLD"]',

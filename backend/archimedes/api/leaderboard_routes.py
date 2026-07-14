@@ -4,9 +4,12 @@ The testnet engagement engine (North Star §5): a public, gamified ranking of th
 strategy library by the transparent conviction score (real rigor gate + backtest),
 paired with an honest, pending StockBench / live-P&L forward axis.
 
-Ranks the curated/validated library (``strategy_provider``) ALONGSIDE published
-or rigor-promoted GENERATED strategies (curated ∪ generated — the "unify source"
-decouple in docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md Part A).
+Ranks the curated/validated library (``strategy_provider``) ALONGSIDE PUBLISHED
+generated strategies (curated ∪ generated — the "unify source" decouple in
+docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md Part A). Publish is
+the ONLY generated-side criterion: rigor promotion ("live" status) deliberately
+does NOT qualify, or a private strategy would leak onto the public board the
+moment it passed rigor (#850 privacy principle — publish is the consent signal).
 A generated strategy earns a spot the same way a curated one does: real,
 rigor-gated backtest numbers score it via ``compute_conviction`` — a strategy
 missing a metric scores 0 on that axis and sinks honestly, never fabricated.
@@ -71,9 +74,11 @@ async def get_leaderboard(
         responses = []
 
     # Unify: add GENERATED strategies alongside curated (low-pri decouple).
-    # Public/no-wallet criterion — is_published OR rigor-promoted "live" — so a
-    # private candidate never leaks onto the public board. Best-effort: a
-    # failure here degrades to curated-only, exactly today's behavior.
+    # Public/no-wallet criterion — is_published ONLY (never status: rigor
+    # promotion sets "live" on unpublished strategies too, and keying off it
+    # would leak a private candidate onto the public board; publish is the
+    # consent signal — #850). Best-effort: a failure here degrades to
+    # curated-only, exactly today's behavior.
     try:
         from archimedes.api.strategies_routes import _public_generated_strategy_responses
         from archimedes.db import get_session
