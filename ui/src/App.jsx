@@ -262,7 +262,16 @@ export default function App() {
       )
       case 'strategy':     return <StrategyPassport strategyId={selectedStrategy} onNavigate={navigateToPage} walletAddr={walletAddr} />
       case 'corpus':       return <CorpusExplorer />
-      case 'quant':        return <QuantLab />
+      case 'quant':        return (
+        <WalletGate
+          walletAddr={walletAddr}
+          pageName="Quant Lab"
+          description="Quant Lab reads your live strategy library, vault holdings, and reasoning traces. Connect a wallet — sign in with a passkey, no extension needed — to analyze your own positions."
+          onConnect={openConnectModal}
+        >
+          <QuantLab />
+        </WalletGate>
+      )
       case 'portfolio':    return (
         <WalletGate
           walletAddr={walletAddr}
