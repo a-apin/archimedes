@@ -190,7 +190,9 @@ export default function Leaderboard() {
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmt(e.sharpe_ratio)}</td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmtPct(e.cagr)}</td>
-                  <td style={{ padding: '10px', whiteSpace: 'nowrap', color: 'var(--negative)' }}>{fmtPct(e.max_drawdown)}</td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap', color: 'var(--negative)' }}>
+                    {e.max_drawdown != null ? `−${fmtPct(Math.abs(e.max_drawdown))}` : '—'}
+                  </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
                     {rigorBadge(e)}
                     {e.dsr_p_value != null && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }} title="DSR confidence (0–1, higher is better): probability the Sharpe survives deflation/multiple-testing. Not a classical p-value.">DSR conf={fmt(e.dsr_p_value)}{e.pbo_score != null ? ` · PBO ${fmt(e.pbo_score)}` : ''}</div>}

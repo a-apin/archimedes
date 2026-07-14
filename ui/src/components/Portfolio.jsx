@@ -165,19 +165,38 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
     // Regime is loaded + rendered by <RegimePanel /> above, not duplicated here.
   }, [])
 
+  // Own vaults only — /api/traces/ has no auth, and an unfiltered call
+  // returns the platform's most recent traces across every user's vaults.
+  // Key on the joined address list (not the userVaults array reference)
+  // so loadTraces only gets a new identity when the actual vault set
+  // changes, not on every re-fetch of the same vaults.
+  const vaultAddrKey = userVaults.map(v => v.address).join(',')
+
   const loadTraces = useCallback(async () => {
+    const addrs = vaultAddrKey ? vaultAddrKey.split(',') : []
+    if (addrs.length === 0) { setRecentTraces([]); return }
     setTracesLoading(true)
     try {
-      const r = await fetch(`${API_BASE}/api/traces/?limit=20`)
-      if (r.ok) {
-        const data = await r.json()
-        setRecentTraces(data.traces || [])
-      }
+      // list_traces() (traces_routes.py) only accepts a single vault_address
+      // filter, not a list — one request per owned vault, merged and
+      // re-sorted client-side, rather than inventing a filter shape the
+      // backend doesn't support.
+      const results = await Promise.all(
+        addrs.map(addr =>
+          fetch(`${API_BASE}/api/traces/?limit=20&vault_address=${addr}`)
+            .then(r => (r.ok ? r.json() : { traces: [] }))
+            .catch(() => ({ traces: [] })),
+        ),
+      )
+      const tsMs = (t) => { const d = new Date(t); return Number.isNaN(d.getTime()) ? 0 : d.getTime() }
+      const merged = results.flatMap(d => d.traces || [])
+      merged.sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp))
+      setRecentTraces(merged.slice(0, 20))
     } catch {
       // Network blip — leave prior recentTraces intact; next poll retries.
     }
     setTracesLoading(false)
-  }, [])
+  }, [vaultAddrKey])
 
   useEffect(() => { loadVaults(); loadWalletUsdc() }, [loadVaults, loadWalletUsdc])
   useEffect(() => { loadAgentAndRegime(); loadTraces() }, [loadAgentAndRegime, loadTraces])
@@ -188,11 +207,16 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
     return () => clearInterval(t)
   }, [loadAgentAndRegime, loadTraces, loadWalletUsdc, loadVaults])
 
-  // YOUR AUM — sum across vaults the connected wallet created. Placeholder rows
-  // for vaults whose reads reverted contribute 0 (their AUM is unknown), so a
-  // stale-oracle vault doesn't poison the total with NaN.
-  // Wallet-disconnected users see 0; wallet-connected users see real $ at risk.
-  const yourAum = userVaults.reduce((s, v) => s + (v.aum || 0), 0)
+  // YOUR AUM — sum of the connected wallet's OWN share value across vaults it
+  // created, not each vault's totalAssets() (which includes every depositor).
+  // Vault.deposit() has no access-control modifier, so a vault the wallet
+  // created can hold other depositors' USDC too; using totalAssets() here
+  // would overstate the creator's own exposure. userValue (below) is already
+  // scoped to the wallet's own shares — reuse it instead of re-deriving from
+  // aum. Placeholder rows for vaults whose reads reverted contribute 0 (their
+  // value is unknown), so a stale-oracle vault doesn't poison the total with
+  // NaN. Wallet-disconnected users see 0; wallet-connected users see real $ at risk.
+  const yourAum = userVaults.reduce((s, v) => s + (v.userValue || 0), 0)
   const hasVaults = userVaults.length > 0
 
   // Aggregate unrealized PnL across the user's vault positions (positions they
@@ -359,9 +383,9 @@ export default function Portfolio({ walletAddr, onSelectVault, onSelectTrace, on
                 </div>
                 <div className="flex items-baseline gap-2 mt-3 mb-1">
                   <span className="text-[1.5rem] font-bold">
-                    ${v.aum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    ${v.userValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </span>
-                  <span className="caption">AUM</span>
+                  <span className="caption">Your value</span>
                 </div>
                 <div className="flex justify-between items-center mt-2 flex-wrap gap-2">
                   <code className="caption" style={{ color: 'var(--text-3)' }}>{shortAddr(v.address)}</code>

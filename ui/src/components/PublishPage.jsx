@@ -54,14 +54,20 @@ export default function PublishPage({ onNavigate }) {
 
   // Check vault balance whenever vault address changes
   useEffect(() => {
-    if (!vaultMode || !selectedStrategy) return
+    // Early-return paths must reset checkingBalance too: when deps change
+    // mid-flight, the cleanup cancels the old run (its guarded .finally never
+    // fires) — if the new run then bails here, the UI would stay stuck on
+    // "Checking balance…" forever (review).
+    if (!vaultMode || !selectedStrategy) { setCheckingBalance(false); return }
     const addr = vaultMode === 'create' ? createdVault : existingVault.trim()
-    if (!addr) { setVaultBalance(null); return }
+    if (!addr) { setVaultBalance(null); setCheckingBalance(false); return }
+    let cancelled = false
     setCheckingBalance(true)
     usdcBalanceOfRaw(addr)
-      .then(b => setVaultBalance(b))
-      .catch(() => setVaultBalance(null))
-      .finally(() => setCheckingBalance(false))
+      .then(b => { if (!cancelled) setVaultBalance(b) })
+      .catch(() => { if (!cancelled) setVaultBalance(null) })
+      .finally(() => { if (!cancelled) setCheckingBalance(false) })
+    return () => { cancelled = true }
   }, [vaultMode, createdVault, existingVault, selectedStrategy, depositDone])
 
   const resetMenu = () => {
