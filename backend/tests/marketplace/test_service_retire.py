@@ -13,10 +13,8 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from archimedes.marketplace.service import MarketService, Publisher, Subscriber
 from archimedes.models.marketplace import MarketplaceAgent
-
 
 # ── to_dict() notice logic (no DB, pure model test) ────────────────────────
 
@@ -217,7 +215,7 @@ async def test_run_loop_exits_when_publisher_retired():
     pub.retired = True  # Simulate retirement signal
     svc.publishers["strat_exit"] = pub
 
-    with patch.object(svc, "tick", AsyncMock()) as mock_tick:
+    with patch.object(svc, "tick", AsyncMock()):
         await svc._run_loop("strat_exit")
 
     # tick may or may not run (depends on timing), but the loop exits

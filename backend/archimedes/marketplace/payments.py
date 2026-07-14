@@ -150,6 +150,6 @@ async def charge(
         logger.info("[%s] charged sub %s %s", tick_id, sub_id, price)
         return True
 
-    except Exception as exc:  # noqa: BLE001 — bool contract, never raise
+    except Exception as exc:
         logger.warning("[%s] charge failed for sub %s: %s", tick_id, sub_id, exc)
         return False

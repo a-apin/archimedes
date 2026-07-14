@@ -244,7 +244,7 @@ class ChainExecutor:
 
     async def build_trade_arrays(
         self,
-        vault_address: str,
+        vault_address: str,  # noqa: ARG002 — kept as the vault-context param callers pass; array build is vault-agnostic
         trades: list[TradeOrder],
     ) -> tuple[list[str], list[int], list[str], list[int]]:
         """Build the (tokensIn, amountsIn, tokensOut, amountsOut) arrays for Vault.rebalance().

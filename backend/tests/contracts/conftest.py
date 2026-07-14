@@ -13,8 +13,8 @@ Until then they skip gracefully when the legacy Vyper source is not present.
 
 import os
 
-import pytest
 import boa
+import pytest
 
 MOCK_USDC_SOURCE = """
 # @version ^0.4.0

@@ -331,7 +331,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         from archimedes.services.backtest_scheduler import backtest_refresh_loop, refresh_enabled
 
         if refresh_enabled():
-            asyncio.create_task(backtest_refresh_loop())
+            # Hold a reference (RUF006): a fire-and-forget task can be garbage-
+            # collected mid-run. Parked on app.state so it lives for the app's
+            # lifetime instead of being reaped once this function returns.
+            _app.state.backtest_refresh_task = asyncio.create_task(backtest_refresh_loop())
             _logger.info("startup: backtest refresh scheduler armed")
         else:
             _logger.info("startup: backtest refresh scheduler disabled")

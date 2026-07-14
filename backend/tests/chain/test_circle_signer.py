@@ -133,9 +133,9 @@ class TestExecuteContract:
         with (
             patch("archimedes.chain.circle_signer.aiohttp.ClientSession", return_value=_session_context(session)),
             patch("archimedes.chain.circle_signer._encrypt_entity_secret", return_value="ciphertext"),
+            pytest.raises(RuntimeError, match="public key"),
         ):
-            with pytest.raises(RuntimeError, match="public key"):
-                await configured.execute_contract("0xVault", "setAgent(address)", ["0xabc"])
+            await configured.execute_contract("0xVault", "setAgent(address)", ["0xabc"])
 
     async def test_non_201_submit_raises(self, configured):
         session = _mock_session()
@@ -144,9 +144,9 @@ class TestExecuteContract:
         with (
             patch("archimedes.chain.circle_signer.aiohttp.ClientSession", return_value=_session_context(session)),
             patch("archimedes.chain.circle_signer._encrypt_entity_secret", return_value="ciphertext"),
+            pytest.raises(RuntimeError, match="contract execution failed"),
         ):
-            with pytest.raises(RuntimeError, match="contract execution failed"):
-                await configured.execute_contract("0xVault", "setAgent(address)", ["0xabc"])
+            await configured.execute_contract("0xVault", "setAgent(address)", ["0xabc"])
 
 
 # ── _poll_transaction ─────────────────────────────────────────
@@ -175,9 +175,9 @@ class TestPollTransaction:
         with (
             patch("archimedes.chain.circle_signer._MAX_POLLS", 2),
             patch("archimedes.chain.circle_signer.asyncio.sleep", AsyncMock()),
+            pytest.raises(RuntimeError, match="timed out"),
         ):
-            with pytest.raises(RuntimeError, match="timed out"):
-                await configured._poll_transaction(session, "tx-1")
+            await configured._poll_transaction(session, "tx-1")
 
     async def test_poll_query_scoped_to_wallet(self, configured):
         """The poll GET must filter by walletIds so the target tx can't fall off
@@ -230,9 +230,11 @@ class TestSignAndBroadcast:
     async def test_sign_failure_raises(self, configured):
         session = _mock_session()
         session.post = MagicMock(return_value=session._cm(_resp(422, {"error": "bad tx"})))
-        with patch("archimedes.chain.circle_signer.aiohttp.ClientSession", return_value=_session_context(session)):
-            with pytest.raises(RuntimeError, match="sign failed"):
-                await configured.sign_and_broadcast({"to": "0xabc", "value": 0})
+        with (
+            patch("archimedes.chain.circle_signer.aiohttp.ClientSession", return_value=_session_context(session)),
+            pytest.raises(RuntimeError, match="sign failed"),
+        ):
+            await configured.sign_and_broadcast({"to": "0xabc", "value": 0})
 
 
 # ── _encrypt_entity_secret ────────────────────────────────────

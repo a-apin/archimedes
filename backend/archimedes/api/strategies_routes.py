@@ -1822,7 +1822,7 @@ async def get_strategy_returns(strategy_id: str, request: Request):
             latest_row = rows.get(strategy_id)
     except Exception as exc:
         logger.warning("returns endpoint DB read failed for %s: %s", strategy_id, exc)
-        raise HTTPException(status_code=500, detail="Failed to load returns")
+        raise HTTPException(status_code=500, detail="Failed to load returns") from exc
 
     if not daily_returns:
         raise HTTPException(status_code=404, detail="no persisted returns")

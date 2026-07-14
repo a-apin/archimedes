@@ -13,23 +13,23 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from archimedes.models.backtest_fixtures_store import StrategyBacktestFixture  # noqa: F401
-from archimedes.models.backtest_store import BacktestResultRecord  # noqa: F401
+from archimedes.models.backtest_fixtures_store import StrategyBacktestFixture
+from archimedes.models.backtest_store import BacktestResultRecord
 from archimedes.models.chat import Base
-from archimedes.models.corpus_store import CorpusMetaRecord, PaperRecord  # noqa: F401
-from archimedes.models.daily_returns_store import StrategyDailyReturn  # noqa: F401
-from archimedes.models.identity import ControlledWallet, IdentityEvent, WalletIdentity  # noqa: F401
-from archimedes.models.marketplace import (  # noqa: F401
+from archimedes.models.corpus_store import CorpusMetaRecord, PaperRecord
+from archimedes.models.daily_returns_store import StrategyDailyReturn
+from archimedes.models.identity import ControlledWallet, IdentityEvent, WalletIdentity
+from archimedes.models.marketplace import (
     MarketplaceAgent,
     SettlementIntent,
     SubscriberLiability,
     SubscriberTickLog,
 )
-from archimedes.models.request_snapshot import RequestCountSnapshot  # noqa: F401
-from archimedes.models.strategy_generators import StrategyGenerator  # noqa: F401
-from archimedes.models.strategy_proposal import StrategyProposal  # noqa: F401
-from archimedes.models.strategy_store import StrategyRecord  # noqa: F401
-from archimedes.models.user_profile import UserProfile  # noqa: F401
+from archimedes.models.request_snapshot import RequestCountSnapshot
+from archimedes.models.strategy_generators import StrategyGenerator
+from archimedes.models.strategy_proposal import StrategyProposal
+from archimedes.models.strategy_store import StrategyRecord
+from archimedes.models.user_profile import UserProfile
 
 # The model imports above exist to register their tables on ``Base.metadata``
 # (a side effect of import) so ``init_db()``'s ``create_all`` sees every table.
@@ -37,12 +37,9 @@ from archimedes.models.user_profile import UserProfile  # noqa: F401
 # intentional re-exports so CodeQL's unused-import query also treats them as used.
 # (``db.py`` is never ``import *``-ed, so ``__all__`` has no other effect.)
 __all__ = [
-    "Base",
     "DATABASE_URL",
-    "engine",
-    "get_session",
-    "init_db",
     "BacktestResultRecord",
+    "Base",
     "ControlledWallet",
     "CorpusMetaRecord",
     "IdentityEvent",
@@ -59,6 +56,9 @@ __all__ = [
     "SubscriberTickLog",
     "UserProfile",
     "WalletIdentity",
+    "engine",
+    "get_session",
+    "init_db",
 ]
 
 logger = logging.getLogger(__name__)

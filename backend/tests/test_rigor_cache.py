@@ -398,7 +398,7 @@ def test_concurrent_misses_for_the_same_key_invoke_compute_fn_once():
         start_barrier.wait(timeout=5.0)
         try:
             results[i] = rigor_cache.get_or_compute("single-flight-key", _slow_compute)
-        except Exception as exc:  # noqa: BLE001 - surfaced via `errors`, not swallowed
+        except Exception as exc:
             errors.append(exc)
 
     threads = [threading.Thread(target=_worker, args=(i,)) for i in range(n_threads)]
@@ -626,7 +626,7 @@ def test_cohort_key_changes_when_any_series_changes():
     k1 = rigor_cache.cohort_key(["a", "b"], returns)
 
     mutated = dict(returns)
-    mutated["a"] = _series(1)[:-1] + [0.999]  # tweak one strategy's series
+    mutated["a"] = [*_series(1)[:-1], 0.999]  # tweak one strategy's series
     k2 = rigor_cache.cohort_key(["a", "b"], mutated)
     assert k1 != k2
 

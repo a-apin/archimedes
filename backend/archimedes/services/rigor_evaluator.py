@@ -564,11 +564,9 @@ class RigorGateResult:
             return True
         if self.dsr_p_value is None or not math.isfinite(self.dsr_p_value) or self.dsr_p_value < DSR_P_FLOOR:
             return True
-        if self.cpcv_positive_fraction is not None and (
+        return self.cpcv_positive_fraction is not None and (
             not math.isfinite(self.cpcv_positive_fraction) or self.cpcv_positive_fraction < CPCV_MIN_POSITIVE_FRACTION
-        ):
-            return True
-        return False
+        )
 
     def _passes_profile(self, profile: RigorProfile) -> bool:
         """Every criterion clears ``profile``'s adjustable thresholds AND every
@@ -597,7 +595,7 @@ class RigorGateResult:
                 return False
         # ── Adjustable: OOS/IS cliff ratio (the absolute OOS>0 floor is enforced
         # by blocked_by_floor above; this guards against a performance *cliff*). ──
-        if (
+        if (  # noqa: SIM103 — explicit fail-branch kept for gate auditability (negation obscures)
             self.in_sample_sharpe is not None
             and math.isfinite(self.in_sample_sharpe)
             and self.in_sample_sharpe > 0

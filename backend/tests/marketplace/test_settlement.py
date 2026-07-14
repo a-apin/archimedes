@@ -6,12 +6,11 @@ All SDK/clients are mocked at module boundary.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from archimedes.marketplace.settlement import (
-    SettlementSweeper,
-    SWEEP_MIN_DEPOSIT_RAW,
-    GATEWAY_CHAIN,
     _THRESHOLD_RAW,
+    GATEWAY_CHAIN,
+    SWEEP_MIN_DEPOSIT_RAW,
+    SettlementSweeper,
 )
 
 
