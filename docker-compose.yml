@@ -54,21 +54,24 @@ services:
   # runs the app tier against managed stores. See docs/deployment.md.
   postgres:
     # Bumped 16-alpine -> 18-alpine (#777) to match prod Aurora's 18.3 major version.
-    # BREAKING for existing local envs: Postgres refuses to start on a data directory
-    # that a previous major version initialized. If your local `pgdata` volume was
-    # created under the old 16-alpine image, remove it before starting this image:
-    #   docker compose down -v          # drops the pgdata volume (loses local-only data)
-    #   docker compose --profile localdb up -d --build
     #
     # Mount moved to the PARENT dir, `pgdata18:/var/lib/postgresql` (#1119):
     # postgres:18-alpine image revisions since ~2026-07 store data in a
     # major-version-suffixed subdirectory (/var/lib/postgresql/18/docker, for
     # `pg_upgrade --link` support — docker-library/postgres#1259) and HARD-ERROR
     # on a mount at the legacy /var/lib/postgresql/data path, which broke every
-    # fresh `docker compose up`. BREAKING again for existing local envs: data in
-    # the old `pgdata` volume (legacy path) is orphaned by this change — for a
-    # disposable local dev DB, `docker compose down -v` and start fresh; to keep
-    # data, copy it into the version-suffixed layout before switching.
+    # fresh `docker compose up`.
+    #
+    # BREAKING for pre-#1119 local envs: the old `pgdata` volume is no longer
+    # declared here, so `docker compose down -v` will NOT remove it and your
+    # old data is simply orphaned (a fresh, empty `pgdata18` is created on next
+    # up). For the usual disposable local dev DB, no action needed — migrations
+    # re-run on the empty DB. To reclaim disk: `docker volume rm archimedes_pgdata`.
+    # To KEEP old local data: before switching, copy the old volume's contents
+    # into the new layout, e.g.
+    #   docker run --rm -v archimedes_pgdata:/old -v archimedes_pgdata18:/new \
+    #     alpine sh -c 'mkdir -p /new/18/docker && cp -a /old/. /new/18/docker/'
+    # (then verify with a throwaway `docker compose up postgres`).
     image: postgres:18-alpine
     profiles: ["localdb"]
     restart: unless-stopped
