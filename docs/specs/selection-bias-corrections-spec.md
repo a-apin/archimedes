@@ -147,10 +147,13 @@ first** (smaller blast radius, strictly conservative) and leave the candidate-po
 correlation correction as a follow-up; over-deflation (treating correlated candidates as
 independent) only *tightens* the gate, never loosens it, so the simple form is safe to ship.
 
-**Scope note.** This additive correction applies to the **live society generation path**
-(`agents/generation_pipeline.py`). The `/api/selection-bias/gate` route grades the
-**existing persisted library**, where the selection set is the library itself — there is no
-fresh candidate pool, so that route keeps `num_trials = library_size`.
+**Scope note.** *(Superseded by the #1075 addendum below, including for the gate route:
+`/api/selection-bias/gate` now grades curated strategies at `num_trials = 1`, not
+`library_size` — kept verbatim for history.)* This additive correction applies to the
+**live society generation path** (`agents/generation_pipeline.py`). The
+`/api/selection-bias/gate` route grades the **existing persisted library**, where the
+selection set is the library itself — there is no fresh candidate pool, so that route
+keeps `num_trials = library_size`.
 
 > **Owner sign-off:** the choice of formula (additive A vs. effective-N B) is Önder's
 > statistics call. This addendum records approach **A** as the shipped default pending his
