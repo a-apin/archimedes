@@ -264,9 +264,9 @@ async def publish_trace(req: TracePublishRequest, _: None = Depends(require_inte
         raise HTTPException(
             status_code=503,
             detail=(
-                "Trace anchored on-chain"
-                + (f" (tx {arc_tx_hash})" if arc_tx_hash else "")
-                + " but off-chain persistence failed — retry publish."
+                f"Trace anchored on-chain (tx {arc_tx_hash}) but off-chain persistence failed — retry publish."
+                if arc_tx_hash
+                else "Off-chain trace persistence failed (no on-chain anchor was recorded either) — retry publish."
             ),
         ) from None
     finally:
@@ -387,8 +387,11 @@ async def get_trace_canonical(trace_id: str):
         try:
             off_chain = await state.get_trace(trace_id)
         except Exception:
+            # 503, not 404: "store unavailable" must stay distinguishable from
+            # "trace doesn't exist" — a canonical-JSON consumer (hash
+            # re-verification) should retry, not conclude the trace is gone.
             logger.warning("get_trace_canonical: Redis unavailable", exc_info=True)
-            off_chain = None
+            raise HTTPException(status_code=503, detail="Trace store temporarily unavailable — retry.") from None
         if not off_chain:
             raise HTTPException(status_code=404, detail="Trace not found")
 

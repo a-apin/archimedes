@@ -53,7 +53,12 @@ async def test_list_traces_degrades_to_empty_when_redis_down():
         patch.object(AgentStateStore, "close", AsyncMock()),
         patch("archimedes.chain.trace_publisher.trace_publisher") as mock_pub,
     ):
-        mock_pub.list_onchain_trace_ids = AsyncMock(return_value=[])
+        # The route's on-chain fallback calls get_total_trace_count() +
+        # get_trace_by_id() — mock THOSE (review follow-up: an earlier version
+        # mocked a method the route never calls, so the fallback's swallowed
+        # exception made the test pass vacuously).
+        mock_pub.get_total_trace_count = AsyncMock(return_value=0)
+        mock_pub.get_trace_by_id = AsyncMock(return_value=None)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/traces/")
 

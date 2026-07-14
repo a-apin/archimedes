@@ -33,7 +33,7 @@ class TestCreateVaults:
     def test_happy_path_returns_parsed_vault_address(self):
         """status=1 + VaultCreated event found → vault appended with the
         address parsed from the event (not the getVaults()-idempotency-check
-        fallback, which is called once upfront per #1103 but returns no
+        fallback, which is called once upfront per #1102 but returns no
         existing vaults here)."""
         factory = MagicMock()
         factory.events.VaultCreated.return_value.process_log.return_value = {"args": {"vault": "0xNewVault"}}
