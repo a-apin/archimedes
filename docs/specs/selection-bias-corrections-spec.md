@@ -147,14 +147,51 @@ first** (smaller blast radius, strictly conservative) and leave the candidate-po
 correlation correction as a follow-up; over-deflation (treating correlated candidates as
 independent) only *tightens* the gate, never loosens it, so the simple form is safe to ship.
 
-**Scope note.** This additive correction applies to the **live society generation path**
-(`agents/generation_pipeline.py`). The `/api/selection-bias/gate` route grades the
-**existing persisted library**, where the selection set is the library itself — there is no
-fresh candidate pool, so that route keeps `num_trials = library_size`.
+**Scope note.** *(Superseded by the #1075 addendum below, including for the gate route:
+`/api/selection-bias/gate` now grades curated strategies at `num_trials = 1`, not
+`library_size` — kept verbatim for history.)* This additive correction applies to the
+**live society generation path** (`agents/generation_pipeline.py`). The
+`/api/selection-bias/gate` route grades the **existing persisted library**, where the
+selection set is the library itself — there is no fresh candidate pool, so that route
+keeps `num_trials = library_size`.
 
 > **Owner sign-off:** the choice of formula (additive A vs. effective-N B) is Önder's
 > statistics call. This addendum records approach **A** as the shipped default pending his
 > review; promoting to B is a follow-up if candidate-pool over-deflation proves material.
+
+#### Addendum (#1075, 2026-07-14) — decouple #2: num_trials is self-contained — SUPERSEDES the `+ library_size` term above
+
+PR #1075 deliberately reverses formula (A)'s `+ library_size` term. This is the one
+documented exception to #770's "only stricter" anti-goal, reviewed as such — the
+loosening is the point, not a side effect. Owner + statistics sign-off is the merge
+of that PR itself.
+
+```
+num_trials = n_candidates      # society/fusion generation paths (_society_num_trials(N))
+num_trials = 1                 # curated single-methodology serving paths
+```
+
+**Rationale.** Bailey & López de Prado's deflation corrects for the *search that
+produced the reported Sharpe*. The society round genuinely searched `n_candidates`
+variants — that term stays. But a strategy does not become more overfit because the
+shelf it later joins grows: `library_size` is a property of the library, not of the
+trial that produced the strategy. Under formula (A) the *same* strategy's DSR verdict
+changed as unrelated strategies were added — the gate verdict was not a stable
+property of the strategy. Cross-library selection bias ("the shelf displays its best")
+is real but is a *ranking/display* correction belonging to library-level PBO (which is
+unchanged), not a per-strategy admission correction.
+
+**Effect direction.** `num_trials` can only shrink relative to formula (A)
+(`N + library ≥ N ≥ 1`), so deflation strictly weakens and pass rates can rise — an
+acknowledged, reviewed loosening, stated here so nobody reads the old addendum as
+current.
+
+**Methodology versioning.** `rigor_verdict` JSON blobs written after this change carry
+`"num_trials_convention": "self_contained_v2"`. Blobs without the key were computed
+under formula (A) (or the pre-#770 bare library-size convention) and are **not**
+directly comparable to post-change numbers. Whether to backfill/recompute stored
+verdicts or surface the distinction in the UI is an open follow-up (merge-board
+2026-07-14).
 
 #### Addendum (#822) — approach B ships alongside A: real ρ̄ feeds the same `num_trials`
 

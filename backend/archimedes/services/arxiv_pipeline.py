@@ -9,7 +9,7 @@ AGPL enters an Unlicense repo.
 Flow:
   1. arxiv API → paper metadata (title, authors, abstract, year, doi)
   2. download PDF → pypdf text, sha256-cached on disk
-  3. Claude (the same LLMBackend seam as the architect) synthesizes the
+  3. Claude (the same LLMBackend seam) synthesizes the
      strategy *passport* from abstract + body
   4. render a self-describing strategy module into
      analytics-engine/strategies/ and refresh the provider
@@ -37,7 +37,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from archimedes.agents.strategy_architect import (
+from archimedes.agents.generation_json import (
     default_backend,
     extract_json,
 )

@@ -129,6 +129,42 @@ def test_alembic_upgrade_head_is_idempotent(tmp_path):
     assert _table_names(db_path) == tables_after_first
 
 
+def test_alembic_strategy_spec_column_added_and_removed(tmp_path):
+    """Rebalancer decouple (Part A #1): ``strategy_store.strategy_spec`` lands
+    on upgrade, is gone on downgrade, and comes back on re-upgrade — the
+    per-migration up/down/idempotent contract, exercised directly (not just
+    implied by the whole-chain tests above)."""
+    db_path = tmp_path / "spec_column.db"
+    database_url = f"sqlite:///{db_path}"
+
+    def _has_strategy_spec_column() -> bool:
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute("PRAGMA table_info(strategy_store)")
+            return "strategy_spec" in {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert _has_strategy_spec_column()
+
+    downgrade = _run_alembic("downgrade", "-1", database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert not _has_strategy_spec_column()
+
+    # Idempotent re-upgrade: column comes back, and running head→head again
+    # afterwards is a no-op (not an error).
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert _has_strategy_spec_column()
+
+    reupgrade_again = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade_again.returncode == 0, reupgrade_again.stderr
+    assert _has_strategy_spec_column()
+
+
 def test_alembic_upgrade_head_matches_a_fresh_create_all_schema(tmp_path):
     """The two schema-management paths (Alembic for retrofitting an
     already-populated Postgres DB; ``create_all()`` for fresh SQLite —
@@ -181,3 +217,49 @@ def test_alembic_upgrade_head_matches_a_fresh_create_all_schema(tmp_path):
         assert _columns(create_all_db, table) == _columns(alembic_db, table), (
             f"{table} columns diverge between create_all() and alembic upgrade head"
         )
+
+
+def test_alembic_strategy_store_matches_a_fresh_create_all_schema(tmp_path):
+    """Same column-parity contract as the smoke test above, scoped to
+    ``strategy_store`` specifically (Part A #1's ``strategy_spec`` column) —
+    the ORM's ``StrategyRecord.strategy_spec`` (create_all path) and this
+    migration's ``ADD COLUMN strategy_spec`` (alembic path) must agree."""
+    create_all_db = tmp_path / "create_all_strategy_store.db"
+    script = (
+        "import sqlalchemy as sa\n"
+        "from archimedes.models.chat import Base\n"
+        # owner_wallet FKs into wallet_identities — must be registered too,
+        # or create_all() can't resolve the FK target table.
+        "from archimedes.models.identity import WalletIdentity\n"
+        "from archimedes.models.strategy_store import StrategyRecord\n"
+        f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
+        "Base.metadata.create_all(bind=engine)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(_BACKEND_DIR),
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    alembic_db = tmp_path / "alembic_built_strategy_store.db"
+    upgrade = _run_alembic("upgrade", "head", database_url=f"sqlite:///{alembic_db}")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    def _columns(db_path: Path, table: str) -> set[str]:
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    create_all_cols = _columns(create_all_db, "strategy_store")
+    alembic_cols = _columns(alembic_db, "strategy_store")
+    assert "strategy_spec" in create_all_cols
+    assert "strategy_spec" in alembic_cols
+    assert create_all_cols == alembic_cols

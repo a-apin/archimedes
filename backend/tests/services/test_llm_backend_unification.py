@@ -25,13 +25,6 @@ _BACKEND_DIR = Path(__file__).resolve().parents[2] / "archimedes" / "services"
 _AGENTS_DIR = Path(__file__).resolve().parents[2] / "archimedes" / "agents"
 _LLM_BACKEND_FILE = _BACKEND_DIR / "llm_backend.py"
 
-# Modules that previously held duplicate Protocol declarations. Even if a future
-# refactor moves them, the rule stays the same: nobody else declares LLMBackend.
-_HISTORICAL_DUPLICATES = (
-    _AGENTS_DIR / "strategy_architect.py",
-    _AGENTS_DIR / "strategy_fusion.py",
-)
-
 # Any backend service file AND agents file (full sweep — catches new files too).
 _ALL_BACKEND_FILES = sorted(_BACKEND_DIR.rglob("*.py")) + sorted(_AGENTS_DIR.rglob("*.py"))
 
@@ -117,13 +110,14 @@ def test_no_claude_backend_class_anywhere():
 # ── Import-path checks ──────────────────────────────────────────────────────
 
 
-def test_strategy_architect_imports_canonical_llm_backend():
-    """``strategy_architect`` must import LLMBackend from the canonical module."""
-    text = (_AGENTS_DIR / "strategy_architect.py").read_text(encoding="utf-8")
+def test_generation_json_imports_canonical_llm_backend():
+    """``generation_json`` (the relocated architect JSON/backend helpers, #1064)
+    must import LLMBackend from the canonical module."""
+    text = (_AGENTS_DIR / "generation_json.py").read_text(encoding="utf-8")
     assert "from archimedes.services.llm_backend import" in text, (
-        "strategy_architect.py must import from archimedes.services.llm_backend"
+        "generation_json.py must import from archimedes.services.llm_backend"
     )
-    assert "LLMBackend" in text, "strategy_architect.py must reference LLMBackend"
+    assert "LLMBackend" in text, "generation_json.py must reference LLMBackend"
 
 
 def test_strategy_fusion_imports_canonical_llm_backend():

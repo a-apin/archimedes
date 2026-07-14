@@ -266,7 +266,7 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
       </div>
 
       {/* ── Dual regime result cards (Issue #163) ── */}
-      {terminal === 'done' && draftedCandidates.length >= 2 && (
+      {terminal === 'done' && (draftedCandidates.length >= 1 || failedRegimes.length >= 1) && (
         <div style={{ marginTop: 16 }}>
           <div className="label" style={{ marginBottom: 8 }}>Strategy Candidates</div>
           <div style={{

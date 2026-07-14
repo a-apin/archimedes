@@ -11,18 +11,17 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-from archimedes.db import Base, engine, get_session
+from archimedes.db import get_session
 from archimedes.marketplace.service import MarketService, Publisher, Subscriber
 from archimedes.marketplace.tick_registry import TickStep
 from archimedes.models.marketplace import SettlementIntent
 
-
-@pytest.fixture(autouse=True)
-def _db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+# DB isolation for this file's tests comes from the autouse fixture in
+# backend/tests/marketplace/conftest.py (see tests/db_isolation.py) — it
+# replaces a create_all/drop_all pair that operated on `engine` captured at
+# import time, which silently stopped matching what get_session() resolved
+# to once another file in this directory redirected archimedes.db.engine
+# without restoring it (issue #1100).
 
 
 def _svc(dry_run: bool = False) -> MarketService:
@@ -57,7 +56,7 @@ def test_claim_settlement_intent_lifecycle():
     svc = _svc()
     # Unique tick_id per test — assertions are scoped to this logical charge so
     # they never depend on cross-test DB isolation.
-    key = {"strategy_id": "strat_a", "tick_id": "lifecycle:1", "sub_id": "0x" + "cc" * 32, "step": "rebalance"}
+    key = dict(strategy_id="strat_a", tick_id="lifecycle:1", sub_id="0x" + "cc" * 32, step="rebalance")
 
     assert svc._claim_settlement_intent(**key) == "claimed"
     # A second claim for the same logical charge is blocked (pending in-flight).

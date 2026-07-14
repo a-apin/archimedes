@@ -1,0 +1,1126 @@
+{
+ "sAAVE": {
+  "oracle": "0xac566a5b6ffa6b43c3f6e1228c59f90c8723b96f",
+  "token": "0x27dd2145ae42bad5fae7d1e632159b87b4b919b3"
+ },
+ "sACWI": {
+  "oracle": "0x765b70a8d29001ff1666d32c619b8662dba3e5a5",
+  "token": "0x99699b13b6f02eb03b28fafe760acab3651dd762"
+ },
+ "sADA": {
+  "oracle": "0xc150891f90ece51e83d0153233885738f923d9ce",
+  "token": "0x7bc29c90f00500ab2bbdc3c7efe97f14c99f156c"
+ },
+ "sAGG": {
+  "oracle": "0xb10990b96d3883cf36c893f50ffb8c82a56fbac9",
+  "token": "0x3441aa5a4ce3e68838f7595fb1e551599ad03449"
+ },
+ "sALGO": {
+  "oracle": "0x2e5478b78de4777ab5e2803612a6ee5bd9b39f3e",
+  "token": "0x3c43994919111215e9a2829a11cff27a704e7bf3"
+ },
+ "sANGL": {
+  "oracle": "0x4bace3084f19a7aaf4dfe9aed04bbff737c10409",
+  "token": "0x211db4c748b2323a6305a9c7f32d6516e132299f"
+ },
+ "sAPE": {
+  "oracle": "0xba1cc17373606cea4d742acd08f9ef5fe35d86c1",
+  "token": "0xe6149b6d7544c33f11b58105f9b7eca69b028f77"
+ },
+ "sAPT": {
+  "oracle": "0xea878e30aeec587e444b5413ccda77db3f17e90b",
+  "token": "0xf72f9ab6540b89e7114efd5ed8b5cafde51fdeee"
+ },
+ "sAR": {
+  "oracle": "0x469a58e09e24beb5037997bd579b52d1ca4fd1bf",
+  "token": "0xfde7de122d8f755619c2114828922d043c473af9"
+ },
+ "sARB": {
+  "oracle": "0xee28d029ae486ac391ccd9820c462344cc0bb2d8",
+  "token": "0x1b37676101ddb7a4fec6e6602c660a9ca88a75e0"
+ },
+ "sARGT": {
+  "oracle": "0xec811ea1546dd0b85b16b85b8cf52e5350aadf86",
+  "token": "0x8dd28a93c3e42eb3b5b3148ff0ff45a577ad63ed"
+ },
+ "sARKG": {
+  "oracle": "0x346f41146a4f2bc8c7fab969bc2b61b80ea598e8",
+  "token": "0x7bb758ba485afe03f8ffc589126ee6c6a33e544a"
+ },
+ "sARKK": {
+  "oracle": "0x4fdef71ba9acef13b52d475a77129081c20dfb99",
+  "token": "0xf98117b3f586ffce6aba89246e34ce6d308232a6"
+ },
+ "sASHR": {
+  "oracle": "0xbf6dfb9aae1429406ef7a7a95217a6723a59b0d8",
+  "token": "0xa4b86377343690703e489b584c2be7112615a3d2"
+ },
+ "sATOM": {
+  "oracle": "0x127d565409031ed7bb98a9acff4fb5b147193e6a",
+  "token": "0x18195de2d1f1c46b0f5fb6f7944306a79fe34de9"
+ },
+ "sAUDJPY": {
+  "oracle": "0xf0caa373f3e270375305cea80c4fe562da68b0b6",
+  "token": "0x8956fd9fb302cc97791fdcf1026c4d1cda9c9fa4"
+ },
+ "sAUDUSD": {
+  "oracle": "0xaa163dfad5ceb0e9162f291f0742273698eae702",
+  "token": "0xf0217fb4b18c98eac5398b91a843f44dc91c0c45"
+ },
+ "sAVAX": {
+  "oracle": "0x75fa57d41987f991f6d06be116bf53981382ec48",
+  "token": "0xfb1b77b407286f57554c35cd39f73a6526a7218d"
+ },
+ "sAXS": {
+  "oracle": "0x82384f36431326fb7e62765b1ffed16fbc3bb9d8",
+  "token": "0xa6adef15235dc51fc586e9f16b663503d07a1647"
+ },
+ "sBCH": {
+  "oracle": "0xb3df51ec560187a67346a5d519595e53861f5256",
+  "token": "0xed28240b4dfcd12579cfdb1134f06c741e4934d7"
+ },
+ "sBIL": {
+  "oracle": "0x4d92d5dbbf1f8c6ebd41b09c21591be40b9fddee",
+  "token": "0x6c43541f0548896a716ebd71062bdab45321702e"
+ },
+ "sBKLN": {
+  "oracle": "0x788931cc9e6be9f8ffa07aafa1f487e5b0b19f25",
+  "token": "0x1854f036fee9033d5d837c4324a85d5789b531d9"
+ },
+ "sBNB": {
+  "oracle": "0x334fa42868ee8acec5c54f1c1c42621cc300de6a",
+  "token": "0x2de718e6c51f9f30b6d220f72f2505efd0ec6831"
+ },
+ "sBND": {
+  "oracle": "0x4e74d44e143f565e9cb24c224e393eda86b832e1",
+  "token": "0x6b7d40bce282ba0821547947355fe8a412aac73f"
+ },
+ "sBNDX": {
+  "oracle": "0xa9e63bc24ea726b3b6c7e6bd8d367de858787c3f",
+  "token": "0xda127566c9753cf08aa830c94883d44f08693985"
+ },
+ "sBNO": {
+  "oracle": "0x46599b738303f7ea3449f23e81e23914873d2d27",
+  "token": "0xe87bc59b70f3d4494a8bab02b55afd1aedbbafc4"
+ },
+ "sBOTZ": {
+  "oracle": "0x022ee12787d20d63fe81eb86cf8f6ad484d0ebf6",
+  "token": "0x0ac6baaf05c18e1c025617e2351f7314d91a1e82"
+ },
+ "sBTC": {
+  "oracle": "0x40c895c92515f0d73ed6ce6b4e8a8960cba765a9",
+  "token": "0xa6ddc0ace2b9a6a305d5aedef7432c4e48be35dc"
+ },
+ "sBWX": {
+  "oracle": "0x40ab1c704b89512a6682d1b0eb85fea8479ce75b",
+  "token": "0x0d4f7814133eab0ab9f4d8653de85b78feb2812c"
+ },
+ "sCHZ": {
+  "oracle": "0xd20fcd961106aac13a58aeda4a4b9fba45d2fecf",
+  "token": "0xc285f8703183b17ab14f1ca285031f39b64f8c30"
+ },
+ "sCIBR": {
+  "oracle": "0x3a0866812d9125bd194e2efdd9dd6994e6e483ee",
+  "token": "0xf0bbe1cba0a3731d9605e79ca9ee29c567133d38"
+ },
+ "sCOPX": {
+  "oracle": "0x188b484b00698cf478c6e8730e5cd35f274a7b5b",
+  "token": "0x467eaccb7bbf8bf85f0ef80000064e50b255421a"
+ },
+ "sCORN": {
+  "oracle": "0xfadc030e73216b1d96a7873f3254165277cd415f",
+  "token": "0xf0bd2b7b9871be91719962a433245ac8de05681f"
+ },
+ "sCRV": {
+  "oracle": "0xf6c43221eff82b9ba3c16d4db0258a3a2b6949ca",
+  "token": "0xd65d71e83caef2bc880afdb860736e42a0510a8c"
+ },
+ "sDASH": {
+  "oracle": "0x8a54238d6686c19bc54842e6fa98517fc48aef45",
+  "token": "0x7366b9a0f3dc48caf6e266075d78e41fb3b07257"
+ },
+ "sDBA": {
+  "oracle": "0xa0976e890869d18bbabdd2c68d21bc6a6814a15a",
+  "token": "0x756eab65c634f45980d0921ede0d9845984319ad"
+ },
+ "sDBB": {
+  "oracle": "0xfca422065abccb3f635e9ad0b1a8713f0f79ee7f",
+  "token": "0xf7d3dd0cbf5a5b912e1951cb9ef7ea89a603a155"
+ },
+ "sDBC": {
+  "oracle": "0x44970d1be9b81972def819850662f433844a52aa",
+  "token": "0x4c352514206d1bd9d11512384bf692d8ee3c16fd"
+ },
+ "sDGRO": {
+  "oracle": "0x6fc72938b64c9294c1ce4a48827184755f0e9066",
+  "token": "0x8267d547ce24f85fd03530e09d4ca17ecd54b5e3"
+ },
+ "sDIA": {
+  "oracle": "0xb3e6867c4e98c3acd0ba1a73e646aebbb157bf19",
+  "token": "0x7fa3f2ffe72cc1310140f70c0aac28387ae41a08"
+ },
+ "sDOGE": {
+  "oracle": "0x22e27b2abf390e12408e1b26a9f6646c3b9e8fc2",
+  "token": "0x304ef89850b633def7ead43c32035ef773df16f8"
+ },
+ "sDOT": {
+  "oracle": "0x9068c02044115227d80577c716b3d65972523b5b",
+  "token": "0xb4fa424ab8c3addf4805790f3b3fea66bb8b1c8c"
+ },
+ "sDXJ": {
+  "oracle": "0x9d2188425c8d9131e8ace94815a1f7f6556d1f09",
+  "token": "0x50d06237c2582e0603b89445ba24c34263360e36"
+ },
+ "sDYDX": {
+  "oracle": "0xdd4f5840337007d3d8c36e4ac857fa8da9cfbd33",
+  "token": "0xe6b9d843f68b0dcbef3613d1b55cb06ec06cd531"
+ },
+ "sECH": {
+  "oracle": "0x5b57aa07f3a6f982151b2579669b4f1b1dfc49f4",
+  "token": "0x9918cae8841162f73ded0f635bc2de6eaa859f6e"
+ },
+ "sEEM": {
+  "oracle": "0x1c5985a105100b235c8d76d80785ed2288b00c8c",
+  "token": "0xe40b9696fd5afa37517951086edffab70d0650a5"
+ },
+ "sEFA": {
+  "oracle": "0xb92abccaa74f77bcb3badbfcf38a99a586709f41",
+  "token": "0xc86d006c74f93fa8dd1cc7a79720e33dd8bfb521"
+ },
+ "sEGLD": {
+  "oracle": "0x54031bc22151dbcb74d54b236323cb461ddac375",
+  "token": "0x88d159788f29c34864e4a6f599d947a8f94d00d5"
+ },
+ "sEIDO": {
+  "oracle": "0x2f7e14e9327e26f2b614a4d355bc8723bc6beaf3",
+  "token": "0x9b930c0e38b98981ab40107515190ddb4dca9d50"
+ },
+ "sEIRL": {
+  "oracle": "0x64b333e04401a5b54546082570ea23539b2b455c",
+  "token": "0x1691bd799e6bc0bc49eabec0011ba2fda6e3c0da"
+ },
+ "sEMB": {
+  "oracle": "0x8c2e837f99c4db10d765a544fea5d5b32bfe290a",
+  "token": "0x8efeefcf09f5528fdd18ab96c971a77e94f03454"
+ },
+ "sEMLC": {
+  "oracle": "0xbb7b214c91895c574cbb75ee5992229d6312c073",
+  "token": "0x49d452bddce2a16f824590f64847634dbc3d2fdc"
+ },
+ "sENA": {
+  "oracle": "0x25bf00034b77bf8a4b3cefa1aa37a994e4725dae",
+  "token": "0x27e24b7380331237f9a424c721ec37a505d652b2"
+ },
+ "sENJ": {
+  "oracle": "0x6a97308af7b57b8f2ececac5305b5235dd287bd0",
+  "token": "0x6815cb43619fe8bd790be9cb0adae1e53430f0f7"
+ },
+ "sENZL": {
+  "oracle": "0x750660f9cd690c83e8ed241c35236d06d8bb92d9",
+  "token": "0xfba9b30769e2a07dc86388753f9fa9f2468ac248"
+ },
+ "sEPI": {
+  "oracle": "0x0b4fb0362cc9e998ebc291a97f2c4aa52adede6d",
+  "token": "0x44600ea3188dd4c358bc2c409feb59080ae8b826"
+ },
+ "sEPOL": {
+  "oracle": "0x97313e9d310982661037dba0504209d52500182c",
+  "token": "0xed5a0407c2716263eb2391566337f9c4ec8af7bc"
+ },
+ "sETC": {
+  "oracle": "0x0496d7a2fe07b4b4f22dc91d34c30f49263ffcbf",
+  "token": "0x654cab52e0e35230c35f87df63e4ce63f4306da1"
+ },
+ "sETH": {
+  "oracle": "0xaa79e025a44ddbd095a5f9242ec8585ab6f02a82",
+  "token": "0x27f8678029c1f1ead7a9734fc9ab51eaff3613da"
+ },
+ "sEURCHF": {
+  "oracle": "0xcbcac9e97897f75cc3cc8e817df44131829c5368",
+  "token": "0xbd83ca9ddfde58cdef5b493d88d6c607d3130811"
+ },
+ "sEURGBP": {
+  "oracle": "0x1b7c670a62c838018ab325bf82e248aa83c1e257",
+  "token": "0x2cd4e84d4f9c13506851b6218756ac1d1daa20ec"
+ },
+ "sEURJPY": {
+  "oracle": "0xd5b7aa9f306425c78224ff32f2e6df94b73e1ead",
+  "token": "0x3bd55cdc0970088bdddb108c19343649b65deb00"
+ },
+ "sEURNOK": {
+  "oracle": "0xa6d944a6652803f05b9dbd4fbc44488465b0a2a7",
+  "token": "0xefe2b8aabab231580e8eb314a503ead4b72628b0"
+ },
+ "sEURSEK": {
+  "oracle": "0xb4a4a40a333527b0af51bfcdf282c33473d47ea7",
+  "token": "0x082db24849ec0c7f70bf33926947f8ebc544b6bd"
+ },
+ "sEURUSD": {
+  "oracle": "0x4483e6184a1801034c37054c01e5aa6bd288281f",
+  "token": "0x3b1cc76ffd3adf882ff4bbbd7afe1581ea8fb85a"
+ },
+ "sEWA": {
+  "oracle": "0x85766661add00378dd329e08f0f3fe3988a955fc",
+  "token": "0x05bad8dd878b78acd54a9cf56d52eb589a5d26be"
+ },
+ "sEWC": {
+  "oracle": "0x057182ae3d523481fefe110a0c084da4b9ffd810",
+  "token": "0x2ec71795a078ffa420a0052939a80b3fc12fed2c"
+ },
+ "sEWD": {
+  "oracle": "0xca45dfe83b3c4bc71cf02f1553897effd74bde4d",
+  "token": "0x1a169c6703925bbe1eb8dab777f4a40cc363eafe"
+ },
+ "sEWG": {
+  "oracle": "0xd67522b1113789a878c8a4159a76267908fb439c",
+  "token": "0x544b9ef405cfc32231863b8ddcd65a4f0b41d1f9"
+ },
+ "sEWH": {
+  "oracle": "0xfa506e256cf4aec535c6aed2bdaee3357a45a47c",
+  "token": "0x0c816f14afa262fb70317103527beec9edce08fe"
+ },
+ "sEWI": {
+  "oracle": "0xe5fd392d92b103a7e761feb6dbd570adf29ae981",
+  "token": "0x2017e23f5864d673104165bcdbb078af42876f2c"
+ },
+ "sEWJ": {
+  "oracle": "0x5c133f17cdd4876cb151853e51dae8b31c492788",
+  "token": "0x20ead4cc718e4ee2afa6eb187a5663c50cbd8c80"
+ },
+ "sEWK": {
+  "oracle": "0x2ceab5325a82a37ab19bb541f913871744f568d0",
+  "token": "0x5a80e22259b8d447a7ca103f3e295aae73837fac"
+ },
+ "sEWL": {
+  "oracle": "0x5e604676d45ae07e4a9d896ef897dee53deb335a",
+  "token": "0x954ab4a7b13eccd7d6884b2f500f59ed59e909e8"
+ },
+ "sEWM": {
+  "oracle": "0xfd5df460b3c977ec19c7ae8052c718f1088362b7",
+  "token": "0x3199d5d6976d326a3fa3e36c15dd797aaa270a4e"
+ },
+ "sEWN": {
+  "oracle": "0xaff047aaccb9661177d3909496a83359d8cb719f",
+  "token": "0xbd38552fc88fdb92eb88732e34969cd147a6ec8c"
+ },
+ "sEWO": {
+  "oracle": "0xcc713a8508438e0ebf8ee569284ef0ec30632b20",
+  "token": "0xdf5e6ce5b32b3e8a43c5f4294464c3da0e460835"
+ },
+ "sEWP": {
+  "oracle": "0xd73592d29afe53b5b06fd10c31ef78d890a15a70",
+  "token": "0xc06bd77fe3069d05dd337298f6c94d7c89bba2d1"
+ },
+ "sEWQ": {
+  "oracle": "0xde723616ee3ca6d8aae1736eff3fe2351de6febe",
+  "token": "0xeb44b149be7273d82e9319eb7218bef9549379bc"
+ },
+ "sEWS": {
+  "oracle": "0x4eca1840c94ddf05ee4511ae9db75f4cffda0b66",
+  "token": "0xa4f24b99a3d41a0766219825353c269e3500bf23"
+ },
+ "sEWT": {
+  "oracle": "0x55cd163bd317c29ca65760b3242b055bc4f03998",
+  "token": "0xc72ec53fff8d3045f288b160f7307bbb10c0c833"
+ },
+ "sEWU": {
+  "oracle": "0xf1da9459bd5c2d1878954038998a12de2386c789",
+  "token": "0xe2d3a4dc61b0fe663ad6dc991fa1fab13f10a831"
+ },
+ "sEWW": {
+  "oracle": "0xe30460e6d5ea7b80e65d195ff9c7cd0b008001fe",
+  "token": "0x4520ec185e9005edb37418f83dc6f24bd4e04db5"
+ },
+ "sEWY": {
+  "oracle": "0x525c18134c94154b1430e7eee2567866341ed873",
+  "token": "0xc6a39c7f66d53b168808dc6d6570bcbda0326a82"
+ },
+ "sEWZ": {
+  "oracle": "0x8b8048d1a0665d8b9b0aa635f26a922e65996ade",
+  "token": "0x94b1d3144207eb4a01f3f101352eb4fccb33346c"
+ },
+ "sEZA": {
+  "oracle": "0x9bdac8fa6eb87d3bc498f487d363d2ac0e6237e7",
+  "token": "0x441355803534cf8abef66bfa10dad71c993a2722"
+ },
+ "sEZU": {
+  "oracle": "0x527ce3d9387fec9a1118a888c1c7b94a0a15456b",
+  "token": "0xdbe686d8a81fd350dd1ce1da6a85835dd4eabab1"
+ },
+ "sFDN": {
+  "oracle": "0x20a52dfa62500c9ca77b412b3dac96d82bdeebcd",
+  "token": "0xe9ea547585717fca75cf969ae37f7aaae4447433"
+ },
+ "sFET": {
+  "oracle": "0x946769f71ab1dc1e45412b85d3ba68d6fbd8a733",
+  "token": "0x63c8e7f0b9b922a6b43303e98d12cff79759d1fa"
+ },
+ "sFIL": {
+  "oracle": "0x55f20615041c125c68e95ca562af66ec61718f28",
+  "token": "0x74cfac48fbdf6dfba95bfc743138ddfd168379cd"
+ },
+ "sFLOT": {
+  "oracle": "0xfca845db65504e9b644810c252151c078bb8adfd",
+  "token": "0x0bcc6738d64bbd4b6285bd37e015543f763a5c06"
+ },
+ "sFLOW": {
+  "oracle": "0xdc24793978a1a8152686ff59f50f8e8e7832ad30",
+  "token": "0xeca12d962137fbc729f7357473f2a1d8293f5700"
+ },
+ "sFXI": {
+  "oracle": "0x8a22c1b62cd45da76d84d680ab15b1f2564fdd4f",
+  "token": "0x0e979c925f25e03d28dddbad45fc3ff5e2811a16"
+ },
+ "sGALA": {
+  "oracle": "0xcff52a077d89e896102090a2b06885b42e60aa44",
+  "token": "0x0f618c6858179664f8885da086d83f2111dbfad0"
+ },
+ "sGBPJPY": {
+  "oracle": "0x35383f294ed7e12e8ef59fd1954f2cb3001d3463",
+  "token": "0x3d0cfc284473ee420834ba127f55f2dbfba1b55e"
+ },
+ "sGBPUSD": {
+  "oracle": "0xbc786822dccc87160ac572428d5133cd5c2ab093",
+  "token": "0xf87c9f14ab1a04ca8ef91db90254672382282e23"
+ },
+ "sGDX": {
+  "oracle": "0x67eb7260bb0d349e63b6b4bd02bbe0b0a3d46106",
+  "token": "0xad99cfdb8fe969a7ff80da5ade3cda346ec926ac"
+ },
+ "sGDXJ": {
+  "oracle": "0x8d4b0c67e2ec7ecbc2901dc3b5177e5b816d1cd3",
+  "token": "0x49f5eb8b8eeb3df5349af2758efa2756f6df7a4e"
+ },
+ "sGLD": {
+  "oracle": "0x66c069a062271741474cc4e7de41a8c93d705a87",
+  "token": "0x772c64c1cb742d5731cd6088041815b3d0129db0"
+ },
+ "sGMX": {
+  "oracle": "0x3b43224719a664bcacdcab825797aa68e48dccb6",
+  "token": "0x67ffc73b2ed90769e7aae5e3b4f9f1f04ee460dc"
+ },
+ "sGOVT": {
+  "oracle": "0x524bf77673effe2477d84ddea0f476a481d19701",
+  "token": "0x5138df86beea0b32047fce95bd1ff0ee84e43abd"
+ },
+ "sGRT": {
+  "oracle": "0x1fe5bf27ae3d785116322427d576cd8c50b4a973",
+  "token": "0x4d4fdf19fff120d698c9860e0efd5600104c5092"
+ },
+ "sGSG": {
+  "oracle": "0xaa406533a42f1029172eed0bb4a60aee3ad0b7db",
+  "token": "0x1ee02fb1afd5e07c23ffb48c1f79080edc6b469f"
+ },
+ "sGXG": {
+  "oracle": "0x2c0d6b2fe484e282f0649ab4ef86ce5548da27a1",
+  "token": "0x727114539bebf691768e79d0f59120cd66fd9045"
+ },
+ "sHACK": {
+  "oracle": "0x8d9e8bb13bd821a2c78ce37247360194ca610f54",
+  "token": "0xc9f65804f6b8b7f85d9704288a7597609244a25a"
+ },
+ "sHBAR": {
+  "oracle": "0xb192672f4f725fae6112329421739642ec58a31c",
+  "token": "0xc8ca9cd91958aec79fe22fe059652f8899d2e1c3"
+ },
+ "sHYG": {
+  "oracle": "0xb656af9dcd1f47baa290d1fb2fef3a6a0f646950",
+  "token": "0x4540937352ac84c284b6467382768c9f77f02dbc"
+ },
+ "sIAU": {
+  "oracle": "0x8c8e44294b108562b960512c15fb16df53652523",
+  "token": "0x82e4bd35aed7e8f74e001a15152c28a37ebf7f2a"
+ },
+ "sIBB": {
+  "oracle": "0xac70f4e217b7735ceaa3a3b4167127cb5be5c7ef",
+  "token": "0x21528a061afba9100587159485c3cc478a3a5130"
+ },
+ "sICLN": {
+  "oracle": "0xefc9ce68bace27aa9854b49e5b8634f0cc1eac2c",
+  "token": "0xb104c1ce1a3383c91dd8ae6bdeb606b9d5228a19"
+ },
+ "sICP": {
+  "oracle": "0x559a4655662f2bf385238114041792fb1bed6d49",
+  "token": "0xed69b3db2af2cfae1884b720ddead410598309a1"
+ },
+ "sIEF": {
+  "oracle": "0x849c9b29b4db1fecd37f89780bc6aa3f387952e6",
+  "token": "0x35f948cfb9fa934c87b3b0b2a4fe58205c703531"
+ },
+ "sIEFA": {
+  "oracle": "0x84e9a98275e4cae88f9179ba548d73d9adf0ab4d",
+  "token": "0xf3a4b2ff5fcb6e08d45d126e626c138599979b00"
+ },
+ "sIEMG": {
+  "oracle": "0xf98fd5ba60962638333992f7f644ea8dbaf8e978",
+  "token": "0x5a69772bebd5dbe9a0587e557497b717cd5225ee"
+ },
+ "sIFRA": {
+  "oracle": "0xeed7d75331ad73c60b71787702e11aef7c0c0dec",
+  "token": "0xc20193694a2920bd78bb9d57d1bcd5fbb43527fd"
+ },
+ "sIGV": {
+  "oracle": "0x1dd075cccc2af7a670882bbaa3cdeee8aa5509f0",
+  "token": "0x5ef6899674ac0337a869fee4e5373530c7562038"
+ },
+ "sIJH": {
+  "oracle": "0x30e5be9a3771a13e49c27af8cb4816d3e137986f",
+  "token": "0x1b22e08ae17901ae83a2a8d6555372cd0c2284f9"
+ },
+ "sIJR": {
+  "oracle": "0x7d40908d527f0adfb95b58c128cdc82d9d0b4a23",
+  "token": "0x7cf42ee189f9a8c1a09bf86081e2cf829c4dc04a"
+ },
+ "sILF": {
+  "oracle": "0xd712ef589a6dce4f49b270223a73e388eaa7d004",
+  "token": "0x4c8c2cfafa6e7f53ae9a003c1b1a1258f315885a"
+ },
+ "sIMX": {
+  "oracle": "0xbc001f65f6593751f9c5687d922adfce9edc0c8f",
+  "token": "0x844ef4dbfce2add37a5d79e05212b80a8a23b778"
+ },
+ "sINDA": {
+  "oracle": "0x2ec087f8c7a947c11d55cb57bfee6456a994266c",
+  "token": "0xe07e91948c97588f1f9dbd9399cec9ed00765d1a"
+ },
+ "sINJ": {
+  "oracle": "0xf82a9ed5844fa25cf9eea2547508e8ea898cc4ef",
+  "token": "0x9ea03d19070766d7e5e4ac9fd0613325b5308246"
+ },
+ "sIOTA": {
+  "oracle": "0xcd497abf5fb4f8bc908c2185fb61d26e26a0474b",
+  "token": "0x3b9a50ccb45184f284b75555a5c3f8d024f17c66"
+ },
+ "sITB": {
+  "oracle": "0xf0208a1081b75d1ad86f9e4e0cbeeaff74c5ff4f",
+  "token": "0x675bf5ca5a4aec71a6afd2d1c0dc14d09cfdc629"
+ },
+ "sITOT": {
+  "oracle": "0x32585efd66129756a81dfa71ef886e9844b20632",
+  "token": "0x4870dfa74f7494778c858770439f1c872df910b0"
+ },
+ "sIUSB": {
+  "oracle": "0x0bba3ae0e624326bd05a3b305c21ab45342bd63e",
+  "token": "0x41832c8c4cf0294e98f272fdfe528e07a3c03911"
+ },
+ "sIVV": {
+  "oracle": "0x77013006b261318123900df6e3a947a889058d39",
+  "token": "0x13bde4b6cc120aecd9db39001faff65635252d86"
+ },
+ "sIWD": {
+  "oracle": "0xb7d884b8d697b8d4f8508e2353a7f1e0f3af4624",
+  "token": "0x33fb398ca3f5d883f7abe245edd42bcd8006616b"
+ },
+ "sIWF": {
+  "oracle": "0xb14ad670cbab95e578da3816f9d7e48c6f0a6364",
+  "token": "0xd2ad854e181c2cf31c1716aada10cb30cfd0d269"
+ },
+ "sIWM": {
+  "oracle": "0xffa01be3840dc9ffe47b0188b481031decacf31f",
+  "token": "0x911a2361626fb06dd88e2ab5f5d7161887ea528f"
+ },
+ "sIYR": {
+  "oracle": "0x8e2935a53ac85ce97c1fe55741666dbb4a1a78b1",
+  "token": "0x26278fdd08ce00c6988f49b89ee3796e3898964d"
+ },
+ "sJETS": {
+  "oracle": "0xcf50c745a5f932a9a4da4988e4208f9ed4398539",
+  "token": "0x7abc0f236fe26b962680856c348fb8554012dd83"
+ },
+ "sJNK": {
+  "oracle": "0x134a3f3a354321f3fc26740e95242d81aee344fe",
+  "token": "0xe8f01c48fecdd51b27c9f7f5d63150e93c62128b"
+ },
+ "sJTO": {
+  "oracle": "0xfc4b492efdb4f43eb9b393d732d3af9c677b4a98",
+  "token": "0xcd33ea8a800292c7ca109609c24203346f00e2b0"
+ },
+ "sJUP": {
+  "oracle": "0xf2ff7240792df77a8115b93285ff1deedae8e78c",
+  "token": "0x45cd486e4ff7cfe6551a654ce1af4378129804e0"
+ },
+ "sKAS": {
+  "oracle": "0x153dfb6deb4b2d4728115dba3be77cf1085aab1c",
+  "token": "0x322e29adc959d91a4dc75c3c0be456f1bfb1d3d8"
+ },
+ "sKAVA": {
+  "oracle": "0xe6bdae38cbf1edb05e162d0d0f0f7704f4eeb506",
+  "token": "0xa81c660fa7d5aa377583b7255eac3d4b22cc2134"
+ },
+ "sKRE": {
+  "oracle": "0xd019be606368dc4d3d0d66fc3e2ade7017080bae",
+  "token": "0x8e3320f343455f360340cbd750ff579ffb5852db"
+ },
+ "sKSM": {
+  "oracle": "0x96c3e17ef04327219d603b95b1563ec25c1cc2de",
+  "token": "0x7881fa33f92a6e150c269f7522ce378165b5e875"
+ },
+ "sKWEB": {
+  "oracle": "0x09a587d84445884b3cba0c3100bfe8965f73cb12",
+  "token": "0xa1334d5e6cb2a94cc4825f04917066a993586a3d"
+ },
+ "sLDO": {
+  "oracle": "0xb770e560fb6dc973d0c04a73ab720a2716795858",
+  "token": "0xa78d62e84116f1b5b776bab0367977ba3cf66a6a"
+ },
+ "sLINK": {
+  "oracle": "0x17239a575519e0c1c768e7f90e476383ded20e57",
+  "token": "0x3b2dff7b31cb990049bb9c2fa6847d8059c8e48f"
+ },
+ "sLIT": {
+  "oracle": "0xa34c86b3cbb515cac016183f2e598052e908f8d2",
+  "token": "0x55e0c8c92c607491f07b6248078c7ef3d0c764c3"
+ },
+ "sLQD": {
+  "oracle": "0xe6e50b6eef9b5d6086c76af367a591cd5a88befd",
+  "token": "0xe171949d9f355bdb446c9fd8cee9715ed6e4cd67"
+ },
+ "sLTC": {
+  "oracle": "0x89e5b2439416af29d516c57ea5b9272ffbc9a17a",
+  "token": "0x855db5959955749bb75662d50fa47936eefaa924"
+ },
+ "sMBB": {
+  "oracle": "0xc4d8b46165c60eadec1a75501e3e73864ab952bf",
+  "token": "0xc284584729ee0c63dc3e094638468adc00ba3278"
+ },
+ "sMCHI": {
+  "oracle": "0xec04ec63fa3abcd6af77c1bd2fe65924f34166bf",
+  "token": "0x12729472b7b2fc2ed3a495b2b73c7dbb4bac1736"
+ },
+ "sMDY": {
+  "oracle": "0xa4594b495d3f4b6acad0e959e05df2fac6363599",
+  "token": "0xb89cd135351bad14452cd2012ec5cb6cd49bbd95"
+ },
+ "sMINA": {
+  "oracle": "0x07ed38ddf7fd2e1e17286781ff2e0af6141f17ad",
+  "token": "0xb9f9debdc88ca55d70dc6c2ac152d2f1c9064325"
+ },
+ "sMINT": {
+  "oracle": "0xa9c7fd2f5316f5abaad2185ac80dc4601695104d",
+  "token": "0x7fe328b8d94ba5951e7cf2eb24b30e07ffe18b72"
+ },
+ "sMOO": {
+  "oracle": "0xe8fb99de0c71d12158f598314f19bb32b2e28a16",
+  "token": "0x1bf7832bf76161a845d775da5a145d762499489c"
+ },
+ "sMTUM": {
+  "oracle": "0xeddb67f6443bc2a9bbf98a137d1a5586469cfbca",
+  "token": "0xf635af81a4e128286a29db99cc54a8b3a5c60070"
+ },
+ "sMUB": {
+  "oracle": "0xb339594dbd9ecc575abc28895c2475cb3fb987a2",
+  "token": "0x6bb21246a0fa948edb80ce1069ff481663a564ad"
+ },
+ "sNEAR": {
+  "oracle": "0xe7a1797cfd56a18954fb5ce2d9c099d065f9a00c",
+  "token": "0x9d9af3f46ce54d6d95f2ce5ed9094c5367809946"
+ },
+ "sNOBL": {
+  "oracle": "0x4fb80ab42287a842a44c550acc6e6a98fe72695b",
+  "token": "0x2100bf1624e153397cc94c80dedb96abfef1e547"
+ },
+ "sNZDUSD": {
+  "oracle": "0x2bf2885d246781c1e6a962dc60d19628d8f8a72b",
+  "token": "0x65740c0837656fe609e79e59459723da8c6b5b47"
+ },
+ "sOIH": {
+  "oracle": "0xa305ac178cd24d8c43787b2c4b71c61f5fa3efee",
+  "token": "0xfb1b1476b8805cd458b8ef2c44f563dc03095d8f"
+ },
+ "sONDO": {
+  "oracle": "0xa1287beb44a74036421624bc3fb7ba8a0773833b",
+  "token": "0x8800c07dfe412ebd1b49e01b649ff9b8c1ff8d0b"
+ },
+ "sOP": {
+  "oracle": "0xac68ccd862dbd9d9604914a5ec8b452de7adff55",
+  "token": "0x87861d7ebc82ca63b978f102cbbf754728ac83b5"
+ },
+ "sPALL": {
+  "oracle": "0x7c1e0eec655e1de56a593bb99073b5be121b0dc3",
+  "token": "0x9fe2caddab57fc482fa439233c5363e05a4d9bed"
+ },
+ "sPAVE": {
+  "oracle": "0x96224313710b44622b3ba85840f50a4d108de242",
+  "token": "0x62f568f402cab28fbe83549db11bd7487a6677d5"
+ },
+ "sPDBC": {
+  "oracle": "0xfd81137dc34ad1b6cfaa57234e3d58e583365bfb",
+  "token": "0x7b437f12ccfaac60bac46b131a1f3d9388fd7edf"
+ },
+ "sPFF": {
+  "oracle": "0xc7d817af38127d35fc9375085dc379f9f0f97c55",
+  "token": "0x4986494aea2a4db040e7fcf204d64784848a263c"
+ },
+ "sPOL": {
+  "oracle": "0x0773aa0cf95fbd5fa673b8318dbe7bcb689984bd",
+  "token": "0x09e61a0b67a6bcbbec309c6a011b1e22966018a8"
+ },
+ "sPPLT": {
+  "oracle": "0xc06ffa24eb4d2d878063e3437ef342a68edd69c9",
+  "token": "0x3710b0b872f30fe41af413e18c0d15454c749b70"
+ },
+ "sPYTH": {
+  "oracle": "0x15f7083b8f7b718c44ff0bf407f71b9b4f499e4a",
+  "token": "0xbe304d14ba339d08763bfaf79362461b7310d229"
+ },
+ "sQNT": {
+  "oracle": "0x8807386deea83ab8bf6e15129ab391e56532cfc2",
+  "token": "0x9dd1d93bac23b4d82c7b5f7be6b7a2480fb3218e"
+ },
+ "sQQQ": {
+  "oracle": "0x1f5cc526d5e0ca4b59e8140a2d73aedbe3645629",
+  "token": "0x1b9d8004faafa952bc201dad04bf7783fbeaff65"
+ },
+ "sQUAL": {
+  "oracle": "0x2f3fb831acd2ec26813b1b7aba334a087f5dbdef",
+  "token": "0x0750a07f0695820222baddf4792548e2bad81d72"
+ },
+ "sRENDER": {
+  "oracle": "0x8c566385c8f37e872e91174456048ed7d99d2b5a",
+  "token": "0xdd71f88a909c95d62c60471179103647fffdea3b"
+ },
+ "sROBO": {
+  "oracle": "0xb9b84f3e667db2a9ba62be8c657bbfe0086e57ee",
+  "token": "0x7404c489c6d8e34d1ddab1856b7f97412ee009d4"
+ },
+ "sROSE": {
+  "oracle": "0x67d8a44a695e93fb0865ff1d682aa5fc909b6127",
+  "token": "0xddcd905ae14864e37df2836977205fa505f6e852"
+ },
+ "sRSP": {
+  "oracle": "0x6f90f6572484e7890779d9904842c4a777c3968a",
+  "token": "0xc58cdc45a08917f9d731ac8e9e3374822c985df6"
+ },
+ "sRUNE": {
+  "oracle": "0xd1c99b89dd74df4e1e0d4d2699e56bc177e2560d",
+  "token": "0xffa744bffad9b42a5e5025f515abe99f368cb7af"
+ },
+ "sSAND": {
+  "oracle": "0x40f723d562de0abb7a6ce0264341549982ad6efb",
+  "token": "0x0b951fca92ddca956f5b73bdd4484a8965b3966d"
+ },
+ "sSCHB": {
+  "oracle": "0x32fa8163f2ac29513e5d2d1cbb3b6224a5585e8b",
+  "token": "0xb18effa0d78fc02797cc41d2d951b045930d5f8c"
+ },
+ "sSCHD": {
+  "oracle": "0x96ad8d2006426ff5327a44a338982a937320f5e4",
+  "token": "0x8f1fd150a2893535a13e16cabebae8bd5a11986c"
+ },
+ "sSCHH": {
+  "oracle": "0x46c1501705a4482cde04356a1a525728a5df6850",
+  "token": "0x0ea00c1fd6c5b17730cf751ee5ae2161607f56d7"
+ },
+ "sSEI": {
+  "oracle": "0x24bf6b815b98bf01cbe3966b4fe974fdf20b7400",
+  "token": "0x4166b657587b2abfe63e6d7fb54a0460faff9183"
+ },
+ "sSHV": {
+  "oracle": "0xa6dbff52018b9734b9024d4adee5c47eb4dd32d4",
+  "token": "0x9487c7ba768158efdeb7b089d22a677f7afbd0c1"
+ },
+ "sSHY": {
+  "oracle": "0xd22842e3c3bdc572e0b27e55a4811f088791f82a",
+  "token": "0x6a29be8ee2db133a24ef90471c2f0f589999cd47"
+ },
+ "sSIL": {
+  "oracle": "0xb2f2e4ac08925e7725f99159cbb660ad3b547223",
+  "token": "0xc8312ef470075a257e8397fafff9ea73425b536b"
+ },
+ "sSKYY": {
+  "oracle": "0x19d323b6b373e6990585de48ed7b2f5f714f26e0",
+  "token": "0x43b67680585bb5b827e8a526e41530a74ba32f75"
+ },
+ "sSLV": {
+  "oracle": "0x3f1b3d9e163c2144f52e002255e1779029c0f356",
+  "token": "0x59572520bace0286a9a94c3096d37bfbbb6420a3"
+ },
+ "sSMH": {
+  "oracle": "0x6f2abba680e08256e16312ac613eb5f943753793",
+  "token": "0xbbb4697ff160be93464761e2f8af1da4fb426783"
+ },
+ "sSNX": {
+  "oracle": "0x05fdbc7a8ff6cdbc90306fe268eea7004fc4527b",
+  "token": "0xd2d2fdeb0092a918a4135449c0ff737a231c38e1"
+ },
+ "sSOL": {
+  "oracle": "0xd1f835da23f81770fdeada2e3f26e3fcf8aff838",
+  "token": "0x6a0a558405d0318054b9400d7efff2c290732cbd"
+ },
+ "sSOXX": {
+  "oracle": "0x88bf205bdef7103c47c41feefa409f7977c96850",
+  "token": "0xdc6a50b16dc3f5876edf801f218d0bb705a2e8c5"
+ },
+ "sSOYB": {
+  "oracle": "0x639f67a6b10cc499610c49206fda89f61b6ffc34",
+  "token": "0x87c67bf52a24366c69ca9e37615ca55631a77d43"
+ },
+ "sSPLV": {
+  "oracle": "0xf11ee64992906825578dce923d40f5e9bcae23bf",
+  "token": "0xa1ae5137c55b861c5a45164e050746571b159202"
+ },
+ "sSPY": {
+  "oracle": "0x0c3270ee60f7144cdb95541101e6f6fa3b8061d7",
+  "token": "0xc71c4a7ce89bf45d90b0a56eed9cd842eebf2d5e"
+ },
+ "sSTX": {
+  "oracle": "0xecaa63494ef79cf8a91b173f9d59e7008f72ffa5",
+  "token": "0x7a5e2ff9d0eb88398d4e7b369c528582c505898b"
+ },
+ "sSUI": {
+  "oracle": "0x0847b0b4ccb13c149342c86a9f55d67edb406687",
+  "token": "0xc9c352781bab13212a9aa5cfe740fa19ef5e12d5"
+ },
+ "sSVXY": {
+  "oracle": "0x897c3c9d6ef8fa2fc0a6dc978677b1b239619898",
+  "token": "0xeea10369ed1c46fcd18c39f729db284b58e1218d"
+ },
+ "sTAN": {
+  "oracle": "0xe6d17cb97b49e1ca0a43399f38e526c2f00aef66",
+  "token": "0x69eea39dc2332b72b55ab270ed2df5bc4de824a2"
+ },
+ "sTHD": {
+  "oracle": "0x007bd4ce937852d4a5ee0e8d44fd0a3024f6e094",
+  "token": "0x984a974ea79787ba59468f998f119052a9881846"
+ },
+ "sTHETA": {
+  "oracle": "0x715b7f71ab567f1f6c51e92f6daf7463134f7b6f",
+  "token": "0xc1c6d8bdd850c9354eabf3222ce98d7b54bb4d6b"
+ },
+ "sTIA": {
+  "oracle": "0x7fc311cd880db78836db6d67642b7702b706ce5a",
+  "token": "0x846e5dadc3c13f41f2618ff383f87e50fb70ebfc"
+ },
+ "sTIP": {
+  "oracle": "0x8e6c3d4d2518be3ea9ac2bfdffe6348cdd0ae20c",
+  "token": "0x9be627d84049fc12dc03cb4526a1f689cf347f59"
+ },
+ "sTLT": {
+  "oracle": "0x8d9588a1f0058462c71e9a922f231cc7f9300ea5",
+  "token": "0x4ac70be356cd7b3023e11c6c816b482654571972"
+ },
+ "sTON": {
+  "oracle": "0x337c34aa2013ebd92df22e5db086132ec72ba2f4",
+  "token": "0x42b1b97d37fb3402d7a92e07f8e4517f2f2418aa"
+ },
+ "sTRX": {
+  "oracle": "0xac9cdd2beeded4517b060d504b7083c0a7cc1bb7",
+  "token": "0xc90b51497b35eac814a90d66cca6ad9656836d33"
+ },
+ "sTUR": {
+  "oracle": "0x4f71100810f1ca90b01519ffbaa3868d93a50f87",
+  "token": "0xb844ff5d22b4abfab0f7914318c4022092a0218d"
+ },
+ "sUNG": {
+  "oracle": "0xcab47781cecd1286fbb9e08258104d364421c5f8",
+  "token": "0xb04667b01b002f3172b82bd605d0d7268674c4b3"
+ },
+ "sUNI": {
+  "oracle": "0xdcf56564ce4034d8823e7c40dc17f8cafe9a5d68",
+  "token": "0x320a1c1f1de2c3a4a6aa1c7efbdba2b83daf9d87"
+ },
+ "sURA": {
+  "oracle": "0xf58577067b16b4138b76b79daa7b8e1327468c24",
+  "token": "0xf266ba44f6993acda5ccde399d14f17a908a8531"
+ },
+ "sUSDBRL": {
+  "oracle": "0xa95e791ae501abb84aa7e794a291a55708c86c89",
+  "token": "0xb11e04fe20d32082163d303bbc4a11751d381222"
+ },
+ "sUSDCAD": {
+  "oracle": "0xc9e35e78ed50c65877d1fdaddacc0206f2208cf1",
+  "token": "0x38c9592df77280fa6acb2565030ca3df21c8be5a"
+ },
+ "sUSDCHF": {
+  "oracle": "0x2a52e092788ef484525f54378f030544fb37f081",
+  "token": "0xdd79056659818f595fc42970ee07edb3fc26380d"
+ },
+ "sUSDCNH": {
+  "oracle": "0x903cc0c7e3808bf7c94cbebaf31f4ae35d708db3",
+  "token": "0x2be73b0570bfb20a4ceb4d282ba149b9199c5971"
+ },
+ "sUSDCZK": {
+  "oracle": "0x57c6dd661cafc4707fea0d3e63790e918ae518b7",
+  "token": "0x38016a1cf08d895012b426945af24addf811038f"
+ },
+ "sUSDHKD": {
+  "oracle": "0xa12d60116b0a182ba5dd95e0a9ca4cb454e7784b",
+  "token": "0xbacad22eb2be71993faab2bdcf8c90269d6fa0aa"
+ },
+ "sUSDHUF": {
+  "oracle": "0x01f070180daf92914cbb78c6a372746e379da6be",
+  "token": "0xd61b1f659406128d72a21a6ef99129b84bfcda7c"
+ },
+ "sUSDILS": {
+  "oracle": "0x29dc74a54be7a30ef0b95c252dff434d13bb3615",
+  "token": "0x8a35d62a5d356d965bd4e7be5c641fa988e8b338"
+ },
+ "sUSDINR": {
+  "oracle": "0x927e753336a9fdd0ae615582ffc8afd39de3bb9e",
+  "token": "0x073db0a48d2e8ae04e931c12697a9e8f4c50d352"
+ },
+ "sUSDJPY": {
+  "oracle": "0x0fb147062e029759db72f0a2e5b798ac4eb57cf8",
+  "token": "0x728f780ed5a9c01d27d106ef67f8f25266f16a33"
+ },
+ "sUSDKRW": {
+  "oracle": "0x07f374f8a4634719be2dc074d3d863e4f3a32fed",
+  "token": "0xe0bf7f927fc8aa368d202384083f0bbf58a45906"
+ },
+ "sUSDMXN": {
+  "oracle": "0xdedcd7366eddb241c1555b74dc480c258dd4cdc1",
+  "token": "0xa9b9492e37599df0940163a16a01118bda8934f1"
+ },
+ "sUSDNOK": {
+  "oracle": "0x8fea235303d79ece0d3df0f0995dd98d89d42816",
+  "token": "0x99c3f1c183fa8bcb428fa9c8226478528f62e4f9"
+ },
+ "sUSDPLN": {
+  "oracle": "0x818b598e8e8754994184324c4a552910c7e23ad6",
+  "token": "0x75f394b9f378b12b81889d0253c83709cf452c7a"
+ },
+ "sUSDSEK": {
+  "oracle": "0xef525dd42d253cb97b29145f8bc010a41c428a8a",
+  "token": "0xcc947c6b2b68fdbb90fbc340ee4dc2013d84636b"
+ },
+ "sUSDSGD": {
+  "oracle": "0x1a9f37e6673a0d7c03d98bcf77344305f1762265",
+  "token": "0xc3e031a3f0a3e27b807e2ced26f24ab20a43d6b8"
+ },
+ "sUSDTHB": {
+  "oracle": "0x51075c4b06be55d81bea109ad7ae4f29cd693ece",
+  "token": "0x41deb5cf9b0b29c0af32d8d4d0d3e528a34abc30"
+ },
+ "sUSDTRY": {
+  "oracle": "0x8587fe7f4f6b3e777b747cc2ffb9d29e8aab1ad1",
+  "token": "0x0751e687b8b390835e3fd918210cfed2e2ed0dc2"
+ },
+ "sUSDZAR": {
+  "oracle": "0x747c73e460ee5474ad7b69d3c3c724be067dcedc",
+  "token": "0xf04142e59c25cbec5b8081e8f39c0e95f811c9eb"
+ },
+ "sUSMV": {
+  "oracle": "0xf7a270c4d72bb78864b1416c58dc8533da0cf3bd",
+  "token": "0x96c29bbaafef4c3d162bca170d5bd75925283f3a"
+ },
+ "sUSO": {
+  "oracle": "0x9cbfd3ad4abded582b031578f4171b5c01d9b993",
+  "token": "0xb10736aec298fe10d49a3f48c6019f4eef2b8932"
+ },
+ "sUVXY": {
+  "oracle": "0x70adbddd07f1c75d94cd3520d3798554fb0d6701",
+  "token": "0x768609de905905b469782c2751b9b555e7126e68"
+ },
+ "sVB": {
+  "oracle": "0xd21df151baf96138ae6a3749044ed9903e1741ce",
+  "token": "0x399492f74e7e57838ebc518e16dfb2d70b875624"
+ },
+ "sVCIT": {
+  "oracle": "0x940ce93b68c82805abc5161fec8b10b45f7875f8",
+  "token": "0xf15819100545be5d8e3f994f702e31d7b7bd2d4f"
+ },
+ "sVCSH": {
+  "oracle": "0x096f21e21e07640de0693b6def5bfba0863a8c9b",
+  "token": "0x0fc224c80165084089bc8d514680f74450b97a58"
+ },
+ "sVEA": {
+  "oracle": "0x9cf4b748a052804f8603550e723affc9d78977d5",
+  "token": "0x9c4abf714039f99da8d3db138d12361579c6596d"
+ },
+ "sVET": {
+  "oracle": "0xedcc6cc86d14a97b6a821ce4504de9ea172c1755",
+  "token": "0x05e69235a29ceeaa15ab7447c2b7f1b9a92ee87d"
+ },
+ "sVGIT": {
+  "oracle": "0x786d58f5ad4268d004ce2b79c1205bfbcb37caa0",
+  "token": "0xf6b83e34162c29182525279ab06881bcdb8844bf"
+ },
+ "sVGLT": {
+  "oracle": "0xfbf06cc520259f5be317864d44307f47f6b49269",
+  "token": "0x6590119c654b75c2a237b8d78cbf5f34884db9d4"
+ },
+ "sVGSH": {
+  "oracle": "0x17c140b2f283207bc04d9477644d663852cb111e",
+  "token": "0xb0e4bed143caaa87bbfab1fda1bb58dc958ba9b9"
+ },
+ "sVGT": {
+  "oracle": "0xb4c4106c16e4f37ec16fa4fe2e5e0ac7c51b58b7",
+  "token": "0x88c096626ad76413ef86c6ca7178fb88fac10b8f"
+ },
+ "sVIG": {
+  "oracle": "0xda51eeb5b7c0edc68f4268423ff259f296de18fc",
+  "token": "0xef48f09f0b1dd7abde44465258981671f778bc34"
+ },
+ "sVLUE": {
+  "oracle": "0xfe5b326a3d06c7031331121b290818d8f510345c",
+  "token": "0x69ca889bad9d8174cb97e45b0f42bf0618c3cb9d"
+ },
+ "sVNM": {
+  "oracle": "0x52d71fb71b807337646e54a53c46fa795b1707fa",
+  "token": "0xbac433e6f31ddf5e3bf6299f6bb297e3ecd70c89"
+ },
+ "sVNQ": {
+  "oracle": "0x0506b003feaa2b7f09de7648cea6ed3c338d188c",
+  "token": "0x32051fef86bc3b814936521135afd470d487fcd2"
+ },
+ "sVNQI": {
+  "oracle": "0x9f2ed70d7924420f0aa1ffd052c76f1e60ce0511",
+  "token": "0xad0f659d6a664b370c210df1a751d442fbef6969"
+ },
+ "sVO": {
+  "oracle": "0xca178f5f2bd7b5ee63bea975aab397c4b7d6cd84",
+  "token": "0xcc2fb7765c5b746cf166353b08a8d1e019d1981c"
+ },
+ "sVOO": {
+  "oracle": "0x6946e8921fa90bf3ff1d94e76256e335f19eae3e",
+  "token": "0xf7de93ef0176bb26aacd5f8fc706bd37987ffff7"
+ },
+ "sVT": {
+  "oracle": "0x4dae0dd09dd66838f688964c4cb65130e8540c56",
+  "token": "0x783f4dd611bcaa54403090422393bdc48eb28bdf"
+ },
+ "sVTEB": {
+  "oracle": "0xbd85b8ecfaf1529caf41ad464b70406312dc4c59",
+  "token": "0x805b8c53691d659047a087d4c90506d946dbbfc5"
+ },
+ "sVTI": {
+  "oracle": "0x2db463b6df3223568a16c6eb21e7db50701f2f91",
+  "token": "0x4660e678beb8b51302b39614b26da3c8b1f1aae3"
+ },
+ "sVTIP": {
+  "oracle": "0x9a98a1ff4225e87fc06afbcf89c189100b3880e1",
+  "token": "0x968e42cdb800b5dd61cf4c7040b1d110939f6a02"
+ },
+ "sVTV": {
+  "oracle": "0xbafc3fda3628620d99cb1263cef3516521a6e054",
+  "token": "0xbf1f710caf17a7efda96633b1a9aefe683fa8ddb"
+ },
+ "sVUG": {
+  "oracle": "0xf94da66e5ee19a4ed22d2e90733c6f91a760acc4",
+  "token": "0xaba1dd16eb0837b681d51d9f3ba802b706410189"
+ },
+ "sVWO": {
+  "oracle": "0xe694ea5e94c06794be3d2d2bcd3792c9b01f52bc",
+  "token": "0xea88abbb73f85bcda705940f23aa7968706a763b"
+ },
+ "sVXUS": {
+  "oracle": "0x42e627a610b6839257704bb15ed6894682694197",
+  "token": "0x325ddacad2ea4390c2ff01dcbbdbb9f87ac57104"
+ },
+ "sVXX": {
+  "oracle": "0xbed8c990d9fb7acd2b082fdf7cbeef997be110bd",
+  "token": "0x6c31ec58a08373e697ed357a8d524607864a56ca"
+ },
+ "sVYM": {
+  "oracle": "0xc3fa286b8309f8335a16209bbc8a7e427bb1e446",
+  "token": "0xe249038e2253cba0cd8f1142e99ab31986f3a153"
+ },
+ "sWEAT": {
+  "oracle": "0x89cf7125813d00bac9e2b0b0f9da927da69195c5",
+  "token": "0x6365d3799c1968654698a0e02942fb77c9c49d01"
+ },
+ "sWLD": {
+  "oracle": "0x62f02f924a99d2f0298053c57213de296a2b4f5c",
+  "token": "0xdd1fd74dd6707f93658014d52027d3e8897252ef"
+ },
+ "sWOOD": {
+  "oracle": "0xf0912e5ec7c165ed91545a828f995ee0d45c641d",
+  "token": "0xf6ebcf0f55c73a0812c34d9438d140a49d980048"
+ },
+ "sXAG": {
+  "oracle": "0x537e4e0573cc17510c28a5aae45efca957d81ee1",
+  "token": "0xcdbcc90a0cf10ff4a74bba9959db1f207701cd1b"
+ },
+ "sXAU": {
+  "oracle": "0xbe3012646576cd5d9c89358fa1334dbf752a4d67",
+  "token": "0xd7aeb79a144c9ca0adec833867ebd5acf2902748"
+ },
+ "sXBI": {
+  "oracle": "0x32279a1f1b892246253042a10fa8ceca752b3221",
+  "token": "0x4e1f97cab66c8a4c00a9e3d8ccf275ae95191488"
+ },
+ "sXCU": {
+  "oracle": "0xe8f949f86e5927c32069dbb6ee48e1be2bbf6c6f",
+  "token": "0x08ff73e4297904f080527aaf34925c5ede10c7da"
+ },
+ "sXLB": {
+  "oracle": "0xbd1aca830c1243495f751047c5348e0f5fcc88aa",
+  "token": "0x3f1a9b1ec82aeb83ca737e1b3a1468c82c807fef"
+ },
+ "sXLC": {
+  "oracle": "0xcb3032d581d71f8725496c27f89b91bf24e6b3f9",
+  "token": "0xa240ce38aab2842b74cc627d3fa3eac8d0c32991"
+ },
+ "sXLE": {
+  "oracle": "0x9ef1e93cce9be5b66ccfcc6e34125665dc63bbdc",
+  "token": "0x69bdcbe5ddcd6478605e8231a273c91d8a0506f6"
+ },
+ "sXLF": {
+  "oracle": "0xeb6db3861ee5cccc36774a0f7ce66a30c44bae38",
+  "token": "0xbb89ab1e64ebcb358f083411b401a42344207562"
+ },
+ "sXLI": {
+  "oracle": "0x4afff264d75f4758097e4c8f919f22d2295b2b49",
+  "token": "0x532b9da382ea0f8d91eb3a6ff39cd47133744433"
+ },
+ "sXLK": {
+  "oracle": "0xafed06a0dbafab86b3842eacfcce68ffe76e5c33",
+  "token": "0x2adf83761725ee9e2328286c36a25cec776ea6db"
+ },
+ "sXLM": {
+  "oracle": "0x30abc19bf1ceca6e673c491630738b27ce22dd2d",
+  "token": "0x1d4f8366a5f7b51255066822fe32dd9b678276e9"
+ },
+ "sXLP": {
+  "oracle": "0xd5b141cd3907618efc386fca8f5aeb30a63e7d5c",
+  "token": "0xb6faa6bbd56ebd218e832a81832745ee8d6ef1b5"
+ },
+ "sXLRE": {
+  "oracle": "0x998d3acb2aa6d0b88979049beeadd3c479e17cbe",
+  "token": "0x76ed52325ca203946bd1f43e3fbcb128205db4c8"
+ },
+ "sXLU": {
+  "oracle": "0x5f0f97de3effe1a2de2f0623094861c689587045",
+  "token": "0xc030a6568d8ee3f3a9b110df7921738af860ebce"
+ },
+ "sXLV": {
+  "oracle": "0x4c28ba4638385bd4ebcaef589c6682ad871d5cf2",
+  "token": "0xfa38863069cc22262ddc5de32c796c998c9bf296"
+ },
+ "sXLY": {
+  "oracle": "0x39827a3ce8954ac28d865caaac19712d9de5f7c3",
+  "token": "0xea5fa17368865bef9054ccdb25b935bd05e0a9a9"
+ },
+ "sXME": {
+  "oracle": "0x08762ed0ebaf521b61ca66915c3fe8eb98cd364d",
+  "token": "0xea311a6d4d3cbcddceb3af7ef2df1bd44ab0512e"
+ },
+ "sXOP": {
+  "oracle": "0xe638c3bd353b9fb4e795c1d782416eeff7538f2e",
+  "token": "0xdda784153074d11904d39ea02439f650b9ebbb43"
+ },
+ "sXPD": {
+  "oracle": "0x1ce2f84fd173ff38dc81efe09edc43ae9370ce93",
+  "token": "0xb9eb9998070433ebad80a55ffb52f6ec56760556"
+ },
+ "sXPT": {
+  "oracle": "0xcbb65e662e53b9407fe37bcabec13746b935ca61",
+  "token": "0x63dbded0c4febca0a3dac78937ac101b0ab74357"
+ },
+ "sXRP": {
+  "oracle": "0xa42f2341cb8efebda3e1a18fdaa3dfc20aec0f04",
+  "token": "0xfda91fcd37067987be933baf9b6c060f68b89ed7"
+ },
+ "sXTZ": {
+  "oracle": "0x42c9672ebd332daf1747b8960509eab20482b773",
+  "token": "0x1d03b6f441297a1f7b70cee44ddfb3cef7b7e7ff"
+ },
+ "sYFI": {
+  "oracle": "0xc2d2b79d3a612268965f0ab5858690935f0d2381",
+  "token": "0x75cdac0a79510df23c2833d2e37c2082c6753933"
+ },
+ "sZEC": {
+  "oracle": "0x02139239e2b49defa17795c11019de58ecc9f796",
+  "token": "0x5302a5c69c1461a513815674ab2b0ae52d4a8053"
+ }
+}

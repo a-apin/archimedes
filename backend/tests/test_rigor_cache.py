@@ -116,10 +116,11 @@ def _expected_result(sid: str, returns_by_strategy: dict[str, list[float]]):
     """Independently reproduce what the (uncached) live gate should compute for
     ``sid`` given ``returns_by_strategy`` — the same cohort-context derivation
     ``_live_rigor_results_for_strategies`` performs, used to assert the cache
-    never changes the served numbers."""
+    never changes the served numbers. num_trials is self-contained (1, decouple
+    #2) — it does NOT come from this cohort; only PBO/avg_correlation do."""
     valid = {k: v for k, v in returns_by_strategy.items() if len(v) >= 10 and float(np.ptp(np.asarray(v))) > 0.0}
     pbo_scores = compute_pbo(valid) if len(valid) >= 2 else {}
-    num_trials = max(len(valid), 1)
+    num_trials = 1
     avg_corr = compute_average_pairwise_correlation(valid) if len(valid) >= 2 else 0.0
     return run_rigor_gate(
         strategy_id=sid,

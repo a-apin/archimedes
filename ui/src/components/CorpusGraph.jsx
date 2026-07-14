@@ -10,6 +10,11 @@ const CLUSTER_PALETTE = [
   '#e879f9', '#22d3ee', '#fb923c', '#a3e635', '#f472b6',
 ]
 
+// Client-side safety net: the backend doesn't currently enforce the
+// `sample` query param, so a future full-corpus response can't overwhelm
+// the force-graph render. Mirrors CorpusKG.jsx's MAX_ENTITIES cap.
+const MAX_GRAPH_POINTS = 1000
+
 /**
  * SPECTER2 similarity force-directed graph.
  *
@@ -26,15 +31,24 @@ export default function CorpusGraph() {
   const [error, setError] = useState('')
   const [hoverNode, setHoverNode] = useState(null)
   const [containerWidth, setContainerWidth] = useState(800)
-  const containerRef = useRef(null)
+  // The wrapper div only mounts once data has loaded (the loading/error/empty
+  // states render before it), so a plain useRef + useEffect(..., []) would see
+  // containerRef.current as null on the one time the effect runs and never
+  // retry. A callback ref fires exactly when the node attaches (including
+  // after that later render), which is what we need here.
+  const [containerNode, setContainerNode] = useState(null)
+  const containerRef = useCallback(node => setContainerNode(node), [])
   const fgRef = useRef(null)
+  // Tracks whether the initial zoom-to-fit has run, so a later re-fetch
+  // (e.g. a future filter/search feature) can re-frame the graph instead
+  // of being silently skipped forever.
+  const didInitialFit = useRef(false)
 
   // Track the container's actual width so the canvas always matches it —
-  // both on first paint (in case the ref attaches after the first data-ready
-  // render) and on resize/rotation, instead of locking in a stale/fallback
-  // width forever.
+  // both on mount and on resize/rotation, instead of locking in a stale/
+  // fallback width forever.
   useEffect(() => {
-    const el = containerRef.current
+    const el = containerNode
     if (!el) return
     // ResizeObserver isn't available everywhere (older browsers, some test
     // runners/jsdom) — fall back to a one-time width read from the
@@ -50,7 +64,7 @@ export default function CorpusGraph() {
     ro.observe(el)
     setContainerWidth(el.offsetWidth || 800)
     return () => ro.disconnect()
-  }, [])
+  }, [containerNode])
 
   useEffect(() => {
     let cancelled = false
@@ -61,10 +75,24 @@ export default function CorpusGraph() {
         if (!r.ok) throw new Error(r.statusText)
         return r.json()
       })
-      .then(d => { if (!cancelled) setData(d) })
+      .then(d => { if (!cancelled) { didInitialFit.current = false; setData(d) } })
       .catch(e => { if (!cancelled) setError(e.message || 'Failed to load graph') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
+  }, [])
+
+  // Frame the full point cloud once the graph has settled, instead of
+  // opening on whatever the default d3 transform happens to be — on a
+  // 1000-point UMAP scatter that default is often zoomed too far in/out
+  // to be useful on first paint.
+  const handleEngineStop = useCallback(() => {
+    if (didInitialFit.current) return
+    didInitialFit.current = true
+    fgRef.current?.zoomToFit(400, 40)
+  }, [])
+
+  const resetView = useCallback(() => {
+    fgRef.current?.zoomToFit(400, 40)
   }, [])
 
   // Build a lookup for cluster → color
@@ -83,8 +111,9 @@ export default function CorpusGraph() {
   const graphData = useMemo(() => {
     if (data?.points) {
       // New API: points with pre-computed UMAP x,y
+      const points = data.points.slice(0, MAX_GRAPH_POINTS)
       return {
-        nodes: data.points.map(p => ({
+        nodes: points.map(p => ({
           id: p.arxiv_id,
           label: p.arxiv_id,
           cluster: p.cluster_id || 'default',
@@ -98,19 +127,23 @@ export default function CorpusGraph() {
     }
     // Legacy fallback
     if (!data?.nodes) return { nodes: [], links: [] }
+    const nodes = data.nodes.slice(0, MAX_GRAPH_POINTS)
+    const nodeIds = new Set(nodes.map(n => n.id))
     return {
-      nodes: data.nodes.map(n => ({
+      nodes: nodes.map(n => ({
         id: n.id,
         label: n.title || n.id,
         cluster: n.cluster || 'default',
         val: 2,
         color: clusterColorMap[n.cluster || 'default'] || CLUSTER_PALETTE[0],
       })),
-      links: (data.edges || []).map(e => ({
-        source: e.source,
-        target: e.target,
-        value: e.weight || 1,
-      })),
+      links: (data.edges || [])
+        .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
+        .map(e => ({
+          source: e.source,
+          target: e.target,
+          value: e.weight || 1,
+        })),
     }
   }, [data, clusterColorMap])
 
@@ -181,7 +214,16 @@ export default function CorpusGraph() {
       )}
 
       <div className="corpus-graph-stats flex gap-2 flex-wrap mb-2" style={{ padding: '0 12px' }}>
-        <span className="tag tag-muted">{data.point_count || data.points?.length || data.nodes?.length || 0} points</span>
+        {/* Count what is actually RENDERED (the MAX_GRAPH_POINTS slice), and
+            disclose truncation explicitly — the backend's point_count is
+            uncapped, so once the corpus exceeds the cap the badge would
+            otherwise claim more points than the canvas draws. */}
+        <span className="tag tag-muted">
+          {graphData.nodes.length} points
+          {(data.point_count || data.points?.length || data.nodes?.length || 0) > graphData.nodes.length
+            ? ` (of ${(data.point_count || data.points?.length || data.nodes?.length || 0).toLocaleString()} total)`
+            : ''}
+        </span>
         <span className="tag tag-muted">{data.cluster_count || 0} clusters</span>
         <span className="tag tag-muted">{data.total_papers?.toLocaleString() || ''} total papers</span>
       </div>
@@ -193,6 +235,7 @@ export default function CorpusGraph() {
         nodeCanvasObject={nodeCanvasObject}
         nodePointerAreaPaint={nodePointerAreaPaint}
         onNodeHover={node => setHoverNode(node)}
+        onEngineStop={handleEngineStop}
         linkColor={() => 'rgba(100,100,140,0.08)'}
         linkWidth={0.5}
         backgroundColor="transparent"
@@ -201,7 +244,29 @@ export default function CorpusGraph() {
         cooldownTicks={100}
         width={containerWidth}
         height={500}
+        minZoom={0.3}
+        maxZoom={40}
+        onNodeClick={node => {
+          // Zoom in on the clicked node's neighborhood so a user can jump
+          // straight into a cluster instead of hand-scrolling to it.
+          fgRef.current?.centerAt(node.x, node.y, 400)
+          fgRef.current?.zoom(6, 400)
+        }}
       />
+
+      {/* Reset view — bounded zoom + click-to-zoom-in can leave a user
+          stranded deep inside a cluster with no obvious way back out. */}
+      <button
+        type="button"
+        className="btn btn-outline corpus-graph-reset-view"
+        onClick={resetView}
+        style={{
+          position: 'absolute', top: 8, left: 12,
+          padding: '4px 10px', fontSize: '0.75rem',
+        }}
+      >
+        Reset view
+      </button>
 
       {/* Legend — shrinks on narrow containers so it doesn't permanently
           cover most of the graph on a phone-width viewport. */}

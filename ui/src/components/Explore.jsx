@@ -1,5 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import AssetModal from './AssetModal'
+import AssetGroupModal from './AssetGroupModal'
+import AssetGroupIcon from './AssetGroupIcon'
+import { groupMeta } from '../assetGroups'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -32,6 +35,8 @@ export default function Explore() {
   const [error, setError] = useState('')
   const [filterClass, setFilterClass] = useState('all')
   const [openAsset, setOpenAsset] = useState(null)
+  const [openGroup, setOpenGroup] = useState(null)
+  const [view, setView] = useState('groups')
 
   useEffect(() => {
     let cancelled = false
@@ -62,6 +67,21 @@ export default function Explore() {
 
   const classes = ['all', ...Array.from(new Set(assets.map(a => a.asset_class).filter(Boolean)))]
   const filtered = filterClass === 'all' ? assets : assets.filter(a => a.asset_class === filterClass)
+
+  // Grouped-card view (#464): one card per asset_class bucket, the same
+  // grouping the filter pills above already use. Sorted by member count so
+  // the largest, most-populated groups surface first.
+  const groups = useMemo(() => {
+    const byAssetClass = new Map()
+    for (const a of assets) {
+      if (!a.asset_class) continue
+      if (!byAssetClass.has(a.asset_class)) byAssetClass.set(a.asset_class, [])
+      byAssetClass.get(a.asset_class).push(a)
+    }
+    return Array.from(byAssetClass.entries())
+      .map(([assetClass, members]) => ({ assetClass, members, meta: groupMeta(assetClass) }))
+      .sort((a, b) => b.members.length - a.members.length)
+  }, [assets])
 
   // Banner only fires when *every* asset's displayed price is itself stale.
   // The backend now treats a missing on-chain oracle as "not stale" when
@@ -98,20 +118,52 @@ export default function Explore() {
         </p>
       </div>
 
-      {/* Filter pills */}
-      <div className="strat-filter-bar" style={{ marginBottom: 18 }}>
-        {classes.map(c => (
-          <span
-            key={c}
-            className={`tag ${filterClass === c ? 'tag-accent' : 'tag-muted'}`}
-            onClick={() => setFilterClass(c)}
-            style={{ cursor: 'pointer' }}
-          >
-            {c === 'all' ? 'All' : c.replace(/_/g, ' ')}
-            {c !== 'all' && ` (${assets.filter(a => a.asset_class === c).length})`}
-          </span>
-        ))}
+      {/* Grouped-cards vs. flat-list view toggle */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+        <button
+          type="button"
+          className={`btn btn-sm ${view === 'groups' ? '' : 'btn-outline'}`}
+          onClick={() => setView('groups')}
+          style={{
+            background: view === 'groups' ? 'var(--accent-muted)' : undefined,
+            color: view === 'groups' ? 'var(--accent)' : undefined,
+            borderColor: view === 'groups' ? 'var(--accent)' : undefined,
+          }}
+          aria-pressed={view === 'groups'}
+        >
+          By group
+        </button>
+        <button
+          type="button"
+          className={`btn btn-sm ${view === 'assets' ? '' : 'btn-outline'}`}
+          onClick={() => setView('assets')}
+          style={{
+            background: view === 'assets' ? 'var(--accent-muted)' : undefined,
+            color: view === 'assets' ? 'var(--accent)' : undefined,
+            borderColor: view === 'assets' ? 'var(--accent)' : undefined,
+          }}
+          aria-pressed={view === 'assets'}
+        >
+          All assets
+        </button>
       </div>
+
+      {/* Filter pills — only meaningful for the flat asset list */}
+      {view === 'assets' && (
+        <div className="strat-filter-bar" style={{ marginBottom: 18 }}>
+          {classes.map(c => (
+            <span
+              key={c}
+              className={`tag ${filterClass === c ? 'tag-accent' : 'tag-muted'}`}
+              onClick={() => setFilterClass(c)}
+              style={{ cursor: 'pointer' }}
+            >
+              {c === 'all' ? 'All' : c.replace(/_/g, ' ')}
+              {c !== 'all' && ` (${assets.filter(a => a.asset_class === c).length})`}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Loading / error / empty states */}
       {loading && !assets.length && <div className="caption">Loading market data…</div>}
@@ -147,8 +199,99 @@ export default function Explore() {
         </div>
       )}
 
+      {/* Grouped-asset card grid */}
+      {view === 'groups' && groups.length > 0 && (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+            gap: 14,
+          }}
+        >
+          {groups.map(g => {
+            const avgChange = (() => {
+              const vals = g.members.map(a => a.change_24h_pct).filter(v => v != null && !Number.isNaN(v))
+              if (vals.length === 0) return null
+              return vals.reduce((a, b) => a + b, 0) / vals.length
+            })()
+            return (
+              <button
+                key={g.assetClass}
+                type="button"
+                onClick={() => setOpenGroup(g)}
+                className="card-flat"
+                style={{
+                  textAlign: 'left',
+                  padding: 16,
+                  background: 'var(--glass)',
+                  border: '1px solid var(--glass-border)',
+                  borderRadius: 8,
+                  cursor: 'pointer',
+                  color: 'inherit',
+                  font: 'inherit',
+                  transition: 'background 0.15s, border-color 0.15s',
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.background = 'var(--glass-hover)'
+                  e.currentTarget.style.borderColor = 'var(--text-4)'
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.background = 'var(--glass)'
+                  e.currentTarget.style.borderColor = 'var(--glass-border)'
+                }}
+                aria-label={`Open details for ${g.meta.label} group`}
+              >
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                  <div
+                    style={{
+                      width: 34, height: 34, borderRadius: 7, flexShrink: 0,
+                      background: 'var(--surface-1)', border: '1px solid var(--glass-border)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      color: 'var(--accent)',
+                    }}
+                  >
+                    <AssetGroupIcon icon={g.meta.icon} size={18} />
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: '1.02rem', fontWeight: 700, lineHeight: 1.2 }}>{g.meta.label}</div>
+                    <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem', marginTop: 2 }}>
+                      {g.members.length} asset{g.members.length === 1 ? '' : 's'}
+                    </div>
+                  </div>
+                </div>
+
+                <p
+                  className="caption"
+                  style={{
+                    color: 'var(--text-3)',
+                    fontSize: '0.76rem',
+                    marginTop: 10,
+                    lineHeight: 1.4,
+                    display: '-webkit-box',
+                    WebkitLineClamp: 3,
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {g.meta.description}
+                </p>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 12 }}>
+                  <span className={`mono ${changeClass(avgChange)}`} style={{ fontSize: '0.85rem' }}>
+                    {fmtPct(avgChange)}
+                  </span>
+                  <span className="caption" style={{ color: 'var(--text-4)', fontSize: '0.65rem' }}>
+                    avg 24h
+                  </span>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       {/* Asset card grid */}
-      {filtered.length > 0 && (
+      {view === 'assets' && filtered.length > 0 && (
         <div
           style={{
             display: 'grid',
@@ -243,6 +386,13 @@ export default function Explore() {
       </p>
 
       {openAsset && <AssetModal asset={openAsset} onClose={() => setOpenAsset(null)} />}
+      {openGroup && (
+        <AssetGroupModal
+          assetClass={openGroup.assetClass}
+          assets={openGroup.members}
+          onClose={() => setOpenGroup(null)}
+        />
+      )}
     </div>
   )
 }

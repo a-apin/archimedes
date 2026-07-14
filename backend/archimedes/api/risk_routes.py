@@ -104,8 +104,7 @@ def risk_data_health() -> RiskDataHealth:
 
 # ── Risk Profile Bands ───────────────────────────────────────
 # Thresholds used to classify a portfolio into one of five tiers.
-# These are the same five levels used by the strategy architect
-# (architect_schemas.py RiskProfileLiteral).
+# These are the same five levels as `archimedes.models.portfolio.RiskProfile`.
 
 RISK_BANDS: list[dict] = [
     {

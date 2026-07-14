@@ -183,7 +183,7 @@ export default function Insights() {
           <em>Landed</em> number above, but may not match it exactly — both are HyperLogLog estimates, and
           visits recorded before once-per-visitor attribution shipped can still show up in the all-time
           totals. Treat this as directional, not a precise reconciliation. Country shows{' '}
-          <code>ZZ</code> (unknown / not provided) until CloudFront forwards the visitor's country.
+          <code>ZZ</code> (unknown / not provided) until the visitor's country is available.
         </p>
         {loading && !visitors && !visitorsError ? (
           <Empty>Loading visitor insights…</Empty>

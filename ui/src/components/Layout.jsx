@@ -30,11 +30,16 @@ const NAV = [
   { group: 'Strategy', items: [
     { id: 'generate', label: 'Generate', icon: 'i-lucide-sparkles' },
     { id: 'library',  label: 'Library',  icon: 'i-lucide-line-chart' },
-    // Quant Lab hidden from nav for the livestream — renders synthetic sample data;
-    // route/component intact, reachable by direct URL. Re-enable + wire to live data: see issue #1060.
   ]},
   { group: 'Position', items: [
     { id: 'portfolio', label: 'Portfolio', icon: 'i-lucide-layout-dashboard' },
+    // Re-added (#1060 AC#3, Dan's call 2026-07-14): the livestream-era hiding
+    // (#1061) was for the synthetic-sample-data version; this PR wires the
+    // panels to live library/vault/trace data with per-section disclaimers.
+    // Lives in POSITION (Dan, 2026-07-14): its panels read the user's live
+    // vault/trace data, so it belongs with the deployed-state surfaces and is
+    // wallet-gated like them (see App.jsx).
+    { id: 'quant',     label: 'Quant Lab', icon: 'i-lucide-flask-conical' },
     { id: 'reasoning', label: 'Reasoning', icon: 'i-lucide-brain' },
     { id: 'learnings', label: 'Learnings', icon: 'i-lucide-graduation-cap' },
   ]},

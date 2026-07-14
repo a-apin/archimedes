@@ -12,7 +12,7 @@ import uuid
 # NOTE: import avoids literal text that triggers the M0 verify heuristic.
 # AgentStateStore wraps an actual Redis connection via _get_redis().
 # Never access the underlying client directly.
-from archimedes.services.redis_state import AgentStateStore
+from archimedes.services.redis_state import AgentStateStore, safe_json_loads
 
 _EVENTS_PREFIX = "archimedes:market:events:"  # + strategy_id  (capped list)
 _SUBS_PREFIX = "archimedes:market:subs:"  # + strategy_id  (JSON dict cache)
@@ -59,7 +59,8 @@ class MarketState:
     async def get_events(self, strategy_id: str, count: int = 50) -> list[dict]:
         r = await self.store._get_redis()
         raw = await r.lrange(f"{_EVENTS_PREFIX}{strategy_id}", 0, count - 1)
-        return [json.loads(e) for e in raw]  # already str
+        events = [safe_json_loads(e, context="market_event") for e in raw]  # already str
+        return [e for e in events if e is not None]
 
     async def save_subscribers(self, strategy_id: str, subs: dict) -> None:
         r = await self.store._get_redis()
@@ -68,7 +69,9 @@ class MarketState:
     async def load_subscribers(self, strategy_id: str) -> dict:
         r = await self.store._get_redis()
         raw = await r.get(f"{_SUBS_PREFIX}{strategy_id}")
-        return json.loads(raw) if raw else {}  # raw is str|None
+        if not raw:  # raw is str|None
+            return {}
+        return safe_json_loads(raw, context="market_subscribers") or {}
 
     async def try_acquire_leader(self, strategy_id: str, ttl_seconds: int = LEADER_LOCK_TTL_SECONDS) -> str | None:
         """Attempt to acquire the per-strategy leader lock.
@@ -127,7 +130,8 @@ class MarketState:
     async def get_subscriber_ticks(self, sub_id: str, count: int = 50) -> list[dict]:
         r = await self.store._get_redis()
         raw = await r.lrange(f"{_SUBTICK_PREFIX}{sub_id}", 0, count - 1)
-        return [json.loads(e) for e in raw]  # already str
+        ticks = [safe_json_loads(e, context="subscriber_tick") for e in raw]  # already str
+        return [t for t in ticks if t is not None]
 
     # ---- x402 payment record ------------------------------------------------
 
@@ -144,7 +148,7 @@ class MarketState:
         """Return the most recent payment record for *sub_id*, or None."""
         r = await self.store._get_redis()
         raw = await r.get(f"{_PAYMENT_PREFIX}{sub_id}")
-        return json.loads(raw) if raw else None
+        return safe_json_loads(raw, context="market_payment") if raw else None
 
     async def has_active_payment(self, sub_id: str) -> bool:
         """Return True iff a payment record exists and its ``paid`` field is True."""

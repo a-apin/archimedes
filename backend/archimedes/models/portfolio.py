@@ -71,6 +71,10 @@ class PortfolioHolding:
     amount: float  # Token amount held
     value_usdc: float  # Current USDC value
     weight: float  # Fraction of total portfolio (0-1)
+    # False when the oracle price could not be read (#1080): value_usdc/weight
+    # are then 0 BY CONSTRUCTION, not real zeros — trade sizing must treat the
+    # holding as unknown-value (skip), never as absent (buy more every tick).
+    priced: bool = True
 
 
 @dataclass(frozen=True)

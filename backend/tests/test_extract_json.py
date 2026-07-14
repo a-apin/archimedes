@@ -8,7 +8,7 @@ no LLM, no network, no .env.
 from __future__ import annotations
 
 import pytest
-from archimedes.agents.strategy_architect import extract_json
+from archimedes.agents.generation_json import extract_json
 
 
 def test_plain_object():
