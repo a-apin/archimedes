@@ -44,6 +44,18 @@ def redirect_to_tmp_sqlite(tmp_path: Path) -> Iterator[None]:
         # finally below still restores the originals — otherwise a setup-time
         # failure would leak the half-redirected globals into every later test
         # in the process, the exact #1100 failure mode this helper exists to fix.
+        #
+        # Same side-effect imports init_db() does before ITS create_all: ORM
+        # models must register with Base.metadata or their tables (kg_*,
+        # strategy_passports) silently won't exist on the tmp DB — whether
+        # they do would otherwise depend on which other test file imported
+        # those models first, the exact import-order roulette this helper
+        # exists to eliminate (review follow-up).
+        from archimedes.models import (  # noqa: F401
+            kg,
+            strategy_passport_record,
+        )
+
         db_path = tmp_path / "test_archimedes.db"
         archimedes_db.DATABASE_URL = f"sqlite:///{db_path}"
         tmp_engine = create_engine(
