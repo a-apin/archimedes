@@ -309,6 +309,47 @@ class TestGeneratedStrategyRebalance:
         assert any(t.weight > 0 for t in targets), "generated-strategy vault got no non-zero targets"
         assert any(ss.strategy_id == "gen_001" for ss in scoped_signals)
 
+    async def test_legacy_vault_signals_stay_curated_only_alongside_generated(self, runner_env):
+        """Regression (#1076 review): step 5b must NOT mutate ``all_signals``
+        in place — the legacy (no-VaultMetadata) path hands that exact list to
+        ``_process_vault``, where it feeds ``_build_reasoning`` and every
+        ``_publish_trace`` call. A tick managing BOTH a legacy vault and a
+        generated-strategy vault must give the legacy vault curated-only
+        signals; otherwise another user's generated-strategy signals leak into
+        the legacy vault's published reasoning trace."""
+        import json
+
+        from archimedes.services.strategy_dsl import FABER_2007_SPEC
+
+        runner, m = runner_env
+        self._seed_strategy("gen_001", raw_spec=json.dumps(FABER_2007_SPEC))
+
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xLegacyVault", "0xGenVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        runner._get_vault_strategy_ids = MagicMock(
+            side_effect=lambda addr: None if addr == "0xLegacyVault" else ["gen_001"]
+        )
+
+        def _eval_side_effect(strategies, _synth_assets, *_a, **_kw):
+            ids = {getattr(s, "id", None) for s in strategies}
+            return [_gen_signals()] if "gen_001" in ids else [_signals()]
+
+        m["eval"].evaluate_strategies.side_effect = _eval_side_effect
+
+        process_vault_spy = AsyncMock(wraps=runner._process_vault)
+        runner._process_vault = process_vault_spy
+
+        await runner.tick()
+
+        assert process_vault_spy.await_count == 2
+        signals_by_vault = {c.args[0]: c.args[2] for c in process_vault_spy.await_args_list}
+        assert all(ss.strategy_id != "gen_001" for ss in signals_by_vault["0xLegacyVault"]), (
+            "generated-strategy signals leaked into the legacy vault's signal list"
+        )
+        assert any(ss.strategy_id == "gen_001" for ss in signals_by_vault["0xGenVault"])
+
     async def test_generated_strategy_without_spec_is_still_skipped(self, runner_env):
         """Control: a generated strategy_id bound to a vault but persisted
         WITHOUT a spec (legacy row, or pre-this-feature) is still skipped —

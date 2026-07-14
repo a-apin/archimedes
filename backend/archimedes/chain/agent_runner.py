@@ -334,9 +334,16 @@ class StrategyRunner:
             # no VaultMetadata — None), subtract the curated ids already
             # evaluated, and load+evaluate any remaining ids that carry a
             # persisted DSL `strategy_spec` in strategy_store. This does NOT
-            # touch the curated global-ensemble weights/targets computed above
-            # (already finalized from the pre-extension `all_signals`) — it only
-            # enriches the signal pool the per-vault loop's scoping reads from.
+            # touch the curated global-ensemble weights/targets computed above —
+            # it only enriches `signals_pool`, the SEPARATE list the per-vault
+            # scoping below reads from. `all_signals` itself must stay
+            # curated-only and immutable past this point: the legacy-vault
+            # (no-VaultMetadata) path passes `all_signals` into _process_vault,
+            # where it feeds _build_reasoning and every _publish_trace call —
+            # extending it in place would let other users' generated-strategy
+            # signals contaminate a legacy vault's published reasoning trace
+            # (a claim-integrity violation, and a leak of private strategy ids
+            # into someone else's on-chain-anchored provenance).
             # Fail-safe: a broken/invalid generated spec (bad JSON, DB error,
             # unexpected shape) must never break the curated tick or the
             # per-vault loop — logged and swallowed, never raised.
@@ -352,6 +359,7 @@ class StrategyRunner:
             vault_strategy_ids_cache: dict[str, list[str] | None] = {
                 vault_addr: self._get_vault_strategy_ids(vault_addr) for vault_addr in vaults
             }
+            signals_pool: list[StrategySignals] = all_signals
             try:
                 curated_ids = {ss.strategy_id for ss in all_signals}
                 bound_ids: set[str] = set()
@@ -372,7 +380,7 @@ class StrategyRunner:
                             len(generated_signals),
                             ", ".join(ss.strategy_id[:10] for ss in generated_signals),
                         )
-                        all_signals.extend(generated_signals)
+                        signals_pool = all_signals + generated_signals  # new list — never mutate all_signals
             except Exception:
                 logger.exception(
                     "[tick %s] Generated-strategy signal load failed — continuing with curated signals only",
@@ -407,8 +415,9 @@ class StrategyRunner:
                         )
                         continue
 
-                    # Filter signals to this vault's strategies
-                    scoped_signals = [ss for ss in all_signals if ss.strategy_id in vault_strategy_ids]
+                    # Filter signals to this vault's strategies (from the
+                    # generated-enriched pool, not curated-only all_signals)
+                    scoped_signals = [ss for ss in signals_pool if ss.strategy_id in vault_strategy_ids]
 
                     if not scoped_signals:
                         logger.warning(
@@ -442,7 +451,7 @@ class StrategyRunner:
                         tick_id,
                         vault_addr[:10],
                         len(scoped_signals),
-                        len(all_signals),
+                        len(signals_pool),
                         " | ".join(f"{k}={v:.0%}" for k, v in vault_weights.items()),
                     )
 
