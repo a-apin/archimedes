@@ -38,14 +38,16 @@
     "known_caveat_capital_preservation_tbill": "capital_preservation_tbill's live/legacy DB fixture (sharpe=0.481, cagr=2.91%) was NOT reproduced by a literal run_backtest(BIL) — BIL's raw (non-dividend-adjusted) Close is flat (+0.04% total return over 19 years) because virtually all of a T-bill ETF's return is distributions, not price appreciation. This script uses dividend-adjusted BIL (auto_adjust=True) instead, which correctly captures +28.7% total / ~1.3%/yr CAGR over the same window. See docs/CURATED-CONSOLIDATION-BUILD-2026-07-09.md for the full diagnosis. Flagging for Dan/Önder: the standard fetch_ohlcv pipeline (auto_adjust=False) would silently mis-backtest capital_preservation_tbill if it were ever added to regen_fixtures.py as-is."
   },
   "verified_real_verdict": {
-    "cagr": 0.05340972962499002,
-    "max_drawdown": 0.2618732445705211,
-    "sharpe_rf5pct": 0.07236756451337062,
-    "correlation_to_spy": -0.009126,
-    "deflated_sharpe": -0.432292,
-    "dsr_p_value_hac": 0.024497,
-    "oos_sharpe": 0.439309,
-    "in_sample_sharpe": -0.111490995548579,
+    "snapshot_note": "Re-stamped 2026-07-13 from the corrected verification run (PR #1078 review fixes: date-aligned correlation, apples-to-apples 2-leg window, per-leg look-ahead threading). Non-correlation numbers differ from the original 2026-07-09 snapshot only by the documented BIL fetch drift (5th-6th significant digit; T-bill-leg rows up to 4th).",
+    "cagr": 0.05340936481434344,
+    "max_drawdown": 0.26187372595039277,
+    "sharpe_rf5pct": 0.0723642924803896,
+    "correlation_to_spy": 0.210343,
+    "correlation_method_note": "Date-aligned (calendar intersection) Pearson correlation. The originally reported -0.009126 was computed by positional last-N truncation, which matched 12.4% of pairs to the wrong calendar days — retracted; +0.210 is the corrected value. Low, but NOT near-zero.",
+    "deflated_sharpe": -0.432296,
+    "dsr_p_value_hac": 0.024496,
+    "oos_sharpe": 0.439304,
+    "in_sample_sharpe": -0.1114930536199913,
     "pbo_score": 0.10777,
     "pbo_cohort_size": 15,
     "pbo_cohort_note": "Real CSCV PBO (Bailey et al. 2014) over a date-aligned, real-data cohort of 14 other curated strategies + this fused candidate (N=15, clears the codebase's own MIN_LIBRARY_N_FOR_PBO_GATING=10 floor). NOT the full 34-strategy library PBO (that would need all 34 backtested and date-aligned, which this pass did not do for all 34 — see the build doc's coverage table).",
@@ -59,10 +61,14 @@
     "verdict": "HONEST FAIL. Does not clear the rigor gate at any strictness level (1-5)."
   },
   "what_worked": [
-    "Diversification thesis CONFIRMED on real data: correlation_to_spy = -0.009 (near-zero, genuinely uncorrelated), matching the doc's low/negative-SPY-corr premise for these three legs.",
     "PBO = 0.108 (well under the 0.50 ceiling) — the combination is NOT overfit / curve-fit by the CSCV test.",
     "OOS Sharpe (+0.439) is positive and exceeds the in-sample Sharpe (-0.111) — no in-sample-to-out-of-sample performance cliff.",
     "Look-ahead audit passes (real backtrader run, no cheat-on-close/open)."
+  ],
+  "corrections_2026_07_13_pr1078_review": [
+    "RETRACTED: 'correlation_to_spy = -0.009, near-zero, genuinely uncorrelated'. Date-aligned, the fused candidate's SPY correlation is +0.210 — a real but materially weaker diversification benefit than originally claimed. The -0.009 was a calendar-misalignment artifact (12.4% of pairs matched to wrong days).",
+    "CORRECTED: the 2-leg (no cash floor) comparison row was computed on the blend's native 2004-2026 window (n=5268), not the stated common 2007-2026 window (n=4467). Corrected apples-to-apples DSR p = 0.0754 (was misreported as 0.0943; that figure belongs to the incomparable native window). The qualitative finding — dropping the cash floor improves deflated significance — survives.",
+    "Per-leg date-aligned SPY correlations (native windows): antonacci +0.096 (genuinely low), maillard +0.360 (NOT low/negative — the legacy -0.019 was the same misalignment artifact), tbill -0.119."
   ],
   "what_failed": [
     "DSR p-value (0.0245) is far below both the 0.90 badge bar and the 0.50 always-on floor — the deflated, multiple-testing-corrected significance of the fused Sharpe is very weak.",
@@ -71,9 +77,10 @@
   "supplementary_comparison_same_window_num_trials": {
     "antonacci_alone": {"sharpe_rf5": 0.1014, "dsr_p": 0.0312, "oos_sharpe": 0.4130, "in_sample_sharpe": -0.0658},
     "maillard_alone": {"sharpe_rf5": 0.2922, "dsr_p": 0.1626, "oos_sharpe": 0.5648, "in_sample_sharpe": 0.2035},
-    "tbill_alone": {"sharpe_rf5": -7.7204, "dsr_p": 0.0000, "oos_sharpe": -8.0744, "in_sample_sharpe": -8.0915},
-    "antonacci_plus_maillard_NO_cashfloor_50_50": {"sharpe_rf5": 0.1963, "dsr_p": 0.0943, "oos_sharpe": 0.5504, "in_sample_sharpe": 0.0036},
-    "note": "All computed on the SAME 2007-2026 common window and num_trials=34 as the 3-leg fused candidate, for a true apples-to-apples comparison — NOT each leg's own longer native window (which is what the source doc's priors, e.g. Maillard DSR p=0.849/0.944, were computed on). Notably, dropping the cash-floor leg (2-leg 50/50 Antonacci+Maillard) scores BETTER on DSR (p=0.094) than the 3-leg blend (p=0.024) — the cash floor's near-zero-yield-vs-5%-hurdle problem in this window HURTS the deflated significance more than the extra diversification helps it. This is reported as a finding, not acted on by re-weighting (that would be tuning to pass)."
+    "tbill_alone": {"sharpe_rf5": -7.7215, "dsr_p": 0.0000, "oos_sharpe": -8.0759, "in_sample_sharpe": -8.0925},
+    "antonacci_plus_maillard_NO_cashfloor_50_50": {"sharpe_rf5": 0.1873, "dsr_p": 0.0754, "oos_sharpe": 0.4988, "in_sample_sharpe": 0.0319},
+    "antonacci_plus_maillard_NATIVE_2004_2026_context_only": {"sharpe_rf5": 0.1963, "dsr_p": 0.0943, "oos_sharpe": 0.5504, "in_sample_sharpe": 0.0036, "n_obs": 5268, "note": "The blend's own native window, ~3.2y longer incl. pre-GFC — NOT comparable to the rows above; kept for context because the original (buggy) same-window row actually reported these values."},
+    "note": "All rows except the explicitly-labeled native-window context row are computed on the SAME 2007-2026 common window (n=4467) and num_trials=34 as the 3-leg fused candidate, for a true apples-to-apples comparison. (The original version of this block misreported the 2-leg row: it was computed on the native window — window-mismatch bug caught in PR #1078 review, corrected 2026-07-13.) Corrected finding: dropping the cash-floor leg (2-leg 50/50 Antonacci+Maillard) scores BETTER on DSR (p=0.0754) than the 3-leg blend (p=0.0245) — the cash floor's near-zero-yield-vs-5%-hurdle problem in this window HURTS the deflated significance more than the extra diversification helps it. This is reported as a finding, not acted on by re-weighting (that would be tuning to pass)."
   },
-  "recommendation": "Do NOT promote to the live library as-is. Two honest, non-tuning paths forward for Dan/Önder to consider: (1) re-evaluate the cash-floor leg's fair treatment given the flat 5%/yr rf convention was not designed with a genuinely risk-free instrument in mind — this is a modeling-convention question, not a strategy question; (2) the 2-leg Antonacci+Maillard (no cash floor) variant is closer to passing (DSR p=0.094 vs 0.90 needed) and may be worth a from-scratch, non-tuned re-verification as its own candidate in a future pass. Neither path is executed here — both would need Dan/Önder sign-off before any further real-data run is used to justify a claim."
+  "recommendation": "Do NOT promote to the live library as-is. Two honest, non-tuning paths forward for Dan/Önder to consider: (1) re-evaluate the cash-floor leg's fair treatment given the flat 5%/yr rf convention was not designed with a genuinely risk-free instrument in mind — this is a modeling-convention question, not a strategy question; (2) the 2-leg Antonacci+Maillard (no cash floor) variant scores better on deflated significance (corrected same-window DSR p=0.0754 vs 0.90 needed — still far from passing) and may be worth a from-scratch, non-tuned re-verification as its own candidate in a future pass. Neither path is executed here — both would need Dan/Önder sign-off before any further real-data run is used to justify a claim."
 }

@@ -127,14 +127,14 @@
   },
   "capital_preservation_tbill": {
     "stem": "capital_preservation_tbill",
-    "sharpe": -7.314758855525988,
-    "gross_sharpe": -7.309352389672599,
-    "cagr": 0.013282841655462896,
-    "max_dd_pct": 0.7728852855042867,
+    "sharpe": -7.315711675438615,
+    "gross_sharpe": -7.310305912099704,
+    "cagr": 0.013281829950625657,
+    "max_dd_pct": 0.7727904951994631,
     "trades": 0,
     "n_obs": 4761,
-    "cost_drag_annual_pct": 0.004859570227381202,
-    "turnover_annualized": 0.02429785113690601,
+    "cost_drag_annual_pct": 0.004859210319041553,
+    "turnover_annualized": 0.024296051595207757,
     "look_ahead_passed": true,
     "start": "2007-05-30T00:00:00",
     "end": "2026-04-30T00:00:00"
@@ -239,19 +239,24 @@
   },
   "candidate1_fused": {
     "n_obs": 4467,
-    "cagr": 0.05340972962499002,
-    "max_dd": 0.2618732445705211,
-    "sharpe_rf5": 0.07236756451337062,
-    "corr_spy": -0.009126,
-    "dsr": -0.432292,
-    "dsr_p_value": 0.024497,
-    "oos_sharpe": 0.439309,
-    "in_sample_sharpe": -0.111490995548579,
+    "cagr": 0.05340936481434344,
+    "max_dd": 0.26187372595039277,
+    "sharpe_rf5": 0.0723642924803896,
+    "corr_spy": 0.210343,
+    "dsr": -0.432296,
+    "dsr_p_value": 0.024496,
+    "oos_sharpe": 0.439304,
+    "in_sample_sharpe": -0.1114930536199913,
     "pbo_score": 0.10777,
     "pbo_library_size": 15,
     "num_trials": 34,
     "passes_all": false,
     "min_passing_level": null,
     "blocked_by_floor": true
+  },
+  "leg_correlations_to_spy_date_aligned": {
+    "antonacci_2014_dual_momentum": 0.09561,
+    "maillard_2010_risk_parity": 0.359746,
+    "capital_preservation_tbill": -0.119436
   }
 }

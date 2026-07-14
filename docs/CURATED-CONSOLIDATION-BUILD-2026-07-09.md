@@ -37,9 +37,11 @@
   not price appreciation. Fixed in the verification script only; flagged as a
   follow-up for the live pipeline.
 - **Candidate #1 (Antonacci + Maillard + T-Bill, real data): HONEST FAIL.**
-  DSR p=0.0245 (need ≥0.90; even the always-on floor is 0.50). Diversification
-  thesis is real (SPY corr −0.009, PBO 0.108 — not overfit); absolute risk-
-  adjusted-return thesis is not. Full numbers in §3.
+  DSR p=0.0245 (need ≥0.90; even the always-on floor is 0.50). PBO 0.108 — not
+  overfit. SPY correlation **+0.210 date-aligned** — low, but NOT the "near-zero
+  −0.009" this doc originally reported; that number was a calendar-misalignment
+  artifact caught in PR #1078 review and is retracted (§3). Absolute
+  risk-adjusted-return thesis fails. Full numbers in §3.
 - **Retire/keep proposal** for all 34 fixtures in §4.
 
 ---
@@ -75,6 +77,17 @@ conda run -n archimedes python scripts/consolidation_candidate1_verify.py
 
 Raw machine-readable output:
 `analytics-engine/scripts/_consolidation_candidate1_verify_output.json`.
+
+**Reproducibility caveat (added in PR #1078 review):** the pipeline itself is
+deterministic — CSCV enumerates its splits exhaustively via
+`itertools.combinations`, and there is no RNG anywhere in the DSR/HAC/PBO
+math — and every leg except the T-bill one reproduces bit-exactly across
+independent runs. The T-bill leg alone uses dividend-adjusted BIL
+(`auto_adjust=True`), which Yahoo recomputes backward through history on each
+query, so bit-exact reproduction of that leg (and the fused series downstream)
+is not guaranteed between fetches. Observed drift across four independent runs
+days apart: 5th–6th significant digit only; the decisive gate numbers
+(`deflated_sharpe`, `dsr_p_value`) agreed to every reported digit in all runs.
 
 ---
 
@@ -232,7 +245,7 @@ re-implementation):
 | CAGR | +5.34% |
 | Max drawdown | 26.19% |
 | Sharpe (rf=5%/yr) | +0.072 |
-| Correlation to SPY | **−0.009** |
+| Correlation to SPY (date-aligned) | **+0.210** |
 | Deflated Sharpe | −0.432 |
 | **DSR p-value (HAC)** | **0.0245** (need ≥ 0.90 for the badge; ≥ 0.50 to clear the always-on floor) |
 | OOS Sharpe | +0.439 |
@@ -248,12 +261,20 @@ re-implementation):
 honest, real fail — reported as such, not hidden or reweighted to pass.**
 
 **What worked (real, not cherry-picked):**
-- Diversification thesis confirmed: correlation to SPY is −0.009 (genuinely
-  near-zero), matching the doc's premise.
 - PBO = 0.108, well under the 0.50 ceiling — the combination is not
   curve-fit / overfit by the CSCV test.
 - OOS Sharpe (+0.439) exceeds in-sample Sharpe (−0.111) — no
   in-sample-to-out-of-sample cliff.
+
+**What changed under review (PR #1078 — correction, previously misreported):**
+the diversification thesis is *weaker than first claimed*. The original
+"−0.009, genuinely near-zero" SPY correlation was computed by positionally
+truncating the two return series to equal length, which matched 12.4% of the
+pairs to the wrong calendar days (the fused calendar starts 2007-05-30; SPY's
+last-4,467-by-position window starts 2008-07-29). Date-aligned, the fused
+candidate's SPY correlation is **+0.210** — low enough that a real
+diversification benefit remains vs. an all-equity book, but decidedly not
+near-zero. The original claim is retracted, not restated.
 
 **What failed, and why (diagnosed, not patched by reweighting):** the fused
 Sharpe at rf=5%/yr is only +0.072 — barely above zero — because the cash-
@@ -275,15 +296,21 @@ what the source doc's priors were computed on):
 | Antonacci alone | +0.101 | 0.031 | +0.413 | −0.066 |
 | Maillard alone | +0.292 | 0.163 | +0.565 | +0.204 |
 | T-Bill alone | −7.720 | 0.000 | −8.074 | −8.092 |
-| **Antonacci + Maillard, 50/50, NO cash floor** | +0.196 | **0.094** | +0.550 | +0.004 |
+| **Antonacci + Maillard, 50/50, NO cash floor** | +0.187 | **0.075** | +0.499 | +0.032 |
 | **Candidate #1 (3-leg, w/ cash floor)** | +0.072 | **0.024** | +0.439 | −0.111 |
+| *context only: the 2-leg blend on its own native 2004–2026 window (n=5,268 — includes ~3.2 pre-GFC years; NOT comparable to the rows above)* | +0.196 | 0.094 | +0.550 | +0.004 |
 
-**Notable, non-obvious finding:** dropping the cash-floor leg (2-leg
-Antonacci+Maillard) scores meaningfully *better* on DSR (p=0.094) than the
-3-leg blend (p=0.024) on this exact real data. The cash floor's near-zero-
-yield-vs-5%-hurdle problem in this specific window hurts the deflated
-significance more than its diversification helps it. **Reported as a finding
-only — not acted on** (re-weighting away from the doc's specified
+**Notable, non-obvious finding (corrected in PR #1078 review):** dropping the
+cash-floor leg (2-leg Antonacci+Maillard) still scores meaningfully *better*
+on DSR than the 3-leg blend on the same window — **p=0.075 vs p=0.024** — but
+the gap is smaller than this doc first reported. The original table computed
+the 2-leg row on the blend's native 2004–2026 window rather than the stated
+common 2007–2026 window (a window-mismatch bug caught by Önder's review); the
+0.094 figure is real but belongs to the incomparable native-window context row
+above. The qualitative conclusion survives correction: the cash floor's
+near-zero-yield-vs-5%-hurdle problem in this specific window hurts the
+deflated significance more than its diversification helps it. **Reported as a
+finding only — not acted on** (re-weighting away from the doc's specified
 construction to chase a better number would be exactly the tuning-to-pass
 this task's guardrail forbids). If Dan/Önder want to pursue the 2-leg variant
 instead, that is a new candidate requiring its own from-scratch, non-tuned
@@ -318,8 +345,8 @@ pass's fresh real numbers (14 strategies, §2/§3).
 | `faber_2007_sma200_timing` | 0.612 | +0.634 | Doc's designated flagship trend strategy (highest `min_passing_level`=5, most-cited paper). Keep as canonical single-paper teaching example even though not badge-passing. |
 | `pipeline_buy_hold` | 0.891 | +0.537 | The null-hypothesis benchmark. Always valuable as a comparison anchor. Keep. |
 | `brock_1992_dual_ma_crossover` | **0.849** | +0.212 | **Notable finding: the 3rd-highest DSR p in the entire library, un-mentioned by the source doc.** Real, positive, near-passing. Worth flagging as a candidate leg for a *future* consolidation pass, or as a standalone near-miss worth revisiting — not evaluated further here (would need its own from-scratch real verification, not assumed from the legacy snapshot). |
-| `maillard_2010_risk_parity` | 0.944 (legacy, num_trials=21) / 0.163 (this pass, same-window, num_trials=34) | +0.349 | Genuinely low/negative SPY correlation (−0.019 legacy, confirmed directionally in this pass). Keep — real, distinct methodology, valuable diversifier regardless of exact pass/fail; passport should carry the current-convention number, not the stale one. |
-| `antonacci_2014_dual_momentum` | 0.288 (legacy) / 0.031 (this pass) | +0.099 | Genuinely low-correlation (−0.002) defensive rotation. Keep as a distinct, real, honestly-weak example. |
+| `maillard_2010_risk_parity` | 0.944 (legacy, num_trials=21) / 0.163 (this pass, same-window, num_trials=34) | +0.349 | **Correlation claim corrected (PR #1078 review):** date-aligned SPY correlation is **+0.360** — moderate positive, NOT the "low/negative −0.019" the legacy number suggested (same misalignment artifact as the fused-candidate corr). Keep — real, distinct methodology and the best standalone DSR of the candidate legs; but the "valuable diversifier" framing should not be repeated until re-based on the corrected number. Passport should carry the current-convention number, not the stale one. |
+| `antonacci_2014_dual_momentum` | 0.288 (legacy) / 0.031 (this pass) | +0.099 | Genuinely low-correlation defensive rotation — survives correction: date-aligned SPY correlation is **+0.096** (the legacy −0.002 was misaligned, but the corrected value is still genuinely low). Keep as a distinct, real, honestly-weak example. |
 | `capital_preservation_tbill` | 0.812 (legacy, non-reproducible methodology per §2.3) | +0.481 (legacy) / −7.31 (this pass, dividend-adjusted) | **Keep the strategy** (the cash-floor role is conceptually necessary for the product) but **flag its real-backtest pipeline as unreliable** until the dividend-adjustment issue (§2.3) is fixed for this instrument specifically, and until Dan/Önder decide how a genuinely-risk-free instrument should be graded against a flat 5%/yr hurdle. |
 | `connors_alvarez_2009_rsi2`, `bollinger_2001_band_reversion`, `appel_1979_macd`, `ariel_1987_turn_of_month`, `donchian_breakout` | 0.27–0.62 | −0.12 to −0.58 | Five distinct, real, non-duplicative classic-TA methodologies, all honestly weak/negative. Keep as teaching examples of "simple technical indicators mostly don't clear a rigorous bar" — a legitimate, useful lesson, not a placeholder result. (Side note: `ariel_1987_turn_of_month` and `appel_1979_macd` are unusually cost-sensitive — turnover ~11×/yr and ~10×/yr respectively, cost drag 2.3%/yr and 2.1%/yr, with gross Sharpe much less negative than net — −0.05 vs −0.32, and −0.09 vs −0.30. Worth a cost-model sanity check in a future pass, not done here.) |
 | `engle_granger_1987_cointegration_pairs` | 0.055 | −0.923 (net) / **+0.055 (raw, rf=0)** | Diagnosed §2.2 — near-breakeven raw signal, not a bug. Keep as a distinct cointegration methodology (different from Gatev's distance method); passport should disclose the rf-convention sensitivity. |

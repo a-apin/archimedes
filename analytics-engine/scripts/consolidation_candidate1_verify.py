@@ -30,6 +30,16 @@ It does THREE things, all on REAL market data (yfinance), never synthetic:
 NEVER tunes parameters to pass. No weight in the fused blend is chosen to beat
 the gate — it is a flat 1/3 split, the least-tunable choice available.
 
+Reproducibility caveat (PR #1078 review, 2026-07-12): every leg except the
+T-bill one reproduces bit-exactly across runs — the pipeline itself is
+deterministic (CSCV uses exhaustive ``itertools.combinations``; no RNG
+anywhere). The T-bill leg alone uses dividend-adjusted BIL
+(``auto_adjust=True``), and Yahoo recomputes the backward adjustment on every
+query, so bit-exact reproduction of that leg (and, downstream, the fused
+series) is NOT guaranteed between fetches. Observed drift is in the 5th-6th
+significant digit; the decisive gate numbers (``deflated_sharpe``,
+``dsr_p_value``) were bit-identical across three independent runs days apart.
+
 Usage:
     cd analytics-engine
     conda run -n archimedes python scripts/consolidation_candidate1_verify.py
@@ -39,6 +49,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -51,7 +62,7 @@ BACKEND_ROOT = ROOT.parent / "backend"
 sys.path.insert(0, str(BACKEND_ROOT))
 
 import yfinance as yf
-from archimedes_analytics_engine.data import fetch_ohlcv, normalize_ohlcv
+from archimedes_analytics_engine.data import _MAX_RETRIES, _RETRY_DELAY_S, fetch_ohlcv, normalize_ohlcv
 from archimedes_analytics_engine.engine import (
     run_backtest,
     run_multi_backtest,
@@ -77,11 +88,35 @@ def fetch_ohlcv_div_adjusted(symbol: str, start: str, end: str):
     the T-bill leg only — it does not change the shared ``fetch_ohlcv`` used
     by every other (price-return-dominated) strategy in the library, which is
     a separate, wider decision for Dan/Önder, not made unilaterally here.
+
+    Retry/backoff mirrors ``fetch_ohlcv`` (same constants) — BIL is the one
+    series in this script empirically shown to vary between fetches, so it
+    should not also be the one fetch with no transient-failure defense
+    (PR #1078 review finding #2).
+
+    Reproducibility note: ``auto_adjust=True`` series are recomputed by Yahoo
+    backward through history on each query — bit-exact reproduction of this
+    leg between runs is not guaranteed (see module docstring).
     """
-    data = yf.download(symbol, start=start, end=end, auto_adjust=True, progress=False)
-    if data.empty:
-        raise ValueError(f"No data returned for symbol={symbol} in range {start}..{end}")
-    return normalize_ohlcv(data, symbol=symbol)
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            data = yf.download(symbol, start=start, end=end, auto_adjust=True, progress=False)
+        except Exception as exc:  # transient network/yfinance error — retry with backoff
+            last_exc = exc
+            if attempt == _MAX_RETRIES:
+                break
+            _log(f"fetch_ohlcv_div_adjusted({symbol}) attempt {attempt} failed: {exc} — retrying")
+            time.sleep(_RETRY_DELAY_S * attempt)
+            continue
+        if data.empty:
+            if attempt == _MAX_RETRIES:
+                raise ValueError(f"No data returned for symbol={symbol} in range {start}..{end}")
+            _log(f"fetch_ohlcv_div_adjusted({symbol}) returned empty — retrying (attempt {attempt})")
+            time.sleep(_RETRY_DELAY_S * attempt)
+            continue
+        return normalize_ohlcv(data, symbol=symbol)
+    raise RuntimeError(f"yfinance download failed for {symbol} after {_MAX_RETRIES} attempts") from last_exc
 
 
 BACKTEST_START = "2004-01-02"
@@ -135,15 +170,28 @@ def fetch_all(symbols: list[str]) -> dict[str, object]:
     return out
 
 
-def _correlation_to(a: list[float], b: list[float]) -> float | None:
-    n = min(len(a), len(b))
-    if n < 3:
+def _correlation_to(map_a: dict[str, float], map_b: dict[str, float]) -> float | None:
+    """Pearson correlation over date-ALIGNED return pairs.
+
+    Takes date->return maps (ISO-date keys, the ``daily_return_dates``
+    convention) and intersects the two calendars before correlating. The
+    previous positional last-N truncation mismatched up to 12.4% of pairs
+    when the series had different trading calendars (PR #1078 review
+    finding #3) — the engine explicitly supports differing calendars, so
+    alignment must be by date, never by position.
+    """
+    common = sorted(set(map_a) & set(map_b))
+    if len(common) < 3:
         return None
-    aa = np.asarray(a[-n:], dtype=float)
-    bb = np.asarray(b[-n:], dtype=float)
+    aa = np.asarray([map_a[d] for d in common], dtype=float)
+    bb = np.asarray([map_b[d] for d in common], dtype=float)
     if float(np.ptp(aa)) == 0.0 or float(np.ptp(bb)) == 0.0:
         return None
     return round(float(np.corrcoef(aa, bb)[0, 1]), 6)
+
+
+def _date_return_map(result) -> dict[str, float]:
+    return dict(zip(result.daily_return_dates, result.daily_returns, strict=True))
 
 
 def summarize(stem: str, result) -> dict:
@@ -165,10 +213,11 @@ def summarize(stem: str, result) -> dict:
 
 def main() -> None:
     prices = fetch_all(ALL_SYMBOLS)
-    spy_returns_full = [
-        (float(prices["SPY"]["Close"].iloc[i]) / float(prices["SPY"]["Close"].iloc[i - 1])) - 1.0
-        for i in range(1, len(prices["SPY"]))
-    ]
+    spy_close = prices["SPY"]["Close"]
+    spy_ret_map = {
+        spy_close.index[i].isoformat()[:10]: (float(spy_close.iloc[i]) / float(spy_close.iloc[i - 1])) - 1.0
+        for i in range(1, len(spy_close))
+    }
 
     results: dict[str, object] = {}
 
@@ -245,7 +294,7 @@ def main() -> None:
             prices["SPY"], strategy_cls=bundle.cls, initial_cash=INITIAL_CASH, transaction_cost_bps=TX_COST_BPS
         )
         results[stem] = result
-        corr = _correlation_to(result.daily_returns, spy_returns_full)
+        corr = _correlation_to(_date_return_map(result), spy_ret_map)
         s = summarize(stem, result)
         s["corr_spy"] = corr
         _log(json.dumps(s, default=str, indent=2))
@@ -306,9 +355,6 @@ def main() -> None:
     # ---------------------------------------------------------------------
     antonacci_result = results["antonacci_2014_dual_momentum"]
     maillard_result = results["maillard_2010_risk_parity"]
-
-    def _date_return_map(result) -> dict[str, float]:
-        return dict(zip(result.daily_return_dates, result.daily_returns, strict=True))
 
     m_a = _date_return_map(antonacci_result)
     m_m = _date_return_map(maillard_result)
@@ -420,7 +466,7 @@ def main() -> None:
     _log(f"\nfused CAGR                    = {cagr:+.4%}")
     _log(f"fused max_drawdown            = {max_dd:.4%}")
     _log(f"fused Sharpe (rf=5%/yr)       = {sharpe_rf5:+.4f}")
-    corr_spy_fused = _correlation_to(fused_returns, spy_returns_full)
+    corr_spy_fused = _correlation_to(dict(zip(fused_dates, fused_returns, strict=True)), spy_ret_map)
     _log(f"fused correlation_to_spy      = {corr_spy_fused}")
 
     # ---------------------------------------------------------------------
@@ -434,12 +480,15 @@ def main() -> None:
     _log("SUPPLEMENTARY — individual-leg verdicts + 2-leg (no cash-floor) variant")
     _log("=" * 78)
 
-    def _leg_verdict(label: str, returns: list[float]) -> None:
+    def _leg_verdict(label: str, returns: list[float], look_ahead_passed: bool) -> None:
+        # look_ahead_passed threads the REAL per-leg audit flag through —
+        # previously hardcoded True, which would have silently misreported a
+        # failing leg (PR #1078 review finding #4; latent, never triggered).
         v = run_rigor_gate(
             strategy_id=label,
             daily_returns=returns,
             num_trials=NUM_CURATED_FILES,
-            look_ahead_audit_passed=True,
+            look_ahead_audit_passed=look_ahead_passed,
             library_pbo=fused_pbo,
             pbo_library_size=len(cohort_returns),
         )
@@ -449,19 +498,44 @@ def main() -> None:
         _log(
             f"{label:45s} n={len(returns):5d}  sharpe(rf5%)={sharpe5:+.4f}  "
             f"DSR_p={v.dsr_p_value:.4f}  OOS={v.oos_sharpe:+.4f}  IS={v.in_sample_sharpe:+.4f}  "
-            f"blocked_by_floor={v.blocked_by_floor}  passes_all={v.passes_all}"
+            f"look_ahead={look_ahead_passed}  blocked_by_floor={v.blocked_by_floor}  passes_all={v.passes_all}"
         )
+
+    la_a = bool(antonacci_result.look_ahead_audit_passed)
+    la_m = bool(maillard_result.look_ahead_audit_passed)
+    la_t = bool(tbill_result.look_ahead_audit_passed)
+
+    # Date-aligned per-leg SPY correlations (native windows). The fused blend's
+    # aligned corr came out materially different from the misaligned value
+    # (+0.21 vs -0.009), so the per-leg "low/negative correlation" claims in
+    # the report must be recomputed with aligned calendars too.
+    corr_a = _correlation_to(m_a, spy_ret_map)
+    corr_m = _correlation_to(m_m, spy_ret_map)
+    corr_t = _correlation_to(m_t, spy_ret_map)
+    _log(
+        f"\nleg correlation_to_spy (date-aligned, native windows): antonacci={corr_a} maillard={corr_m} tbill={corr_t}"
+    )
 
     # Individual legs, restricted to the SAME common date window as the fused
     # candidate (2007-05-30..2026-04-30) for a true apples-to-apples comparison
     # — NOT each leg's own full native window.
-    _leg_verdict("antonacci_ALONE_2007_2026window", [m_a[d] for d in fused_dates])
-    _leg_verdict("maillard_ALONE_2007_2026window", [m_m[d] for d in fused_dates])
-    _leg_verdict("tbill_ALONE_2007_2026window", [m_t[d] for d in fused_dates])
+    _leg_verdict("antonacci_ALONE_2007_2026window", [m_a[d] for d in fused_dates], la_a)
+    _leg_verdict("maillard_ALONE_2007_2026window", [m_m[d] for d in fused_dates], la_m)
+    _leg_verdict("tbill_ALONE_2007_2026window", [m_t[d] for d in fused_dates], la_t)
 
-    two_leg_dates = sorted(set(m_a) & set(m_m))
-    two_leg_returns = [(m_a[d] + m_m[d]) / 2.0 for d in two_leg_dates]
-    _leg_verdict("antonacci_plus_maillard_NO_cashfloor_50_50", two_leg_returns)
+    # Apples-to-apples 2-leg row: SAME window as the fused candidate
+    # (m_a ∩ m_m ∩ m_t — BIL-capped 2007-05-30..2026-04-30) even though this
+    # variant holds no BIL; comparability against the 3-leg blend is the whole
+    # point of the row. The previous m_a ∩ m_m window silently included ~3.2
+    # extra years (2004..2007, pre-GFC bull) — PR #1078 review finding #1.
+    two_leg_returns = [(m_a[d] + m_m[d]) / 2.0 for d in fused_dates]
+    _leg_verdict("antonacci_plus_maillard_NO_cashfloor_50_50", two_leg_returns, la_a and la_m)
+
+    # Context-only row on the 2-leg blend's own native window (2004..2026,
+    # ~3.2y longer). Labeled as such — NOT comparable to the 3-leg candidate.
+    two_leg_native_dates = sorted(set(m_a) & set(m_m))
+    two_leg_native_returns = [(m_a[d] + m_m[d]) / 2.0 for d in two_leg_native_dates]
+    _leg_verdict("antonacci_plus_maillard_NATIVE_2004_2026", two_leg_native_returns, la_a and la_m)
 
     _log("\n" + "=" * 78)
     _log("ALL RESULTS (real data, for the report) — machine-readable dump below")
@@ -483,6 +557,11 @@ def main() -> None:
         "passes_all": verdict.passes_all,
         "min_passing_level": verdict.min_passing_level,
         "blocked_by_floor": verdict.blocked_by_floor,
+    }
+    dump["leg_correlations_to_spy_date_aligned"] = {
+        "antonacci_2014_dual_momentum": corr_a,
+        "maillard_2010_risk_parity": corr_m,
+        "capital_preservation_tbill": corr_t,
     }
     out_path = ROOT / "scripts" / "_consolidation_candidate1_verify_output.json"
     out_path.write_text(json.dumps(dump, indent=2, default=str))
