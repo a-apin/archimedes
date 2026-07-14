@@ -31,31 +31,67 @@ function changeClass(v) {
  * one) — anchoring on any single symbol's price units would misrepresent
  * the group.
  *
- * We align on index position rather than timestamp: all history requests
- * share the same `range`, so the backend returns bars on the same cadence
- * per symbol; index alignment is the same approach the single-asset x-axis
- * tick heuristic already assumes (see PriceHistoryChart's isIntraday check).
+ * We align by TIMESTAMP on the common overlapping window — never by array
+ * index. Same-range requests share a cadence, but NOT a start date: group
+ * members have wildly different history lengths (sBTC ~15y vs sARB ~2y on
+ * MAX), so index i lands on different calendar dates per symbol. And
+ * rebasing each series to its OWN first bar mixes epochs (%-since-2010
+ * averaged with %-since-2023 at the same x position). Instead: the group
+ * index starts at the LATEST first-bar across members (the youngest
+ * member's inception within the range), every series is rebased to its
+ * first bar at/after that common start, and each time bucket averages only
+ * the symbols that actually have a bar there. Consequence, by design: on
+ * long ranges the group chart's window is capped by its youngest member —
+ * a shorter, honest window beats a longer, distorted one.
  */
-function buildGroupIndex(seriesList) {
+function buildGroupIndex(seriesList, range) {
   const usable = seriesList.filter(s => s.points && s.points.length > 1)
   if (usable.length === 0) return []
 
-  const maxLen = Math.max(...usable.map(s => s.points.length))
+  // Daily+ ranges bucket on the ISO date part; intraday (1D) on the full ts.
+  const bucketKey = (ts) => (range === '1D' ? String(ts) : String(ts).slice(0, 10))
+
+  const seriesMaps = usable
+    .map(s => {
+      const map = new Map()
+      for (const pt of s.points) {
+        if (pt?.price == null) continue
+        map.set(bucketKey(pt.ts), pt)
+      }
+      return { map, firstKey: bucketKey(s.points[0].ts) }
+    })
+    .filter(m => m.map.size > 1)
+  if (seriesMaps.length === 0) return []
+
+  // ISO8601 strings compare lexicographically — the max firstKey is the
+  // youngest member's inception, i.e. the common window start.
+  const commonStartKey = seriesMaps.map(m => m.firstKey).sort().at(-1)
+
+  const rebased = []
+  for (const { map } of seriesMaps) {
+    const keys = [...map.keys()].sort()
+    const startIdx = keys.findIndex(k => k >= commonStartKey)
+    if (startIdx === -1) continue
+    const base = map.get(keys[startIdx])?.price
+    if (base == null || base === 0) continue
+    rebased.push({ map, keys: keys.slice(startIdx), base })
+  }
+  if (rebased.length === 0) return []
+
+  const allKeys = [...new Set(rebased.flatMap(r => r.keys))].sort()
   const out = []
-  for (let i = 0; i < maxLen; i++) {
+  for (const k of allKeys) {
     let sum = 0
     let count = 0
     let ts = null
-    for (const s of usable) {
-      const pt = s.points[i]
+    for (const r of rebased) {
+      const pt = r.map.get(k)
       if (!pt) continue
-      const base = s.points[0].price
-      if (base == null || base === 0) continue
-      sum += ((pt.price - base) / base) * 100
+      sum += ((pt.price - r.base) / r.base) * 100
       count += 1
       if (!ts) ts = pt.ts
     }
-    if (count > 0) out.push({ ts: ts || String(i), price: sum / count })
+    if (count > 0) out.push({ ts: ts || k, price: sum / count })
   }
   return out
 }
@@ -112,8 +148,8 @@ export default function AssetGroupModal({ assetClass, assets, onClose }) {
   }, [aggregateMembers, range])
 
   const groupIndexPoints = useMemo(
-    () => buildGroupIndex(Object.entries(seriesBySymbol).map(([symbol, points]) => ({ symbol, points }))),
-    [seriesBySymbol]
+    () => buildGroupIndex(Object.entries(seriesBySymbol).map(([symbol, points]) => ({ symbol, points })), range),
+    [seriesBySymbol, range]
   )
 
   // Aggregate 24h change across the whole group (not just the capped
