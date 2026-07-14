@@ -815,16 +815,15 @@ def run_rigor_gate(
             explicitly if that path should ever gate on the floor too.
     """
     if num_trials == 1:
-        # Loud on purpose (#902, reworded for decouple #2): num_trials=1 zeroes
-        # E[max SR] and collapses DSR to a plain "Sharpe > 0" test. This is the
-        # CORRECT, expected value for a strategy graded on its own self-contained
-        # selection set (a curated single-paper strategy, or a strategy with no
-        # real N-candidate search behind it) — a strategy's rigor depends ONLY on
-        # itself, never on the count of other strategies in the library (Dan's
-        # principle). The warning stays as a diagnostic breadcrumb: if a caller
-        # meant to pass the strategy's OWN selection-pool size (its N generated
-        # candidates or parameter-variant grid) and forgot, this line is the tell.
-        logger.warning(
+        # Debug-level breadcrumb (#902; demoted from WARNING in the #1075
+        # review): num_trials=1 zeroes E[max SR] and collapses DSR to a plain
+        # "Sharpe > 0" test. Pre-decouple that was anomalous and deserved a
+        # loud line; post-decouple-#2 it is the DOCUMENTED DEFAULT for every
+        # curated serving call (list/detail/gate), so at WARNING it would spam
+        # the hot path with non-actionable noise. Kept at debug as the tell
+        # for the one real misuse: a caller with an N-candidate pool or
+        # variant grid that forgot to pass its own count.
+        logger.debug(
             "Rigor gate [%s]: num_trials=1 — DSR runs UNDEFLATED (no multiple-testing correction). "
             "Correct for a self-contained strategy; if this strategy has its own real selection "
             "set (an N-candidate generation pool or parameter-variant grid), pass that count "

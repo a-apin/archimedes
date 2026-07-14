@@ -2109,6 +2109,11 @@ async def _run_fusion_job(job_id: str) -> None:
                 # audit having passed (audit 06-14, Q6).
                 "look_ahead_label": r.look_ahead_label,
                 "num_trials": int(r.num_trials),
+                # Methodology marker (#1075): this verdict was computed under the
+                # self-contained num_trials convention (decouple #2). Blobs
+                # WITHOUT this key predate the change (formula A, N+library_size)
+                # and are not directly comparable.
+                "num_trials_convention": "self_contained_v2",
                 # Backtest metrics — surface alongside so the passport renders
                 # without the UI having to denormalize from a separate field.
                 "sharpe_ratio": bt.sharpe_ratio,

@@ -389,6 +389,11 @@ def _rigor_verdict_for(
         "in_sample_sharpe": round(float(in_sample_sharpe), 4) if in_sample_sharpe is not None else None,
         "lookahead_audit_passed": lookahead_passed,
         "passing": passing,
+        # Deflation provenance (#1075): the N actually used and the convention
+        # marker distinguishing post-decouple verdicts from stored pre-change
+        # blobs (formula A included the curated library count; this one never does).
+        "num_trials": int(max(1, num_trials)),
+        "num_trials_convention": "self_contained_v2",
     }
 
 
@@ -1072,9 +1077,7 @@ async def run_generation(
             *[
                 # num_trials = the strategy's OWN candidate pool (N), never the library
                 # size — a strategy's rigor depends only on itself (decouple #2).
-                _backtest_and_persist(
-                    c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates)
-                )
+                _backtest_and_persist(c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates))
                 for c in candidates
                 if c.generation_method not in _static_skip and c.candidate_id in strategy_ids
             ]
@@ -1087,9 +1090,7 @@ async def run_generation(
         # and the server-side create_vault gate (#829) refuses to deploy it.
         await asyncio.gather(
             *[
-                _persist_real_returns(
-                    c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates)
-                )
+                _persist_real_returns(c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates))
                 for c in candidates
                 if c.has_real_rigor and c.return_series and c.candidate_id in strategy_ids
             ]

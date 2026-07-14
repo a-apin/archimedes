@@ -17,6 +17,7 @@ are typically correlated — ρ̄=0 over-deflates and over-states the gate's str
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from archimedes.agents.generation_pipeline import (
     _CandidateResult,
     _is_deployable,
@@ -95,8 +96,16 @@ class TestSocietyNumTrialsFormula:
         assert _society_num_trials(0) == 1
 
     def test_independent_of_library_size(self):
-        # The whole point: growing the library must NOT change a strategy's num_trials.
-        assert _society_num_trials(20) == _society_num_trials(20)
+        # The whole point: growing the library must NOT change a strategy's
+        # num_trials. Pin it structurally — the function must not even ACCEPT
+        # a second (library_size) argument, so a refactor can't quietly
+        # reintroduce the coupling. (Review follow-up: the previous assertion
+        # compared the call to itself, which could never fail.)
+        import inspect
+
+        assert len(inspect.signature(_society_num_trials).parameters) == 1
+        with pytest.raises(TypeError):
+            _society_num_trials(20, 34)  # the old (N, library_size) shape must be rejected
 
 
 class TestNumTrialsCorrection:
