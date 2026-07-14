@@ -196,7 +196,16 @@ export default function CorpusGraph() {
       )}
 
       <div className="corpus-graph-stats flex gap-2 flex-wrap mb-2" style={{ padding: '0 12px' }}>
-        <span className="tag tag-muted">{data.point_count || data.points?.length || data.nodes?.length || 0} points</span>
+        {/* Count what is actually RENDERED (the MAX_GRAPH_POINTS slice), and
+            disclose truncation explicitly — the backend's point_count is
+            uncapped, so once the corpus exceeds the cap the badge would
+            otherwise claim more points than the canvas draws. */}
+        <span className="tag tag-muted">
+          {graphData.nodes.length} points
+          {(data.point_count || data.points?.length || data.nodes?.length || 0) > graphData.nodes.length
+            ? ` (of ${(data.point_count || data.points?.length || data.nodes?.length || 0).toLocaleString()} total)`
+            : ''}
+        </span>
         <span className="tag tag-muted">{data.cluster_count || 0} clusters</span>
         <span className="tag tag-muted">{data.total_papers?.toLocaleString() || ''} total papers</span>
       </div>
