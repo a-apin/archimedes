@@ -132,6 +132,15 @@ jobs:
           # near ')'" failures.
           cat > /tmp/remote.sh <<EOS
           set -euo pipefail
+          # Instance-local mutex: GitHub's concurrency.cancel-in-progress only
+          # cancels the Actions JOB — an already-dispatched SSM command keeps
+          # executing on the box. Two overlapping deploys would interleave
+          # docker pull/tag/restart on the funds-adjacent oracle/agent runners
+          # (mixed image tags, double restarts mid-tick). flock -n fails the
+          # second invocation fast and loud instead; rerun it once the first
+          # finishes.
+          exec 200>/var/lock/archimedes-runner-deploy.lock
+          flock -n 200 || { echo "another runner deploy is already in progress on this instance — aborting" >&2; exit 1; }
           aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
           docker pull ${ECR_REGISTRY}/${BACKEND_ECR_REPO}:${IMAGE_TAG}
           docker tag ${ECR_REGISTRY}/${BACKEND_ECR_REPO}:${IMAGE_TAG} ${ECR_REGISTRY}/${BACKEND_ECR_REPO}:latest
