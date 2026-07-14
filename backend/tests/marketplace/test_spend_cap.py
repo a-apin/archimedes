@@ -270,6 +270,25 @@ async def test_is_over_cap_true_when_over():
 
 
 @pytest.mark.asyncio
+async def test_is_over_cap_unaffected_by_corrupted_empty_member(_fake_store):
+    """Regression test for a Copilot review finding on #1099: is_over_cap's
+    internal member is always "" (it never reserves), so the read-only path
+    must never let a stray empty-string member in the set (corrupted data,
+    or some future bug) short-circuit the projection. Before the fix, the
+    Lua script ran ZSCORE key "" unconditionally, so a real "" member here
+    would have made it wrongly treat additional_amount_raw as "already
+    counted" and drop it from the projection — undercounting exactly the
+    hypothetical amount the caller asked about.
+    """
+    key = spend_cap._key(_WALLET)
+    await _fake_store._redis.zadd(key, {"": time.time()})  # simulated corrupted entry
+    # No real spend recorded — only the additional_amount_raw (== the pinned
+    # cap) should decide this. The old, buggy script would have dropped it
+    # entirely and returned False here.
+    assert await spend_cap.is_over_cap(_WALLET, additional_amount_raw=_raw("10")) is True
+
+
+@pytest.mark.asyncio
 async def test_is_over_cap_considers_pending_additional_amount():
     """additional_amount_raw models a charge not yet reserved — current spend
     alone is under cap, but current + pending crosses it."""

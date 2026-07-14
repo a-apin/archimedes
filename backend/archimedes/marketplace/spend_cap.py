@@ -66,13 +66,14 @@ _USDC_DECIMALS = 6
 #             of the verdict (is_over_cap's mode)
 # Returns 1 if amount_raw fits under the cap, 0 if it would meet/exceed it.
 #
-# Checks whether `member` already exists BEFORE summing, so re-reserving the
-# exact same (charge_id, amount_raw) — e.g. a caller that reserves twice for
-# what is logically one charge — does not double-count its own prior
-# contribution against the cap: the existing entry is already inside `total`,
-# so it is not added a second time. Callers should still avoid reserving the
-# same charge twice (see try_reserve_usdc's docstring on ordering relative to
-# the idempotency claim); this is defense in depth, not license to skip that.
+# The double-count-avoidance check (does `member` already exist?) only runs
+# when do_reserve==1 — i.e. only in the mode where `member` means anything.
+# In read-only mode (do_reserve==0, is_over_cap's mode) member is always the
+# empty string, so checking its existence would be meaningless at best; worse,
+# ZSCORE key "" happening to find a real (corrupted/externally-written) empty
+# member would wrongly skip adding amount_raw to the projection and undercount
+# (#1099 review — Copilot). Gating it behind do_reserve==1 also drops an
+# unnecessary Redis call from every read-only check.
 _CHECK_AND_RESERVE_LUA = """
 local key = KEYS[1]
 local window_start = tonumber(ARGV[1])
@@ -84,7 +85,6 @@ local ttl_seconds = ARGV[6]
 local do_reserve = tonumber(ARGV[7])
 
 redis.call("ZREMRANGEBYSCORE", key, 0, window_start)
-local already_reserved = redis.call("ZSCORE", key, member)
 local members = redis.call("ZRANGE", key, 0, -1)
 local total = 0
 for _, m in ipairs(members) do
@@ -94,9 +94,20 @@ for _, m in ipairs(members) do
     end
 end
 
-local projected = total
-if already_reserved == false then
-    projected = total + amount_raw
+-- Default: amount_raw is new spend, not yet counted in `total`.
+local projected = total + amount_raw
+if do_reserve == 1 then
+    -- Re-reserving the exact same (charge_id, amount_raw) as an existing
+    -- entry (e.g. a caller that reserves twice for what is logically one
+    -- charge) must not double-count it: it is already inside `total`, so
+    -- don't add it again. Callers should still avoid reserving the same
+    -- charge twice (see try_reserve_usdc's docstring on ordering relative
+    -- to the idempotency claim) — this is defense in depth, not a license
+    -- to skip that.
+    local already_reserved = redis.call("ZSCORE", key, member)
+    if already_reserved ~= false then
+        projected = total
+    end
 end
 
 if projected >= cap_raw then
