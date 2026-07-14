@@ -126,13 +126,13 @@ export default function Leaderboard() {
         <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Sort</span>
         {SORT_OPTIONS.map(o => (
           <button key={o.id} type="button" onClick={() => setSortBy(o.id)}
-            className={sortBy === o.id ? 'tag-accent' : 'tag-muted'}
-            style={{ cursor: 'pointer', border: 'none', padding: '4px 10px', borderRadius: 14, fontSize: 12 }}>
+            className={`tag-tab ${sortBy === o.id ? 'tag-accent' : 'tag-muted'}`}
+            style={{ cursor: 'pointer', border: 'none', borderRadius: 14, fontSize: 12 }}>
             {o.label}
           </button>
         ))}
         <button type="button" onClick={() => setOrder(o => o === 'desc' ? 'asc' : 'desc')}
-          className="tag-muted" style={{ cursor: 'pointer', border: 'none', padding: '4px 10px', borderRadius: 14, fontSize: 12 }}
+          className="tag-tab tag-muted" style={{ cursor: 'pointer', border: 'none', borderRadius: 14, fontSize: 12 }}
           title="Toggle sort direction">
           {order === 'desc' ? '↓ desc' : '↑ asc'}
         </button>

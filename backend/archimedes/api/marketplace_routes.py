@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.exc import IntegrityError
 
-from archimedes.api._route_helpers import strategy_provider
 from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.limiter import limiter
 from archimedes.db import get_session
@@ -77,9 +76,14 @@ async def publish_strategy(
             detail="Marketplace not configured: ARCHIMEDES_TREASURY_WALLET is unset",
         )
 
-    # 0. Validate strategy exists in the provider
-    if strategy_provider().get_strategy(strategy_id) is None:
-        raise HTTPException(status_code=404, detail=f"Strategy not found: {strategy_id}")
+    # NOTE: existence is validated authoritatively against StrategyRecord in the
+    # D5 ownership block below (§1a). We deliberately do NOT gate on
+    # strategy_provider().get_strategy() here: that provider is the curated,
+    # file-backed LocalStrategyProvider (examples only), so an early guard on it
+    # 404s every *generated* strategy before the real StrategyRecord check can
+    # run — which is exactly the "I can't publish my strategy" bug. Curated
+    # examples are also seeded into StrategyRecord (main.py is_example=True), so
+    # the StrategyRecord check covers both curated and generated strategies.
 
     # 1. Reject if publisher already running for this strategy
     with get_session() as session:
@@ -279,9 +283,11 @@ async def subscribe_strategy(
     if int(sub_id, 16) == 0:
         raise HTTPException(status_code=400, detail="sub_id cannot be zero")
 
-    # 0b. Validate strategy exists in the provider (M2)
-    if strategy_provider().get_strategy(strategy_id) is None:
-        raise HTTPException(status_code=404, detail=f"Strategy not found: {strategy_id}")
+    # NOTE: existence is validated by the running-publisher check below — you can
+    # only subscribe to a strategy that has a live publisher. We do NOT gate on
+    # strategy_provider().get_strategy() (curated, file-backed examples only): that
+    # 404s every *generated* strategy that was published, breaking subscribe on
+    # exactly the strategies the marketplace exists to distribute.
 
     # 1. Find the publisher
     pub_row = None
@@ -635,6 +641,13 @@ async def withdraw_publisher_earnings(
         )
     if pub is None:
         raise HTTPException(status_code=404, detail="No publisher row found for this strategy/wallet")
+
+    # Fail-safe: no real settlement while PAYMENTS_DRY_RUN is on. The sweeper
+    # methods also short-circuit under dry-run (defense in depth); return here so
+    # the API responds with an honest no-op rather than a misleading 502 when
+    # withdraw_publisher returns None.
+    if market.payments_dry_run:
+        return {"status": "dry_run_noop", "detail": "PAYMENTS_DRY_RUN enabled — no on-chain settlement performed."}
 
     sweeper = market._sweeper
     await sweeper.sweep_publisher(pub)  # Stage A + B, refresh pool state

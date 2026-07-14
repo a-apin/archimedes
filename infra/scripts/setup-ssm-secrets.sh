@@ -30,6 +30,9 @@ PARAMS=(
   PINATA_JWT               # IPFS pinning for reasoning-trace provenance (T1.4)
   CIRCLE_API_KEY           # Circle wallets / Gateway nanopayments (T1.2)
   CIRCLE_ENTITY_SECRET     # Circle dev-controlled wallet entity secret
+  WALLET_ID                # Circle DCW wallet UUID (oracle/agent Circle signer) — T3.2
+  WALLET_ADDRESS           # Circle DCW EVM address (public; agent signer) — T3.2
+  INTERNAL_AGENT_API_KEY   # X-Internal-Agent-Key runner->backend auth — T3.2
 )
 # NOTE: VITE_CIRCLE_CLIENT_KEY is a BUILD-TIME secret baked into the UI bundle at
 # `docker compose build` — it lives in the box-local .env (seeded by user-data.sh),

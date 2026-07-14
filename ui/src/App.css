@@ -144,7 +144,14 @@
 }
 
 /* --- Base --- */
-html { font-size: 17px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; scroll-behavior: smooth; overflow-x: hidden; }
+/* Root font-size is pinned at 16px across every breakpoint (mobile included)
+   — it is NOT used as the mobile-compaction lever, because virtually every
+   text size in the system is rem-based off it (.body, .caption, tags,
+   labels, form inputs...). Shrinking it globally silently shrinks ALL body
+   copy on phones and drags form inputs below the 16px iOS-Safari
+   auto-zoom threshold. Individual oversized elements (h1/h2, .swap-amount)
+   are scaled down explicitly inside the ≤600px query instead. */
+html { font-size: 16px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; scroll-behavior: smooth; overflow-x: hidden; }
 body {
   font-family: var(--sans);
   background: var(--canvas);
@@ -152,6 +159,8 @@ body {
   line-height: 1.6;
   min-height: 100vh;
   letter-spacing: -0.01em;
+  max-width: 100vw;
+  overflow-x: hidden;
 }
 
 a { color: var(--text-2); text-decoration: none; transition: color 0.15s; }
@@ -760,6 +769,9 @@ h4, .h4 { font-family: var(--sans); font-size: 0.8rem; font-weight: 600; text-tr
   justify-content: center;
   z-index: 1000;
   animation: modal-overlay-in 0.18s ease-out;
+  /* Gutter backstop so the modal never touches the viewport edge, even
+     before the width clamp below kicks in. */
+  padding: 16px;
 }
 .modal-overlay > .modal { animation: modal-pop-in 0.22s ease-out; }
 .modal {
@@ -767,7 +779,11 @@ h4, .h4 { font-family: var(--sans); font-size: 0.8rem; font-weight: 600; text-tr
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   padding: 36px;
-  min-width: 380px;
+  /* Clamp to the viewport instead of a hard min-width — a fixed 380px min
+     forces horizontal overflow on any viewport narrower than that (iPhone
+     SE-class ~375px, common Android ~360px, foldable cover screens). */
+  width: min(380px, calc(100vw - 32px));
+  min-width: 0;
   max-width: 480px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
 }
@@ -1753,6 +1769,57 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .strat-filter-bar .tag { cursor: pointer; transition: all 0.15s; }
 .strat-filter-bar .tag:hover { opacity: 0.85; }
 
+/* ─── Library — mobile card list ──────────────────────────
+   Table (.lib-table-wrap) and card list (.lib-cards) both always render;
+   visibility toggles on a plain CSS media query rather than a UnoCSS
+   `hidden` utility, since this build doesn't generate that utility class
+   (a prior attempt using `hidden md:block` rendered both views on desktop
+   simultaneously). Default: table visible, cards hidden. */
+.lib-cards { display: none; }
+@media (max-width: 768px) {
+  .lib-table-wrap { display: none; }
+  .lib-cards { display: flex; flex-direction: column; gap: 10px; }
+}
+
+.lib-card {
+  background: var(--surface-2);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  cursor: pointer;
+}
+.lib-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.lib-card-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+.lib-card-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.lib-card-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--glass-border);
+}
+.lib-card-detail {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--glass-border);
+  cursor: default;
+}
+
 .divider { height: 1px; background: var(--glass-border); }
 
 .table-container {
@@ -2230,9 +2297,11 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
     width: 260px !important;
     transform: translateX(-100%);
     transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    /* Must outrank MobileBanner.jsx's inline z-index: 9999 — otherwise the
-       sticky "Best on desktop" banner renders on top of the open drawer and
-       covers its brand header + close button (issue #854 finding #2). */
+    /* Compositor hint — mitigates a known WebKit failure mode where a
+       transform transition on a position:fixed element can get stuck
+       mid-flight (e.g. after the tab was backgrounded) instead of settling
+       at its target value. */
+    will-change: transform;
     z-index: 10000;
     box-shadow: 4px 0 32px rgba(0, 0, 0, 0.5);
     overflow-y: auto;
@@ -2240,9 +2309,9 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
   /* !important pins the open-state transform so no other rule (present or
      future) can leave the drawer stuck at its closed, off-canvas position. */
   .sidebar.sidebar-open { transform: translateX(0) !important; }
-  /* Overlay backdrop (only rendered while menuOpen) must also outrank the
-     mobile banner so it dims/blocks the banner — and its own "tap to
-     dismiss" handler — while the drawer is open. */
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar { transition: none; }
+  }
   .sidebar-overlay { z-index: 9998; }
   .sidebar-collapsed .logo-copy,
   .sidebar-collapsed .logo-text,
@@ -2275,10 +2344,29 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
   .grid,
   .trade-grid,
   .strat-grid-2,
-  .strat-grid-3 {
+  .strat-grid-3,
+  .strat-metric-grid,
+  .summary-grid {
     grid-template-columns: 1fr !important;
   }
   .trade-grid { gap: 16px; }
+
+  /* Touch targets — these are the primary mobile-only navigation controls a
+     thumb has to hit precisely, so raise the hit area via padding (not icon
+     size) to at least the ~44px iOS HIG / 48dp Material guidance. */
+  .hamburger-btn {
+    width: 44px;
+    height: 44px;
+  }
+  .topbar-icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+  .sidebar-close-btn {
+    width: 40px;
+    height: 40px;
+    padding: 8px;
+  }
 }
 
 
@@ -2289,7 +2377,14 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
     --space-7: 32px;
   }
 
-  html { font-size: 14px; }
+  /* Root font-size stays pinned at 16px (see the ≤1024px base rule) — only
+     the specific oversized display elements below are scaled down. */
+  h1, .h1 { font-size: 2rem; }
+  h2, .h2 { font-size: 1.5rem; }
+
+  /* Form controls: pin to a literal 16px regardless of any rem scaling so
+     iOS Safari never auto-zooms the viewport on focus. */
+  input, select, textarea { font-size: 16px; }
 
   .sidebar-brand {
     padding: var(--space-2) var(--space-3);
@@ -2317,6 +2412,13 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
     grid-template-columns: repeat(2, 1fr) !important;
   }
 
+  /* Several inline 2-column '1fr 1fr' grids (RigorExplainer threshold
+     cards, RegimePanel signal breakdown, etc.) have no responsive handling
+     of their own — catch them the same kebab-case-matching way. */
+  [style*="grid-template-columns: 1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+
   /* Stack forms */
   .form-row {
     flex-direction: column !important;
@@ -2331,6 +2433,30 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-primary {
     width: 100%;
   }
+
+  /* Modal: width already clamps to the viewport at every breakpoint (base
+     rule above) — just tighten the padding so content isn't cramped. */
+  .modal { padding: 22px; }
+
+  /* Corpus catalog search + filter row: stack instead of squeezing a
+     fixed-width select against the search box. !important because the
+     Corpus Explorer section's own .catalog-filter rule is defined later in
+     this file (component sections follow the responsive breakpoints), so
+     it would otherwise win the cascade at equal specificity — same pattern
+     already used by .vault-stats-grid etc. below. */
+  .catalog-controls { flex-direction: column; align-items: stretch; }
+  .catalog-filter { width: 100% !important; flex-shrink: 1 !important; }
+
+  /* Filter/sort pill rows are the primary way to change what data is shown
+     on Library/Publish/Leaderboard — raise their tap target. */
+  .strat-filter-bar .tag,
+  .tag-tab {
+    padding: 8px 14px;
+    min-height: 36px;
+  }
+
+  /* Asset-class filter pills on Explore — same reasoning. */
+  .strat-filter-bar .tag { font-size: 0.78rem; }
 
   .vault-stats-grid {
     grid-template-columns: repeat(2, 1fr) !important;
@@ -2380,12 +2506,19 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .corpus-tabs {
   display: flex; gap: 2px; margin-bottom: 24px;
   background: var(--surface-2); border-radius: 8px; padding: 3px;
+  /* Scroll horizontally rather than overflow the page if the 4 tab labels
+     don't fit a narrow viewport — this is the one hard constraint (no
+     horizontal PAGE scroll) so the scroll must stay contained here. */
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .corpus-tab {
   padding: 8px 16px; border: none; border-radius: 6px;
   background: transparent; color: var(--text-2);
   cursor: pointer; font-size: 0.8rem; font-weight: 500;
   transition: all 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .corpus-tab.active { background: var(--accent); color: #fff; }
 .corpus-tab:hover:not(.active) { background: var(--surface-3); }
@@ -2427,11 +2560,12 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--text-1); font-size: 0.85rem;
 }
 .catalog-search:focus, .kg-search:focus { outline: none; border-color: var(--accent); }
-.catalog-filter {
-  padding: 8px 12px; border-radius: 6px;
-  background: var(--surface-2); border: 1px solid var(--glass-border);
-  color: var(--text-1); font-size: 0.85rem; min-width: 180px;
-}
+/* .catalog-filter now wraps a CustomSelect (a div-based cs-wrap, not a raw
+   <select>) — it only controls layout/sizing here; the visible chrome
+   (padding/background/border/font-size) lives on .cs-trigger already, so
+   this class must NOT redeclare those or it doubles up behind the trigger.
+   Overrides .cs-wrap's own `width: 100%` (same specificity, later wins). */
+.catalog-filter { width: 180px; flex-shrink: 0; }
 .catalog-results-info { font-size: 0.8rem; color: var(--text-2); margin-bottom: 12px; }
 
 .paper-list { display: flex; flex-direction: column; gap: 8px; }
@@ -2504,6 +2638,53 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .strategy-name { font-size: 0.85rem; font-weight: 600; }
 .source-refs { font-size: 0.7rem; color: var(--text-2); margin-left: 8px; }
+
+/* ─── Quant Lab — risk decomposition / correlation pairs ──
+   Two tables side by side on desktop; stacks on mobile so each table gets
+   full width instead of squeezing 3-column tables into ~155px halves. */
+.risk-decomp-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+@media (max-width: 640px) {
+  .risk-decomp-grid { grid-template-columns: 1fr; }
+}
+
+/* ─── Portfolio — account header stat cards ───────────────
+   Fluid size instead of a fixed 1.6rem so long dollar figures (e.g.
+   "$12,345.67") shrink to fit one line on the 2-column mobile grid instead
+   of wrapping and desyncing the 4 cards' row heights. */
+.acct-stat-value { font-size: clamp(1.1rem, 5.5vw, 1.6rem); }
+
+/* ─── Insights — "Who's visiting" two-column layout ──────
+   Top Countries + Device side by side on desktop; stacks on mobile so
+   long labels + progress bars aren't crushed into ~155px columns. */
+.insights-two-col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+}
+@media (max-width: 640px) {
+  .insights-two-col { grid-template-columns: 1fr; gap: 20px; }
+}
+
+/* ─── Architecture — MemoryPillar layer rows ──────────────
+   Desktop: tag chip + name/lifetime + substrate + why, in a row.
+   Mobile: stack each row's fields vertically like a card. */
+.memory-row {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr 1fr;
+  gap: 16px;
+  align-items: center;
+}
+@media (max-width: 768px) {
+  .memory-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    text-align: left;
+  }
+  .memory-row > span:first-child { justify-self: start; }
+}
 
 /* ─── Landing section layout ───────────────────────────── */
 .l-section {
