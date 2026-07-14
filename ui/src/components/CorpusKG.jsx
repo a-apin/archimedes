@@ -144,6 +144,13 @@ export default function CorpusKG({ onOpenPaper }) {
   const displayIds = new Set(displayEntities.map(e => e.id))
   const displayRelations = relations.filter(r => displayIds.has(r.source) && displayIds.has(r.target))
 
+  // Full entity behind the current hover, for the tooltip below — looked up
+  // by id rather than trusting the label already baked into the SVG <text>
+  // so the tooltip always shows the complete, untruncated title.
+  // Explicit null check: entity ids are integer PKs — truthiness would
+  // treat a (theoretical) id of 0 as not-hovered (review).
+  const hoveredEntityObj = hoverEntity != null ? entityMap[hoverEntity] : null
+
   return (
     <div className="corpus-kg-wrapper">
       <form onSubmit={handleSearch} className="flex gap-2 mb-4" style={{ padding: '0 12px' }}>
@@ -174,7 +181,7 @@ export default function CorpusKG({ onOpenPaper }) {
       ) : entities.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center' }} className="caption">No entities found.</div>
       ) : (
-        <div style={{ overflow: 'auto', padding: '0 12px 12px' }}>
+        <div style={{ position: 'relative', overflow: 'auto', padding: '0 12px 12px' }}>
           <svg
             ref={svgRef}
             viewBox={`0 0 ${layout.svgW} ${layout.svgH}`}
@@ -211,6 +218,9 @@ export default function CorpusKG({ onOpenPaper }) {
                   style={{ cursor: e.type === 'paper' ? 'pointer' : 'default' }}
                   onClick={() => e.type === 'paper' && onOpenPaper?.(e.id)}
                 >
+                  {/* Native SVG tooltip: full, untruncated label as a browser-rendered
+                      title on hover — a fallback alongside the HTML tooltip below. */}
+                  <title>{e.label}</title>
                   <circle
                     r={isHovered ? r + 3 : r}
                     fill={color}
@@ -246,6 +256,29 @@ export default function CorpusKG({ onOpenPaper }) {
               ))}
             </g>
           </svg>
+
+          {/* Hover tooltip — full, untruncated entity title with strong
+              contrast so it stays readable over a busy/filtered graph. */}
+          {hoveredEntityObj && (
+            <div
+              className="corpus-kg-tooltip"
+              style={{
+                position: 'absolute', bottom: 16, left: 24, zIndex: 5,
+                background: 'rgba(10,10,16,0.95)', borderRadius: 8, padding: '10px 14px',
+                border: '1px solid var(--glass-border)', maxWidth: 420, pointerEvents: 'none',
+              }}
+            >
+              <div
+                className="caption"
+                style={{ color: TYPE_COLORS[hoveredEntityObj.type] || 'var(--text-4)', marginBottom: 4, textTransform: 'capitalize' }}
+              >
+                {hoveredEntityObj.type}
+              </div>
+              <div className="body" style={{ color: '#fff', lineHeight: 1.4, fontSize: '0.95rem', wordBreak: 'break-word' }}>
+                {hoveredEntityObj.label}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
