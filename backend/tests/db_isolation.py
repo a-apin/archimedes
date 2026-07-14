@@ -37,23 +37,30 @@ def redirect_to_tmp_sqlite(tmp_path: Path) -> Iterator[None]:
     orig_session_local = archimedes_db.SessionLocal
     orig_database_url = archimedes_db.DATABASE_URL
 
-    db_path = tmp_path / "test_archimedes.db"
-    archimedes_db.DATABASE_URL = f"sqlite:///{db_path}"
-    archimedes_db.engine = create_engine(
-        archimedes_db.DATABASE_URL,
-        connect_args={"check_same_thread": False},
-    )
-    archimedes_db.SessionLocal = sessionmaker(
-        bind=archimedes_db.engine,
-        autocommit=False,
-        autoflush=False,
-    )
-    archimedes_db.Base.metadata.create_all(bind=archimedes_db.engine)
-
+    tmp_engine = None
     try:
+        # Setup happens INSIDE the try: if create_engine/sessionmaker/create_all
+        # raises after some module attributes were already reassigned, the
+        # finally below still restores the originals — otherwise a setup-time
+        # failure would leak the half-redirected globals into every later test
+        # in the process, the exact #1100 failure mode this helper exists to fix.
+        db_path = tmp_path / "test_archimedes.db"
+        archimedes_db.DATABASE_URL = f"sqlite:///{db_path}"
+        tmp_engine = create_engine(
+            archimedes_db.DATABASE_URL,
+            connect_args={"check_same_thread": False},
+        )
+        archimedes_db.engine = tmp_engine
+        archimedes_db.SessionLocal = sessionmaker(
+            bind=tmp_engine,
+            autocommit=False,
+            autoflush=False,
+        )
+        archimedes_db.Base.metadata.create_all(bind=tmp_engine)
         yield
     finally:
-        archimedes_db.engine.dispose()
+        if tmp_engine is not None:
+            tmp_engine.dispose()
         archimedes_db.engine = orig_engine
         archimedes_db.SessionLocal = orig_session_local
         archimedes_db.DATABASE_URL = orig_database_url
