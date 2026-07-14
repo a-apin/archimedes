@@ -151,7 +151,14 @@ class ChainExecutor:
         return Portfolio(
             vault_address=vault_address,
             holdings=holdings,
-            total_value_usdc=total_assets / 1e6,
+            # Same NAV the weights were computed against (review follow-up):
+            # weights use `denominator` (sum of priced holdings, falling back
+            # to totalAssets), while trade sizing multiplies drift by
+            # total_value_usdc — if this stayed on raw totalAssets(), the
+            # #1080 scenario (on-chain NAV excluding an unwired-oracle synth)
+            # would size trades against a NAV inconsistent with the weights
+            # being diffed. One denominator for both surfaces.
+            total_value_usdc=denominator / 1e6,
         )
 
     async def _validate_trade_liquidity(self, trades: list[TradeOrder]) -> None:

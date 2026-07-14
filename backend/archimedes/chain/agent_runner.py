@@ -1017,8 +1017,9 @@ class StrategyRunner:
         for sym in all_symbols:
             if sym in unpriced:
                 logger.warning(
-                    "skipping trade for %s: oracle price unavailable — holding weight is 0 by "
-                    "construction, not truth; refusing to size a trade against it (#1080)",
+                    "vault %s: skipping trade for %s — oracle price unavailable; holding weight "
+                    "is 0 by construction, not truth; refusing to size a trade against it (#1080)",
+                    portfolio.vault_address[:10],
                     sym,
                 )
                 continue

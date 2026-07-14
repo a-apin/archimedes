@@ -131,6 +131,10 @@ class TestReadPortfolio:
         assert weights["sTSLA"] == pytest.approx(0.25)
         assert sum(weights.values()) == pytest.approx(1.0)
         assert all(0.0 <= w <= 1.0 for w in weights.values())
+        # total_value_usdc uses the SAME denominator as the weights (sum of
+        # priced holdings = $400), not the USDC-only on-chain totalAssets
+        # ($300) — trade sizing and weight diffs must share one NAV.
+        assert portfolio.total_value_usdc == pytest.approx(400.0)
 
     def test_unpriceable_synth_valued_zero_not_raw_amount(self, executor, mock_loader):
         """Regression for #1080: a synth whose oracle can't be read was valued
