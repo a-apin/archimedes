@@ -147,7 +147,9 @@ export default function CorpusKG({ onOpenPaper }) {
   // Full entity behind the current hover, for the tooltip below — looked up
   // by id rather than trusting the label already baked into the SVG <text>
   // so the tooltip always shows the complete, untruncated title.
-  const hoveredEntityObj = hoverEntity ? entityMap[hoverEntity] : null
+  // Explicit null check: entity ids are integer PKs — truthiness would
+  // treat a (theoretical) id of 0 as not-hovered (review).
+  const hoveredEntityObj = hoverEntity != null ? entityMap[hoverEntity] : null
 
   return (
     <div className="corpus-kg-wrapper">
