@@ -56,6 +56,17 @@ urllib3>=2.7.0
 backtrader>=1.9.78.123
 
 # x402 micropayments via Circle Gateway (D1)
+# pip-audit flags PYSEC-2023-142 / PYSEC-2025-33 against the transitive vyper
+# pull-in (via titanoboa). Both are false positives here: PYSEC-2023-142 is a
+# @nonreentrant compiler bug fixed in vyper 0.3.1 (the OSV record's malformed
+# range with no "fixed" event over-sweeps every later release incl. 0.4.3);
+# PYSEC-2025-33 is a precompile-return-check bug fixed in 0.4.1. Our resolved
+# vyper (0.4.3, latest on PyPI; titanoboa pins >=0.4.2) already has both fixes.
+# Also moot in practice: these are compiled-bytecode bugs requiring compiling
+# Vyper source, and the only boa.loads/boa.load calls in this repo (backend/
+# tests/contracts/conftest.py) compile our own hardcoded trusted mock source,
+# never untrusted input. Re-verify with `pip-audit -r backend/requirements.txt`
+# before assuming this is stale (investigated 2026-07-14).
 circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355
 
 # LLM

@@ -60,6 +60,11 @@ dependencies:
       # wallet_provisioner.py, and settlement.py. Pinned to the same commit as
       # backend/requirements.txt; pinned to a forked commit (not on PyPI) so the
       # git URL form is required. Evaluate vendoring if the upstream fork disappears.
+      # pip-audit flags PYSEC-2023-142 / PYSEC-2025-33 against the transitive vyper
+      # pull-in (via titanoboa) — both false positives against our resolved 0.4.3
+      # (fixed upstream in 0.3.1 / 0.4.1 respectively; also moot since we never
+      # compile untrusted Vyper source). Full analysis: backend/requirements.txt
+      # comment above the same pin (investigated 2026-07-14).
       - "circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355"
 
       # --- LLM ---
