@@ -417,6 +417,32 @@ resource "aws_ecs_task_definition" "backend" {
     cpu_architecture        = "X86_64"
   }
 
+  # ── EFS companion mount (issue #1065 decision #3 / infra/efs.tf) ─────────
+  # Shared KB corpus-artifact storage — the backend's read side of the SAME
+  # EFS access point the kb-runner scheduled task (infra/kb_runner.tf) writes
+  # into, replacing docker-compose.yml's single named volume
+  # (`archimedes-corpus-artifact`, mounted at this same
+  # `/app/data/corpus-artifact` path there too). Adding this volume block +
+  # the "backend" container's mountPoints entry below is the ONE additive,
+  # in-place update this PR makes to an existing resource (new task-def
+  # revision; aws_ecs_service.backend keeps `lifecycle.ignore_changes =
+  # [task_definition]`, so this revision does NOT auto-roll the live
+  # service — a human/CI still points the service at it explicitly, same as
+  # any other deploy).
+  volume {
+    name = "corpus-artifact"
+
+    efs_volume_configuration {
+      file_system_id     = aws_efs_file_system.corpus_artifact.id # efs.tf
+      transit_encryption = "ENABLED"
+
+      authorization_config {
+        access_point_id = aws_efs_access_point.corpus_artifact.id # efs.tf
+        iam             = "ENABLED"
+      }
+    }
+  }
+
   container_definitions = jsonencode([
     {
       name      = "backend"
@@ -425,6 +451,16 @@ resource "aws_ecs_task_definition" "backend" {
 
       portMappings = [
         { containerPort = 8000, protocol = "tcp" }
+      ]
+
+      # Backend/Dockerfile pre-creates + chowns this exact path to the
+      # nonroot (uid 1001) user, matching the EFS access point's posix_user
+      # (efs.tf) — the KB pipeline's read side (kb-runner writes the SAME
+      # underlying files via infra/kb_runner.tf's mount at
+      # /srv/corpus-artifact). KB_ARTIFACT_DIR (env, below) already points
+      # here; only the volume was previously missing.
+      mountPoints = [
+        { sourceVolume = "corpus-artifact", containerPath = "/app/data/corpus-artifact", readOnly = false }
       ]
 
       # Mirrors backend/Dockerfile's own HEALTHCHECK exactly. Declaring it
