@@ -4,10 +4,15 @@ The testnet engagement engine (North Star §5): a public, gamified ranking of th
 strategy library by the transparent conviction score (real rigor gate + backtest),
 paired with an honest, pending StockBench / live-P&L forward axis.
 
-Source for v1 is the curated/validated library (``strategy_provider``) — the
-strategies that carry real, rigor-gated numbers. Extending the board to
-generated passports is a fast-follow once their backtest completeness is
-confirmed.
+Ranks the curated/validated library (``strategy_provider``) ALONGSIDE PUBLISHED
+generated strategies (curated ∪ generated — the "unify source" decouple in
+docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md Part A). Publish is
+the ONLY generated-side criterion: rigor promotion ("live" status) deliberately
+does NOT qualify, or a private strategy would leak onto the public board the
+moment it passed rigor (#850 privacy principle — publish is the consent signal).
+A generated strategy earns a spot the same way a curated one does: real,
+rigor-gated backtest numbers score it via ``compute_conviction`` — a strategy
+missing a metric scores 0 on that axis and sinks honestly, never fabricated.
 """
 
 from __future__ import annotations
@@ -67,6 +72,21 @@ async def get_leaderboard(
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("leaderboard: strategy provider unavailable: %s", exc)
         responses = []
+
+    # Unify: add GENERATED strategies alongside curated (low-pri decouple).
+    # Public/no-wallet criterion — is_published ONLY (never status: rigor
+    # promotion sets "live" on unpublished strategies too, and keying off it
+    # would leak a private candidate onto the public board; publish is the
+    # consent signal — #850). Best-effort: a failure here degrades to
+    # curated-only, exactly today's behavior.
+    try:
+        from archimedes.api.strategies_routes import _public_generated_strategy_responses
+        from archimedes.db import get_session
+
+        with get_session() as session:
+            responses.extend(_public_generated_strategy_responses(session))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("leaderboard: generated strategies unavailable: %s", exc)
 
     return build_leaderboard(
         responses,

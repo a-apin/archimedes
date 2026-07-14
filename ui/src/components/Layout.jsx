@@ -23,13 +23,15 @@ const NAV = [
   ]},
   { group: 'Discover', items: [
     { id: 'explore',      label: 'Explore',      icon: 'i-lucide-compass' },
-    { id: 'leaderboard',  label: 'Leaderboard',  icon: 'i-lucide-trophy' },
     { id: 'corpus',       label: 'Corpus',       icon: 'i-lucide-library' },
     { id: 'architecture', label: 'Architecture', icon: 'i-lucide-network' },
   ]},
   { group: 'Strategy', items: [
-    { id: 'generate', label: 'Generate', icon: 'i-lucide-sparkles' },
-    { id: 'library',  label: 'Library',  icon: 'i-lucide-line-chart' },
+    { id: 'generate',     label: 'Generate',     icon: 'i-lucide-sparkles' },
+    { id: 'library',      label: 'Library',      icon: 'i-lucide-line-chart' },
+    // Leaderboard lives in STRATEGY (#1077): it ranks the strategy library —
+    // discovery-friendly but strategy-native. (Quant Lab moved to Position.)
+    { id: 'leaderboard',  label: 'Leaderboard',  icon: 'i-lucide-trophy' },
   ]},
   { group: 'Position', items: [
     { id: 'portfolio', label: 'Portfolio', icon: 'i-lucide-layout-dashboard' },

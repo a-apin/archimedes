@@ -1,8 +1,10 @@
 """Tests for GET /api/risk/cvar and GET /api/risk/greeks endpoints.
 
-Hermetic: no DB, no Redis, no network, no .env.  The _strategy_provider
-module-level singleton in risk_routes is patched at the boundary before
-each test so the endpoints operate entirely on controlled mock data.
+Hermetic: no DB, no Redis, no network, no .env.  Both ``_strategy_provider``
+(the curated singleton) and ``_all_strategies`` (the curated ∪ generated
+resolver — the endpoints' actual strategy source since the "unify source"
+decouple) are patched at the boundary before each test so the endpoints
+operate entirely on controlled mock data, never a real DB read.
 """
 
 from __future__ import annotations
@@ -65,7 +67,15 @@ async def test_cvar_returns_200_with_empty_strategies():
 
     # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
     # patch it with a callable returning the pre-configured mock instance.
-    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
+    with (
+        patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider),
+        # _all_strategies (curated ∪ generated, low-pri decouple) is the new
+        # top-level strategy source for these endpoints — pin it to exactly
+        # the curated mock list so these tests stay hermetic (no real DB
+        # generated-strategy row can sneak in and break an exact-count
+        # assertion below).
+        patch("archimedes.api.risk_routes._all_strategies", return_value=mock_provider.list_strategies.return_value),
+    ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/cvar")
 
@@ -98,7 +108,15 @@ async def test_cvar_levels_have_correct_confidence_values():
 
     # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
     # patch it with a callable returning the pre-configured mock instance.
-    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
+    with (
+        patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider),
+        # _all_strategies (curated ∪ generated, low-pri decouple) is the new
+        # top-level strategy source for these endpoints — pin it to exactly
+        # the curated mock list so these tests stay hermetic (no real DB
+        # generated-strategy row can sneak in and break an exact-count
+        # assertion below).
+        patch("archimedes.api.risk_routes._all_strategies", return_value=mock_provider.list_strategies.return_value),
+    ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/cvar")
 
@@ -128,7 +146,15 @@ async def test_cvar_cvar_exceeds_var():
 
     # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
     # patch it with a callable returning the pre-configured mock instance.
-    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
+    with (
+        patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider),
+        # _all_strategies (curated ∪ generated, low-pri decouple) is the new
+        # top-level strategy source for these endpoints — pin it to exactly
+        # the curated mock list so these tests stay hermetic (no real DB
+        # generated-strategy row can sneak in and break an exact-count
+        # assertion below).
+        patch("archimedes.api.risk_routes._all_strategies", return_value=mock_provider.list_strategies.return_value),
+    ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/cvar")
 
@@ -157,7 +183,15 @@ async def test_cvar_single_return_emits_valid_json():
     mock_provider.list_strategies.return_value = [s1]
     mock_provider.get_backtest_result.return_value = bt1
 
-    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
+    with (
+        patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider),
+        # _all_strategies (curated ∪ generated, low-pri decouple) is the new
+        # top-level strategy source for these endpoints — pin it to exactly
+        # the curated mock list so these tests stay hermetic (no real DB
+        # generated-strategy row can sneak in and break an exact-count
+        # assertion below).
+        patch("archimedes.api.risk_routes._all_strategies", return_value=mock_provider.list_strategies.return_value),
+    ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/cvar")
 
@@ -188,7 +222,15 @@ async def test_greeks_returns_200_with_empty_strategies():
 
     # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
     # patch it with a callable returning the pre-configured mock instance.
-    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
+    with (
+        patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider),
+        # _all_strategies (curated ∪ generated, low-pri decouple) is the new
+        # top-level strategy source for these endpoints — pin it to exactly
+        # the curated mock list so these tests stay hermetic (no real DB
+        # generated-strategy row can sneak in and break an exact-count
+        # assertion below).
+        patch("archimedes.api.risk_routes._all_strategies", return_value=mock_provider.list_strategies.return_value),
+    ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/greeks")
 
@@ -215,7 +257,15 @@ async def test_greeks_delta_in_valid_range():
 
     # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
     # patch it with a callable returning the pre-configured mock instance.
-    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
+    with (
+        patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider),
+        # _all_strategies (curated ∪ generated, low-pri decouple) is the new
+        # top-level strategy source for these endpoints — pin it to exactly
+        # the curated mock list so these tests stay hermetic (no real DB
+        # generated-strategy row can sneak in and break an exact-count
+        # assertion below).
+        patch("archimedes.api.risk_routes._all_strategies", return_value=mock_provider.list_strategies.return_value),
+    ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/greeks")
 
@@ -243,7 +293,15 @@ async def test_greeks_portfolio_aggregate_matches_weighted_sum():
 
     # _strategy_provider is now a lazily-cached accessor (_strategy_provider());
     # patch it with a callable returning the pre-configured mock instance.
-    with patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider):
+    with (
+        patch("archimedes.api.risk_routes._strategy_provider", lambda: mock_provider),
+        # _all_strategies (curated ∪ generated, low-pri decouple) is the new
+        # top-level strategy source for these endpoints — pin it to exactly
+        # the curated mock list so these tests stay hermetic (no real DB
+        # generated-strategy row can sneak in and break an exact-count
+        # assertion below).
+        patch("archimedes.api.risk_routes._all_strategies", return_value=mock_provider.list_strategies.return_value),
+    ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/risk/greeks")
 

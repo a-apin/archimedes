@@ -1711,6 +1711,68 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     )
 
 
+# ── Curated ∪ generated resolvers for read-surfaces beyond Library ────────
+# (leaderboard, risk, chat — the "unify source" decouples in
+# docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md Part A).
+# Curated strategies are UNCHANGED: callers keep sourcing those from
+# strategy_provider() and concatenate the GENERATED half these return on top —
+# nothing here alters the curated path.
+
+
+def _generated_strategy_responses(session, caller: str | None) -> list[StrategyResponse]:
+    """GENERATED (non-curated) strategies visible to *caller*, as StrategyResponse.
+
+    Same #850 ownership-visibility rule as ``list_generated_strategies`` /
+    ``_visible_passports``: a row is visible when ``is_published`` or the
+    caller's verified wallet matches ``owner_wallet`` (``is_example`` is never
+    True for a non-curated row). Used by surfaces that need real per-caller
+    generated strategies (risk endpoints, chat vault-context) — NOT for
+    unauthenticated public surfaces, which want ``_public_generated_strategy_responses``
+    instead so a private candidate never leaks.
+    """
+    from archimedes.services.passport_loader import list_passports
+
+    records = [r for r in list_passports(session) if (r.generation_method or "").lower() != "curated"]
+    if not records:
+        return []
+    visible = _visible_passports(session, records, caller)
+    return [_passport_to_strategy_response(r, session) for r in visible]
+
+
+def _public_generated_strategy_responses(session) -> list[StrategyResponse]:
+    """GENERATED strategies visible on PUBLIC, unauthenticated surfaces (the
+    leaderboard). No wallet context exists here, so visibility requires the
+    OWNER to have opted in by PUBLISHING — ``is_published`` ONLY.
+
+    ``status`` is deliberately NOT a visibility criterion: ``upsert_strategy``
+    sets ``status="live"`` on ANY strategy whose rigor passes, published or not,
+    so keying off it would leak a user's PRIVATE (unpublished) strategy — its
+    name + metrics — onto a public ranking the moment it passed rigor. Publish
+    is the consent signal, not rigor. (#850 privacy principle.)
+
+    NOTE: ``is_published`` is currently a dormant flag — the publish flow does
+    not yet flip it — so this is intentionally inert in prod until that wiring
+    lands (tracked as a follow-up). Inert-but-safe beats leaky.
+    """
+    from archimedes.models.strategy_store import StrategyRecord
+    from archimedes.services.passport_loader import list_passports
+
+    records = [r for r in list_passports(session) if (r.generation_method or "").lower() != "curated"]
+    if not records:
+        return []
+    ids = [r.id for r in records]
+    published_ids = {
+        sid
+        for (sid,) in (
+            session.query(StrategyRecord.id)
+            .filter(StrategyRecord.id.in_(ids), StrategyRecord.is_published.is_(True))
+            .all()
+        )
+    }
+    visible = [r for r in records if r.id in published_ids]
+    return [_passport_to_strategy_response(r, session) for r in visible]
+
+
 @strategies_router.get("/{strategy_id}/returns", response_model=StrategyReturnsResponse)
 async def get_strategy_returns(strategy_id: str, request: Request):
     """Return persisted real daily returns for a strategy.
