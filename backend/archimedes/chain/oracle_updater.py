@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import uuid
@@ -298,8 +299,29 @@ class OracleUpdater:
                 try:
                     ciphertext = _encrypt_entity_secret(self._entity_secret, public_key)
 
+                    # Deterministic idempotency key (#F5): derived from the
+                    # stable identifying content of this exact call (wallet +
+                    # oracle contract + function + price), not a fresh random
+                    # UUID per call. A retry of THIS SAME push (same symbol,
+                    # same price) now produces the same key, so Circle's
+                    # dedup can actually recognize it as a retry, while a
+                    # genuinely different push (different oracle or price)
+                    # still produces a different key. uuid5 is used so the
+                    # result is a validly-formatted UUID per Circle's
+                    # IdempotencyKey schema.
+                    idempotency_source = json.dumps(
+                        {
+                            "walletId": self._wallet_id,
+                            "contractAddress": oracle_addr,
+                            "abiFunctionSignature": "setPrice(uint256)",
+                            "abiParameters": [str(price_int)],
+                        },
+                        sort_keys=True,
+                    )
+                    idempotency_key = str(uuid.uuid5(uuid.NAMESPACE_URL, idempotency_source))
+
                     payload = {
-                        "idempotencyKey": str(uuid.uuid4()),
+                        "idempotencyKey": idempotency_key,
                         "walletId": self._wallet_id,
                         "contractAddress": oracle_addr,
                         "abiFunctionSignature": "setPrice(uint256)",

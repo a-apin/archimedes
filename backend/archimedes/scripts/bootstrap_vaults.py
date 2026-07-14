@@ -181,6 +181,14 @@ async def mint_synthetic_tokens() -> dict[str, float]:
     minted: dict[str, float] = {}
 
     for symbol, usdc_amount in MINT_BUDGET.items():
+        if symbol not in synth_addresses:
+            # sTSLA/sNVDA (and any other MINT_BUDGET entry not in the live
+            # SSOT) are compliance-held single-stock synths removed from
+            # chain_client.settings.synth_addresses — see client.py. Skip
+            # rather than crash on the first KeyError, so the remaining
+            # valid symbols still get minted.
+            print(f"  ⏭️  {symbol}: not in current synth_addresses SSOT — skipping")
+            continue
         vault_addr = synth_vault_addresses[symbol]
         token_addr = synth_addresses[symbol]
         usdc_int = int(usdc_amount * 1e6)  # USDC has 6 decimals

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import uuid
@@ -118,8 +119,28 @@ class CircleSigner:
 
             ciphertext = _encrypt_entity_secret(self._entity_secret, public_key)
 
+            # Deterministic idempotency key (#F5): derived from the stable
+            # identifying content of this exact call (wallet + contract +
+            # function + args), not a fresh random UUID per call. A retry of
+            # THIS SAME logical call now produces the same key, so Circle's
+            # dedup can actually recognize it as a retry, while a genuinely
+            # different call (different contract/function/args) still
+            # produces a different key. uuid5 is used so the result is a
+            # validly-formatted UUID per Circle's IdempotencyKey schema.
+            idempotency_source = json.dumps(
+                {
+                    "walletId": self._wallet_id,
+                    "contractAddress": contract_address,
+                    "abiFunctionSignature": abi_function,
+                    "abiParameters": abi_params,
+                },
+                sort_keys=True,
+                default=str,
+            )
+            idempotency_key = str(uuid.uuid5(uuid.NAMESPACE_URL, idempotency_source))
+
             payload = {
-                "idempotencyKey": str(uuid.uuid4()),
+                "idempotencyKey": idempotency_key,
                 "walletId": self._wallet_id,
                 "contractAddress": contract_address,
                 "abiFunctionSignature": abi_function,
@@ -170,7 +191,15 @@ class CircleSigner:
         async with aiohttp.ClientSession() as session:
             payload = {
                 "walletId": self._wallet_id,
-                "transaction": tx_object if isinstance(tx_object, str) else str(tx_object),
+                # Circle's SignTransaction endpoint documents `transaction` as
+                # a JSON-encoded string of the tx object (see
+                # developer-controlled-wallets.yaml TransactionObject schema).
+                # Python's str() produces a single-quoted repr
+                # ("{'nonce': '0x5', ...}") which is not valid JSON and is
+                # rejected by Circle's parser — json.dumps() is the correct
+                # encoding. A caller that already passes a pre-serialized
+                # string (e.g. a raw RLP hex string) is passed through as-is.
+                "transaction": tx_object if isinstance(tx_object, str) else json.dumps(tx_object),
             }
 
             # Sign

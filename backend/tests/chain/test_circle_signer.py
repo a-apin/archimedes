@@ -13,6 +13,7 @@ where a real key would otherwise be needed. No network, no Circle, no Arc RPC.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -235,6 +236,39 @@ class TestSignAndBroadcast:
             pytest.raises(RuntimeError, match="sign failed"),
         ):
             await configured.sign_and_broadcast({"to": "0xabc", "value": 0})
+
+    async def test_dict_transaction_is_json_encoded_not_python_repr(self, configured):
+        """A dict tx_object must be sent as valid JSON (Circle's documented
+        TransactionObject format — see developer-controlled-wallets.yaml),
+        not Python's str() repr. A repr like "{'nonce': '0x5', ...}" (single
+        quotes) is not valid JSON and is not a format Circle's sign endpoint
+        accepts."""
+        session = _mock_session()
+        sign_resp = _resp(201, {"data": {"signedTransaction": "0xabcd", "txHash": ""}})
+        session.post = MagicMock(return_value=session._cm(sign_resp))
+
+        mock_chain = MagicMock()
+        sent_hash = MagicMock()
+        sent_hash.hex = MagicMock(return_value="0xBROADCAST")
+        mock_chain.w3.eth.send_raw_transaction = AsyncMock(return_value=sent_hash)
+
+        tx = {"nonce": "0x5", "to": "0xabc", "value": "0x0", "gas": "0x5208", "chainId": "0x4cef52"}
+
+        with (
+            patch("archimedes.chain.circle_signer.aiohttp.ClientSession", return_value=_session_context(session)),
+            patch("archimedes.chain.client.chain_client", mock_chain),
+        ):
+            await configured.sign_and_broadcast(tx)
+
+        sent_payload = session.post.call_args.kwargs["json"]
+        sent_transaction = sent_payload["transaction"]
+
+        # Must be valid JSON (json.loads must not raise) round-tripping to
+        # the original dict — the old str(tx_object) repr fails this.
+        assert json.loads(sent_transaction) == tx
+        # Guard against a Python-repr regression directly: repr() uses
+        # single-quoted keys/values, which is never valid JSON syntax.
+        assert "'" not in sent_transaction
 
 
 # ── _encrypt_entity_secret ────────────────────────────────────

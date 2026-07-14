@@ -98,7 +98,7 @@ class TracePublisher:
             return None
 
         registry = self.loader.trace_registry
-        nonce = await chain_client.w3.eth.get_transaction_count(account.address)
+        nonce = await chain_client.w3.eth.get_transaction_count(account.address, "pending")
 
         try:
             tx = await registry.functions.publishTrace(vault_addr, trace_hash_bytes, metadata).build_transaction(
@@ -201,7 +201,7 @@ class TracePublisher:
 
         registry = self.loader.trace_registry
         try:
-            nonce = await chain_client.w3.eth.get_transaction_count(account.address)
+            nonce = await chain_client.w3.eth.get_transaction_count(account.address, "pending")
             tx = await registry.functions.commit(
                 vault_addr, content_hash_bytes, claimed_execution_time, trade_id, trade_intent_summary
             ).build_transaction(
@@ -306,7 +306,7 @@ class TracePublisher:
 
         registry = self.loader.trace_registry
         try:
-            nonce = await chain_client.w3.eth.get_transaction_count(account.address)
+            nonce = await chain_client.w3.eth.get_transaction_count(account.address, "pending")
             tx = await registry.functions.reveal(trace_id, storage_pointer, full_content).build_transaction(
                 {
                     "from": account.address,

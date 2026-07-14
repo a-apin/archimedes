@@ -108,7 +108,7 @@ class StrategyPublisher:
             return None
 
         registry = self.loader.strategy_registry
-        nonce = await chain_client.w3.eth.get_transaction_count(account.address)
+        nonce = await chain_client.w3.eth.get_transaction_count(account.address, "pending")
 
         try:
             tx = await registry.functions.registerStrategy(
