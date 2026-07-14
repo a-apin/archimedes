@@ -33,7 +33,7 @@ dependencies:
       - psycopg2-binary>=2.9.12       # PostgreSQL driver (binary wheel; no system pq needed). Floor aligned with backend/requirements.txt via dependabot PR #247.
       - redis>=8.0.0                  # Redis client for live regime/state cache (aligned with backend/requirements.txt)
       - pydantic>=2.13.4
-      - pydantic-settings>=2.14.1     # Floor aligned with backend/requirements.txt via dependabot PR #248.
+      - pydantic-settings>=2.14.2     # Floor aligned with backend/requirements.txt (dependabot batch 2026-07-13).
       - python-dotenv>=1.2.2
       - "slowapi>=0.1.10"             # FastAPI rate-limiter — required by api/limiter.py + user_routes.py. CI installs from backend/requirements.txt; this keeps local dev parity.
 
@@ -41,7 +41,7 @@ dependencies:
       - numpy>=2.4.6,<3.0             # numpy 2 verified against backtrader 1.9.78.123 on 2026-06-12: full analytics-engine suite (170 tests) + backend backtrader tests + e2e Faber SMA200 run all green. Aligned with backend/requirements.txt (dependabot #489).
       - pandas>=2.2
       - scipy>=1.13
-      - scikit-learn>=1.5            # GaussianMixture + StandardScaler for the GmmRegimeDetector (issue #661); BSD-3-Clause. Aligned with backend/requirements.txt.
+      - scikit-learn>=1.9.0          # GaussianMixture + StandardScaler for the GmmRegimeDetector (issue #661); BSD-3-Clause. Aligned with backend/requirements.txt (dependabot batch 2026-07-13).
       - matplotlib>=3.8
       - seaborn>=0.13
 
@@ -72,15 +72,16 @@ dependencies:
       # was an API-breaking bump, so the floors must agree.
       - web3>=7.16.0                  # Python EVM client; works with Arc (EVM-compatible)
       - eth-account>=0.13.7           # Local key management for testnet wallets
+      - eth-abi>=5.2.0,<6             # ABI codec (direct import in marketplace/encoding.py). Cap <6: eth-account's pre-release specifier (`eth-abi>=4.0.0-b.2`) otherwise lets pip resolve the 6.0.0b1 beta — no betas on the funds path. Aligned with backend/requirements.txt.
       - eth-utils>=6.0.0
       - cryptography>=42.0            # RSA sign/serialize for the oracle signer (backend/archimedes/chain/oracle_updater.py); mirrors backend/requirements.txt
 
       # --- AWS / S3 ---
-      - boto3>=1.35                    # S3 artifact reads for KB pipeline output (embeddings, KG)
+      - boto3>=1.43.46                 # S3 artifact reads for KB pipeline output (embeddings, KG). Aligned with backend/requirements.txt (dependabot batch 2026-07-13).
 
       # --- Paper ingestion (Q-fin corpus) ---
       - arxiv>=2.1                    # arxiv API client
-      - pypdf>=6.13.3                 # PDF text extraction. Floor raised to 6.13.3 to close 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25). Aligned with backend/requirements.txt.
+      - pypdf>=6.14.2                 # PDF text extraction. Floor 6.13.3 closed 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25). Aligned with backend/requirements.txt (dependabot batch 2026-07-13).
 
       # --- Semantic retrieval (paper_rag MiniLM embeddings, issue #874) ---
       - torch>=2.0,<3.0               # PyTorch CPU (local dev: pip picks the native/MPS wheel; Docker uses the CPU-only wheel via --extra-index-url in requirements.txt)

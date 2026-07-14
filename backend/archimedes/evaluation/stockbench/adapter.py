@@ -436,7 +436,7 @@ class ArchimedesStockBenchAdapter:
                 synth_budget=0.75,
                 market_ranking=market_ranking,
                 strategies=strategies,
-                scan_universe={f"s{a['ticker']}" for a in analysis},
+                scan_universe_synths={f"s{a['ticker']}" for a in analysis},
             )
 
             if portfolio is None or not portfolio.picks:

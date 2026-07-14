@@ -7,19 +7,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.marketplace_routes import marketplace_router
-from archimedes.db import Base, engine
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from tests.db_isolation import redirect_to_tmp_sqlite
 
 TEST_WALLET = "0x0000000000000000000000000000000000000001"
 
 
 @pytest.fixture(autouse=True)
-def _setup_db():
-    """Create all tables before each test, drop after."""
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+def _setup_db(tmp_path):
+    """Point archimedes.db at a fresh, isolated tmp SQLite file for each test.
+
+    See tests/db_isolation.py — archimedes.db's engine/SessionLocal/DATABASE_URL
+    are process-global singletons bound once at import time, so real isolation
+    means swapping and restoring them, not create_all/drop_all on whichever
+    engine object happens to still be bound to them (issue #1100).
+    """
+    yield from redirect_to_tmp_sqlite(tmp_path)
 
 
 @pytest.fixture(autouse=True)
@@ -405,9 +409,9 @@ def test_unsubscribe_triggers_refund_and_returns_tx(client, app):
 
 
 # ─── Identity ledger (issue #1028, D1a/D2/D3) ──────────────────────────────
-# _setup_db creates+drops all tables around EACH test in this file, so these
-# assertions can be absolute (not delta-based) — no shared-process residue
-# from other tests, unlike files that use the process-wide default engine.
+# _setup_db redirects to a fresh isolated tmp DB around EACH test in this
+# file, so these assertions can be absolute (not delta-based) — no
+# shared-process residue from other tests.
 
 
 def test_publish_registers_dcw_and_ledgers_strategy_published(client):

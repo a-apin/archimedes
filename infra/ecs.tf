@@ -417,6 +417,32 @@ resource "aws_ecs_task_definition" "backend" {
     cpu_architecture        = "X86_64"
   }
 
+  # ── EFS companion mount (issue #1065 decision #3 / infra/efs.tf) ─────────
+  # Shared KB corpus-artifact storage — the backend's read side of the SAME
+  # EFS access point the kb-runner scheduled task (infra/kb_runner.tf) writes
+  # into, replacing docker-compose.yml's single named volume
+  # (`archimedes-corpus-artifact`, mounted at this same
+  # `/app/data/corpus-artifact` path there too). Adding this volume block +
+  # the "backend" container's mountPoints entry below is the ONE additive,
+  # in-place update this PR makes to an existing resource (new task-def
+  # revision; aws_ecs_service.backend keeps `lifecycle.ignore_changes =
+  # [task_definition]`, so this revision does NOT auto-roll the live
+  # service — a human/CI still points the service at it explicitly, same as
+  # any other deploy).
+  volume {
+    name = "corpus-artifact"
+
+    efs_volume_configuration {
+      file_system_id     = aws_efs_file_system.corpus_artifact.id # efs.tf
+      transit_encryption = "ENABLED"
+
+      authorization_config {
+        access_point_id = aws_efs_access_point.corpus_artifact.id # efs.tf
+        iam             = "ENABLED"
+      }
+    }
+  }
+
   container_definitions = jsonencode([
     {
       name      = "backend"
@@ -425,6 +451,16 @@ resource "aws_ecs_task_definition" "backend" {
 
       portMappings = [
         { containerPort = 8000, protocol = "tcp" }
+      ]
+
+      # Backend/Dockerfile pre-creates + chowns this exact path to the
+      # nonroot (uid 1001) user, matching the EFS access point's posix_user
+      # (efs.tf) — the KB pipeline's read side (kb-runner writes the SAME
+      # underlying files via infra/kb_runner.tf's mount at
+      # /srv/corpus-artifact). KB_ARTIFACT_DIR (env, below) already points
+      # here; only the volume was previously missing.
+      mountPoints = [
+        { sourceVolume = "corpus-artifact", containerPath = "/app/data/corpus-artifact", readOnly = false }
       ]
 
       # Mirrors backend/Dockerfile's own HEALTHCHECK exactly. Declaring it
@@ -470,12 +506,22 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "ARCHIMEDES_STRATEGIES_DIR", value = "/app/analytics-engine/strategies" },
         { name = "ARCHIMEDES_CORPUS_MANIFEST", value = "/app/data/corpus/manifest.jsonl" },
         { name = "KB_ARTIFACT_DIR", value = "/app/data/corpus-artifact" },
-        # Deployed Arc testnet contract addresses — same defaults as
-        # docker-compose.yml's backend service; not secrets.
-        { name = "ARC_AMM_ROUTER_ADDRESS", value = "0xd5b829f9d364a8bbe1caf6c8b19cb05371b178f4" },
-        { name = "ARC_VAULT_FACTORY_ADDRESS", value = "0xca873414070844aeb98b0bf1051f81969c79cc32" },
-        { name = "ARC_REASONING_TRACE_REGISTRY_ADDRESS", value = "0x42d8a23edb897cbee203e9fa197eb05ab5106ca6" },
-        { name = "ARC_ASSET_REGISTRY_ADDRESS", value = "0x2d44550711137916df6175587d17886281a0fbc7" },
+        # Deployed Arc testnet contract addresses — T3.2 redeploy 2026-07-09
+        # (deployer 0x03AaB3C91873f0Ec606c1Ed7528FE4CDCD6a4092, chain 5042002).
+        # One authoritative set; converges the prior FE/BE split-brain. Not secrets.
+        { name = "ARC_AMM_ROUTER_ADDRESS", value = "0x03df6c79f4e573ce793cdaa187719d1f15df24dc" },
+        { name = "ARC_VAULT_FACTORY_ADDRESS", value = "0x404d18a906abbdf7bed5cf798c1dc5399c563987" },
+        { name = "ARC_REASONING_TRACE_REGISTRY_ADDRESS", value = "0x9d81bfbfadb683cf77acda480e94e64088012847" },
+        { name = "ARC_ASSET_REGISTRY_ADDRESS", value = "0x32c28231202626fbd8cf87caf42b01d973dc96c8" },
+        { name = "ARC_SYNTHETIC_FACTORY_ADDRESS", value = "0x295b176aecc3be722827c49827794ee7ee707815" },
+        # Marketplace contracts (publish path) — T3.2.
+        { name = "ARC_STRATEGY_REGISTRY_ADDRESS", value = "0x283a2E42a06bb9BBA5e6613957C473D8AE7d4219" },
+        { name = "ARC_PAYMENT_SPLITTER_ADDRESS", value = "0x69697D64e6ABD4dd7febc4dB7F017e9Cf4a9A1a7" },
+        # Per-synth token/oracle addresses are NOT set here: the backend resolves all
+        # 281 from the committed deploy-address SSOT baked into the image
+        # (backend/archimedes/data/synthetic_addresses.json, regenerated per redeploy by
+        # scripts/gen_synthetic_addresses.py). ARC_<SYMBOL>_ADDRESS env still overrides
+        # any single synth if ever needed, but the whole set no longer needs pinning here.
         # Config consolidation (#1039 P5): public wallet addresses, sourced
         # from Terraform variables (TF_VAR_*, see variables.tf) rather than
         # hardcoded here or read off a box .env file. Empty defaults disable

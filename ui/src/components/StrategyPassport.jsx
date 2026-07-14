@@ -35,7 +35,7 @@ function statusTag(status, passesRigor) {
 }
 
 function statusLabel(status, passesRigor) {
-  if (status === 'live' && passesRigor === false) return 'Live (rigor failed)'
+  if (status === 'live' && passesRigor === false) return 'Reference only — gate failed'
   return (status || 'candidate').charAt(0).toUpperCase() + (status || 'candidate').slice(1)
 }
 

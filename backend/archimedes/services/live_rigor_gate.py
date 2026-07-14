@@ -42,39 +42,19 @@ PASS = "pass"
 FAIL = "fail"
 PENDING = "pending"
 
-# Fail-safe selection-set size when the true library trial count cannot be
-# derived (#902). Deflating with too many trials errs toward rejecting a
-# strategy; deflating with num_trials=1 errs toward an UNDEFLATED pass — the
-# exact failure mode #902 flags. So when the DB/provider is unreachable the
-# default leans conservative (the seeded v1 library size), never 1.
-_FALLBACK_NUM_TRIALS = 5
-
 
 def _default_num_trials() -> int:
-    """Library-wide selection-set size for DSR deflation (#902).
+    """Self-contained default selection-set size = 1 (decouple #2, Dan's principle).
 
-    The multiple-testing set for a library strategy is the library itself —
-    the number of strategies with enough persisted real returns to grade
-    (same valid-set definition as ``verdicts_for_strategies``). Callers that
-    already hold cohort context pass ``num_trials`` explicitly; this default
-    exists so the single-verdict path can never silently run undeflated
-    (``num_trials=1`` collapses DSR to plain Sharpe > 0). Fail-safe to
-    ``_FALLBACK_NUM_TRIALS`` — more deflation, never less — on any failure.
+    A strategy's rigor depends ONLY on itself, never on how many OTHER strategies
+    happen to sit in the curated library. With no explicit caller-supplied trial
+    count, a single strategy's own selection set is one trial — NOT the library
+    size (the prior #902 behavior, which deflated every strategy by the count of
+    strategies with enough persisted returns to grade). Callers holding real
+    cohort context of their OWN (e.g. a strategy's own N-candidate generation
+    pool, or its own parameter-variant grid) still pass ``num_trials`` explicitly.
     """
-    try:
-        from archimedes.db import get_session, init_db
-        from archimedes.services.backtest_repository import get_all_daily_returns
-        from archimedes.services.strategy_provider import default_provider
-
-        strategy_ids = [s.id for s in default_provider().list_strategies()]
-        init_db()
-        with get_session() as session:
-            returns_by_strategy = get_all_daily_returns(session, strategy_ids)
-        n = sum(1 for v in returns_by_strategy.values() if len(v) >= _MIN_RETURNS_FOR_GATE)
-        return max(n, 1)
-    except Exception as exc:
-        logger.warning("default num_trials derivation failed (fallback=%d): %s", _FALLBACK_NUM_TRIALS, exc)
-        return _FALLBACK_NUM_TRIALS
+    return 1
 
 
 @dataclass(frozen=True)
@@ -153,11 +133,12 @@ def verdict_from_returns(
     unexpected failure inside the gate fails closed to ``pending`` so the badge can
     never claim a pass it did not earn.
 
-    ``num_trials=None`` (the default) derives the library-wide selection-set size
-    (#902) — the old ``num_trials=1`` default zeroed the multiple-testing penalty
-    (``E_max_N=0``) and collapsed DSR to a plain Sharpe test, so an unspecified
-    trial count silently ran the badge undeflated. Callers holding cohort context
-    (``verdicts_for_strategies``, the generation pipeline) still pass it explicitly.
+    ``num_trials=None`` (the default) derives a self-contained ``1`` via
+    ``_default_num_trials()`` — a strategy is graded on its own selection set,
+    never deflated by the curated library's count (decouple #2, reverses the
+    #902 library-wide-count default). Callers holding a real selection-set of
+    their OWN (a strategy's own N-candidate generation pool, or its own
+    parameter-variant grid) still pass ``num_trials`` explicitly.
 
     ``look_ahead_audit_passed=None`` (the default) leaves the look-ahead leg to
     ``run_rigor_gate``'s own AST-audit-over-``strategy_code`` path — the right
@@ -216,8 +197,9 @@ def verdicts_for_strategies(strategies: list) -> dict[str, RigorGateVerdict]:
     Single source of truth for the library-list badge (#821). Mirrors the
     ``/api/selection-bias/gate`` route's data path:
       * load real daily returns from the DB (``get_all_daily_returns``);
-      * compute the library-wide ``num_trials`` + cohort PBO + avg-correlation from
-        the strategies that actually HAVE returns (≥10 obs);
+      * compute cohort PBO + avg-correlation from the strategies that actually
+        HAVE returns (≥10 obs) — ``num_trials`` is self-contained (1 per
+        strategy, decouple #2) and does NOT come from this cohort;
       * run ``run_rigor_gate`` per strategy and map ``passes_all`` to a tri-state.
 
     Strategies with no real returns map to ``pending`` — never a fixture boolean.
@@ -249,13 +231,17 @@ def verdicts_for_strategies(strategies: list) -> dict[str, RigorGateVerdict]:
     # (that is the circular validation the /gate route explicitly refuses).
     valid_returns = {k: v for k, v in returns_by_strategy.items() if len(v) >= _MIN_RETURNS_FOR_GATE}
 
-    # The library is the multiple-testing selection set (mirrors selection_bias_routes).
-    # Wrap the cohort-context compute in the same fail-closed contract the docstring
-    # promises: if compute_pbo / compute_average_pairwise_correlation raises, degrade
-    # the whole batch to pending rather than 500-ing the library list.
+    # num_trials = 1: each strategy is graded on ITS OWN Sharpe, NOT deflated by
+    # how many OTHER strategies sit in the library (Dan's principle, decouple #2,
+    # mirrors selection_bias_routes.evaluate_rigor_gate). PBO and avg_correlation
+    # stay cohort-wide (unchanged, out of scope for this decouple) — only
+    # num_trials is self-contained. Wrap the cohort-context compute in the same
+    # fail-closed contract the docstring promises: if compute_pbo /
+    # compute_average_pairwise_correlation raises, degrade the whole batch to
+    # pending rather than 500-ing the library list.
     try:
         pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
-        num_trials = max(len(valid_returns), 1)
+        num_trials = 1
         avg_correlation = compute_average_pairwise_correlation(valid_returns) if len(valid_returns) >= 2 else 0.0
     except Exception as exc:
         logger.warning("live rigor gate batch: cohort-context compute failed (all → pending): %s", exc)

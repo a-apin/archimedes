@@ -35,12 +35,16 @@ async def list_traces(
 
     state = AgentStateStore()
     try:
-        off_chain_traces, total = await state.list_traces(
-            vault_address=vault_address,
-            decision_type=decision_type,
-            limit=limit,
-            offset=offset,
-        )
+        try:
+            off_chain_traces, total = await state.list_traces(
+                vault_address=vault_address,
+                decision_type=decision_type,
+                limit=limit,
+                offset=offset,
+            )
+        except Exception:
+            logger.warning("list_traces: Redis unavailable — falling back to on-chain-only listing", exc_info=True)
+            off_chain_traces, total = [], 0
 
         if off_chain_traces:
             traces = []
@@ -125,7 +129,11 @@ async def get_trace(trace_id: str):
 
     state = AgentStateStore()
     try:
-        off_chain = await state.get_trace(trace_id)
+        try:
+            off_chain = await state.get_trace(trace_id)
+        except Exception:
+            logger.warning("get_trace: Redis unavailable — falling back to on-chain-only lookup", exc_info=True)
+            off_chain = None
         if off_chain:
             return TraceResponse(
                 id=off_chain.get("id", trace_id),
@@ -245,6 +253,22 @@ async def publish_trace(req: TracePublishRequest, _: None = Depends(require_inte
     state = AgentStateStore()
     try:
         await state.save_trace(off_chain_data)
+    except Exception:
+        # WRITE path: unlike the read endpoints' graceful degradation above,
+        # a failed off-chain persist must NOT return 200 — the caller would
+        # get is_anchored=True for a trace whose full reasoning body was never
+        # stored, i.e. an on-chain anchor that can never be re-verified against
+        # its off-chain content (claim-integrity). Fail loudly and retryably;
+        # include the anchor tx so the caller knows the on-chain half landed.
+        logger.error("publish_trace: failed to persist off-chain trace data (Redis unavailable?)", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Trace anchored on-chain (tx {arc_tx_hash}) but off-chain persistence failed — retry publish."
+                if arc_tx_hash
+                else "Off-chain trace persistence failed (no on-chain anchor was recorded either) — retry publish."
+            ),
+        ) from None
     finally:
         await state.close()
 
@@ -270,7 +294,13 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
 
     state = AgentStateStore()
     try:
-        off_chain = await state.get_trace(trace_id)
+        try:
+            off_chain = await state.get_trace(trace_id)
+        except Exception:
+            logger.warning(
+                "verify_trace: Redis unavailable — falling back to on-chain-only verification", exc_info=True
+            )
+            off_chain = None
         if not off_chain:
             try:
                 int_id = int(trace_id)
@@ -354,7 +384,14 @@ async def get_trace_canonical(trace_id: str):
 
     state = AgentStateStore()
     try:
-        off_chain = await state.get_trace(trace_id)
+        try:
+            off_chain = await state.get_trace(trace_id)
+        except Exception:
+            # 503, not 404: "store unavailable" must stay distinguishable from
+            # "trace doesn't exist" — a canonical-JSON consumer (hash
+            # re-verification) should retry, not conclude the trace is gone.
+            logger.warning("get_trace_canonical: Redis unavailable", exc_info=True)
+            raise HTTPException(status_code=503, detail="Trace store temporarily unavailable — retry.") from None
         if not off_chain:
             raise HTTPException(status_code=404, detail="Trace not found")
 

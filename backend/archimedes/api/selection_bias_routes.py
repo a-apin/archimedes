@@ -300,14 +300,15 @@ async def evaluate_rigor_gate(
         }
         pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
 
-        # num_trials = library size here (#770). This route grades the EXISTING persisted
-        # library, so the selection set is the library itself — there is no fresh
-        # N-candidate society pool to add (that additive correction, N + library_size,
-        # applies only on the live society generation path in generation_pipeline.py).
-        # #820 unified the live and fusion generation paths on that additive count;
-        # this route staying on library-size alone is the deliberate exception, not
-        # a fourth convention that slipped through.
-        num_trials = max(len(valid_returns), 1)
+        # num_trials = 1: each curated strategy is graded on ITS OWN Sharpe, NOT
+        # deflated by how many OTHER strategies sit in the library (Dan's principle,
+        # decouple #2, 2026-07-09). A curated single-paper strategy carries no
+        # generation search of ours, so its self-contained trial count is 1 (the
+        # paper's headline config) — with num_trials=1 the DSR expectation-of-max
+        # term collapses, so the strategy is judged purely on its own return series.
+        # REVERSES the prior library-size deflation (#770/#820) — needs Önder's
+        # sign-off; it raises curated pass rates by removing a cross-strategy penalty.
+        num_trials = 1
 
         # The strategy library is the multiple-testing selection set; correlated
         # strategies (overlapping assets/signals) carry fewer independent trials, so

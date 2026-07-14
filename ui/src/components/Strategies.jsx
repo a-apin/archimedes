@@ -76,7 +76,7 @@ function statusTag(status, passesRigor) {
 }
 
 function statusLabel(status, passesRigor) {
-  if (status === 'live' && passesRigor === false) return 'Live (rigor failed)'
+  if (status === 'live' && passesRigor === false) return 'Reference only — gate failed'
   if (status === 'pending_backtest') return 'Pending Backtest'
   if (!status) return 'Candidate'
   return status.charAt(0).toUpperCase() + status.slice(1)
@@ -154,15 +154,18 @@ export function BacktestHorizon({ s, principal = 1000 }) {
 
 // ── Strategy Architect form ───────────────────────────────────
 
-// Weighted-sum of per-strategy backtest metrics across the architect's
-// selected portfolio. Honest about partial coverage — if any selected
-// strategy is missing a metric, we return null for that metric rather
-// than silently undercounting.
+// Weighted-average of per-strategy backtest metrics across the architect's
+// selected portfolio. Honest about partial coverage — if a selected strategy
+// is missing a metric, its weight is excluded from that metric's average
+// (renormalized by the weight of strategies that actually contributed)
+// rather than silently treated as a zero contribution, which would deflate
+// the blended result.
 function aggregateMetrics(selected, strategies) {
   if (!selected?.length || !strategies?.length) return null
   const byId = Object.fromEntries(strategies.map(s => [s.id, s]))
   const metrics = ['sharpe_ratio', 'cagr', 'max_drawdown']
   const out = {}
+  const metricWeight = Object.fromEntries(metrics.map(m => [m, 0]))
   let totalWeight = 0
   let anyMissing = false
   for (const sel of selected) {
@@ -172,13 +175,14 @@ function aggregateMetrics(selected, strategies) {
     for (const m of metrics) {
       if (row[m] == null) { anyMissing = true; continue }
       out[m] = (out[m] || 0) + row[m] * sel.weight
+      metricWeight[m] += sel.weight
     }
   }
   if (totalWeight === 0) return null
   return {
-    sharpe_ratio: out.sharpe_ratio ?? null,
-    cagr: out.cagr ?? null,
-    max_drawdown: out.max_drawdown ?? null,
+    sharpe_ratio: metricWeight.sharpe_ratio > 0 ? out.sharpe_ratio / metricWeight.sharpe_ratio : null,
+    cagr: metricWeight.cagr > 0 ? out.cagr / metricWeight.cagr : null,
+    max_drawdown: metricWeight.max_drawdown > 0 ? out.max_drawdown / metricWeight.max_drawdown : null,
     coverage_weight: totalWeight,
     partial: anyMissing,
   }
@@ -779,6 +783,13 @@ function coerceGenerated(row) {
   const sourcePapers = Array.isArray(row.source_papers) ? row.source_papers : []
   const firstPaper = sourcePapers[0]?.arxiv_id || ''
   const year = row.created_at ? new Date(row.created_at).getFullYear() : null
+  // rigor_verdict is the real shape the backend persists (see
+  // StrategyRecord.to_dict() in backend/archimedes/models/strategy_store.py
+  // and generation_pipeline.py ~line 1272): {dsr, dsr_p_value, pbo,
+  // oos_sharpe, passing}. Read from there rather than nonexistent top-level
+  // fields — fall back to null only when rigor_verdict itself is absent.
+  const verdict = row.rigor_verdict || null
+  const hasRealMetrics = verdict?.dsr != null || row.sharpe_ratio != null
   // Honest status mapping: the generation pipeline persists status="rejected"
   // when its synthesis-time signal didn't pass, but for these rows no real
   // backtest has run yet (every metric column is null). Calling that
@@ -786,7 +797,6 @@ function coerceGenerated(row) {
   // know what's actually happening: candidate generated, real metrics not
   // computed yet. The rigor gate verdict + DSR/PBO numbers still render
   // honestly on the strategy passport.
-  const hasRealMetrics = row.dsr_value != null || row.sharpe_ratio != null
   const honestStatus = (!hasRealMetrics && row.status === 'rejected')
     ? 'pending_backtest'
     : (row.status || 'candidate')
@@ -804,15 +814,15 @@ function coerceGenerated(row) {
     cagr: null,
     max_drawdown: null,
     correlation_to_spy: null,
-    deflated_sharpe_ratio: null,
-    pbo_score: null,
-    out_of_sample_sharpe: null,
+    deflated_sharpe_ratio: verdict?.dsr ?? null,
+    pbo_score: verdict?.pbo ?? null,
+    out_of_sample_sharpe: verdict?.oos_sharpe ?? null,
     paper_claimed_sharpe: null,
     backtest_start: null,
     backtest_end: null,
     is_backtest_placeholder: true,
-    passes_rigor_gate: null,
-    dsr_p_value: null,
+    passes_rigor_gate: verdict ? Boolean(verdict.passing) : null,
+    dsr_p_value: verdict?.dsr_p_value ?? null,
     sharpe_ci_95: null,
     drift_detected: null,
   }

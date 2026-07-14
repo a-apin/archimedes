@@ -122,6 +122,30 @@ class TestComputeTrades:
         assert len(gold_trades) == 1
         assert gold_trades[0].direction == TradeDirection.SELL
 
+    def test_unpriced_holding_is_never_traded(self, runner):
+        """#1080 review follow-up: a holding whose oracle price couldn't be
+        read reports weight 0 BY CONSTRUCTION (priced=False) while its balance
+        is real. Trading on that fake 0 would BUY more of the unpriceable
+        asset every tick (current 0 vs target >0, forever). It must be
+        skipped — in both directions — until the oracle prices it again."""
+        holdings = [
+            PortfolioHolding(symbol="USDC", token_address="0xusdc", amount=7000.0, weight=0.70, value_usdc=7000.0),
+            PortfolioHolding(symbol="sSPY", token_address="0xsspy", amount=30.0, weight=0.30, value_usdc=3000.0),
+            # Real balance, unreadable price: weight/value are fake zeros.
+            PortfolioHolding(
+                symbol="sGOLD", token_address="0xsgold", amount=15.0, weight=0.0, value_usdc=0.0, priced=False
+            ),
+        ]
+        portfolio = _make_portfolio(holdings=holdings)
+        # Target wants 30% sGOLD — naive diff would BUY (0 → 0.30).
+        targets = _make_targets(USDC=0.40, sSPY=0.30, sGOLD=0.30)
+        trades = runner._compute_trades(portfolio, targets)
+        assert [t for t in trades if t.symbol == "sGOLD"] == [], (
+            "unpriced holding must not be traded on its fake-zero weight"
+        )
+        # Other symbols still trade normally (USDC 0.70→0.40 is a real drift).
+        assert any(t.symbol != "sGOLD" for t in trades)
+
 
 class TestWeightsToTargets:
     """Test _weights_to_targets: dict → TargetAllocation list."""
