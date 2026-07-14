@@ -35,10 +35,7 @@ function statusTag(status, passesRigor) {
 }
 
 function statusLabel(status, passesRigor) {
-  // Keep "Live" in the string: status 'live' = active in ≥1 portfolio; the
-  // gate verdict is a separate, continuously re-derived fact (see
-  // Strategies.jsx statusLabel for the full rationale).
-  if (status === 'live' && passesRigor === false) return 'Live — rigor gate failing'
+  if (status === 'live' && passesRigor === false) return 'Reference only — gate failed'
   return (status || 'candidate').charAt(0).toUpperCase() + (status || 'candidate').slice(1)
 }
 
