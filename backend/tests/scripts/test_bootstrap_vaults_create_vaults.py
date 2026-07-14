@@ -32,9 +32,12 @@ class TestCreateVaults:
 
     def test_happy_path_returns_parsed_vault_address(self):
         """status=1 + VaultCreated event found → vault appended with the
-        parsed address, without ever calling getVaults()."""
+        address parsed from the event (not the getVaults()-idempotency-check
+        fallback, which is called once upfront per #1102 but returns no
+        existing vaults here)."""
         factory = MagicMock()
         factory.events.VaultCreated.return_value.process_log.return_value = {"args": {"vault": "0xNewVault"}}
+        factory.functions.getVaults.return_value.call = AsyncMock(return_value=[])
         loader = MagicMock()
         loader.vault_factory = factory
         receipt = AttributeDict({"status": 1, "logs": [MagicMock()]})
@@ -58,13 +61,13 @@ class TestCreateVaults:
                 "allocations": {"USDC": 10000},
             }
         ]
-        factory.functions.getVaults.assert_not_called()
 
     def test_revert_skips_profile_and_prints_error(self, capsys):
         """status=0 → VaultCreationRevertedError is raised, caught by the
         per-profile try/except, and the profile is NOT appended to vaults
         (the bug #655 guards against: silently returning all_vaults[-1])."""
         factory = MagicMock()
+        factory.functions.getVaults.return_value.call = AsyncMock(return_value=[])
         loader = MagicMock()
         loader.vault_factory = factory
         receipt = AttributeDict({"status": 0, "logs": []})
@@ -81,7 +84,6 @@ class TestCreateVaults:
             vaults = asyncio.run(create_vaults({}))
 
         assert vaults == []
-        factory.functions.getVaults.assert_not_called()
         captured = capsys.readouterr()
         assert "Test Vault: creation failed" in captured.out
         assert "reverted on-chain" in captured.out

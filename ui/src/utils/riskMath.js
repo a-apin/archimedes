@@ -62,6 +62,34 @@ export function annualizedSharpe(window, rf = 0, periodsPerYear = TRADING_DAYS) 
 }
 
 /**
+ * Chronological walk-forward folds over a returns series. Splits the series
+ * into `k` contiguous segments; inside each, the first `trainFrac` is the
+ * in-sample window and the remainder is out-of-sample. Mirrors the shape the
+ * BacktestVisualizer fold band expects ({isSharpe, oosSharpe} per fold).
+ * @param {number[]} returns — periodic returns, chronological
+ * @param {number} k — number of folds (default 6)
+ * @param {number} trainFrac — in-sample share of each fold (default 0.7)
+ * @returns {{isSharpe: number, oosSharpe: number}[]} empty when the series is
+ *   too short for each OOS slice to hold at least 20 observations
+ */
+export function walkForwardFolds(returns, k = 6, trainFrac = 0.7) {
+  if (!returns || returns.length === 0) return []
+  const segLen = Math.floor(returns.length / k)
+  const oosLen = Math.floor(segLen * (1 - trainFrac))
+  if (oosLen < 20) return []
+  const folds = []
+  for (let i = 0; i < k; i++) {
+    const seg = returns.slice(i * segLen, (i + 1) * segLen)
+    const split = Math.floor(seg.length * trainFrac)
+    folds.push({
+      isSharpe: annualizedSharpe(seg.slice(0, split)),
+      oosSharpe: annualizedSharpe(seg.slice(split)),
+    })
+  }
+  return folds
+}
+
+/**
  * Rolling annualized Sharpe over a trailing window. Returns one value per
  * position once enough data exists (null before the window fills, so charts
  * can skip the warm-up region).

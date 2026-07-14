@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from archimedes.agents.strategy_architect import ArchitectProposal
+from archimedes.agents.generation_json import ArchitectProposal
 from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
 
 logger = logging.getLogger(__name__)

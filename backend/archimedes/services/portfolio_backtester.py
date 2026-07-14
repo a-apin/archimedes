@@ -362,8 +362,10 @@ def backtest_portfolio(
         rebalance_days: Periodic rebalance interval in trading days.
         initial_cash: Starting equity.
         tx_cost_bps: Round-trip cost in basis points (10 = 0.10%, matches default).
-        num_trials_for_dsr: Multiple-testing correction; pass library size for
-            meaningful DSR. Default 1 = no correction (passport's own row).
+        num_trials_for_dsr: Multiple-testing correction; pass the strategy's OWN
+            selection-set size (e.g. its N-candidate generation pool) for a
+            meaningful DSR — never the curated library's count (decouple #2).
+            Default 1 = no correction (a self-contained, single-trial grade).
         paper_claimed_sharpe: If set, recorded for paper-vs-actual delta display.
         paper_title: Optional human-readable title for the artifact metadata.
 

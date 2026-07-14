@@ -118,7 +118,7 @@ function HeroStrip() {
     { n: '3', l: 'Top-level agents', s: 'Generation · Construction · Execution' },
     { n: '6', l: 'Memory layers', s: 'KV cache → on-chain ground truth' },
     { n: '10,000', l: 'q-fin metadata records', s: 'embeddings + clusters + KG: build target' },
-    { n: '10', l: 'Smart contracts', s: 'Deployed on Arc testnet' },
+    { n: '11', l: 'Smart contracts', s: 'Deployed on Arc testnet' },
   ]
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-7">
