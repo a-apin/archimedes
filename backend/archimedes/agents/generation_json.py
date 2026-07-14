@@ -59,6 +59,8 @@ def extract_json(text: str) -> dict:
         if isinstance(parsed, dict):
             return parsed
     except json.JSONDecodeError:
+        # Not valid JSON at the top level — fall through to the brace scan
+        # below, which extracts the first balanced embedded object instead.
         pass
 
     start = cleaned.find("{")
