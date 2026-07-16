@@ -65,10 +65,14 @@ def test_sortino_all_negative_is_finite_and_negative() -> None:
 
 
 def test_sortino_rms_of_negatives_convention() -> None:
-    # Verify the RMS-of-negatives denominator convention explicitly.
+    # Verify the downside-deviation denominator convention explicitly.
+    # Updated for corrected Sortino denominator: divides by the TOTAL sample
+    # size (len(returns)), not just the count of negative days, per the
+    # standard Sortino/target-semideviation convention (e.g.
+    # empyrical.downside_risk) — bug M1 fix.
     returns = [0.05, -0.02, 0.03, -0.04]
     downside = [r for r in returns if r < 0]
-    dd_rms = math.sqrt(sum(r * r for r in downside) / len(downside))
+    dd_rms = math.sqrt(sum(r * r for r in downside) / len(returns))
     mean = statistics.fmean(returns)
     expected = ((mean - RF_DAILY) / dd_rms) * math.sqrt(ANNUALIZATION)
     assert _compute_sortino(returns) == pytest.approx(expected)

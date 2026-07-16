@@ -96,8 +96,12 @@ class FiftyTwoWeekHighMomentum(bt.Strategy):
         if len(self) <= lookback:
             return
 
-        recent_highs = [float(self.data.high[-i]) for i in range(1, lookback + 1)]
-        annual_high = max(recent_highs)
+        # Disclosed methodology (METHODOLOGY_TEXT) is the trailing 52-week
+        # highest CLOSE, not intraday high — using self.data.high overstates
+        # the denominator (intraday high >= close) and shifts when the
+        # near-52-week-high signal fires relative to the passport's claim.
+        recent_closes = [float(self.data.close[-i]) for i in range(1, lookback + 1)]
+        annual_high = max(recent_closes)
         if annual_high <= 0:
             return
 
