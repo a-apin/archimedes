@@ -254,6 +254,12 @@ class TracePublisher:
         except Exception as e:
             logger.warning(f"Cannot read commit receipt: {e}")
 
+        if reverted:
+            # Loud, not silent: the commit-side code above already logged an
+            # INFO success line before the receipt came back, so without this
+            # the log stream would claim a commit succeeded when it reverted.
+            logger.warning(f"Commit tx {tx_hash[:16]}... reverted (status=0) — no trace_id for this commit")
+
         if trace_id is None and not reverted:
             # Fallback: newest trace id for the vault. Skipped on a confirmed
             # revert (reverted=True, see docstring). If the receipt fetch above

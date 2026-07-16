@@ -12,6 +12,7 @@ argument, and the graceful fallback when the deployed registry is pre-v1.5 (#588
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -133,7 +134,7 @@ class TestFinalizeCommitRevertHandling:
     silently hand back an unrelated, already-committed trace's id.
     """
 
-    def test_reverted_commit_does_not_fall_back_to_stale_trace_id(self, supported_loader):
+    def test_reverted_commit_does_not_fall_back_to_stale_trace_id(self, supported_loader, caplog):
         with (
             patch("archimedes.chain.trace_publisher.circle_signer") as mock_signer,
             patch("archimedes.chain.trace_publisher.chain_client") as mock_client,
@@ -152,14 +153,19 @@ class TestFinalizeCommitRevertHandling:
 
             trace = _make_trace()
             trace.compute_hash()
-            trace_id, tx, block = asyncio.run(
-                TracePublisher(loader=supported_loader).commit(trace, 2_000_000_000, b"\x44" * 32)
-            )
+            with caplog.at_level(logging.WARNING, logger="archimedes.chain.trace_publisher"):
+                trace_id, tx, block = asyncio.run(
+                    TracePublisher(loader=supported_loader).commit(trace, 2_000_000_000, b"\x44" * 32)
+                )
 
             assert trace_id is None  # NOT 999 — the confirmed revert must not be masked
             assert tx == "0xREVERTED"  # tx hash still recorded for the diagnostic trail
             assert block == 100
             supported_loader.trace_registry.functions.getTracesByVault.assert_not_called()
+            # The revert must be loud: the commit path logs an INFO success line
+            # before the receipt comes back, so without this warning the log
+            # stream would claim the commit succeeded.
+            assert "reverted (status=0)" in caplog.text
 
     def test_successful_commit_with_undecodable_event_still_uses_fallback(self, supported_loader):
         """Regression guard: only a confirmed revert skips the fallback — a
