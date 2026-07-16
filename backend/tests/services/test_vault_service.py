@@ -170,7 +170,7 @@ class TestListVaults:
         """Issue #1138: a vault whose immutable fee bps exceed the #1129 caps
         (mintable by the pre-cap factory, unfixable on-chain) must not be
         listed as investable."""
-        from archimedes.chain.executor import MAX_PERFORMANCE_FEE_BPS
+        from archimedes.chain.constants import MAX_PERFORMANCE_FEE_BPS
 
         with patch("archimedes.services.vault_service.chain_executor") as ce:
             ce.get_all_vaults = AsyncMock(return_value=["0xGOOD", "0xHOSTILE"])
@@ -205,7 +205,7 @@ class TestListVaults:
     @pytest.mark.asyncio
     async def test_at_cap_fee_vault_stays_listed(self) -> None:
         """A vault at exactly the caps is allowed — the contract allows it too."""
-        from archimedes.chain.executor import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
+        from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
 
         with patch("archimedes.services.vault_service.chain_executor") as ce:
             ce.get_all_vaults = AsyncMock(return_value=["0xATCAP"])
@@ -217,19 +217,38 @@ class TestListVaults:
             assert [v.address for v in resp.vaults] == ["0xATCAP"]
 
     @pytest.mark.asyncio
-    async def test_detail_refuses_over_cap_vault(self) -> None:
+    async def test_detail_refuses_over_cap_vault_with_400(self) -> None:
         """The detail view renders the deposit CTA — a direct link to a hostile
-        vault must not bypass the listing filter (issue #1138)."""
-        from archimedes.chain.executor import MAX_MANAGEMENT_FEE_BPS
+        vault must not bypass the listing filter (issue #1138). The refusal is
+        a typed raise (not None → 404) so the route can answer 400 with the
+        actual fee values instead of pretending the vault doesn't exist."""
+        from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS
+        from archimedes.services.vault_service import VaultFeeGuardRefusal
 
         with patch("archimedes.services.vault_service.chain_executor") as ce:
             m = _metrics(address="0xHOSTILE")
             m["management_fee_bps"] = MAX_MANAGEMENT_FEE_BPS + 1
             ce.get_vault_metrics = AsyncMock(return_value=m)
-            detail = await VaultService().get_vault_detail("0xHOSTILE")
-            assert detail is None
+            with pytest.raises(VaultFeeGuardRefusal) as exc_info:
+                await VaultService().get_vault_detail("0xHOSTILE")
+            assert exc_info.value.status_code == 400
+            assert f"managementFeeBps={MAX_MANAGEMENT_FEE_BPS + 1}" in exc_info.value.detail
             # Refused before any further chain reads.
             ce.read_portfolio.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_detail_refuses_unreadable_fee_vault_with_502(self) -> None:
+        """Unverifiable fees on detail → 502 (fail-closed), distinguishable
+        from both a hostile vault (400) and an unknown address (404)."""
+        from archimedes.services.vault_service import VaultFeeGuardRefusal
+
+        with patch("archimedes.services.vault_service.chain_executor") as ce:
+            m = _metrics(address="0xUNKNOWN")
+            m["performance_fee_bps"] = None
+            ce.get_vault_metrics = AsyncMock(return_value=m)
+            with pytest.raises(VaultFeeGuardRefusal) as exc_info:
+                await VaultService().get_vault_detail("0xUNKNOWN")
+            assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_pagination_respects_limit_and_offset(self) -> None:

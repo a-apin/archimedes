@@ -16,37 +16,55 @@ from archimedes.api.schemas import (
     VaultListResponse,
     VaultSummaryResponse,
 )
-from archimedes.chain.executor import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS, chain_executor
+from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
+from archimedes.chain.executor import chain_executor
 from archimedes.chain.trace_publisher import trace_publisher
 from archimedes.services.log_scrubber import sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
 
-def _fees_pass_caps(metrics: dict) -> bool:
+class VaultFeeGuardRefusal(Exception):
+    """A vault exists but the #1138 fee guard refuses to surface it.
+
+    Raised by get_vault_detail so the route can distinguish "refused" from
+    "unknown address" (404): over-cap → status_code 400 with the actual fee
+    values, unreadable fees → 502 (verification failed, fail-closed).
+    """
+
+    def __init__(self, status_code: int, detail: str):
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(detail)
+
+
+def _fee_refusal(metrics: dict) -> tuple[int, str] | None:
     """The #1138 fee-cap gate for display surfaces.
 
-    False for vaults whose immutable fee bps exceed the #1129 caps (hostile —
-    the pre-cap factory could mint them and no setter can ever fix them) AND
-    for vaults whose fees could not be read (None from get_vault_metrics) —
-    fail-closed: never render a vault we couldn't verify as investable.
+    Returns (status_code, reason) for vaults whose immutable fee bps exceed
+    the #1129 caps (hostile — the pre-cap factory could mint them and no
+    setter can ever fix them) and for vaults whose fees could not be read
+    (None from get_vault_metrics) — fail-closed: never render a vault we
+    couldn't verify as investable. Returns None when the vault passes.
     """
+    address = metrics.get("vault_address", "?")
     mgmt, perf = metrics.get("management_fee_bps"), metrics.get("performance_fee_bps")
     if mgmt is None or perf is None:
-        logger.warning(
-            "Refusing to surface vault %s: fee bps unreadable (fail-closed)",
-            sanitize_log_value(metrics.get("vault_address", "?")),
-        )
-        return False
+        logger.warning("Refusing to surface vault %s: fee bps unreadable (fail-closed)", sanitize_log_value(address))
+        return 502, f"Could not verify on-chain fees for vault {address}; refusing (fail-closed)"
     if mgmt > MAX_MANAGEMENT_FEE_BPS or perf > MAX_PERFORMANCE_FEE_BPS:
         logger.warning(
             "Refusing to surface vault %s: fees exceed caps (managementFeeBps=%d, performanceFeeBps=%d)",
-            sanitize_log_value(metrics.get("vault_address", "?")),
+            sanitize_log_value(address),
             mgmt,
             perf,
         )
-        return False
-    return True
+        return 400, (
+            f"Vault {address} fees exceed caps: "
+            f"managementFeeBps={mgmt} (cap {MAX_MANAGEMENT_FEE_BPS}), "
+            f"performanceFeeBps={perf} (cap {MAX_PERFORMANCE_FEE_BPS})"
+        )
+    return None
 
 
 class VaultService:
@@ -128,7 +146,7 @@ class VaultService:
         for addr in vault_addresses:
             try:
                 metrics = await chain_executor.get_vault_metrics(addr)
-                if not _fees_pass_caps(metrics):  # issue #1138 — refuse to list
+                if _fee_refusal(metrics) is not None:  # issue #1138 — refuse to list
                     continue
                 summary = self._metrics_to_summary(metrics, meta=metadata_by_address.get(addr.lower()))
                 if tier is not None and summary.tier != tier:
@@ -163,9 +181,12 @@ class VaultService:
             metrics = await chain_executor.get_vault_metrics(address)
             # Issue #1138 — refuse to surface hostile or unverifiable vaults on
             # the detail view too: it's the page that renders the deposit CTA,
-            # so a direct link must not bypass the listing filter.
-            if not _fees_pass_caps(metrics):
-                return None
+            # so a direct link must not bypass the listing filter. Raises (not
+            # returns None) so the route can answer 400/502 with the reason
+            # instead of conflating a refused vault with an unknown address.
+            refusal = _fee_refusal(metrics)
+            if refusal is not None:
+                raise VaultFeeGuardRefusal(*refusal)
             portfolio = await chain_executor.read_portfolio(address)
 
             # Build holdings
@@ -233,6 +254,8 @@ class VaultService:
                 strategy_ids=strategy_ids,
                 current_regime=current_regime,
             )
+        except VaultFeeGuardRefusal:
+            raise  # deliberate refusal, not a read failure — let the route map it
         except Exception:
             logging.getLogger(__name__).exception("Failed to get vault detail for %s", sanitize_log_value(address))
             return None

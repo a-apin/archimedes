@@ -31,14 +31,9 @@ logger = logging.getLogger(__name__)
 # Production would raise this to $1000+.
 MIN_HEALTHY_LIQUIDITY_USDC = 5.0
 
-# Off-chain mirror of the Vault constructor fee caps (PR #1129 —
-# MAX_MANAGEMENT_FEE_BPS / MAX_PERFORMANCE_FEE_BPS in Vault.sol). The live
-# VaultFactory predates those caps and fee bps are immutable once a vault is
-# constructed, so a pre-cap vault with hostile fees can never be fixed
-# on-chain. These constants bound what the backend will list or interact
-# with (issue #1138) and MUST stay in lockstep with the Solidity values.
-MAX_MANAGEMENT_FEE_BPS = 500  # 5%
-MAX_PERFORMANCE_FEE_BPS = 5000  # 50%
+# The #1138 fee-cap constants live in archimedes.chain.constants (a module
+# with no import side effects) so schemas and tooling can use them without
+# instantiating the chain_executor singleton below.
 
 # Solidity types of Vault.rebalance()'s params, in order — MUST match
 # Vault.sol's `rebalance(address[] tokensIn, uint256[] amountsIn,

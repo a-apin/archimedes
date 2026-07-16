@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -15,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 
 from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.limiter import limiter
-from archimedes.chain.executor import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
+from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
 from archimedes.db import get_session
 from archimedes.marketplace.encoding import derive_pool_id, to_bytes32
 from archimedes.marketplace.service import MarketService, Subscriber
@@ -27,6 +28,11 @@ from archimedes.services.identity_events import emit_identity_event, register_co
 logger = logging.getLogger(__name__)
 
 marketplace_router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
+
+# 20-byte 0x-prefixed hex address. vault_address arrives via an untyped body
+# dict, so validate before any chain read — a malformed address must be a 400
+# (client error), not a 502 from the fee guard's fail-closed path.
+_EVM_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 
 def _get_market(request: Request) -> MarketService:
@@ -164,6 +170,11 @@ async def publish_strategy(
             owner_wallet=wallet,
         )
     else:
+        if not _EVM_ADDRESS_RE.fullmatch(vault_address):
+            raise HTTPException(
+                status_code=400,
+                detail="vault_address must be a 0x-prefixed 20-byte hex address",
+            )
         # Fee-cap guard (issue #1138) — only the user-supplied path needs it:
         # a reused vault may have been minted by the pre-cap factory with
         # hostile immutable fees, while the create path above hardcodes 0/0.

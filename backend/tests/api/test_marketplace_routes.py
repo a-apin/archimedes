@@ -7,12 +7,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.marketplace_routes import marketplace_router
-from archimedes.chain.executor import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
+from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.db_isolation import redirect_to_tmp_sqlite
 
 TEST_WALLET = "0x0000000000000000000000000000000000000001"
+
+
+def _vaddr(byte: str) -> str:
+    """A valid 20-byte hex vault address built from one repeated byte.
+
+    Publish validates user-supplied vault_address format before the #1138
+    fee guard runs, so test addresses must be real-shaped."""
+    return "0x" + byte * 20
 
 
 @pytest.fixture(autouse=True)
@@ -150,7 +158,7 @@ def test_publish_rejects_unknown_strategy(client):
     """
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "nonexistent", "vault_address": "0xvault"},
+        json={"strategy_id": "nonexistent", "vault_address": _vaddr("aa")},
     )
     assert resp.status_code == 404, resp.text
 
@@ -172,7 +180,7 @@ def test_publish_generated_strategy_not_in_curated_provider(client):
 
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "gen_strat", "vault_address": "0xvault_gen"},
+        json={"strategy_id": "gen_strat", "vault_address": _vaddr("a1")},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["strategy_id"] == "gen_strat"
@@ -183,7 +191,7 @@ def test_publish_creates_publisher_row(client):
     """Publish creates a MarketplaceAgent row with a derived pool_id."""
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault_pre"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("a2")},
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
@@ -199,7 +207,7 @@ def test_publish_underfunded_vault_returns_402(client):
     client.app.state.market._usdc_balance_of = AsyncMock(return_value=0)
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault_pre"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("a2")},
     )
     assert resp.status_code == 402, resp.text
     assert "below minimum" in resp.json()["detail"]
@@ -224,13 +232,13 @@ def test_publish_duplicate_returns_409(client):
     """Publishing the same strategy twice returns 409."""
     resp1 = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "dup_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "dup_strat", "vault_address": _vaddr("aa")},
     )
     assert resp1.status_code == 200
 
     resp2 = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "dup_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "dup_strat", "vault_address": _vaddr("aa")},
     )
     assert resp2.status_code == 409, resp2.text
 
@@ -240,7 +248,7 @@ def test_publish_pool_id_is_derived_not_accepted(client):
     # Validate that pool_id is non-zero, 66 chars, and starts with 0x
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "check_pool", "vault_address": "0xvault_a"},
+        json={"strategy_id": "check_pool", "vault_address": _vaddr("a3")},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["pool_id"].startswith("0x")
@@ -260,7 +268,7 @@ def test_subscribe_succeeds_live_mode_no_chain_calls(client, app):
     # Create publisher first
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("aa")},
     )
     assert resp.status_code == 200
 
@@ -308,7 +316,7 @@ def test_subscribe_rejects_duplicate_sub_id_from_other_wallet(client, app):
     """
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "dup_sid_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "dup_sid_strat", "vault_address": _vaddr("aa")},
     )
     assert resp.status_code == 200
 
@@ -350,7 +358,7 @@ def test_published_detail_public_surface_count_only(client, app):
     """
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "redact_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "redact_strat", "vault_address": _vaddr("aa")},
     )
     assert resp.status_code == 200
 
@@ -389,7 +397,7 @@ def test_published_detail_public_surface_count_only(client, app):
 def test_unsubscribe_triggers_refund_and_returns_tx(client, app):
     """Unsubscribe auto-withdraws the subscriber's remaining DCW balance back to
     their wallet (issue #975 exit) and surfaces the tx in the response."""
-    resp = client.post("/api/marketplace/publish", json={"strategy_id": "refund_strat", "vault_address": "0xv"})
+    resp = client.post("/api/marketplace/publish", json={"strategy_id": "refund_strat", "vault_address": _vaddr("a5")})
     assert resp.status_code == 200
 
     with patch(
@@ -430,7 +438,7 @@ def test_publish_rejects_over_cap_management_fee(client, app):
     _set_fees(app, MAX_MANAGEMENT_FEE_BPS + 100, 0)
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xhostile"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("bb")},
     )
     assert resp.status_code == 400, resp.text
     detail = resp.json()["detail"]
@@ -443,7 +451,7 @@ def test_publish_rejects_over_cap_performance_fee(client, app):
     _set_fees(app, 0, MAX_PERFORMANCE_FEE_BPS + 1)
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xhostile"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("bb")},
     )
     assert resp.status_code == 400, resp.text
     assert f"performanceFeeBps={MAX_PERFORMANCE_FEE_BPS + 1}" in resp.json()["detail"]
@@ -454,7 +462,7 @@ def test_publish_allows_fees_exactly_at_caps(client, app):
     _set_fees(app, MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS)
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xatcap"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("cc")},
     )
     assert resp.status_code == 200, resp.text
 
@@ -468,10 +476,22 @@ def test_publish_fee_read_failure_fails_closed(client, app):
     app.state.market.executor.get_vault_fee_bps = AsyncMock(side_effect=RuntimeError("rpc down"))
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xunknown"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("dd")},
     )
     assert resp.status_code == 502, resp.text
     assert "fail-closed" in resp.json()["detail"]
+
+
+def test_publish_rejects_malformed_vault_address(client, app):
+    """A malformed vault_address is a client error (400) caught BEFORE any
+    chain read — not a 502 from the fee guard's fail-closed path."""
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": "0xnot-an-address"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "vault_address" in resp.json()["detail"]
+    app.state.market.executor.get_vault_fee_bps.assert_not_awaited()
 
 
 def test_publish_created_vault_skips_fee_read(client, app):
@@ -491,7 +511,7 @@ def test_subscribe_rejects_over_cap_publisher_vault(client, app):
     subscribe must re-check its fees on-chain and refuse, same as publish."""
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xpre_guard"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("ee")},
     )
     assert resp.status_code == 200, resp.text
 
@@ -513,7 +533,7 @@ def test_subscribe_rejects_over_cap_publisher_vault(client, app):
 def test_subscribe_fee_read_failure_fails_closed(client, app):
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("aa")},
     )
     assert resp.status_code == 200, resp.text
 
@@ -545,7 +565,7 @@ def test_publish_registers_dcw_and_ledgers_strategy_published(client):
 
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault_ledger"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("a4")},
     )
     assert resp.status_code == 200, resp.text
 
@@ -570,7 +590,7 @@ def test_subscribe_registers_dcw_and_ledgers_marketplace_subscribed(client):
     from archimedes.db import get_session
     from archimedes.models.identity import ControlledWallet, IdentityEvent
 
-    pub = client.post("/api/marketplace/publish", json={"strategy_id": "test_strat", "vault_address": "0xvault"})
+    pub = client.post("/api/marketplace/publish", json={"strategy_id": "test_strat", "vault_address": _vaddr("aa")})
     assert pub.status_code == 200, pub.text
 
     dcw_address = "0x0000000000000000000000000000000000000eee"
@@ -604,7 +624,7 @@ def test_unsubscribe_ledgers_marketplace_unsubscribed(client, app):
     from archimedes.db import get_session
     from archimedes.models.identity import IdentityEvent
 
-    pub = client.post("/api/marketplace/publish", json={"strategy_id": "refund_strat", "vault_address": "0xv"})
+    pub = client.post("/api/marketplace/publish", json={"strategy_id": "refund_strat", "vault_address": _vaddr("a5")})
     assert pub.status_code == 200
 
     with patch(

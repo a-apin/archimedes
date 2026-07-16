@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from archimedes.chain.executor import MAX_MANAGEMENT_FEE_BPS
+from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS
 
 
 class VaultCreateRequest(BaseModel):
