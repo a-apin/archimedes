@@ -10,7 +10,10 @@
 > and 2026-06-24 (team/ownership change: Chuan stepping back, Dan takes smart-contract
 > + on-chain-integration + infra ownership, Bogdan joins as on-chain reviewer; prod
 > migrated to Dan's own AWS account behind `archimedes-arc.com`; Bedrock/Nova Micro is
-> the live LLM; GitHub Actions auto-deploy on; Lepton Sprint framing).
+> the live LLM; GitHub Actions auto-deploy on; Lepton Sprint framing), and 2026-07-14
+> (Fargate cutover executed 2026-07-09 — ECS/ALB/Aurora/ElastiCache is the live picture;
+> T3.2 full contract redeploy — 12 sources / 570 live instances; 36-PR merge train landed;
+> architecture map at `docs/architecture-redesign/`).
 > Intent: drop at the root of the `archimedes` repo and read at the start of every
 > Claude Code session.
 >
@@ -72,14 +75,16 @@ it). The headlines a fresh session needs:
   (CloudFront → nginx → EC2). The prod stack was **rebuilt on Dan's own AWS account
   (`037613907429` / `us-east-1`)**, decoupled from the prior shared account. **GitHub Actions
   auto-deploy is re-pointed and ON** — every merge to `main` rebuilds + redeploys.
-  **EC2 → ECS Fargate migration (#1039) is authored, not applied:** three
-  production OOM outages on 2026-07-06 (build-on-the-serving-host, #1001) locked
-  the decision to move compute to Fargate behind the *same* ALB/WAF/Aurora/
-  ElastiCache; the Terraform + CI pipeline live on `dbrowneup/1039-fargate-infra`,
-  with the cutover ordered step-by-step in
-  [`infra/runbooks/ecs-fargate-cutover.md`](infra/runbooks/ecs-fargate-cutover.md) —
-  `terraform apply` + the ALB target swing + EC2 decommission are Dan's AWS
-  operations, still pending as of this revision.
+  **EC2 → ECS Fargate migration: EXECUTED 2026-07-09.** The web tier runs on ECS
+  Fargate behind ALB/WAF with Aurora PostgreSQL 18.3 + ElastiCache (build-in-CI →
+  ECR → Fargate; #1056–#1059). The old EC2 box is detached from the ALB but still
+  running as a rollback window (decommission pending), and the three background
+  runners (oracle / agent / kb) are stranded on it with no deploy path — relocation
+  IaC merged (PR #1071, 2026-07-14: oracle+agent → small EC2, kb → scheduled
+  Fargate, EFS artifact volume); the `terraform apply` + first runner deploy are
+  Dan's AWS operations (#1065). Full contract suite redeployed 2026-07-09 (T3.2,
+  chain 5042002): 12 Solidity sources → 570 live instances (8 core + 281 synths +
+  281 AMM pools), census live at `GET /api/config/contracts`.
 - **LLM.** **AWS Bedrock is the live LLM** — **Amazon Nova Micro** default via a multi-provider
   **Converse** backend, with a model cost-picker on the Generate page. (GLM is removed from prod;
   BYOK and a local-Ollama single-user path are preserved.) `response.model` is the
@@ -195,7 +200,7 @@ cross-lane review need in the PR description so the right teammate sees it.
 | Backend Python layer (FastAPI, API, services, models) | Daniel R.      | Marten                |
 | On-chain integration layer (`backend/archimedes/chain/`, oracle runner) | Dan | Bogdan / Marten |
 | Frontend (React + Vite + viem, wallet UX, trade tab) | Marten (current) / Daniel R. | Dan       |
-| Smart contracts (Arc, Foundry, 11 deployed)         | Dan              | Bogdan (`mnemonik-dev`) / Marten |
+| Smart contracts (Arc, Foundry — 12 sources, 570 live instances) | Dan | Bogdan (`mnemonik-dev`) / Marten |
 | Infra / EC2 / CI/CD / docker-compose / AWS account  | Dan              | Daniel R.             |
 | Architecture + design decisions                     | Dan (lead)       | full team             |
 | Pitch deck + demo script + Claude Design + judging  | Dan              | Marten                |
@@ -395,32 +400,33 @@ they actually shipped (Day 4):
   Supersedes `docs/design.md` § 6 ("vectorbt / custom numpy engine") on this one
   line; design.md remains the architecture spec for everything else. Migration to
   vectorbt is a v2 problem if parameter-sweep speed becomes a constraint.
-- **Smart contracts:** Solidity + Foundry, targeting Arc (EVM-compatible). **11 contracts
-  deployed on Arc testnet** (Day 4 baseline + `StrategyRegistry` added later):
-  `AMMPool`, `AMMRouter`, `AssetRegistry`, `PriceOracle`, `ReasoningTraceRegistry`,
-  `StrategyRegistry`, `SyntheticFactory`, `SyntheticToken`, `SyntheticVault`,
-  `Vault`, `VaultFactory`. ABIs cached in
-  [`contracts/abis/`](contracts/abis/) for backend + UI consumption. (Note:
+- **Smart contracts:** Solidity + Foundry, targeting Arc (EVM-compatible). **12 contract
+  sources → 570 live instances on Arc testnet** (full hardened redeploy 2026-07-09, T3.2,
+  chain 5042002): 8 core singletons (`AMMRouter`, `VaultFactory`, `ReasoningTraceRegistry`,
+  `AssetRegistry`, `StrategyRegistry`, `PriceOracle`, `SyntheticFactory`, `PaymentSplitter`)
+  + 281 `SyntheticToken` instances + 281 `AMMPool` instances (router-created, one USDC↔synth
+  pool each) + user `Vault`s minted on demand via `VaultFactory`. Census is live at
+  `GET /api/config/contracts`. Sources also include `SyntheticVault` (no live instance) —
+  see [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/architecture-redesign/ARCHITECTURE-MAP.md) §1.7.
+  ABIs cached in [`contracts/abis/`](contracts/abis/) for backend + UI consumption. (Note:
   `ecosystem-design-spec.md` described `StrategyRegistry → AssetRegistry` as a
   replacement, but in practice both coexist today — the spec-vs-state delta
   is intentional and the registries serve different lookups.)
 - **On-chain integration:** Circle SDK — Wallets (Circle-managed wallet for the oracle
   signer), USYC, Gateway, CCTP, Paymaster; viem on the UI side
-- **Deployment:** Docker compose stack (postgres / redis / nginx / oracle / backend) on an
-  EC2 instance behind nginx, fronted by CloudFront. **Runs on Dan's own AWS account
-  (`037613907429` / `us-east-1`) as of 2026-06-24.** CI/CD via GitHub Actions per
-  [`docs/infra-setup.md`](docs/infra-setup.md) — **auto-deploy is re-pointed and ON**, so every
-  merge to `main` rebuilds + redeploys. Live at
-  [`https://archimedes-arc.com/`](https://archimedes-arc.com/). (Aurora + ElastiCache TF is
-  provisioned but the cutover off in-stack Postgres/Redis is still pending — roadmap T3.5.)
-  **ECS Fargate migration (issue #1039, decided 2026-07-06 after the 2026-07-06 OOM
-  outage chain — #1001) has its IaC + CI pipeline authored on `dbrowneup/1039-fargate-infra`:**
-  build-in-CI → ECR → Fargate on the *existing* ALB/WAF/Aurora/ElastiCache, replacing
-  the build-on-the-serving-host `deploy.yml` path above. **Not yet applied, not yet
-  cut over** — that's Dan's AWS operation, ordered step-by-step in
+- **Deployment (live picture since 2026-07-09):** **ECS Fargate behind ALB/WAF** with
+  **Aurora PostgreSQL 18.3 + ElastiCache Redis**, on Dan's AWS account
+  (`037613907429` / `us-east-1`), fronted by CloudFront at
+  [`https://archimedes-arc.com/`](https://archimedes-arc.com/). CI/CD: every merge to
+  `main` builds images in CI → pushes to ECR → rolls the Fargate services
+  (`deploy.yml`; superseded runs auto-cancel). The Fargate cutover (#1039, decided after
+  the 2026-07-06 OOM outage chain #1001) was executed 2026-07-09 via #1056–#1059 per
   [`infra/runbooks/ecs-fargate-cutover.md`](infra/runbooks/ecs-fargate-cutover.md).
-  Until that runbook is executed, the EC2/docker-compose description above remains
-  the accurate live picture.
+  Residuals: the old EC2 box is detached-but-running as a rollback window (decommission
+  pending), and the background runners (oracle / agent / kb) still run stale code there —
+  relocation IaC merged (PR #1071), `terraform apply` pending (#1065). Docker compose
+  remains the **local dev** mirror (`docker compose --profile localdb up`; postgres:18
+  data lives under the `pgdata18` parent-dir volume per #1119/#1121).
 
 ## Scope — the headline commitments
 
@@ -496,7 +502,7 @@ Four workflows run on every PR and every push to `main`:
 | --- | --- | --- |
 | `quality-gate.yml` | PR → main | Hard block: `pytest -m "not integration"` (unit suite, no DB/Redis) **and** `ruff-gate` (`ruff format --check .` + `ruff check --select E9,F63,F7,F40 .`). Informational: full `ruff check` (broader rule set) + `npm run lint` in `ui/` — both run with `continue-on-error` and their pass/fail counts are posted as a PR comment table (marker `<!-- quality-gate-v1 -->`). Agent PRs (`t2o2`) also get a coverage gate (≥ 60%). |
 | `complexity-gate.yml` | PR → main (Python/JS/TS files only) | Aggregate cyclomatic-complexity, nesting depth, recursion, and orphan analysis via lizard + Python AST. Compares the changed-file set against the `main` baseline and posts a table comment on the PR (marker `<!-- complexity-gate-v1 -->`). **Informational only — never blocks merge.** Runs on the GitHub runner with `pip install lizard`; the bundled distroless Dockerfile at `.github/docker/complexity-gate/Dockerfile` is available for local use but not pulled by CI. |
-| `deploy.yml` | push → main | Rebuilds and redeploys the EC2 stack. |
+| `deploy.yml` | push → main | Builds images in CI → pushes to ECR → rolls the ECS Fargate services (auto-cancels superseded runs). |
 | `main-format-guard.yml` | push → main | Runs `ruff format --check .` on every push to `main`. If the check fails, the workflow runs `ruff format .`, commits the fix back with `[skip ci]` (no recursion), and fails its own run so the violation is visible in CI history. Net effect: `main` self-heals so open PRs aren't stranded with red ruff-gates, and the failed run nudges the contributor (or agent) to install pre-commit. Added 2026-05-25 after several rounds of direct-to-main pushes landed unformatted files. |
 | `release-tag.yml` | push → main | Creates a semver annotated tag for every merged PR via the GitHub API (no `git push`). Bump rules (read from PR title only, **end-of-title anchor**): `!version-release` → major (1.0.0), `!minor` → minor (0.1.0), anything else → patch (0.0.1). Title-end matching prevents false positives where the marker text appears in body prose. Direct pushes with no associated PR are skipped silently. |
 
