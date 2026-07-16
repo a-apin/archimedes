@@ -16,11 +16,37 @@ from archimedes.api.schemas import (
     VaultListResponse,
     VaultSummaryResponse,
 )
-from archimedes.chain.executor import chain_executor
+from archimedes.chain.executor import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS, chain_executor
 from archimedes.chain.trace_publisher import trace_publisher
 from archimedes.services.log_scrubber import sanitize_log_value
 
 logger = logging.getLogger(__name__)
+
+
+def _fees_pass_caps(metrics: dict) -> bool:
+    """The #1138 fee-cap gate for display surfaces.
+
+    False for vaults whose immutable fee bps exceed the #1129 caps (hostile —
+    the pre-cap factory could mint them and no setter can ever fix them) AND
+    for vaults whose fees could not be read (None from get_vault_metrics) —
+    fail-closed: never render a vault we couldn't verify as investable.
+    """
+    mgmt, perf = metrics.get("management_fee_bps"), metrics.get("performance_fee_bps")
+    if mgmt is None or perf is None:
+        logger.warning(
+            "Refusing to surface vault %s: fee bps unreadable (fail-closed)",
+            sanitize_log_value(metrics.get("vault_address", "?")),
+        )
+        return False
+    if mgmt > MAX_MANAGEMENT_FEE_BPS or perf > MAX_PERFORMANCE_FEE_BPS:
+        logger.warning(
+            "Refusing to surface vault %s: fees exceed caps (managementFeeBps=%d, performanceFeeBps=%d)",
+            sanitize_log_value(metrics.get("vault_address", "?")),
+            mgmt,
+            perf,
+        )
+        return False
+    return True
 
 
 class VaultService:
@@ -102,6 +128,8 @@ class VaultService:
         for addr in vault_addresses:
             try:
                 metrics = await chain_executor.get_vault_metrics(addr)
+                if not _fees_pass_caps(metrics):  # issue #1138 — refuse to list
+                    continue
                 summary = self._metrics_to_summary(metrics, meta=metadata_by_address.get(addr.lower()))
                 if tier is not None and summary.tier != tier:
                     continue
@@ -133,6 +161,11 @@ class VaultService:
         """Get full vault detail."""
         try:
             metrics = await chain_executor.get_vault_metrics(address)
+            # Issue #1138 — refuse to surface hostile or unverifiable vaults on
+            # the detail view too: it's the page that renders the deposit CTA,
+            # so a direct link must not bypass the listing filter.
+            if not _fees_pass_caps(metrics):
+                return None
             portfolio = await chain_executor.read_portfolio(address)
 
             # Build holdings
