@@ -48,6 +48,25 @@ const CREDENTIAL_STORAGE_KEY = 'archimedes_circle_credential'
 // retained only so clearCircleSession() can purge values left by old builds.
 const USERNAME_STORAGE_KEY = 'archimedes_circle_username'
 
+// CREDENTIAL_STORAGE_KEY is localStorage, so it's shared across every tab of
+// this origin — if Tab B registers/connects a different passkey wallet, Tab A
+// would otherwise silently rehydrate as that new identity on its next reload.
+// sessionStorage IS tab-scoped, so we stamp the credential id this tab last
+// saw/used here; a mismatch on rehydrate means another tab changed the wallet
+// underneath this one (see rehydrateSmartAccount below).
+const TAB_SEEN_CREDENTIAL_ID_KEY = 'archimedes_circle_credential_tab_seen_id'
+
+function getTabSeenCredentialId() {
+  try { return sessionStorage.getItem(TAB_SEEN_CREDENTIAL_ID_KEY) } catch { return null }
+}
+
+function setTabSeenCredentialId(id) {
+  try {
+    if (id) sessionStorage.setItem(TAB_SEEN_CREDENTIAL_ID_KEY, id)
+    else sessionStorage.removeItem(TAB_SEEN_CREDENTIAL_ID_KEY)
+  } catch { /* storage unavailable */ }
+}
+
 // True if a CLIENT_KEY was supplied at build time. The modal hides the
 // passkey option when this is false so we never show a broken button.
 export function circlePasskeyEnabled() {
@@ -65,6 +84,27 @@ function saveCredential(credential) {
   try {
     localStorage.setItem(CREDENTIAL_STORAGE_KEY, JSON.stringify(credential))
   } catch { /* storage unavailable */ }
+  // This tab is the one that just wrote the credential, so it's the source of
+  // the change, not a victim of drift — establish it as this tab's baseline.
+  setTabSeenCredentialId(credential?.id ?? null)
+}
+
+// Subscribe to cross-tab credential changes. The native `storage` event only
+// fires in OTHER tabs of the same origin (never the tab that made the write),
+// which makes it the standard browser primitive for detecting "another tab
+// just swapped the passkey wallet" without waiting for this tab to reload.
+// Returns an unsubscribe function. No-op (returns a no-op unsubscribe) outside
+// a browser context.
+export function onCredentialChange(callback) {
+  if (typeof window === 'undefined' || typeof callback !== 'function') return () => {}
+  const handler = (event) => {
+    if (event.key !== CREDENTIAL_STORAGE_KEY) return
+    let credential = null
+    try { credential = event.newValue ? JSON.parse(event.newValue) : null } catch { /* */ }
+    callback({ credential })
+  }
+  window.addEventListener('storage', handler)
+  return () => window.removeEventListener('storage', handler)
 }
 
 // A fresh, UNIQUE username for each Register (new wallet). Circle's server
@@ -120,6 +160,7 @@ export function clearCircleSession() {
     localStorage.removeItem(CREDENTIAL_STORAGE_KEY)
     localStorage.removeItem(USERNAME_STORAGE_KEY)
   } catch { /* */ }
+  setTabSeenCredentialId(null)
 }
 
 // Returns true if a previously-registered passkey is on file for this
@@ -241,10 +282,21 @@ export async function connectCirclePasskey({ mode = 'login', walletName } = {}) 
 //
 // Returns null if there's no stored credential (caller should redirect
 // to the register flow).
+//
+// Cross-tab drift: CREDENTIAL_STORAGE_KEY is localStorage (shared across every
+// tab of this origin). If this tab previously saw a credential and the one now
+// on file has a different id, another tab registered/switched to a different
+// passkey wallet since — this tab would otherwise silently rehydrate as that
+// new identity with no warning. `credentialChanged: true` on the return value
+// surfaces that so a caller can require explicit user re-confirmation instead
+// of proceeding as usual; callers that don't check it keep today's behavior.
 export async function rehydrateSmartAccount() {
   if (!circlePasskeyEnabled()) return null
   const credential = loadStoredCredential()
   if (!credential) return null
+
+  const seenId = getTabSeenCredentialId()
+  const credentialChanged = Boolean(seenId && credential.id && seenId !== credential.id)
 
   const modularTransport = toModularTransport(`${CLIENT_URL}/arcTestnet`, CLIENT_KEY)
   const client = createPublicClient({ chain: arcTestnet, transport: modularTransport })
@@ -252,10 +304,13 @@ export async function rehydrateSmartAccount() {
   const owner = toWebAuthnAccount({ credential })
   const smartAccount = await toCircleSmartAccount({ client, owner })
 
+  setTabSeenCredentialId(credential.id)
+
   return {
     address: smartAccount.address,
     smartAccount,
     client,
     credential,
+    credentialChanged,
   }
 }
