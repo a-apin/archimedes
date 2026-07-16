@@ -3,12 +3,45 @@ import { useState, useEffect, useCallback } from 'react'
 import { isAddress, parseUnits, formatUnits } from 'viem'
 import {
   publicClient, getWalletClient, getAddress,
+  getConnectedProvider, getSmartAccount, getSmartAccountClient, CIRCLE_PROVIDER_ID,
   USDC, TOKEN_ABI, VAULT_ABI,
   ASSETS, USDC_DECIMALS,
 } from '../config'
+import { executeUserOp, encodeCall } from '../circle-tx-executor'
 import VaultChat from './VaultChat'
 
-
+// Wallet routing: EOA wallets sign via viem writeContract; passkey/Circle
+// Modular Wallets have no EIP-1193 provider and must sign via the bundler
+// instead — getWalletClient() throws for that path (see config.js). Mirrors
+// the sendContractCall helper added to CreateVaultModal.jsx (#1089).
+//
+// Both branches must guard against a mined-but-reverted tx reading as
+// success: executeUserOp already throws on receipt.success === false, but
+// viem's waitForTransactionReceipt does NOT throw on a reverted tx — it only
+// throws on things like a dropped/replaced tx — so the EOA branch checks
+// receipt.status explicitly (same guard as DepositFlow.jsx's EOA flow).
+function sendContractCall({ address, abi, functionName, args }) {
+  if (getConnectedProvider() === CIRCLE_PROVIDER_ID) {
+    const smartAccount = getSmartAccount()
+    const client = getSmartAccountClient()
+    if (!smartAccount || !client) {
+      throw new Error('Passkey wallet not initialized — please reconnect.')
+    }
+    return executeUserOp({
+      smartAccount,
+      client,
+      calls: [encodeCall({ address, abi, functionName, args })],
+    }).then(out => out.txHash)
+  }
+  return getWalletClient().then(async walletClient => {
+    const hash = await walletClient.writeContract({ address, abi, functionName, args })
+    const receipt = await publicClient.waitForTransactionReceipt({ hash })
+    if (receipt.status !== 'success') {
+      throw new Error(`Transaction reverted on-chain (${hash.slice(0, 10)}…${hash.slice(-6)})`)
+    }
+    return hash
+  })
+}
 
 function timeAgo(ts) {
   if (!ts) return '—'
@@ -281,14 +314,13 @@ export default function VaultDetail({ address, onBack }) {
     }
     setBusy(true); setStatus('')
     try {
-      const w = await getWalletClient()
       const owner = getAddress()
       // Non-custodial: the USER signs redeem(shares, receiver, owner). The backend
       // never holds keys for this — receiver and owner are both the connected wallet,
       // so funds can only flow back to the signer. redeem burns `shares` and returns
       // the previewed USDC.
       setStatus('Redeeming…')
-      const hash = await w.writeContract({
+      const hash = await sendContractCall({
         address, abi: VAULT_ABI, functionName: 'redeem', args: [shares, owner, owner],
       })
       setStatus(
@@ -324,14 +356,37 @@ export default function VaultDetail({ address, onBack }) {
     }
     setBusy(true); setStatus('')
     try {
-      const w = await getWalletClient()
       // parseUnits is exact for decimal strings; float math (parseFloat * 1e6)
       // is lossy for large/many-decimal inputs.
       const amount = parseUnits(depositAmt, USDC_DECIMALS)
-      setStatus('Approving USDC…')
-      await w.writeContract({ address: USDC, abi: TOKEN_ABI, functionName: 'approve', args: [address, amount] })
-      setStatus('Depositing…')
-      const hash = await w.writeContract({ address, abi: VAULT_ABI, functionName: 'deposit', args: [amount, getAddress()] })
+      const approveCall = { address: USDC, abi: TOKEN_ABI, functionName: 'approve', args: [address, amount] }
+      const depositCall = { address, abi: VAULT_ABI, functionName: 'deposit', args: [amount, getAddress()] }
+      let hash
+      if (getConnectedProvider() === CIRCLE_PROVIDER_ID) {
+        // Passkey wallets: batch approve + deposit into a single signed user
+        // operation (mirrors PasskeyDepositFlow in DepositFlow.jsx) — one
+        // WebAuthn prompt instead of two, and no partial state where the
+        // approval lands but the deposit doesn't. Both target addresses
+        // (USDC, vault) are known up front, so there's no CREATE-address
+        // ordering constraint blocking the batch.
+        setStatus('Approving USDC and depositing…')
+        const smartAccount = getSmartAccount()
+        const client = getSmartAccountClient()
+        if (!smartAccount || !client) {
+          throw new Error('Passkey wallet not initialized — please reconnect.')
+        }
+        const out = await executeUserOp({
+          smartAccount,
+          client,
+          calls: [encodeCall(approveCall), encodeCall(depositCall)],
+        })
+        hash = out.txHash
+      } else {
+        setStatus('Approving USDC…')
+        await sendContractCall(approveCall)
+        setStatus('Depositing…')
+        hash = await sendContractCall(depositCall)
+      }
       // Render TX hash as a clickable arcscan link (Issue #389 follow-up — Pi
       // missed this in the original bundle). status is a ReactNode so we can
       // mix string + <a>; the renderer at line 376 already passes through.
