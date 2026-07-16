@@ -780,7 +780,13 @@ async def health_amm():
                     }
                 )
             except Exception as exc:
-                pool_info["error"] = f"failed to read pool state: {type(exc).__name__}: {exc}"
+                # Log full detail server-side only — the exception text (which
+                # can include RPC/contract internals) must not flow into this
+                # public health-check response (CodeQL py/stack-trace-exposure, #9).
+                logging.getLogger(__name__).warning(
+                    "AMM health check: failed to read pool state for %s", addr, exc_info=exc
+                )
+                pool_info["error"] = "failed to read pool state — see server logs"
             pools.append(pool_info)
 
         return {
