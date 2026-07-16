@@ -541,8 +541,16 @@ async def derive_vault_allocations(
         synth_budget_bps = 10000 - usdc_floor_bps
         synth_addrs = {k: v for k, v in chain_client.settings.synth_addresses.items() if v}
         per_synth = synth_budget_bps // max(len(synth_addrs), 1)
+        remainder = synth_budget_bps - per_synth * len(synth_addrs)
         allocations = [
-            AllocationTarget(symbol=sym, token_address=addr, weight_bps=per_synth) for sym, addr in synth_addrs.items()
+            AllocationTarget(
+                symbol=sym,
+                token_address=addr,
+                # Distribute the floor-division remainder 1 bps at a time to the
+                # first `remainder` entries so total_bps always lands on 10000.
+                weight_bps=per_synth + (1 if i < remainder else 0),
+            )
+            for i, (sym, addr) in enumerate(synth_addrs.items())
         ]
         allocations.append(
             AllocationTarget(
