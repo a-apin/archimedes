@@ -482,7 +482,7 @@ class ChainExecutor:
         if not account:
             raise RuntimeError("No agent account configured — set CIRCLE_API_KEY or ARC_AGENT_PRIVATE_KEY")
 
-        nonce = await chain_client.w3.eth.get_transaction_count(account.address)
+        nonce = await chain_client.w3.eth.get_transaction_count(account.address, "pending")
 
         tx = await factory.functions.createVault(
             name, symbol, management_fee_bps, performance_fee_bps, agent_assisted
