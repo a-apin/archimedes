@@ -165,7 +165,7 @@ async def test_charge_one_refuses_when_over_spend_cap():
     assert halt_reason_override == "24h spend cap reached"
     m_charge.assert_not_awaited()
     m_reserve.assert_awaited_once_with(
-        sub.subscriber_wallet, action_count * FLAT_FEE_PER_ACTION, f"{tick}:{TickStep.REBALANCE.value}"
+        sub.subscriber_wallet, action_count * FLAT_FEE_PER_ACTION, f"{tick}:{sub.sub_id}:{TickStep.REBALANCE.value}"
     )
 
     with get_session() as session:
@@ -218,7 +218,7 @@ async def test_charge_one_reserves_with_correct_wallet_and_amount():
 
     assert paid is True
     m_reserve.assert_awaited_once_with(
-        sub.subscriber_wallet, action_count * FLAT_FEE_PER_ACTION, f"{tick}:{TickStep.REBALANCE.value}"
+        sub.subscriber_wallet, action_count * FLAT_FEE_PER_ACTION, f"{tick}:{sub.sub_id}:{TickStep.REBALANCE.value}"
     )
 
 
@@ -239,7 +239,42 @@ async def test_charge_one_releases_reservation_when_charge_fails():
         paid, _ = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
 
     assert paid is False
-    m_release.assert_awaited_once_with(sub.subscriber_wallet, f"{tick}:{TickStep.REBALANCE.value}", FLAT_FEE_PER_ACTION)
+    m_release.assert_awaited_once_with(
+        sub.subscriber_wallet, f"{tick}:{sub.sub_id}:{TickStep.REBALANCE.value}", FLAT_FEE_PER_ACTION
+    )
+
+
+async def test_charge_one_releases_reservation_when_charge_raises():
+    """payments.charge documents "never raises", but the reservation must not
+    depend on that contract holding forever. A raise escaping _charge_one used
+    to leave the reserved amount stuck in the wallet's window for 24h and the
+    intent pending — now it's treated as a failed charge: released, finalized
+    failed, (False, None) returned instead of propagating."""
+    from archimedes.marketplace.service import FLAT_FEE_PER_ACTION
+
+    svc = _svc()
+    pub, sub = _pub(), _sub()
+    tick = "spend-cap:5"
+    with (
+        patch("archimedes.marketplace.service.spend_cap.try_reserve_usdc", new=AsyncMock(return_value=True)),
+        patch("archimedes.marketplace.payments.charge", new=AsyncMock(side_effect=RuntimeError("gateway blew up"))),
+        patch("archimedes.marketplace.service.spend_cap.release_reservation", new=AsyncMock()) as m_release,
+    ):
+        paid, halt_reason_override = await svc._charge_one(pub, sub, "strat_a", tick, TickStep.REBALANCE, 1)
+
+    assert paid is False
+    assert halt_reason_override is None
+    m_release.assert_awaited_once_with(
+        sub.subscriber_wallet, f"{tick}:{sub.sub_id}:{TickStep.REBALANCE.value}", FLAT_FEE_PER_ACTION
+    )
+    with get_session() as session:
+        row = (
+            session.query(SettlementIntent)
+            .filter_by(strategy_id="strat_a", tick_id=tick, sub_id=sub.sub_id, step=TickStep.REBALANCE.value)
+            .first()
+        )
+        assert row is not None
+        assert row.status == "failed"
 
 
 # ── #8 — auto-withdraw on unsubscribe ─────────────────────────────────────

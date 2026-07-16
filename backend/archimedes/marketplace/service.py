@@ -866,8 +866,13 @@ class MarketService:
         # cap could all read "under cap" before any of them recorded anything,
         # so all N would proceed and blow through the cap by up to N times a
         # single charge (#1099 review). Released below if the charge fails.
+        # charge_id includes sub_id so the Redis member is unique per logical
+        # charge even for two subscriptions charged from the same wallet in the
+        # same tick+step. Today the subscribe route only allows one running sub
+        # per (wallet, strategy) so that can't happen, but the cap must not
+        # silently undercount (or cross-release) if that invariant ever relaxes.
         pending_raw = action_count * FLAT_FEE_PER_ACTION
-        charge_id = f"{tick_id}:{step.value}"
+        charge_id = f"{tick_id}:{sub.sub_id}:{step.value}"
         if not await spend_cap.try_reserve_usdc(sub.subscriber_wallet, pending_raw, charge_id):
             logger.info(
                 "[%s] sub %s (wallet %s) at/over 24h spend cap — refusing charge for step %s",
@@ -879,17 +884,25 @@ class MarketService:
             self._finalize_settlement_intent(strategy_id, tick_id, sub.sub_id, step.value, settled=False)
             return False, "24h spend cap reached"
 
-        paid = await payments.charge(
-            sub_id=sub.sub_id,
-            wallet_id=sub.circle_wallet_id,
-            wallet_address=sub.ephemeral_wallet,
-            seller_address=pub.gateway_seller_address,
-            strategy_id=strategy_id,
-            tick_id=tick_id,
-            action_count=action_count,
-            flat_fee_raw=FLAT_FEE_PER_ACTION,
-            step=step.value,
-        )
+        # payments.charge documents "never raises", but the reservation above
+        # must not depend on that contract holding forever: a raise escaping
+        # here would leave the reserved amount sitting in the wallet's window
+        # for 24h (and the intent pending). Treat a raise as a failed charge.
+        try:
+            paid = await payments.charge(
+                sub_id=sub.sub_id,
+                wallet_id=sub.circle_wallet_id,
+                wallet_address=sub.ephemeral_wallet,
+                seller_address=pub.gateway_seller_address,
+                strategy_id=strategy_id,
+                tick_id=tick_id,
+                action_count=action_count,
+                flat_fee_raw=FLAT_FEE_PER_ACTION,
+                step=step.value,
+            )
+        except Exception:
+            logger.exception("[%s] payments.charge raised for sub %s — treating as unpaid", tick_id, sub.sub_id)
+            paid = False
         self._finalize_settlement_intent(strategy_id, tick_id, sub.sub_id, step.value, settled=paid)
         if not paid:
             await spend_cap.release_reservation(sub.subscriber_wallet, charge_id, pending_raw)
