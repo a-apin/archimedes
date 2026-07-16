@@ -20,7 +20,9 @@
 > · the private `a-apin/docs` internal-docs repo (not a submodule of this repo):
 > `2026-06-23-Lepton_artifacts/consolidated/corpus-rag-build-vs-buy-memo.md` (the
 > 2026-06-28 decision memo #778 quotes) and `CORPUS-AND-MINILM.md` (2026-07-04,
-> describes the retrieval path that actually shipped).
+> describes the retrieval path that actually shipped). Readers without access to
+> that repo don't need it: every number and conclusion this ADR relies on from
+> those two docs is restated inline below.
 
 ## TL;DR
 
@@ -51,9 +53,10 @@ written, both narrowing what's actually left to build:
    S3+DynamoDB** (#1065 + draft PR #1071) — zero app-code change vs. the S3 path,
    chosen alongside relocating the other stranded background runners.
 
-**Net: Part B's acceptance criterion ("build path decided + scoped into follow-up
-issues") is satisfied.** Nothing below proposes new issues — it maps what already
-exists and flags what's still blocked on Dan's AWS operations.
+**Net: this pass reads Part B's acceptance criterion ("build path decided + scoped
+into follow-up issues") as met — Dan's call to confirm as #778's owner, not this
+doc's.** Nothing below proposes new issues — it maps what already exists and flags
+what's still blocked on Dan's AWS operations.
 
 ## Context
 
@@ -177,6 +180,11 @@ in #1065 only affects which one actually gets populated at runtime.
    *scheduled, unattended* run in prod is meaningful.
 
 ## Current state (verified 2026-07-10)
+
+> Snapshot, not a live surface. The `/health` endpoint is authoritative for every
+> "live" row below and updates on its own as the underlying system changes (that's
+> the whole point of #778 Part A) — if this table and `/health` ever disagree,
+> trust `/health` and treat the row here as history.
 
 | Signal | Value | Source |
 |---|---|---|
