@@ -70,7 +70,7 @@ backtrader>=1.9.78.123
 circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355
 
 # LLM
-anthropic>=0.116.0
+anthropic>=0.117.0
 
 # On-chain / Web3
 web3>=7.16.0
