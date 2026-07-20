@@ -23,7 +23,7 @@
     "@eslint/js": "^10.0.1",
     "@iconify-json/cryptocurrency-color": "^1.2.4",
     "@iconify-json/logos": "^1.2.11",
-    "@iconify-json/lucide": "^1.2.116",
+    "@iconify-json/lucide": "^1.2.118",
     "@iconify-json/simple-icons": "^1.2.89",
     "@iconify-json/token-branded": "^1.2.40",
     "@types/react": "^19.2.15",
