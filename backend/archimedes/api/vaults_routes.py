@@ -95,6 +95,60 @@ def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
     return False, False
 
 
+def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
+    """``None`` if no ``StrategyRecord`` exists for ``strategy_id``; otherwise
+    whether that record is visible to the caller identified by ``request``.
+
+    Reuses the ``#850`` ownership rule verbatim (copied from
+    ``selection_bias_routes._generated_strategy_rigor``, itself copied from
+    ``strategies_routes.get_strategy`` — consolidation tracked in #1120): a
+    non-example, unpublished ``strategy_store`` row is visible only to its
+    ``owner_wallet``. Curated strategies are typically seeded into
+    ``strategy_store`` with ``is_example=True`` at startup (``main.py``), so
+    they resolve ``True`` here (visible to everyone); ``None`` (no row at
+    all — an unseeded environment or an unknown id) falls through to the
+    passport badge, which handles both identically to pre-#1073 behavior.
+
+    Used to close the strictest-level deploy fast path (#1073): the badge
+    (``_strategy_rigor_status``) is not ownership-gated, so without this check
+    a caller who knows a private generated strategy's id could learn its
+    deployability and deploy a vault bound to it.
+    """
+    from archimedes.api.auth_siwe import get_verified_wallet
+    from archimedes.db import get_session
+    from archimedes.models.strategy_store import StrategyRecord
+
+    try:
+        # No init_db() here: the app calls it once at startup (main.py), and
+        # re-running its schema inspection/patch pass per deploy request (× per
+        # strategy id) is wasted DB work on a hot, funds-adjacent path. Direct
+        # test callers create their own schema (see test_vault_rigor_gate.py).
+        from archimedes.services.strategy_visibility import is_strategy_visible
+
+        with get_session() as session:
+            row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+            if row is None:
+                return None
+            caller = get_verified_wallet(request)
+            return is_strategy_visible(row, caller)
+    except HTTPException:
+        raise
+    except Exception:
+        # Fail CLOSED. Returning None here would make the gate silently
+        # disappear on a DB error (None means "no record — fall through to the
+        # ownership-blind badge"), i.e. private strategies would become
+        # deployable exactly when the DB is down. Surfacing a raw exception
+        # would 500 past the deploy endpoint's error handling. A 503 blocks
+        # the deploy loudly and recoverably instead.
+        logger.exception(
+            "ownership-visibility lookup failed for %s — failing closed",
+            sanitize_log_value(strategy_id),
+        )
+        raise HTTPException(
+            status_code=503, detail="Strategy ownership check temporarily unavailable — try again."
+        ) from None
+
+
 def _deployable_levels(
     strategy_ids: list[str], request: Request | None = None
 ) -> dict[str, tuple[bool, int | None, bool]]:
@@ -205,6 +259,18 @@ def _assert_strategies_pass_rigor(
     # the default deploy path unchanged for callers that don't opt into strictness.
     if level <= STRICTEST_LEVEL:
         for sid in strategy_ids:
+            # Ownership gate (#1073): `_strategy_rigor_status` below resolves the
+            # passport badge without regard to ownership, so a private/unpublished
+            # generated strategy would otherwise be deployable by anyone who knows
+            # its id. Reject BEFORE consulting the badge when a request is present
+            # and the id resolves to a StrategyRecord not visible to this caller.
+            # `visible is None` means "no StrategyRecord at all" (curated strategy,
+            # or unknown id) — falls through to the badge unchanged either way.
+            if request is not None:
+                visible = _strategy_record_visible(sid, request)
+                if visible is False:
+                    raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
+
             found, passes = _strategy_rigor_status(sid)
             if not found:
                 raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
@@ -337,7 +403,15 @@ async def get_vault_detail(address: str):
     """Get full vault detail including holdings, performance, traces."""
     from fastapi import HTTPException
 
-    detail = await vault_svc.get_vault_detail(address)
+    from archimedes.services.vault_service import VaultFeeGuardRefusal
+
+    try:
+        detail = await vault_svc.get_vault_detail(address)
+    except VaultFeeGuardRefusal as exc:
+        # Issue #1138: the vault exists but the fee guard refuses it — answer
+        # 400 (over-cap, reason names the values) or 502 (fees unverifiable,
+        # fail-closed) instead of conflating it with an unknown address.
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="Vault not found")
     return detail
@@ -475,8 +549,16 @@ async def derive_vault_allocations(
         synth_budget_bps = 10000 - usdc_floor_bps
         synth_addrs = {k: v for k, v in chain_client.settings.synth_addresses.items() if v}
         per_synth = synth_budget_bps // max(len(synth_addrs), 1)
+        remainder = synth_budget_bps - per_synth * len(synth_addrs)
         allocations = [
-            AllocationTarget(symbol=sym, token_address=addr, weight_bps=per_synth) for sym, addr in synth_addrs.items()
+            AllocationTarget(
+                symbol=sym,
+                token_address=addr,
+                # Distribute the floor-division remainder 1 bps at a time to the
+                # first `remainder` entries so total_bps always lands on 10000.
+                weight_bps=per_synth + (1 if i < remainder else 0),
+            )
+            for i, (sym, addr) in enumerate(synth_addrs.items())
         ]
         allocations.append(
             AllocationTarget(

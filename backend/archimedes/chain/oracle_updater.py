@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import uuid
@@ -298,8 +299,29 @@ class OracleUpdater:
                 try:
                     ciphertext = _encrypt_entity_secret(self._entity_secret, public_key)
 
+                    # Deterministic idempotency key (#F5): derived from the
+                    # stable identifying content of this exact call (wallet +
+                    # oracle contract + function + price), not a fresh random
+                    # UUID per call. A retry of THIS SAME push (same symbol,
+                    # same price) now produces the same key, so Circle's
+                    # dedup can actually recognize it as a retry, while a
+                    # genuinely different push (different oracle or price)
+                    # still produces a different key. uuid5 is used so the
+                    # result is a validly-formatted UUID per Circle's
+                    # IdempotencyKey schema.
+                    idempotency_source = json.dumps(
+                        {
+                            "walletId": self._wallet_id,
+                            "contractAddress": oracle_addr,
+                            "abiFunctionSignature": "setPrice(uint256)",
+                            "abiParameters": [str(price_int)],
+                        },
+                        sort_keys=True,
+                    )
+                    idempotency_key = str(uuid.uuid5(uuid.NAMESPACE_URL, idempotency_source))
+
                     payload = {
-                        "idempotencyKey": str(uuid.uuid4()),
+                        "idempotencyKey": idempotency_key,
                         "walletId": self._wallet_id,
                         "contractAddress": oracle_addr,
                         "abiFunctionSignature": "setPrice(uint256)",
@@ -388,13 +410,26 @@ class OracleUpdater:
         vix = vix_result[0] if vix_result is not None else None
         sp500_data = await asyncio.to_thread(self._fetch_sp500_moving_averages)
 
-        return MarketSnapshot(
+        snapshot = MarketSnapshot(
             timestamp=now,
             prices=price_map,
             vix=vix,
             sp500_ma50=sp500_data.get("ma50"),
             sp500_ma200=sp500_data.get("ma200"),
         )
+        await self._write_redis_price_snapshots(price_map)
+        return snapshot
+
+    async def _write_redis_price_snapshots(self, price_map: dict[str, float]) -> None:
+        """Publish oracle price snapshot to Redis (#1103)."""
+        try:
+            import redis.asyncio as _aioredis
+            redis_url = os.getenv("REDIS_URL") or f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}/0"
+            r = _aioredis.from_url(redis_url, decode_responses=True)
+            await r.set("oracle:prices:latest", json.dumps(price_map))
+            await r.aclose()
+        except Exception:
+            logger.debug("Redis price snapshot write failed", exc_info=True)
 
     def get_cached_price(self, symbol: str) -> AssetPrice | None:
         return self._price_cache.get(symbol)

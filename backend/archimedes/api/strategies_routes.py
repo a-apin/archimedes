@@ -1,7 +1,7 @@
 """Strategy endpoints — /api/strategies/*.
 
 Includes: library listing, signals, frontier, correlation, advisor, stress,
-construct, generate/fusion.
+generate/fusion.
 """
 
 from __future__ import annotations
@@ -16,17 +16,7 @@ from datetime import UTC
 import numpy as np
 from fastapi import APIRouter, Depends, Query, Request, Response
 
-from archimedes.api._route_helpers import (
-    architect,
-    persist_trace_off_chain,
-    strategy_provider,
-)
-from archimedes.api.architect_schemas import (
-    ConstructionSelectionResponse,
-    ConstructionTraceResponse,
-    StrategyConstructionRequest,
-    StrategyConstructionResponse,
-)
+from archimedes.api._route_helpers import strategy_provider
 from archimedes.api.auth_siwe import gate_generation, get_verified_wallet, require_verified_wallet
 from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
@@ -38,13 +28,11 @@ from archimedes.api.schemas import (
     StrategySignalsResponse,
 )
 from archimedes.models.strategy import Strategy, StrategyStatus
-from archimedes.services.construction_trace import build_construction_trace
 from archimedes.services.live_rigor_gate import (
     RigorGateVerdict,
     verdicts_for_strategies,
 )
 from archimedes.services.rigor_evaluator import RigorGateResult
-from archimedes.services.strategy_guardrail import apply_guardrail
 
 logger = logging.getLogger(__name__)
 
@@ -221,12 +209,12 @@ def _live_verdict_for_one(s: Strategy) -> RigorGateVerdict:
 
     Used by the single-strategy fetch path (``get_strategy``). Delegates to
     ``verdicts_for_strategies`` over the FULL library so the verdict is computed
-    with the library-wide cohort context — num_trials = library size, cohort PBO,
-    avg correlation (#902). The old per-strategy path ran ``num_trials=1``, which
-    zeroes the DSR multiple-testing deflation and let the detail view disagree
-    with the (properly deflated) list badge for the same strategy. No real
-    returns → ``pending``, never a fixture value. Never raises: any failure
-    degrades to ``pending`` (fail-closed badge).
+    with the same cohort PBO + avg correlation context the list badge uses,
+    keeping the detail view consistent with the list. ``num_trials`` is
+    self-contained (1 per strategy, decouple #2) — it does NOT come from the
+    library size; only PBO/avg_correlation are cohort-derived. No real returns
+    → ``pending``, never a fixture value. Never raises: any failure degrades to
+    ``pending`` (fail-closed badge).
     """
     try:
         cohort = _library_cohort_including(s)
@@ -237,11 +225,12 @@ def _live_verdict_for_one(s: Strategy) -> RigorGateVerdict:
 
 
 def _library_cohort_including(s: Strategy) -> list[Strategy]:
-    """The full library selection set, guaranteed to contain ``s``.
+    """The full library cohort, guaranteed to contain ``s``.
 
-    The library IS the multiple-testing cohort for a single-strategy grade
-    (#902); ``s`` is appended only if the provider list somehow misses it
-    (e.g. a just-generated strategy not yet listed).
+    This cohort feeds cohort-scoped PBO + avg_correlation ONLY — it must NOT
+    drive ``num_trials`` (self-contained at 1 per strategy, decouple #2). ``s``
+    is appended only if the provider list somehow misses it (e.g. a
+    just-generated strategy not yet listed).
     """
     try:
         cohort = list(strategy_provider().list_strategies())
@@ -263,13 +252,12 @@ def _live_rigor_result_for_one(s: Strategy) -> RigorGateResult | None:
     ``bt.dsr_p_value`` fixture fields — otherwise the leaderboard can show
     numbers that disagree with what ``GET /api/selection-bias/gate`` computes
     for the same strategy right now. Delegates to
-    ``_live_rigor_results_for_strategies`` over the FULL library (#902) so the
-    single fetch carries the same cohort context (num_trials = library size,
-    cohort PBO, avg correlation) as the list — the old per-strategy path ran
-    ``num_trials=1``, zeroing the DSR multiple-testing deflation. Returns
-    ``None`` on no/insufficient persisted returns or any failure — the caller
-    must fall back to the stale fixture fields rather than fabricate a number,
-    matching the fail-closed badge contract.
+    ``_live_rigor_results_for_strategies`` over the FULL library so the single
+    fetch carries the same cohort PBO + avg correlation context as the list.
+    ``num_trials`` is self-contained (1, decouple #2) — it does NOT come from
+    the library size. Returns ``None`` on no/insufficient persisted returns or
+    any failure — the caller must fall back to the stale fixture fields rather
+    than fabricate a number, matching the fail-closed badge contract.
     """
     try:
         cohort = _library_cohort_including(s)
@@ -288,13 +276,15 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
     ``GET /api/selection-bias/gate`` computes for the same strategy right now
     (not the stale ``s.dsr_p_value``/``bt.dsr_p_value`` fixture fields), so this
     mirrors that route's cohort context exactly: real persisted returns from
-    the DB, zero-variance series excluded before they can inflate num_trials or
-    dilute avg_correlation (same fix as #868's selection_bias_routes.py change),
-    cohort PBO + avg-correlation over the survivors, one ``run_rigor_gate`` call
-    per strategy. Strategies with no/insufficient persisted returns or a
-    degenerate series are simply absent from the returned dict — the caller
-    falls back to the stale fixture fields for those ids (fail-closed: no
-    fabricated number for a strategy the live gate cannot evaluate).
+    the DB, zero-variance series excluded before they can dilute avg_correlation
+    (same fix as #868's selection_bias_routes.py change), cohort PBO +
+    avg-correlation over the survivors, one ``run_rigor_gate`` call per
+    strategy. ``num_trials`` is self-contained (1 per strategy, decouple #2) —
+    it is NOT derived from this cohort. Strategies with no/insufficient
+    persisted returns or a degenerate series are simply absent from the
+    returned dict — the caller falls back to the stale fixture fields for
+    those ids (fail-closed: no fabricated number for a strategy the live gate
+    cannot evaluate).
 
     Any DB or cohort-compute failure degrades to ``{}`` (every id falls back to
     the stale fields) rather than raising into the library-list response.
@@ -356,8 +346,8 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
 
         # Exclude zero-variance (degenerate/placeholder-flat) series from the cohort
         # context — same fix as selection_bias_routes.py's valid_returns filter
-        # (#868), so num_trials/avg_correlation/pbo_scores here match that route's
-        # library-wide gate exactly rather than drifting apart on this input.
+        # (#868), so avg_correlation/pbo_scores here match that route's cohort gate
+        # exactly rather than drifting apart on this input.
         valid_returns = {
             k: v
             for k, v in returns_by_strategy.items()
@@ -366,7 +356,10 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
 
         try:
             pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
-            num_trials = max(len(valid_returns), 1)
+            # num_trials = 1: each strategy is graded on ITS OWN Sharpe, never
+            # deflated by how many OTHER strategies sit in the library (decouple
+            # #2). PBO/avg_correlation stay cohort-wide (out of scope here).
+            num_trials = 1
             avg_correlation = compute_average_pairwise_correlation(valid_returns) if len(valid_returns) >= 2 else 0.0
         except Exception as exc:
             logger.warning("live rigor result batch: cohort-context compute failed (all → stale fallback): %s", exc)
@@ -385,8 +378,9 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
             if len(daily_returns) < 10:
                 continue  # No sufficient returns — caller falls back to stale fields
             if s.id in valid_returns:
-                # Non-degenerate series: run with the full cohort context so
-                # num_trials / pbo_scores / avg_correlation match the library gate.
+                # Non-degenerate series: num_trials is self-contained (1, decouple
+                # #2); pbo_scores / avg_correlation still come from the cohort so
+                # they match the library gate.
                 gate_kwargs: dict = {
                     "num_trials": num_trials,
                     "pbo_scores": pbo_scores,
@@ -394,9 +388,10 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
                 }
             else:
                 # Degenerate (zero-variance) series: excluded from cohort context to
-                # prevent inflating num_trials or diluting avg_correlation (#868), but
-                # the strategy still runs its own gate so the caller gets a live "fail"
-                # verdict rather than falling back to a stale fixture value.
+                # prevent diluting avg_correlation (#868); num_trials is self-contained
+                # (1) either way, but the strategy still runs its own gate so the
+                # caller gets a live "fail" verdict rather than falling back to a
+                # stale fixture value.
                 gate_kwargs = {"num_trials": 1, "pbo_scores": {}, "average_correlation": 0.0}
             try:
                 computed[s.id] = run_rigor_gate(
@@ -1716,6 +1711,68 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     )
 
 
+# ── Curated ∪ generated resolvers for read-surfaces beyond Library ────────
+# (leaderboard, risk, chat — the "unify source" decouples in
+# docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md Part A).
+# Curated strategies are UNCHANGED: callers keep sourcing those from
+# strategy_provider() and concatenate the GENERATED half these return on top —
+# nothing here alters the curated path.
+
+
+def _generated_strategy_responses(session, caller: str | None) -> list[StrategyResponse]:
+    """GENERATED (non-curated) strategies visible to *caller*, as StrategyResponse.
+
+    Same #850 ownership-visibility rule as ``list_generated_strategies`` /
+    ``_visible_passports``: a row is visible when ``is_published`` or the
+    caller's verified wallet matches ``owner_wallet`` (``is_example`` is never
+    True for a non-curated row). Used by surfaces that need real per-caller
+    generated strategies (risk endpoints, chat vault-context) — NOT for
+    unauthenticated public surfaces, which want ``_public_generated_strategy_responses``
+    instead so a private candidate never leaks.
+    """
+    from archimedes.services.passport_loader import list_passports
+
+    records = [r for r in list_passports(session) if (r.generation_method or "").lower() != "curated"]
+    if not records:
+        return []
+    visible = _visible_passports(session, records, caller)
+    return [_passport_to_strategy_response(r, session) for r in visible]
+
+
+def _public_generated_strategy_responses(session) -> list[StrategyResponse]:
+    """GENERATED strategies visible on PUBLIC, unauthenticated surfaces (the
+    leaderboard). No wallet context exists here, so visibility requires the
+    OWNER to have opted in by PUBLISHING — ``is_published`` ONLY.
+
+    ``status`` is deliberately NOT a visibility criterion: ``upsert_strategy``
+    sets ``status="live"`` on ANY strategy whose rigor passes, published or not,
+    so keying off it would leak a user's PRIVATE (unpublished) strategy — its
+    name + metrics — onto a public ranking the moment it passed rigor. Publish
+    is the consent signal, not rigor. (#850 privacy principle.)
+
+    NOTE: ``is_published`` is currently a dormant flag — the publish flow does
+    not yet flip it — so this is intentionally inert in prod until that wiring
+    lands (tracked as a follow-up). Inert-but-safe beats leaky.
+    """
+    from archimedes.models.strategy_store import StrategyRecord
+    from archimedes.services.passport_loader import list_passports
+
+    records = [r for r in list_passports(session) if (r.generation_method or "").lower() != "curated"]
+    if not records:
+        return []
+    ids = [r.id for r in records]
+    published_ids = {
+        sid
+        for (sid,) in (
+            session.query(StrategyRecord.id)
+            .filter(StrategyRecord.id.in_(ids), StrategyRecord.is_published.is_(True))
+            .all()
+        )
+    }
+    visible = [r for r in records if r.id in published_ids]
+    return [_passport_to_strategy_response(r, session) for r in visible]
+
+
 @strategies_router.get("/{strategy_id}/returns", response_model=StrategyReturnsResponse)
 async def get_strategy_returns(strategy_id: str, request: Request):
     """Return persisted real daily returns for a strategy.
@@ -1743,15 +1800,13 @@ async def get_strategy_returns(strategy_id: str, request: Request):
         from archimedes.db import get_session
         from archimedes.models.strategy_store import StrategyRecord
 
+        from archimedes.services.strategy_visibility import is_strategy_visible
+
         with get_session() as session:
             row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-            if row is None:
+            caller = get_verified_wallet(request)
+            if not is_strategy_visible(row, caller):
                 raise HTTPException(status_code=404, detail="Strategy not found")
-            if not row.is_example and not row.is_published:
-                caller = get_verified_wallet(request)
-                is_owner = bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
-                if not is_owner:
-                    raise HTTPException(status_code=404, detail="Strategy not found")
 
     # ── 2. Load persisted daily returns from backtest_results ────────────────
     try:
@@ -1765,7 +1820,7 @@ async def get_strategy_returns(strategy_id: str, request: Request):
             latest_row = rows.get(strategy_id)
     except Exception as exc:
         logger.warning("returns endpoint DB read failed for %s: %s", strategy_id, exc)
-        raise HTTPException(status_code=500, detail="Failed to load returns")
+        raise HTTPException(status_code=500, detail="Failed to load returns") from exc
 
     if not daily_returns:
         raise HTTPException(status_code=404, detail="no persisted returns")
@@ -1809,14 +1864,13 @@ async def get_strategy(strategy_id: str, request: Request):
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.passport_loader import get_passport
+    from archimedes.services.strategy_visibility import is_strategy_visible
 
     with get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-        if row is not None and not row.is_example and not row.is_published:
-            caller = get_verified_wallet(request)
-            is_owner = bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
-            if not is_owner:
-                raise HTTPException(status_code=404, detail="Strategy not found")
+        caller = get_verified_wallet(request)
+        if row is not None and not is_strategy_visible(row, caller):
+            raise HTTPException(status_code=404, detail="Strategy not found")
         record = get_passport(session, strategy_id)
         if record is not None:
             return _passport_to_strategy_response(record, session=session)
@@ -1871,7 +1925,7 @@ async def rename_strategy(
         return {"strategy": row.to_dict()}
 
 
-# ── Strategy generation (fusion / architect) ──────────────────
+# ── Strategy generation (fusion) ────────────────────────────────
 
 
 @strategies_router.post("/generate", status_code=202)
@@ -1883,42 +1937,19 @@ async def generate_strategy(
     risk_appetite: str = "moderate",
     strategic_direction: str = "",
     max_papers: int = 4,
-    mode: str = "fusion",
     _wallet: str | None = Depends(gate_generation),  # 401 when REQUIRE_SIWE_FOR_GENERATION is on
 ):
-    """Queue a strategy generation job. Returns 202 + job_id immediately."""
+    """Queue a strategy generation job. Returns 202 + job_id immediately.
+
+    Direct-fusion path only — the ``mode=fast`` (interactive Strategy
+    Architect) branch was removed in #1064; the debate society
+    (``POST /api/generate/start``) is the sole interactive generation path.
+    """
     from fastapi import HTTPException
 
     from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
     from archimedes.models.portfolio import RiskProfile
     from archimedes.services.job_queue import JobStore
-
-    if mode == "fast":
-        try:
-            proposal = await asyncio.to_thread(
-                architect().propose,
-                strategic_direction or "Generate a strategy",
-                risk_appetite,
-                10000.0,
-                None,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"LLM backend unavailable: {exc}") from exc
-        guardrail = apply_guardrail(proposal)
-        return {
-            "mode": "architect",
-            "status": "ok",
-            "proposal": {
-                "intent": proposal.intent,
-                "model_id": proposal.model_id,
-                "selected": [
-                    {"strategy_id": s.strategy_id, "weight": w, "rationale": s.rationale}
-                    for s, w in zip(proposal.selected, guardrail.strategy_weights.values(), strict=False)
-                ],
-                "overall_reasoning": proposal.overall_reasoning,
-                "usyc_weight": guardrail.usyc_weight,
-            },
-        }
 
     if not fusion_enabled():
         raise HTTPException(
@@ -2059,19 +2090,20 @@ async def _run_fusion_job(job_id: str) -> None:
                 from archimedes.agents.generation_pipeline import _society_num_trials
                 from archimedes.services.fusion_evaluator import evaluate_fusion_spec
                 from archimedes.services.fusion_market_data import real_data_enabled
-                from archimedes.services.strategy_provider import default_provider
 
-                # #820: same deflation denominator as the society/live paths —
-                # library + pool (pool=1 here: a single direct-fusion candidate).
-                # Without this, evaluate_fusion_spec falls back to its
-                # library-size-only default and this route under-deflates
-                # relative to every other generation path.
-                library_size = len(default_provider().list_strategies())
+                # Decouple #2: num_trials = the strategy's OWN selection pool, NOT
+                # the curated library's count. A single direct-fusion job proposes
+                # exactly one candidate spec (pool=1) — no N-candidate search
+                # happens on this route — so the self-contained trial count is
+                # _society_num_trials(1) == 1. Passed explicitly (not left as
+                # None) so this route's deflation matches the same formula the
+                # society/live generation paths use, without reaching for the
+                # library size the way the old ``library_size + pool`` term did.
                 eval_result = await asyncio.to_thread(
                     evaluate_fusion_spec,
                     result.strategy_spec,
                     use_real_data=real_data_enabled(),
-                    num_trials=_society_num_trials(library_size, 1),
+                    num_trials=_society_num_trials(1),
                 )
             except Exception as _eval_exc:
                 import logging as _logging
@@ -2101,6 +2133,11 @@ async def _run_fusion_job(job_id: str) -> None:
                 # audit having passed (audit 06-14, Q6).
                 "look_ahead_label": r.look_ahead_label,
                 "num_trials": int(r.num_trials),
+                # Methodology marker (#1075): this verdict was computed under the
+                # self-contained num_trials convention (decouple #2). Blobs
+                # WITHOUT this key predate the change (formula A, N+library_size)
+                # and are not directly comparable.
+                "num_trials_convention": "self_contained_v2",
                 # Backtest metrics — surface alongside so the passport renders
                 # without the UI having to denormalize from a separate field.
                 "sharpe_ratio": bt.sharpe_ratio,
@@ -2287,98 +2324,3 @@ async def _run_fusion_job(job_id: str) -> None:
             await store.update_status(job_id, "failed", error=str(exc))
     finally:
         await store.close()
-
-
-# ── Construct (architect interactive) ─────────────────────────
-
-
-@strategies_router.post("/construct", response_model=StrategyConstructionResponse)
-@limiter.limit("20/minute")
-async def construct_strategy(
-    req: StrategyConstructionRequest,
-    request: Request,  # noqa: ARG001 — required by the slowapi limiter / FastAPI
-    response: Response,  # noqa: ARG001 — kept for FastAPI handler symmetry
-    _wallet: str | None = Depends(gate_generation),
-):
-    """Interactive strategy architect -- the 'design me a portfolio' path."""
-    from fastapi import HTTPException
-
-    try:
-        proposal = await asyncio.to_thread(
-            architect().propose,
-            req.intent,
-            req.risk_profile,
-            req.capital_usdc,
-            req.regime,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"LLM backend unavailable: {exc}") from exc
-    guardrail = apply_guardrail(proposal)
-    trace = build_construction_trace(proposal, guardrail)
-
-    await persist_trace_off_chain(trace)
-
-    # Persist architect proposal to episodic memory (T-PE.8)
-    try:
-        import uuid as _uuid
-
-        from archimedes.services.strategy_memory import persist_proposal
-
-        persist_proposal(
-            generation_id=_uuid.uuid4().hex[:16],
-            agent="architect",
-            intent=req.intent,
-            strategy_spec={
-                "strategy_ids": [s.strategy_id for s in proposal.selected],
-                "weights": guardrail.strategy_weights,
-                "overall_reasoning": proposal.overall_reasoning,
-            },
-            papers=[s.paper_citation for s in proposal.selected if s.paper_citation],
-            extra={
-                "model_id": proposal.model_id,
-                "risk_notes": proposal.risk_notes,
-                "regime": proposal.regime,
-            },
-            # SIWE-derived owner (gate_generation) — None when
-            # REQUIRE_SIWE_FOR_GENERATION is off (local dev/demo opt-out).
-            owner_wallet=_wallet,
-        )
-    except Exception:
-        pass  # Non-blocking per spec
-
-    by_id = {s.strategy_id: s for s in proposal.selected}
-    selected = []
-    for sid, weight in sorted(guardrail.strategy_weights.items()):
-        sel = by_id.get(sid)
-        strat = strategy_provider().get_strategy(sid)
-        selected.append(
-            ConstructionSelectionResponse(
-                strategy_id=sid,
-                paper_title=strat.paper_title if strat else "",
-                weight=weight,
-                rationale=sel.rationale if sel else "",
-                paper_citation=sel.paper_citation if sel else "",
-            )
-        )
-
-    return StrategyConstructionResponse(
-        intent=proposal.intent,
-        risk_profile=proposal.risk_profile,
-        capital_usdc=proposal.capital_usdc,
-        regime=proposal.regime,
-        model_id=proposal.model_id,
-        selected=selected,
-        usyc_weight=guardrail.usyc_weight,
-        overall_reasoning=proposal.overall_reasoning,
-        risk_notes=proposal.risk_notes,
-        guardrail_notes=guardrail.adjustments,
-        trace=ConstructionTraceResponse(
-            id=trace.id,
-            decision_type=trace.decision_type.value,
-            trigger=trace.trigger,
-            timestamp=trace.timestamp.isoformat(),
-            trace_hash=trace.trace_hash,
-            arc_tx_hash=trace.arc_tx_hash,
-            is_anchored=trace.is_anchored,
-        ),
-    )
