@@ -81,9 +81,9 @@ class TestCommit:
             claimed = 2_000_000_000
             trade_id = b"\x11" * 32
 
-            trace_id, tx, block = asyncio.run(publisher.commit(trace, claimed, trade_id, b"\x01"))
+            trace_id, tx, block, reverted = asyncio.run(publisher.commit(trace, claimed, trade_id, b"\x01"))
 
-            assert (trace_id, tx, block) == (42, "0xCOMMIT", 100)
+            assert (trace_id, tx, block, reverted) == (42, "0xCOMMIT", 100, False)
             _, kwargs = mock_signer.execute_contract.call_args
             assert kwargs["abi_function"] == "commit(address,bytes32,uint64,bytes32,bytes)"
             # vault, contentHash, claimedExecutionTime (as str), tradeId, intent
@@ -103,7 +103,7 @@ class TestCommit:
 
             trace = _make_trace()
             trace.compute_hash()
-            trace_id, _, _ = asyncio.run(
+            trace_id, _, _, _ = asyncio.run(
                 TracePublisher(loader=supported_loader).commit(trace, 2_000_000_000, b"\x22" * 32)
             )
             assert trace_id == 42  # decoded from TraceCommitted, not the getTracesByVault fallback
@@ -120,7 +120,7 @@ class TestCommit:
             trace = _make_trace()
             trace.compute_hash()
             result = asyncio.run(TracePublisher(loader=unsupported_loader).commit(trace, 2_000_000_000, b"\x33" * 32))
-            assert result == (None, None, None)
+            assert result == (None, None, None, False)
 
 
 class TestFinalizeCommitRevertHandling:
@@ -154,13 +154,18 @@ class TestFinalizeCommitRevertHandling:
             trace = _make_trace()
             trace.compute_hash()
             with caplog.at_level(logging.WARNING, logger="archimedes.chain.trace_publisher"):
-                trace_id, tx, block = asyncio.run(
+                trace_id, tx, block, reverted = asyncio.run(
                     TracePublisher(loader=supported_loader).commit(trace, 2_000_000_000, b"\x44" * 32)
                 )
 
             assert trace_id is None  # NOT 999 — the confirmed revert must not be masked
             assert tx == "0xREVERTED"  # tx hash still recorded for the diagnostic trail
             assert block == 100
+            # A confirmed revert MUST surface as reverted=True: a consumer (e.g.
+            # agent_runner's Phase 2 guard) that only checks tx is not None would
+            # wrongly treat this reverted-but-truthy tx as a landed commit (#1095
+            # review — see agent_runner._commit_trace / commit_reverted).
+            assert reverted is True
             supported_loader.trace_registry.functions.getTracesByVault.assert_not_called()
             # The revert must be loud: the commit path logs an INFO success line
             # before the receipt comes back, so without this warning the log
@@ -189,13 +194,14 @@ class TestFinalizeCommitRevertHandling:
 
             trace = _make_trace()
             trace.compute_hash()
-            trace_id, tx, block = asyncio.run(
+            trace_id, tx, block, reverted = asyncio.run(
                 TracePublisher(loader=supported_loader).commit(trace, 2_000_000_000, b"\x55" * 32)
             )
 
             assert trace_id == 9  # last element of the fallback lookup
             assert tx == "0xOK"
             assert block == 101
+            assert reverted is False
 
 
 class TestReveal:

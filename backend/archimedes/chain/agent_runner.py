@@ -988,7 +988,14 @@ class StrategyRunner:
         # Build + commit the canonical trace ONCE. The same trace object is revealed
         # after settlement so the on-chain keccak256 binding holds. In dry-run we still
         # build it (no on-chain commit) so the reveal/persist path has a trace to use.
-        committed_trace, commit_trace_id, commit_tx, commit_block, claimed_execution_time = await self._commit_trace(
+        (
+            committed_trace,
+            commit_trace_id,
+            commit_tx,
+            commit_block,
+            claimed_execution_time,
+            commit_reverted,
+        ) = await self._commit_trace(
             vault_address,
             trades,
             all_signals,
@@ -1002,22 +1009,28 @@ class StrategyRunner:
         )
 
         # ── Commit-Reveal guard: if the registry supports commit-reveal but the
-        # commit above did NOT land (commit_tx is None), submitting the trade
-        # anyway would revert on-chain post-#588-redeploy ("no matching
-        # commitment") — wasting gas and leaving an unrevealed commitment
-        # attempt. Short-circuit with a SKIP trace instead of proceeding to
+        # commit above did NOT land — either no tx was ever sent (commit_tx is
+        # None) OR it was sent and CONFIRMED REVERTED on-chain (commit_reverted)
+        # — submitting the trade anyway would revert on-chain post-#588-redeploy
+        # ("no matching commitment") — wasting gas and leaving an unrevealed
+        # commitment attempt. A confirmed revert still has a real commit_tx
+        # (kept for the diagnostic trail), so commit_tx is None alone is NOT a
+        # reliable "did the commit land" signal — commit_reverted is (#1095
+        # review). Short-circuit with a SKIP trace instead of proceeding to
         # Phase 2. Gated on the SAME `not DRY_RUN` condition the commit path
         # uses above, so DRY_RUN (where trade_id/commit_tx are always None by
         # design) is unaffected. Registries that don't support commit-reveal
         # (legacy publishTrace-only) keep the old proceed-to-trade behavior —
         # this only blocks when commit-reveal IS supported and the commit failed.
-        if not DRY_RUN and trace_publisher.supports_commit_reveal() and commit_tx is None:
+        if not DRY_RUN and trace_publisher.supports_commit_reveal() and (commit_tx is None or commit_reverted):
             logger.warning(
-                "[tick %s] Vault %s: commit-reveal supported but commit FAILED "
-                "(commit_tx is None) — skipping trade to avoid an on-chain revert "
-                "against a missing commitment.",
+                "[tick %s] Vault %s: commit-reveal supported but commit did not land "
+                "(commit_tx=%s, reverted=%s) — skipping trade to avoid an on-chain "
+                "revert against a missing commitment.",
                 tick_id,
                 vault_address[:10],
+                commit_tx,
+                commit_reverted,
             )
             await self._publish_trace(
                 vault_address,
@@ -1293,7 +1306,7 @@ class StrategyRunner:
         portfolio: Portfolio,
         targets: list[TargetAllocation],
         trade_id: bytes | None,
-    ) -> tuple[ReasoningTrace, int | None, str | None, int | None, int | None]:
+    ) -> tuple[ReasoningTrace, int | None, str | None, int | None, int | None, bool]:
         """Commit phase: anchor the trace hash on-chain BEFORE the trade executes.
 
         Builds the canonical trace ONCE and commits its keccak256 via the registry's
@@ -1317,10 +1330,14 @@ class StrategyRunner:
                 the DRY_RUN path, where no on-chain commit is made at all.
 
         Returns (trace, on_chain_trace_id, commit_tx_hash, commit_block_number,
-        claimed_execution_time). The trace is always returned so reveal() can submit
-        the identical content; trace_id is None when commit-reveal is unavailable
-        (publishTrace fallback); claimed_execution_time is non-None only on the real
-        commit-reveal path so the reveal phase knows how long to wait.
+        claimed_execution_time, reverted). The trace is always returned so reveal()
+        can submit the identical content; trace_id is None when commit-reveal is
+        unavailable (publishTrace fallback); claimed_execution_time is non-None only
+        on the real commit-reveal path so the reveal phase knows how long to wait.
+        ``reverted`` is True only on a CONFIRMED on-chain revert of the commit tx —
+        a reverted commit still has a real commit_tx_hash (diagnostic trail), so
+        callers gating Phase 2 trade execution MUST check ``reverted`` too, not
+        just ``commit_tx is None`` (#1095 review).
         """
         trace = ReasoningTrace(
             id=str(uuid.uuid4()),
@@ -1360,7 +1377,7 @@ class StrategyRunner:
 
         if DRY_RUN:
             logger.info("[tick %s] DRY RUN — skipping on-chain commit", tick_id)
-            return trace, None, None, None, None
+            return trace, None, None, None, None, False
 
         if not self._lease_ok:
             # #1043 fail-closed: no provable exclusivity — do not anchor a
@@ -1372,7 +1389,7 @@ class StrategyRunner:
                 "(fail-closed; will retry once the lease is re-acquired)",
                 tick_id,
             )
-            return trace, None, None, None, None
+            return trace, None, None, None, None, False
 
         claimed_execution_time = int(datetime.now(UTC).timestamp()) + self._COMMIT_EXECUTION_LEAD_S
         intent_summary = f"{trace.decision_type.value}:{len(trades)}".encode()
@@ -1386,8 +1403,8 @@ class StrategyRunner:
                     # than let trace_publisher.commit() reject an empty tradeId
                     # silently or bind a wrong one.
                     logger.error("[tick %s] COMMIT FAILED: trade_id missing on real commit-reveal path", tick_id)
-                    return trace, None, None, None, None
-                trace_id, commit_tx, commit_block = await trace_publisher.commit(
+                    return trace, None, None, None, None, False
+                trace_id, commit_tx, commit_block, reverted = await trace_publisher.commit(
                     trace, claimed_execution_time, trade_id, intent_summary
                 )
                 if commit_tx:
@@ -1398,7 +1415,7 @@ class StrategyRunner:
                         commit_tx[:16],
                         commit_block,
                     )
-                return trace, trace_id, commit_tx, commit_block, claimed_execution_time
+                return trace, trace_id, commit_tx, commit_block, claimed_execution_time, reverted
 
             # Fallback: v1 publishTrace anchor (no temporal binding).
             arc_tx = await trace_publisher.publish(trace)
@@ -1417,10 +1434,10 @@ class StrategyRunner:
                     arc_tx[:16],
                     commit_block,
                 )
-            return trace, None, arc_tx, commit_block, None
+            return trace, None, arc_tx, commit_block, None, False
         except Exception as e:
             logger.error("[tick %s] COMMIT FAILED: %s", tick_id, e)
-            return trace, None, None, None, None
+            return trace, None, None, None, None, False
 
     async def _reveal_trace(
         self,

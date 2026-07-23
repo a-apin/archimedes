@@ -234,9 +234,9 @@ class TestTracePublisherCommitWithTradeId:
             claimed = 2_000_000_000
             trade_id = compute_trade_id(["0x" + "55" * 20], [1_000_000], [], [])
 
-            trace_id, tx, block = asyncio.run(publisher.commit(trace, claimed, trade_id, b"\x01"))
+            trace_id, tx, block, reverted = asyncio.run(publisher.commit(trace, claimed, trade_id, b"\x01"))
 
-            assert (trace_id, tx, block) == (7, "0xCOMMIT", 100)
+            assert (trace_id, tx, block, reverted) == (7, "0xCOMMIT", 100, False)
             _, kwargs = mock_signer.execute_contract.call_args
             assert kwargs["abi_function"] == "commit(address,bytes32,uint64,bytes32,bytes)"
             params = kwargs["abi_params"]
@@ -271,9 +271,9 @@ class TestTracePublisherCommitWithTradeId:
                 trade_id = compute_trade_id(["0x" + "66" * 20], [2_000_000], [], [])
                 content_hash_bytes = bytes.fromhex(trace.trace_hash.removeprefix("0x"))
 
-                trace_id, tx, block = asyncio.run(publisher.commit(trace, claimed, trade_id, b"\x02"))
+                trace_id, tx, block, reverted = asyncio.run(publisher.commit(trace, claimed, trade_id, b"\x02"))
 
-                assert (trace_id, tx, block) == (7, "0xRAWTX", 100)
+                assert (trace_id, tx, block, reverted) == (7, "0xRAWTX", 100, False)
                 supported_loader.trace_registry.functions.commit.assert_called_once_with(
                     trace.vault_address, content_hash_bytes, claimed, trade_id, b"\x02"
                 )
