@@ -178,6 +178,12 @@ def run_command(
                 }
             )
 
+    # NOTE: look_ahead_audit_passed is a broker-execution-timing check only (no
+    # cheat-on-close/cheat-on-open) — it is NOT a source-level audit of the
+    # strategy's signal logic and is unconditionally True today because this
+    # engine never sets coc/coo. See BacktestResult.look_ahead_audit_passed's
+    # docstring in engine.py. The real AST-based check lives in
+    # backend/archimedes/services/rigor_evaluator.look_ahead_audit.
     lookahead_passed = all(r["metrics"]["look_ahead_audit_passed"] for r in results) if results else False
     paper_claim_applied = metadata.get("paper_claimed_sharpe") is not None
 

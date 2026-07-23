@@ -403,15 +403,7 @@ async def get_vault_detail(address: str):
     """Get full vault detail including holdings, performance, traces."""
     from fastapi import HTTPException
 
-    from archimedes.services.vault_service import VaultFeeGuardRefusal
-
-    try:
-        detail = await vault_svc.get_vault_detail(address)
-    except VaultFeeGuardRefusal as exc:
-        # Issue #1138: the vault exists but the fee guard refuses it — answer
-        # 400 (over-cap, reason names the values) or 502 (fees unverifiable,
-        # fail-closed) instead of conflating it with an unknown address.
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    detail = await vault_svc.get_vault_detail(address)
     if detail is None:
         raise HTTPException(status_code=404, detail="Vault not found")
     return detail

@@ -119,3 +119,31 @@ variable "archimedes_treasury_wallet" {
   type        = string
   default     = ""
 }
+
+# ── Runner relocation (issue #1065 / #1043) ─────────────────────────────────
+# Draft IaC — Dan applies POST-T3.2. See infra/runner_ec2.tf, infra/kb_runner.tf,
+# infra/efs.tf, and the PR body for the full architecture + caveats.
+
+variable "runner_instance_type" {
+  description = "EC2 instance type for the dedicated oracle+agent runner box (issue #1065 decision #1 — a single instance, never an ASG). t3.small is generous headroom for two lightweight async Python loops; bump if the agent's regime/backtest compute proves heavier in practice."
+  type        = string
+  default     = "t3.small"
+}
+
+variable "kb_runner_cpu" {
+  description = "Fargate task-level vCPU units for the scheduled kb-runner task (infra/kb_runner.tf). 1024 = 1 vCPU. Sized for the current skip-mode default (KB_PIPELINE_ENABLED unset) — bump substantially (and add GPU-appropriate compute, out of scope for Fargate) when the real ~6 GB SPECTER2/REBEL/SciSpacy pipeline is enabled."
+  type        = string
+  default     = "1024"
+}
+
+variable "kb_runner_memory" {
+  description = "Fargate task-level memory (MiB) for the scheduled kb-runner task. Must pair validly with kb_runner_cpu — see https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html."
+  type        = string
+  default     = "4096"
+}
+
+variable "kb_runner_schedule_expression" {
+  description = "EventBridge Scheduler rate/cron expression for the kb-runner scheduled Fargate task (infra/kb_runner.tf's aws_scheduler_schedule). Daily is a conservative default for a batch job that currently no-ops to a 'skipped' manifest.json (KB_PIPELINE_ENABLED unset) — tighten or loosen once the real pipeline is live and its actual runtime/cost is known."
+  type        = string
+  default     = "rate(1 day)"
+}

@@ -32,12 +32,10 @@ __all__ = [
     "AssetInfo",
     "AssetPrice",
     "AssetType",
-    "MarketplaceAgent",
-    "SubscriberLiability",
-    "SubscriberTickLog",
     # Backtest
     "BacktestResult",
     "DecisionType",
+    "MarketplaceAgent",
     # Paper reference
     "PaperRef",
     "Portfolio",
@@ -58,6 +56,8 @@ __all__ = [
     # Strategy passport
     "StrategyPassport",
     "StrategyStatus",
+    "SubscriberLiability",
+    "SubscriberTickLog",
     "TargetAllocation",
     "TradeDirection",
     "TradeOrder",

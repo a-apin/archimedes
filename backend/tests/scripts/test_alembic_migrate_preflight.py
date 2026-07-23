@@ -143,7 +143,6 @@ def test_stamp_and_upgrade_on_already_populated_postgres_db():
     import archimedes.db as db_module
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-
     from archimedes.scripts.alembic_migrate_preflight import BASELINE_REVISION
 
     engine = sa.create_engine(database_url)

@@ -67,11 +67,16 @@ class RigorProfile:
 # Level-1 dsr_p_min = 0.90 is INTENTIONAL (recalibrated 0.95 → 0.90 in PR #901,
 # team-sanctioned), with an explicit risk caveat (#902): 0.90 is a one-sided
 # ~10% test — real but not overwhelming evidence, and materially weaker than a
-# conventional 0.95 bar. It was chosen so the badge stays achievable at the
-# current library size, where the multiple-testing deflation (num_trials =
-# library N) already stiffens the p-value; anyone marketing the badge should
-# say "deflated-Sharpe evidence at the 0.90 level", not "statistically proven".
-# Revisit toward 0.95 as the library and return histories grow.
+# conventional 0.95 bar. This threshold VALUE is unchanged by decouple #2 (a
+# rigor floor, never loosened here) — but its original rationale ("achievable
+# at the library-size deflation, num_trials = library N") is now stale: a
+# strategy's num_trials is self-contained (decouple #2, Dan's principle — 1
+# for curated/single-candidate strategies, its own N for a real generation
+# pool), so the badge is often LESS deflated than when this bar was picked.
+# Anyone marketing the badge should say "deflated-Sharpe evidence at the 0.90
+# level", not "statistically proven". Revisit toward 0.95 as return histories
+# grow — needs Önder's re-derivation now that the deflation denominator has
+# changed.
 _PROFILES: dict[int, RigorProfile] = {
     1: RigorProfile(
         1,

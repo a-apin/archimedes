@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from archimedes.agents import debate_engine as de
@@ -371,7 +372,7 @@ class _NameVaryingFusionBackend:
     scenario: independently-generated proposals that converge on the same
     trading logic under different marketing names."""
 
-    _MARKETING_NAMES = [
+    _MARKETING_NAMES: ClassVar[list[str]] = [
         "TrendFusionCryptoVolatility",
         "CryptoVolTrendGuard",
         "Volatility-Hedge Trend-Follow",
@@ -462,9 +463,8 @@ def test_pick_pipeline_is_debate_unconditionally(monkeypatch):
     from archimedes.agents.generation_pipeline import _pick_pipeline
 
     monkeypatch.delenv("ARCHIMEDES_DEBATE_ENABLED", raising=False)
-    brief = GenerateBrief(intent="momentum equities")
     for override in (None, "fusion", "architect", "agent", "debate"):
-        name, reason = _pick_pipeline(brief, mode_override=override)
+        name, reason = _pick_pipeline(mode_override=override)
         assert name == "debate", f"override {override!r} must not route off the society"
         assert "Phase-3" in reason
 

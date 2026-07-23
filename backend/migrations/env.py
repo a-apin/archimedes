@@ -39,28 +39,28 @@ if str(_BACKEND_DIR) not in sys.path:
 # list exactly (including the two models init_db() imports only inline for
 # the same reason), so the two never drift apart.
 from archimedes.db import DATABASE_URL  # noqa: E402
-from archimedes.models.backtest_fixtures_store import StrategyBacktestFixture  # noqa: E402,F401
-from archimedes.models.backtest_store import BacktestResultRecord  # noqa: E402,F401
+from archimedes.models.backtest_fixtures_store import StrategyBacktestFixture  # noqa: E402
+from archimedes.models.backtest_store import BacktestResultRecord  # noqa: E402
 from archimedes.models.chat import Base  # noqa: E402
-from archimedes.models.corpus_store import CorpusMetaRecord, PaperRecord  # noqa: E402,F401
-from archimedes.models.daily_returns_store import StrategyDailyReturn  # noqa: E402,F401
-from archimedes.models.identity import ControlledWallet, IdentityEvent, WalletIdentity  # noqa: E402,F401
-from archimedes.models.kg import KGEntity, KGRelation  # noqa: E402,F401
-from archimedes.models.marketplace import (  # noqa: E402,F401
+from archimedes.models.corpus_store import CorpusMetaRecord, PaperRecord  # noqa: E402
+from archimedes.models.daily_returns_store import StrategyDailyReturn  # noqa: E402
+from archimedes.models.identity import ControlledWallet, IdentityEvent, WalletIdentity  # noqa: E402
+from archimedes.models.kg import KGEntity, KGRelation  # noqa: E402
+from archimedes.models.marketplace import (  # noqa: E402
     MarketplaceAgent,
     SettlementIntent,
     SubscriberLiability,
     SubscriberTickLog,
 )
-from archimedes.models.request_snapshot import RequestCountSnapshot  # noqa: E402,F401
-from archimedes.models.strategy_generators import StrategyGenerator  # noqa: E402,F401
-from archimedes.models.strategy_passport_record import (  # noqa: E402,F401
+from archimedes.models.request_snapshot import RequestCountSnapshot  # noqa: E402
+from archimedes.models.strategy_generators import StrategyGenerator  # noqa: E402
+from archimedes.models.strategy_passport_record import (  # noqa: E402
     PassportPaperRef,
     StrategyPassportRecord,
 )
-from archimedes.models.strategy_proposal import StrategyProposal  # noqa: E402,F401
-from archimedes.models.strategy_store import StrategyRecord  # noqa: E402,F401
-from archimedes.models.user_profile import UserProfile  # noqa: E402,F401
+from archimedes.models.strategy_proposal import StrategyProposal  # noqa: E402
+from archimedes.models.strategy_store import StrategyRecord  # noqa: E402
+from archimedes.models.user_profile import UserProfile  # noqa: E402
 
 # The model imports above are side-effect imports: they register every table on
 # ``Base.metadata`` so Alembic's ``target_metadata`` (below) sees the full schema
@@ -70,11 +70,8 @@ from archimedes.models.user_profile import UserProfile  # noqa: E402,F401
 # entrypoint, never ``import *``-ed, so ``__all__`` has no other effect.)
 __all__ = [
     "DATABASE_URL",
-    "Base",
-    "target_metadata",
-    "run_migrations_offline",
-    "run_migrations_online",
     "BacktestResultRecord",
+    "Base",
     "ControlledWallet",
     "CorpusMetaRecord",
     "IdentityEvent",
@@ -95,6 +92,9 @@ __all__ = [
     "SubscriberTickLog",
     "UserProfile",
     "WalletIdentity",
+    "run_migrations_offline",
+    "run_migrations_online",
+    "target_metadata",
 ]
 
 # this is the Alembic Config object, which provides

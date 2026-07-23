@@ -564,11 +564,9 @@ class RigorGateResult:
             return True
         if self.dsr_p_value is None or not math.isfinite(self.dsr_p_value) or self.dsr_p_value < DSR_P_FLOOR:
             return True
-        if self.cpcv_positive_fraction is not None and (
+        return self.cpcv_positive_fraction is not None and (
             not math.isfinite(self.cpcv_positive_fraction) or self.cpcv_positive_fraction < CPCV_MIN_POSITIVE_FRACTION
-        ):
-            return True
-        return False
+        )
 
     def _passes_profile(self, profile: RigorProfile) -> bool:
         """Every criterion clears ``profile``'s adjustable thresholds AND every
@@ -597,7 +595,7 @@ class RigorGateResult:
                 return False
         # ── Adjustable: OOS/IS cliff ratio (the absolute OOS>0 floor is enforced
         # by blocked_by_floor above; this guards against a performance *cliff*). ──
-        if (
+        if (  # noqa: SIM103 — explicit fail-branch kept for gate auditability (negation obscures)
             self.in_sample_sharpe is not None
             and math.isfinite(self.in_sample_sharpe)
             and self.in_sample_sharpe > 0
@@ -815,13 +813,19 @@ def run_rigor_gate(
             explicitly if that path should ever gate on the floor too.
     """
     if num_trials == 1:
-        # Loud on purpose (#902): num_trials=1 zeroes E[max SR] and collapses DSR
-        # to a plain "Sharpe > 0" test — the exact silent-undeflation failure mode
-        # that made the badge weaker than claimed. Legitimate only for a genuinely
-        # single-trial context, never for grading a library member.
-        logger.warning(
+        # Debug-level breadcrumb (#902; demoted from WARNING in the #1075
+        # review): num_trials=1 zeroes E[max SR] and collapses DSR to a plain
+        # "Sharpe > 0" test. Pre-decouple that was anomalous and deserved a
+        # loud line; post-decouple-#2 it is the DOCUMENTED DEFAULT for every
+        # curated serving call (list/detail/gate), so at WARNING it would spam
+        # the hot path with non-actionable noise. Kept at debug as the tell
+        # for the one real misuse: a caller with an N-candidate pool or
+        # variant grid that forgot to pass its own count.
+        logger.debug(
             "Rigor gate [%s]: num_trials=1 — DSR runs UNDEFLATED (no multiple-testing correction). "
-            "Pass num_trials=len(strategy_library) for a meaningful deflated verdict.",
+            "Correct for a self-contained strategy; if this strategy has its own real selection "
+            "set (an N-candidate generation pool or parameter-variant grid), pass that count "
+            "explicitly instead — never the curated library's size.",
             strategy_id,
         )
 

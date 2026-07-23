@@ -355,9 +355,11 @@ class TestAugmentCandidateScores:
         monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
         _reset_model_cache()
         candidates = [self._make_candidate("a", "Paper A")]
-        with patch.object(rag_module, "semantic_rerank", side_effect=RuntimeError("boom")):
-            with patch.object(rag_module, "_get_embedding_model", return_value=_fake_model()):
-                results = augment_candidate_scores("direction", candidates)
+        with (
+            patch.object(rag_module, "semantic_rerank", side_effect=RuntimeError("boom")),
+            patch.object(rag_module, "_get_embedding_model", return_value=_fake_model()),
+        ):
+            results = augment_candidate_scores("direction", candidates)
         assert all(s == 1.0 for _, s in results)
 
     def test_empty_arxiv_ids_get_zero_not_default_promotion(self, monkeypatch):

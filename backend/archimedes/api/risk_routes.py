@@ -13,7 +13,7 @@ from functools import lru_cache
 
 import numpy as np
 import scipy.stats
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from archimedes.api.risk_schemas import (
     CVaRLevel,
@@ -39,6 +39,43 @@ def _strategy_provider() -> LocalStrategyProvider:
     copy of the singleton rather than importing the shared one, so it gets
     its own lazy accessor). Call sites: ``_strategy_provider().foo()``."""
     return default_provider()
+
+
+def _all_strategies(request: Request) -> list:
+    """Curated ∪ generated strategy resolution shared by the risk endpoints
+    (the "unify source" decouple — docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md
+    Part A). Generated strategies are included via the SAME #850 ownership-visibility
+    rule as the rest of the app (is_example OR is_published OR owner_wallet == caller)
+    — never curated-only, so a generated strategy's portfolio risk is no longer
+    silently misreported as mock. Both halves then read metrics through the SAME
+    source, ``_strategy_provider().get_backtest_result(id)`` (queries the shared
+    ``backtest_results`` table by id regardless of curated/generated origin) — a
+    generated strategy with no persisted backtest yet contributes ``None`` metrics
+    exactly like an un-backtested curated one, never a fabricated stand-in.
+
+    Best-effort: any failure resolving the generated half degrades to curated-only
+    (today's behavior) rather than breaking the risk surface.
+    """
+    strategies: list = list(_strategy_provider().list_strategies())
+    try:
+        from archimedes.api.auth_siwe import get_verified_wallet
+        from archimedes.api.strategies_routes import _generated_strategy_responses
+        from archimedes.db import get_session
+
+        caller = get_verified_wallet(request)
+        with get_session() as session:
+            strategies.extend(_generated_strategy_responses(session, caller))
+    except Exception:
+        logger.debug("risk: generated strategy resolution failed (non-fatal)", exc_info=True)
+    return strategies
+
+
+def _status_str(s) -> str:
+    """Status value for either a curated ``Strategy`` (``StrategyStatus`` enum)
+    or a generated ``StrategyResponse`` (plain string) — the two object types
+    ``_all_strategies`` can hand back."""
+    st = getattr(s, "status", None)
+    return st.value if hasattr(st, "value") else (st or "unknown")
 
 
 # ── Loud-fallback telemetry (T0.5) ───────────────────────────
@@ -104,8 +141,7 @@ def risk_data_health() -> RiskDataHealth:
 
 # ── Risk Profile Bands ───────────────────────────────────────
 # Thresholds used to classify a portfolio into one of five tiers.
-# These are the same five levels used by the strategy architect
-# (architect_schemas.py RiskProfileLiteral).
+# These are the same five levels as `archimedes.models.portfolio.RiskProfile`.
 
 RISK_BANDS: list[dict] = [
     {
@@ -193,7 +229,7 @@ async def get_risk_profiles():
 
 
 @risk_router.get("/portfolio", response_model=PortfolioRiskResponse)
-async def get_portfolio_risk():
+async def get_portfolio_risk(request: Request):
     """Aggregate portfolio-level risk metrics from persisted backtests.
 
     Computes:
@@ -201,8 +237,11 @@ async def get_portfolio_risk():
       - Per-strategy derived volatility (abs(cagr) / sharpe when both present)
       - Concentration HHI from on-chain vault holdings (if available)
       - Actual risk profile classification based on worst max DD
+
+    Strategy resolution is curated ∪ generated (visible generated strategies —
+    see ``_all_strategies``), not curated-only.
     """
-    strategies = _strategy_provider().list_strategies()
+    strategies = _all_strategies(request)
 
     # ── Per-strategy summaries ───────────────────────────────
     summaries: list[StrategyRiskSummary] = []
@@ -246,7 +285,7 @@ async def get_portfolio_risk():
             StrategyRiskSummary(
                 id=s.id,
                 paper_title=s.paper_title,
-                status=s.status.value,
+                status=_status_str(s),
                 sharpe_ratio=sharpe,
                 volatility=volatility,
                 max_drawdown=max_dd,
@@ -318,13 +357,17 @@ async def get_portfolio_risk():
 
 
 @risk_router.get("/cvar", response_model=PortfolioCVaRResponse)
-async def get_portfolio_cvar():
+async def get_portfolio_cvar(request: Request):
     """Portfolio-level CVaR at 90, 95, 99% confidence from persisted backtests.
 
     Daily returns are derived from equity_curve via pct_change. Strategies are
     equally weighted. Returns 200 with empty levels if no equity data is available.
+
+    Strategy resolution is curated ∪ generated (see ``_all_strategies``). A
+    generated strategy with no persisted equity curve yet is skipped exactly
+    like an un-backtested curated one — never a fabricated CVaR.
     """
-    strategies = _strategy_provider().list_strategies()
+    strategies = _all_strategies(request)
 
     all_returns: list[np.ndarray] = []
     for s in strategies:
@@ -426,18 +469,20 @@ def _bs_atm_greeks(sigma: float, tau: float, r: float, q: float) -> dict[str, fl
 
 
 @risk_router.get("/greeks", response_model=PortfolioGreeksResponse)
-async def get_portfolio_greeks():
+async def get_portfolio_greeks(request: Request):
     """ATM call Black-Scholes Greeks per strategy and equal-weight portfolio aggregate.
 
     Vol is derived from Sharpe + CAGR: sigma = abs(CAGR) / Sharpe.
     Falls back to 0.20 when not derivable. Returns 200 with zeros when no strategies exist.
+
+    Strategy resolution is curated ∪ generated (see ``_all_strategies``).
     """
     _R = 0.045
     _Q = 0.02
     _TAU = 30 / 365
     _FALLBACK_VOL = 0.20
 
-    strategies = _strategy_provider().list_strategies()
+    strategies = _all_strategies(request)
 
     strategy_greeks: list[StrategyGreeks] = []
     for s in strategies:

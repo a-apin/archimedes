@@ -13,8 +13,8 @@ import json
 import logging
 import os
 import time
-from datetime import UTC, datetime
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 
 from sqlalchemy.exc import IntegrityError
 
@@ -26,11 +26,11 @@ from archimedes.chain.v_check import VCheck
 from archimedes.db import get_session
 from archimedes.interfaces.math import IRegimeDetector
 from archimedes.marketplace import payments
-from archimedes.marketplace.state import MarketState
 from archimedes.marketplace.settlement import SettlementSweeper
+from archimedes.marketplace.state import MarketState
 from archimedes.marketplace.tick_registry import (
-    HaltSource,
     PIPELINE_STEPS,
+    HaltSource,
     SubscriberTickRecord,
     TickStep,
 )
@@ -506,7 +506,9 @@ class MarketService:
             await self._save_publisher_consensus(strategy_id, ctx.consensus, ctx.all_signals)
         return _StepResult()
 
-    async def _step_throttle(self, ctx: _TickCtx, strategy_id: str) -> _StepResult:
+    # strategy_id kept for the uniform _step_* signature (dispatched positionally
+    # by the tick pipeline); this step reads only ctx. noqa: keep the interface.
+    async def _step_throttle(self, ctx: _TickCtx, strategy_id: str) -> _StepResult:  # noqa: ARG002
         strategies = [ctx.strategy] if ctx.strategy else []
         ctx.allocations = self.portfolio_constructor.construct(
             risk_profile=RiskProfile.MODERATE,
@@ -867,7 +869,7 @@ class MarketService:
                 *[self._charge_one(pub, s, strategy_id, tick_id, step, action_count=1) for s in chunk],
                 return_exceptions=True,
             )
-            for sub, paid in zip(chunk, results):
+            for sub, paid in zip(chunk, results, strict=True):  # results == gather(over chunk) → same length
                 if isinstance(paid, Exception):
                     paid = False
                 if paid:

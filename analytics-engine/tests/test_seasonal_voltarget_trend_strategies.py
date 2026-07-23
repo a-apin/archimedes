@@ -95,7 +95,7 @@ def test_strategy_metadata(stem: str, expected_cls: str, expected_regime: str) -
     assert isinstance(module.PAPER_AUTHORS, list) and len(module.PAPER_AUTHORS) >= 1
     assert all(isinstance(a, str) and a.strip() for a in module.PAPER_AUTHORS)
     assert isinstance(module.PAPER_YEAR, int) and module.PAPER_YEAR > 1900
-    assert module.REGIME_TAG == expected_regime
+    assert expected_regime == module.REGIME_TAG
     assert isinstance(module.RISK_PROFILES, list) and len(module.RISK_PROFILES) >= 1
     assert module.STATUS == "candidate"
     assert isinstance(module.METHODOLOGY_TEXT, str) and len(module.METHODOLOGY_TEXT) > 100

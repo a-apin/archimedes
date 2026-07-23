@@ -87,11 +87,13 @@ async def test_heartbeat_emitted_during_long_silent_compute_stretch(monkeypatch)
         from archimedes.main import app
 
         chunks: list[str] = []
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            async with client.stream("GET", f"/api/generate/stream/{_JOB_ID}") as resp:
-                assert resp.status_code == 200
-                async for line in resp.aiter_lines():
-                    chunks.append(line)
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+            client.stream("GET", f"/api/generate/stream/{_JOB_ID}") as resp,
+        ):
+            assert resp.status_code == 200
+            async for line in resp.aiter_lines():
+                chunks.append(line)
 
     heartbeat_lines = [c for c in chunks if c.strip() == ": heartbeat"]
     done_lines = [c for c in chunks if c.strip() == "event: done"]
@@ -132,11 +134,13 @@ async def test_no_heartbeat_needed_when_events_flow_continuously(monkeypatch):
         from archimedes.main import app
 
         chunks: list[str] = []
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            async with client.stream("GET", f"/api/generate/stream/{_JOB_ID}") as resp:
-                assert resp.status_code == 200
-                async for line in resp.aiter_lines():
-                    chunks.append(line)
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+            client.stream("GET", f"/api/generate/stream/{_JOB_ID}") as resp,
+        ):
+            assert resp.status_code == 200
+            async for line in resp.aiter_lines():
+                chunks.append(line)
 
     heartbeat_lines = [c for c in chunks if c.strip() == ": heartbeat"]
     assert not heartbeat_lines, f"unexpected heartbeat with continuously-flowing events: {chunks}"

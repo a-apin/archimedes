@@ -49,6 +49,43 @@ AI_WALLET_ADDRESS = os.getenv(
 CHAT_MODEL = os.getenv("CHAT_MODEL", "").strip() or None
 
 
+def _generated_context_lines(strategy_id: str) -> list[str]:
+    """Curated-provider miss → look up a GENERATED strategy directly from the
+    unified strategy_passports store, so a generated-strategy vault's chat gets
+    real context instead of silence (the "unify source" decouple —
+    docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md Part A).
+
+    No additional ownership check is applied: the vault was already bound to
+    this strategy_id at deploy time (VaultMetadata.get_strategy_ids()), so
+    reading it back here crosses no new trust boundary. Fail-safe: any lookup
+    error yields no extra lines, never a fabricated one.
+    """
+    try:
+        from archimedes.db import get_session
+        from archimedes.services.passport_loader import get_passport
+
+        with get_session() as session:
+            record = get_passport(session, strategy_id)
+            if record is None:
+                return []
+            d = record.to_dict()
+            lines: list[str] = []
+            paper_refs = d.get("paper_refs") or []
+            title = (paper_refs[0].get("title") if paper_refs else None) or (d.get("methodology_summary") or "")[:60]
+            if title:
+                lines.append(f"Strategy: {title}")
+            if d.get("methodology_summary"):
+                lines.append(f"Methodology: {d['methodology_summary'][:400]}")
+            if d.get("asset_universe"):
+                lines.append(f"Assets: {', '.join(d['asset_universe'])}")
+            rigor = "passed" if d.get("passes_rigor_gate") else "not passed"
+            lines.append(f"Rigor gate: {rigor}")
+            return lines
+    except Exception:
+        logger.debug("generated-strategy chat context lookup failed for %s (non-fatal)", strategy_id, exc_info=True)
+        return []
+
+
 class ChatService:
     """Manages per-vault chat messages and AI responses."""
 
@@ -315,6 +352,12 @@ class ChatService:
                                     parts.append(f"Assets: {', '.join(s.asset_universe)}")
                                 rigor = "passed" if s.passes_rigor_gate else "not passed"
                                 parts.append(f"Rigor gate: {rigor}")
+                            else:
+                                # Curated provider miss — GENERATED strategy vault
+                                # (unify-source decouple): fall back to the unified
+                                # strategy_passports store instead of leaving this
+                                # vault's chat with no strategy context at all.
+                                parts.extend(_generated_context_lines(sid))
             finally:
                 session.close()
         except Exception as exc:

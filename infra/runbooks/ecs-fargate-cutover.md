@@ -26,7 +26,16 @@
 > with empty `VITE_*` build-args (no Circle client key baked into the served
 > bundle); added the PRE-CUTOVER ENV-PARITY CHECKLIST as a hard gate before
 > Phase 4; and locked in **Option C — hard cutover, no parallel-traffic
-> soak** as the chosen cutover strategy, rewriting Phase 4 accordingly).
+> soak** as the chosen cutover strategy, rewriting Phase 4 accordingly);
+> updated 2026-07-08 (issue #1065 runner-relocation draft — **Phase 8's old
+> gate (three ECS *services* named `archimedes-oracle`/`archimedes-agent`/
+> `archimedes-kb-runner`) never matched what actually got built and is
+> REPLACED below.** The shipped shape is a dedicated EC2 instance for
+> oracle+agent (funds-adjacent exactly-once singletons — never a Fargate
+> service with autoscaling, never an ASG) and a scheduled (not
+> long-running) Fargate task for kb-runner. See `infra/runner_ec2.tf`,
+> `infra/kb_runner.tf`, `infra/efs.tf`, and #1065 for the full IaC + the
+> post-apply execution checklist).
 > **Not yet applied, not yet drilled.** Written against `infra/ecr.tf` +
 > `infra/ecs.tf` on the `dbrowneup/1039-fargate-infra` epic branch. No
 > `terraform apply`, ALB cutover, or EC2 decommission has happened — those are
@@ -742,37 +751,71 @@ step 1's gate is still red.**
 
 1. **HARD GATE — confirm the oracle/agent/kb-runner background daemons have
    somewhere to run, with a concrete verification command, BEFORE touching
-   the EC2 instance at all.** These are singleton, no-ALB background loops
-   (Phase 0's residual — no Fargate home in this chunk; they need their own
-   Fargate service(s), `desired_count = 1`, no autoscaling — same anti-goal
-   as the EC2 ASG tier: these loops must not be duplicated) that are today
-   the vault/regime-state source of truth as `docker compose` services on
-   the EC2 box. Decommissioning the box while they still only exist there
-   silently kills that state — this is the one step in this runbook that is
-   NOT just "detach and delete."
+   the EC2 instance at all.** **REPLACED 2026-07-08 (issue #1065):** the
+   original version of this gate checked for three ECS *services* named
+   `archimedes-oracle` / `archimedes-agent` / `archimedes-kb-runner` — that
+   was always aspirational and doesn't match what actually got built.
+   oracle + agent are funds-adjacent, exactly-once singletons
+   (`services/runner_lease.py` is the app-layer Redis lease control) that
+   live on their OWN dedicated EC2 instance (`infra/runner_ec2.tf`) —
+   deliberately NOT an ECS service, NOT autoscaled, NOT an ASG (duplicating
+   either process risks a double-signed on-chain tx). kb-runner is a
+   scheduled (batch), not long-running, Fargate task
+   (`infra/kb_runner.tf` + an EventBridge Scheduler schedule) — it has no
+   `aws ecs describe-services` entry at all; it exists only as task
+   invocations on its schedule. Decommissioning the old box while these
+   still only run there (as `docker compose` services) would silently kill
+   the vault/regime-state source of truth — this is still the one step in
+   this runbook that is NOT just "detach and delete," just checked
+   differently:
 
    ```bash
-   for svc in archimedes-oracle archimedes-agent archimedes-kb-runner; do
-     echo "=== $svc ==="
-     aws ecs describe-services --cluster "$(terraform output -raw ecs_cluster_name)" \
-       --services "$svc" \
-       --query 'services[0].{status:status,running:runningCount,desired:desiredCount}' \
-       --output table || echo "MISSING: $svc has no Fargate service yet — GATE FAILS"
-   done
+   # 1. Oracle + agent EC2 — must be running.
+   aws ec2 describe-instances \
+     --instance-ids "$(terraform output -raw runner_instance_id)" \
+     --query 'Reservations[0].Instances[0].State.Name' --output text
+   # Expect: running
+
+   # 2. Oracle + agent — each completed >= 1 successful on-chain action in
+   #    the last hour (price push / rebalance), not just "the process is up."
+   aws logs tail "$(terraform output -raw runner_log_group_name)" \
+     --since 1h --filter-pattern "oracle" | grep -i "price push complete" \
+     || echo "GATE FAILS: no oracle price push in the last hour"
+   aws logs tail "$(terraform output -raw runner_log_group_name)" \
+     --since 1h --filter-pattern "agent" | grep -i "rebalance" \
+     || echo "GATE FAILS: no agent rebalance activity in the last hour"
+
+   # 3. kb-runner schedule — must be ENABLED, with >= 1 successful invocation.
+   aws scheduler get-schedule --name "$(terraform output -raw kb_runner_schedule_name)" \
+     --query 'State' --output text
+   # Expect: ENABLED
+   aws logs tail "$(terraform output -raw kb_runner_log_group_name)" --since 24h \
+     | grep -i "manifest" || echo "GATE FAILS: no kb-runner manifest.json write logged in the last 24h"
+
+   # 4. Both CloudWatch alarms show OK, not INSUFFICIENT_DATA.
+   aws cloudwatch describe-alarms \
+     --alarm-names archimedes-runner-ec2-status-check-failed archimedes-kb-runner-failed \
+     --query 'MetricAlarms[].{Name:AlarmName,State:StateValue}' --output table
    ```
 
-   **Gate passes only if all three print `status: ACTIVE` with
-   `running >= desired >= 1`.** Any `MISSING` line, any `status` other than
-   `ACTIVE`, or `running < desired` — STOP. Do not proceed to step 2 or 3.
-   (These singleton services aren't provisioned by this PR — see the note at
-   the top of this file: they're pending cost sign-off as a follow-up.)
+   **Gate passes only if:** the runner EC2 is `running`; both oracle and
+   agent show real on-chain activity in the last hour (not just process
+   liveness); the kb schedule is `ENABLED` with at least one completed
+   invocation; and both alarms are `OK`. Any failure — STOP. Do not proceed
+   to step 2 or 3. (Full step-by-step verification detail: issue #1065 Step
+   3 of the execution checklist.)
 2. Remove the now-dead `EC2_INSTANCE_ID` / SSM `deploy` job from `deploy.yml`
    entirely — the `deploy-ecs` job (issue #1039 C1) has independently
    redeployed Fargate on every push since before Phase 4 ran, so this step is
    purely deleting the now-unreachable EC2 code path, not changing behavior.
+   (Separately, once step 1's gate is green, `.github/workflows/deploy-runners.yml`'s
+   `push` trigger can be uncommented — see that workflow's header — so runner
+   deploys stop being a manual `workflow_dispatch`.)
 3. **Only now, last:** terminate `aws_instance.archimedes` (remove from
    `main.tf`, `terraform apply`). Aurora/ElastiCache/ALB/WAF/CloudFront/
-   Route 53 are all unaffected; this chunk never touched them.
+   Route 53 are all unaffected; this chunk never touched them. The NEW
+   runner EC2 (`aws_instance.runner`, `infra/runner_ec2.tf`) is a SEPARATE
+   resource and is not affected by this termination.
 
 ---
 

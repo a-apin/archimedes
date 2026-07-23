@@ -14,13 +14,11 @@ Run: env -i HOME=$HOME PATH=$PATH PYTHONPATH=backend python -m pytest \
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-
 from archimedes.models.chat import Base
 from archimedes.models.corpus_store import PaperRecord
 from archimedes.models.strategy_passport_record import PassportPaperRef, StrategyPassportRecord
-
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 # ---------------------------------------------------------------------------
 # Fixtures

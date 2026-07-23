@@ -185,3 +185,40 @@ output "ecs_migrate_network_configuration" {
     }
   })
 }
+
+# ── Runner relocation outputs (issue #1065 / #1043) ────────────────────────
+
+output "runner_instance_id" {
+  description = "Instance id of the dedicated oracle+agent runner EC2 (infra/runner_ec2.tf) — target for `aws ssm start-session` / `aws ssm send-command`, and for #1065 Step 4's Phase 8 gate check."
+  value       = aws_instance.runner.id
+}
+
+output "runner_log_group_name" {
+  description = "CloudWatch log group both runner systemd units ship to (docker awslogs driver, distinct stream prefixes 'oracle'/'agent') — `aws logs tail <this> --since 10m --filter-pattern oracle` per #1065 Step 3."
+  value       = aws_cloudwatch_log_group.runners.name
+}
+
+output "efs_file_system_id" {
+  description = "EFS file system id for the shared KB corpus-artifact storage (infra/efs.tf) — mounted by both the backend service task (ecs.tf) and the kb-runner scheduled task (infra/kb_runner.tf)."
+  value       = aws_efs_file_system.corpus_artifact.id
+}
+
+output "efs_access_point_id" {
+  description = "EFS access point id (posix uid/gid 1001, matches backend/Dockerfile's nonroot user) — referenced by both task definitions' `efs_volume_configuration.authorization_config.access_point_id`."
+  value       = aws_efs_access_point.corpus_artifact.id
+}
+
+output "kb_runner_task_definition_family" {
+  description = "ECS task definition family for the scheduled kb-runner task (infra/kb_runner.tf) — register new revisions against this family for CI deploys (.github/workflows/deploy-runners.yml); the EventBridge Schedule always targets the latest ACTIVE revision (revision-less ARN), not a pinned one."
+  value       = aws_ecs_task_definition.kb_runner.family
+}
+
+output "kb_runner_schedule_name" {
+  description = "EventBridge Scheduler schedule name for kb-runner — `aws scheduler get-schedule --name <this>` to confirm ENABLED state (#1065 Step 3)."
+  value       = aws_scheduler_schedule.kb_runner.name
+}
+
+output "kb_runner_log_group_name" {
+  description = "CloudWatch log group the kb-runner scheduled task ships to — `aws logs tail <this> --since 10m` to verify a run."
+  value       = aws_cloudwatch_log_group.kb_runner.name
+}

@@ -92,8 +92,7 @@ def needs_refresh() -> tuple[bool, str]:
                     f"backing off: {len(missing)} strategies still missing and unchanged"
                     " since last refresh (likely need code fixes, not re-runs)",
                 )
-            else:
-                return True, f"{len(missing)}/{len(ids)} strategies have no persisted backtest"
+            return True, f"{len(missing)}/{len(ids)} strategies have no persisted backtest"
         now = datetime.now(UTC)
         oldest = None
         for row in latest.values():

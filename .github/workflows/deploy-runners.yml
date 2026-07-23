@@ -1,0 +1,235 @@
+# Archimedes — Deploy the relocated runners (oracle+agent EC2, kb scheduled Fargate task)
+#
+# Issue #1065 (execution checklist) / #1043 (parent). Companion to
+# `.github/workflows/deploy.yml`'s `build-and-push` job — this workflow
+# does NOT build or push images itself; it consumes whatever
+# `archimedes-backend:<tag>` build-and-push already pushed to ECR and:
+#   (a) SSM RunCommand's the runner EC2 to `docker pull` the fresh tag +
+#       restart the `archimedes-oracle`/`archimedes-agent` systemd units
+#       (infra/runner_ec2.tf's runner-user-data.sh sets these up).
+#   (b) registers a new `archimedes-kb-runner` ECS task-definition revision
+#       carrying the fresh image tag (infra/kb_runner.tf) — the EventBridge
+#       Schedule targets the family's latest ACTIVE revision (no pinned
+#       revision, see that file's comment), so no further action is needed
+#       for the next scheduled run to pick it up.
+#
+# IAM: reuses the EXISTING `archimedes-github-deploy` OIDC role unchanged —
+# no new permissions needed. Verified against
+# infra/scripts/setup-github-oidc.sh's starter policy: `ssm:SendCommand` /
+# `ssm:GetCommandInvocation` / `ec2:DescribeInstances` are already granted
+# (Resource "*"), and `ecs:RegisterTaskDefinition` / `DescribeTaskDefinition`
+# are already granted by ecs.tf's `aws_iam_role_policy.github_deploy_ecs`
+# (also Resource "*", covering every task-definition family including the
+# new `archimedes-kb-runner`).
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# SAFETY — THIS WORKFLOW IS INERT UNTIL DAN ENABLES IT POST-APPLY. Merging
+# the PR that adds this file CANNOT trigger a deploy against infrastructure
+# that doesn't exist yet. Three independent layers:
+#   1. NO `push` TRIGGER. Only `workflow_dispatch` (manual) is wired below.
+#      The `push: branches: [main]` trigger a live version of this workflow
+#      would eventually want is written but COMMENTED OUT — uncomment it only
+#      once #1065 Step 2 (terraform apply) and Step 3 (verify on-chain) are
+#      both green. (infra/runbooks/ecs-fargate-cutover.md Phase 8 step 2
+#      references this exact moment.)
+#   2. `if: vars.RUNNER_DEPLOY_ENABLED == 'true'` gates BOTH jobs — a NEW,
+#      separate repo variable from `DEPLOY_ENABLED` (which already gates
+#      deploy.yml). Unset/false (the default — nothing sets it) skips both
+#      jobs cleanly even if this workflow is ever manually dispatched or the
+#      push trigger above is prematurely uncommented.
+#   3. RUNTIME EXISTENCE CHECKS. Even with both gates open, each job first
+#      confirms its target actually exists (a `Name=archimedes-runner`
+#      running EC2 instance; an ACTIVE `archimedes-kb-runner` task-definition
+#      family) and no-ops loudly rather than erroring if #1065 Step 2 hasn't
+#      run yet — same convention as deploy.yml's `migrate` / `deploy-ecs`
+#      jobs' own self-activating checks.
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Deploy Runners (oracle+agent EC2, kb scheduled Fargate task)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "archimedes-backend image tag to deploy (defaults to the current commit SHA)"
+        required: false
+        type: string
+  # SAFETY layer 1 (see header) — intentionally commented out. Uncomment only
+  # after #1065 Step 2 (terraform apply) + Step 3 (on-chain verification) are
+  # both done; see infra/runbooks/ecs-fargate-cutover.md Phase 8 step 2.
+  # push:
+  #   branches:
+  #     - main
+
+concurrency:
+  group: deploy-runners
+  cancel-in-progress: true
+
+permissions:
+  id-token: write # Required for OIDC token request
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 037613907429.dkr.ecr.us-east-1.amazonaws.com
+  BACKEND_ECR_REPO: archimedes-backend
+  KB_TASK_FAMILY: archimedes-kb-runner
+  # Matches infra/runner_ec2.tf's `aws_instance.runner` tag (Name =
+  # "${var.project_name}-runner" = "archimedes-runner" with the default
+  # project_name). Resolved to an instance id at runtime, not hardcoded —
+  # unlike deploy.yml's EC2_INSTANCE_ID literal, this box doesn't exist yet
+  # at the time this workflow is authored, so there is no id to hardcode.
+  RUNNER_INSTANCE_NAME_TAG: archimedes-runner
+
+jobs:
+  deploy-runner-ec2:
+    name: Deploy oracle+agent (SSM -> runner EC2)
+    if: ${{ vars.RUNNER_DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
+        with:
+          role-to-assume: arn:aws:iam::037613907429:role/archimedes-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve the runner EC2 instance id (SAFETY layer 3 — no-ops if not applied yet)
+        id: find
+        run: |
+          set -euo pipefail
+          ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${RUNNER_INSTANCE_NAME_TAG}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text 2>/dev/null || echo "None")
+          if [ -z "$ID" ] || [ "$ID" = "None" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "NO-OP: no running EC2 tagged Name=$RUNNER_INSTANCE_NAME_TAG found. The runner-relocation Terraform (infra/runner_ec2.tf) hasn't been applied yet — see issue #1065 Step 2. Skipping cleanly (not a failure)."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "instance_id=$ID" >> "$GITHUB_OUTPUT"
+            echo "Found runner instance: $ID"
+          fi
+
+      - name: docker pull + restart oracle/agent systemd units via SSM RunCommand
+        if: steps.find.outputs.present == 'true'
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
+          INSTANCE_ID: ${{ steps.find.outputs.instance_id }}
+        run: |
+          set -euo pipefail
+
+          # Validate the tag BEFORE it is interpolated into the root-run SSM
+          # script below: image_tag is a workflow_dispatch input, and while
+          # dispatch requires repo write access, a crafted value would inject
+          # shell into the runner box (review). Docker tag charset only.
+          if ! [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+            echo "::error::invalid image_tag '$IMAGE_TAG' — must match ^[A-Za-z0-9._-]{1,128}$"
+            exit 1
+          fi
+
+          # Unquoted heredoc — $AWS_REGION/$ECR_REGISTRY/$BACKEND_ECR_REPO/
+          # $IMAGE_TAG are all REAL shell env vars in THIS runner's
+          # environment (workflow-level `env:` + this step's own `env:`
+          # above), so they expand into literal values here, before the
+          # script is ever shipped to the target instance — the box on the
+          # other end just runs a plain, already-resolved shell script, no
+          # further interpolation needed there. Written to a file (rather
+          # than inlined into `--parameters commands=[...]`) per CLAUDE.md's
+          # documented convention: building a multi-line SSM command payload
+          # inline through shell quoting is a reliable source of "parse error
+          # near ')'" failures.
+          cat > /tmp/remote.sh <<EOS
+          set -euo pipefail
+          # Instance-local mutex: GitHub's concurrency.cancel-in-progress only
+          # cancels the Actions JOB — an already-dispatched SSM command keeps
+          # executing on the box. Two overlapping deploys would interleave
+          # docker pull/tag/restart on the funds-adjacent oracle/agent runners
+          # (mixed image tags, double restarts mid-tick). flock -n fails the
+          # second invocation fast and loud instead; rerun it once the first
+          # finishes.
+          exec 200>/var/lock/archimedes-runner-deploy.lock
+          flock -n 200 || { echo "another runner deploy is already in progress on this instance — aborting" >&2; exit 1; }
+          aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+          docker pull ${ECR_REGISTRY}/${BACKEND_ECR_REPO}:${IMAGE_TAG}
+          docker tag ${ECR_REGISTRY}/${BACKEND_ECR_REPO}:${IMAGE_TAG} ${ECR_REGISTRY}/${BACKEND_ECR_REPO}:latest
+          systemctl restart archimedes-oracle.service archimedes-agent.service
+          EOS
+
+          python3 -c "
+          import json
+          script = open('/tmp/remote.sh').read()
+          json.dump({'commands': [script]}, open('/tmp/ssm-params.json', 'w'))
+          "
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file:///tmp/ssm-params.json \
+            --query 'Command.CommandId' --output text)
+          echo "SSM command: $CMD_ID"
+
+          aws ssm wait command-executed --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" || true
+
+          STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" \
+            --instance-id "$INSTANCE_ID" --query Status --output text)
+          echo "SSM command status: $STATUS"
+          if [ "$STATUS" != "Success" ]; then
+            echo "::error::SSM RunCommand did not succeed (status=$STATUS) — stderr below"
+            aws ssm get-command-invocation --command-id "$CMD_ID" \
+              --instance-id "$INSTANCE_ID" --query StandardErrorContent --output text
+            exit 1
+          fi
+          echo "oracle + agent restarted on tag $IMAGE_TAG"
+
+  deploy-kb-runner:
+    name: Deploy kb-runner (new scheduled Fargate task-def revision)
+    if: ${{ vars.RUNNER_DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
+        with:
+          role-to-assume: arn:aws:iam::037613907429:role/archimedes-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check whether the kb-runner task family exists yet (SAFETY layer 3)
+        id: check
+        run: |
+          set -euo pipefail
+          STATUS=$(aws ecs describe-task-definition --task-definition "$KB_TASK_FAMILY" \
+            --query 'taskDefinition.status' --output text 2>/dev/null || echo "")
+          if [ "$STATUS" = "ACTIVE" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "NO-OP: task family '$KB_TASK_FAMILY' not found. infra/kb_runner.tf hasn't been applied yet — see issue #1065 Step 2. Skipping cleanly (not a failure)."
+          fi
+
+      - name: Register a new kb-runner task-definition revision with the fresh image tag
+        if: steps.check.outputs.present == 'true'
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
+        run: |
+          set -euo pipefail
+
+          aws ecs describe-task-definition --task-definition "$KB_TASK_FAMILY" \
+            --query 'taskDefinition' > current-kb-task-def.json
+
+          jq --arg image "$ECR_REGISTRY/$BACKEND_ECR_REPO:$IMAGE_TAG" '
+            .containerDefinitions = (.containerDefinitions | map(
+              if .name == "kb-runner" then .image = $image else . end
+            )) |
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+          ' current-kb-task-def.json > new-kb-task-def.json
+
+          NEW_ARN=$(aws ecs register-task-definition --cli-input-json file://new-kb-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          if [ -z "$NEW_ARN" ] || [ "$NEW_ARN" = "None" ]; then
+            echo "::error::ecs register-task-definition did not return a task definition ARN — see the command output above."
+            exit 1
+          fi
+          echo "Registered $NEW_ARN — the EventBridge Schedule targets the family's latest ACTIVE revision (infra/kb_runner.tf), so the NEXT scheduled invocation picks this up automatically. No schedule update needed."

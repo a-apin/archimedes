@@ -936,9 +936,13 @@ class TestDegenerateSeriesExcludedFromCohort:
         )
 
     @pytest.mark.asyncio
-    async def test_num_trials_excludes_degenerate_series(self, monkeypatch):
-        """3 real + 2 degenerate (flat) series in the cohort → num_trials == 3,
-        not 5. Before the fix, num_trials counted len(valid_returns) == 5."""
+    async def test_degenerate_series_excluded_from_avg_correlation(self, monkeypatch):
+        """3 real + 2 degenerate (flat) series in the cohort. Post-decouple #2,
+        num_trials is a self-contained 1 (each curated strategy graded on its own
+        Sharpe, never deflated by cohort size), so the degeneracy filter no longer
+        affects num_trials — but it MUST still keep the 2 flat placeholders out of
+        the cohort avg_correlation/PBO context (#868), so avg_correlation stays a
+        finite number computed from only the 3 real series."""
         from archimedes.api import selection_bias_routes as routes
         from archimedes.main import app
         from archimedes.services.rigor_evaluator import run_rigor_gate as real_run_rigor_gate
@@ -969,10 +973,16 @@ class TestDegenerateSeriesExcludedFromCohort:
         assert resp.status_code == 200
         assert captured_kwargs, "run_rigor_gate was never called"
 
-        # Every call in this run shares the same library-wide num_trials context.
+        # Decouple #2: num_trials is a self-contained 1 for every curated strategy,
+        # independent of cohort size (degenerate or not).
         num_trials_seen = {kwargs["num_trials"] for kwargs in captured_kwargs}
-        assert num_trials_seen == {3}, (
-            f"num_trials should count only the 3 non-degenerate series, got {num_trials_seen}"
+        assert num_trials_seen == {1}, f"curated num_trials must be self-contained 1, got {num_trials_seen}"
+
+        # The #868 protection that REMAINS meaningful: the 2 flat placeholders must
+        # not corrupt the cohort avg_correlation (computed from the 3 real series).
+        avg_corr_seen = {kwargs["average_correlation"] for kwargs in captured_kwargs}
+        assert all(np.isfinite(c) for c in avg_corr_seen), (
+            f"avg_correlation must be finite (degenerate series excluded), got {avg_corr_seen}"
         )
 
     @pytest.mark.asyncio

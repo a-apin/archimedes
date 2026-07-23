@@ -97,7 +97,9 @@ async def deploy_contract(bytecode_hex: str, gas: int = 5_000_000) -> str:
         "value": "0x0",
         "data": f"0x{bytecode_hex}" if not bytecode_hex.startswith("0x") else bytecode_hex,
         "chainId": hex(5042002),
-        "to": "0x",  # contract creation
+        # No "to" field: contract creation is signaled by omitting `to`
+        # entirely (a literal "0x" is not a valid 20-byte address and would
+        # be rejected once this dict is JSON-encoded and sent to Circle).
     }
 
     print(f"  ⏳ Submitting deploy tx (nonce={nonce}, gas={gas})...")

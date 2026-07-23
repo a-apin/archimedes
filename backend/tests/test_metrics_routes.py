@@ -199,15 +199,28 @@ async def test_get_funnel_defaults_to_visitor_source():
     """GET /api/metrics/funnel with no params stays the pre-#1028 Redis/HLL funnel (no behavior change)."""
     from archimedes.main import app
 
-    with patch(
-        "archimedes.api.metrics_routes.FunnelStore.get_totals",
-        new=AsyncMock(
-            return_value={
-                "landed": 10,
-                "wallet_connected": 4,
-                "generation_started": 2,
-                "vault_deployed": 1,
-            }
+    with (
+        patch(
+            "archimedes.api.metrics_routes.FunnelStore.get_totals",
+            new=AsyncMock(
+                return_value={
+                    "landed": 10,
+                    "wallet_connected": 4,
+                    "generation_started": 2,
+                    "vault_deployed": 1,
+                }
+            ),
+        ),
+        patch(
+            "archimedes.api.metrics_routes.FunnelStore.get_totals_by_agent_type",
+            new=AsyncMock(
+                return_value={
+                    "landed": {"internal": 1, "external": 2, "human": 7},
+                    "wallet_connected": {"internal": 0, "external": 0, "human": 4},
+                    "generation_started": {"internal": 0, "external": 0, "human": 2},
+                    "vault_deployed": {"internal": 0, "external": 0, "human": 1},
+                }
+            ),
         ),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -222,6 +235,11 @@ async def test_get_funnel_defaults_to_visitor_source():
         "generation_started",
         "vault_deployed",
     ]
+    # #788: the per-stage agent_type breakdown rides alongside the unchanged aggregate.
+    by_stage = {s["stage"]: s["by_agent_type"] for s in data["stages"]}
+    assert by_stage["landed"] == {"internal": 1, "external": 2, "human": 7}
+    landed = next(s for s in data["stages"] if s["stage"] == "landed")
+    assert landed["distinct_visitors"] == 10  # unchanged by the additive breakdown
 
 
 @pytest.mark.asyncio

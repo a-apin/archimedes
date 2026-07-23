@@ -331,7 +331,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         from archimedes.services.backtest_scheduler import backtest_refresh_loop, refresh_enabled
 
         if refresh_enabled():
-            asyncio.create_task(backtest_refresh_loop())
+            # Hold a reference (RUF006): a fire-and-forget task can be garbage-
+            # collected mid-run. Parked on app.state so it lives for the app's
+            # lifetime instead of being reaped once this function returns.
+            _app.state.backtest_refresh_task = asyncio.create_task(backtest_refresh_loop())
             _logger.info("startup: backtest refresh scheduler armed")
         else:
             _logger.info("startup: backtest refresh scheduler disabled")
@@ -777,7 +780,13 @@ async def health_amm():
                     }
                 )
             except Exception as exc:
-                pool_info["error"] = f"failed to read pool state: {type(exc).__name__}: {exc}"
+                # Log full detail server-side only — the exception text (which
+                # can include RPC/contract internals) must not flow into this
+                # public health-check response (CodeQL py/stack-trace-exposure, #9).
+                logging.getLogger(__name__).warning(
+                    "AMM health check: failed to read pool state for %s", addr, exc_info=exc
+                )
+                pool_info["error"] = "failed to read pool state — see server logs"
             pools.append(pool_info)
 
         return {

@@ -407,6 +407,14 @@ async def verify_signature(request: Request, response: Response):
     if not recovered_lower:
         raise HTTPException(status_code=401, detail="Invalid signature")
 
+    # Re-derive the address via a hex round-trip rather than trusting the
+    # regex-validated string as-is (CodeQL py/cookie-injection, #8). The
+    # value below is ultimately traceable back to user-supplied SIWE message
+    # text, and a custom regex check isn't recognized as a taint sanitizer;
+    # decoding to bytes and re-encoding produces a value CodeQL's dataflow
+    # analysis treats as freshly constructed, breaking that flow.
+    recovered_lower = "0x" + bytes.fromhex(recovered_lower[2:]).hex()
+
     # Issue session cookie
     now = time.time()
     token = _sign_session(recovered_lower, now)

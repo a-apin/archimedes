@@ -92,17 +92,24 @@ async def record_funnel(request: Request, stage: str) -> None:
     """Record a server-authoritative funnel transition for this request's visitor.
 
     Reads ``request.state.visitor_id`` (set by the middleware) and writes one HLL
-    entry. Never raises — a telemetry write must not affect the user's action.
+    entry, tagged with ``request.state.agent_type`` when present (#788) — that
+    attribute is set by ``api.telemetry_middleware`` earlier in the ASGI stack,
+    so any route that already calls this helper gets the agent/human breakdown
+    for free, no call-site changes needed. Degrades gracefully to ``None`` (the
+    pre-#788 aggregate-only write) if the attribute is missing, e.g. in a test
+    request that never went through that middleware. Never raises — a telemetry
+    write must not affect the user's action.
     """
     try:
         visitor_id = getattr(request.state, "visitor_id", "") or ""
         if not visitor_id:
             return
+        agent_type = getattr(request.state, "agent_type", None)
         from archimedes.services.funnel_store import FunnelStore
 
         store = FunnelStore()
         try:
-            await store.record(stage, visitor_id)
+            await store.record(stage, visitor_id, agent_type=agent_type)
         finally:
             await store.close()
     except Exception as exc:
