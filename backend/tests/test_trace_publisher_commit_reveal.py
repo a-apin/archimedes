@@ -165,7 +165,7 @@ class TestFinalizeCommitRevertHandling:
             # The revert must be loud: the commit path logs an INFO success line
             # before the receipt comes back, so without this warning the log
             # stream would claim the commit succeeded.
-            assert "reverted (status=0)" in caplog.text
+            assert "reverted on-chain (status=0)" in caplog.text
 
     def test_successful_commit_with_undecodable_event_still_uses_fallback(self, supported_loader):
         """Regression guard: only a confirmed revert skips the fallback — a
