@@ -631,7 +631,7 @@ async def main() -> None:
     if not circle_signer.is_configured:
         print("❌ Circle wallet not configured. Set CIRCLE_API_KEY, CIRCLE_ENTITY_SECRET, WALLET_ID.")
         sys.exit(1)
-        
+
     if not os.getenv("WALLET_ADDRESS"):
         print("❌ WALLET_ADDRESS is not set. Please set the WALLET_ADDRESS environment variable.")
         sys.exit(1)
