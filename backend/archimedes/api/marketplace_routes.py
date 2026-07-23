@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -15,8 +16,8 @@ from sqlalchemy.exc import IntegrityError
 
 from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.limiter import limiter
+from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
 from archimedes.db import get_session
-from archimedes.marketplace import spend_cap
 from archimedes.marketplace.encoding import derive_pool_id, to_bytes32
 from archimedes.marketplace.service import MarketService, Subscriber
 from archimedes.models.marketplace import MarketplaceAgent
@@ -28,12 +29,56 @@ logger = logging.getLogger(__name__)
 
 marketplace_router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
 
+# 20-byte 0x-prefixed hex address. vault_address arrives via an untyped body
+# dict, so validate before any chain read — a malformed address must be a 400
+# (client error), not a 502 from the fee guard's fail-closed path.
+_EVM_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
+
 
 def _get_market(request: Request) -> MarketService:
     market: MarketService | None = getattr(request.app.state, "market", None)
     if market is None:
         raise HTTPException(status_code=503, detail="Marketplace engine not available")
     return market
+
+
+async def _require_vault_fees_within_caps(market: MarketService, vault_address: str) -> None:
+    """Refuse any vault whose on-chain fees exceed the #1129 caps (issue #1138).
+
+    The live VaultFactory predates the constructor caps and fee bps are
+    immutable with no setter, so a vault created with hostile fees before the
+    factory redeploy stays hostile forever. The only protection for users is
+    off-chain: read the fees and refuse to interact.
+
+    Fail-CLOSED on read failure: this guard is fund-adjacent — waving through
+    a vault whose fees we couldn't verify exposes depositors to the C1
+    fee-drain, so an unreadable vault is refused with a 502. (Contrast with
+    the #713 spend cap, which fails open for availability: the worst case
+    there is a bounded overcharge, not principal loss.)
+    """
+    try:
+        mgmt_fee_bps, perf_fee_bps = await market.executor.get_vault_fee_bps(vault_address)
+    except Exception as exc:
+        logger.warning("Fee-cap guard: could not read fees for vault %s: %s", vault_address, exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not verify on-chain fees for vault {vault_address}; refusing (fail-closed)",
+        ) from exc
+    if mgmt_fee_bps > MAX_MANAGEMENT_FEE_BPS or perf_fee_bps > MAX_PERFORMANCE_FEE_BPS:
+        logger.warning(
+            "Fee-cap guard: refusing vault %s (managementFeeBps=%d, performanceFeeBps=%d)",
+            vault_address,
+            mgmt_fee_bps,
+            perf_fee_bps,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Vault {vault_address} fees exceed caps: "
+                f"managementFeeBps={mgmt_fee_bps} (cap {MAX_MANAGEMENT_FEE_BPS}), "
+                f"performanceFeeBps={perf_fee_bps} (cap {MAX_PERFORMANCE_FEE_BPS})"
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +169,16 @@ async def publish_strategy(
             agent_assisted=True,
             owner_wallet=wallet,
         )
+    else:
+        if not _EVM_ADDRESS_RE.fullmatch(vault_address):
+            raise HTTPException(
+                status_code=400,
+                detail="vault_address must be a 0x-prefixed 20-byte hex address",
+            )
+        # Fee-cap guard (issue #1138) — only the user-supplied path needs it:
+        # a reused vault may have been minted by the pre-cap factory with
+        # hostile immutable fees, while the create path above hardcodes 0/0.
+        await _require_vault_fees_within_caps(market, vault_address)
 
     # 3a. Publish funding gate (D7) — vault MUST hold at least
     #     MARKETPLACE_MIN_VAULT_FUNDS_RAW idle USDC (raw 6-dec).
@@ -252,7 +307,7 @@ async def publish_strategy(
 
 
 @marketplace_router.post("/subscribe")
-@limiter.limit("5/minute")
+@limiter.limit(os.getenv("SUBSCRIBE_RATE_LIMIT", "5/minute"))
 async def subscribe_strategy(
     request: Request,
     response: Response,  # required by slowapi header injection (headers_enabled=True) — looks unused, is not
@@ -305,6 +360,12 @@ async def subscribe_strategy(
     if pub_row is None:
         raise HTTPException(status_code=404, detail=f"No running publisher for strategy '{strategy_id}'")
 
+    # 1a. Fee-cap guard (issue #1138): the publisher's vault is where the
+    # subscription's economics live — a vault published before the guard
+    # existed (or minted by the pre-cap factory) may carry hostile immutable
+    # fees. Refuse before provisioning any wallet for a doomed subscribe.
+    await _require_vault_fees_within_caps(market, pub_row.vault_address)
+
     # 2. Reject if this wallet is already subscribed
     with get_session() as session:
         existing = (
@@ -333,25 +394,6 @@ async def subscribe_strategy(
         )
         if sub_id_taken is not None:
             raise HTTPException(status_code=409, detail="sub_id already in use")
-
-    # 2c. Spend-cap guard (#713): refuse a NEW subscription for a wallet
-    # already at/over its rolling 24h marketplace spend cap. This is the one
-    # place in the subscribe path building a synchronous HTTP response for a
-    # specific wallet, so it's the natural spot for a literal 429 — the
-    # charge-time enforcement in MarketService._charge_one is the more
-    # operationally important guard (it stops further charges on EXISTING
-    # subscriptions) but runs in a background tick loop and cannot itself
-    # produce an HTTP response. No additional_amount_raw here — this checks
-    # current standing only, not a specific pending charge.
-    if await spend_cap.is_over_cap(wallet.lower()):
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "message": "This wallet is at its rolling 24h marketplace spend cap — try subscribing again once the window clears.",
-                "reason": "marketplace_spend_cap_reached",
-                "cap_usdc": str(spend_cap.spend_cap_usdc()),
-            },
-        )
 
     # 3. Use the server-derived pool_id for storage (D-POOL)
     pool_id = derive_pool_id(strategy_id, pub_row.creator_wallet)
