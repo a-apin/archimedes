@@ -111,6 +111,9 @@ async def corpus_overview() -> dict[str, Any]:
 
         with get_session() as session:
             paper_count = session.query(func.count(PaperRecord.arxiv_id)).scalar() or 0
+            hydrated_fulltext_count = (
+                session.query(func.count(PaperRecord.arxiv_id)).filter(PaperRecord.pdf_sha256.isnot(None)).scalar() or 0
+            )
             processed_papers = (
                 session.query(func.count(PaperRecord.arxiv_id)).filter(PaperRecord.cluster_id.isnot(None)).scalar() or 0
             )
@@ -181,6 +184,8 @@ async def corpus_overview() -> dict[str, Any]:
         # Legacy KB-pipeline shape — kept for backward compatibility
         "paper_count": paper_count,
         "processed_papers": processed_papers,
+        "hydrated_fulltext_count": hydrated_fulltext_count,
+        "hydrated_papers": hydrated_fulltext_count,
         "metadata_only_papers": max(paper_count - processed_papers, 0),
         "cluster_count": len([c for c, _ in cluster_rows if c is not None]),
         "last_run_ts": (manifest or {}).get("run_ts"),

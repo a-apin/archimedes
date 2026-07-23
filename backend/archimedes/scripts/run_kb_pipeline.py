@@ -124,32 +124,85 @@ def run_pipeline(
             "status": "aborted — lease lost before pipeline start",
         }
 
-    # Real pipeline path — gated by feature flag. Invocation pattern lives in
-    # kb-integration-spec.md § "Pipeline invocation". Adding to sys.path so
-    # the submodule's `papers_analysis` package is importable.
+    # Real pipeline path — gated by feature flag (#1090)
     kb_root = _kb_submodule_path()
-    if str(kb_root) not in sys.path:
+    if str(kb_root) not in sys.path and kb_root.exists():
         sys.path.insert(0, str(kb_root))
 
-    # The actual functions live in:
-    #   papers_analysis.vectorize.embed_corpus(text_dir) → (np.ndarray, ids)
-    #   papers_analysis.cluster.cluster_embeddings(...) → dict[id, cluster]
-    #   papers_analysis.cluster.bertopic_labels(...)     → dict[cluster, label]
-    #   papers_analysis.knowledge_graph.extract_triples(text_dir) → list
-    #   papers_analysis.graph.aggregate(triples) → {nodes, edges}
-    #
-    # The canonical wiring (entry points, atomic-swap semantics, output schema)
-    # is documented in docs/corpus-architecture.md. The full implementation is
-    # gated behind REQUIRE_KB_PIPELINE_RUN because it pulls in ~6 GB of model
-    # weights (SPECTER2, REBEL, SciSpacy) and runs meaningfully only inside
-    # the dedicated container. Once that container ships, set the flag and this
-    # NotImplementedError will be replaced with the real pipeline invocation.
-    raise NotImplementedError(
-        "KB_PIPELINE_ENABLED set, but the full pipeline invocation is not yet wired. "
-        "See docs/specs/kb-integration-spec.md § Pipeline invocation for the canonical shape. "
-        "Until the dedicated docker container with SPECTER2/REBEL/SciSpacy weights ships, "
-        "leave KB_PIPELINE_ENABLED unset and rely on the skip path."
-    )
+    t0 = time.time()
+    try:
+        from papers_analysis import cluster, graph, knowledge_graph, vectorize  # type: ignore
+
+        logger.info("kb_pipeline: running SPECTER2 vectorization on %s", corpus_dir)
+        embeddings, ids = vectorize.embed_corpus(str(corpus_dir))
+        cluster_map = cluster.cluster_embeddings(embeddings, ids)
+        topic_map = cluster.bertopic_labels(embeddings, ids, cluster_map)
+        triples = knowledge_graph.extract_triples(str(corpus_dir))
+        kg_data = graph.aggregate(triples)
+
+        # Write to staging directory before atomic swap
+        staging_dir = artifact_dir.parent / f".tmp_{artifact_dir.name}_{int(t0)}"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+
+        (staging_dir / "ids.json").write_text(json.dumps(ids))
+        (staging_dir / "clusters.json").write_text(json.dumps(cluster_map))
+        (staging_dir / "topics.json").write_text(json.dumps(topic_map))
+        (staging_dir / "kg_graph.json").write_text(json.dumps(kg_data))
+
+        import numpy as np
+        np.save(str(staging_dir / "embeddings.npy"), embeddings)
+
+        manifest = {
+            "run_ts": started_iso,
+            "duration_s": round(time.time() - t0, 2),
+            "paper_count": len(ids),
+            "cluster_count": len(set(cluster_map.values())),
+            "kg_node_count": len(kg_data.get("nodes", [])),
+            "kg_edge_count": len(kg_data.get("edges", [])),
+            "status": "complete",
+        }
+        (staging_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+        # Check lease before atomic swap (#1043)
+        if lease_lost is not None and lease_lost.is_set():
+            logger.error("kb_pipeline: lease lost before atomic swap — cleaning staging dir and aborting swap")
+            import shutil
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return manifest
+
+        # Atomic directory swap
+        import shutil
+        if artifact_dir.exists():
+            backup_dir = artifact_dir.with_name(artifact_dir.name + "_backup")
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            artifact_dir.rename(backup_dir)
+            try:
+                staging_dir.rename(artifact_dir)
+            except Exception:
+                backup_dir.rename(artifact_dir)
+                raise
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        else:
+            staging_dir.rename(artifact_dir)
+        logger.info("kb_pipeline: successfully completed pipeline run (%d papers)", len(ids))
+        return manifest
+
+    except Exception as exc:
+        logger.warning("kb_pipeline submodule execution degraded: %s — falling back to metadata manifest", exc)
+        duration_s = round(time.time() - t0, 2)
+        manifest = {
+            "run_ts": started_iso,
+            "duration_s": duration_s,
+            "paper_count": 0,
+            "cluster_count": 0,
+            "kg_node_count": 0,
+            "kg_edge_count": 0,
+            "status": f"degraded — {exc}",
+        }
+        if lease_lost is not None and lease_lost.is_set():
+            return manifest
+        (artifact_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        return manifest
 
 
 def main() -> None:
