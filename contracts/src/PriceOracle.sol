@@ -2,30 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-
-/// @notice Minimal Chainlink price-feed interface (T1.3 — Chainlink-first read path).
-///         Declared locally rather than pulling in the chainlink/contracts package
-///         so we add no new submodule dependency for one interface. This is the canonical
-///         AggregatorV3Interface signature — Chainlink feeds (and Arc-native /
-///         Chainlink-compatible aggregators) implement it verbatim.
-///         Reference: https://docs.chain.link/data-feeds/api-reference
-interface AggregatorV3Interface {
-    /// @return The number of decimals the feed answer is reported in (USD feeds: 8).
-    function decimals() external view returns (uint8);
-
-    /// @notice Latest completed round of price data.
-    /// @return roundId         The round ID the answer was computed in.
-    /// @return answer          The price (signed; non-negative for a healthy feed).
-    /// @return startedAt       Timestamp the round started.
-    /// @return updatedAt       Timestamp the answer was last updated (staleness key).
-    /// @return answeredInRound The round in which the answer was computed (legacy
-    ///                         carry-over detector; answeredInRound < roundId means
-    ///                         the answer is stale carried from a prior round).
-    function latestRoundData()
-        external
-        view
-        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
-}
+import "./interfaces/IAggregatorV3.sol";
 
 /// @title PriceOracle
 /// @notice Per-asset price oracle for any asset on Arc testnet. Prefers a Chainlink
