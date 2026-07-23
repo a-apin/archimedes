@@ -227,24 +227,24 @@ class TracePublisher:
     ) -> tuple[int | None, str | None, int | None]:
         """Resolve the on-chain trace_id + block from a commit tx receipt.
 
-        Decodes the TraceCommitted event to read the auto-incremented trace_id.
-        Falls back to getTracesByVault()[-1] only when the receipt confirms the
-        tx succeeded (status == 1) but the event couldn't be decoded. A confirmed
-        revert (status == 0) skips the fallback and leaves trace_id=None instead —
-        a reverted tx has no meaningful logs, and the fallback would otherwise
-        silently hand back some other, unrelated trace_id already on record for
-        the vault as if it belonged to this failed commit.
+        Decodes the TraceCommitted event to read the auto-incremented trace_id; falls
+        back to getTracesByVault()[-1] if the event can't be decoded.
         """
         trace.commit_tx_hash = tx_hash
         registry = self.loader.trace_registry
         block_num = None
         trace_id = None
-        reverted = False
         try:
             receipt = await chain_client.w3.eth.get_transaction_receipt(tx_hash)
-            block_num = receipt.blockNumber
-            reverted = receipt.status == 0
-            for log in receipt.logs:
+            block_num = receipt.get("blockNumber") if isinstance(receipt, dict) else getattr(receipt, "blockNumber", None)
+            trace.commit_block_number = block_num
+            receipt_status = receipt.get("status") if isinstance(receipt, dict) else getattr(receipt, "status", 1)
+            if receipt_status == 0:
+                logger.error(f"Commit tx {tx_hash} reverted on-chain (status=0)")
+                return None, tx_hash, block_num
+
+            logs = receipt.get("logs", []) if isinstance(receipt, dict) else getattr(receipt, "logs", [])
+            for log in logs:
                 try:
                     decoded = registry.events.TraceCommitted().process_log(log)
                     trace_id = int(decoded["args"]["traceId"])
@@ -254,17 +254,8 @@ class TracePublisher:
         except Exception as e:
             logger.warning(f"Cannot read commit receipt: {e}")
 
-        if reverted:
-            # Loud, not silent: the commit-side code above already logged an
-            # INFO success line before the receipt came back, so without this
-            # the log stream would claim a commit succeeded when it reverted.
-            logger.warning(f"Commit tx {tx_hash[:16]}... reverted (status=0) — no trace_id for this commit")
-
-        if trace_id is None and not reverted:
-            # Fallback: newest trace id for the vault. Skipped on a confirmed
-            # revert (reverted=True, see docstring). If the receipt fetch above
-            # failed, `reverted` is still its initial False, so this still runs —
-            # unchanged from before the revert check was added.
+        if trace_id is None:
+            # Fallback: newest trace id for the vault.
             try:
                 ids = await registry.functions.getTracesByVault(vault_addr).call()
                 trace_id = int(ids[-1]) if ids else None
@@ -348,7 +339,7 @@ class TracePublisher:
         block_num = None
         try:
             receipt = await chain_client.w3.eth.get_transaction_receipt(tx_hash)
-            block_num = receipt.blockNumber
+            block_num = receipt.get("blockNumber") if isinstance(receipt, dict) else getattr(receipt, "blockNumber", None)
         except Exception:
             logger.debug("reveal receipt block lookup failed", exc_info=True)
         trace.reveal_block_number = block_num
