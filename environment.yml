@@ -68,7 +68,7 @@ dependencies:
       - "circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355"
 
       # --- LLM ---
-      - anthropic>=0.104.1            # Claude / GLM-compatible client for strategy extraction + reasoning trace generation + chat. Floor aligned with backend/requirements.txt via dependabot PR #251; locally smoke-tested at 0.104.1 against llm_backend.py + chat_service.py (full 784-test backend suite green).
+      - anthropic>=0.120.0            # Claude / GLM-compatible client for strategy extraction + reasoning trace generation + chat. Floor aligned with backend/requirements.txt via dependabot PR #1166; this closes a large pre-existing drift (was still pinned at 0.104.1, 13 releases behind requirements.txt's 0.117.0).
 
       # --- On-chain / Web3 ---
       # Floors kept in lockstep with backend/requirements.txt (audit 2026-06-14):
