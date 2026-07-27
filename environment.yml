@@ -85,7 +85,7 @@ dependencies:
       - boto3>=1.43.56                 # S3 artifact reads for KB pipeline output (embeddings, KG). Floor aligned with backend/requirements.txt via dependabot PR #1162.
 
       # --- Paper ingestion (Q-fin corpus) ---
-      - arxiv>=2.1                    # arxiv API client
+      - arxiv>=4.0.0                  # arxiv API client. Floor aligned with backend/requirements.txt (was still pinned at 2.1, a pre-existing drift with no open Dependabot PR to attach the fix to).
       - pypdf>=6.14.2                 # PDF text extraction. Floor 6.13.3 closed 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25). Aligned with backend/requirements.txt (dependabot batch 2026-07-13).
 
       # --- Semantic retrieval (paper_rag MiniLM embeddings, issue #874) ---
