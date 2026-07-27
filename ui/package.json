@@ -11,10 +11,10 @@
   },
   "dependencies": {
     "@circle-fin/modular-wallets-core": "^1.0.15",
-    "react": "^19.2.6",
+    "react": "^19.2.8",
     "react-dom": "^19.2.7",
     "react-force-graph-2d": "^1.29.1",
-    "viem": "^2.55.4"
+    "viem": "^2.55.8"
   },
   "overrides": {
     "ws": ">=8.21.0"
@@ -24,16 +24,16 @@
     "@iconify-json/cryptocurrency-color": "^1.2.4",
     "@iconify-json/logos": "^1.2.11",
     "@iconify-json/lucide": "^1.2.118",
-    "@iconify-json/simple-icons": "^1.2.89",
+    "@iconify-json/simple-icons": "^1.2.92",
     "@iconify-json/token-branded": "^1.2.42",
-    "@types/react": "^19.2.15",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "cssnano": "^8.0.2",
     "eslint": "^10.7.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
-    "globals": "^17.7.0",
+    "globals": "^17.8.0",
     "sass-embedded": "^1.99.0",
     "unocss": "^66.7.5",
     "vite": "^8.1.5"

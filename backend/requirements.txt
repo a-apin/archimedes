@@ -42,7 +42,7 @@ yfinance>=1.4.1
 requests>=2.32,<2.34
 # Bumped from 3.13.5 to close CVE-2026-34993 / CVE-2026-47265 (HTTP parser
 # DoS/smuggling).
-aiohttp>=3.14.1
+aiohttp>=3.14.3
 # httpx is directly imported by services/corpus_service.py (arXiv intake) and
 # services/llm_backend.py (OpenAI-compatible + Ollama backends). Pinned directly
 # so we don't rely on it arriving transitively via anthropic/fastapi.
@@ -70,7 +70,7 @@ backtrader>=1.9.78.123
 circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355
 
 # LLM
-anthropic>=0.117.0
+anthropic>=0.120.0
 
 # On-chain / Web3
 web3>=7.16.0
@@ -97,8 +97,8 @@ pypdf>=6.14.2
 # sentence-transformers brings torch transitively; pinning torch here forces
 # the CPU wheel so the Docker image stays within budget.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch>=2.0,<3.0  # CPU-only wheel via pytorch whl index (see extra-index-url above)
-sentence-transformers>=5.6.0  # all-MiniLM-L6-v2 semantic retrieval; baked at Docker build time
+torch>=2.13.0,<3.0  # CPU-only wheel via pytorch whl index (see extra-index-url above); no +cpu here, pip rejects a local version label on a >= specifier
+sentence-transformers>=5.6.1  # all-MiniLM-L6-v2 semantic retrieval; baked at Docker build time
 
 # AWS / S3
-boto3>=1.43.46
+boto3>=1.43.56
