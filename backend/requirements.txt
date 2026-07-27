@@ -97,7 +97,7 @@ pypdf>=6.14.2
 # sentence-transformers brings torch transitively; pinning torch here forces
 # the CPU wheel so the Docker image stays within budget.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch>=2.0,<3.0  # CPU-only wheel via pytorch whl index (see extra-index-url above)
+torch>=2.13.0,<3.0  # CPU-only wheel via pytorch whl index (see extra-index-url above); no +cpu here, pip rejects a local version label on a >= specifier
 sentence-transformers>=5.6.0  # all-MiniLM-L6-v2 semantic retrieval; baked at Docker build time
 
 # AWS / S3
