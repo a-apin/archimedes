@@ -90,8 +90,8 @@ all downstream prompt outputs without re-explaining the project each time.
 **Tips on the upload fields:**
 
 - **Link code on GitHub:** `a-apin/archimedes-arcadia` is sufficient. The repo carries
-  the live `ui/` (React 19 + Vite 8 + viem 2.48), `docs/architecture-diagram.html`, and
-  all the curated design context. No need to configure additional repos.
+  the live `ui/` (React 19 + Vite 8 + UnoCSS + viem ^2.55.4) and all the curated design
+  context. No need to configure additional repos.
 - **Link code from your computer:** skip. Requires Chrome/Edge and the GitHub link
   covers the same ground.
 - **Upload a .fig file:** none — Archimedes doesn't have a Figma source of truth (and
@@ -138,7 +138,7 @@ Pro), modern sans body (Inter or Geist Sans), monospace for hashes and addresses
 In the linked repo: the live frontend is `ui/` (React 19 + Vite 8 + viem 2.48).
 The retired Day 1–2 static-HTML prototypes (`ui-mockups/`) were removed in issue
 #461, so `ui/` is the only frontend to study. Live testnet deploy: https://archimedes-arc.com/.
-Architecture diagram: `docs/architecture-diagram.html`. Curated per-asset design
+Architecture diagrams: `docs/diagrams/`. Curated per-asset design
 prompts: `docs/claude-design-prompts.md`. Pitch + demo context:
 `docs/demo-script-pitch-deck-outline.md`.
 

@@ -10,10 +10,11 @@
 > (GitHub issue `#96`, now *unblocked* after `#95` engine v2 merged; previously
 > keyword-only selection). See also
 > [`../corpus-architecture.md`](../corpus-architecture.md) for the corpus end-to-end
-> + [`fusion-to-backtest-t2o2-issue.md`](fusion-to-backtest-t2o2-issue.md) for the
-> outstanding fusion→backtest pipeline issue.
+> The fusion→backtest pipeline issue (#128) shipped; its spec file was removed
+> 2026-07-27 and is recoverable from git history.
 > Additive to, and deliberately decoupled from,
-> [`strategy_architect.py`](../../backend/archimedes/services/strategy_architect.py).
+> `strategy_architect.py` (**deleted in PR #1074** — the debate engine is now the sole
+> generation pipeline).
 > **Prerequisite reading:** [`../architectural-principles.md`](../architectural-principles.md)
 > for the verifiability philosophy; [`strategy-passport-spec.md`](strategy-passport-spec.md)
 > for the provenance primitive this extends.

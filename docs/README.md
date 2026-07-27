@@ -47,7 +47,6 @@ Durable implementation contracts. Spec-only items are tracked under their respec
 | [`specs/component-interfaces-spec.md`](specs/component-interfaces-spec.md) | shipped (interfaces); ownership softened | Original frozen `I*` Protocol contracts. Interfaces are architecturally correct; ownership has evolved to lead+coverage per CLAUDE.md. |
 | [`specs/ipfs-reasoning-traces-design-note.md`](specs/ipfs-reasoning-traces-design-note.md) | design note — not wired | Hash → Pinata CID → on-chain anchor (Rosetta-Alpha pattern). |
 | [`specs/commit-reveal-trace-spec.md`](specs/commit-reveal-trace-spec.md) | spec-only — v1.5 | Promotes "trace existed at T" to "trace existed *before* the trade". |
-| [`specs/ecosystem-architecture.html`](specs/ecosystem-architecture.html) | diagram | Visual diagram of the ecosystem architecture (HTML render). |
 
 ## Specs — phase plans
 
@@ -61,11 +60,7 @@ The five spec files below shipped on `main` between 2026-05-23 and 2026-05-24 an
 
 | Spec file | Status | Issue |
 |---|---|---|
-| [`archive/fusion-to-backtest-t2o2-issue.md`](archive/fusion-to-backtest-t2o2-issue.md) | ✓ closed — foundation `bd6935b` + wiring `2f7f871` | [#128](https://github.com/a-apin/archimedes-arcadia/issues/128) |
-| [`archive/phase7-rigor-consolidation-t2o2-issue.md`](archive/phase7-rigor-consolidation-t2o2-issue.md) | ✓ closed — shipped `e030ee4` | [#129](https://github.com/a-apin/archimedes-arcadia/issues/129) |
-| [`archive/phase7-llm-backend-unification-t2o2-issue.md`](archive/phase7-llm-backend-unification-t2o2-issue.md) | ✓ closed — shipped `dc91b43` | [#130](https://github.com/a-apin/archimedes-arcadia/issues/130) |
-| [`archive/phase7-portfolio-constructor-retirement-t2o2-issue.md`](archive/phase7-portfolio-constructor-retirement-t2o2-issue.md) | ✓ closed — shipped `a4a09fb` | [#131](https://github.com/a-apin/archimedes-arcadia/issues/131) |
-| [`archive/phase7-routes-py-split-t2o2-issue.md`](archive/phase7-routes-py-split-t2o2-issue.md) | ✓ closed — shipped `be9260b` | [#132](https://github.com/a-apin/archimedes-arcadia/issues/132) |
+| (spec files removed 2026-07-27 — recoverable from git history) | ✓ all closed — shipped `bd6935b`, `e030ee4`, `dc91b43`, `a4a09fb`, `be9260b` | [#128](https://github.com/a-apin/archimedes-arcadia/issues/128), [#129](https://github.com/a-apin/archimedes-arcadia/issues/129), [#130](https://github.com/a-apin/archimedes-arcadia/issues/130), [#131](https://github.com/a-apin/archimedes-arcadia/issues/131), [#132](https://github.com/a-apin/archimedes-arcadia/issues/132) |
 | (no file — drafted inline as fast-follow to #128) | ✓ closed — shipped `2f7f871` | [#133](https://github.com/a-apin/archimedes-arcadia/issues/133) |
 
 ## Strategy + launch + marketing
@@ -95,8 +90,7 @@ The five spec files below shipped on `main` between 2026-05-23 and 2026-05-24 an
 | [`judging-rubric-assessment.md`](judging-rubric-assessment.md) | Day-13 self-assessment against the rubric (Agentic Sophistication + Traction + Circle Tool Usage + Innovation + **Arc OSS Showcase**). |
 | [`rigor-methods.md`](rigor-methods.md) | Plain-English summary of the rigor methods (DSR / PBO / Kelly / MVO) that the selection-bias spec implements. Reader-friendly companion. |
 | [`anti-features.md`](anti-features.md) | What Archimedes is *not* building, with rationale. Back-pressure document for scope creep. |
-| [`infra-setup.md`](infra-setup.md) | EC2 deploy + CI/CD + Terraform reference. Lead: Chuan. |
-| [`architecture-diagram.html`](architecture-diagram.html) | Visual system architecture diagram (HTML render). |
+| [`infra-setup.md`](infra-setup.md) | Deploy + CI/CD + Terraform reference (prod is ECS Fargate). Owner: Dan. |
 
 ## Architecture Decision Records ([`adr/`](adr/))
 

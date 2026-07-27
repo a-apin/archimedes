@@ -228,6 +228,6 @@ The Day-3 forcing function was *build the end-to-end loop*. That's now built. Th
 
 ## Open questions
 
-1. **Is the Arc OSS Showcase form filled out + submitted?** See [`../ARC-OSS-FORM-DRAFT.md`](../ARC-OSS-FORM-DRAFT.md) for the team-review draft. Submission is via Google Form (per the showcase landing page) or via `arc-canteen update-product` with `"ArcOSS:"` prefix.
+1. **Is the Arc OSS Showcase form filled out + submitted?** (The team-review draft `ARC-OSS-FORM-DRAFT.md` was removed 2026-07-27 and is recoverable from git history.) Submission is via Google Form (per the showcase landing page) or via `arc-canteen update-product` with `"ArcOSS:"` prefix.
 2. **Demo video recording — who owns it?** The deck owner is the obvious candidate. Length target: ≤3 minutes per the Canteen submission form.
 3. **Live demo vs recorded demo at the in-person event?** Per the submission form, a video demo is required regardless. If both are an option, live is the safer demo-day choice (controllable failure modes) and recorded is the safer submission-form choice.

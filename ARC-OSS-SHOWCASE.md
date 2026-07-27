@@ -269,12 +269,11 @@ If you're building an Arc app that needs AI-decision-making — agent products, 
 
 Two channels per the showcase landing page:
 
-1. **Google Form** — <https://forms.gle/ok3Gr9zhmHnApvK48> (the team-review draft of the answers lives in [`ARC-OSS-FORM-DRAFT.md`](ARC-OSS-FORM-DRAFT.md))
+1. **Google Form** — <https://forms.gle/ok3Gr9zhmHnApvK48>
 2. **ARC-cli** — `arc-canteen update-product "ArcOSS: <message>"` (the `"ArcOSS:"` prefix is the trigger)
 
 ## Related docs
 
 - [`README.md`](README.md) — project overview
 - [`docs/README.md`](docs/README.md) — documentation map
-- [`ARC-OSS-FORM-DRAFT.md`](ARC-OSS-FORM-DRAFT.md) — team-review draft of the Google Form answers
 - [`docs/judging-rubric-assessment.md`](docs/judging-rubric-assessment.md) — Day-13 rubric self-assessment (submission day; includes Arc OSS Showcase as a dimension)

@@ -880,11 +880,11 @@ them would burn hosted-Claude budget on work t2o2 can do for ~free.
 
 | # | Issue | Survey gap | Spec file | Owner-reviewer |
 |---|---|---|---|---|
-| 7.1 | Fusion-output → backtestable DSL | (the wedge) | [`fusion-to-backtest-t2o2-issue.md`](fusion-to-backtest-t2o2-issue.md) — filed as **#128** | Dan + Daniel R. |
-| 7.2 | Rigor consolidation on `rigor_evaluator.py` | #1 | [`phase7-rigor-consolidation-t2o2-issue.md`](phase7-rigor-consolidation-t2o2-issue.md) | Önder |
-| 7.3 | LLM backend unification on `llm_backend.py` | #3 | [`phase7-llm-backend-unification-t2o2-issue.md`](phase7-llm-backend-unification-t2o2-issue.md) | Daniel R. / Dan |
-| 7.4 | Portfolio constructor retirement | #5 | [`phase7-portfolio-constructor-retirement-t2o2-issue.md`](phase7-portfolio-constructor-retirement-t2o2-issue.md) | Önder |
-| 7.5 | `routes.py` monolith split | #6 | [`phase7-routes-py-split-t2o2-issue.md`](phase7-routes-py-split-t2o2-issue.md) | Chuan / Daniel R. |
+| 7.1 | Fusion-output → backtestable DSL | (the wedge) | spec file removed 2026-07-27 (git history) — filed as **#128** | Dan + Daniel R. |
+| 7.2 | Rigor consolidation on `rigor_evaluator.py` | #1 | spec file removed 2026-07-27 (git history) — **#129** | Önder |
+| 7.3 | LLM backend unification on `llm_backend.py` | #3 | spec file removed 2026-07-27 (git history) — **#130** | Daniel R. / Dan |
+| 7.4 | Portfolio constructor retirement | #5 | spec file removed 2026-07-27 (git history) — **#131** | Önder |
+| 7.5 | `routes.py` monolith split | #6 | spec file removed 2026-07-27 (git history) — **#132** | Chuan / Daniel R. |
 
 **Suggested ordering** (t2o2 PRs land serially to avoid import-path conflicts):
 
