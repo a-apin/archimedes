@@ -79,7 +79,32 @@ def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
     """
     strat = strategy_provider().get_strategy(strategy_id)
     if strat is not None:
-        return True, bool(getattr(strat, "passes_rigor_gate", False))
+        # Use the LIVE verdict, not the provider object's attribute (#1173).
+        # LocalStrategyProvider sets passes_rigor_gate = False unconditionally on
+        # every curated Strategy (fail-closed by construction, 56cc9bde); the real
+        # verdict is overlaid downstream in _to_strategy_response. Reading the raw
+        # attribute here therefore made EVERY curated strategy undeployable at the
+        # default strictness with the message "has not passed the rigor gate —
+        # server-side rigor enforcement", which is simply false. Perverse symptom:
+        # deploying at strictness >= 2 worked, because that path takes the
+        # _deployable_levels branch below, which already consults the live gate.
+        #
+        # Graded against the FULL library cohort — same cohort the list badge and
+        # the passport use — because the verdict is cohort-dependent (cohort-scoped
+        # PBO/CSCV; a cohort under MIN_LIBRARY_N_FOR_PBO_GATING skips criterion 4).
+        # Grading `strat` alone would let the deploy gate disagree with the badge.
+        from archimedes.services.live_rigor_gate import RigorGateVerdict, verdicts_for_strategies
+
+        try:
+            cohort = list(strategy_provider().list_strategies())
+            if not any(getattr(x, "id", None) == strategy_id for x in cohort):
+                cohort.append(strat)
+            verdict = verdicts_for_strategies(cohort).get(strategy_id, RigorGateVerdict.pending())
+        except Exception:
+            # Fail closed, consistent with this function's contract.
+            logger.exception("live rigor verdict failed for %s — failing closed", sanitize_log_value(strategy_id))
+            return True, False
+        return True, bool(verdict.passes)
 
     from archimedes.db import get_session
     from archimedes.services.passport_loader import get_passport

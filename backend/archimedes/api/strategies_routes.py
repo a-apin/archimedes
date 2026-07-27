@@ -483,8 +483,22 @@ async def list_strategies(
     status_filter = StrategyStatus(status) if status else None
     strats = strategy_provider().list_strategies(status=status_filter)
     total = len(strats)
+    # Grade over the FULL library, not the paginated window (#1173). The detail
+    # route grades via _library_cohort_including() — i.e. the whole library — so
+    # scoring the list over `window` made the same strategy's badge depend on
+    # which page it happened to land on: a short window can fall under
+    # MIN_LIBRARY_N_FOR_PBO_GATING (criterion 4 skipped) and the CSCV/PBO value
+    # itself shifts with the cohort. Verified live before this fix: strategy
+    # d90b357a…4bbd graded False in a 5-item window but True in the full-library
+    # view and True on its own detail/passport route — the exact list-vs-detail
+    # contradiction dfa8fc1 was written to prevent, and which the docstring
+    # above still asserts cannot happen.
+    #
+    # Bonus: the cache key (see cohort_key) is derived from the cohort's ids, so
+    # grading the full library also collapses the previous one-cohort-computation
+    # -per-offset (~6s each) into a single shared entry.
+    rigor_results = _live_rigor_results_for_strategies(strats)
     window = strats[offset : offset + limit]
-    rigor_results = _live_rigor_results_for_strategies(window)
     caller = get_verified_wallet(request)
     responses: list[StrategyResponse] = []
     with get_session() as session:

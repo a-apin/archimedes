@@ -242,6 +242,50 @@ class TestSingleStrategyCohortContext:
         assert strategies_routes._live_rigor_result_for_one(lib[1]) is sentinel
         assert captured["cohort_ids"] == ["s0", "s1"]
 
+    @pytest.mark.asyncio
+    async def test_list_route_grades_full_library_not_the_page(self, monkeypatch):
+        """REGRESSION (#1173): the LIST badge must be graded over the whole library,
+        never the paginated window.
+
+        The detail route grades via ``_library_cohort_including`` (the test above
+        pins that), so grading the list over ``strats[offset:offset+limit]`` made
+        the same strategy's badge depend on which page it landed on — a short window
+        can fall under ``MIN_LIBRARY_N_FOR_PBO_GATING`` (criterion 4 skipped) and the
+        cohort-scoped PBO/CSCV value itself shifts with membership. Verified against
+        production before the fix: strategy ``d90b357a…4bbd`` graded False in a
+        5-item window but True in the full-library view and True on its own
+        detail/passport route — the exact list-vs-detail contradiction dfa8fc1 was
+        written to prevent.
+        """
+        from archimedes.api import strategies_routes
+        from archimedes.main import app
+
+        lib = [MagicMock(id=f"s{i}", status=None) for i in range(30)]
+        provider = MagicMock()
+        provider.list_strategies.return_value = lib
+        monkeypatch.setattr(strategies_routes, "strategy_provider", lambda: provider)
+
+        captured = {}
+
+        def _fake_batch(strategies):
+            captured["cohort_ids"] = [s.id for s in strategies]
+            return {}
+
+        monkeypatch.setattr(strategies_routes, "_live_rigor_results_for_strategies", _fake_batch)
+
+        # The cohort is handed to the gate BEFORE any response serialization, so we
+        # assert on it regardless of whether serializing these MagicMock strategies
+        # succeeds. raise_app_exceptions=False keeps a serialization 500 from
+        # masking the assertion we actually care about.
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/api/strategies/?limit=5&offset=25")
+
+        assert captured.get("cohort_ids") == [s.id for s in lib], (
+            "list route must grade the FULL library cohort; got a "
+            f"{len(captured.get('cohort_ids', []))}-item cohort for a 5-item page"
+        )
+
 
 class TestRigorGateVerdict:
     def test_passes_only_truthy_for_pass(self):

@@ -19,9 +19,13 @@ from archimedes.api.vaults_routes import (
     _strategy_record_visible,
     _strategy_rigor_status,
 )
+from archimedes.services.live_rigor_gate import RigorGateVerdict
 from fastapi import HTTPException
 
 V = "archimedes.api.vaults_routes"
+# The curated deploy-gate branch imports the live gate lazily (inside the function)
+# to avoid a route<->service import cycle, so patch the SOURCE module here.
+LRG = "archimedes.services.live_rigor_gate"
 
 
 @contextlib.contextmanager
@@ -45,8 +49,10 @@ def _override_verified_wallet(app, wallet: str = "0x0000000000000000000000000000
 
 
 class _Strat:
-    def __init__(self, passes):
+    def __init__(self, passes, sid="s1"):
         self.passes_rigor_gate = passes
+        # The cohort build dedupes on .id, so the stub needs one.
+        self.id = sid
 
 
 # ── _strategy_rigor_status ────────────────────────────────────────────────
@@ -55,14 +61,83 @@ class _Strat:
 def test_status_curated_passing():
     # strategy_provider is now a lazily-cached accessor (strategy_provider());
     # patch the name wholesale and configure the mocked callable's return_value.
-    with patch(f"{V}.strategy_provider") as mock_provider:
+    # The curated branch reads the LIVE gate (#1173), so stub that too.
+    with (
+        patch(f"{V}.strategy_provider") as mock_provider,
+        patch(f"{LRG}.verdicts_for_strategies", return_value={"s1": RigorGateVerdict.passed()}),
+    ):
         mock_provider.return_value.get_strategy.return_value = _Strat(True)
         assert _strategy_rigor_status("s1") == (True, True)
 
 
 def test_status_curated_failing():
-    with patch(f"{V}.strategy_provider") as mock_provider:
+    with (
+        patch(f"{V}.strategy_provider") as mock_provider,
+        patch(f"{LRG}.verdicts_for_strategies", return_value={"s1": RigorGateVerdict.failed()}),
+    ):
         mock_provider.return_value.get_strategy.return_value = _Strat(False)
+        assert _strategy_rigor_status("s1") == (True, False)
+
+
+def test_status_curated_uses_live_verdict_not_provider_attribute():
+    """REGRESSION (#1173): a curated strategy must be deployable when the LIVE gate
+    passes it, even though the provider object always carries
+    ``passes_rigor_gate = False``.
+
+    ``LocalStrategyProvider`` sets that attribute to False unconditionally
+    (fail-closed by construction, 56cc9bde) and the real verdict is overlaid
+    downstream. Reading the raw attribute here made EVERY curated strategy
+    undeployable at the default strictness with a message asserting it "has not
+    passed the rigor gate" — a false statement — while deploying at strictness >= 2
+    worked, because that path consults the live gate. This test pins the live
+    verdict as the source of truth.
+    """
+    with (
+        patch(f"{V}.strategy_provider") as mock_provider,
+        patch(f"{LRG}.verdicts_for_strategies", return_value={"s1": RigorGateVerdict.passed()}),
+    ):
+        # Provider says False — the historical bug source.
+        mock_provider.return_value.get_strategy.return_value = _Strat(False)
+        assert _strategy_rigor_status("s1") == (True, True)
+
+
+def test_status_curated_grades_against_full_library_cohort():
+    """REGRESSION (#1173): the deploy gate must grade against the shared FULL-library
+    cohort, never a 1-item list.
+
+    The verdict is cohort-dependent (cohort-scoped PBO/CSCV; a cohort under
+    MIN_LIBRARY_N_FOR_PBO_GATING skips criterion 4), so grading a strategy alone
+    would let the deploy gate disagree with the list badge and the passport.
+    """
+    strat = _Strat(False, sid="s1")
+    library = [_Strat(False, sid=f"other{i}") for i in range(12)] + [strat]
+    seen: dict = {}
+
+    def _capture(strategies):
+        seen["ids"] = [s.id for s in strategies]
+        return {"s1": RigorGateVerdict.passed()}
+
+    with (
+        patch(f"{V}.strategy_provider") as mock_provider,
+        patch(f"{LRG}.verdicts_for_strategies", side_effect=_capture),
+    ):
+        mock_provider.return_value.get_strategy.return_value = strat
+        mock_provider.return_value.list_strategies.return_value = library
+        assert _strategy_rigor_status("s1") == (True, True)
+
+    assert seen["ids"] == [s.id for s in library], (
+        "deploy gate must grade against the full library cohort, not the strategy alone; "
+        f"got a {len(seen.get('ids', []))}-item cohort"
+    )
+
+
+def test_status_curated_fails_closed_when_live_gate_raises():
+    """A live-gate failure must not wave a deploy through."""
+    with (
+        patch(f"{V}.strategy_provider") as mock_provider,
+        patch(f"{LRG}.verdicts_for_strategies", side_effect=RuntimeError("boom")),
+    ):
+        mock_provider.return_value.get_strategy.return_value = _Strat(True)
         assert _strategy_rigor_status("s1") == (True, False)
 
 
