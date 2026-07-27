@@ -89,7 +89,7 @@ dependencies:
       - pypdf>=6.14.2                 # PDF text extraction. Floor 6.13.3 closed 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25). Aligned with backend/requirements.txt (dependabot batch 2026-07-13).
 
       # --- Semantic retrieval (paper_rag MiniLM embeddings, issue #874) ---
-      - torch>=2.0,<3.0               # PyTorch CPU (local dev: pip picks the native/MPS wheel; Docker uses the CPU-only wheel via --extra-index-url in requirements.txt)
+      - torch>=2.13.0,<3.0             # PyTorch CPU (local dev: pip picks the native/MPS wheel; Docker uses the CPU-only wheel via --extra-index-url in requirements.txt). Floor aligned with backend/requirements.txt via dependabot PR #1163.
       - sentence-transformers>=2.7    # all-MiniLM-L6-v2 zero-cost semantic retrieval for paper_rag.py; aligned with backend/requirements.txt
 
       # --- Quality + tests ---
