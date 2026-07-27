@@ -48,7 +48,7 @@ dependencies:
       # --- Market data ---
       - yfinance>=1.4.1              # Historical + live equity/ETF/crypto data; for backtesting
       - requests>=2.32,<2.34          # arxiv pins requests<2.34; keep aligned with backend/requirements.txt (Dependabot #702 broke the deploy 2026-06-25)
-      - aiohttp>=3.14.1                # Bumped from 3.13.5 to close CVE-2026-34993 / CVE-2026-47265 (HTTP parser DoS/smuggling). Floor aligned with backend/requirements.txt.
+      - aiohttp>=3.14.3                # Bumped from 3.13.5 to close CVE-2026-34993 / CVE-2026-47265 (HTTP parser DoS/smuggling). Floor aligned with backend/requirements.txt via dependabot PR #1165.
       - httpx>=0.27                   # Directly imported by services/corpus_service.py (arXiv intake) and services/llm_backend.py (OpenAI-compatible + Ollama). Pinned so we don't rely on transitive resolution.
       - urllib3>=2.7.0                # Transitive (requests / boto3 / arxiv). Pinned directly to close PYSEC-2026-141 / PYSEC-2026-142 so a fresh resolve can't regress (CVE bump 2026-06-25). Aligned with backend/requirements.txt.
 
