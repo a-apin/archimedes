@@ -51,12 +51,12 @@ May 11–25, 2026.
 - Repository: [`github.com/a-apin/archimedes`](https://github.com/a-apin/archimedes)
 - Discord: **Archimedes Arcadia** server
 - Branch model: **`main` is the single live branch — build-on-deploy.** Every merge to
-  `main` triggers a CI build + deploy to the live EC2 stack. No `develop`/integration
+  `main` triggers a CI build + deploy to the live ECS Fargate stack. No `develop`/integration
   branch (retired 2026-05-18, unused). Short-lived per-owner branches
   (`dbrowneup/<name>`, `marten`, …) → PR → merge to `main`; `main` moves continuously
   (the agentic system `t2o2` lands + self-iterates on it; Dan + Claude Code now drive the
   core build), so rebase late and merge fast
-- Live testnet deploy: [`https://archimedes-arc.com/`](https://archimedes-arc.com/) (CloudFront → EC2,
+- Live testnet deploy: [`https://archimedes-arc.com/`](https://archimedes-arc.com/) (CloudFront → WAF → ALB → ECS Fargate,
   Chain ID `5042002` / `0x4cef52`, Arc testnet). **Prod migrated 2026-06-24 to Dan's own AWS
   account (`037613907429` / `us-east-1`)** — see "Project / Status" below. The old `.app` domain
   was decommissioned 2026-06-24 (its `.app`/`.com` split had caused the Circle passkey rpId bug,
@@ -67,12 +67,11 @@ May 11–25, 2026.
 
 Post-Agora, the team is in the **Lepton Sprint** (→ Jun 29 + a post-event funding/grant/
 acquisition track). The current build sequence, full tier breakdown, and Lepton scoring map
-live in **`ARCHIMEDES-ROADMAP-v3.md`** (a team artifact pending consolidation into `docs/`
-under roadmap T3.3 — not yet committed at a fixed in-repo path; ask Dan if you can't find
-it). The headlines a fresh session needs:
+are maintained **in the private `docs` repo** (`consolidated/ROADMAP.md`), not in this
+repo. **Dan owns it** — ask him for access. The headlines a fresh session needs:
 
 - **Live + infra.** App is live at [`https://archimedes-arc.com`](https://archimedes-arc.com)
-  (CloudFront → nginx → EC2). The prod stack was **rebuilt on Dan's own AWS account
+  (CloudFront → WAF → ALB → ECS Fargate). The prod stack was **rebuilt on Dan's own AWS account
   (`037613907429` / `us-east-1`)**, decoupled from the prior shared account. **GitHub Actions
   auto-deploy is re-pointed and ON** — every merge to `main` rebuilds + redeploys.
   **EC2 → ECS Fargate migration: EXECUTED 2026-07-09.** The web tier runs on ECS
@@ -154,7 +153,7 @@ in parentheses; the human handles are what shows up in the channel.
 | -------------------------- | ---------- | ------------------ | --------- | --------| ------------------------------------------------------------------------------------------------------------------- |
 | **Dan Browne**             | 37         | dbrowneup          | Chicago   | UTC-5   | **Owner of smart contracts + on-chain integration + infra (incl. AWS account `037613907429` and contract deploys), full-stack control.** Strategy engine (Q-fin paper corpus, strategy library curation), pitch architecture. Senior Scientist @ LanzaTech, PhD biochemistry. Day job — evenings/weekends. |
 | **Marten Windler**         | ~31        | Marten             | Bremen    | UTC+2   | Off-chain → on-chain integration via Arc CLI. Systems Engineering @ U. Bremen, ML-uncertainty B.Sc. thesis. ROS + Python/C++/Rust. Coordinator lean. |
-| **Daniel Reis dos Santos** | early 20s  | The go guy / Daniel [vibe] | Brazil    | UTC-3   | Frontend ownership (Next.js + TailwindCSS). Backend engineer day-side. Go / Java / TypeScript, distributed systems, AWS, Terraform. Healthcare-ERP day role.  |
+| **Daniel Reis dos Santos** | early 20s  | The go guy / Daniel [vibe] | Brazil    | UTC-3   | Frontend ownership (React 19 + Vite 8 + UnoCSS). Backend engineer day-side. Go / Java / TypeScript, distributed systems, AWS, Terraform. Healthcare-ERP day role.  |
 | **Bogdan Sivochkin**       | —          | (GitHub `mnemonik-dev`) | —    | —       | **New member** (joined for Lepton). Blockchain & cryptography architect; 15+ yrs distributed systems; Solidity, Rust, ZK, account abstraction, secure smart-contract engineering (founder, Mnemonic protocol). Ran the recent full-tree technical audit ([PR #710](https://github.com/a-apin/archimedes/pull/710)); working on on-chain provenance / commit-reveal + IPFS ([issue #714](https://github.com/a-apin/archimedes/issues/714)). **Can help with contracts — preferred two-eyes reviewer on contract changes.** |
 | **Önder Akkaya**           | ~21        | Önder              | Ankara    | UTC+3   | Portfolio math (Kelly Criterion / +EV, backtest evaluation, risk pricing). Statistics @ Hacettepe; [ASA Statistical Insight World Champion](https://www.linkedin.com/in/onder-akkaya/); President of [TİD-Genç](https://www.tid.org.tr/); trainee actuary. |
 | **Ricardo Obregon Huaman** | —          | (GitHub `rcrdoh`)  | —    | —       | Nanopayment marketplace — x402-gated strategy access, Circle Gateway settlement, on-chain revenue split, per-user spend caps ([issue #713](https://github.com/a-apin/archimedes/issues/713)). |
@@ -200,8 +199,8 @@ cross-lane review need in the PR description so the right teammate sees it.
 | Backend Python layer (FastAPI, API, services, models) | Daniel R.      | Marten                |
 | On-chain integration layer (`backend/archimedes/chain/`, oracle runner) | Dan | Bogdan / Marten |
 | Frontend (React + Vite + viem, wallet UX, trade tab) | Marten (current) / Daniel R. | Dan       |
-| Smart contracts (Arc, Foundry — 12 sources, 570 live instances) | Dan | Bogdan (`mnemonik-dev`) / Marten |
-| Infra / EC2 / CI/CD / docker-compose / AWS account  | Dan              | Daniel R.             |
+| Smart contracts (Arc, Foundry — 12 Solidity sources; live census at `GET /api/config/contracts`) | Dan | Bogdan (`mnemonik-dev`) / Marten |
+| Infra / ECS Fargate / CI/CD / docker-compose / AWS account | Dan       | Daniel R.             |
 | Architecture + design decisions                     | Dan (lead)       | full team             |
 | Pitch deck + demo script + Claude Design + judging  | Dan              | Marten                |
 
@@ -222,7 +221,9 @@ listed above are reviewers and memory-carriers, not gatekeepers.
 Read [`README.md`](README.md) for the full setup walkthrough — Python conda env via
 [`environment.yml`](environment.yml), Node.js frontend, Foundry for contracts, the
 [arc-canteen CLI](https://github.com/the-canteen-dev/ARC-cli) for traction tracking,
-and a Docker-compose-driven local stack that mirrors the production EC2 deployment.
+and a Docker-compose-driven local stack that approximates the production ECS Fargate
+deployment (local compose runs `postgres:18-alpine`; prod is Aurora PostgreSQL 18.3 +
+ElastiCache Redis 7.1).
 Platform-specific notes for macOS / Linux / Windows (Önder on macOS; WSL2 recommended for Marten).
 
 **Spinning up locally is one command** once `.env` is filled in:
@@ -250,8 +251,9 @@ cd ui && npm run lint     # or scoped: ./node_modules/.bin/eslint src/<file>
 ```
 
 **Tests:** from the repo root in the `archimedes` conda env, just `pytest` —
-`pytest.ini` sets `pythonpath`/`testpaths` and a verbose default (~1400 backend
-`def test_` cases on `main` as of 2026-06-13; suite is still growing). Coverage:
+`pytest.ini` sets `pythonpath`/`testpaths` and a verbose default. For the current case
+count, ask the suite rather than trusting a doc: `pytest --collect-only -q | tail -1`.
+Coverage:
 `pytest --cov=archimedes --cov-report=term-missing`. The
 analytics-engine runs its own suite: `cd analytics-engine && uv run pytest`. See
 README § "Running the test suite" for the honest coverage picture and the
@@ -261,7 +263,8 @@ Engineering conventions for the hermetic-test standard.
 **AWS account access (added 2026-05-27; updated 2026-06-24 — new account/region):**
 Prod now lives on **Dan's own AWS account (`037613907429`) in `us-east-1`** (migrated
 2026-06-24 off the prior shared account). Team members who need to verify AWS
-infrastructure (security review, dashboard checks, SSM access to the live EC2,
+infrastructure (security review, dashboard checks, SSM access to the residual EC2
+runner box,
 Aurora port-forwarding) should ask **Dan** (the AWS account owner) for an IAM
 user with the AWS managed policies `SecurityAudit` + `ViewOnlyAccess`, MFA
 required on first login, and the access key + secret delivered via a secure
@@ -278,7 +281,9 @@ export AWS_PROFILE=archimedes
 aws sts get-caller-identity   # smoke-test (account 037613907429)
 ```
 
-For SSM admin access to the live EC2 (replaces SSH, no port 22 needed):
+The live **web tier is ECS Fargate** — there is no host to SSH or SSM into; use
+`aws ecs execute-command` if you need a shell in a task. SSM below reaches only the
+**residual EC2 box** that still hosts the oracle / agent / kb background runners:
 ```bash
 aws ssm start-session --target i-<instance-id> --region us-east-1
 # Aurora port forward (after Aurora/ElastiCache cutover — T3.5):
@@ -393,8 +398,6 @@ they actually shipped (Day 4):
   AWS use-case activation (roadmap T3.8) before the paid tier (T1.8) has real models behind
   it. GLM is removed from prod; **BYOK and a local-Ollama single-user path are preserved.**
   `response.model` is the provenance of record across the GLM→Bedrock migration.
-  (`.env.example` still defaults `LLM_PROVIDER=anthropic_compatible` — that's stale vs the
-  live `bedrock_converse`/Nova default and is tracked as roadmap T3.10.)
 - **Backtesting:** [backtrader](https://github.com/mementum/backtrader) for v1 per
   [`docs/adr/backtrader-vs-vectorbt-decision-memo.md`](docs/adr/backtrader-vs-vectorbt-decision-memo.md).
   Supersedes `docs/design.md` § 6 ("vectorbt / custom numpy engine") on this one
@@ -460,7 +463,7 @@ Codified 2026-05-18 to match how the team actually works (see
 "Working with AI agents on this repo" below):
 
 - **`main` is the only long-lived branch, and it is the deploy branch.** Every merge
-  to `main` triggers a CI build + deploy to the live EC2 stack. There is no
+  to `main` triggers a CI build + deploy to the live ECS Fargate stack. There is no
   `develop`/integration branch — it drifted unused and was retired.
 - **`main` moves continuously.** The agentic system (`t2o2`) merges work and iterates on
   its own CI failures directly on `main`, and Dan + Claude Code drive the core build in
@@ -541,7 +544,7 @@ Four workflows run on every PR and every push to `main`:
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `quality-gate.yml` | PR → main | Hard block: `pytest -m "not integration"` (unit suite, no DB/Redis) **and** `ruff-gate` (`ruff format --check .` + `ruff check --select E9,F63,F7,F40 .`). Informational: full `ruff check` (broader rule set) + `npm run lint` in `ui/` — both run with `continue-on-error` and their pass/fail counts are posted as a PR comment table (marker `<!-- quality-gate-v1 -->`). Agent PRs (`t2o2`) also get a coverage gate (≥ 60%). |
+| `quality-gate.yml` | PR → main | Hard block: `pytest -m "not integration"` (unit suite, no DB/Redis) **and** `ruff-gate` (`ruff format --check .` + `ruff check --select E9,F63,F7,F40,F82 .`). Informational: full `ruff check` (broader rule set) + `npm run lint` in `ui/` — both run with `continue-on-error` and their pass/fail counts are posted as a PR comment table (marker `<!-- quality-gate-v1 -->`). Agent PRs (`t2o2`) also get a coverage gate (≥ 60%). |
 | `complexity-gate.yml` | PR → main (Python/JS/TS files only) | Aggregate cyclomatic-complexity, nesting depth, recursion, and orphan analysis via lizard + Python AST. Compares the changed-file set against the `main` baseline and posts a table comment on the PR (marker `<!-- complexity-gate-v1 -->`). **Informational only — never blocks merge.** Runs on the GitHub runner with `pip install lizard`; the bundled distroless Dockerfile at `.github/docker/complexity-gate/Dockerfile` is available for local use but not pulled by CI. |
 | `deploy.yml` | push → main | Builds images in CI → pushes to ECR → rolls the ECS Fargate services (auto-cancels superseded runs). |
 | `main-format-guard.yml` | push → main | Runs `ruff format --check .` on every push to `main`. If the check fails, the workflow runs `ruff format .`, commits the fix back with `[skip ci]` (no recursion), and fails its own run so the violation is visible in CI history. Net effect: `main` self-heals so open PRs aren't stranded with red ruff-gates, and the failed run nudges the contributor (or agent) to install pre-commit. Added 2026-05-25 after several rounds of direct-to-main pushes landed unformatted files. |
@@ -648,12 +651,13 @@ PR via the `ruff-gate` job:
 | Check | Command | Status |
 | --- | --- | --- |
 | Formatting | `ruff format --check .` | Hard block |
-| Critical lint rules | `ruff check --select E9,F63,F7,F40 .` | Hard block |
+| Critical lint rules | `ruff check --select E9,F63,F7,F40,F82 .` | Hard block |
 | Broader lint | `ruff check .` | Informational (continue-on-error) |
 
-The blocking subset is deliberately narrow today (syntax + undefined-module
-rules) so the gate doesn't trip on pre-existing style debt. It can grow as we
-clean things up — next candidate is `F82` (undefined-name).
+The blocking subset is deliberately narrow (syntax, undefined names, undefined-module
+rules) so the gate doesn't trip on pre-existing style debt. It can grow as we clean
+things up. `F82` (undefined-name) is already in the blocking set, in both
+`quality-gate.yml` and `.pre-commit-config.yaml`.
 
 **Local feedback loop — install pre-commit once per clone:**
 ```bash
@@ -695,8 +699,6 @@ Three rules:
 - **No new dep without a sentence on what it does + why we picked it.** Comments in the requirements / env files are how future readers (us in a week) understand the trust surface. "added by tooling" is not a sentence.
 
 **Frontend**: `npm ci` (used by both `quality-gate.yml` lint-report and local `ui/` setup) verifies `package-lock.json` integrity — that's the lockfile hash check we rely on for transitive integrity. Don't `npm install` (which can mutate the lockfile); always `npm ci`.
-
-**Pre-commit + detect-secrets** are tracked as separate hardening (issue TS.7 / #176-adjacent) — not implemented today.
 
 ### Smoke-test before deploy
 
@@ -858,8 +860,9 @@ Non-negotiable, and load-bearing because the judges read this repo like operator
   private keys in the tree. `.gitignore` covers `*.pem`, `*.key`, `*.p12`, `*.pfx`,
   `*.crt`, `*.tfstate*` globally as of 2026-05-27. The
   [`detect-secrets`](https://github.com/Yelp/detect-secrets) pre-commit hook is
-  wired in `.pre-commit-config.yaml` with the audited baseline at
-  `.secrets.baseline` — install with `pip install pre-commit && pre-commit install`
+  wired in `.pre-commit-config.yaml` with the (currently unaudited) baseline at
+  `.secrets.baseline` — regenerating and auditing it is outstanding (all 28 entries are
+  `is_verified: false`, dated 2026-05-27). Install with `pip install pre-commit && pre-commit install`
   so commits are scanned locally before push.
 - **Rotation alone does not undo a leak.** When a credential is committed and
   later removed, the value remains in `git log -p` forever and on every clone
@@ -1021,7 +1024,7 @@ here.
 
 > **Academic backstops for the architecture (added Day-12, 2026-05-24):**
 > - **Xia et al. 2026 — *Agentic Trading: When LLM Agents Meet Financial Markets*** ([arxiv 2605.19337](https://arxiv.org/abs/2605.19337), ESWA). The audit-grade survey of 19 trading-agent papers: **15/19 are R0** (no code/data artifacts), **0/19 reach R3** (fully replayable with artifact versioning + immutable provenance), **2/19** report time-consistent train/test splits, **1/19** has a transaction-cost model, **1/19** documents universe/survivorship handling. Archimedes is engineered to be the first production trading-agent system to ship at R3 and to implement every named protocol Xia formalizes (Outcome Embargo, Time-Aware Retrieval, Hierarchy of Truth, Source Tracking, `V_check`) as **enforced mechanisms** rather than advisory guidelines. Detail in [`docs/specs/xia-2026-protocols.md`](docs/specs/xia-2026-protocols.md).
-> - **Chen et al. 2026 — *StockBench*** ([arxiv 2510.02209](https://arxiv.org/abs/2510.02209)). The first contamination-free, closed-loop, multi-month trading-agent benchmark. Our primary LLM family (GLM-4.5 → GLM-4.7) ranks #3 globally on the model baseline (behind Kimi-K2 and Qwen3-235B-Instruct; ahead of Claude-4-Sonnet at #7 and GPT-5 at #9). **Honest about the agent result:** when we layer Archimedes' Strategy Generation Agent on top, our `T3.8` harness run lands at #15/15 (Sortino -0.91). That underperformance is itself a load-bearing data point — Xia et al. argue (and StockBench corroborates) that *all* LLM agents underperform passive baselines in many windows, and our pitch surfaces this rather than hides it. Detail in [`docs/benchmarks/stockbench-results.md`](docs/benchmarks/stockbench-results.md).
+> - **Chen et al. 2026 — *StockBench*** ([arxiv 2510.02209](https://arxiv.org/abs/2510.02209)). The first contamination-free, closed-loop, multi-month trading-agent benchmark. GLM-4.5 → GLM-4.7 — which we ran in prod at the time of the benchmark, before the migration to Bedrock Converse / `amazon.nova-micro-v1:0` — ranks #3 globally on the model baseline (behind Kimi-K2 and Qwen3-235B-Instruct; ahead of Claude-4-Sonnet at #7 and GPT-5 at #9). **Honest about the agent result:** when we layer Archimedes' Strategy Generation Agent on top, our `T3.8` harness run lands at #15/15 (Sortino -0.91). That underperformance is itself a load-bearing data point — Xia et al. argue (and StockBench corroborates) that *all* LLM agents underperform passive baselines in many windows, and our pitch surfaces this rather than hides it. Detail in [`docs/benchmarks/stockbench-results.md`](docs/benchmarks/stockbench-results.md).
 
 ### 1. The strategy passport
 
@@ -1159,9 +1162,8 @@ rubric score. Adding team / coordination risks:
   and commercial material lives in the private docs repo by policy; this repo carries code
   and technical documentation. Ask Dan. (Do not re-create a competitor doc here — that has
   happened twice.)
-- The current build roadmap + tier breakdown — see **`ARCHIMEDES-ROADMAP-v3.md`**
-  (Lepton Sprint; the canonical sequence and Lepton scoring map; a team artifact
-  pending consolidation into `docs/` under roadmap T3.3)
+- The current build roadmap + tier breakdown — maintained privately in the `docs` repo
+  (`consolidated/ROADMAP.md`); **Dan owns it**, ask him for access. It is not in this repo.
 
 ---
 
