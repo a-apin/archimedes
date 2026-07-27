@@ -90,7 +90,7 @@ dependencies:
 
       # --- Semantic retrieval (paper_rag MiniLM embeddings, issue #874) ---
       - torch>=2.0,<3.0               # PyTorch CPU (local dev: pip picks the native/MPS wheel; Docker uses the CPU-only wheel via --extra-index-url in requirements.txt)
-      - sentence-transformers>=2.7    # all-MiniLM-L6-v2 zero-cost semantic retrieval for paper_rag.py; aligned with backend/requirements.txt
+      - sentence-transformers>=5.6.1  # all-MiniLM-L6-v2 zero-cost semantic retrieval for paper_rag.py. Floor aligned with backend/requirements.txt via dependabot PR #1167; this closes a large pre-existing drift (was still pinned at 2.7, several major versions behind requirements.txt's 5.6.0).
 
       # --- Quality + tests ---
       - ruff>=0.6                     # Linter + formatter; configured at line length 120
