@@ -1,8 +1,12 @@
+> **ARCHIVED 2026-05-26 — historical record. Do not execute.** Current status: see
+> [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../architecture-redesign/ARCHITECTURE-MAP.md).
+
 # Archimedes Launch Execution Plan
 
 **Window:** Saturday 2026-05-23 → Sunday 2026-05-24 (target submission) → Monday 2026-05-25 23:59 ET (hard deadline; buffer day).
 **Author:** Daniel Browne, with Claude (Opus 4.7) as planner. Marten + Chuan signed off on Phase 4/5 driver authority 2026-05-23 AM. Chuan confirmed full AWS provisioning autonomy for the `t2o2` bot system 2026-05-23 AM.
-**Status:** Locked. Issue specs ready to file.
+**Status (historical):** Was "Locked. Issue specs ready to file." on 2026-05-23. **No longer
+actionable** — the issues were filed and closed in May 2026 and this plan is archived.
 
 ---
 
@@ -3310,4 +3314,6 @@ copy if any, (4) empty-state copy, (5) error-state copy.
 
 ---
 
-*End of launch execution plan. Next read: pick up your assigned Maestro track prompt in § 9.*
+*End of launch execution plan. **The "pick up your assigned Maestro track prompt in § 9"
+instruction is historical and expired — do not act on it.** For current work, see
+[`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../architecture-redesign/ARCHITECTURE-MAP.md).*

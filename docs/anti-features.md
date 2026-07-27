@@ -11,6 +11,13 @@
 > in [`user-stories.md`](user-stories.md). Reconciled with the ecosystem pivot in
 > [`specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md) and the red-team
 > critique in [`archive/agora_project_analysis.md`](archive/agora_project_analysis.md).
+>
+> **CORRECTION (2026-07-27) — the Marketplace anti-feature no longer holds.** The
+> marketplace **shipped** and is live behind the `PAYMENTS_DRY_RUN` flag. It lives in
+> `backend/archimedes/marketplace/`, `backend/archimedes/api/marketplace_routes.py`, and
+> `ui/src/pages/{MarketplacePage,PublishPage,SubscriptionsPage}.jsx`. **Do not delete those
+> files** on the authority of this document — the "deleted Marketplace" note below records
+> the state of PR #118 in May 2026, not current scope policy.
 
 ## Why this doc exists
 
