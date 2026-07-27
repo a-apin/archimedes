@@ -8,8 +8,9 @@
 > **Status:** Day-10 update (2026-05-22). The four primitives below — paper-claim
 > binding, reasoning trace, tool-call provenance, selection-bias correction — are
 > **all shipped and live** as of Day-10. The selection-bias gate has 2 Tier-1
-> strategies that currently pass (Faber 2007 SMA-200, Moreira-Muir 2017
-> vol-managed) against 22 years of real SPY data. The four primitives remain the
+> strategies that currently pass (Moreira-Muir 2017 vol-managed,
+> Moskowitz-Ooi-Pedersen 2012 TSMOM) against 22 years of real SPY data. Faber 2007
+> SMA-200 does *not* pass — see [`analysis/faber-dsr-finding.md`](analysis/faber-dsr-finding.md). The four primitives remain the
 > philosophical core; Day-10 added a *fifth* operational capability — the LLM-driven
 > agentic portfolio advisor ([`portfolio_agent.py`](../backend/archimedes/services/portfolio_agent.py))
 > — which sits *on top of* the four primitives (it cannot bypass the passport,

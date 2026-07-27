@@ -23,9 +23,9 @@
 > individual stocks/bonds anchored to paper-grounded passports); **stress
 > engine** (`stress_engine.py` six historical shocks, backend ready, UI strip
 > still on Phase 4 candidate list); the full rigor wedge live (DSR/PBO/Kelly/
-> MVO via canonical `services/rigor_evaluator.py`; 2 Tier-1 strategies — Faber
-> 2007 + Moreira-Muir 2017 — pass all four gates on 22-year SPY); DB-backed
-> 10,000-paper q-fin corpus with the Corpus Explorer UI shipped; "Linus for
+> MVO via canonical `services/rigor_evaluator.py`; 2 Tier-1 strategies — Moreira-Muir
+> 2017 + Moskowitz-Ooi-Pedersen 2012 TSMOM — pass all four gates on 22-year SPY;
+> Faber 2007 does *not*); DB-backed 10,000-paper arXiv q-fin preprint corpus with the Corpus Explorer UI shipped; "Linus for
 > quantitative finance" framing locked per [`docs/user-stories.md`](user-stories.md);
 > **806 backend tests** + 16 analytics-engine tests collected; **submission day**.
 > UI prompts work as **refinement** prompts against the live UI, not greenfield.
@@ -323,8 +323,9 @@ LEFT — Generation + intelligence
 RIGHT — Rigor + on-chain
 - Selection-bias gate live: Deflated Sharpe (Bailey & López de Prado 2014) +
   Probability of Backtest Overfitting (CSCV) + walk-forward OOS + look-ahead audit
-- 2 Tier-1 strategies passing all four gates today (Faber, Moreira-Muir) —
-  the failures are visible, not hidden
+- 2 Tier-1 strategies passing all four gates today (Moreira-Muir 2017,
+  Moskowitz-Ooi-Pedersen 2012 TSMOM) — the failures, Faber 2007 included, are
+  visible, not hidden
 - 10 Arc-testnet contracts deployed: Vault, VaultFactory, SyntheticVault,
   SyntheticFactory, SyntheticToken, AMMPool, AMMRouter, AssetRegistry,
   PriceOracle, ReasoningTraceRegistry. **Vault.sol is now multi-asset NAV** —

@@ -26,7 +26,7 @@ are exactly the conditions checked in `RigorGateResult.passes_all`:
 
 | # | Control | Function | Threshold (the literal gate) |
 |---|---|---|---|
-| 1 | Deflated Sharpe Ratio | `compute_dsr` | `dsr_p_value ≥ 0.95` (and not `None`) |
+| 1 | Deflated Sharpe Ratio | `compute_dsr` | `dsr_p_value ≥ 0.90` (and not `None`) — recalibrated from 0.95 in PR #901 |
 | 2 | Probability of Backtest Overfitting | `compute_pbo` | `pbo_score < 0.5` (and not `None`) |
 | 3a | Walk-forward OOS Sharpe — absolute floor | `compute_oos_sharpe` | `oos_sharpe > 0` (and not `None`) |
 | 3b | Walk-forward OOS Sharpe — the cliff | `compute_oos_sharpe` | `oos_sharpe / in_sample_sharpe ≥ 0.5` |
@@ -35,13 +35,13 @@ are exactly the conditions checked in `RigorGateResult.passes_all`:
 
 Notes on each threshold, with the *why* behind the number:
 
-### 1. DSR p-value ≥ 0.95
+### 1. DSR p-value ≥ 0.90
 
 The Deflated Sharpe Ratio (Bailey & López de Prado 2014) returns a probability that
 the true Sharpe is positive *after* deflating for multiple testing and
-non-normality. The `0.95` bar is the conventional 95%-confidence threshold:
-admission requires 95% confidence that the Sharpe is not a selection-and-luck
-artifact. When `num_trials = 1` no deflation is applied (there was no selection);
+non-normality. The bar was originally the conventional 95%-confidence threshold and was
+**recalibrated to `0.90` in PR #901**: admission requires 90% confidence that the Sharpe
+is not a selection-and-luck artifact. When `num_trials = 1` no deflation is applied (there was no selection);
 the orchestrator passes `N = len(strategy_library)` so the correction is real, and
 the effective-N correction (`average_correlation`) prevents a correlated parameter
 sweep from being over-penalized as `N` independent tests. See
@@ -159,7 +159,7 @@ thresholds is an explicit anti-goal).
 
 ### A. Diversification benefit vs. a marginally lower DSR
 
-A strategy that *just* misses the `0.95` DSR bar but is **genuinely
+A strategy that *just* misses the `0.90` DSR bar but is **genuinely
 decorrelated** from the rest of the validated set can be more valuable to the
 portfolio than a higher-DSR strategy that duplicates an existing bet. The portfolio
 math is the justification: adding a low-correlation sleeve lowers portfolio variance
@@ -236,7 +236,7 @@ no longer passes returns to `CANDIDATE` automatically.
 ## Summary
 
 - Admission = all four controls pass in `RigorGateResult.passes_all`:
-  DSR `p ≥ 0.95`, PBO `< 0.5`, OOS Sharpe `> 0` and OOS/IS `≥ 0.5`
+  DSR `p ≥ 0.90`, PBO `< 0.5`, OOS Sharpe `> 0` and OOS/IS `≥ 0.5`
   (plus CPCV `positive_fraction ≥ 0.5` when computable), look-ahead `PASS`.
 - Promotion is `CANDIDATE → VALIDATED`; failures stay `CANDIDATE` with the failing
   gate shown openly; re-evaluation can demote.

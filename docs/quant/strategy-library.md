@@ -12,13 +12,16 @@
 > adaptation caveat, that caveat is reproduced here. For strategies whose full
 > methodology is non-trivial, see the file header for the complete write-up.
 
-This page documents the **31 strategy files** in the library as of this writing.
+This page documents the strategy files in the library (34 at the time of writing; count
+them with `ls analytics-engine/strategies/*.py`).
 Each carries an academic or practitioner anchor, a `REGIME_TAG`
 (`bull` / `bear` / `regime_neutral`), and the honest paper-vs-implementation
 delta. Admission to Tier 1 still requires passing the four-gate
 [`admission-criteria.md`](admission-criteria.md); a paper anchor is necessary, not
-sufficient. Today **Faber 2007** and **Moreira–Muir 2017** pass all four gates; the
-rest are honest `CANDIDATE`s with their failing gate shown openly.
+sufficient. Today **Moreira–Muir 2017** (volatility-managed portfolios) and **Moskowitz–Ooi–Pedersen 2012** (TSMOM) pass all four gates; the rest are honest `CANDIDATE`s with their
+failing gate shown openly. **Faber 2007 does not pass** — its walk-forward OOS Sharpe
+ratio is 0.612, under the 0.90 gate (see
+[`../analysis/faber-dsr-finding.md`](../analysis/faber-dsr-finding.md)).
 
 A recurring honesty theme: many files set `paper_claimed_*` to **null** when the
 source reports win-rate / t-statistic / conditional-mean tables rather than a
@@ -45,7 +48,7 @@ carry crash risk at trend reversals.
 - **v1 caveat:** the original is a cross-sectional long–short ranking; verify the
   live universe and ranking horizon against the paper. *(See file header.)*
 
-### Moskowitz, Ooi & Pedersen (2012) — Time Series Momentum (TSMOM)
+### Moskowitz, Ooi & Pedersen (2012) — Time Series Momentum (TSMOM) ✅ *passes the gate*
 - **File:** `moskowitz_ooi_pedersen_2012_tsmom.py`
 - **Paper:** *Time Series Momentum*, Journal of Financial Economics, 2012.
 - **Anomaly:** an asset's own past 12-month return predicts its next-month return —
@@ -55,6 +58,8 @@ carry crash risk at trend reversals.
   positions across many assets; the v1 adaptation is long/flat on a narrower
   universe, so the paper-claimed-vs-actual delta is surfaced in the methodology
   block. *(See file header.)*
+- **Status:** one of the two strategies that **passes all four admission gates** today
+  (see [`../analysis/faber-dsr-finding.md`](../analysis/faber-dsr-finding.md)).
 
 ### Antonacci (2014) — Dual Momentum
 - **File:** `antonacci_2014_dual_momentum.py`
@@ -337,12 +342,13 @@ anomaly to chase.
   versus a static-exposure baseline; exploits the weak/negative relationship between
   current volatility and next-period return.
 - **Regime:** `bear` (outperforms in bear/high-vol regimes).
-- **Status:** one of the two strategies that **passes all four admission gates**
-  today.
+- **Status:** `CANDIDATE` — **fails admission.** Walk-forward OOS Sharpe ratio 0.612,
+  under the 0.90 gate. The earlier claim that Faber passed was wrong; see
+  [`../analysis/faber-dsr-finding.md`](../analysis/faber-dsr-finding.md).
 - **v1 note:** the volatility signal is a rolling realized-volatility estimate (the
   paper uses one-month realized vol). *(See file header.)*
 
-### Faber (2007) — SMA200 tactical asset allocation ✅ *passes the gate*
+### Faber (2007) — SMA200 tactical asset allocation ❌ *fails the gate*
 - **File:** `faber_2007_sma200_timing.py`
 - **Paper:** *A Quantitative Approach to Tactical Asset Allocation*, Journal of
   Wealth Management, 2007.
@@ -401,9 +407,9 @@ against, and the defensive floor.
 - **`paper_claimed_*` null ≠ a weak strategy.** It means the source reported
   t-stats/win-rates rather than a mechanical Sharpe/CAGR; the number we stand behind
   is always the post-gate one on our own data.
-- **A paper anchor does not equal Tier-1 admission.** Only Faber 2007 and
-  Moreira–Muir 2017 pass all four gates today; the rest are honest `CANDIDATE`s with
-  their failing gate visible. See [`admission-criteria.md`](admission-criteria.md).
+- **A paper anchor does not equal Tier-1 admission.** Only **Moreira–Muir 2017** (volatility-managed portfolios) and **Moskowitz–Ooi–Pedersen 2012** (TSMOM) pass all four gates today;
+  the rest — Faber 2007 included — are honest `CANDIDATE`s with their failing gate
+  visible. See [`admission-criteria.md`](admission-criteria.md).
 - **Regime tags drive sizing, not just labeling.** A `bull`-tagged strategy is sized
   down by the regime-conditional γ multiplier in `risk_off`/`crisis` regimes (see
   [`methodology.md`](methodology.md) §10).
