@@ -82,7 +82,7 @@ dependencies:
       - cryptography>=42.0            # RSA sign/serialize for the oracle signer (backend/archimedes/chain/oracle_updater.py); mirrors backend/requirements.txt
 
       # --- AWS / S3 ---
-      - boto3>=1.43.46                 # S3 artifact reads for KB pipeline output (embeddings, KG). Aligned with backend/requirements.txt (dependabot batch 2026-07-13).
+      - boto3>=1.43.56                 # S3 artifact reads for KB pipeline output (embeddings, KG). Floor aligned with backend/requirements.txt via dependabot PR #1162.
 
       # --- Paper ingestion (Q-fin corpus) ---
       - arxiv>=2.1                    # arxiv API client
