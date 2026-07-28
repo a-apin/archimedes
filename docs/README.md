@@ -163,6 +163,18 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`research/linus-archimedes-comparison.md`](research/linus-archimedes-comparison.md) | reference | Dan Browne | — | Bidirectional architecture comparison with Linus. |
 | [`research/archimedes-to-linus-portbacks.md`](research/archimedes-to-linus-portbacks.md) | reference | Dan Browne | — | What Archimedes sends back to Linus. |
 | [`prompts/quant-audit-prompt.md`](prompts/quant-audit-prompt.md) | template | Önder Akkaya | — | LLM prompt template for a quant audit. Not an audit. |
+| [`prompts/agentic-issue-skeleton.md`](prompts/agentic-issue-skeleton.md) | template | Dan Browne | 2026-07-28 | Copy-paste skeleton for a judge-grade issue spec dispatched to the agentic system. |
+
+---
+
+## Working with the repo and the team
+
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`CONVENTIONS.md`](CONVENTIONS.md) | current | Dan Browne | 2026-07-28 | Where a new doc goes, how it is named, its front-matter, and the ADR lifecycle. Read before adding any file. |
+| [`team.md`](team.md) | current | Dan Browne | 2026-07-28 | Roster, lanes, review coverage, timezones, sync window. Extracted from `CLAUDE.md`. |
+| [`agent-gotchas.md`](agent-gotchas.md) | current | Dan Browne | 2026-07-28 | Character-limited message surfaces (`wc -m`, not `wc -c`) and zsh quoting traps. Both were paid for. |
+| [`submodules.md`](submodules.md) | current | Dan Browne | 2026-07-28 | The three submodules, what each is for, and the sticky-config one-liner a fresh clone needs. |
 
 ---
 
