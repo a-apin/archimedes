@@ -154,6 +154,46 @@ uncertainty so the user can audit it.
 **Tier-2 community vaults are exempt from primitive 4.** That is by design — see the
 two-tier section below.
 
+## Fail-soft is correct for optional configuration and wrong for anything a claim depends on
+
+The four primitives above describe what the product must prove. This principle describes the
+most common way it stops proving it without anyone noticing.
+
+For credentials and for measured values, the correct degraded state is a **loud, visible
+absence** — a `NOT_RUN`, an em-dash, a startup abort, a CloudWatch alarm — never a plausible
+substitute. A fail-soft default converts an outage into a silence, and silence is
+indistinguishable from working. That is the whole failure: nobody investigates a system that
+looks fine.
+
+The fix is not "always crash". Fail-soft is genuinely correct for optional configuration — an
+absent feature flag, an unset local override, a missing dev-only endpoint. The distinction is
+whether a *claim* rests on the value. A function that loads secrets should know which
+parameters are load-bearing and be loud about **those** while genuinely optional ones stay
+quiet. The same applies to a number rendered in the UI: if it is presented as measured, there
+must be no code path that substitutes something else for it.
+
+Three instances of the same failure were found in one week:
+
+| Instance | Mechanism | Cost |
+|---|---|---|
+| SSM credentials | `load_ssm_secrets()` catches the IAM denial and boots degraded by design | Marketplace publish never worked in production. 19 days, silent, no alarm. |
+| Leaderboard fixture fallback | Numeric fields fall back to migrated fixture columns when live compute is unavailable | Fabricated statistics presented as measured, on the flagship public page |
+| T-bill / Maillard rows | Persisted return series bound to the wrong asset | The top-ranked strategy graded the null benchmark's returns |
+
+Note what the three have in common: each one was a *deliberate* design choice at the time,
+each looked like defensive engineering, and each removed the signal that would have revealed
+it. None of them threw. None of them alarmed. All three were found by reading code, not by
+being told.
+
+The rigor gate already gets this right. Its verdict is tri-state — `pass` / `fail` /
+`pending` — and `pending` is a first-class, rendered state meaning "no real returns yet, we
+honestly do not know." A strategy never silently wears a badge it did not earn. That is the
+pattern the other three subsystems needed and did not have.
+
+**Applying it.** When reviewing a fallback, ask: if this path fires in production, what tells
+someone? If the answer is "nothing" and a user-visible claim depends on the value, the
+fallback is a defect regardless of how defensively it reads.
+
 ## Two-tier marketplace: how the primitives apply to each tier
 
 Per [`specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md), Archimedes runs a

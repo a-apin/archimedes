@@ -72,6 +72,13 @@ you touch a doc past that line, do one of three things and record it in the fron
 3. **Archive** — move it under `archive/` with an `ARCHIVED` banner and a `superseded-by`
    pointer.
 
+Corollary: **an absent number beats a substituted one.** When a doc cannot state a value
+honestly, write `—` or "unestablished" and say where the live source is; do not reach for the
+nearest plausible figure. This is the documentation instance of a repo-wide principle —
+*fail-soft is correct for optional configuration and wrong for anything a claim depends on*
+([`architectural-principles.md`](architectural-principles.md) § fail-soft). A doc that
+silently substitutes reads exactly like a doc that is right.
+
 Corollary: **anything that decays fast does not belong in a doc at all.** Counts, contract
 addresses, service inventories, test totals, and status live in the live source (`GET
 /api/config/contracts`, `pytest --collect-only -q | tail -1`, `README.md` § Status) or in a
