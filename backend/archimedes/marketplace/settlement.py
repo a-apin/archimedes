@@ -194,7 +194,7 @@ class SettlementSweeper:
         """Stage C: PaymentSplitter.withdraw(pool_id, amount) — creator/platform payout.
 
         Callable regardless of pool.active (D6 §2.5); caller no longer needs to be
-        pool.creator/platform (see PaymentSplitter.vy withdraw docstring, changed 2026-07-03).
+        pool.creator/platform (see PaymentSplitter.sol withdraw docstring).
         """
         if self._payments_dry_run:
             logger.info(
