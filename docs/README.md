@@ -8,6 +8,11 @@ Last rebuilt **2026-07-28**.
 
 Everything under [`archive/`](archive/) is historical by definition and is indexed separately in [`archive/README.md`](archive/README.md). Archived docs carry an `ARCHIVED` banner naming their replacement.
 
+| Archived doc | Status | Owner | Archived | What it is |
+|---|---|---|---|---|
+| [`archive/deployment-runbook.md`](archive/deployment-runbook.md) | archived | Dan Browne | 2026-07-28 | EC2-era manual / break-glass AWS deploy runbook. **Do not execute** — it routes to an instance detached from the ALB target group. Kept for its incident history and diagrams. The Fargate-era replacement is unwritten; the gap is named in [`runbooks/README.md`](runbooks/README.md). |
+
+
 Repo root: [`../README.md`](../README.md) · [`../SETUP.md`](../SETUP.md) · [`../CLAUDE.md`](../CLAUDE.md) · [`../AGENTS.md`](../AGENTS.md)
 
 Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **Önder Akkaya** — portfolio math and the rigor gate. **Bogdan Sivochkin** (`mnemonik-dev`) — preferred reviewer for contract changes.
@@ -95,6 +100,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
+| [`runbooks/README.md`](runbooks/README.md) | current | Dan Browne | 2026-07-28 | Index of every runbook, and an explicit list of the runbooks that do **not** exist yet — including the missing Fargate break-glass procedure. |
 | [`runbooks/operations.md`](runbooks/operations.md) | current | Dan Browne | 2026-07-28 | Run the stack, RPC deep-dive, LLM backends, security notes. |
 | [`runbooks/arc-testnet-e2e.md`](runbooks/arc-testnet-e2e.md) | runbook | Dan Browne | — | End-to-end testnet smoke test. |
 | [`runbooks/arc-testnet-e2e-evidence.md`](runbooks/arc-testnet-e2e-evidence.md) | evidence | Önder Akkaya | 2026-05-26 | Replayable on-chain evidence for SPEC-1. |
