@@ -1,8 +1,7 @@
 # Rigor Methods — How Archimedes Stress-Tests Every Strategy
 
-> **Status:** Shipped — all four gates (DSR, PBO, walk-forward OOS, look-ahead audit) are live in [`services/rigor_evaluator.py`](../backend/archimedes/services/rigor_evaluator.py) (canonical) and gate every Tier-1 strategy. 2 Tier-1 strategies pass all four today: **Moreira-Muir 2017** (volatility-managed
-> portfolios) and **Moskowitz-Ooi-Pedersen 2012** (TSMOM). Faber 2007 does *not* pass —
-> see [`analysis/faber-dsr-finding.md`](analysis/faber-dsr-finding.md).
+> **Status:** Shipped — all four gates (DSR, PBO, walk-forward OOS, look-ahead audit) are live in [`services/rigor_evaluator.py`](../backend/archimedes/services/rigor_evaluator.py) (canonical) and gate every Tier-1 strategy. How many strategies pass all four is not recorded in this document — the live rigor gate is the only authority on which strategies currently pass; see the PASS/CANDIDATE badges in the app and `backend/archimedes/services/live_rigor_gate.py`.
+> Faber 2007 does *not* pass — see [`analysis/faber-dsr-finding.md`](analysis/faber-dsr-finding.md).
 >
 > **Audience:** Judges, team members, and anyone reading a strategy passport who is not a quant.
 > **Author:** Önder Akkaya (Lead Quant)

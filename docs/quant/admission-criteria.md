@@ -144,10 +144,12 @@ Mechanics:
    strategy's PBO `≥ 0.5` (or any other gate below threshold) returns it to
    `CANDIDATE`. Validation is a *standing* property, not a one-time stamp.
 
-Today **2 of the library's strategies pass all four gates** (Faber 2007 SMA200
-timing and Moreira–Muir 2017 volatility-managed), per
-[`../rigor-methods.md`](../rigor-methods.md). The rest remain honest CANDIDATEs with
-their failing gate shown openly.
+How many of the library's strategies pass all four gates is deliberately not written
+down here — the live rigor gate is the only authority on which strategies currently pass; see the PASS/CANDIDATE badges in the app and `backend/archimedes/services/live_rigor_gate.py`.
+The rest remain honest CANDIDATEs with their failing gate shown openly. (This
+paragraph previously named Faber 2007 as a passing strategy, contradicting
+[`../analysis/faber-dsr-finding.md`](../analysis/faber-dsr-finding.md) and
+[`../rigor-methods.md`](../rigor-methods.md), which both record it as failing.)
 
 ---
 

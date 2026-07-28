@@ -182,7 +182,7 @@ Two commands matter:
 
 ```bash
 # Log a product / feature update — call after merging anything meaningful
-arc-canteen update-product "Live testnet deploy — 10 contracts on Arc + LLM-driven agentic advisor + 2 Tier-1 strategies"
+arc-canteen update-product "Live testnet deploy — contracts on Arc + LLM-driven agentic advisor + rigor-gated strategy library"
 
 # Log a traction event — call every time you talk to a potential user or onboard someone
 arc-canteen update-traction "Shared live demo URL with two crypto-native users — first external traffic on the EC2 deploy"

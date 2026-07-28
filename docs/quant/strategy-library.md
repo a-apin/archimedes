@@ -18,8 +18,8 @@ Each carries an academic or practitioner anchor, a `REGIME_TAG`
 (`bull` / `bear` / `regime_neutral`), and the honest paper-vs-implementation
 delta. Admission to Tier 1 still requires passing the four-gate
 [`admission-criteria.md`](admission-criteria.md); a paper anchor is necessary, not
-sufficient. Today **Moreira–Muir 2017** (volatility-managed portfolios) and **Moskowitz–Ooi–Pedersen 2012** (TSMOM) pass all four gates; the rest are honest `CANDIDATE`s with their
-failing gate shown openly. **Faber 2007 does not pass** — its walk-forward OOS Sharpe
+sufficient. Which strategies pass all four gates is not recorded here — the live rigor gate is the only authority on which strategies currently pass; see the PASS/CANDIDATE badges in the app and `backend/archimedes/services/live_rigor_gate.py`; the rest are honest
+`CANDIDATE`s with their failing gate shown openly. **Faber 2007 does not pass** — its walk-forward OOS Sharpe
 ratio is 0.612, under the 0.90 gate (see
 [`../analysis/faber-dsr-finding.md`](../analysis/faber-dsr-finding.md)).
 
@@ -58,8 +58,8 @@ carry crash risk at trend reversals.
   positions across many assets; the v1 adaptation is long/flat on a narrower
   universe, so the paper-claimed-vs-actual delta is surfaced in the methodology
   block. *(See file header.)*
-- **Status:** one of the two strategies that **passes all four admission gates** today
-  (see [`../analysis/faber-dsr-finding.md`](../analysis/faber-dsr-finding.md)).
+- **Status:** per the live rigor gate (see
+  [`../analysis/faber-dsr-finding.md`](../analysis/faber-dsr-finding.md)).
 
 ### Antonacci (2014) — Dual Momentum
 - **File:** `antonacci_2014_dual_momentum.py`
@@ -355,8 +355,7 @@ anomaly to chase.
 - **Anomaly:** hold the asset while price is above its 200-day SMA; move to cash
   (T-bills) when it falls below — a simple trend filter that cuts drawdowns.
 - **Regime:** `bull` (works in trending markets).
-- **Status:** one of the two strategies that **passes all four admission gates**
-  today.
+- **Status:** per the live rigor gate.
 
 ---
 
@@ -407,9 +406,9 @@ against, and the defensive floor.
 - **`paper_claimed_*` null ≠ a weak strategy.** It means the source reported
   t-stats/win-rates rather than a mechanical Sharpe/CAGR; the number we stand behind
   is always the post-gate one on our own data.
-- **A paper anchor does not equal Tier-1 admission.** Only **Moreira–Muir 2017** (volatility-managed portfolios) and **Moskowitz–Ooi–Pedersen 2012** (TSMOM) pass all four gates today;
-  the rest — Faber 2007 included — are honest `CANDIDATE`s with their failing gate
-  visible. See [`admission-criteria.md`](admission-criteria.md).
+- **A paper anchor does not equal Tier-1 admission.** Which strategies pass all four gates is
+  reported by the live gate, not by this file; Faber 2007 is among those that do not.
+  Everything that has not passed is an honest `CANDIDATE` with its failing gate visible. See [`admission-criteria.md`](admission-criteria.md).
 - **Regime tags drive sizing, not just labeling.** A `bull`-tagged strategy is sized
   down by the regime-conditional γ multiplier in `risk_off`/`crisis` regimes (see
   [`methodology.md`](methodology.md) §10).

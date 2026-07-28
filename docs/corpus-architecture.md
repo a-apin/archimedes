@@ -193,8 +193,8 @@ point at specific papers that informed it. **That's the rigor wedge externalized
 - [x] Persistent named volume `archimedes-corpus-artifact` mounted in compose
 - [x] Rigor gate (DSR + PBO + Kelly + MVO + look-ahead audit) on every generated
       strategy
-- [x] 2 Tier-1 strategies passing all four gates (Moreira-Muir 2017 vol-managed,
-      Moskowitz-Ooi-Pedersen 2012 TSMOM). Faber 2007 SMA200 does *not* pass.
+- [x] Four-gate admission enforced on the curated library. How many strategies
+      currently pass is not recorded here — the live rigor gate is the only authority on which strategies currently pass; see the PASS/CANDIDATE badges in the app and `backend/archimedes/services/live_rigor_gate.py`.
 
 ### Scaffolded but not running yet
 
