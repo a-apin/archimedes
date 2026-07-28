@@ -67,6 +67,13 @@ export default function RigorExplainer() {
               where SR₀ = expected best Sharpe of N iid trials, γ₃ = skewness, γ₄ = raw kurtosis
             </span>
           </div>
+          <div className="caption" style={{ marginTop: 10, color: 'var(--text-3)', fontSize: '0.78rem', lineHeight: 1.5 }}>
+            <strong>N is self-contained per strategy.</strong> Curated library strategies run
+            with N = 1 — each is graded on its own Sharpe, so SR₀ collapses to its N = 1 minimum
+            and no multiple-testing deflation is applied. N &gt; 1 only applies to a strategy
+            that comes out of a multi-candidate generation pool, where N counts every candidate
+            actually tried in that round.
+          </div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -85,8 +92,9 @@ export default function RigorExplainer() {
               Moreira-Muir: DSR = 0.55, p = 0.995
             </div>
             <div className="caption" style={{ color: 'var(--text-3)' }}>
-              The market's volatility-managed premium is statistically real, even after
-              correcting for 4 candidate strategies tested.
+              Graded on its own Sharpe (N = 1, undeflated) with a standard error robust to
+              non-normality — the market's volatility-managed premium clears the bar without
+              relying on a multiple-testing correction.
             </div>
           </div>
         </div>

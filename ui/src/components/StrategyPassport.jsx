@@ -447,11 +447,22 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
           <Metric label="Trades" value={s.total_trades != null ? s.total_trades : '—'} hint="executed in backtest" />
         </div>
         <p className="caption mt-3 leading-relaxed text-[var(--text-3)]">
-          The Deflated Sharpe Ratio corrects the realized Sharpe for multiple-testing
-          inflation (Bailey & López de Prado 2014). PBO estimates how much of the
-          in-sample Sharpe is overfit (Bailey et al. 2014). OOS Sharpe is the
-          chronological out-of-sample number. A strategy passes the rigor gate only
-          when all three signals align.
+          {s.num_trials_in_selection != null && s.num_trials_in_selection > 1 ? (
+            <>
+              The Deflated Sharpe Ratio corrects the realized Sharpe for multiple-testing
+              inflation across the {s.num_trials_in_selection} candidates in this strategy's
+              own selection pool (Bailey & López de Prado 2014).
+            </>
+          ) : (
+            <>
+              This strategy is graded on its own Sharpe (num_trials = 1 — no multiple-testing
+              correction applied); the Deflated Sharpe Ratio here still uses a standard error
+              robust to non-normality (Bailey & López de Prado 2014).
+            </>
+          )}{' '}
+          PBO estimates how much of the in-sample Sharpe is overfit (Bailey et al. 2014). OOS
+          Sharpe is the chronological out-of-sample number. A strategy passes the rigor gate
+          only when all three signals align.
         </p>
 
         {/* Return source (T2.5) — the rigor gate says whether the edge survives;

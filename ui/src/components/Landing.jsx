@@ -1,4 +1,40 @@
+import { useEffect, useState } from 'react'
+import { apiGet } from '../api'
+
+// Core singleton contract fields actually returned by GET /api/config/contracts
+// today (ConfigService.get_contract_addresses). `usdc` is Arc-native (Circle's,
+// not ours) so it is deliberately excluded from this count — see
+// ARCHITECTURE-MAP.md §1.7. strategy_registry / payment_splitter are NOT in the
+// live response yet (a known backend gap), so the derived count below is the
+// honest floor, not the full architectural singleton count.
+const CORE_CONTRACT_FIELDS = [
+  'synthetic_factory',
+  'amm_router',
+  'vault_factory',
+  'reasoning_trace_registry',
+  'asset_registry',
+  'price_oracle',
+]
+
 export default function Landing({ onNavigate }) {
+  // Live contract census — never hardcode a contract count (it has shipped
+  // wrong 8 different ways across this repo). Fetched once on mount; an
+  // honest "—" / unavailable state renders on failure, never a stale number.
+  const [contracts, setContracts] = useState(null)
+  const [contractsError, setContractsError] = useState(false)
+
+  useEffect(() => {
+    apiGet('/api/config/contracts')
+      .then(setContracts)
+      .catch(() => setContractsError(true))
+  }, [])
+
+  const coreCount = contracts ? CORE_CONTRACT_FIELDS.filter(f => contracts[f]).length : null
+  const synthCount = contracts?.synthetics ? Object.keys(contracts.synthetics).length : null
+  const poolCount = contracts?.pools ? Object.keys(contracts.pools).length : null
+  const totalLive =
+    coreCount != null && synthCount != null && poolCount != null ? coreCount + synthCount + poolCount : null
+
   return (
     <div className="min-h-screen bg-[var(--canvas)] overflow-x-hidden font-[var(--sans)]">
 
@@ -47,7 +83,7 @@ export default function Landing({ onNavigate }) {
             Every rebalance decision gets a keccak256 hash anchored on Arc.
             Verify the agent's reasoning trail — before and after each trade.
           </FeatureCard>
-          <FeatureCard icon="bot" title="Autonomous Agent" tag="Live · minute-level ticks">
+          <FeatureCard icon="bot" title="Autonomous Agent" tag="Live · scheduled rebalance loop">
             The agent evaluates paper-grounded strategies against live market data,
             detects regime shifts, and rebalances autonomously — USDC on Arc.
           </FeatureCard>
@@ -65,7 +101,14 @@ export default function Landing({ onNavigate }) {
           {[
             { name: 'Arc',         desc: 'EVM · Sub-second finality' },
             { name: 'Circle',      desc: 'USDC · Wallets · CCTP' },
-            { name: 'Foundry',     desc: '11 deployed contracts' },
+            {
+              name: 'Foundry',
+              desc: contractsError
+                ? 'live count unavailable'
+                : totalLive != null
+                  ? `${totalLive} live instances`
+                  : '…',
+            },
             { name: 'AWS Bedrock', desc: 'Nova Micro · Strategy extraction · Reasoning' },
             { name: 'React + viem',desc: 'Frontend · Wallet UX' },
             { name: 'FastAPI',     desc: 'Backend · Agent runner' },
@@ -86,7 +129,7 @@ export default function Landing({ onNavigate }) {
         </p>
         <div className="lg-grid-4">
           {[
-            { n: '01', title: 'Deflated Sharpe Ratio',              desc: 'Bailey & López de Prado 2014 — corrects for multiple-testing inflation' },
+            { n: '01', title: 'Deflated Sharpe Ratio',              desc: 'Bailey & López de Prado 2014 — 90% one-sided confidence, robust standard errors; deflated against candidate-pool size where one exists' },
             { n: '02', title: 'Probability of Backtest Overfitting', desc: 'Bailey/Borwein/López de Prado/Zhu 2014 — detects curve-fitting' },
             { n: '03', title: 'Walk-Forward OOS Sharpe',             desc: 'Rolling window validation with no in/out-of-sample cliff' },
             { n: '04', title: 'Look-Ahead Audit',                    desc: 'Static lint for future-leaking function calls in strategy code' },
@@ -112,10 +155,21 @@ export default function Landing({ onNavigate }) {
             All vault deposits, trades, and redemptions settle in USDC on Arc.
             Native USDC at 0x3600…0000 on Arc testnet.
           </FeatureCard>
-          <FeatureCard icon="scroll-text"       title="Smart Contracts on Arc"       tag="11 Contracts · Foundry">
-            11 Solidity contracts deployed: Vault, VaultFactory, SyntheticVault,
-            SyntheticFactory, SyntheticToken, AMMPool, AMMRouter, AssetRegistry,
-            PriceOracle, StrategyRegistry, ReasoningTraceRegistry.
+          <FeatureCard
+            icon="scroll-text"
+            title="Smart Contracts on Arc"
+            tag={contractsError ? 'Foundry' : totalLive != null ? `${totalLive} live · Foundry` : 'Foundry'}
+          >
+            {contractsError ? (
+              <>Live contract count unavailable right now — see the Architecture page for the full census.</>
+            ) : totalLive != null ? (
+              <>
+                {coreCount} core contracts, {synthCount} synthetic assets, and {poolCount} AMM pools deployed
+                on Arc — fetched live from the contract census, not hardcoded.
+              </>
+            ) : (
+              <>Loading the live contract census…</>
+            )}
           </FeatureCard>
         </div>
       </LSection>
