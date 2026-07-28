@@ -481,23 +481,40 @@ async def list_strategies(
     from archimedes.models.strategy_generators import wallet_can_publish
 
     status_filter = StrategyStatus(status) if status else None
-    strats = strategy_provider().list_strategies(status=status_filter)
-    total = len(strats)
-    # Grade over the FULL library, not the paginated window (#1173). The detail
-    # route grades via _library_cohort_including() — i.e. the whole library — so
-    # scoring the list over `window` made the same strategy's badge depend on
-    # which page it happened to land on: a short window can fall under
-    # MIN_LIBRARY_N_FOR_PBO_GATING (criterion 4 skipped) and the CSCV/PBO value
-    # itself shifts with the cohort. Verified live before this fix: strategy
-    # d90b357a…4bbd graded False in a 5-item window but True in the full-library
-    # view and True on its own detail/passport route — the exact list-vs-detail
-    # contradiction dfa8fc1 was written to prevent, and which the docstring
-    # above still asserts cannot happen.
+
+    # Grade over the FULL library — never a filtered or paginated subset (#1173).
+    # The detail route grades via _library_cohort_including(), which calls
+    # list_strategies() with NO status filter, so the cohort here must match it
+    # exactly or the same strategy's badge changes depending on how it was
+    # requested. Two distinct ways that broke:
+    #
+    #   1. Pagination. Scoring over `window` made the badge depend on which page
+    #      a strategy landed on: a short window can fall under
+    #      MIN_LIBRARY_N_FOR_PBO_GATING (criterion 4 skipped) and the CSCV/PBO
+    #      value itself shifts with the cohort. Verified live: strategy
+    #      d90b357a…4bbd graded False in a 5-item window but True in the
+    #      full-library view and True on its own detail/passport route.
+    #   2. The `status` filter. Grading `list_strategies(status=...)` graded a
+    #      SUBSET, so `?status=candidate` and `?status=validated` could return
+    #      different verdicts for the same strategy, and both could disagree with
+    #      the passport. Same class of bug as (1), same fix — the filter is a
+    #      display concern and must not reach the cohort.
+    #
+    # Both are the list-vs-detail contradiction dfa8fc1 was written to prevent,
+    # and which this route's docstring asserts cannot happen.
     #
     # Bonus: the cache key (see cohort_key) is derived from the cohort's ids, so
-    # grading the full library also collapses the previous one-cohort-computation
-    # -per-offset (~6s each) into a single shared entry.
-    rigor_results = _live_rigor_results_for_strategies(strats)
+    # grading the full library collapses the previous one-cohort-computation-per
+    # -offset AND per-status-filter (~6s each) into a single shared entry.
+    library = strategy_provider().list_strategies()
+    rigor_results = _live_rigor_results_for_strategies(library)
+
+    # Filter/paginate only AFTER grading. Delegated to the provider rather than
+    # filtered in-process so the `status` semantics stay byte-identical to the
+    # previous behaviour (file-declared status, before the live-gate promotion
+    # overlay — see the docstring note above).
+    strats = strategy_provider().list_strategies(status=status_filter) if status_filter else library
+    total = len(strats)
     window = strats[offset : offset + limit]
     caller = get_verified_wallet(request)
     responses: list[StrategyResponse] = []

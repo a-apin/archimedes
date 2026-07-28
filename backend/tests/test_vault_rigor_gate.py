@@ -180,7 +180,7 @@ def test_assert_empty_list_is_noop():
 
 def test_assert_blocks_if_any_one_fails():
     # All must pass; one failing id blocks the whole deploy.
-    def _status(sid):
+    def _status(sid, cohort_cache=None):
         return (True, sid != "bad")
 
     with patch(f"{V}._strategy_rigor_status", side_effect=_status), pytest.raises(HTTPException) as exc:
@@ -444,3 +444,64 @@ async def test_create_vault_allows_owner_to_deploy_private_strategy():
     body = resp.json()
     assert body["vault_address"] == "0xOwnerDeployedAddress"
     mock_create.assert_awaited_once()  # owner → gate lets it through
+
+
+# ── Cohort map computed once per deploy (#1172 review follow-up) ───────────
+#
+# `verdicts_for_strategies` is UNCACHED: every call re-reads
+# get_all_daily_returns and re-runs a full cohort CSCV/PBO pass (~6s by the
+# route's own measurement). Grading the deploy against the full library — the
+# correctness fix — therefore made a vault bound to k curated strategies pay
+# that k times inside one request. The map must be built at most once.
+
+
+def test_deploy_gate_computes_cohort_verdicts_once_for_many_strategies():
+    """A 3-strategy deploy triggers exactly ONE verdicts_for_strategies call."""
+    ids = ["s1", "s2", "s3"]
+    cohort = [_Strat(True, sid=i) for i in ids]
+    calls: list[int] = []
+
+    def _verdicts(strategies):
+        calls.append(len(strategies))
+        return {s.id: RigorGateVerdict.passed() for s in strategies}
+
+    with (
+        patch(f"{V}.strategy_provider") as provider,
+        patch(f"{LRG}.verdicts_for_strategies", side_effect=_verdicts),
+    ):
+        provider.return_value.list_strategies.return_value = cohort
+        provider.return_value.get_strategy.side_effect = lambda sid: next(
+            (s for s in cohort if s.id == sid), None
+        )
+        _assert_strategies_pass_rigor(ids)  # must not raise
+
+    assert len(calls) == 1, f"expected 1 cohort computation, got {len(calls)}"
+    assert calls[0] == len(cohort), "and it must be graded over the FULL library"
+
+
+def test_deploy_gate_does_not_cache_a_one_off_cohort():
+    """A strategy MISSING from list_strategies() is graded on a one-off cohort
+    (itself appended). That map must NOT be cached and reused, or a second such
+    strategy would miss the dict, degrade to `pending`, and be wrongly refused."""
+    listed = [_Strat(True, sid="listed")]
+    missing_a = _Strat(True, sid="missing-a")
+    missing_b = _Strat(True, sid="missing-b")
+    by_id = {s.id: s for s in (listed[0], missing_a, missing_b)}
+    seen: list[list[str]] = []
+
+    def _verdicts(strategies):
+        seen.append([s.id for s in strategies])
+        return {s.id: RigorGateVerdict.passed() for s in strategies}
+
+    with (
+        patch(f"{V}.strategy_provider") as provider,
+        patch(f"{LRG}.verdicts_for_strategies", side_effect=_verdicts),
+    ):
+        provider.return_value.list_strategies.return_value = listed
+        provider.return_value.get_strategy.side_effect = by_id.get
+        # Neither unlisted strategy may be refused.
+        _assert_strategies_pass_rigor(["missing-a", "missing-b"])
+
+    assert len(seen) == 2, "each unlisted strategy needs its own cohort"
+    assert seen[0] == ["listed", "missing-a"]
+    assert seen[1] == ["listed", "missing-b"]

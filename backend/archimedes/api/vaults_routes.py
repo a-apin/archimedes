@@ -67,7 +67,7 @@ async def _anchor_strategies_async(strategy_ids: list[str]) -> None:
             logger.warning("anchor failed for strategy %s (non-fatal): %s", sanitize_log_value(sid), exc)
 
 
-def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
+def _strategy_rigor_status(strategy_id: str, cohort_cache: dict | None = None) -> tuple[bool, bool]:
     """``(found, passes_rigor_gate)`` for a strategy id, resolved across the curated
     provider AND the generated ``strategy_passports`` table — the same two sources
     ``GET /api/strategies/{id}`` uses. Server-side source of truth for the deploy
@@ -76,6 +76,13 @@ def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
     Fail-closed: if the DB lookup raises (cannot verify a generated strategy), the
     strategy is reported as not-found so the caller refuses the deploy rather than
     waving through an unverifiable one.
+
+    ``cohort_cache`` (optional) is a caller-owned dict used to compute the curated
+    full-library verdict map at most ONCE per request. ``verdicts_for_strategies``
+    is uncached and does a fresh ``get_all_daily_returns`` read plus a full cohort
+    CSCV/PBO pass on every call (~6s), so a vault bound to k curated strategies
+    otherwise paid that k times inside a single deploy request. Only the canonical
+    full-library map is ever cached — see the in-cohort guard below.
     """
     strat = strategy_provider().get_strategy(strategy_id)
     if strat is not None:
@@ -97,9 +104,21 @@ def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
 
         try:
             cohort = list(strategy_provider().list_strategies())
-            if not any(getattr(x, "id", None) == strategy_id for x in cohort):
-                cohort.append(strat)
-            verdict = verdicts_for_strategies(cohort).get(strategy_id, RigorGateVerdict.pending())
+            in_cohort = any(getattr(x, "id", None) == strategy_id for x in cohort)
+            # Reuse the cached map ONLY for a strategy that is genuinely in the
+            # library list. A strategy missing from it needs `strat` appended,
+            # which yields a different (one-off) cohort — caching that map would
+            # let a later missing strategy miss the dict and silently degrade to
+            # `pending` → fail-closed → a spurious "not passed the rigor gate".
+            if in_cohort and cohort_cache is not None and "verdicts" in cohort_cache:
+                verdicts = cohort_cache["verdicts"]
+            else:
+                if not in_cohort:
+                    cohort.append(strat)
+                verdicts = verdicts_for_strategies(cohort)
+                if in_cohort and cohort_cache is not None:
+                    cohort_cache["verdicts"] = verdicts
+            verdict = verdicts.get(strategy_id, RigorGateVerdict.pending())
         except Exception:
             # Fail closed, consistent with this function's contract.
             logger.exception("live rigor verdict failed for %s — failing closed", sanitize_log_value(strategy_id))
@@ -283,6 +302,9 @@ def _assert_strategies_pass_rigor(
     # level 1, so no live per-level ladder computation is needed. This also keeps
     # the default deploy path unchanged for callers that don't opt into strictness.
     if level <= STRICTEST_LEVEL:
+        # Request-scoped: the curated full-library verdict map is computed at most
+        # once for this deploy, not once per strategy_id (see _strategy_rigor_status).
+        cohort_cache: dict = {}
         for sid in strategy_ids:
             # Ownership gate (#1073): `_strategy_rigor_status` below resolves the
             # passport badge without regard to ownership, so a private/unpublished
@@ -296,7 +318,7 @@ def _assert_strategies_pass_rigor(
                 if visible is False:
                     raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
 
-            found, passes = _strategy_rigor_status(sid)
+            found, passes = _strategy_rigor_status(sid, cohort_cache=cohort_cache)
             if not found:
                 raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
             if not passes:
