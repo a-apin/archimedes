@@ -210,13 +210,14 @@ jobs:
     # and leaked-secret regressions (detect-secrets) as a PR-comment table so
     # the signal is visible without gating the build.
     #
-    # Informational first; promote pip-audit/npm-audit to hard-block once the
-    # open CVE backlog (starlette/urllib3/pypdf) is cleared. Until then, a red
-    # row here is a triage nudge, not a wall.
+    # Informational first; promote dependency audits to hard-block once known
+    # CVE backlog is cleared. Until then, a red row is a triage nudge, not a wall.
     name: Supply chain — report table
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v7
         with:
@@ -232,21 +233,18 @@ jobs:
         id: pip_audit
         continue-on-error: true
         run: |
-          pip install --quiet pip-audit
-          # --format json emits a machine-readable report; --progress-spinner=off
-          # keeps the CI log clean. continue-on-error + `|| true` mean a non-zero
-          # exit (vulnerabilities found) never fails the step.
-          pip-audit -r backend/requirements.txt --format json --progress-spinner=off > /tmp/pip_audit.json 2>/dev/null || true
+          pip install --quiet pip-audit==2.10.1
+          # Current Vyper already contains both fixes; advisory ranges falsely
+          # include 0.4.3. See backend/requirements.txt for full rationale.
+          pip-audit -r backend/requirements.txt --format json --progress-spinner=off \
+            --ignore-vuln PYSEC-2023-142 --ignore-vuln PYSEC-2025-33 \
+            > /tmp/pip_audit.json 2>/dev/null || true
           python3 - <<'EOF'
           import json, os
           # pip-audit JSON shape: {"dependencies": [{"name": ..., "vulns": [...]}, ...]}.
-          # Count total vulnerability entries across all dependencies.
-          try:
-              data = json.load(open("/tmp/pip_audit.json"))
-              deps = data.get("dependencies", data) if isinstance(data, dict) else data
-              count = sum(len(d.get("vulns", [])) for d in deps)
-          except Exception:
-              count = 0
+          data = json.load(open("/tmp/pip_audit.json"))
+          deps = data.get("dependencies", data) if isinstance(data, dict) else data
+          count = sum(len(d.get("vulns", [])) for d in deps)
           out = open(os.environ["GITHUB_OUTPUT"], "a")
           out.write(f"result={'passed' if count == 0 else 'not passed'}\n")
           out.write(f"count={count}\n")
@@ -263,11 +261,8 @@ jobs:
           python3 - <<'EOF'
           import json, os
           # npm audit --json shape: {"metadata": {"vulnerabilities": {"total": N, ...}}}.
-          try:
-              data = json.load(open("/tmp/npm_audit.json"))
-              count = data.get("metadata", {}).get("vulnerabilities", {}).get("total", 0)
-          except Exception:
-              count = 0
+          data = json.load(open("/tmp/npm_audit.json"))
+          count = data.get("metadata", {}).get("vulnerabilities", {}).get("total", 0)
           out = open(os.environ["GITHUB_OUTPUT"], "a")
           out.write(f"result={'passed' if count == 0 else 'not passed'}\n")
           out.write(f"count={count}\n")
@@ -276,38 +271,35 @@ jobs:
       - name: detect-secrets
         id: detect_secrets
         continue-on-error: true
-        run: |
-          pip install --quiet detect-secrets
-          # Re-scan the tree against the audited baseline. New findings (lines
-          # not already in .secrets.baseline) surface as added results in the
-          # scan output; we diff the result set against the baseline to report
-          # whether anything new leaked.
-          detect-secrets scan --baseline .secrets.baseline > /tmp/secrets_scan.json 2>/dev/null || true
-          python3 - <<'EOF'
-          import json, os
+        run: |  # pragma: allowlist secret
+          pip install --quiet detect-secrets==1.5.0
+          base_sha="${{ github.event.pull_request.base.sha || github.event.before }}"
+          mapfile -d '' changed < <(
+            git diff --diff-filter=ACMR --name-only -z "$base_sha" "$GITHUB_SHA"
+          )
 
-          def result_keys(report):
-              # results maps "path" -> [ {line_number, type, ...}, ... ].
-              keys = set()
-              for path, findings in (report.get("results") or {}).items():
-                  for f in findings:
-                      keys.add((path, f.get("line_number"), f.get("type")))
-              return keys
+          status=0
+          if ((${#changed[@]})); then
+            detect-secrets-hook --json --baseline .secrets.baseline \
+              --exclude-files '(^|/)(package-lock\.json|\.secrets\.baseline)$' \
+              "${changed[@]}" > /tmp/secrets_scan.json || status=$?
+          fi
+          if ((status > 1)); then
+            exit "$status"
+          fi
 
-          new_found = 0
-          try:
-              baseline = json.load(open(".secrets.baseline"))
-              scan = json.load(open("/tmp/secrets_scan.json"))
-              # Findings present in the fresh scan but absent from the baseline
-              # are newly-introduced potential secrets.
-              new_keys = result_keys(scan) - result_keys(baseline)
-              new_found = len(new_keys)
-          except Exception:
-              new_found = 0
-          out = open(os.environ["GITHUB_OUTPUT"], "a")
-          out.write(f"result={'passed' if new_found == 0 else 'not passed'}\n")
-          out.write(f"count={new_found}\n")
+          new_found=0
+          if ((status == 1)); then
+            new_found=$(python3 - <<'EOF'
+          import json
+
+          report = json.load(open("/tmp/secrets_scan.json"))
+          print(sum(len(findings) for findings in report.get("results", {}).values()))
           EOF
+          )
+          fi
+          echo "result=$([[ $new_found == 0 ]] && echo passed || echo 'not passed')" >> "$GITHUB_OUTPUT"
+          echo "count=$new_found" >> "$GITHUB_OUTPUT"
 
       - name: Post or update PR comment
         if: github.event_name == 'pull_request'
@@ -327,14 +319,14 @@ jobs:
               marker,
               '## Supply Chain (informational)',
               '',
-              'Non-blocking. Promote pip-audit/npm-audit to hard-block once the open',
-              'CVE backlog (starlette/urllib3/pypdf) is cleared.',
+              'Non-blocking. Promote dependency audits to hard-block once known',
+              'CVE backlog is cleared.',
               '',
               '| Check | Status | Count |',
               '|---|---|---|',
               `| pip-audit (python deps) | ${pipResult} | ${pipCount} |`,
               `| npm audit (frontend prod deps) | ${npmResult} | ${npmCount} |`,
-              `| detect-secrets (new secrets) | ${secResult} | ${secCount} |`,
+              `| detect-secrets (changed files) | ${secResult} | ${secCount} |`,
             ].join('\n');
 
             const { data: comments } = await github.rest.issues.listComments({
