@@ -11,6 +11,8 @@ fire-and-forget pipeline task is patched out so no LLM/network call happens.
 
 from __future__ import annotations
 
+import gc
+import warnings
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -31,6 +33,11 @@ def _mock_store() -> MagicMock:
 def _start(model_value):
     """POST /start with the given model field; return (status, captured_payload)."""
     store = _mock_store()
+
+    def _close_background_coroutine(coro):
+        coro.close()
+        return MagicMock()
+
     body = {
         "brief": {"intent": "low-vol treasury alternative with crypto upside", "risk_appetite": "moderate"},
     }
@@ -39,8 +46,8 @@ def _start(model_value):
 
     with (
         patch("archimedes.api.generate_routes.get_job_store", return_value=store),
-        # Patch the background task factory so the pipeline never actually runs.
-        patch("archimedes.api.generate_routes.asyncio.create_task", return_value=MagicMock()),
+        # Close the coroutine handed to the mock so it cannot leak a never-awaited warning.
+        patch("archimedes.api.generate_routes.asyncio.create_task", side_effect=_close_background_coroutine),
     ):
         resp = _client().post("/api/generate/start", json=body)
     captured = store.enqueue.call_args.kwargs["payload"] if store.enqueue.call_args else {}
@@ -79,3 +86,12 @@ def test_absent_model_unchanged_behavior() -> None:
     resp, payload = _start(None)
     assert resp.status_code == 202, resp.text
     assert payload.get("model") is None
+
+
+def test_start_mock_does_not_leak_pipeline_coroutine() -> None:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _start("zai.glm-4.7-flash")
+        gc.collect()
+
+    assert not [warning for warning in caught if "was never awaited" in str(warning.message)]
