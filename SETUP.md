@@ -2,7 +2,7 @@
 
 This doc walks you from a fresh clone to a working local Archimedes stack. Works on **macOS, Linux, and Windows**. Once you can run [`docker compose up -d --build`](#step-2--spin-up-the-stack-recommended-path) and see services pass their health checks, you're done — everything else here is optional polish.
 
-> **Status:** Day-10 (2026-05-22). Lead: Chuan (infra); cross-platform support: Marten (Windows / WSL2), Daniel R. (Linux), Dan + Chuan + Önder (macOS).
+> **Status:** Day-10 (2026-05-22); owner review 2026-07-28. Owner: Dan Browne (infra). Platform coverage is best-effort: macOS is the only routinely exercised path.
 
 ## Prerequisites
 

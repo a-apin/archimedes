@@ -2,7 +2,7 @@
 
 Running, configuring, and operating the Archimedes stack — local and production. For first-time setup, read [`SETUP.md`](../../SETUP.md) first.
 
-> **Status:** Day-10 (2026-05-22). Lead: Chuan.
+> **Status:** Day-10 (2026-05-22); re-verified 2026-07-28. Owner: Dan Browne.
 
 ## Contents
 
