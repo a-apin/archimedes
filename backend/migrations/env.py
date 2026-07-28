@@ -39,6 +39,14 @@ if str(_BACKEND_DIR) not in sys.path:
 # list exactly (including the two models init_db() imports only inline for
 # the same reason), so the two never drift apart.
 from archimedes.db import DATABASE_URL  # noqa: E402
+from archimedes.models.account import (  # noqa: E402
+    AuthAccount,
+    AuthSession,
+    AuthUser,
+    AuthVerification,
+    LinkedWallet,
+    WalletLinkChallenge,
+)
 from archimedes.models.backtest_fixtures_store import StrategyBacktestFixture  # noqa: E402
 from archimedes.models.backtest_store import BacktestResultRecord  # noqa: E402
 from archimedes.models.chat import Base  # noqa: E402
@@ -70,6 +78,10 @@ from archimedes.models.user_profile import UserProfile  # noqa: E402
 # entrypoint, never ``import *``-ed, so ``__all__`` has no other effect.)
 __all__ = [
     "DATABASE_URL",
+    "AuthAccount",
+    "AuthSession",
+    "AuthUser",
+    "AuthVerification",
     "BacktestResultRecord",
     "Base",
     "ControlledWallet",
@@ -77,6 +89,7 @@ __all__ = [
     "IdentityEvent",
     "KGEntity",
     "KGRelation",
+    "LinkedWallet",
     "MarketplaceAgent",
     "PaperRecord",
     "PassportPaperRef",
@@ -92,6 +105,7 @@ __all__ = [
     "SubscriberTickLog",
     "UserProfile",
     "WalletIdentity",
+    "WalletLinkChallenge",
     "run_migrations_offline",
     "run_migrations_online",
     "target_metadata",
