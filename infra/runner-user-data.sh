@@ -167,8 +167,19 @@ chmod 700 /opt/archimedes-runners/ecr-login.sh
 #   - pull the SAME archimedes-backend image (never build on-box)
 #   - refresh secrets from SSM on every (re)start (ExecStartPre)
 #   - pass ONLY static, non-redeploy-variable config as `-e` flags
-#     (AWS_REGION, ORACLE_INTERVAL_SECONDS/AGENT_INTERVAL_SECONDS,
-#     AGENT_DRY_RUN). Every mutable ARC_*_ADDRESS contract address comes from
+#     (AWS_REGION, ORACLE_INTERVAL_SECONDS/AGENT_INTERVAL_SECONDS).
+#     AGENT_DRY_RUN is deliberately NOT an `-e` flag: it is a funds-BEHAVIOUR
+#     switch, and `docker run -e` overrides `--env-file`, so hardcoding it here
+#     would make it unchangeable in practice — `aws_instance.runner` carries
+#     `lifecycle.ignore_changes = [ami, user_data]` (runner_ec2.tf), so whatever
+#     this file says at FIRST BOOT is baked in for the life of the instance.
+#     Sourcing it from SSM instead means Dan flips dry-run -> live with
+#     `setup-ssm-secrets.sh --apply` + `systemctl restart archimedes-agent`,
+#     with no instance replacement. Seed it as "true" and only flip to "false"
+#     after a dry-run smoke pass. If the SSM param is absent the app default
+#     applies (agent_runner.py: AGENT_DRY_RUN defaults to "false"), so ALWAYS
+#     seed it explicitly before the agent has working credentials.
+#     Every mutable ARC_*_ADDRESS contract address comes from
 #     the SSM-sourced --env-file instead — NEVER as an `-e` flag, which would
 #     override the env-file and re-hardcode a soon-to-be-stale address (see
 #     the fetch-secrets.sh preamble above for the full rationale).
@@ -235,7 +246,6 @@ ExecStart=/usr/bin/docker run --rm --name archimedes-agent \
   --env-file /opt/archimedes-runners/runner.env \
   -e AWS_REGION=${aws_region} \
   -e AGENT_INTERVAL_SECONDS=300 \
-  -e AGENT_DRY_RUN=false \
   --log-driver=awslogs \
   --log-opt awslogs-region=${aws_region} \
   --log-opt awslogs-group=${log_group_name} \

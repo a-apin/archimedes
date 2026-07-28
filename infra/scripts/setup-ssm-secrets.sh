@@ -52,6 +52,16 @@ PARAMS=(
   ARC_REASONING_TRACE_REGISTRY_ADDRESS # ReasoningTraceRegistry — oracle + agent runner (fetch-secrets.sh)
   ARC_STRATEGY_REGISTRY_ADDRESS       # StrategyRegistry — changes at every contract redeploy (T3.2), so SSM-sourced, not hardcoded
   ARC_PAYMENT_SPLITTER_ADDRESS        # PaymentSplitter (marketplace payouts) — same rationale
+  # --- Runner behaviour switches (SSM-sourced so they can change without an
+  #     instance replacement — see runner-user-data.sh's systemd-unit preamble) ---
+  AGENT_DRY_RUN                       # "true" = agent computes trades but signs NOTHING on-chain.
+                                      # Funds-behaviour switch for the relocated agent runner. Deliberately
+                                      # NOT a `docker run -e` flag (that would override --env-file and, because
+                                      # aws_instance.runner sets ignore_changes=[user_data], be unchangeable
+                                      # without replacing the box). Seed "true", flip to "false" only after a
+                                      # dry-run smoke pass, then `systemctl restart archimedes-agent`.
+                                      # WARNING: agent_runner.py defaults AGENT_DRY_RUN to "false" when unset,
+                                      # so leaving this unseeded means LIVE trading on first boot.
 )
 # NOTE: VITE_CIRCLE_CLIENT_KEY is a BUILD-TIME secret baked into the UI bundle at
 # `docker compose build` — it lives in the box-local .env (seeded by user-data.sh),
