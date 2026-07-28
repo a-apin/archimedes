@@ -55,4 +55,4 @@ Submodules (reference only, not product code): `submodules/context-arc/` (Circle
 docs — the canonical Arc integration reference), `submodules/KnowledgeBase/` (Dan's paper-analysis
 pipeline — the KB-pipeline reference implementation), `submodules/Linus/` (orchestration priors).
 
-The full component-by-component map with data flows and trust boundaries: `ARCHITECTURE-MAP.md`.
+The full component-by-component map with data flows and trust boundaries: `docs/architecture.md`.

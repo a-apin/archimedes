@@ -4,7 +4,7 @@
 
 | File | What it is |
 |---|---|
-| `ARCHITECTURE-MAP.md` | The comprehensive system map: 9 layers with file paths, 5 data flows (Generate; Deploy+Rebalance w/ commit-reveal; Marketplace; Corpus; SIWE), trust boundaries, deploy topology, and a doc-vs-code disagreement register |
+| `docs/architecture.md` | The comprehensive system map: 9 layers with file paths, 5 data flows (Generate; Deploy+Rebalance w/ commit-reveal; Marketplace; Corpus; SIWE), trust boundaries, deploy topology, and a doc-vs-code disagreement register |
 | `page-design-proposal.md` | The new Architecture page: 12-section structure with **full final-quality draft copy**, visual placement, and implementation notes (incl. the "fetch, don't hardcode" anti-rot rule) |
 | `flow-diagram.svg` | Headline visual: user journey over the technical substrate, off-chain/on-chain trust boundary explicit, commit→trade→reveal loop numbered, Circle/USDC rails tagged, honesty footnotes baked in. Self-contained (own dark background, system fonts only), matches the site palette (`ui/src/App.css` tokens), colorblind-safe accents (gold/sky/emerald + labels) |
 | `flow-diagram.mmd` | Editable mermaid source (fallback / future edits) |
@@ -80,7 +80,7 @@ draft. Markers in the map updated accordingly.
   contract-enforced.
 - `agents/strategy_fusion.py`'s module docstring still describes fusion as flag-gated-OFF
   beside the architect — it's now the heart of the sole pipeline.
-- Full register: `ARCHITECTURE-MAP.md` §9.
+- Full register: `docs/architecture.md` §9.
 
 ## Open questions for Dan
 

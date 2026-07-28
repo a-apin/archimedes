@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../../architecture-redesign/ARCHITECTURE-MAP.md)**
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architecture.md`](../../architecture.md)**
 >
 > The original single-vault architecture spec. Superseded end to end by the architecture map.
 

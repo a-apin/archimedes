@@ -226,10 +226,10 @@ archimedes/
 | Hackathon CLI     | [arc-canteen](https://github.com/the-canteen-dev/ARC-cli) (RPC proxy + telemetry)         |
 | Deployment        | ECS Fargate behind ALB/WAF (build-in-CI → ECR → Fargate); Aurora PostgreSQL + ElastiCache; docker compose = local dev mirror |
 
-Full architecture: [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/architecture-redesign/ARCHITECTURE-MAP.md)
+Full architecture: [`docs/architecture.md`](docs/architecture.md)
 (2026-07-14 system map) with the repo-map figure
-[`docs/architecture-redesign/file-tree.svg`](docs/architecture-redesign/file-tree.svg) and dataflow diagram
-[`docs/architecture-redesign/flow-diagram.svg`](docs/architecture-redesign/flow-diagram.svg);
+[`docs/architecture-redesign/file-tree.svg`](docs/reference/file-tree.svg) and dataflow diagram
+[`docs/architecture-redesign/flow-diagram.svg`](docs/reference/flow-diagram.svg);
 historical lineage: [`docs/design.md`](docs/archive/agora-2026-05/design.md) + [`docs/chuan-architecture-survey.md`](docs/archive/agora-2026-05/chuan-architecture-survey.md).
 
 ## Development workflow

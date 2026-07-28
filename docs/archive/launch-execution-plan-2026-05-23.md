@@ -1,5 +1,5 @@
 > **ARCHIVED 2026-05-26 — historical record. Do not execute.** Current status: see
-> [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../architecture-redesign/ARCHITECTURE-MAP.md).
+> [`docs/architecture.md`](../architecture.md).
 
 # Archimedes Launch Execution Plan
 
@@ -3316,4 +3316,4 @@ copy if any, (4) empty-state copy, (5) error-state copy.
 
 *End of launch execution plan. **The "pick up your assigned Maestro track prompt in § 9"
 instruction is historical and expired — do not act on it.** For current work, see
-[`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../architecture-redesign/ARCHITECTURE-MAP.md).*
+[`docs/architecture.md`](../architecture.md).*

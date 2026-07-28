@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../../architecture-redesign/ARCHITECTURE-MAP.md)**
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architecture.md`](../../architecture.md)**
 >
 > SSH-to-a-t3.medium bootstrap against PostgreSQL 16. Production is ECS Fargate with Aurora PostgreSQL 18.3; nothing here is safe to follow.
 

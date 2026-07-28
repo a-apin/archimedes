@@ -375,7 +375,7 @@ The CLI is two things in one binary:
 
 ## Tech Stack
 
-Refer to [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/architecture-redesign/ARCHITECTURE-MAP.md) for the full table. Headline choices as
+Refer to [`docs/architecture.md`](docs/architecture.md) for the full table. Headline choices as
 they actually shipped (Day 4):
 
 - **Backend:** Python 3.12 / FastAPI / Uvicorn, packaged as `backend/archimedes/` with
@@ -402,7 +402,7 @@ they actually shipped (Day 4):
   [`docs/adr/backtrader-vs-vectorbt-decision-memo.md`](docs/adr/backtrader-vs-vectorbt-decision-memo.md).
   Supersedes `docs/design.md` § 6 ("vectorbt / custom numpy engine"); `design.md`
   is archived in full and the architecture spec is now
-  `docs/architecture-redesign/ARCHITECTURE-MAP.md`. Migration to
+  `docs/architecture.md`. Migration to
   vectorbt is a v2 problem if parameter-sweep speed becomes a constraint.
 - **Smart contracts:** Solidity + Foundry, targeting Arc (EVM-compatible). **12 contract
   sources → 570 live instances on Arc testnet** (full hardened redeploy 2026-07-09, T3.2,
@@ -411,7 +411,7 @@ they actually shipped (Day 4):
   + 281 `SyntheticToken` instances + 281 `AMMPool` instances (router-created, one USDC↔synth
   pool each) + user `Vault`s minted on demand via `VaultFactory`. Census is live at
   `GET /api/config/contracts`. Sources also include `SyntheticVault` (no live instance) —
-  see [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/architecture-redesign/ARCHITECTURE-MAP.md) §1.7.
+  see [`docs/architecture.md`](docs/architecture.md) §1.7.
   ABIs cached in [`contracts/abis/`](contracts/abis/) for backend + UI consumption. (Note:
   `ecosystem-design-spec.md` described `StrategyRegistry → AssetRegistry` as a
   replacement, but in practice both coexist today — the spec-vs-state delta
@@ -1123,7 +1123,7 @@ miss compounds with every visitor.
 
 ## Known risks
 
-Refer to [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/architecture-redesign/ARCHITECTURE-MAP.md) for the technical risk matrix and
+Refer to [`docs/architecture.md`](docs/architecture.md) for the technical risk matrix and
 [`docs/judging-rubric-assessment.md`](docs/archive/agora-2026-05/judging-rubric-assessment.md) for the running
 rubric score. Adding team / coordination risks:
 
@@ -1156,7 +1156,7 @@ rubric score. Adding team / coordination risks:
 
 ## What this file deliberately does not cover
 
-- The full architecture — see [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/architecture-redesign/ARCHITECTURE-MAP.md) (note: the archived `docs/archive/agora-2026-05/design.md` §5.2/§5.3 are
+- The full architecture — see [`docs/architecture.md`](docs/architecture.md) (note: the archived `docs/archive/agora-2026-05/design.md` §5.2/§5.3 are
   superseded history per PR #710; architecture decisions now route to Dan)
 - Pitch deck content — see [`docs/demo-script-pitch-deck-outline.md`](docs/archive/agora-2026-05/demo-script-pitch-deck-outline.md)
 - Competitive landscape, pricing, and business model — **not in this repo.** Competitive

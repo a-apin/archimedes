@@ -172,7 +172,7 @@ The local docker-compose stack runs the same code as the EC2 deployment. To veri
 
 This checks `/health` and asserts: live LLM backend, non-empty corpus (≥10,000 papers), fusion enabled.
 
-Full production infrastructure (ECS Fargate behind an ALB, CloudFront + WAF, Aurora PostgreSQL 18.3, ElastiCache Redis 7.1, CI/CD and Terraform) is documented in [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../architecture-redesign/ARCHITECTURE-MAP.md) and the Terraform under `infra/`. The old `docs/infra-setup.md` is archived and describes a single EC2 box that no longer exists.
+Full production infrastructure (ECS Fargate behind an ALB, CloudFront + WAF, Aurora PostgreSQL 18.3, ElastiCache Redis 7.1, CI/CD and Terraform) is documented in [`docs/architecture.md`](../architecture.md) and the Terraform under `infra/`. The old `docs/infra-setup.md` is archived and describes a single EC2 box that no longer exists.
 
 ## Reporting traction (the 30% rubric weight)
 

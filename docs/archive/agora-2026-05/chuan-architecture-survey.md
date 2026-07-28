@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../../architecture-redesign/ARCHITECTURE-MAP.md)**
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architecture.md`](../../architecture.md)**
 >
 > A point-in-time module survey by an author who left the project on 2026-06-24. Module layout has since changed (agents/ split, services/_deprecated/, architect deleted).
 

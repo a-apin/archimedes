@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../../architecture-redesign/ARCHITECTURE-MAP.md)**
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architecture.md`](../../architecture.md)**
 >
 > Describes a single EC2 box with no ALB, no managed database, no managed Redis and no WAF. All four exist: ECS Fargate behind an ALB, CloudFront + WAF in front, Aurora PostgreSQL 18.3 and ElastiCache Redis 7.1.
 

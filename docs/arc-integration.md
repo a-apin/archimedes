@@ -77,4 +77,4 @@ Or via the canteen CLI: `arc-canteen context sync` (drops a copy into `~/.arc-ca
 - [`SETUP.md`](../SETUP.md) — prerequisites + 5-step install
 - [`docs/runbooks/operations.md`](runbooks/operations.md) — RPC URL deep-dive + LLM backends + security
 - [`docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`](archive/agora-2026-05/ARC-OSS-SHOWCASE.md) — forkable primitives for the Arc OSS Showcase competition
-- [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](architecture-redesign/ARCHITECTURE-MAP.md) — current deployment topology (ECS Fargate + ALB + CloudFront + WAF)
+- [`docs/architecture.md`](architecture.md) — current deployment topology (ECS Fargate + ALB + CloudFront + WAF)

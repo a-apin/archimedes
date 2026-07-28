@@ -1,5 +1,5 @@
 > **ARCHIVED 2026-05-26 — historical record. Do not execute.** Current status: see
-> [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../architecture-redesign/ARCHITECTURE-MAP.md).
+> [`docs/architecture.md`](../architecture.md).
 
 # Launch night operational runbook — overnight 2026-05-23 → 2026-05-24
 
