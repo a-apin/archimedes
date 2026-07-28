@@ -184,7 +184,7 @@ but not for v1 ("ship a curated 5–10 strategies").
   inspection straightforward.
 - **Day 5:** Önder wires the backtest runner to produce `BacktestResult` dataclass output
   per Chuan's design.md § 4.2, with the additional fields from
-  [`strategy-passport-spec.md`](strategy-passport-spec.md) (paper_claimed comparison,
+  [`strategy-passport-spec.md`](../specs/strategy-passport-spec.md) (paper_claimed comparison,
   out_of_sample_sharpe, look_ahead_audit_passed, etc.).
 - **Day 8–9:** The live agent's decision loop is implemented to structurally match the
   backtrader Strategy lifecycle (regime check → strategy selection → next() →

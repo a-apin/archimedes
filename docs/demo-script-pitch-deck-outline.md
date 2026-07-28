@@ -5,7 +5,7 @@
 > update (2026-05-22) atop the 2026-05-19 rewrite to the **locked product spine**
 > ([`user-stories.md`](user-stories.md)) and the **tiered competitive thesis**
 > ([`competitor-landscape.md`](competitor-landscape.md)). The Day-10 deltas — agentic
-> portfolio advisor ([`portfolio_agent.py`](../backend/archimedes/services/portfolio_agent.py))
+> portfolio advisor ([`portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py))
 > picking individual instruments anchored to passports, the stress engine
 > ([`stress_engine.py`](../backend/archimedes/services/stress_engine.py)) with 6
 > canonical shocks, the multi-asset NAV vault (`Vault.totalAssets()` oracle-priced),

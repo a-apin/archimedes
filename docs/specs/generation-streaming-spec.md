@@ -4,7 +4,7 @@
 > [Spine+ v2 plan](./spine-plus-v2-plan.md). Authoritative for Phase 2
 > implementation — the Generate page's SSE protocol.
 >
-> **Lineage:** Wraps [`portfolio_agent.PortfolioAgent`](../../backend/archimedes/services/portfolio_agent.py)
+> **Lineage:** Wraps [`portfolio_agent.PortfolioAgent`](../../backend/archimedes/agents/portfolio_agent.py)
 > per the decision in
 > [`portfolio-constructor-decision-tree.md`](./portfolio-constructor-decision-tree.md).
 > Iterations bounded by `MAX_AGENT_ITERATIONS=12` (Day-10 default).

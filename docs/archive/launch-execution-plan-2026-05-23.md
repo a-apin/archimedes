@@ -1857,7 +1857,7 @@ Goal: ship the **Strategy Passport** to its full architectural promise — multi
 
 **Reference docs:**
 - [docs/diagrams/strategy-passport-architecture.md](../diagrams/strategy-passport-architecture.md) — canonical architecture reference (multi-paper, regime-aware, unified store, on-chain anchor; multiple mermaid diagrams)
-- [docs/specs/strategy-passport-spec.md](strategy-passport-spec.md) — implementation contract (rewritten in T-PE.4 to match the unified architecture)
+- [docs/specs/strategy-passport-spec.md](../specs/strategy-passport-spec.md) — implementation contract (rewritten in T-PE.4 to match the unified architecture)
 - Xia et al. 2026 (arxiv 2605.19337) — protocol critique that motivates R3 reproducibility target
 - Chen et al. 2026 (arxiv 2510.02209, StockBench) — empirical bear-market vulnerability that motivates Layers 1-3 of the bear-strategy architecture
 

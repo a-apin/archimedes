@@ -5,7 +5,7 @@
 > **Status:** Proposal — v1.5, post-hackathon MVP unless trivially droppable into the
 > existing `ReasoningTraceRegistry` work
 > **Prerequisite reading:**
-> [`../agora_project_analysis.md`](../agora_project_analysis.md) § 5.2,
+> [`../agora_project_analysis.md`](../archive/agora_project_analysis.md) § 5.2,
 > [`./strategy-passport-spec.md`](./strategy-passport-spec.md),
 > [`./ecosystem-design-spec.md`](./ecosystem-design-spec.md) § 3.4
 
@@ -254,4 +254,4 @@ That's honesty about what the cryptography buys you.
 - The same pattern in prediction-market resolution: Augur, Realitio, and most
   oracle-based markets use commit-reveal for honest reporting.
 - The "trace existed at T, doesn't prove causation" critique:
-  [`../agora_project_analysis.md`](../agora_project_analysis.md) § 5.2.
+  [`../agora_project_analysis.md`](../archive/agora_project_analysis.md) § 5.2.

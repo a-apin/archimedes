@@ -257,7 +257,7 @@ small enough to commit, fast enough to seed, and rich enough to retrieve.
 ## See also
 
 - [`backend/archimedes/services/corpus_service.py`](../backend/archimedes/services/corpus_service.py) — the seed + intake implementation
-- [`backend/archimedes/services/strategy_fusion.py`](../backend/archimedes/services/strategy_fusion.py) — `load_corpus()` + fusion prompt build
+- [`backend/archimedes/agents/strategy_fusion.py`](../backend/archimedes/agents/strategy_fusion.py) — `load_corpus()` + fusion prompt build
 - [`backend/archimedes/models/corpus_store.py`](../backend/archimedes/models/corpus_store.py) — `PaperRecord` + `CorpusMetaRecord` schemas
 - [`docs/qfin-paper-corpus-seed.md`](archive/qfin-paper-corpus-seed.md) — the original
   seed-curation spec (largely historical now that #97 expanded to 10k via bulk ingest)

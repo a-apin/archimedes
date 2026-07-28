@@ -2,7 +2,7 @@
 
 > **Audience:** strategy engine owner + backend engineers.
 > **Status:** Day-10 update (2026-05-22). The original spec was implemented in
-> [`backend/archimedes/services/strategy_fusion.py`](../../backend/archimedes/services/strategy_fusion.py)
+> [`backend/archimedes/agents/strategy_fusion.py`](../../backend/archimedes/agents/strategy_fusion.py)
 > (650 lines, feature-flagged, DB-first corpus reads with file fallback). **What ships
 > today:** the 3-input fusion engine (`POST /api/strategies/generate`) consuming
 > user brief × live market regime × 10,000-paper corpus → grounded strategy spec.
@@ -40,7 +40,7 @@ contract-review-grade (the `ReasoningTraceRegistry` contract is live — see
 multi-paper fusion would be a load-bearing change to an audited path under hackathon time
 pressure. Instead:
 
-- **Additive.** A new `backend/archimedes/services/strategy_fusion.py`. Nothing imports it
+- **Additive.** A new `backend/archimedes/agents/strategy_fusion.py`. Nothing imports it
   yet; wiring it into a route is a later, separately reviewable step.
 - **Flagged.** `ARCHIMEDES_FUSION_ENABLED` (default OFF). Flag-off is a hard inert path:
   no LLM call, no corpus read, returns a self-describing sentinel.

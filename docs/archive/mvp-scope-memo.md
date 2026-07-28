@@ -23,7 +23,7 @@
 5. **(Day 3 addition) Two-tier marketplace.** Tier 1 = Archimedes-Verified, paper-grounded,
    full agent autonomy, selection-bias-corrected. Tier 2 = community, permissionless,
    opt-in agent features. The single-vault original scope is replaced by VaultFactory
-   per [`specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md).
+   per [`specs/ecosystem-design-spec.md`](../specs/ecosystem-design-spec.md).
 
 These five decisions cascade through every other doc in `docs/`. Treat them as locked
 unless the team explicitly agrees to change one (and updates this memo).
@@ -37,7 +37,7 @@ unless the team explicitly agrees to change one (and updates this memo).
   / +EV / position sizing). Önder's work on the portfolio-math module is structurally the
   RFB 02 mechanic applied inside RFB 04's portfolio construction.
 - **Adjacent showcase:** RFB 06 — Social Trading Intelligence. The strategy-performance
-  leaderboard in the frontend (per Chuan's [`design.md` § 4.2](design.md)) is RFB 06
+  leaderboard in the frontend (per Chuan's [`design.md` § 4.2](../design.md)) is RFB 06
   flavored — users follow top-performing strategies via paper-grounded reasoning traces.
 
 ### Why not the others
@@ -63,7 +63,7 @@ criteria mapping.
 
 Build both Arc-native components:
 
-1. **ArchimedesVault contracts** (per Chuan's [`design.md` § 5.2](design.md)) — user
+1. **ArchimedesVault contracts** (per Chuan's [`design.md` § 5.2](../design.md)) — user
    deposits USDC, agent has rebalance authority, RWA tokens flow through CCTP/Gateway
    between Arc and source chains.
 2. **ReasoningTraceRegistry contract** — every agent decision is hashed and anchored on
@@ -92,7 +92,7 @@ The architecture is clean:
 
 - The two contracts are **independent** — the vault doesn't need to know about the trace
   registry, and vice versa. Either can ship without the other; failure modes are isolated.
-- The contracts are **small** — Chuan's [`design.md` § 5.2](design.md) sketches both at
+- The contracts are **small** — Chuan's [`design.md` § 5.2](../design.md) sketches both at
   under 10 functions total. Each is a 1–2 day Solidity build with thorough testing.
 - The off-chain integration is **scoped per Circle tool** — Wallets and Paymaster are
   routine; CCTP/Gateway are the harder integrations but well-documented.
@@ -128,7 +128,7 @@ But the plan is: ship both.
   bioinformatics — he is structurally well-equipped to evaluate published research for
   methodology rigor. The seed corpus benefits from his read.
 - **Curation closes the "what if the LLM-extracted strategy is wrong" risk** Chuan flagged
-  in [`design.md` § 10](design.md) — human validation gate.
+  in [`design.md` § 10](../design.md) — human validation gate.
 
 ### Where the arxiv pipeline goes
 
@@ -158,7 +158,7 @@ and the per-paper rationale. Headline criteria for a paper to make the v1 librar
 ## Day 3 updates (2026-05-13)
 
 Two new commitments were locked on Day 3, prompted by Chuan's ecosystem-design pivot
-([`specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md)) and Dan's red-team
+([`specs/ecosystem-design-spec.md`](../specs/ecosystem-design-spec.md)) and Dan's red-team
 synthesis ([`agora_project_analysis.md`](agora_project_analysis.md)). Both are now
 treated as locked alongside the original three decisions.
 
@@ -179,7 +179,7 @@ Prado & Zhu (2014) showed in-sample-optimal strategies frequently underperform t
 median under realistic conditions. Either failure mode produces a "validated" library
 full of curve-fit artifacts. Applying the textbook corrections — and surfacing the
 results — is the single change that turns the analysis-doc critique from a *risk* into
-a *differentiator*. See [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md)
+a *differentiator*. See [`specs/selection-bias-corrections-spec.md`](../specs/selection-bias-corrections-spec.md)
 for Önder's implementation contract.
 
 ### Decision 5 — Two-tier marketplace
@@ -228,7 +228,7 @@ pitch dies without them.
   Archimedes asset that compounds — better curation = better strategy library = better
   portfolios = better moat.
 - They imply **anti-features** we should be explicit about — see
-  [`anti-features.md`](anti-features.md). No native token, no perp leverage, no third-party
+  [`anti-features.md`](../anti-features.md). No native token, no perp leverage, no third-party
   strategy onboarding in v1, no fiat on-ramp, no mobile app.
 
 ## What changes if the team disagrees
@@ -243,7 +243,7 @@ let scope silently drift** — make the change visible.
 These aren't covered by this memo and should be decided by Day 4 or Day 5:
 
 - **Backtesting library:** backtrader vs. vectorbt vs. custom numpy. See
-  [`specs/backtrader-vs-vectorbt-decision-memo.md`](specs/backtrader-vs-vectorbt-decision-memo.md).
+  [`specs/backtrader-vs-vectorbt-decision-memo.md`](../adr/backtrader-vs-vectorbt-decision-memo.md).
 - **Backend ownership:** vacant since Shimon's departure. Decide by Day 3.
 - **EURC inclusion:** USDC-only for v1, or USDC + EURC for international users? Decide
   based on regulatory and integration cost; default to USDC-only.
@@ -251,8 +251,8 @@ These aren't covered by this memo and should be decided by Day 4 or Day 5:
 
 ## What this memo doesn't cover
 
-- Implementation details — see Chuan's [`design.md`](design.md) and the specs in
-  [`specs/`](specs/).
+- Implementation details — see Chuan's [`design.md`](../design.md) and the specs in
+  [`specs/`](../specs/).
 - The full pitch deck — see
-  [`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md).
-- Day-by-day milestones — see Chuan's [`design.md` § 8](design.md).
+  [`demo-script-pitch-deck-outline.md`](../demo-script-pitch-deck-outline.md).
+- Day-by-day milestones — see Chuan's [`design.md` § 8](../design.md).

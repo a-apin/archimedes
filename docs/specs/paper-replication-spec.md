@@ -106,7 +106,7 @@ Instead of a fixed zero-threshold rule ("long if 12m return > 0"), use DSR-defla
 
 ### Phase 4: Writeup (week 3, late)
 
-Use the template in [`docs/research/replications/_template.md`](../research/replications/_template.md) (see Section 5 of this spec for the template skeleton). 3–5 pages. Sections:
+Use the template in `docs/research/replications/_template.md` (template not yet created) (see Section 5 of this spec for the template skeleton). 3–5 pages. Sections:
 
 1. **Motivation** — one paragraph. Why this paper, why this extension.
 2. **Paper precedent** — formal signal definition, paper's stated results, citation.

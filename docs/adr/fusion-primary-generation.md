@@ -3,7 +3,7 @@
 > **Audience:** Archimedes team (decision owner: Dan, strategy engine + backend lead)
 > **Status:** **Accepted.** Wired into the live Generate path in [PR #751](https://github.com/a-apin/archimedes/pull/751).
 > **Question being decided:** How does the generation engine route between free-form LLM generation, curated-library selection, and multi-paper fusion? Which is primary?
-> **Related:** [`docs/corpus-architecture.md`](../corpus-architecture.md), `backend/archimedes/agents/generation_pipeline.py`, `backend/archimedes/services/strategy_fusion.py`.
+> **Related:** [`docs/corpus-architecture.md`](../corpus-architecture.md), `backend/archimedes/agents/generation_pipeline.py`, `backend/archimedes/agents/strategy_fusion.py`.
 
 ## TL;DR
 

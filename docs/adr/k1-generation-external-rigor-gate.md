@@ -3,7 +3,7 @@
 > **Audience:** Archimedes team (decision owner: Dan, architecture; implementation: Önder + Daniel R.)
 > **Status:** **Adopted.** Codified 2026-05-23 after a Linus-Maestro architecture audit; live in the generation + passport flow.
 > **Question being decided:** How many candidate strategies should the generation agent emit per Generate call — K=1 (one winner + considered alternatives), or K=many (parallel candidates all gated together)?
-> **Related:** [`docs/architectural-principles.md` § 5](../architectural-principles.md), [`docs/user-stories.md`](../user-stories.md), `backend/archimedes/agents/generation_pipeline.py`, `backend/archimedes/services/strategy_fusion.py`.
+> **Related:** [`docs/architectural-principles.md` § 5](../architectural-principles.md), [`docs/user-stories.md`](../user-stories.md), `backend/archimedes/agents/generation_pipeline.py`, `backend/archimedes/agents/strategy_fusion.py`.
 
 ## TL;DR
 

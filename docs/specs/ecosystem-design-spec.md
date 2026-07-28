@@ -699,7 +699,7 @@ Platform revenue streams:
 | [`design.md`](../design.md) | **Partially superseded.** Strategy engine (§4.1), backtesting (§4.2), regime detection (§4.3.3) survive. Smart contract architecture (§5.2) replaced by this spec. |
 | [`mvp-scope-memo.md`](../archive/mvp-scope-memo.md) | **Scope expanded.** The three locked decisions (RFB 04, both on-chain stories, curated library) still hold but are now embedded in a larger ecosystem. |
 | [`architectural-principles.md`](../architectural-principles.md) | **Survives intact.** Paper-grounded provenance = Tier 1. Reasoning traces = all agent-managed vaults. Non-custodial = vault architecture. Verifiable history = ReasoningTraceRegistry. |
-| [`strategy-passport-spec.md`](specs/strategy-passport-spec.md) | **Survives for Tier 1 vaults.** Strategy passports apply to Archimedes-curated strategies. Community vaults don't require paper backing. |
+| [`strategy-passport-spec.md`](strategy-passport-spec.md) | **Survives for Tier 1 vaults.** Strategy passports apply to Archimedes-curated strategies. Community vaults don't require paper backing. |
 | [`anti-features.md`](../anti-features.md) | **Needs update.** "No third-party strategy onboarding" is now reversed — community vaults ARE third-party strategies. |
 
 ---

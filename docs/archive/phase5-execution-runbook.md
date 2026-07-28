@@ -2,7 +2,7 @@
 
 > **Status:** Planning-only — spec + verification runbook + open questions. No
 > code in this PR. Drafted overnight per `dbrowneup/phase5-execution-runbook`
-> while Dan slept; per [`docs/specs/spine-plus-v2-plan.md` § Phase 5](spine-plus-v2-plan.md)
+> while Dan slept; per [`docs/specs/spine-plus-v2-plan.md` § Phase 5](../specs/spine-plus-v2-plan.md)
 > the implementation needs Chuan's kickoff (signing setup, AMM liquidity
 > verification, `setTargetAllocations` semantics, USDC-as-gas) before the code
 > goes in.

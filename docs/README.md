@@ -108,11 +108,11 @@ Docs that were authoritative at an earlier phase and have since been superseded.
 
 | Archived doc | Now superseded by |
 |---|---|
-| [`archive/mvp-scope-memo.md`](archive/mvp-scope-memo.md) | [`user-stories.md`](user-stories.md) (spine) + [`dead-code-audit-2026-05-24-v2.md`](dead-code-audit-2026-05-24-v2.md) § Submission-day execution plan (current scope) |
-| [`archive/launch-plan-2026-05-19.md`](archive/launch-plan-2026-05-19.md) | [`dead-code-audit-2026-05-24-v2.md`](dead-code-audit-2026-05-24-v2.md) § Submission-day execution plan |
+| [`archive/mvp-scope-memo.md`](archive/mvp-scope-memo.md) | [`user-stories.md`](user-stories.md) (spine) + [`AUDIT_2026-06-14.md`](../AUDIT_2026-06-14.md) (current scope) |
+| [`archive/launch-plan-2026-05-19.md`](archive/launch-plan-2026-05-19.md) | [`AUDIT_2026-06-14.md`](../AUDIT_2026-06-14.md) |
 | [`archive/ui-simplification-proposal-2026-05-20.md`](archive/ui-simplification-proposal-2026-05-20.md) | [`specs/page-roles-spec.md`](specs/page-roles-spec.md) + spine Phases 0–7 shipped per [`specs/spine-plus-v2-plan.md`](specs/spine-plus-v2-plan.md) |
-| [`archive/evening-execution-plan-2026-05-24.md`](archive/evening-execution-plan-2026-05-24.md) | Shipped via PRs #220–#241; reality captured in [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) and [`dead-code-audit-2026-05-24-v2.md`](dead-code-audit-2026-05-24-v2.md) |
-| [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) | [`dead-code-audit-2026-05-24-v2.md`](dead-code-audit-2026-05-24-v2.md) § Submission-day execution plan |
+| [`archive/evening-execution-plan-2026-05-24.md`](archive/evening-execution-plan-2026-05-24.md) | Shipped via PRs #220–#241; reality captured in [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) and [`AUDIT_2026-06-14.md`](../AUDIT_2026-06-14.md) |
+| [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) | [`AUDIT_2026-06-14.md`](../AUDIT_2026-06-14.md) |
 | [`archive/rfb-alignment.md`](archive/rfb-alignment.md) | [`arc-alignment.md`](arc-alignment.md) + [`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md) |
 | [`archive/qfin-paper-corpus-seed.md`](archive/qfin-paper-corpus-seed.md) | [`corpus-architecture.md`](corpus-architecture.md) |
 | [`archive/agora_project_analysis.md`](archive/agora_project_analysis.md) | [`architectural-principles.md`](architectural-principles.md) + [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md) |

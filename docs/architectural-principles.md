@@ -12,7 +12,7 @@
 > Moskowitz-Ooi-Pedersen 2012 TSMOM) against 22 years of real SPY data. Faber 2007
 > SMA-200 does *not* pass — see [`analysis/faber-dsr-finding.md`](analysis/faber-dsr-finding.md). The four primitives remain the
 > philosophical core; Day-10 added a *fifth* operational capability — the LLM-driven
-> agentic portfolio advisor ([`portfolio_agent.py`](../backend/archimedes/services/portfolio_agent.py))
+> agentic portfolio advisor ([`portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py))
 > — which sits *on top of* the four primitives (it cannot bypass the passport,
 > rigor gate, or trace anchor). See
 > [`chuan-architecture-survey.md`](chuan-architecture-survey.md) for the current
@@ -54,8 +54,7 @@ Three independent arguments converge:
    machines; reasoning traces ARE information. RFB 04's "Adaptive Portfolio Manager" lives
    most credibly when each adaptation has an auditable reasoning trail.
 3. **Past performance does not persist out-of-sample.** This is the canonical failure mode
-   of leaderboard-based reputation (see [`reputation-and-vertical-selection.md`](reputation-and-vertical-selection.md)
-   in the prior agent-marketplace work; the same principle applies). A portfolio agent
+   of leaderboard-based reputation (see `reputation-and-vertical-selection.md` in the prior agent-marketplace work (external, not in this repo); the same principle applies). A portfolio agent
    that claims "X% returns last year, so you can trust me" inherits the regression-to-mean
    problem of every leaderboard. **Verifiable reasoning history bypasses the prediction
    problem**: we don't claim the past predicts the future; we claim the past is auditable.

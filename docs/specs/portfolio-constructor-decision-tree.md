@@ -8,7 +8,7 @@
 > LLM-agentic top-level constructor. Three pre-Day-10 deterministic constructors
 > remained in the tree:
 > - [`services/portfolio_constructor.py`](../../backend/archimedes/services/portfolio_constructor.py) (285 lines)
-> - [`services/kelly_portfolio.py`](../../backend/archimedes/services/kelly_portfolio.py) (505 lines)
+> - [`services/kelly_portfolio.py`](../../backend/archimedes/services/_deprecated/kelly_portfolio.py) (505 lines)
 > - [`services/portfolio_optimizer.py`](../../backend/archimedes/services/portfolio_optimizer.py) (488 lines)
 >
 > Most have **zero production call sites** today. This spec decides who fires

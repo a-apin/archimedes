@@ -352,7 +352,7 @@ Three gaps observed in the strip-to-spine state:
 | File | Change |
 |---|---|
 | `backend/archimedes/api/generate_routes.py` (NEW) | New dedicated router for Generate endpoints. Per cross-cutting principle #2, this does NOT live in `routes.py`. |
-| `backend/archimedes/services/portfolio_agent.py` | Instrument iteration loop to emit events (callback hook the SSE endpoint subscribes to). |
+| `backend/archimedes/agents/portfolio_agent.py` | Instrument iteration loop to emit events (callback hook the SSE endpoint subscribes to). |
 | `backend/archimedes/services/generation_pipeline.py` (NEW) | New orchestrator: receives brief, runs `portfolio_agent` N times for N candidates, evaluates each through rigor gate, persists best, emits events at each step. |
 | `backend/archimedes/services/job_queue.py` | Extend to support the per-job event log Redis key (`jobs:{job_id}:events`) referenced in the spec. |
 | `backend/archimedes/api/generate_schemas.py` (NEW) | Pydantic models for the event payloads. |

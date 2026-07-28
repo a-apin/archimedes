@@ -22,7 +22,7 @@ Three repos, one lineage — that *is* the story:
 
 Hook: **"On-chain curation runs on trust; November 2025 proved that breaks on rigor. We
 built the proof-based alternative — and the personal research-intelligence stack under
-it."** Anchor with the real numbers from [`competitor-landscape.md`](competitor-landscape.md).
+it."** Anchor with the real numbers from [`competitor-landscape.md`](../competitor-landscape.md).
 
 ## 2. Timing & sequencing (decision-driving)
 

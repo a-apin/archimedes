@@ -21,7 +21,7 @@
 
 ## KB submodule entry points
 
-From [`submodules/KnowledgeBase/papers_analysis/`](../../submodules/KnowledgeBase/papers_analysis/):
+From `submodules/KnowledgeBase/papers_analysis/` (submodule not checked out):
 
 | File | Role |
 |---|---|
@@ -108,7 +108,7 @@ CREATE INDEX IF NOT EXISTS idx_papers_cluster ON papers (cluster_id);
 
 Note: these `ALTER TABLE` statements already exist in `db.py` (added during the
 strip-to-spine work to unblock `/api/papers/`), but the matching ORM columns on
-`PaperRecord` in [`backend/archimedes/models/paper.py`](../../backend/archimedes/models/paper.py)
+`PaperRecord` in `backend/archimedes/models/paper.py` (planned; not yet in tree)
 are **not yet defined**. Phase 3c adds them to the ORM so they round-trip
 correctly.
 

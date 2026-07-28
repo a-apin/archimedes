@@ -68,7 +68,7 @@ duplicate-brief regeneration attempts and de-duplicate in Library.
 
 | Transition | Trigger | Effects |
 |---|---|---|
-| → Generated | Agent emits final `candidate_drafted` SSE event with rigor verdict | DB insert; trace persisted off-chain via [`AgentStateStore`](../../backend/archimedes/services/agent_state.py) |
+| → Generated | Agent emits final `candidate_drafted` SSE event with rigor verdict | DB insert; trace persisted off-chain via `AgentStateStore` (module removed) |
 | → Validated | `passes_rigor_gate == true` and all four sub-gates green | `status='validated'`; `ttl_expires_at = now() + TTL` |
 | → Rejected | At least one rigor sub-gate fails | `status='rejected'`; reason string surfaced in Library |
 | → Deployed | User signs vault-creation tx; backend observes `VaultCreated` event | `status='deployed'`; `vault_address` linked |
