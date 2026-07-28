@@ -388,3 +388,31 @@ resource "aws_route53_record" "apex_cloudfront_ipv6" {
     evaluate_target_health = false
   }
 }
+
+# ── GitHub Actions deploy role: CloudFront invalidation ────────────────
+# Without this, a deploy publishes a new index.html + new hashed asset
+# filenames, but CloudFront keeps serving the OLD cached index.html (which
+# references asset filenames that no longer exist) until the html cache
+# policy's TTL expires — a blank-page/404 outage window on every deploy.
+# `.github/workflows/deploy.yml`'s "Invalidate CloudFront" step (deploy-ecs
+# job) needs `cloudfront:CreateInvalidation` (+ `GetInvalidation` so it can
+# poll the invalidation to completion) on this specific distribution.
+# `data.aws_iam_role.github_deploy` is declared once in ecs.tf and reused
+# here (same module — no re-declaration needed). Scoped to THIS
+# distribution's ARN only, matching the resource-scoped-Sid convention the
+# other github_deploy_* / ecs_task_* policies in ecs.tf use — never `"*"`.
+resource "aws_iam_role_policy" "github_deploy_cloudfront" {
+  name = "archimedes-cloudfront-invalidate"
+  role = data.aws_iam_role.github_deploy.name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "CloudFrontInvalidate"
+        Effect   = "Allow"
+        Action   = ["cloudfront:CreateInvalidation", "cloudfront:GetInvalidation"]
+        Resource = aws_cloudfront_distribution.main.arn
+      }
+    ]
+  })
+}

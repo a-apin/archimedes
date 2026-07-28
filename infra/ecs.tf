@@ -38,16 +38,13 @@
 #    are baked into the image today. Until backend/Dockerfile COPYs them in
 #    (or an EFS volume is attached to this task), the backend container will
 #    boot but fail to find strategies/corpus data at these paths.
-# 3. `DATABASE_URL` / `REDIS_URL` (below, via ECS `secrets`) resolve from
-#    SSM parameters `/archimedes/prod/DATABASE_URL` and
-#    `/archimedes/prod/REDIS_URL`, which do not exist yet — seed them the
-#    same way AURORA_MASTER_PASSWORD / EMAIL_ENCRYPTION_KEY already are
-#    (extend a local secrets.env and run `infra/scripts/seed-ssm-secrets.sh`
-#    — operator step, see infra/runbooks/ecs-fargate-cutover.md). Until
-#    seeded, ECS will fail to launch tasks with a secret-resolution error on
-#    these two specifically — AURORA_MASTER_PASSWORD / EMAIL_ENCRYPTION_KEY
-#    (config consolidation, #1039 P5, this chunk) are already live in SSM and
-#    resolve without any further action.
+# 3. RESOLVED (2026-07-08): `DATABASE_URL` / `REDIS_URL` (below, via ECS
+#    `secrets`) resolve from SSM parameters `/archimedes/prod/DATABASE_URL`
+#    and `/archimedes/prod/REDIS_URL` — both now exist, seeded the same way
+#    AURORA_MASTER_PASSWORD / EMAIL_ENCRYPTION_KEY already were (via
+#    `infra/scripts/seed-ssm-secrets.sh` — operator step, see
+#    infra/runbooks/ecs-fargate-cutover.md). All four secrets in the `secrets`
+#    block below are live in SSM and resolve without further action.
 # 4. `oracle_runner` / `agent_runner` / `kb_runner` (docker-compose services
 #    `oracle`, `agent`, `kb-runner`) are NOT covered by this file. They are
 #    singleton background daemons, not ALB-fronted request handlers, and
@@ -540,15 +537,13 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "ARCHIMEDES_TREASURY_WALLET", value = var.archimedes_treasury_wallet }
       ]
 
-      # KNOWN GAP #3 (see file header) — NARROWED by #1039 P5 (config
-      # consolidation, this chunk): AURORA_MASTER_PASSWORD and
-      # EMAIL_ENCRYPTION_KEY are wired below and resolve immediately — both
-      # already exist live in SSM (infra/scripts/setup-ssm-secrets.sh already
-      # seeds them, predating this chunk). DATABASE_URL / REDIS_URL remain the
-      # open gap: those two SSM parameters don't exist yet, seeded the same
-      # way via infra/scripts/seed-ssm-secrets.sh (operator step, documented
-      # in infra/runbooks/ecs-fargate-cutover.md). Until seeded, ECS fails to
-      # launch tasks with a secret-resolution error on those two only.
+      # KNOWN GAP #3 (see file header) — RESOLVED (2026-07-08): AURORA_MASTER_PASSWORD
+      # and EMAIL_ENCRYPTION_KEY were already live in SSM
+      # (infra/scripts/setup-ssm-secrets.sh, predating this chunk).
+      # DATABASE_URL / REDIS_URL were seeded the same way via
+      # infra/scripts/seed-ssm-secrets.sh (operator step, documented in
+      # infra/runbooks/ecs-fargate-cutover.md) and now also exist live in SSM.
+      # All four secrets below resolve at task launch with no outstanding gap.
       secrets = [
         { name = "DATABASE_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/DATABASE_URL" },
         { name = "REDIS_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/REDIS_URL" },
