@@ -73,6 +73,64 @@ APPLY=false; for a in "$@"; do case "$a" in
 $APPLY && echo ">>> APPLY MODE — writing SecureString params under ${PREFIX}/" \
         || echo ">>> DRY RUN — re-run with --apply to write. Values are read from env; names only are shown."
 
+# ── Fail-closed guard for funds-behaviour parameters ────────────────────────
+# Everything else in this script is intentionally skip-if-unset, so partial runs
+# work. That default is WRONG for AGENT_DRY_RUN: agent_runner.py resolves an
+# unset AGENT_DRY_RUN to "false" (= LIVE on-chain signing), so "operator ran
+# --apply and didn't notice one skip line among twenty" silently arms the
+# funds-adjacent agent. Enforce the invariant in the tool instead of relying on
+# the caller reading output (Copilot review, PR #1173).
+#
+# Deliberately narrow so partial runs keep working:
+#   - only in --apply mode (a dry run writes nothing and stays advisory)
+#   - only for AGENT_DRY_RUN
+#   - satisfied by EITHER an exported value OR the parameter already existing in
+#     SSM (re-seeding one unrelated secret must not require re-passing it)
+#   - checked BEFORE any put, so a failure writes nothing at all
+if $APPLY; then
+  if [ -z "${AGENT_DRY_RUN:-}" ]; then
+    if ! aws ssm get-parameter --name "${PREFIX}/AGENT_DRY_RUN" >/dev/null 2>&1; then
+      cat >&2 <<EOM
+ERROR: refusing to --apply. AGENT_DRY_RUN is not set and ${PREFIX}/AGENT_DRY_RUN
+       does not exist yet.
+
+       agent_runner.py treats an UNSET AGENT_DRY_RUN as "false" — i.e. the
+       relocated agent runner would boot into LIVE on-chain signing.
+
+       Seed it explicitly, dry-run first:
+           export AGENT_DRY_RUN=true    # flip to false only after a smoke pass
+       then re-run with --apply.
+EOM
+      exit 3
+    fi
+  else
+    # VALUE validation, not just presence (Copilot review, PR #1174).
+    # agent_runner.py parses this as:  os.getenv("AGENT_DRY_RUN","false").lower() == "true"
+    # so ONLY the literal "true" (any case) enables dry-run and EVERYTHING else —
+    # including the intuitive-looking "1", "yes", "on", "True " with whitespace —
+    # silently resolves to LIVE signing. An operator typing `AGENT_DRY_RUN=1`
+    # reasonably believes they armed dry-run; they armed the opposite. Accept only
+    # the two values that mean what they look like.
+    case "$(printf '%s' "$AGENT_DRY_RUN" | tr 'A-Z' 'a-z')" in
+      true|false) ;;
+      *)
+        cat >&2 <<EOM
+ERROR: refusing to --apply. AGENT_DRY_RUN="${AGENT_DRY_RUN}" is not a recognised value.
+
+       agent_runner.py evaluates:  AGENT_DRY_RUN.lower() == "true"
+       so ONLY "true" enables dry-run. Values like "1", "yes" or "on" look like
+       they enable it but resolve to LIVE on-chain signing.
+
+       Use exactly one of:
+           export AGENT_DRY_RUN=true     # agent computes trades, signs nothing
+           export AGENT_DRY_RUN=false    # LIVE signing (only after a smoke pass)
+EOM
+        exit 3
+        ;;
+    esac
+  fi
+fi
+
 put=0; skip=0
 for name in "${PARAMS[@]}"; do
   val="${!name:-}"
