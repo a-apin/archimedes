@@ -21,10 +21,21 @@ from archimedes.services.backtest_mapper import (
     canonical_artifact_hash,
     map_artifact_to_backtest_result,
 )
-from archimedes.services.backtest_repository import insert_backtest_if_missing
+from archimedes.services.backtest_repository import get_daily_returns, insert_backtest_if_missing
 from archimedes.services.strategy_provider import default_provider
+from archimedes.services.vol_plausibility import (
+    VolPlausibilityError,
+    assess_strategy,
+    compute_vol_stats,
+    daily_returns_from_equity_curve,
+)
 
 logger = logging.getLogger(__name__)
+
+# The confirmed-correct reference strategy for the Rule-B equity-baseline-match
+# check (see services/vol_plausibility.py module docstring) — a stem match
+# against analytics-engine/strategies/pipeline_buy_hold.py.
+_BASELINE_STRATEGY_STEM = "pipeline_buy_hold"
 
 
 @dataclass(frozen=True)
@@ -113,6 +124,59 @@ def _read_config() -> RunConfig:
     )
 
 
+def _load_baseline_vol(strategy_by_path: dict) -> float | None:
+    """Best-effort fetch of the pipeline_buy_hold realized vol for Rule B.
+
+    Deliverable-2 permanent guard (audit 2026-07-27, services/vol_plausibility.py):
+    every strategy's freshly-computed backtest is checked against BOTH the
+    self-contained asset-class-band rule (Rule A) AND, when available, this
+    pre-existing equity baseline (Rule B) — the check that specifically catches a
+    diversified/non-equity strategy whose realized vol is suspiciously close to
+    pure S&P equity (the exact signature of the confirmed single-feed-default
+    fallback). Reads whatever ``pipeline_buy_hold`` last persisted BEFORE this
+    run started — one query, done once, not per strategy.
+
+    Returns ``None`` (never raises) when the reference strategy file is missing,
+    has no persisted backtest yet (e.g. a brand new clone before the first ever
+    run), or its own persisted series is degenerate/too short — every case logs
+    a clear warning so the "Rule B skipped this run" gap is visible, not silent.
+    """
+    baseline = next(
+        (s for s in strategy_by_path.values() if Path(s.strategy_code_path or "").stem == _BASELINE_STRATEGY_STEM),
+        None,
+    )
+    if baseline is None:
+        logger.warning(
+            "vol-plausibility guard: no strategy file matching stem %r found — "
+            "Rule B (equity-baseline match) skipped this run; only Rule A runs",
+            _BASELINE_STRATEGY_STEM,
+        )
+        return None
+
+    with get_session() as session:
+        baseline_returns = get_daily_returns(session, baseline.id)
+
+    if not baseline_returns:
+        logger.warning(
+            "vol-plausibility guard: %s has no persisted backtest yet — "
+            "Rule B (equity-baseline match) skipped this run; only Rule A runs",
+            _BASELINE_STRATEGY_STEM,
+        )
+        return None
+
+    stats = compute_vol_stats(baseline_returns)
+    if stats.annualized_vol is None:
+        logger.warning(
+            "vol-plausibility guard: %s's persisted series is degenerate/too short "
+            "(n_obs=%d) — Rule B (equity-baseline match) skipped this run; only Rule A runs",
+            _BASELINE_STRATEGY_STEM,
+            stats.n_obs,
+        )
+        return None
+
+    return stats.annualized_vol
+
+
 def run_backtests() -> dict:
     repo_root = _repo_root()
     strategy_dir = _analytics_strategy_dir(repo_root)
@@ -128,6 +192,12 @@ def run_backtests() -> dict:
     }
 
     init_db()
+
+    # Deliverable-2 permanent guard: fetch the pre-existing equity baseline ONCE
+    # (not per strategy) so every freshly-computed artifact below can be checked
+    # against both plausibility rules before it is persisted. See
+    # services/vol_plausibility.py's module docstring for Rule A / Rule B.
+    baseline_vol = _load_baseline_vol(strategy_by_path)
 
     inserted = 0
     skipped = 0
@@ -166,6 +236,22 @@ def run_backtests() -> dict:
             )
             content_hash = canonical_artifact_hash(artifact_payload)
 
+            # Deliverable-2 permanent guard (audit 2026-07-27): refuse to persist
+            # a backtest whose realized vol is wildly inconsistent with the
+            # strategy's own declared ASSET_UNIVERSE — this is exactly the
+            # confirmed "backtesting the wrong asset" defect class (e.g.
+            # capital_preservation_tbill declaring BIL but reading pure equity
+            # vol). Checked BEFORE insert_backtest_if_missing so a flagged
+            # artifact is never written, loudly, fail-closed.
+            candidate_returns = daily_returns_from_equity_curve(mapped.equity_curve)
+            verdict = assess_strategy(strategy.asset_universe, candidate_returns, baseline_vol=baseline_vol)
+            if verdict.status in ("flagged", "degenerate"):
+                raise VolPlausibilityError(
+                    f"strategy {strategy.id} ({strategy.paper_title}) declares ASSET_UNIVERSE="
+                    f"{strategy.asset_universe!r}; realized vol/return check status={verdict.status!r}: "
+                    f"{'; '.join(verdict.reasons)}"
+                )
+
             with get_session() as session:
                 _, was_inserted = insert_backtest_if_missing(
                     session,
@@ -185,6 +271,15 @@ def run_backtests() -> dict:
                 skipped += 1
                 logger.info("skip duplicate content hash: %s (%s)", strategy.paper_title, strategy.id)
 
+        except VolPlausibilityError as exc:
+            # Loud + fail-closed by construction: this exception is only ever
+            # raised AFTER the artifact was computed but BEFORE
+            # insert_backtest_if_missing — so nothing was written. ERROR (not
+            # WARNING) because this is the exact defect class the whole guard
+            # exists to catch, not a routine engine limitation.
+            failed += 1
+            errors[strategy.id] = f"VolPlausibilityError: {exc}"
+            logger.error("REFUSING to persist backtest for %s: %s", strategy_file.name, exc)
         except Exception as exc:
             failed += 1
             if typed_errors and isinstance(exc, typed_errors):
