@@ -1,48 +1,86 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Real paths only. This SPA uses browser History API routing (window.history.pushState
+  in ui/src/App.jsx), never hash routing — there has never been a served route under
+  `/#/...`. The route set below is PAGE_TO_PATH in ui/src/App.jsx intersected with the
+  cases actually implemented in renderPage(); per-entity deep links (/strategy/:id,
+  /portfolio/vaults/:address, /reasoning/:id, /marketplace/strategy/:id) are intentionally
+  excluded — those are dynamic and not meant for a static sitemap.
+-->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>/#/</loc>
+    <loc>https://archimedes-arc.com/</loc>
     <priority>1.0</priority>
     <changefreq>daily</changefreq>
   </url>
   <url>
-    <loc>/#/markets/explore</loc>
+    <loc>https://archimedes-arc.com/explore</loc>
     <priority>0.9</priority>
     <changefreq>daily</changefreq>
   </url>
   <url>
-    <loc>/#/markets/strategies</loc>
+    <loc>https://archimedes-arc.com/leaderboard</loc>
+    <priority>0.7</priority>
+    <changefreq>daily</changefreq>
+  </url>
+  <url>
+    <loc>https://archimedes-arc.com/generate</loc>
+    <priority>0.9</priority>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://archimedes-arc.com/architecture</loc>
+    <priority>0.6</priority>
+    <changefreq>monthly</changefreq>
+  </url>
+  <url>
+    <loc>https://archimedes-arc.com/library</loc>
     <priority>0.8</priority>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>/#/markets/trade</loc>
-    <priority>0.9</priority>
-    <changefreq>daily</changefreq>
-  </url>
-  <url>
-    <loc>/#/portfolio/dashboard</loc>
-    <priority>0.9</priority>
-    <changefreq>daily</changefreq>
-  </url>
-  <url>
-    <loc>/#/portfolio/mint-burn</loc>
+    <loc>https://archimedes-arc.com/corpus</loc>
     <priority>0.7</priority>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>/#/portfolio/liquidity</loc>
-    <priority>0.7</priority>
+    <loc>https://archimedes-arc.com/quant</loc>
+    <priority>0.6</priority>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>/#/portfolio/vaults</loc>
+    <loc>https://archimedes-arc.com/portfolio</loc>
     <priority>0.8</priority>
     <changefreq>daily</changefreq>
   </url>
   <url>
-    <loc>/#/intelligence/reasoning</loc>
+    <loc>https://archimedes-arc.com/reasoning</loc>
+    <priority>0.7</priority>
+    <changefreq>daily</changefreq>
+  </url>
+  <url>
+    <loc>https://archimedes-arc.com/learnings</loc>
+    <priority>0.6</priority>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://archimedes-arc.com/insights</loc>
+    <priority>0.6</priority>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://archimedes-arc.com/marketplace</loc>
     <priority>0.8</priority>
     <changefreq>daily</changefreq>
+  </url>
+  <url>
+    <loc>https://archimedes-arc.com/publish</loc>
+    <priority>0.6</priority>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://archimedes-arc.com/subscriptions</loc>
+    <priority>0.6</priority>
+    <changefreq>weekly</changefreq>
   </url>
 </urlset>

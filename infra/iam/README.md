@@ -25,7 +25,13 @@ Anti-goals from the original [T3.1 spec](https://github.com/a-apin/archimedes-ar
 - **No cross-region replication** for v1 (no `s3:ReplicateObject`)
 - **No access to other AWS accounts** — every resource ARN scoped to `*` for account but the bucket/table names are unique to this project
 - **No IAM operations** (the role can't create more roles, attach policies, or assume other roles)
-- **No Bedrock** — [T3.5 #154](https://github.com/a-apin/archimedes-arcadia/issues/154) is OPTIONAL and held; if/when it fires, append a separate Bedrock statement
+- **No Bedrock in this policy document** — Bedrock has been the live LLM in prod since
+  2026-06-24, but `bedrock:InvokeModel`/`InvokeModelWithResponseStream` is granted via a
+  separate Terraform-managed inline policy on the same EC2 role
+  (`aws_iam_role_policy.ec2_bedrock_invoke` in [`infra/ec2_iam.tf`](../ec2_iam.tf)), not
+  via this JSON file. This document was written pre-Bedrock and is being kept in sync
+  manually — treat `infra/ec2_iam.tf` as the source of truth for what the role can
+  actually do; update this bullet again if the two ever diverge further.
 - **No ECS / Lambda / EC2 management** — provisioning happens with deployer credentials, not the backend runtime role
 
 ## How pi (or anyone) applies this
@@ -142,7 +148,8 @@ code change needed; the GitHub repo never sees the value.
 
 ## Cross-account / multi-environment notes
 
-- **Single-account model for v1.** Everything in Chuan's hackathon AWS account.
+- **Single-account model for v1.** Everything in Dan's AWS account (`037613907429`,
+  `us-east-1` — migrated off the prior shared/hackathon account 2026-06-24).
 - **`*` in resource ARNs** is the account-ID wildcard. AWS resolves to the account
   the API call is made from, so this is effectively "this account only."
 - **Region `*` in DynamoDB / SSM / KMS / Logs** is deliberate — we may run the

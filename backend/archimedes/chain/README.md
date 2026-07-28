@@ -152,6 +152,33 @@ export ARC_AGENT_PRIVATE_KEY="<0x-prefixed 32-byte hex>"  # or leave empty to us
 export ARC_OWNER_PRIVATE_KEY="<0x-prefixed 32-byte hex>"  # for oracle updates
 ```
 
+#### Rotating the Entity Secret
+
+`CIRCLE_ENTITY_SECRET` is a long-lived credential — rotate it periodically and
+immediately if it may have leaked (committed to a branch, pasted in a shared
+channel, etc.). [`wallet-setup/rotate-secret.mjs`](../../../wallet-setup/rotate-secret.mjs)
+automates the full cycle:
+
+```bash
+make rotate-secret
+# equivalent: cd wallet-setup && node --env-file=../.env rotate-secret.mjs
+```
+
+The script (1) generates a fresh 32-byte secret, (2) registers it with Circle
+via `registerEntitySecretCiphertext`, saving the one-time-downloadable recovery
+file to `wallet-setup/recovery_file.dat` (store this securely — Circle will not
+re-issue it), (3) test-signs a real contract call to confirm the new secret is
+live before touching anything else, and only then (4) overwrites
+`CIRCLE_ENTITY_SECRET` in the root `.env`. If step 2 returns `409 Conflict`,
+Circle already has an entity secret registered — reset it first from
+[console.circle.com](https://console.circle.com) → Programmable Wallets →
+Configuration → "Reset Entity Secret", then re-run.
+
+This is distinct from `register-entity-secret.mjs`'s initial-setup path (`make
+register`), which only runs when `CIRCLE_ENTITY_SECRET` is unset — use
+`rotate-secret.mjs` when a secret already exists and needs replacing without a
+gap in Circle-signed on-chain writes (oracle price pushes, agent rebalances).
+
 ### 2. Configure Arc RPC and Contract Addresses
 
 ```bash

@@ -25,7 +25,7 @@
 # REQUIREMENTS: gh (authenticated, with admin scope for --apply), python3 (for pretty JSON).
 set -euo pipefail
 
-REPO="${REPO:-hackagora/archimedes-arcadia}"
+REPO="${REPO:-a-apin/archimedes}"
 BRANCH="${BRANCH:-main}"
 
 # enforce_admins=false → admins (incl. the t2o2 build-on-deploy user) bypass the gate.
@@ -34,13 +34,28 @@ ENFORCE_ADMINS="${ENFORCE_ADMINS:-false}"
 
 # Hard-block CI contexts from quality-gate.yml. The informational checks
 # ("Lint — report table", "Complexity analysis", coverage) are deliberately NOT required.
+#
+# "Contracts — forge build + test" (.github/workflows/contracts-test.yml) is included
+# below to close the gap where a Solidity PR could merge with red contract tests. READ
+# BEFORE RUNNING --apply: that workflow is scoped with `on.pull_request.paths:
+# ["contracts/**", ...]`, so it never runs on a PR that doesn't touch contracts/. GitHub's
+# classic required-status-checks model leaves a required check that never posts a status
+# stuck at "Expected — waiting for status to be reported" FOREVER, which blocks merging
+# every non-contract PR too (a documented GitHub limitation, not a bug in this script —
+# see https://github.com/orgs/community/discussions/44490 and #54877). Before applying
+# this payload, add a "skip-but-report-success" job to contracts-test.yml (GitHub's
+# documented workaround: a job that runs on the inverse path filter and always reports
+# the same check name as passed) — otherwise every PR that doesn't touch contracts/**
+# will hang unmergeable. Tracked as a follow-up; deliberately not fixed in this sweep
+# (touching contracts-test.yml is CI/CD wiring that needs its own review).
 read -r -d '' PAYLOAD <<JSON || true
 {
   "required_status_checks": {
     "strict": false,
     "contexts": [
       "Backend — unit tests",
-      "Ruff — format + critical lint rules"
+      "Ruff — format + critical lint rules",
+      "Contracts — forge build + test"
     ]
   },
   "enforce_admins": ${ENFORCE_ADMINS},
