@@ -470,9 +470,7 @@ def test_deploy_gate_computes_cohort_verdicts_once_for_many_strategies():
         patch(f"{LRG}.verdicts_for_strategies", side_effect=_verdicts),
     ):
         provider.return_value.list_strategies.return_value = cohort
-        provider.return_value.get_strategy.side_effect = lambda sid: next(
-            (s for s in cohort if s.id == sid), None
-        )
+        provider.return_value.get_strategy.side_effect = lambda sid: next((s for s in cohort if s.id == sid), None)
         _assert_strategies_pass_rigor(ids)  # must not raise
 
     assert len(calls) == 1, f"expected 1 cohort computation, got {len(calls)}"
