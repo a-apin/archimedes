@@ -1,7 +1,7 @@
 # Universe Experiment: does a bigger universe rescue the second-wave strategies?
 
 > **Status:** Findings note, 2026-06-11 (Önder, quant lane). Companion to
-> [`second-wave-multi-asset-strategies.md`](second-wave-multi-asset-strategies.md).
+> [`second-wave-multi-asset-strategies.md`](../plans/second-wave-multi-asset-strategies.md).
 > **TL;DR:** No. All nine second-wave strategies are admitted as `CANDIDATE`
 > (none clears the rigor gate). The natural hypothesis — "they fail only because
 > the demo universe is too small (5 assets)" — was tested directly and is **false**.

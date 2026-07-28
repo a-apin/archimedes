@@ -114,7 +114,7 @@ The current market-regime indicator appears in **three** places across the spine
 2. `Portfolio.jsx` — `<RegimePanel />` rendered above the status strip.
 3. `Portfolio.jsx` — a separate `Market Regime` stat-card inside the 4-card status strip (text-only, just the label + confidence).
 
-Two of these on one page is the more glaring duplication. Per [`docs/specs/page-roles-spec.md`](page-roles-spec.md), each page owns one job — and market context is a Portfolio (Monitor) concern, not a Generate concern. The agent already incorporates regime into its decision-making internally; the user constructing a strategy doesn't need a visible regime widget alongside the input form.
+Two of these on one page is the more glaring duplication. Per [`docs/specs/page-roles-spec.md`](../specs/page-roles-spec.md), each page owns one job — and market context is a Portfolio (Monitor) concern, not a Generate concern. The agent already incorporates regime into its decision-making internally; the user constructing a strategy doesn't need a visible regime widget alongside the input form.
 
 **Resolution:**
 

@@ -3,9 +3,9 @@
 > **Status:** Living roadmap for the portfolio-math / backtest-rigor lane (Önder),
 > written 2026-06-11 after the second-wave build + universe experiment. Read with
 > [`second-wave-multi-asset-strategies.md`](second-wave-multi-asset-strategies.md),
-> [`second-wave-universe-experiment.md`](second-wave-universe-experiment.md), and
+> [`second-wave-universe-experiment.md`](../quant/second-wave-universe-experiment.md), and
 > the four-primitive admission gate in
-> [`selection-bias-corrections-spec.md`](selection-bias-corrections-spec.md).
+> [`selection-bias-corrections-spec.md`](../specs/selection-bias-corrections-spec.md).
 >
 > **One-line thesis:** strategy *count* is now a vanity metric. The scarce,
 > valuable things are (1) strategies that survive the rigor gate *honestly* and

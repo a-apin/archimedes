@@ -5,7 +5,7 @@
 > merged 2026-06-11) which took the library 6 → 13 and added the engine's first
 > multi-asset capability (`run_pairs_backtest`).
 >
-> **Companion doc:** [`second-wave-handover.md`](second-wave-handover.md) — the
+> **Companion doc:** [`second-wave-handover.md`](../handovers/second-wave-handover.md) — the
 > self-contained execution brief for whoever (human or agent) builds these phases.
 
 ## Context — why this exists

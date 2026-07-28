@@ -2,10 +2,10 @@
 
 > **Audience:** the agent (or teammate) picking up the quant lane after the third
 > wave. **Author:** Önder, 2026-06-11. **Prereq read:** the repo `CLAUDE.md`,
-> [`quant-roadmap.md`](quant-roadmap.md) (the what/why),
+> [`quant-roadmap.md`](../plans/quant-roadmap.md) (the what/why),
 > [`third-wave-handover.md`](third-wave-handover.md) (§5-§10 conventions all still
 > apply — this doc does not repeat them, it extends them), and
-> [`third-wave-retest.md`](third-wave-retest.md) (the evidence base you inherit).
+> [`third-wave-retest.md`](../quant/third-wave-retest.md) (the evidence base you inherit).
 >
 > **Operating context:** assume the team may be offline. Solo boundaries are
 > task-specific this wave — each task below states exactly where you must stop.
@@ -22,7 +22,7 @@ All merged to `main` 2026-06-11 (PRs #540-#543), all deployed:
   `BacktestResult` now carries `turnover_annualized`, `traded_notional`,
   `total_commission_paid`, `cost_drag_annual_pct`, `break_even_cost_bps`,
   `gross_sharpe_ratio`. Conventions in
-  [`transaction-cost-turnover-model.md`](transaction-cost-turnover-model.md).
+  [`transaction-cost-turnover-model.md`](../specs/transaction-cost-turnover-model.md).
 - **Walk-forward harness** (`walk_forward.py`): train-only param selection,
   OOS-tail evaluation, `n_param_combos` exposed. All three engine runners now
   take `strategy_params=` and `cost_model=`.
@@ -94,7 +94,7 @@ parity (+0.35 Sharpe, passes DSR at N ≤ 13, fails at N = 22+).
 
 **Your job is to assemble and post the decision package, not to decide.** The
 issue already contains the N-sweep table. New evidence from the third wave to
-fold in (from [`third-wave-retest.md`](third-wave-retest.md)):
+fold in (from [`third-wave-retest.md`](../quant/third-wave-retest.md)):
 
 - *For* the provenance split: risk parity's honest search space was 3 lookback
   combos (`n_param_combos = 3` in the walk-forward run), nowhere near 22. The

@@ -1,8 +1,8 @@
 # Library-level PBO — findings (fourth wave, task 1)
 
 > **Author:** Önder, 2026-06-11. **Lineage:** roadmap Priority 3.3 in
-> [`quant-roadmap.md`](quant-roadmap.md); task 1 of
-> [`fourth-wave-handover.md`](fourth-wave-handover.md); evidence base in
+> [`quant-roadmap.md`](../plans/quant-roadmap.md); task 1 of
+> [`fourth-wave-handover.md`](../handovers/fourth-wave-handover.md); evidence base in
 > [`third-wave-retest.md`](third-wave-retest.md).
 >
 > **Status of these numbers:** a new, parallel diagnostic on current-vintage

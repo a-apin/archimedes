@@ -1,7 +1,7 @@
 # Portfolio Constructor Decision Tree
 
 > **Status:** Drafted 2026-05-22 as Phase 0 of the
-> [Spine+ v2 plan](./spine-plus-v2-plan.md). Closes survey gap cluster #5
+> [Spine+ v2 plan](../plans/spine-plus-v2-plan.md). Closes survey gap cluster #5
 > (load-bearing) from [`chuan-architecture-survey.md`](../chuan-architecture-survey.md).
 >
 > **Lineage:** Day-10 introduced `portfolio_agent.py` (850 lines) as an

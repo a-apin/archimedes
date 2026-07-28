@@ -34,7 +34,7 @@
 | 30%    | Traction                | Real users, real transactions, real volume *during the event window* (arc-canteen telemetry is the scoreboard) |
 | 20%    | Circle Tool Usage       | Creative use of Wallets, CCTP, Gateway, App Kit, Contracts, USYC, USDC, Paymaster |
 | 20%    | Innovation              | Novel approaches, emergent behavior, research insight       |
-| **+**  | **Arc OSS Showcase**    | **Separate parallel competition — reusable open-source primitives** (see [`../ARC-OSS-SHOWCASE.md`](../ARC-OSS-SHOWCASE.md)) |
+| **+**  | **Arc OSS Showcase**    | **Separate parallel competition — reusable open-source primitives** (see [`../ARC-OSS-SHOWCASE.md`](archive/agora-2026-05/ARC-OSS-SHOWCASE.md)) |
 
 ## TL;DR — Day-10 running score: ~28 / 40 ≈ 70%, plus a strong Arc OSS bid
 
@@ -177,7 +177,7 @@ arc-canteen status
 
 ## ⭐ NEW: Arc OSS Showcase — strong contender
 
-The Arc OSS Showcase is a parallel competition for codebases other Arc builders can fork. Our positioning lives in [`../ARC-OSS-SHOWCASE.md`](../ARC-OSS-SHOWCASE.md).
+The Arc OSS Showcase is a parallel competition for codebases other Arc builders can fork. Our positioning lives in [`../ARC-OSS-SHOWCASE.md`](archive/agora-2026-05/ARC-OSS-SHOWCASE.md).
 
 **What we expose as forkable primitives:**
 

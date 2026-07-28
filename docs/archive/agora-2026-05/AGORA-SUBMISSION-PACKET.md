@@ -7,9 +7,9 @@ Everything you need to (1) record the demo, (2) submit the Google Form, (3) push
 ## 1. THE DEMO SCRIPT — read this aloud, ~2:50 total
 
 **Recording setup before you hit record:**
-- Browser tab 1: `http://13.40.112.220/` (the live app, landing page)
-- Browser tab 2: `http://13.40.112.220/corpus` (Corpus Explorer pre-warmed)
-- Browser tab 3: `http://13.40.112.220/generate` (Generate page)
+- Browser tab 1: `http://[redacted-host]/` (the live app, landing page)
+- Browser tab 2: `http://[redacted-host]/corpus` (Corpus Explorer pre-warmed)
+- Browser tab 3: `http://[redacted-host]/generate` (Generate page)
 - Browser tab 4: `https://testnet.arcscan.app/` (an existing reasoning trace tx)
 - Wallet already connected (Circle passkey or MetaMask), with faucet USDC in it
 - Screen at 1.25× zoom, devtools closed, notifications off
@@ -103,7 +103,7 @@ Form URL: <https://forms.gle/ok3Gr9zhmHnApvK48>
 
 ### #1 Email
 ```
-dbrowne.up@gmail.com
+[redacted]
 ```
 
 ### #2 Project Name
@@ -152,13 +152,13 @@ The compelling part: the textbook tools to prevent this — Deflated Sharpe Rati
 ```
 Archimedes is "Linus for quantitative finance" — a research-grounded strategy-generation instrument for capable non-experts who want their idle USDC to compound thoughtfully. The user describes what they want; Archimedes fuses that intent with live market regime data and a 10,000-paper quantitative-finance research library into a candidate strategy. The strategy passes through a four-control selection-bias rigor gate (Deflated Sharpe Ratio, Probability of Backtest Overfitting, walk-forward out-of-sample testing, look-ahead static audit) before admission to the Tier-1 library. Two strategies currently pass the full gate against 22 years of real SPY data. Execution is into non-custodial ERC-4626 vaults on Arc testnet with USDC settlement; every reasoning trace is keccak256-hashed and anchored on a deployed ReasoningTraceRegistry contract.
 
-The stack: Python 3.12 / FastAPI / SQLAlchemy backend in a 6-container docker-compose stack (backend + postgres + redis + nginx + oracle feeder + autonomous agent runner); React 19 + Vite 8 + viem frontend with multi-wallet UX (MetaMask + Coinbase + Circle Modular Wallets passkey via EIP-6963); 11 Solidity contracts deployed via Foundry on Arc testnet; Circle Developer-Controlled Wallets for autonomous on-chain execution (no raw private keys in production); LLM-provider-agnostic backend supporting GLM / Anthropic / OpenAI / Ollama. The marquee addition is an LLM-driven agentic portfolio advisor running a 12-iteration tool-use loop that picks individual instruments (not just ETF baskets) and anchors each pick to a paper-grounded strategy passport. Live at http://13.40.112.220.
+The stack: Python 3.12 / FastAPI / SQLAlchemy backend in a 6-container docker-compose stack (backend + postgres + redis + nginx + oracle feeder + autonomous agent runner); React 19 + Vite 8 + viem frontend with multi-wallet UX (MetaMask + Coinbase + Circle Modular Wallets passkey via EIP-6963); 11 Solidity contracts deployed via Foundry on Arc testnet; Circle Developer-Controlled Wallets for autonomous on-chain execution (no raw private keys in production); LLM-provider-agnostic backend supporting GLM / Anthropic / OpenAI / Ollama. The marquee addition is an LLM-driven agentic portfolio advisor running a 12-iteration tool-use loop that picks individual instruments (not just ETF baskets) and anchors each pick to a paper-grounded strategy passport. Live at http://[redacted-host].
 ```
 
 ### #11 Traction
 *Run `arc-canteen status` and paste the numbers — placeholders below.*
 ```
-Live testnet deploy at http://13.40.112.220 has been up since the Day-3 EC2 deploy and accepting traffic throughout the build. Coordinated launch via Discord (Canteen + Build on Arc), X, Bluesky, and LinkedIn is going out within the submission window.
+Live testnet deploy at http://[redacted-host] has been up since the Day-3 EC2 deploy and accepting traffic throughout the build. Coordinated launch via Discord (Canteen + Build on Arc), X, Bluesky, and LinkedIn is going out within the submission window.
 
 Internal team validation: 5 builders across 5 timezones (US/UK/EU/Brazil/Turkey) using the platform daily for our own scope-validation; 2 of those are working portfolio professionals (one with CTO experience at a quant trading platform, one ASA Statistical Insight World Champion / actuarial trainee) treating the rigor surface as a serious work tool.
 
@@ -180,7 +180,7 @@ https://github.com/a-apin/archimedes-arcadia
 
 ### #13 Project Live (optional)
 ```
-http://13.40.112.220
+http://[redacted-host]
 ```
 
 ### #14 Project Video Demo
@@ -213,7 +213,7 @@ Archimedes exposes twelve forkable primitives that other Arc builders can adopt 
 
 Each primitive has a dedicated spec or walkthrough doc — a forker can implement against the spec without reading the full source. We're under the Unlicense (no attribution required, more permissive than MIT). The existing Arc reference repos (arc-commerce, arc-p2p-payments, etc.) cover transaction-flow plumbing; Archimedes adds the AI-decision-provenance layer on top. They compose; they don't overlap.
 
-806 backend tests + 16 analytics-engine tests green; 11 contracts deployed on Arc testnet; live at http://13.40.112.220. Full positioning + per-primitive how-to-fork docs in ARC-OSS-SHOWCASE.md in the repo root.
+806 backend tests + 16 analytics-engine tests green; 11 contracts deployed on Arc testnet; live at http://[redacted-host]. Full positioning + per-primitive how-to-fork docs in ARC-OSS-SHOWCASE.md in the repo root.
 ```
 
 ### #17 Circle / Arc Feedback
@@ -266,7 +266,7 @@ Two weeks. 5 builders, 5 timezones. 553 commits, 11 Solidity contracts on Arc, 8
 
 It's testnet-only and honest about it — faucet USDC, no real funds, AI can be wrong. What we can prove today is provenance and rigor.
 
-🔗 Live: http://13.40.112.220
+🔗 Live: http://[redacted-host]
 🔗 Code (Unlicense): https://github.com/a-apin/archimedes-arcadia
 🔗 OSS primitives: https://github.com/a-apin/archimedes-arcadia/blob/main/ARC-OSS-SHOWCASE.md
 
@@ -313,7 +313,7 @@ Built with @circle Modular Wallets passkey auth — sign up with your fingerprin
 
 **Post 5 (CTA):**
 ```
-Try it on testnet: http://13.40.112.220
+Try it on testnet: http://[redacted-host]
 Code (Unlicense, fork freely): https://github.com/a-apin/archimedes-arcadia
 12 forkable primitives for Arc builders: https://github.com/a-apin/archimedes-arcadia/blob/main/ARC-OSS-SHOWCASE.md
 
@@ -339,7 +339,7 @@ THE HONESTY. Arc has no mainnet yet — we run on testnet, faucet USDC, no real 
 
 It's fully open source under the Unlicense — the most permissive license possible. Twelve primitives are documented as standalone-forkable for other Arc builders: the rigor gate, the on-chain reasoning trace anchoring, the 3-input fusion engine, the Circle passkey wallet integration, the regime-conditional Kelly optimizer (Ang & Bekaert 2002, Review of Financial Studies). Each has a dedicated spec.
 
-Try it: http://13.40.112.220
+Try it: http://[redacted-host]
 Code: https://github.com/a-apin/archimedes-arcadia
 
 Thanks to the team — Marten Windler, Daniel Reis dos Santos, Chuan Bai, Önder Akkaya — and to Canteen, Circle, and Arc for building the rails.

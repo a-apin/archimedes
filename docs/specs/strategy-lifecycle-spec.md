@@ -1,7 +1,7 @@
 # Strategy Lifecycle Spec
 
 > **Status:** Drafted 2026-05-22 as Phase 0 of the
-> [Spine+ v2 plan](./spine-plus-v2-plan.md). Authoritative for the
+> [Spine+ v2 plan](../plans/spine-plus-v2-plan.md). Authoritative for the
 > `StrategyRecord.status` enum, Library/Portfolio filters, and every state
 > transition in Phases 2-5.
 >

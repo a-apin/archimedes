@@ -1,7 +1,7 @@
 # Handover: Building the Second Wave of Multi-Asset Strategies
 
 > **Audience:** the agent (or teammate) implementing all three phases of
-> [`second-wave-multi-asset-strategies.md`](second-wave-multi-asset-strategies.md).
+> [`second-wave-multi-asset-strategies.md`](../plans/second-wave-multi-asset-strategies.md).
 > **Author:** Önder, 2026-06-11. **Prereq read:** that roadmap + the repo
 > `CLAUDE.md`. This doc is the *how* and *where*; the roadmap is the *what* and *why*.
 

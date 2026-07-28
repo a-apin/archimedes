@@ -17,7 +17,7 @@ How Archimedes uses Arc and the Circle SDK, plus pointers into the `context-arc`
 | USDC (ERC-20, 6 decimals) | `0x3600000000000000000000000000000000000000` |
 | Gas token | USDC (18 decimals native) — no ETH needed |
 
-**Onboarding flow:** visit <https://faucet.circle.com> → connect wallet → receive 20 testnet USDC on Arc. Refills every 2 hours. USDC is the native gas token, so faucet funds cover both gas and trading. **No Arc mainnet yet** — see [`README.md` § Status](README.md#status-2026-05-22) for the honest framing.
+**Onboarding flow:** visit <https://faucet.circle.com> → connect wallet → receive 20 testnet USDC on Arc. Refills every 2 hours. USDC is the native gas token, so faucet funds cover both gas and trading. **No Arc mainnet yet** — see [`README.md` § Status](../README.md#status-2026-05-22) for the honest framing.
 
 ## Circle sponsor alignment
 
@@ -48,9 +48,9 @@ The 10 deployed contracts:
 
 ## Using the `context-arc` submodule
 
-[`submodules/context-arc/`](submodules/context-arc/) is Circle's curated bundle of Arc + Circle developer documentation and 5 reference codebases (`arc-commerce`, `arc-escrow`, `arc-fintech`, `arc-multichain-wallet`, `arc-p2p-payments`). It is the single best place to look up anything Arc- or Circle-specific.
+[`submodules/context-arc/`](../submodules/context-arc) is Circle's curated bundle of Arc + Circle developer documentation and 5 reference codebases (`arc-commerce`, `arc-escrow`, `arc-fintech`, `arc-multichain-wallet`, `arc-p2p-payments`). It is the single best place to look up anything Arc- or Circle-specific.
 
-Start with [`submodules/context-arc/AGENTS.md`](submodules/context-arc/AGENTS.md) for the entry-point index. Task-routed quick reference:
+Start with [`submodules/context-arc/AGENTS.md`](../submodules/context-arc/AGENTS.md) for the entry-point index. Task-routed quick reference:
 
 | Task                                            | Start with                                                            |
 | ----------------------------------------------- | --------------------------------------------------------------------- |
@@ -73,8 +73,8 @@ Or via the canteen CLI: `arc-canteen context sync` (drops a copy into `~/.arc-ca
 
 ## Related docs
 
-- [`README.md`](README.md) — project overview + status
-- [`SETUP.md`](SETUP.md) — prerequisites + 5-step install
-- [`OPERATIONS.md`](OPERATIONS.md) — RPC URL deep-dive + LLM backends + security
-- [`ARC-OSS-SHOWCASE.md`](ARC-OSS-SHOWCASE.md) — forkable primitives for the Arc OSS Showcase competition
-- [`docs/infra-setup.md`](docs/infra-setup.md) — EC2 deployment + CI/CD
+- [`README.md`](../README.md) — project overview + status
+- [`SETUP.md`](../SETUP.md) — prerequisites + 5-step install
+- [`docs/runbooks/operations.md`](runbooks/operations.md) — RPC URL deep-dive + LLM backends + security
+- [`docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`](archive/agora-2026-05/ARC-OSS-SHOWCASE.md) — forkable primitives for the Arc OSS Showcase competition
+- [`docs/infra-setup.md`](infra-setup.md) — EC2 deployment + CI/CD

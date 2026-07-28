@@ -1,7 +1,7 @@
 # KB Integration Spec
 
 > **Status:** Drafted 2026-05-22 as Phase 0 of the
-> [Spine+ v2 plan](./spine-plus-v2-plan.md). Authoritative for Phase 3c
+> [Spine+ v2 plan](../plans/spine-plus-v2-plan.md). Authoritative for Phase 3c
 > implementation.
 >
 > **Lineage:** Wires the existing

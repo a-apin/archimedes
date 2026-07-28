@@ -8,9 +8,9 @@ For repo-level setup + operations, start at the **repo root**:
 
 - [`../README.md`](../README.md) — project overview + status + documentation map
 - [`../SETUP.md`](../SETUP.md) — prerequisites + 5-step install + platform notes + test suite
-- [`../OPERATIONS.md`](../OPERATIONS.md) — run the stack + RPC deep-dive + LLM backends + traction + security
-- [`../ARC.md`](../ARC.md) — Arc testnet reference + Circle sponsor alignment
-- [`../ARC-OSS-SHOWCASE.md`](../ARC-OSS-SHOWCASE.md) — Arc OSS Showcase positioning + forkable primitives
+- [`../OPERATIONS.md`](runbooks/operations.md) — run the stack + RPC deep-dive + LLM backends + traction + security
+- [`../ARC.md`](arc-integration.md) — Arc testnet reference + Circle sponsor alignment
+- [`../ARC-OSS-SHOWCASE.md`](archive/agora-2026-05/ARC-OSS-SHOWCASE.md) — Arc OSS Showcase positioning + forkable primitives
 - [`../CLAUDE.md`](../CLAUDE.md) — project context for Claude Code sessions
 
 ## Product spine (canonical — read these first)
@@ -38,7 +38,7 @@ Durable implementation contracts. Spec-only items are tracked under their respec
 | [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md) | shipped | DSR + PBO + walk-forward OOS + look-ahead audit math + thresholds. 2 Tier-1 strategies pass today. |
 | [`specs/strategy-fusion-spec.md`](specs/strategy-fusion-spec.md) | shipped | Multi-paper fusion engine. SPECTER2 + RAG upgrade is the unblocked `#96` follow-on. |
 | [`specs/strategy-lifecycle-spec.md`](specs/strategy-lifecycle-spec.md) | shipped (Phase 0) | Generated → Validated → Deployed → Active → Completed/Expired/Rejected. The state machine fusion-evaluator output enters. |
-| [`specs/portfolio-constructor-decision-tree.md`](specs/portfolio-constructor-decision-tree.md) | shipped (Phase 0) | Names `portfolio_agent.py` (top-level) + `portfolio_optimizer.py` (math leaf) as canonical; retirement of the other two filed as [#131](https://github.com/a-apin/archimedes-arcadia/issues/131). |
+| [`specs/portfolio-constructor-decision-tree.md`](adr/portfolio-constructor-decision-tree.md) | shipped (Phase 0) | Names `portfolio_agent.py` (top-level) + `portfolio_optimizer.py` (math leaf) as canonical; retirement of the other two filed as [#131](https://github.com/a-apin/archimedes-arcadia/issues/131). |
 | [`specs/page-roles-spec.md`](specs/page-roles-spec.md) | shipped (Phase 0) | Per-page ownership in the spine — what each page is for + isn't for. Backs the Reasoning restructure + Library deep-link work. |
 | [`specs/vault-semantics-spec.md`](specs/vault-semantics-spec.md) | spec-only — Phase 4 | Vault lifecycle + trade-window semantics. Waits on Marten/Chuan alignment. |
 | [`specs/generation-streaming-spec.md`](specs/generation-streaming-spec.md) | shipped (Phase 2) | SSE streaming protocol for `/api/generate/*`. Backs the streaming Generate UI. |
@@ -52,7 +52,7 @@ Durable implementation contracts. Spec-only items are tracked under their respec
 
 | Doc | Status | What it is |
 |---|---|---|
-| [`specs/spine-plus-v2-plan.md`](specs/spine-plus-v2-plan.md) | active — Phases 0–3 shipped + Phase 6 (onboarding tour) merged; Phase 7 all shipped via t2o2; Phases 4 & 5 in-flight | The master plan for the spine-plus-v2 effort. |
+| [`specs/spine-plus-v2-plan.md`](plans/spine-plus-v2-plan.md) | active — Phases 0–3 shipped + Phase 6 (onboarding tour) merged; Phase 7 all shipped via t2o2; Phases 4 & 5 in-flight | The master plan for the spine-plus-v2 effort. |
 
 ## Specs — t2o2 issue specs (all closed and archived)
 
@@ -108,11 +108,11 @@ Docs that were authoritative at an earlier phase and have since been superseded.
 
 | Archived doc | Now superseded by |
 |---|---|
-| [`archive/mvp-scope-memo.md`](archive/mvp-scope-memo.md) | [`user-stories.md`](user-stories.md) (spine) + [`AUDIT_2026-06-14.md`](../AUDIT_2026-06-14.md) (current scope) |
-| [`archive/launch-plan-2026-05-19.md`](archive/launch-plan-2026-05-19.md) | [`AUDIT_2026-06-14.md`](../AUDIT_2026-06-14.md) |
-| [`archive/ui-simplification-proposal-2026-05-20.md`](archive/ui-simplification-proposal-2026-05-20.md) | [`specs/page-roles-spec.md`](specs/page-roles-spec.md) + spine Phases 0–7 shipped per [`specs/spine-plus-v2-plan.md`](specs/spine-plus-v2-plan.md) |
-| [`archive/evening-execution-plan-2026-05-24.md`](archive/evening-execution-plan-2026-05-24.md) | Shipped via PRs #220–#241; reality captured in [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) and [`AUDIT_2026-06-14.md`](../AUDIT_2026-06-14.md) |
-| [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) | [`AUDIT_2026-06-14.md`](../AUDIT_2026-06-14.md) |
+| [`archive/mvp-scope-memo.md`](archive/mvp-scope-memo.md) | [`user-stories.md`](user-stories.md) (spine) + [`AUDIT_2026-06-14.md`](audits/2026-06-14-full-tree-audit.md) (current scope) |
+| [`archive/launch-plan-2026-05-19.md`](archive/launch-plan-2026-05-19.md) | [`AUDIT_2026-06-14.md`](audits/2026-06-14-full-tree-audit.md) |
+| [`archive/ui-simplification-proposal-2026-05-20.md`](archive/ui-simplification-proposal-2026-05-20.md) | [`specs/page-roles-spec.md`](specs/page-roles-spec.md) + spine Phases 0–7 shipped per [`specs/spine-plus-v2-plan.md`](plans/spine-plus-v2-plan.md) |
+| [`archive/evening-execution-plan-2026-05-24.md`](archive/evening-execution-plan-2026-05-24.md) | Shipped via PRs #220–#241; reality captured in [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) and [`AUDIT_2026-06-14.md`](audits/2026-06-14-full-tree-audit.md) |
+| [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) | [`AUDIT_2026-06-14.md`](audits/2026-06-14-full-tree-audit.md) |
 | [`archive/rfb-alignment.md`](archive/rfb-alignment.md) | [`arc-alignment.md`](arc-alignment.md) + [`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md) |
 | [`archive/qfin-paper-corpus-seed.md`](archive/qfin-paper-corpus-seed.md) | [`corpus-architecture.md`](corpus-architecture.md) |
 | [`archive/agora_project_analysis.md`](archive/agora_project_analysis.md) | [`architectural-principles.md`](architectural-principles.md) + [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md) |

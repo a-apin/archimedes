@@ -2,8 +2,8 @@
 
 > **Audience:** the agent (or teammate) building the next strategies / engine work
 > solo. **Author:** Önder, 2026-06-11. **Prereq read:** the repo `CLAUDE.md`, plus
-> [`quant-roadmap.md`](quant-roadmap.md) (the *what/why*) and
-> [`second-wave-universe-experiment.md`](second-wave-universe-experiment.md) (why a
+> [`quant-roadmap.md`](../plans/quant-roadmap.md) (the *what/why*) and
+> [`second-wave-universe-experiment.md`](../quant/second-wave-universe-experiment.md) (why a
 > bigger universe alone won't save anything). This doc is the *how/where*.
 >
 > **Operating context (important):** the rest of the team is offline. You are

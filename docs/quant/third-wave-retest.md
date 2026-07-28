@@ -1,8 +1,8 @@
 # Third-wave re-test: the CANDIDATEs through the cost model + walk-forward
 
 > **Status:** Findings note, 2026-06-11 (Önder, quant lane). Item 4 of the
-> third wave (see [`third-wave-handover.md`](third-wave-handover.md) §11).
-> Companion to [`transaction-cost-turnover-model.md`](transaction-cost-turnover-model.md)
+> third wave (see [`third-wave-handover.md`](../handovers/third-wave-handover.md) §11).
+> Companion to [`transaction-cost-turnover-model.md`](../specs/transaction-cost-turnover-model.md)
 > (item 1) and the walk-forward harness (item 3, `walk_forward.py`).
 > Reproduce with `cd analytics-engine && uv run python scripts/retest_candidates.py`
 > (read-only — no fixture is written; the add-only law stands).

@@ -1,6 +1,6 @@
 # Operations
 
-Running, configuring, and operating the Archimedes stack — local and production. For first-time setup, read [`SETUP.md`](SETUP.md) first.
+Running, configuring, and operating the Archimedes stack — local and production. For first-time setup, read [`SETUP.md`](../../SETUP.md) first.
 
 > **Status:** Day-10 (2026-05-22). Lead: Chuan.
 
@@ -17,12 +17,12 @@ Running, configuring, and operating the Archimedes stack — local and productio
 
 ## The 6-service stack
 
-`docker compose up -d --build` brings up 6 services (see [`SETUP.md`](SETUP.md#step-2--spin-up-the-stack-recommended-path) for the table). Beyond what's listed there:
+`docker compose up -d --build` brings up 6 services (see [`SETUP.md`](../../SETUP.md#step-2--spin-up-the-stack-recommended-path) for the table). Beyond what's listed there:
 
 - **Backend** is wired to start the autonomous agent loop, oracle price feeder, statistical regime detector, Kelly/risk-parity portfolio constructor, and the four-control selection-bias gate as in-process services. The `agent` and `oracle` standalone containers run their own loops independently.
 - **Postgres** persists strategies, backtests, reasoning traces, the 10,000-paper q-fin corpus, and vault metadata. Volume `pgdata` survives `docker compose down`.
 - **Redis** holds live regime classifications, agent heartbeat, trace index, and the job queue. Volatile by design — fine to lose on restart.
-- **`archimedes-corpus-artifact`** named volume is mounted but currently empty — reserved for the future KB-pipeline artifact build (per [`docs/corpus-architecture.md`](docs/corpus-architecture.md)).
+- **`archimedes-corpus-artifact`** named volume is mounted but currently empty — reserved for the future KB-pipeline artifact build (per [`docs/corpus-architecture.md`](../corpus-architecture.md)).
 
 ## Configuration via `.env`
 
@@ -46,7 +46,7 @@ You can leave these blank to start — the API will boot, you can hit the routes
 
 ## LLM backends (4 options, same code)
 
-The `LLM_*` env vars configure the LLM provider. All four use the same code paths via [`backend/archimedes/services/llm_backend.py`](backend/archimedes/services/llm_backend.py).
+The `LLM_*` env vars configure the LLM provider. All four use the same code paths via [`backend/archimedes/services/llm_backend.py`](../../backend/archimedes/services/llm_backend.py).
 
 | Provider | Config | Use case |
 |----------|--------|----------|
@@ -74,7 +74,7 @@ arc-canteen rpc eth_chainId
 docker compose up -d
 ```
 
-Full Arc testnet reference (chain ID, USDC address, faucet, etc.) is in [`ARC.md`](ARC.md).
+Full Arc testnet reference (chain ID, USDC address, faucet, etc.) is in [`docs/arc-integration.md`](../arc-integration.md).
 
 ## Understanding the RPC URL
 
@@ -172,7 +172,7 @@ The local docker-compose stack runs the same code as the EC2 deployment. To veri
 
 This checks `/health` and asserts: live LLM backend, non-empty corpus (≥10,000 papers), fusion enabled.
 
-Full production infrastructure (EC2 instance, CI/CD pipeline, Terraform, deployment flow) documented in [`docs/infra-setup.md`](docs/infra-setup.md).
+Full production infrastructure (EC2 instance, CI/CD pipeline, Terraform, deployment flow) documented in [`docs/infra-setup.md`](../infra-setup.md).
 
 ## Reporting traction (the 30% rubric weight)
 
@@ -188,9 +188,9 @@ arc-canteen update-product "Live testnet deploy — 10 contracts on Arc + LLM-dr
 arc-canteen update-traction "Shared live demo URL with two crypto-native users — first external traffic on the EC2 deploy"
 ```
 
-Run `arc-canteen status` to view your current dashboard — what the judges will see. The judging-rubric assessment in [`docs/judging-rubric-assessment.md`](docs/judging-rubric-assessment.md) breaks down where we currently stand on each weighted criterion.
+Run `arc-canteen status` to view your current dashboard — what the judges will see. The judging-rubric assessment in [`docs/judging-rubric-assessment.md`](../judging-rubric-assessment.md) breaks down where we currently stand on each weighted criterion.
 
-> **Arc OSS Showcase submissions** use the same CLI with an `"ArcOSS:"` prefix on the product update (per the showcase landing page at <https://arc-oss.thecanteenapp.com/>). See [`ARC-OSS-SHOWCASE.md`](ARC-OSS-SHOWCASE.md).
+> **Arc OSS Showcase submissions** use the same CLI with an `"ArcOSS:"` prefix on the product update (per the showcase landing page at <https://arc-oss.thecanteenapp.com/>). See [`docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`](../archive/agora-2026-05/ARC-OSS-SHOWCASE.md).
 
 ## Security notes
 

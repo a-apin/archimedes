@@ -2,7 +2,7 @@
 
 > **Status:** Drafted 2026-05-22; refreshed 2026-05-23 with phase-completion audit.
 >
-> **As of 2026-05-23:** Phases 0, 1, 2, 3a, 3b, 6, 7 are ✅ LANDED. Phase 3c is 🟡 SKELETON (production KB body deferred). Phases 4 + 5 are still ⏸ pending Marten/Chuan alignment. Phases 8 + 9 are specced separately in [`phase8-9-landing-and-fusion-spec.md`](phase8-9-landing-and-fusion-spec.md) and scheduled for the next implementation block.
+> **As of 2026-05-23:** Phases 0, 1, 2, 3a, 3b, 6, 7 are ✅ LANDED. Phase 3c is 🟡 SKELETON (production KB body deferred). Phases 4 + 5 are still ⏸ pending Marten/Chuan alignment. Phases 8 + 9 are specced separately in [`phase8-9-landing-and-fusion-spec.md`](../handovers/phase8-9-landing-and-fusion-spec.md) and scheduled for the next implementation block.
 >
 > **Branch:** `dbrowneup/spine-plus-v2` (PR #135 open), branched off `main` and rebased forward as `main` moves.
 >
@@ -192,7 +192,7 @@ this doc without re-asking.
 
 ### 0.6 `docs/specs/kb-integration-spec.md`
 
-How [`submodules/KnowledgeBase/`](../../submodules/KnowledgeBase/) lands on our
+How [`submodules/KnowledgeBase/`](../../submodules/KnowledgeBase) lands on our
 corpus. **No re-implementation** — the spec describes how to invoke the
 existing pipeline and where its outputs persist.
 
@@ -950,8 +950,8 @@ Update this table at phase close. No prospective estimates.
 | Phase 7 specs drafted | 2026-05-22 | 2026-05-22 | ~1 | 4 issue specs in `docs/specs/`; #128 filed |
 | 6 — Onboarding | 2026-05-22 | 2026-05-22 | ~1.5 | `60d1ee5` · PR #134 (6-card tour + localStorage + ? re-launch) |
 | 7 — Dedup via t2o2 | 2026-05-22 | 2026-05-23 | ~0.5 (humans) + bot | All 6 issues closed; PR #136 closed follow-up gaps |
-| 8 — Landing + UX polish (PENDING) | | | | Spec at [`phase8-9-landing-and-fusion-spec.md`](phase8-9-landing-and-fusion-spec.md) |
-| 9 — Fusion UI surface (PENDING) | | | | Spec at [`phase8-9-landing-and-fusion-spec.md`](phase8-9-landing-and-fusion-spec.md) |
+| 8 — Landing + UX polish (PENDING) | | | | Spec at [`phase8-9-landing-and-fusion-spec.md`](../handovers/phase8-9-landing-and-fusion-spec.md) |
+| 9 — Fusion UI surface (PENDING) | | | | Spec at [`phase8-9-landing-and-fusion-spec.md`](../handovers/phase8-9-landing-and-fusion-spec.md) |
 | 4 — Vault (PENDING) | | | | needs Marten + Chuan alignment |
 | 5 — Real trade (PENDING) | | | | needs Chuan alignment |
 
@@ -964,7 +964,7 @@ When the next session resumes:
 1. Read this doc + [`docs/chuan-architecture-survey.md`](../chuan-architecture-survey.md) for context.
 2. Confirm branch hygiene: are we on `dbrowneup/spine-plus-v2`? Rebase onto latest `origin/main` (moves continuously).
 3. **Phases 0, 1, 2, 3a, 3b, 6, 7 are LANDED.** Phase 3c is skeleton-only (KB body deferred). `pytest -q` should be green.
-4. **Next: Phases 8 + 9** per [`phase8-9-landing-and-fusion-spec.md`](phase8-9-landing-and-fusion-spec.md):
+4. **Next: Phases 8 + 9** per [`phase8-9-landing-and-fusion-spec.md`](../handovers/phase8-9-landing-and-fusion-spec.md):
    - Phase 8 first — mechanical (~30 min of edits): Landing CTA fixes + wallet button + RegimePanel dedup + Onboarding card opacity + Corpus Catalog cards→table + design polish.
    - Phase 9 second — Fusion engine UI surface as a third Generate mode toggle.
 5. **Phase 4 + 5** — still pending Marten / Chuan alignment on open questions. If implementation proceeds without alignment, flag risk in PR description so they can course-correct on review.

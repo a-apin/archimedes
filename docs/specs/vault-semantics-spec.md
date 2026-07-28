@@ -1,7 +1,7 @@
 # Vault Semantics Spec
 
 > **Status:** Drafted 2026-05-22 as Phase 0 of the
-> [Spine+ v2 plan](./spine-plus-v2-plan.md). Authoritative for Phase 4
+> [Spine+ v2 plan](../plans/spine-plus-v2-plan.md). Authoritative for Phase 4
 > implementation; supersedes any conflicting language in earlier docs.
 >
 > **Lineage:** Builds on the multi-asset NAV `Vault.sol` deployed Day-10
