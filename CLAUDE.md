@@ -399,7 +399,7 @@ they actually shipped (Day 4):
   it. GLM is removed from prod; **BYOK and a local-Ollama single-user path are preserved.**
   `response.model` is the provenance of record across the GLM→Bedrock migration.
 - **Backtesting:** [backtrader](https://github.com/mementum/backtrader) for v1 per
-  [`docs/adr/backtrader-vs-vectorbt-decision-memo.md`](docs/adr/backtrader-vs-vectorbt-decision-memo.md).
+  [`docs/adr/backtrader-backtest-engine.md`](docs/adr/backtrader-backtest-engine.md).
   Supersedes `docs/design.md` § 6 ("vectorbt / custom numpy engine"); `design.md`
   is archived in full and the architecture spec is now
   `docs/architecture.md`. Migration to
@@ -1023,6 +1023,11 @@ These five architectural commitments are load-bearing for the pitch's defensibil
 Detail in [`docs/architectural-principles.md`](docs/architectural-principles.md); principle
 here.
 
+> **Where these are decided:** each primitive below is a *summary* of a decision recorded
+> in [`docs/adr/`](docs/adr/README.md). The ADR is authoritative — status, date, owner,
+> alternatives and consequences all live there. If this section and an ADR disagree, the
+> ADR wins and this section is stale.
+
 > **Academic backstops for the architecture (added Day-12, 2026-05-24):**
 > - **Xia et al. 2026 — *Agentic Trading: When LLM Agents Meet Financial Markets*** ([arxiv 2605.19337](https://arxiv.org/abs/2605.19337), ESWA). The audit-grade survey of 19 trading-agent papers: **15/19 are R0** (no code/data artifacts), **0/19 reach R3** (fully replayable with artifact versioning + immutable provenance), **2/19** report time-consistent train/test splits, **1/19** has a transaction-cost model, **1/19** documents universe/survivorship handling. Archimedes is engineered to be the first production trading-agent system to ship at R3 and to implement every named protocol Xia formalizes (Outcome Embargo, Time-Aware Retrieval, Hierarchy of Truth, Source Tracking, `V_check`) as **enforced mechanisms** rather than advisory guidelines. Detail in [`docs/specs/xia-2026-protocols.md`](docs/specs/xia-2026-protocols.md).
 > - **Chen et al. 2026 — *StockBench*** ([arxiv 2510.02209](https://arxiv.org/abs/2510.02209)). The first contamination-free, closed-loop, multi-month trading-agent benchmark. GLM-4.5 → GLM-4.7 — which we ran in prod at the time of the benchmark, before the migration to Bedrock Converse / `amazon.nova-micro-v1:0` — ranks #3 globally on the model baseline (behind Kimi-K2 and Qwen3-235B-Instruct; ahead of Claude-4-Sonnet at #7 and GPT-5 at #9). **Honest about the agent result:** when we layer Archimedes' Strategy Generation Agent on top, our `T3.8` harness run lands at #15/15 (Sortino -0.91). That underperformance is itself a load-bearing data point — Xia et al. argue (and StockBench corroborates) that *all* LLM agents underperform passive baselines in many windows, and our pitch surfaces this rather than hides it. Detail in [`docs/benchmarks/stockbench-results.md`](docs/benchmarks/stockbench-results.md).
@@ -1047,12 +1052,21 @@ causal ordering — wiring this through the live `ReasoningTraceRegistry` is the
 
 ### 3. Non-custodial vault architecture
 
+ADR: [`docs/adr/non-custodial-vault-owner-agent.md`](docs/adr/non-custodial-vault-owner-agent.md)
+(owner ≠ agent). Settlement: [`docs/adr/arc-settlement-chain.md`](docs/adr/arc-settlement-chain.md).
+Market structure: [`docs/adr/two-tier-marketplace.md`](docs/adr/two-tier-marketplace.md).
+
 User funds NEVER pass through platform custody. ERC-4626 vault contracts per
 [`docs/specs/ecosystem-design-spec.md` § 3.2](docs/specs/ecosystem-design-spec.md) hold
 user USDC and synth tokens; the agent has rebalance authority only, not withdraw-to-
 platform authority.
 
 ### 4. Selection-bias correction (Tier-1 admission gate)
+
+ADRs: [`docs/adr/rigor-gate-unification.md`](docs/adr/rigor-gate-unification.md) (one gate),
+[`docs/adr/num-trials-self-containment.md`](docs/adr/num-trials-self-containment.md) (what
+counts as a trial — **Accepted, pending quant sign-off**),
+[`docs/adr/backtrader-backtest-engine.md`](docs/adr/backtrader-backtest-engine.md) (the engine).
 
 Every Tier-1 strategy passes Deflated Sharpe Ratio (Bailey & López de Prado 2014),
 Probability of Backtest Overfitting (Bailey/Borwein/López de Prado/Zhu 2014), walk-
@@ -1064,6 +1078,11 @@ submissions at the last Arc HackMoney. Detail in
 [`docs/specs/selection-bias-corrections-spec.md`](docs/specs/selection-bias-corrections-spec.md).
 
 ### 5. K=1 generation + externalized rigor gate
+
+ADRs: [`docs/adr/k1-generation-external-rigor-gate.md`](docs/adr/k1-generation-external-rigor-gate.md),
+and [`docs/adr/debate-society-sole-generation-pipeline.md`](docs/adr/debate-society-sole-generation-pipeline.md)
+for the 2026-07-09 cutover that made the debate society the only generator (the
+fusion/architect/agent routing tree described in older docs is retired).
 
 Codified 2026-05-23 after a Linus-Maestro architecture audit. The generation
 agent emits **one** winner per Generate call (plus a short list of

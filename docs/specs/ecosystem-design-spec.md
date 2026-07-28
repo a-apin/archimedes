@@ -35,6 +35,13 @@ The ecosystem is self-contained on Arc with USDC settlement.
 
 ## 1. Design Decisions (Resolved)
 
+> Decisions 2, 5, 9 and 14 (the two-tier marketplace, the vault token as the copy-trade
+> primitive, agent-as-a-service and the marketplace-as-landing-page) are recorded in
+> [`../adr/two-tier-marketplace.md`](../adr/two-tier-marketplace.md); settlement (decisions
+> 3, 7, 11) in [`../adr/arc-settlement-chain.md`](../adr/arc-settlement-chain.md); vault
+> custody in [`../adr/non-custodial-vault-owner-agent.md`](../adr/non-custodial-vault-owner-agent.md).
+> The ADRs carry the alternatives and consequences; this table is the summary index.
+
 | # | Decision | Choice |
 |---|----------|--------|
 | 1 | Tradeable units | **Two layers:** Layer 1 = individual synthetic/bridged assets; Layer 2 = vault tokens (ERC-20 shares of portfolios). Exchange trades both. |

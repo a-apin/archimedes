@@ -80,6 +80,12 @@ the machine-readable claim-integrity surface the new page should read from.
 
 ### 1.3 Generation layer (the "debate society") — [`backend/archimedes/agents/`](../backend/archimedes/agents)
 
+> Decision records: [`adr/debate-society-sole-generation-pipeline.md`](adr/debate-society-sole-generation-pipeline.md)
+> (why there is one path and no fallback),
+> [`adr/k1-generation-external-rigor-gate.md`](adr/k1-generation-external-rigor-gate.md) (K=1),
+> [`adr/num-trials-self-containment.md`](adr/num-trials-self-containment.md) (what deflates a
+> strategy's Sharpe).
+
 | Component | Path | Role |
 |---|---|---|
 | Orchestrator | [`agents/generation_pipeline.py`](../backend/archimedes/agents/generation_pipeline.py) | SSE lifecycle: `job_queued → brief_validated → pipeline_selected("debate") → candidates_selected → candidate_drafted/evaluated → best_selected → trace_hashed → persisted → done`. Debate is the **sole** live pipeline (Phase 3, issue #834); no LLM or empty corpus → explicit `GENERATION_UNAVAILABLE`, never a silent fallback |
@@ -125,7 +131,7 @@ the machine-readable claim-integrity surface the new page should read from.
 Separate uv-managed package; backtrader runner ([`analytics-engine/src/`](../analytics-engine/src)), **34 single-paper
 strategies** in [`analytics-engine/strategies/`](../analytics-engine/strategies) (consolidation to ~6 honest multi-paper
 strategies is a decided-but-not-executed plan — [`docs/audits/2026-07-09-curated-consolidation.md`](audits/2026-07-09-curated-consolidation.md)).
-Backtesting engine choice: backtrader per [`docs/adr/backtrader-vs-vectorbt-decision-memo.md`](adr/backtrader-vs-vectorbt-decision-memo.md).
+Backtesting engine choice: backtrader per [`docs/adr/backtrader-backtest-engine.md`](adr/backtrader-backtest-engine.md).
 
 ### 1.7 Contracts — [`contracts/src/`](../contracts/src) (Solidity + Foundry; deps as git submodules; `contracts-test.yml` CI)
 
@@ -155,6 +161,10 @@ Addresses: [`infra/ecs.tf`](../infra/ecs.tf) env + [`ui/src/config.js`](../ui/sr
 
 ### 1.8 Data stores
 
+> Decision record: [`adr/aurora-postgres-alembic-datastore.md`](adr/aurora-postgres-alembic-datastore.md)
+> — Aurora Serverless v2 as the system of record, Alembic as the only schema-change
+> mechanism, Redis as ephemeral state only.
+
 | Store | Prod | Local | What lives there |
 |---|---|---|---|
 | Postgres | **Aurora PostgreSQL 18.3** ([`infra/aurora.tf`](../infra/aurora.tf)) | `postgres:18-alpine` ([`docker-compose.yml`](../docker-compose.yml), `localdb` profile) | Strategies + proposals ([`models/strategy_store.py`](../backend/archimedes/models/strategy_store.py), [`models/strategy_proposal.py`](../backend/archimedes/models/strategy_proposal.py)), backtests + daily returns ([`models/backtest_store.py`](../backend/archimedes/models/backtest_store.py), [`models/daily_returns_store.py`](../backend/archimedes/models/daily_returns_store.py)), traces ([`models/trace.py`](../backend/archimedes/models/trace.py)), corpus ([`models/corpus_store.py`](../backend/archimedes/models/corpus_store.py), [`models/kg.py`](../backend/archimedes/models/kg.py)), vaults, users/identity, marketplace |
@@ -164,6 +174,11 @@ Addresses: [`infra/ecs.tf`](../infra/ecs.tf) env + [`ui/src/config.js`](../ui/sr
 | SSM Parameter Store | `/archimedes/prod/*` SecureStrings ([`infra/scripts/setup-ssm-secrets.sh`](../infra/scripts/setup-ssm-secrets.sh)) | `.env` | LLM keys, Circle creds, DB/Redis URLs — pull-model, nothing injected by CI |
 
 ### 1.9 Infra + CI/CD — [`infra/`](../infra), `.github/workflows/`
+
+> Decision records: [`adr/ec2-to-ecs-fargate-cutover.md`](adr/ec2-to-ecs-fargate-cutover.md)
+> (why Fargate, and what the cutover cost) and
+> [`adr/build-on-deploy-main-only.md`](adr/build-on-deploy-main-only.md) (why every merge to
+> `main` deploys).
 
 See §7 for topology. Terraform: `vpc.tf`, `alb.tf`, `waf.tf`, `cloudfront.tf`, `aurora.tf`,
 `elasticache.tf`, `ecr.tf`, `ecs.tf` (Fargate task: nginx :8080 + backend :8000 on one ENI),
@@ -243,7 +258,7 @@ EC2 box (no deploy path since #1058 killed the SSM compose path). Relocation IaC
 kb → scheduled Fargate task; EFS for corpus artifacts.
 ```
 
-- Web tier cut over to Fargate 2026-07-09 (#1056–#1059); the EC2 box is detached from the ALB but running as a rollback window (Phase-8 decommission pending). **Note:** [`CLAUDE.md`](../CLAUDE.md) § Deployment still describes EC2/docker-compose as the live picture — superseded (§9).
+- Web tier cut over to Fargate 2026-07-09 (#1056–#1059) — decision and consequences in [`adr/ec2-to-ecs-fargate-cutover.md`](adr/ec2-to-ecs-fargate-cutover.md); the EC2 box is detached from the ALB but running as a rollback window (Phase-8 decommission pending). **Note:** [`CLAUDE.md`](../CLAUDE.md) § Deployment still describes EC2/docker-compose as the live picture — superseded (§9).
 - Contract-address SSOT: Foundry broadcast → [`infra/ecs.tf`](../infra/ecs.tf) env (merged PR #1079) → `GET /api/config/contracts`; [`ui/src/config.js`](../ui/src/config.js) carries the matching hand-synced set (runtime fetch is the durable fix, not yet landed).
 - Local dev parity: one [`docker-compose.yml`](../docker-compose.yml) with `localdb` + `runners` profiles mirrors prod.
 - LLM: Bedrock in-region; BYOK and Ollama keep the single-user/local path AWS-optional.

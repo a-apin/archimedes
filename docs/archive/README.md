@@ -31,6 +31,6 @@ The current docs (listed in the right column above) are the canonical references
 
 ## Architecture decision records
 
-`docs/specs/backtrader-vs-vectorbt-decision-memo.md` was moved to [`docs/adr/`](../adr/)
+`docs/specs/backtrader-vs-vectorbt-decision-memo.md` was moved to [`docs/adr/backtrader-backtest-engine.md`](../adr/backtrader-backtest-engine.md) (renamed 2026-07-28 to match the directory convention)
 rather than here. ADRs are durable decisions that future contributors need to understand
 even though they're "settled" — they're not stale, they're load-bearing context.

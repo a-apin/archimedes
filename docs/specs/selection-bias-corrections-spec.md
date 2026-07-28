@@ -158,13 +158,24 @@ keeps `num_trials = library_size`.
 > **Owner sign-off:** the choice of formula (additive A vs. effective-N B) is Önder's
 > statistics call. This addendum records approach **A** as the shipped default pending his
 > review; promoting to B is a follow-up if candidate-pool over-deflation proves material.
+> *(Historical: formula A is superseded — see [`../adr/num-trials-self-containment.md`](../adr/num-trials-self-containment.md).
+> The pending-review state carried forward and is still open.)*
 
 #### Addendum (#1075, 2026-07-14) — decouple #2: num_trials is self-contained — SUPERSEDES the `+ library_size` term above
 
+> **Decision record: [`../adr/num-trials-self-containment.md`](../adr/num-trials-self-containment.md).**
+> That ADR is authoritative for *why* and for the decision's status; this section stays as
+> the mechanical spec of *what the code computes*. Do not re-argue the convention here.
+>
+> **Correction to the sign-off claim below:** the merge of PR #1075 is **not** a quant
+> sign-off. Two live code comments still ask for one — `generation_pipeline.py:~657`
+> ("Needs Önder's sign-off (portfolio math) — it changes DSR p-values") and
+> `selection_bias_routes.py:~310`. **It has never been obtained.** The ADR is therefore
+> marked `Accepted, pending quant sign-off`.
+
 PR #1075 deliberately reverses formula (A)'s `+ library_size` term. This is the one
 documented exception to #770's "only stricter" anti-goal, reviewed as such — the
-loosening is the point, not a side effect. Owner + statistics sign-off is the merge
-of that PR itself.
+loosening is the point, not a side effect.
 
 ```
 num_trials = n_candidates      # society/fusion generation paths (_society_num_trials(N))

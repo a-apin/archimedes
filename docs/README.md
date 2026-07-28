@@ -105,18 +105,24 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-07-28 | ADR index. All ten records are listed there. |
-| [`adr/aws-account-migration.md`](adr/aws-account-migration.md) | adopted | Dan Browne | 2026-06-24 | Production moved to account 037613907429 / us-east-1. |
-| [`adr/build-on-deploy-main-only.md`](adr/build-on-deploy-main-only.md) | adopted | Dan Browne | — | Build-on-deploy, main-only branch model. |
-| [`adr/chainlink-primary-oracle.md`](adr/chainlink-primary-oracle.md) | accepted | Dan Browne | 2026-07-01 | Chainlink-primary oracles. |
-| [`adr/fusion-primary-generation.md`](adr/fusion-primary-generation.md) | accepted | Dan Browne | — | Paper-grounded fusion as the generation path. |
-| [`adr/glm-to-bedrock-llm-migration.md`](adr/glm-to-bedrock-llm-migration.md) | decided | Dan Browne | — | GLM → Bedrock. |
-| [`adr/k1-generation-external-rigor-gate.md`](adr/k1-generation-external-rigor-gate.md) | adopted | Dan Browne | — | K=1 generation with an externalised rigor gate. |
-| [`adr/non-custodial-vault-owner-agent.md`](adr/non-custodial-vault-owner-agent.md) | accepted | Dan Browne | — | Owner ≠ agent; non-custodial vaults. |
-| [`adr/portfolio-constructor-consolidation.md`](adr/portfolio-constructor-consolidation.md) | decided | Dan Browne | — | Legacy constructor paths retired. |
-| [`adr/portfolio-constructor-decision-tree.md`](adr/portfolio-constructor-decision-tree.md) | decided | Önder Akkaya | — | Which constructor runs when. |
-| [`adr/rigor-gate-unification.md`](adr/rigor-gate-unification.md) | adopted | Önder Akkaya | — | One source of selection-bias truth. |
-| [`adr/backtrader-vs-vectorbt-decision-memo.md`](adr/backtrader-vs-vectorbt-decision-memo.md) | decided | Önder Akkaya | — | Backtrader chosen as the backtest engine. |
+| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-07-28 | ADR index and status vocabulary. All seventeen records are listed there. |
+| [`adr/arc-settlement-chain.md`](adr/arc-settlement-chain.md) | accepted | Dan Browne | 2026-05-13 | Arc testnet 5042002; USDC as settlement asset and native gas token. |
+| [`adr/two-tier-marketplace.md`](adr/two-tier-marketplace.md) | accepted | Dan Browne | 2026-05-13 | Verified / Community tiers; rigor as the wedge. |
+| [`adr/backtrader-backtest-engine.md`](adr/backtrader-backtest-engine.md) | accepted | Dan Browne | 2026-05-13 | backtrader chosen as the v1 backtest engine. |
+| [`adr/build-on-deploy-main-only.md`](adr/build-on-deploy-main-only.md) | accepted | Dan Browne | 2026-05-18 | Build-on-deploy, main-only branch model. |
+| [`adr/portfolio-constructor-decision-tree.md`](adr/portfolio-constructor-decision-tree.md) | accepted | Önder Akkaya | 2026-05-22 | Which constructor runs when. |
+| [`adr/k1-generation-external-rigor-gate.md`](adr/k1-generation-external-rigor-gate.md) | accepted | Dan Browne | 2026-05-23 | K=1 generation with an externalised rigor gate. |
+| [`adr/aws-account-migration.md`](adr/aws-account-migration.md) | accepted | Dan Browne | 2026-06-24 | Production moved to account 037613907429 / us-east-1. |
+| [`adr/glm-to-bedrock-llm-migration.md`](adr/glm-to-bedrock-llm-migration.md) | accepted | Dan Browne | 2026-06-24 | GLM → Bedrock. |
+| [`adr/non-custodial-vault-owner-agent.md`](adr/non-custodial-vault-owner-agent.md) | accepted | Dan Browne | 2026-06-26 | Owner ≠ agent; non-custodial vaults. |
+| [`adr/portfolio-constructor-consolidation.md`](adr/portfolio-constructor-consolidation.md) | accepted | Önder Akkaya | 2026-06-26 | Legacy constructor paths retired; dual-signal sizer activated. |
+| [`adr/rigor-gate-unification.md`](adr/rigor-gate-unification.md) | accepted | Dan Browne | 2026-06-26 | One source of selection-bias truth. |
+| [`adr/fusion-primary-generation.md`](adr/fusion-primary-generation.md) | superseded | Dan Browne | 2026-06-26 | Fusion-primary routing. Superseded by the debate-society record (2026-07-09). |
+| [`adr/chainlink-primary-oracle.md`](adr/chainlink-primary-oracle.md) | accepted | Dan Browne | 2026-07-01 | Chainlink-primary oracles with a thin, bounded admin fallback. |
+| [`adr/ec2-to-ecs-fargate-cutover.md`](adr/ec2-to-ecs-fargate-cutover.md) | accepted | Dan Browne | 2026-07-09 | Serving tier moved from one EC2 box to ECS Fargate behind the existing ALB. |
+| [`adr/debate-society-sole-generation-pipeline.md`](adr/debate-society-sole-generation-pipeline.md) | accepted | Dan Browne | 2026-07-09 | The debate society is the only generation path; no fallback. |
+| [`adr/num-trials-self-containment.md`](adr/num-trials-self-containment.md) | accepted, **pending quant sign-off** | Dan Browne | 2026-07-09 | DSR trial count depends only on the strategy's own search; curated strategies grade at num_trials = 1. |
+| [`adr/aurora-postgres-alembic-datastore.md`](adr/aurora-postgres-alembic-datastore.md) | accepted | Dan Browne | 2026-07-28 | Aurora Serverless v2 (18.3) + Alembic; Redis 7.1 ephemeral-only. |
 
 ## Plans and roadmaps (intent, not state)
 
@@ -162,6 +168,9 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 ## Conventions
 
 - **No dates in top-level filenames.** Dated files belong in `audits/`, `handovers/` or `archive/`, named `YYYY-MM-DD-slug.md`.
+- **A decision is stated once, in one ADR.** Prose docs link to the record; they do not
+  restate or re-argue it. If a spec disagrees with an `Accepted` ADR, the spec is wrong —
+  open a superseding ADR, do not patch the prose.
 - **One kind per directory.** `specs/` holds specs. Session logs go to `handovers/`, roadmaps to `plans/`, findings to `quant/`, decisions to `adr/`, prompt templates to `prompts/`.
 - **Never state a curated-library pass count in a doc.** Strategy pass/fail is whatever the live rigor gate returns; a number written here goes stale silently and has been wrong before. Point readers at the gate.
 - **Contract counts come from `GET /api/config/contracts`**, not from prose. The tree currently holds 12 Solidity sources / 22 `.sol` files / 21 ABIs.

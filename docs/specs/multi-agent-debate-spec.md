@@ -212,6 +212,13 @@ One line: *the larger pool + top-10 leaderboard live at the cheap debate-over-sh
 
 ## 5. Integration — replacement scope (additive in Phase 1, deletions deferred to cutover)
 
+> **The Phase-3 cutover has happened (2026-07-09).** The society is the sole generation
+> pipeline, the Strategy Architect is deleted (`ccf4f2f`, PR #1074) and
+> `ARCHIMEDES_DEBATE_ENABLED` is retired. Decision record:
+> [`../adr/debate-society-sole-generation-pipeline.md`](../adr/debate-society-sole-generation-pipeline.md).
+> The phased plan below is retained as the *record of how it was sequenced*, not as
+> current state — the flag and the legacy runners it describes no longer exist.
+
 The society **becomes** the sole generation pipeline as the end state — but the path there is **additive first, delete later**. Phase 1 *adds* the `"debate"` branch behind `ARCHIMEDES_DEBATE_ENABLED` (default OFF) and leaves every legacy runner untouched; the deletions land in a separate Phase-3 cutover PR after the society is verified on the live path. Reuse stays ~80% (the persist/backtest/episodic tail, `evaluate_fusion_spec`, `StrategyFusion.propose`, `select_candidates`, SSE vocabulary, the external gate). The ~20% new is the society runner + the deterministic critics + the synthesizer adapter.
 
 ### 5a. Phase 1 is additive; the deletions are the Phase-3 cutover PR (fix A2)

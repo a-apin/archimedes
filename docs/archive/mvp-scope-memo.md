@@ -243,7 +243,7 @@ let scope silently drift** — make the change visible.
 These aren't covered by this memo and should be decided by Day 4 or Day 5:
 
 - **Backtesting library:** backtrader vs. vectorbt vs. custom numpy. See
-  [`specs/backtrader-vs-vectorbt-decision-memo.md`](../adr/backtrader-vs-vectorbt-decision-memo.md).
+  [`adr/backtrader-backtest-engine.md`](../adr/backtrader-backtest-engine.md).
 - **Backend ownership:** vacant since Shimon's departure. Decide by Day 3.
 - **EURC inclusion:** USDC-only for v1, or USDC + EURC for international users? Decide
   based on regulatory and integration cost; default to USDC-only.
