@@ -65,8 +65,14 @@ systemctl start docker
 # directly from AWS, same as infra/scripts/bake-backend-ami.sh does.
 # Arch-aware: hardcoding x86_64 would break bootstrap (and with it ECR login
 # + secret fetch) the day runner_instance_type moves to Graviton (review).
+# NOTE: Terraform renders this file through `templatefile()`, so a bare
+# dollar-brace sequence is TERRAFORM interpolation, not shell — including inside
+# comments, which the template engine does not treat as comments. Shell variables
+# must be doubled (`$${ARCH}`) so Terraform emits a single dollar-brace for bash
+# to expand at boot; same convention as the REGION line further down. Leaving it
+# undoubled fails `terraform plan` with: vars map does not contain key "ARCH".
 ARCH="$(uname -m)"   # x86_64 | aarch64 — matches AWS's installer naming
-curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o /tmp/awscliv2.zip
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$${ARCH}.zip" -o /tmp/awscliv2.zip
 unzip -q /tmp/awscliv2.zip -d /tmp
 /tmp/aws/install
 rm -rf /tmp/awscliv2.zip /tmp/aws
