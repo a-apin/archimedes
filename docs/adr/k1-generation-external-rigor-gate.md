@@ -1,7 +1,11 @@
 # ADR: K=1 generation + externalized rigor gate
 
 > **Audience:** Archimedes team (decision owner: Dan, architecture; implementation: Önder + Daniel R.)
-> **Status:** **Adopted.** Codified 2026-05-23 after a Linus-Maestro architecture audit; live in the generation + passport flow.
+> **Status:** Accepted
+> **Date:** 2026-05-23
+> **Owner:** Dan Browne
+> **Supersedes:** —
+> **Superseded-by:** —
 > **Question being decided:** How many candidate strategies should the generation agent emit per Generate call — K=1 (one winner + considered alternatives), or K=many (parallel candidates all gated together)?
 > **Related:** [`docs/architectural-principles.md` § 5](../architectural-principles.md), [`docs/user-stories.md`](../user-stories.md), `backend/archimedes/agents/generation_pipeline.py`, `backend/archimedes/agents/strategy_fusion.py`.
 

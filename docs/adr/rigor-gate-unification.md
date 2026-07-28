@@ -1,7 +1,11 @@
 # ADR: Rigor-gate unification (single source of selection-bias truth)
 
 > **Audience:** Archimedes team (decision owner: Dan; rigor lane: Önder)
-> **Status:** **Adopted.** Driven by the PR #710 audit; the fake-strict badge it found is closed.
+> **Status:** Accepted
+> **Date:** 2026-06-26 (recorded; decision date [unestablished — needs Dan])
+> **Owner:** Dan Browne (rigor lane: Önder Akkaya)
+> **Supersedes:** —
+> **Superseded-by:** —
 > **Question being decided:** Should every Tier-1 strategy pass the four selection-bias controls via ONE authoritative gate path, or are different gate definitions (a fast one for the library list, a strict one for the passport) acceptable?
 > **Related:** [PR #710](https://github.com/a-apin/archimedes/pull/710) (full-tree technical audit), [`docs/specs/selection-bias-corrections-spec.md`](../specs/selection-bias-corrections-spec.md), `backend/archimedes/services/rigor_evaluator.py` (`run_rigor_gate`).
 

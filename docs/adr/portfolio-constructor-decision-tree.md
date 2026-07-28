@@ -1,6 +1,10 @@
 # Portfolio Constructor Decision Tree
 
-> **Status:** Drafted 2026-05-22 as Phase 0 of the
+> **Status:** Accepted
+> **Date:** 2026-05-22
+> **Owner:** Önder Akkaya
+> **Supersedes:** —
+> **Superseded-by:** —
 > [Spine+ v2 plan](../plans/spine-plus-v2-plan.md). Closes survey gap cluster #5
 > (load-bearing) from [`chuan-architecture-survey.md`](../archive/agora-2026-05/chuan-architecture-survey.md).
 >

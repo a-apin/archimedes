@@ -1,8 +1,19 @@
-# Backtesting Library — Decision Memo
+# ADR: backtrader as the v1 backtest engine
 
-> **Audience:** Archimedes hackathon team (decision owners: Dan + Önder + Chuan)
-> **Status:** Open decision. Surface for the team to ratify in Day 3 sync.
+> **Audience:** Archimedes team
+> **Status:** Accepted
+> **Date:** 2026-05-13 (recommended); ratified in the Day-3 sync — exact ratification date not recorded in git [unestablished — needs Dan]; closed as Accepted 2026-07-28
+> **Owner:** Dan Browne
+> **Supersedes:** —
+> **Superseded-by:** —
 > **Question being decided:** Which backtesting library/engine for v1?
+> **Related:** `analytics-engine/`, `backend/archimedes/services/backtest_*`, [`rigor-gate-unification.md`](rigor-gate-unification.md).
+
+> **Closed 2026-07-28.** This was written as an open decision memo ("surface for the team
+to ratify in Day 3 sync"). It was ratified and shipped; backtrader has been the canonical
+engine for roughly two months. Converted to an ADR and marked **Accepted** so it stops
+inviting the relitigation it exists to prevent. The alternatives analysis below is
+unchanged — it is the reasoning of record, not a live question.
 
 ## TL;DR
 
@@ -10,7 +21,7 @@
 Dan's familiarity, mature ecosystem, well-documented Strategy API. Migrate to vectorbt for
 v2 if we hit speed limits. Custom numpy is overkill for the hackathon timeline.
 
-## The open question
+## Context
 
 Chuan's [`../design.md` § 6](../archive/agora-2026-05/design.md) names "vectorbt / custom numpy engine" for
 backtesting. Dan independently suggested [backtrader](https://github.com/mementum/backtrader).
@@ -206,9 +217,10 @@ canonical strategy definition into a vectorbt signal/entry/exit pattern. Backtra
 strategies can be expressed in vectorbt form for most cases, just with effort. The
 abstraction makes future migration tractable without locking us in.
 
-### What if the team disagrees
+### Alternatives considered — and the counter-arguments
 
-Counter-arguments worth considering:
+
+Counter-arguments considered at the time:
 
 - **"vectorbt's speed pays for itself."** True for parameter sweeps in v2. Not true for
   the v1 demo's 5–10 strategies.
@@ -218,24 +230,41 @@ Counter-arguments worth considering:
 - **"Custom numpy is more powerful."** True in the limit; not relevant for 12 days. We're
   not in the business of writing a backtesting library.
 
-If the team strongly disagrees, the cost of the disagreement is 0.5–1 day of Dan ramping
-on vectorbt. Acceptable. But the recommendation stands.
+At the time of writing, the cost of being wrong was estimated at 0.5–1 day of Dan ramping
+on vectorbt. The decision was ratified as recommended.
 
 ## Decision
 
-**Use backtrader for v1.** Confirm in Day 3 sync; if no objections, lock and move on.
+**backtrader is the backtest engine.** Ratified in the Day-3 sync and shipped; it has been
+the canonical engine since. vectorbt and a custom numpy engine were both considered and
+rejected for v1 (reasoning above). The engine is not re-opened by this record.
 
-If team chooses vectorbt instead, that's fine — same passport schema works; the
-`BacktestResult` fields are engine-agnostic; the `backtest_engine` field on
-`backtest_results` tracks which engine produced the result.
+The escape hatch designed in at the time was built and holds: strategy definitions are
+canonical in our own schema (the `strategies` table), and `backtest_results.backtest_engine`
+records which engine produced each result — so a future migration is an adapter, not a
+rewrite.
 
-## Open questions
+## Consequences
 
-1. **Multi-leg strategies (long X, short Y).** Backtrader handles this via multiple
-   `bt.feeds` and `self.datas` indexing. Document the pattern for Dan's reference.
-2. **Live data feeds.** Backtrader supports IB, Oanda, etc. natively; we may not need a
-   live data feed for v1 if we're using stored daily prices for portfolio decisions.
-   Decide based on demo cadence.
-3. **Cross-strategy correlation computation.** Backtrader doesn't natively run multiple
-   strategies in one Cerebro to compute correlation; we do that in our wrapper after
-   running each strategy separately. Document the pattern.
+### Positive
+- **Shipped strategies on the timeline.** The mature `bt.Strategy` API and Dan's existing
+  familiarity removed the learning curve from the critical path.
+- **Engine provenance is recorded per result** (`backtest_results.backtest_engine`), so a
+  later engine swap is auditable rather than silently mixing results.
+- **Engine-agnostic passport schema** — `BacktestResult` fields do not encode backtrader
+  semantics, which keeps the rigor gate ([`rigor-gate-unification.md`](rigor-gate-unification.md))
+  independent of the engine.
+
+### Negative / costs we accept
+- **Event-driven speed ceiling.** Large parameter sweeps are slow relative to vectorbt.
+  This is real and known; it is a v2 problem, deferred deliberately.
+- **No native multi-strategy Cerebro run**, so cross-strategy correlation (needed by the
+  DSR effective-N correction) is computed in our wrapper after running each strategy
+  separately, not by the engine.
+- **Multi-leg strategies** (long X / short Y) need the multiple-`bt.feeds` + `self.datas`
+  indexing pattern rather than a first-class construct.
+- **No live data feed is wired.** backtrader supports IB/Oanda natively; v1 runs on stored
+  daily prices and does not use them.
+
+*(The three items above were the memo's "open questions". They are not open decisions —
+they are known properties of the chosen engine, recorded here as costs.)*

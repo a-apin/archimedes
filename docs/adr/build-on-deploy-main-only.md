@@ -1,13 +1,17 @@
 # ADR: Build-on-deploy, main-only branch model
 
 > **Audience:** Archimedes team (decision owner: Dan Browne)
-> **Status:** **Adopted.** Codified 2026-05-18; merge-commit-only enforcement added 2026-05-27.
+> **Status:** Accepted
+> **Date:** 2026-05-18
+> **Owner:** Dan Browne
+> **Supersedes:** —
+> **Superseded-by:** —
 > **Question being decided:** How does a 5-person async team across 5 timezones integrate work continuously without a queue-prone `develop` branch?
 > **Related:** CLAUDE.md § "Branch model (build-on-deploy, main-only)", `.github/workflows/deploy.yml`, `release-tag.yml`.
 
 ## TL;DR
 
-**`main` is the only long-lived branch, and it is the deploy branch.** Every merge to `main` triggers a CI build + deploy to the live EC2 stack. The `develop`/integration branch is retired (2026-05-18, drifted unused). Short-lived per-owner branches (`<handle>/<name>`) → PR → merge to `main`. Merge commits only, so `git log --graph` shows unit-of-work boundaries. The agentic system (`t2o2`) and parallel Claude sessions land work on `main` and iterate on CI there, so `main` moves continuously — branch late, rebase right before merge, merge fast.
+**`main` is the only long-lived branch, and it is the deploy branch.** Every merge to `main` triggers a CI build + deploy to the live stack — today a build-and-push to ECR followed by an Alembic migrate task and an ECS Fargate force-redeploy ([`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml); see [`ec2-to-ecs-fargate-cutover.md`](ec2-to-ecs-fargate-cutover.md)). It was an in-place EC2 build + restart when this ADR was codified; the branch model is unchanged by that swap. The `develop`/integration branch is retired (2026-05-18, drifted unused). Short-lived per-owner branches (`<handle>/<name>`) → PR → merge to `main`. Merge commits only, so `git log --graph` shows unit-of-work boundaries. The agentic system (`t2o2`) and parallel Claude sessions land work on `main` and iterate on CI there, so `main` moves continuously — branch late, rebase right before merge, merge fast.
 
 ## Context
 
