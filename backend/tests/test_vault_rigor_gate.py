@@ -13,6 +13,7 @@ import contextlib
 import time
 from unittest.mock import AsyncMock, patch
 
+import archimedes.db as db
 import pytest
 from archimedes.api.vaults_routes import (
     _assert_strategies_pass_rigor,
@@ -22,6 +23,23 @@ from archimedes.api.vaults_routes import (
 from fastapi import HTTPException
 
 V = "archimedes.api.vaults_routes"
+
+
+@pytest.fixture(autouse=True)
+def _use_tmp_db(tmp_path, monkeypatch):
+    """Rebind DB globals so this file stays hermetic regardless of import order."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    url = f"sqlite:///{tmp_path / 'vault-rigor.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setattr(db, "DATABASE_URL", url)
+    engine = create_engine(url, connect_args={"check_same_thread": False})
+    monkeypatch.setattr(db, "engine", engine)
+    monkeypatch.setattr(db, "SessionLocal", sessionmaker(bind=engine, autocommit=False, autoflush=False))
+    db.init_db()
+    yield
+    engine.dispose()
 
 
 @contextlib.contextmanager
@@ -213,10 +231,7 @@ _OTHER = "0x0000000000000000000000000000000000000BAD"
 
 @contextlib.contextmanager
 def _private_strategy_record(sid: str, *, owner: str):
-    """Create a private (non-example, unpublished) StrategyRecord owned by
-    `owner`, yield, then delete it — mirrors the identity-ledger test's
-    real-DB-with-cleanup pattern above rather than a tmp-sqlite swap, since
-    this file has no per-test DB fixture."""
+    """Create a private StrategyRecord in the per-test DB, then delete it."""
     from archimedes.db import get_session, init_db
     from archimedes.models.strategy_store import StrategyRecord
 
