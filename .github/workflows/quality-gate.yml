@@ -238,7 +238,7 @@ jobs:
           # include 0.4.3. See backend/requirements.txt for full rationale.
           pip-audit -r backend/requirements.txt --format json --progress-spinner=off \
             --ignore-vuln PYSEC-2023-142 --ignore-vuln PYSEC-2025-33 \
-            > /tmp/pip_audit.json 2>/dev/null || true
+            > /tmp/pip_audit.json || true
           python3 - <<'EOF'
           import json, os
           # pip-audit JSON shape: {"dependencies": [{"name": ..., "vulns": [...]}, ...]}.
