@@ -42,10 +42,19 @@ resource "aws_iam_role_policy" "ec2_ssm_params" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "ReadAppSecrets"
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
-        Resource = "arn:aws:ssm:*:*:parameter/archimedes/prod/*"
+        Sid    = "ReadAppSecrets"
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+        # BOTH ARNs are required. ssm:GetParametersByPath authorizes against the PATH
+        # itself (".../parameter/archimedes/prod"), which the "/*" child pattern does
+        # NOT match — granting only the child pattern yields:
+        #   AccessDeniedException ... not authorized to perform: ssm:GetParametersByPath
+        #   on resource: arn:aws:ssm:us-east-1:<acct>:parameter/archimedes/prod
+        # The child ARN is still needed for GetParameter/GetParameters on individual keys.
+        Resource = [
+          "arn:aws:ssm:*:*:parameter/archimedes/prod",
+          "arn:aws:ssm:*:*:parameter/archimedes/prod/*",
+        ]
       },
       {
         Sid      = "DecryptSecureStringViaSSM"
