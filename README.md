@@ -217,7 +217,7 @@ archimedes/
 | Frontend          | React 19 + Vite 8 + [viem](https://viem.sh/) 2.48 (plain CSS)                             |
 | Database          | PostgreSQL 16 + Redis 7                                                                   |
 | LLM               | Provider-agnostic (`LLM_*` env): GLM via z.ai, Anthropic, OpenAI, Ollama                  |
-| Backtesting       | [backtrader](https://github.com/mementum/backtrader) ([ADR](docs/adr/backtrader-vs-vectorbt-decision-memo.md)) |
+| Backtesting       | [backtrader](https://github.com/mementum/backtrader) ([ADR](docs/adr/backtrader-backtest-engine.md)) |
 | Generation        | Multi-agent debate society (regime × mechanism steer grid, deterministic critics, K=1)    |
 | Semantic retrieval | `all-MiniLM-L6-v2` (sentence-transformers) — paper RAG reranker for corpus selection    |
 | Smart contracts   | Solidity targeting Arc (EVM-compatible) + [Foundry](https://book.getfoundry.sh/)          |
