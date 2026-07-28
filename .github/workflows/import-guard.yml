@@ -35,16 +35,19 @@ jobs:
           python-version: "3.12"
       - name: Install guards
         # ruff pinned to match quality-gate.yml + main-format-guard.yml +
-        # .pre-commit-config.yaml — unpinned installs drift to whatever ruff
-        # just released. Bump all four together when intentionally upgrading.
-        run: pip install --quiet ruff==0.15.13 deptry
+        # .pre-commit-config.yaml. Pin deptry too: its CLI is not stable.
+        run: pip install --quiet ruff==0.15.13 deptry==0.25.1
       - name: Undefined names (F821) — catches aliased-import NameErrors
         run: ruff check backend/archimedes --select F821 --no-cache
       - name: Byte-compile (no syntax / obvious import-time breakage)
         run: python -m compileall -q backend/archimedes
       - name: Dependency hygiene — undeclared / missing deps (incl. lazy imports)
-        # deptry is AST-based: it sees function-local imports too. Non-blocking
-        # for transitive/dev edge cases; fail only on missing (DEP001) and
-        # undeclared (DEP003) which are the real silent-failure classes.
-        run: deptry backend/archimedes --requirements-txt backend/requirements.txt || true
-        continue-on-error: true
+        # DEP002 is noisy for one shared requirements file. umap and paperqa are
+        # deliberate optional imports with runtime fallbacks.
+        run: >-
+          deptry backend/archimedes
+          --requirements-files backend/requirements.txt
+          --known-first-party archimedes
+          --known-first-party archimedes_analytics_engine
+          --ignore DEP002
+          --per-rule-ignores 'DEP001=umap|paperqa'

@@ -83,6 +83,7 @@ dependencies:
 
       # --- AWS / S3 ---
       - boto3>=1.43.56                 # S3 artifact reads for KB pipeline output (embeddings, KG). Floor aligned with backend/requirements.txt via dependabot PR #1162.
+      - botocore>=1.43.56              # Direct imports for AWS exceptions/config. boto3 constrains compatible versions; aligned with backend/requirements.txt.
 
       # --- Paper ingestion (Q-fin corpus) ---
       - arxiv>=4.0.0                  # arxiv API client. Floor aligned with backend/requirements.txt (was still pinned at 2.1, a pre-existing drift with no open Dependabot PR to attach the fix to).
