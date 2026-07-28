@@ -42,8 +42,6 @@ const PAGE_TO_PATH = {
   reasoning: '/reasoning',
   learnings: '/learnings',
   insights:  '/insights',
-  about:     '/about',
-  imprint:   '/imprint',
   marketplace: '/marketplace',
   publish:     '/publish',
   subscriptions: '/subscriptions',

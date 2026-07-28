@@ -1,48 +1,60 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Entries below are restricted to routes that (a) exist as a `case` in
+  ui/src/App.jsx's render switch, AND (b) render real content for an
+  anonymous visitor with no wallet connected and no selected entity.
+
+  Excluded on purpose:
+    - generate, library, quant, portfolio, reasoning, learnings, publish,
+      subscriptions — each renders only a generic "Connect your wallet"
+      prompt for a cold/anonymous visitor (see ui/src/components/WalletGate.jsx
+      and the equivalent inline gates in PublishPage.jsx / SubscriptionsPage.jsx).
+      No unique indexable content exists at these URLs without a session.
+    - strategy, vault-detail, market-strategy — dynamic routes that require
+      an id/address in the path; there is no single canonical URL to list.
+
+  URLs are the app's real client-side routes (window.history.pushState on
+  ui/src/App.jsx's PAGE_TO_PATH, e.g. /explore, /architecture — NOT hash
+  fragments like /#/explore). nginx serves these with a SPA fallback
+  (`try_files $uri $uri/ /index.html`, see nginx/nginx.conf), so a crawler
+  requesting any of these paths directly gets a 200 with the app shell,
+  which is not true of a /#/... fragment (the fragment never reaches the
+  server at all).
+-->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>/#/</loc>
+    <loc>https://archimedes-arc.com/</loc>
     <priority>1.0</priority>
     <changefreq>daily</changefreq>
   </url>
   <url>
-    <loc>/#/markets/explore</loc>
+    <loc>https://archimedes-arc.com/explore</loc>
     <priority>0.9</priority>
     <changefreq>daily</changefreq>
   </url>
   <url>
-    <loc>/#/markets/strategies</loc>
+    <loc>https://archimedes-arc.com/marketplace</loc>
     <priority>0.8</priority>
-    <changefreq>weekly</changefreq>
-  </url>
-  <url>
-    <loc>/#/markets/trade</loc>
-    <priority>0.9</priority>
     <changefreq>daily</changefreq>
   </url>
   <url>
-    <loc>/#/portfolio/dashboard</loc>
-    <priority>0.9</priority>
+    <loc>https://archimedes-arc.com/leaderboard</loc>
+    <priority>0.7</priority>
     <changefreq>daily</changefreq>
   </url>
   <url>
-    <loc>/#/portfolio/mint-burn</loc>
+    <loc>https://archimedes-arc.com/architecture</loc>
     <priority>0.7</priority>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>/#/portfolio/liquidity</loc>
+    <loc>https://archimedes-arc.com/corpus</loc>
     <priority>0.7</priority>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>/#/portfolio/vaults</loc>
-    <priority>0.8</priority>
-    <changefreq>daily</changefreq>
-  </url>
-  <url>
-    <loc>/#/intelligence/reasoning</loc>
-    <priority>0.8</priority>
+    <loc>https://archimedes-arc.com/insights</loc>
+    <priority>0.5</priority>
     <changefreq>daily</changefreq>
   </url>
 </urlset>
