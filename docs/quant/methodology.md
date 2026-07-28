@@ -29,10 +29,14 @@ accident*. Search enough parameter combinations, or pick the best of enough
 candidate strategies, and you will find something that looks brilliant on
 history and is worthless out-of-sample. Archimedes' wedge is that it refuses to
 report a raw Sharpe as if it were evidence. Every Tier-1 strategy is run through
-selection-bias corrections that *deflate* the observed performance by exactly the
-amount of luck the search process injected, and the corrected numbers — plus the
-delta against what the source paper claimed — are surfaced openly, never hidden
-behind an aggregate score. This is "rigor as the wedge": the curation protocol is
+statistical controls that hold the observed performance to a standard error robust to
+non-normality and autocorrelation, and — **where a search of ours actually happened** —
+deflate it by exactly the amount of luck that search injected. On the curated library
+`num_trials = 1`, so there is no deflation and no multiple-testing correction; that caveat
+is published on the Architecture page rather than buried. The resulting numbers — plus the
+delta against what the source paper claimed — are surfaced openly, never hidden behind an
+aggregate score. Note the distinction the product holds to throughout: the board-level
+selection bias a user incurs choosing best-of-N is **disclosed, not corrected**. This is "rigor as the wedge": the curation protocol is
 the product.
 
 ---

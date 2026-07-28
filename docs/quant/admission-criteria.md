@@ -37,15 +37,37 @@ Notes on each threshold, with the *why* behind the number:
 
 ### 1. DSR p-value ≥ 0.90
 
-The Deflated Sharpe Ratio (Bailey & López de Prado 2014) returns a probability that
-the true Sharpe is positive *after* deflating for multiple testing and
-non-normality. The bar was originally the conventional 95%-confidence threshold and was
-**recalibrated to `0.90` in PR #901**: admission requires 90% confidence that the Sharpe
-is not a selection-and-luck artifact. When `num_trials = 1` no deflation is applied (there was no selection);
-the orchestrator passes `N = len(strategy_library)` so the correction is real, and
-the effective-N correction (`average_correlation`) prevents a correlated parameter
-sweep from being over-penalized as `N` independent tests. See
-[`methodology.md`](methodology.md) §1 for the full formula.
+The published statement of the gate — the wording the app carries on the Architecture
+page, which these thresholds must match:
+
+> Over 20+ years of backtested returns net of realistic commission, a strategy's excess Sharpe
+> must be positive at 90% one-sided confidence under standard errors robust to non-normality
+> and autocorrelation, and must stay positive on a 30% chronological holdout. On the generated
+> path, the Sharpe is additionally deflated against that strategy's own candidate pool.
+>
+> **On the curated library, `num_trials=1` — DSR runs undeflated (no multiple-testing
+> correction).**
+
+The Deflated Sharpe Ratio (Bailey & López de Prado 2014) returns a probability that the
+excess Sharpe is positive under standard errors robust to non-normality and
+autocorrelation, *and*, where a candidate pool exists, after deflating by the expected
+best-of-`N` under the null. The bar was recalibrated from `0.95` to **`0.90` in PR #901**:
+admission requires 90% one-sided confidence.
+
+**What `N` is, and is not.** On the **generated** path `num_trials` is that strategy's own
+candidate pool — the search we ran. On the **curated library** `num_trials = 1`, so
+`E[max_N] = 0` and **no deflation is applied**: there was no search of ours to charge for,
+and promoting a strategy into a larger library must not retroactively move its score (see
+[`../adr/num-trials-self-containment.md`](../adr/num-trials-self-containment.md);
+`rigor_evaluator.py` logs the undeflated case verbatim). Where a pool does exist, the
+effective-N correction (`average_correlation`) prevents a correlated parameter sweep from
+being over-penalized as `N` independent tests. See [`methodology.md`](methodology.md) §1
+for the full formula.
+
+**Disclosure is not correction.** The board-level selection bias a user incurs by picking
+the best of N displayed strategies is *disclosed*, not *corrected*. Benjamini–Hochberg
+helpers exist in `_rigor_helpers.py:1199` with zero non-test callers — written down,
+unimplemented. Do not describe this gate as correcting selection bias across the library.
 
 ### 2. PBO < 0.5
 

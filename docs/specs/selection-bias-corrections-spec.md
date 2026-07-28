@@ -32,8 +32,14 @@ Three corrections, each populating specific fields on
 [`backend/archimedes/models/backtest.py`](../../backend/archimedes/models/backtest.py)
 `BacktestResult`:
 
-1. **Deflated Sharpe Ratio (DSR)** — Sharpe corrected for non-normality and
-   multiple testing (Bailey & López de Prado 2014).
+1. **Deflated Sharpe Ratio (DSR)** — excess Sharpe tested at 90% one-sided
+   confidence under standard errors robust to non-normality and
+   autocorrelation, deflated by the expected best-of-`N` **only where a
+   candidate pool exists** (Bailey & López de Prado 2014). On the curated
+   library `num_trials = 1` and DSR runs undeflated — no multiple-testing
+   correction on that path. Board-level selection bias is *disclosed*, not
+   corrected: the Benjamini–Hochberg helpers at `_rigor_helpers.py:1199` have
+   zero non-test callers.
 2. **Probability of Backtest Overfitting (PBO)** — CSCV-framework probability
    that the in-sample-optimal strategy underperforms the median out-of-
    sample (Bailey, Borwein, López de Prado & Zhu 2014).

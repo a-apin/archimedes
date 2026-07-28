@@ -133,8 +133,12 @@ For every strategy admitted to the Tier-1 library, the
 [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md)
 contract requires:
 
-- **Deflated Sharpe Ratio (DSR)** — Sharpe corrected for non-normality and multiple
-  testing (Bailey & López de Prado 2014). `dsr_p_value >= 0.95`.
+- **Deflated Sharpe Ratio (DSR)** — excess Sharpe positive at 90% one-sided confidence
+  under standard errors robust to non-normality and autocorrelation; on the generated path
+  additionally deflated against that strategy's own candidate pool (Bailey & López de Prado
+  2014). `dsr_p_value >= 0.90`. On the curated library `num_trials = 1`, so DSR runs
+  **undeflated** — no multiple-testing correction on that path
+  ([`adr/num-trials-self-containment.md`](adr/num-trials-self-containment.md)).
 - **Probability of Backtest Overfitting (PBO)** — CSCV-framework probability that the
   in-sample-optimal strategy underperforms the OOS median (Bailey, Borwein, López de
   Prado, Zhu 2014). `pbo_score < 0.5`.
