@@ -74,7 +74,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`specs/component-interfaces-spec.md`](specs/component-interfaces-spec.md) | spec | Dan Browne | — | Component interfaces and the team work split. |
 | [`specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md) | spec | Dan Browne | — | Marketplace/ecosystem design. Marketplace ships behind `PAYMENTS_DRY_RUN`. |
 | [`specs/xia-2026-protocols.md`](specs/xia-2026-protocols.md) | spec | Dan Browne | — | Xia et al. 2026 named protocols as implemented here. |
-| [`specs/architecture-page-design.md`](specs/architecture-page-design.md) | spec | Dan Browne | 2026-07-14 | Redesign proposal for the Architecture page. |
+| [`specs/architecture-page-design.md`](specs/architecture-page-design.md) | implemented | Dan Browne | 2026-07-28 | Design for the Architecture page, **implemented in PR #1192**. Should leave `specs/` for `architecture/` or `archive/` once #1192 merges, per `CONVENTIONS.md` § 1. |
 | [`diagrams/strategy-passport-architecture.md`](diagrams/strategy-passport-architecture.md) | reference | Dan Browne | — | Passport architecture diagram + reference. |
 | [`bedrock-model-cost-comparison.md`](bedrock-model-cost-comparison.md) | reference | Dan Browne | — | Bedrock model costs, us-east-1 on-demand. LLM is `bedrock_converse` / `amazon.nova-micro-v1:0`. |
 | [`cost-estimates/generate-llm-costs.md`](cost-estimates/generate-llm-costs.md) | reference | Dan Browne | — | Per-generation LLM cost estimate. |
@@ -155,7 +155,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`handovers/2026-07-14-architecture-review.md`](handovers/2026-07-14-architecture-review.md) | historical log | Dan Browne | 2026-07-14 | Architecture-page redesign summary; evidence behind `architecture.md` §10. |
+| [`handovers/2026-07-14-architecture-review.md`](handovers/2026-07-14-architecture-review.md) | historical log | Dan Browne | 2026-07-28 | Architecture-page redesign summary; evidence behind `architecture.md` §10. Its "what's stale" section describes a page that no longer exists — the redesign was **implemented in PR #1192**. |
 | [`handovers/second-wave-handover.md`](handovers/second-wave-handover.md) | historical log | Önder Akkaya | — | Second-wave brief. |
 | [`handovers/third-wave-handover.md`](handovers/third-wave-handover.md) | historical log | Önder Akkaya | — | Third-wave (fidelity) brief. |
 | [`handovers/fourth-wave-handover.md`](handovers/fourth-wave-handover.md) | historical log | Önder Akkaya | — | Fourth-wave (gate-as-product) brief. |

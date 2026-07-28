@@ -1,5 +1,21 @@
 # Architecture-page redesign — Summary (2026-07-14)
 
+> **NOTE ADDED 2026-07-28 — this handover is now history, not a work item.**
+> The Architecture page described here as needing replacement **was built in PR #1192 on
+> 2026-07-28**. The redesign is *implemented*, not proposed. In particular, the section
+> below titled *"What's stale on the current page"* describes a page that **no longer
+> exists** — every item in it was an argument for the rebuild, and the rebuild happened.
+> Read that section as the rationale that produced #1192, not as a live defect list.
+>
+> One thing to be precise about, because it has been misread: **PR #1123 merged
+> documentation only and shipped zero UI code.** It did not build the page. The page was
+> built in **#1192**. Anything that cites #1123 as the moment the redesign shipped is
+> wrong.
+>
+> Current statements of the page live in
+> [`../specs/architecture-page-design.md`](../specs/architecture-page-design.md) (the
+> design, now implemented) and [`../architecture.md`](../architecture.md) (the system map).
+
 ## What was produced (this directory)
 
 | File | What it is |

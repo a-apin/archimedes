@@ -57,7 +57,7 @@ canvas `#09090B`).
 | Corpus | [`ui/src/components/CorpusExplorer.jsx`](../ui/src/components/CorpusExplorer.jsx), `CorpusGraph.jsx`, `CorpusKG.jsx` | Renders real KB artifacts; explicit empty state on 503 (pipeline not yet run) |
 | Wallets | [`ui/src/components/WalletConnect.jsx`](../ui/src/components/WalletConnect.jsx), `WalletGate.jsx`, [`ui/src/circle-wallet.js`](../ui/src/circle-wallet.js) | EIP-6963 injected wallets + Circle passkey smart account |
 | Chain config | [`ui/src/config.js`](../ui/src/config.js) (line 742) | Arc chain 5042002; `NEW_CONTRACTS` = the T3.2 2026-07-09 address set, converged with the backend env (the FE/BE split-brain is fixed by hand-sync; a runtime fetch from `/api/config/contracts` remains the durable fix). Full 281-synth universe comes from `GET /api/explore/assets`; only an 8-synth demo list is hardcoded |
-| Current Architecture page | [`ui/src/components/Architecture.jsx`](../ui/src/components/Architecture.jsx) | **The page this project replaces** — staleness itemized in §10 |
+| Architecture page | [`ui/src/components/Architecture.jsx`](../ui/src/components/Architecture.jsx) | **Rebuilt in PR #1192 (2026-07-28)** to the design in [`specs/architecture-page-design.md`](specs/architecture-page-design.md). §10 records the staleness that motivated the rebuild. |
 
 ### 1.2 API layer — [`backend/archimedes/api/`](../backend/archimedes/api) (FastAPI, wired in `backend/archimedes/main.py:468-492`)
 
@@ -281,7 +281,7 @@ kb → scheduled Fargate task; EFS for corpus artifacts.
 ## 9. Doc-vs-code disagreements found (flag for cleanup)
 
 1. **[`CLAUDE.md`](../CLAUDE.md) § Tech Stack / Deployment** — ~~said the EC2/docker-compose stack "remains the accurate live picture"~~ **fixed 2026-07-14** (same branch as this map): Fargate/ALB/Aurora/ElastiCache is the live picture, EC2 detached-but-running; "11 contracts deployed" corrected to 12 sources / 570 live instances (T3.2 census above).
-2. **[`docs/architectural-principles.md`](architectural-principles.md)** — "three top-level agents" mermaid + `services/portfolio_agent.py` path. Generation is debate-only now ([`agents/generation_pipeline.py`](../backend/archimedes/agents/generation_pipeline.py)); the file actually lives at [`agents/portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py). The three-agent framing survives only as UI copy on the stale Architecture page.
+2. **[`docs/architectural-principles.md`](architectural-principles.md)** — "three top-level agents" mermaid + `services/portfolio_agent.py` path. Generation is debate-only now ([`agents/generation_pipeline.py`](../backend/archimedes/agents/generation_pipeline.py)); the file actually lives at [`agents/portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py). The three-agent framing survived only as UI copy on the pre-#1192 Architecture page, and went away when that page was rebuilt (PR #1192, 2026-07-28).
 3. **[`docs/specs/commit-reveal-trace-spec.md`](specs/commit-reveal-trace-spec.md)** — cites `backend/archimedes/services/trace_publisher.py`; actual: [`backend/archimedes/chain/trace_publisher.py`](../backend/archimedes/chain/trace_publisher.py). Spec status says "proposal / v1.5 hop"; commit-reveal is implemented and contract-enforced (`Vault.sol:422`).
 4. **[`docs/user-stories.md`](user-stories.md)** — "GLM-backed" MVP framing; live LLM is Bedrock/Nova Micro via the Converse seam. Also predates marketplace/leaderboard surfaces.
 5. **`docs/design.md` §6** — vectorbt; superseded by backtrader (noted in [`CLAUDE.md`](../CLAUDE.md) itself, kept for history).
@@ -291,7 +291,12 @@ kb → scheduled Fargate task; EFS for corpus artifacts.
 9. **[`docs/corpus-architecture.md`](corpus-architecture.md)** — Day-9 fusion-path framing; retrieval reality is keyword → MiniLM ([`services/paper_rag.py`](../backend/archimedes/services/paper_rag.py)) with the KB pipeline as the artifact layer.
 10. **[`ui/src/components/Architecture.jsx`](../ui/src/components/Architecture.jsx)** — the page being replaced; full staleness list in §10 and [`docs/handovers/2026-07-14-architecture-review.md`](handovers/2026-07-14-architecture-review.md).
 
-## 10. What the current Architecture page gets wrong (headline items)
+## 10. What the pre-#1192 Architecture page got wrong (headline items)
+
+> **Updated 2026-07-28.** The page was rebuilt in **PR #1192** to the design in
+> [`specs/architecture-page-design.md`](specs/architecture-page-design.md). The items below
+> are the record of what motivated that rebuild — they are no longer live defects. #1123
+> merged documentation only and shipped zero UI code; #1192 is the PR that built the page.
 
 Itemized with evidence in [`docs/handovers/2026-07-14-architecture-review.md`](handovers/2026-07-14-architecture-review.md) §"What's stale". Headlines: the "3 top-level agents"
 model (now: debate society + external rigor gate), "10 smart contracts" (now 12 Solidity

@@ -1,4 +1,27 @@
-# Architecture Page — Redesign Proposal (replaces `ui/src/components/Architecture.jsx`)
+# Architecture Page — Design (implemented in PR #1192)
+
+> **status:** implemented
+> **owner:** Dan Browne
+> **updated:** 2026-07-28
+> **superseded-by:** —
+
+> **IMPLEMENTED 2026-07-28 in PR #1192.** This is no longer a proposal. The page described
+> below was built and replaces `ui/src/components/Architecture.jsx`; the published copy —
+> including the rigor-gate statement in § 5 and its `num_trials=1` caveat — is what the app
+> now renders. Treat divergence between this document and the shipped page as a bug in
+> whichever was changed last, and fix the page or this doc deliberately rather than letting
+> them drift.
+>
+> **Note (PR numbering):** #1123 merged documentation only and shipped zero UI code. #1192
+> is the PR that built the page.
+>
+> **This document should not stay in `specs/`.** Per
+> [`../CONVENTIONS.md`](../CONVENTIONS.md) § 1, `specs/` holds interfaces others build
+> *against*; a spec leaves `specs/` once it ships. Once #1192 merges, move this to
+> `docs/architecture/` if it is to be maintained as the description of the live page, or to
+> `docs/archive/` with an `ARCHIVED` banner if `architecture.md` and the page itself become
+> the authority. Use `git mv` and update
+> [`../README.md`](../README.md) in the same commit.
 
 > Voice: confident, precise, honest. Claim-integrity is the #1 rule — nothing below claims
 > what the live path doesn't do. Draft copy is final-quality and ready to lift into JSX.
