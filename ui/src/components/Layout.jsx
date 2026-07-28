@@ -69,6 +69,8 @@ export const PAGE_LABELS = {
   learnings: 'Learnings',
   insights: 'Insights',
   'vault-detail': 'Vault Details',
+  about: 'About',
+  imprint: 'Imprint',
   marketplace: 'Marketplace',
   'market-strategy': 'Strategy Detail',
   publish: 'Publish',
