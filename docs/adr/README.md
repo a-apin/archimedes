@@ -34,11 +34,12 @@ the review named in the code has not happened.
 
 ## Index
 
-Seventeen records. Status and date are authoritative in each ADR's front-matter block;
+Eighteen records. Status and date are authoritative in each ADR's front-matter block;
 this table mirrors them.
 
 | ADR | Status | Date | Owner | Decision |
 |---|---|---|---|---|
+| [`unlicense-public-domain.md`](unlicense-public-domain.md) | Accepted | initial commit `292f543` | Dan Browne | Why the project is released under **the Unlicense** — a public-domain dedication — and what that costs: the code is not an ownable asset, and contributors retain copyright independent of it |
 | [`arc-settlement-chain.md`](arc-settlement-chain.md) | Accepted | 2026-05-13 | Dan Browne | Arc testnet (chain `5042002`) settles, with **USDC as both settlement asset and native gas token**; Circle Developer-Controlled Wallets on the write path |
 | [`two-tier-marketplace.md`](two-tier-marketplace.md) | Accepted | 2026-05-13 | Dan Browne | The Day-3 pivot from a single vault to a **Verified / Community two-tier marketplace**, with rigor as a badge rather than an entry requirement |
 | [`backtrader-backtest-engine.md`](backtrader-backtest-engine.md) | Accepted | 2026-05-13 | Dan Browne | Why we picked **backtrader** over **vectorbt** for the v1 backtest engine |

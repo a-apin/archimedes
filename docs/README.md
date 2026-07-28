@@ -105,7 +105,8 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-07-28 | ADR index and status vocabulary. All seventeen records are listed there. |
+| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-07-28 | ADR index and status vocabulary. All eighteen records are listed there. |
+| [`adr/unlicense-public-domain.md`](adr/unlicense-public-domain.md) | accepted | Dan Browne | initial commit | The Unlicense as a public-domain dedication, and its ownership/contributor consequences. |
 | [`adr/arc-settlement-chain.md`](adr/arc-settlement-chain.md) | accepted | Dan Browne | 2026-05-13 | Arc testnet 5042002; USDC as settlement asset and native gas token. |
 | [`adr/two-tier-marketplace.md`](adr/two-tier-marketplace.md) | accepted | Dan Browne | 2026-05-13 | Verified / Community tiers; rigor as the wedge. |
 | [`adr/backtrader-backtest-engine.md`](adr/backtrader-backtest-engine.md) | accepted | Dan Browne | 2026-05-13 | backtrader chosen as the v1 backtest engine. |
