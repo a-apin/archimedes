@@ -230,7 +230,7 @@ Full architecture: [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/archi
 (2026-07-14 system map) with the repo-map figure
 [`docs/architecture-redesign/file-tree.svg`](docs/architecture-redesign/file-tree.svg) and dataflow diagram
 [`docs/architecture-redesign/flow-diagram.svg`](docs/architecture-redesign/flow-diagram.svg);
-historical lineage: [`docs/design.md`](docs/design.md) + [`docs/chuan-architecture-survey.md`](docs/chuan-architecture-survey.md).
+historical lineage: [`docs/design.md`](docs/archive/agora-2026-05/design.md) + [`docs/chuan-architecture-survey.md`](docs/archive/agora-2026-05/chuan-architecture-survey.md).
 
 ## Development workflow
 

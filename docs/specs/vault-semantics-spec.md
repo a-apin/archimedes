@@ -5,7 +5,7 @@
 > implementation; supersedes any conflicting language in earlier docs.
 >
 > **Lineage:** Builds on the multi-asset NAV `Vault.sol` deployed Day-10
-> (Chuan's stack — see [`chuan-architecture-survey.md`](../chuan-architecture-survey.md))
+> (Chuan's stack — see [`chuan-architecture-survey.md`](../archive/agora-2026-05/chuan-architecture-survey.md))
 > and the 1:1 strategy↔vault decision locked in the Spine+ v2 plan.
 
 ## Definition

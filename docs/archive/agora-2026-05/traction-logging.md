@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/runbooks/operations.md`](../../runbooks/operations.md)**
+>
+> Canteen traction-logging procedure for the May-2026 submission window.
+
 # `arc-canteen` traction logging — cheat sheet
 
 > **Why this exists:** CLAUDE.md § "Known risks" reads:
@@ -12,7 +16,7 @@ arc-canteen login            # opens GitHub device flow
 arc-canteen status           # confirms your dashboard view (what the judges see)
 ```
 
-If the binary isn't on your PATH, see [README.md § arc-canteen CLI](../README.md).
+If the binary isn't on your PATH, see [README.md § arc-canteen CLI](../../../README.md).
 
 ---
 

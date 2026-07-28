@@ -253,7 +253,7 @@ Beyond just *having* primitives:
 1. **All twelve primitives are documented, not just shipped.** Each links to a spec or walkthrough doc. A forker can implement against the spec without reading the full source.
 2. **The docs are kept current.** This isn't a post-hoc add — the docs were maintained through every shipped commit. See [`docs/README.md`](../../README.md) for the documentation map.
 3. **The primitives compose.** Strategy Passport + Rigor Gate + Trace Anchor form a complete provenance chain for any AI-decision product. You can fork them individually OR as a stack.
-4. **The codebase is fully reviewed at the architecture level.** [`docs/chuan-architecture-survey.md`](../../chuan-architecture-survey.md) walks every file in `backend/archimedes/` with author signal + gap notes — a forker can see exactly what's load-bearing vs scaffolded.
+4. **The codebase is fully reviewed at the architecture level.** [`docs/chuan-architecture-survey.md`](chuan-architecture-survey.md) walks every file in `backend/archimedes/` with author signal + gap notes — a forker can see exactly what's load-bearing vs scaffolded.
 5. **License is the most permissive possible.** Unlicense is more permissive than MIT, BSD, or Apache — no attribution, no notice file required, no warranty disclaimer to copy. Forkers don't need to think about it.
 6. **The substrate is real, not aspirational.** 806+ backend tests + 16 analytics-engine tests pass. Live HTTPS testnet deploy at <https://archimedes-arc.com/>. 10 contracts on Arc testnet. 22 years of real SPY backtest data. 2 Tier-1 strategies that actually pass the rigor gate. **The autonomous agent is writing real on-chain rebalance traces against `ReasoningTraceRegistry` right now** — `curl https://archimedes-arc.com/api/traces/?limit=10` and you'll see real `arc_tx_hash` values verifiable on `testnet.arcscan.app`. Nothing on this list is mocked.
 
@@ -276,4 +276,4 @@ Two channels per the showcase landing page:
 
 - [`README.md`](../../../README.md) — project overview
 - [`docs/README.md`](../../README.md) — documentation map
-- [`docs/judging-rubric-assessment.md`](../../judging-rubric-assessment.md) — Day-13 rubric self-assessment (submission day; includes Arc OSS Showcase as a dimension)
+- [`docs/judging-rubric-assessment.md`](judging-rubric-assessment.md) — Day-13 rubric self-assessment (submission day; includes Arc OSS Showcase as a dimension)

@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/demo-script-lepton.md`](../../demo-script-lepton.md)**
+>
+> May-2026 Agora rigor-track pitch talking points.
+
 # Pitch talking points — rigor / provenance / agent track
 
 > **Status:** One-page handout for whoever runs the pitch deck (Dan, per

@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../../architecture-redesign/ARCHITECTURE-MAP.md)**
+>
+> SSH-to-a-t3.medium bootstrap against PostgreSQL 16. Production is ECS Fargate with Aurora PostgreSQL 18.3; nothing here is safe to follow.
+
 # Infrastructure & CI/CD Setup
 
 > **Status:** Day-10 update (2026-05-22). Originally added 2026-05-13. Lead: Chuan.

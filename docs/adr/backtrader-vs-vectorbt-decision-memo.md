@@ -12,7 +12,7 @@ v2 if we hit speed limits. Custom numpy is overkill for the hackathon timeline.
 
 ## The open question
 
-Chuan's [`../design.md` § 6](../design.md) names "vectorbt / custom numpy engine" for
+Chuan's [`../design.md` § 6](../archive/agora-2026-05/design.md) names "vectorbt / custom numpy engine" for
 backtesting. Dan independently suggested [backtrader](https://github.com/mementum/backtrader).
 Both are credible Python backtesting libraries with different tradeoffs. We need to pick
 one before strategy implementation starts in earnest (per the Week-1 roadmap, that's

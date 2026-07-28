@@ -2,7 +2,7 @@
 
 > **Status:** Drafted 2026-05-22 as Phase 0 of the
 > [Spine+ v2 plan](../plans/spine-plus-v2-plan.md). Closes survey gap cluster #5
-> (load-bearing) from [`chuan-architecture-survey.md`](../chuan-architecture-survey.md).
+> (load-bearing) from [`chuan-architecture-survey.md`](../archive/agora-2026-05/chuan-architecture-survey.md).
 >
 > **Lineage:** Day-10 introduced `portfolio_agent.py` (850 lines) as an
 > LLM-agentic top-level constructor. Three pre-Day-10 deterministic constructors

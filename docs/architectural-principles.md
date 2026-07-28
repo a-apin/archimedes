@@ -4,7 +4,7 @@
 > **Purpose:** Establish the design philosophy underneath the strategy passport, the
 > on-chain reasoning-trace anchoring, and the non-custodial vault. The "why" doc;
 > the "what" details live in the specs in [`specs/`](specs/) and in
-> [`design.md`](design.md).
+> [`design.md`](archive/agora-2026-05/design.md).
 > **Status:** Day-10 update (2026-05-22). The four primitives below — paper-claim
 > binding, reasoning trace, tool-call provenance, selection-bias correction — are
 > **all shipped and live** as of Day-10. The selection-bias gate has 2 Tier-1
@@ -15,7 +15,7 @@
 > agentic portfolio advisor ([`portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py))
 > — which sits *on top of* the four primitives (it cannot bypass the passport,
 > rigor gate, or trace anchor). See
-> [`chuan-architecture-survey.md`](chuan-architecture-survey.md) for the current
+> [`chuan-architecture-survey.md`](archive/agora-2026-05/chuan-architecture-survey.md) for the current
 > shipped-state per file.
 
 ## The frame: portfolio agents that don't ship verifiable history don't earn trust

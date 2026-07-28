@@ -172,7 +172,7 @@ The local docker-compose stack runs the same code as the EC2 deployment. To veri
 
 This checks `/health` and asserts: live LLM backend, non-empty corpus (≥10,000 papers), fusion enabled.
 
-Full production infrastructure (EC2 instance, CI/CD pipeline, Terraform, deployment flow) documented in [`docs/infra-setup.md`](../infra-setup.md).
+Full production infrastructure (ECS Fargate behind an ALB, CloudFront + WAF, Aurora PostgreSQL 18.3, ElastiCache Redis 7.1, CI/CD and Terraform) is documented in [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../architecture-redesign/ARCHITECTURE-MAP.md) and the Terraform under `infra/`. The old `docs/infra-setup.md` is archived and describes a single EC2 box that no longer exists.
 
 ## Reporting traction (the 30% rubric weight)
 
@@ -188,7 +188,7 @@ arc-canteen update-product "Live testnet deploy — 10 contracts on Arc + LLM-dr
 arc-canteen update-traction "Shared live demo URL with two crypto-native users — first external traffic on the EC2 deploy"
 ```
 
-Run `arc-canteen status` to view your current dashboard — what the judges will see. The judging-rubric assessment in [`docs/judging-rubric-assessment.md`](../judging-rubric-assessment.md) breaks down where we currently stand on each weighted criterion.
+Run `arc-canteen status` to view your current dashboard — what the judges will see. The judging-rubric assessment in [`docs/judging-rubric-assessment.md`](../archive/agora-2026-05/judging-rubric-assessment.md) breaks down where we currently stand on each weighted criterion.
 
 > **Arc OSS Showcase submissions** use the same CLI with an `"ArcOSS:"` prefix on the product update (per the showcase landing page at <https://arc-oss.thecanteenapp.com/>). See [`docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`](../archive/agora-2026-05/ARC-OSS-SHOWCASE.md).
 

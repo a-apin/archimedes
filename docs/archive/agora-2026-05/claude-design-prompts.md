@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/user-stories.md`](../../user-stories.md)**
+>
+> Design prompts for the May-2026 UI push. The frontend is React 19 + Vite 8 + UnoCSS today; these prompts predate that.
+
 # Claude Design — Prompts for Archimedes
 
 > **Audience:** Dan (and anyone on the team) using Claude Design at
@@ -26,7 +30,7 @@
 > MVO via canonical `services/rigor_evaluator.py`; 2 Tier-1 strategies — Moreira-Muir
 > 2017 + Moskowitz-Ooi-Pedersen 2012 TSMOM — pass all four gates on 22-year SPY;
 > Faber 2007 does *not*); DB-backed 10,000-paper arXiv q-fin preprint corpus with the Corpus Explorer UI shipped; "Linus for
-> quantitative finance" framing locked per [`docs/user-stories.md`](user-stories.md);
+> quantitative finance" framing locked per [`docs/user-stories.md`](../../user-stories.md);
 > **806 backend tests** + 16 analytics-engine tests collected; **submission day**.
 > UI prompts work as **refinement** prompts against the live UI, not greenfield.
 >
@@ -430,7 +434,7 @@ preserve the layout — those visual structures are load-bearing for the pitch.
 **Setup notes:** Use Claude Design's **Prototype** mode with **High fidelity** selected.
 This is a refinement prompt against the live UI at
 [`https://archimedes-arc.com/`](https://archimedes-arc.com/), targeting the proposed
-simplification in [`docs/archive/ui-simplification-proposal-2026-05-20.md`](archive/ui-simplification-proposal-2026-05-20.md) (now shipped via spine-plus-v2 Phases 0–7; see [`docs/specs/page-roles-spec.md`](specs/page-roles-spec.md) for the current page model).
+simplification in [`docs/archive/ui-simplification-proposal-2026-05-20.md`](../ui-simplification-proposal-2026-05-20.md) (now shipped via spine-plus-v2 Phases 0–7; see [`docs/specs/page-roles-spec.md`](../../specs/page-roles-spec.md) for the current page model).
 **The Day-4 risk-tier-cards onboarding flow is retired** — the product is now
 generator-first: users describe what they want, fusion produces a candidate strategy,
 the rigor gate admits or rejects, and the user inspects + deposits. Risk tolerance is

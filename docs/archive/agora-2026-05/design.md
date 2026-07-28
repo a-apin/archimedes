@@ -1,18 +1,22 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../../architecture-redesign/ARCHITECTURE-MAP.md)**
+>
+> The original single-vault architecture spec. Superseded end to end by the architecture map.
+
 # Archimedes — Design Document
 
 **Fund-of-Funds Portfolio Agent Powered by Academic Research**
 
-> **Status:** Architecture lineage doc — **superseded for product framing** by [`user-stories.md`](user-stories.md); the architecture for everything below the product layer remains authoritative. Component-level shipped state in [`chuan-architecture-survey.md`](chuan-architecture-survey.md). Retained so reviewers can trace the design history.
+> **Status:** Architecture lineage doc — **superseded for product framing** by [`user-stories.md`](../../user-stories.md); the architecture for everything below the product layer remains authoritative. Component-level shipped state in [`chuan-architecture-survey.md`](chuan-architecture-survey.md). Retained so reviewers can trace the design history.
 >
 > ⚠️ **Superseded for product framing.** This is the original single-vault design
 > document, retained for architecture lineage. The **canonical product spine** — and
 > the retirement of the "connect wallet → pick a risk profile" flow — is
-> [`user-stories.md`](user-stories.md). Read that first for what the product *is*.
+> [`user-stories.md`](../../user-stories.md). Read that first for what the product *is*.
 >
 > 📌 **Day-10 update (2026-05-22).** Component-level shipped state for everything
 > described below is in [`chuan-architecture-survey.md`](chuan-architecture-survey.md);
 > the corpus deep-dive supersedes § 4 on the strategy engine for what's actually
-> live ([`corpus-architecture.md`](corpus-architecture.md)). The four selection-bias
+> live ([`corpus-architecture.md`](../../corpus-architecture.md)). The four selection-bias
 > primitives in § 4.2 are live and have 2 Tier-1 strategies passing today. Sections
 > 4.3 (Portfolio Agent) and 4.4 (Reasoning Trace) describe the *direction*; the
 > shipped state has gone past — see the agentic advisor (`portfolio_agent.py`,

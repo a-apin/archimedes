@@ -20,7 +20,7 @@
 > **Architecture lineage to read together:**
 > - [`docs/user-stories.md`](docs/user-stories.md) — **the locked product spine
 >   (canonical); supersedes the older product framing in the docs below**
-> - [`docs/design.md`](docs/design.md) — original single-vault architecture
+> - [`docs/archive/agora-2026-05/design.md`](docs/archive/agora-2026-05/design.md) — original single-vault architecture (**archived**)
 > - [`docs/specs/ecosystem-design-spec.md`](docs/specs/ecosystem-design-spec.md) — Day-3
 >   two-tier marketplace pivot (synthetic protocol + AMM + VaultFactory + agent-as-a-service)
 > - [`docs/specs/component-interfaces-spec.md`](docs/specs/component-interfaces-spec.md) —
@@ -368,14 +368,14 @@ The CLI is two things in one binary:
    onboard or even talk to should be logged via `arc-canteen update-traction`. The
    30% Traction score is computed from this telemetry, not from anywhere else. **Until
    we start logging, the rubric reads zero.** See
-   [`docs/judging-rubric-assessment.md`](docs/judging-rubric-assessment.md) for where we
+   [`docs/judging-rubric-assessment.md`](docs/archive/agora-2026-05/judging-rubric-assessment.md) for where we
    currently stand.
 
 `arc-canteen status` shows your current dashboard — what the judges see.
 
 ## Tech Stack
 
-Refer to [`docs/design.md` § 6](docs/design.md) for the full table. Headline choices as
+Refer to [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/architecture-redesign/ARCHITECTURE-MAP.md) for the full table. Headline choices as
 they actually shipped (Day 4):
 
 - **Backend:** Python 3.12 / FastAPI / Uvicorn, packaged as `backend/archimedes/` with
@@ -400,8 +400,9 @@ they actually shipped (Day 4):
   `response.model` is the provenance of record across the GLM→Bedrock migration.
 - **Backtesting:** [backtrader](https://github.com/mementum/backtrader) for v1 per
   [`docs/adr/backtrader-vs-vectorbt-decision-memo.md`](docs/adr/backtrader-vs-vectorbt-decision-memo.md).
-  Supersedes `docs/design.md` § 6 ("vectorbt / custom numpy engine") on this one
-  line; design.md remains the architecture spec for everything else. Migration to
+  Supersedes `docs/design.md` § 6 ("vectorbt / custom numpy engine"); `design.md`
+  is archived in full and the architecture spec is now
+  `docs/architecture-redesign/ARCHITECTURE-MAP.md`. Migration to
   vectorbt is a v2 problem if parameter-sweep speed becomes a constraint.
 - **Smart contracts:** Solidity + Foundry, targeting Arc (EVM-compatible). **12 contract
   sources → 570 live instances on Arc testnet** (full hardened redeploy 2026-07-09, T3.2,
@@ -1122,8 +1123,8 @@ miss compounds with every visitor.
 
 ## Known risks
 
-Refer to [`docs/design.md` § 10](docs/design.md) for the technical risk matrix and
-[`docs/judging-rubric-assessment.md`](docs/judging-rubric-assessment.md) for the running
+Refer to [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/architecture-redesign/ARCHITECTURE-MAP.md) for the technical risk matrix and
+[`docs/judging-rubric-assessment.md`](docs/archive/agora-2026-05/judging-rubric-assessment.md) for the running
 rubric score. Adding team / coordination risks:
 
 - **Smart-contract + on-chain-integration + infra ownership concentrated in one human
@@ -1139,7 +1140,7 @@ rubric score. Adding team / coordination risks:
 - **Distributed team across many timezones with day-job constraints.** Mitigated by Marten as
   schedule owner + daily sync + async-first defaults.
 - **Traction = 0 on the rubric scoreboard until arc-canteen telemetry starts flowing.**
-  Per [`docs/judging-rubric-assessment.md`](docs/judging-rubric-assessment.md), this is
+  Per [`docs/judging-rubric-assessment.md`](docs/archive/agora-2026-05/judging-rubric-assessment.md), this is
   the cheapest +points to recover. Every meaningful product ship should pair with an
   `arc-canteen update-product` call; every user conversation should be logged via
   `arc-canteen update-traction`.
@@ -1155,9 +1156,9 @@ rubric score. Adding team / coordination risks:
 
 ## What this file deliberately does not cover
 
-- The full architecture — see [`docs/design.md`](docs/design.md) (note: §5.2/§5.3 are
+- The full architecture — see [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/architecture-redesign/ARCHITECTURE-MAP.md) (note: the archived `docs/archive/agora-2026-05/design.md` §5.2/§5.3 are
   superseded history per PR #710; architecture decisions now route to Dan)
-- Pitch deck content — see [`docs/demo-script-pitch-deck-outline.md`](docs/demo-script-pitch-deck-outline.md)
+- Pitch deck content — see [`docs/demo-script-pitch-deck-outline.md`](docs/archive/agora-2026-05/demo-script-pitch-deck-outline.md)
 - Competitive landscape, pricing, and business model — **not in this repo.** Competitive
   and commercial material lives in the private docs repo by policy; this repo carries code
   and technical documentation. Ask Dan. (Do not re-create a competitor doc here — that has

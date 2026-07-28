@@ -1,10 +1,14 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/arc-integration.md`](../../arc-integration.md)**
+>
+> Sponsor-alignment argument written for the May-2026 Agora judging.
+
 # Arc Alignment — Strategy & Build Posture
 
 > **Status:** Canonical reference for Arc/Circle alignment. Written 2026-05-19 (Day 8); build-posture decisions below remain current as of 2026-05-23 (Day 11). Re-validate before the pitch.
 >
 > **Date:** 2026-05-19. **Canonical strategy doc for "how Archimedes aligns to,
 > and builds in, the Arc/Circle world."** Read with
-> [`user-stories.md`](user-stories.md) (the spine), [`competitor-landscape.md`](competitor-landscape.md)
+> [`user-stories.md`](../../user-stories.md) (the spine), [`competitor-landscape.md`](../../competitor-landscape.md)
 > (the tiered thesis), and issue #84 (Circle Agent Stack adoption).
 > Sourcing: `/tmp/research/arc-circle.md` (2026-05-19 research pass) + `submodules/context-arc/`.
 
@@ -31,7 +35,7 @@ This is a **strategic strength, stated plainly**:
   there is no RIA trigger, no custody risk, no redemption-liquidity problem *yet*.
   Off-chain redemptions, preset-strategy / RIA posture, and exploit alerting
   (Hypernative-class) become a **designed-for-mainnet business-plan story**, not
-  hackathon debt. See [`competitor-landscape.md`](competitor-landscape.md)
+  hackathon debt. See [`competitor-landscape.md`](../../competitor-landscape.md)
   § Regulatory.
 
 ## 2. What we already use (real Arc/Circle integration)
@@ -84,7 +88,7 @@ decision hashed and verifiable on Arc."*
 
 ## 6. Strategic posture vs the curation-infra tier
 
-Per [`competitor-landscape.md`](competitor-landscape.md): the live-mainnet
+Per [`competitor-landscape.md`](../../competitor-landscape.md): the live-mainnet
 curation incumbents (Morpho/Gauntlet/Upshift) run **trust-based** curation —
 Nov-2025 proved that layer breaks on rigor. Archimedes is the **proof-based**
 answer, and being **Arc-native + testnet-honest** is consistent with that: we
@@ -105,7 +109,7 @@ building. Accountable is partner-shaped, not a rival.
 
 When Arc mainnet ships: real-funds custody, off-chain redemption design,
 preset-strategy / RIA legal posture, exploit alerting (Hypernative-class),
-multi-user + the social-network expansion (see [`user-stories.md`](user-stories.md)
+multi-user + the social-network expansion (see [`user-stories.md`](../../user-stories.md)
 § Scope). These are the business-plan narrative; **none are v1 demo work.**
 
 ---

@@ -23,9 +23,9 @@ For repo-level setup + operations, start at the **repo root**:
 
 | Doc | Status | What it is |
 |---|---|---|
-| [`design.md`](design.md) | superseded for product framing | Original single-vault design. Architecture lineage; the canonical product framing is `user-stories.md`. Component-level shipped state in `chuan-architecture-survey.md`. |
+| [`design.md`](archive/agora-2026-05/design.md) | superseded for product framing | Original single-vault design. Architecture lineage; the canonical product framing is `user-stories.md`. Component-level shipped state in `chuan-architecture-survey.md`. |
 | [`architectural-principles.md`](architectural-principles.md) | shipped | The four primitives (paper-claim binding, reasoning trace, tool-call provenance, selection-bias correction). All four live. |
-| [`chuan-architecture-survey.md`](chuan-architecture-survey.md) | snapshot — Day-11 | File-by-file survey of `backend/archimedes/` (~89 files). Aggregate gap clusters with t2o2-issue cross-refs. |
+| [`chuan-architecture-survey.md`](archive/agora-2026-05/chuan-architecture-survey.md) | snapshot — Day-11 | File-by-file survey of `backend/archimedes/` (~89 files). Aggregate gap clusters with t2o2-issue cross-refs. |
 | [`corpus-architecture.md`](corpus-architecture.md) | partial | The q-fin corpus end-to-end: 3-layer substrate (seed → DB → artifact), fusion path, wired-vs-not-yet table. |
 
 ## Specs — architectural contracts
@@ -67,12 +67,12 @@ The five spec files below shipped on `main` between 2026-05-23 and 2026-05-24 an
 
 | Doc | What it is |
 |---|---|
-| [`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md) | 3-min pitch + 2-min demo + Q&A structure; 9-slide deck; honesty rules baked in. |
-| [`pitch-talking-points-rigor-track.md`](pitch-talking-points-rigor-track.md) | One-page handout for the rigor / provenance / agent track. Supplements the demo script. |
-| [`portfolio-advisor-demo-cues.md`](portfolio-advisor-demo-cues.md) | 60-second verbatim cue card for the Portfolio Advisor moment inside the live demo. |
-| [`claude-design-prompts.md`](claude-design-prompts.md) | Paste-ready prompts for [Claude Design](https://claude.ai/design) — logo, slide deck, UI screens, plus explainer diagrams. |
-| [`arc-alignment.md`](arc-alignment.md) | Arc testnet posture as a strategic strength + Circle Agent Stack opportunity framing. |
-| [`traction-logging.md`](traction-logging.md) | Operational cheat sheet for `arc-canteen update-product` + `update-traction` (the 30% rubric weight). |
+| [`demo-script-pitch-deck-outline.md`](archive/agora-2026-05/demo-script-pitch-deck-outline.md) | 3-min pitch + 2-min demo + Q&A structure; 9-slide deck; honesty rules baked in. |
+| [`pitch-talking-points-rigor-track.md`](archive/agora-2026-05/pitch-talking-points-rigor-track.md) | One-page handout for the rigor / provenance / agent track. Supplements the demo script. |
+| [`portfolio-advisor-demo-cues.md`](archive/agora-2026-05/portfolio-advisor-demo-cues.md) | 60-second verbatim cue card for the Portfolio Advisor moment inside the live demo. |
+| [`claude-design-prompts.md`](archive/agora-2026-05/claude-design-prompts.md) | Paste-ready prompts for [Claude Design](https://claude.ai/design) — logo, slide deck, UI screens, plus explainer diagrams. |
+| [`arc-alignment.md`](archive/agora-2026-05/arc-alignment.md) | Arc testnet posture as a strategic strength + Circle Agent Stack opportunity framing. |
+| [`traction-logging.md`](archive/agora-2026-05/traction-logging.md) | Operational cheat sheet for `arc-canteen update-product` + `update-traction` (the 30% rubric weight). |
 
 ## Benchmarks + diagrams + runbooks
 
@@ -87,10 +87,10 @@ The five spec files below shipped on `main` between 2026-05-23 and 2026-05-24 an
 
 | Doc | What it is |
 |---|---|
-| [`judging-rubric-assessment.md`](judging-rubric-assessment.md) | Day-13 self-assessment against the rubric (Agentic Sophistication + Traction + Circle Tool Usage + Innovation + **Arc OSS Showcase**). |
+| [`judging-rubric-assessment.md`](archive/agora-2026-05/judging-rubric-assessment.md) | Day-13 self-assessment against the rubric (Agentic Sophistication + Traction + Circle Tool Usage + Innovation + **Arc OSS Showcase**). |
 | [`rigor-methods.md`](rigor-methods.md) | Plain-English summary of the rigor methods (DSR / PBO / Kelly / MVO) that the selection-bias spec implements. Reader-friendly companion. |
 | [`anti-features.md`](anti-features.md) | What Archimedes is *not* building, with rationale. Back-pressure document for scope creep. |
-| [`infra-setup.md`](infra-setup.md) | Deploy + CI/CD + Terraform reference (prod is ECS Fargate). Owner: Dan. |
+| [`infra-setup.md`](archive/agora-2026-05/infra-setup.md) | Deploy + CI/CD + Terraform reference (prod is ECS Fargate). Owner: Dan. |
 
 ## Architecture Decision Records ([`adr/`](adr/))
 
@@ -113,7 +113,7 @@ Docs that were authoritative at an earlier phase and have since been superseded.
 | [`archive/ui-simplification-proposal-2026-05-20.md`](archive/ui-simplification-proposal-2026-05-20.md) | [`specs/page-roles-spec.md`](specs/page-roles-spec.md) + spine Phases 0–7 shipped per [`specs/spine-plus-v2-plan.md`](plans/spine-plus-v2-plan.md) |
 | [`archive/evening-execution-plan-2026-05-24.md`](archive/evening-execution-plan-2026-05-24.md) | Shipped via PRs #220–#241; reality captured in [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) and [`AUDIT_2026-06-14.md`](audits/2026-06-14-full-tree-audit.md) |
 | [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) | [`AUDIT_2026-06-14.md`](audits/2026-06-14-full-tree-audit.md) |
-| [`archive/rfb-alignment.md`](archive/rfb-alignment.md) | [`arc-alignment.md`](arc-alignment.md) + [`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md) |
+| [`archive/rfb-alignment.md`](archive/rfb-alignment.md) | [`arc-alignment.md`](archive/agora-2026-05/arc-alignment.md) + [`demo-script-pitch-deck-outline.md`](archive/agora-2026-05/demo-script-pitch-deck-outline.md) |
 | [`archive/qfin-paper-corpus-seed.md`](archive/qfin-paper-corpus-seed.md) | [`corpus-architecture.md`](corpus-architecture.md) |
 | [`archive/agora_project_analysis.md`](archive/agora_project_analysis.md) | [`architectural-principles.md`](architectural-principles.md) + [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md) |
 

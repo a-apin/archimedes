@@ -3,7 +3,7 @@
 > **Audience:** Archimedes team (decision owner: Dan Browne, AWS account holder)
 > **Status:** **Adopted and completed 2026-06-24** (Lepton Sprint, post-Agora).
 > **Question being decided:** After the hackathon, who owns the production AWS infrastructure?
-> **Related:** CLAUDE.md § "Project / Status" (2026-06-24 revision), [`docs/infra-setup.md`](../infra-setup.md), `infra/`.
+> **Related:** CLAUDE.md § "Project / Status" (2026-06-24 revision), [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../architecture-redesign/ARCHITECTURE-MAP.md), `infra/`.
 
 ## TL;DR
 

@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](../../architecture-redesign/ARCHITECTURE-MAP.md)**
+>
+> Describes a single EC2 box with no ALB, no managed database, no managed Redis and no WAF. All four exist: ECS Fargate behind an ALB, CloudFront + WAF in front, Aurora PostgreSQL 18.3 and ElastiCache Redis 7.1.
+
 # AWS Architecture — Archimedes
 
 > **Status:** Living doc. Written 2026-05-28. Reflects actual deployed state;
@@ -335,4 +339,4 @@ gh workflow run deploy.yml --ref main
 
 ---
 
-_Cross-references: [CLAUDE.md § AWS account access](../CLAUDE.md), [infra/README.md](../infra/README.md), [issue #439](https://github.com/a-apin/archimedes-arcadia/issues/439)_
+_Cross-references: [CLAUDE.md § AWS account access](../../../CLAUDE.md), [infra/README.md](../../../infra/README.md), [issue #439](https://github.com/a-apin/archimedes-arcadia/issues/439)_

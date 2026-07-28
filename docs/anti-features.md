@@ -71,7 +71,7 @@ unblocking the wedge.
 
 ### NOT building: tax-loss harvesting
 
-**Why not:** Mentioned in RFB 04 and in Chuan's [`design.md` § 4.3.1](design.md), but
+**Why not:** Mentioned in RFB 04 and in Chuan's [`design.md` § 4.3.1](archive/agora-2026-05/design.md), but
 classified as v1.5. Tax-loss harvesting requires accounting infrastructure (cost basis
 tracking, wash-sale rules, jurisdiction-specific tax codes) that's a real product on its
 own.
@@ -164,7 +164,7 @@ trace generation in v1. Fine-tuning is a v2+ conversation.
 ### NOT building: an Arc smart contract upgrade pattern
 
 **Why not:** Per [`docs/specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md)
-and following Chuan's [`design.md` § 5.2](design.md), contracts are immutable in v1. If a
+and following Chuan's [`design.md` § 5.2](archive/agora-2026-05/design.md), contracts are immutable in v1. If a
 bug surfaces, we deploy a new contract and migrate. Upgrade patterns add their own bug
 surface (the proxy / delegatecall failure mode is non-trivial); we hold the line on
 immutability for v1.

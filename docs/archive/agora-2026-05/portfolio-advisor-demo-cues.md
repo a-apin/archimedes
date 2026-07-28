@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/demo-script-lepton.md`](../../demo-script-lepton.md)**
+>
+> May-2026 Agora demo cue sheet.
+
 # Portfolio Advisor — 60-second demo cue card
 
 > **Status:** Supplement, not replacement. Dan owns the master pitch deck +

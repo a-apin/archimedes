@@ -1,13 +1,17 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/demo-script-lepton.md`](../../demo-script-lepton.md)**
+>
+> May-2026 Agora demo script and deck outline.
+
 # Demo Script & Pitch Deck Outline
 
 > **Audience:** Archimedes hackathon team (deck owner + demo runner + Q&A primaries).
 > **Status:** Day-13 date-bump (2026-05-25 — submission day) on top of the Day-10
 > update (2026-05-22) atop the 2026-05-19 rewrite to the **locked product spine**
-> ([`user-stories.md`](user-stories.md)) and the **tiered competitive thesis**
-> ([`competitor-landscape.md`](competitor-landscape.md)). The Day-10 deltas — agentic
-> portfolio advisor ([`portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py))
+> ([`user-stories.md`](../../user-stories.md)) and the **tiered competitive thesis**
+> ([`competitor-landscape.md`](../../competitor-landscape.md)). The Day-10 deltas — agentic
+> portfolio advisor ([`portfolio_agent.py`](../../../backend/archimedes/agents/portfolio_agent.py))
 > picking individual instruments anchored to passports, the stress engine
-> ([`stress_engine.py`](../backend/archimedes/services/stress_engine.py)) with 6
+> ([`stress_engine.py`](../../../backend/archimedes/services/stress_engine.py)) with 6
 > canonical shocks, the multi-asset NAV vault (`Vault.totalAssets()` oracle-priced),
 > and the Arc OSS Showcase dimension — are now baseline. **Day-12 → Day-13 deltas
 > folded as baseline:** PortfolioAdvisor preview-before-deploy banner on `/generate`
@@ -267,7 +271,7 @@ A: On testnet with no real funds, there is no custody/RIA trigger — that's *wh
 regulatory architecture (off-chain redemptions, preset-strategy / RIA posture, exploit
 alerting) is presented as the **mainnet business-plan**, designed-for not claimed-as-shipped.
 
-**Q: Why USDC, no token?** A: No native token ([anti-features](anti-features.md));
+**Q: Why USDC, no token?** A: No native token ([anti-features](../../anti-features.md));
 revenue = take-rate on settlement + USYC yield share. Optimizing for users with a job to
 do, not tokenholders.
 

@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/archive/agora-2026-05/AGORA-SUBMISSION-PACKET.md`](AGORA-SUBMISSION-PACKET.md)**
+>
+> Scored against the May-2026 Agora hackathon rubric. The competition is over.
+
 # Judging-Rubric Self-Assessment — Day-13 (2026-05-25 — submission day)
 
 > **Status:** Day-13 date-bump on top of the Day-10 rewrite (2026-05-22). The Day-3
@@ -23,7 +27,7 @@
 > to go before submission. Identifies the biggest *remaining* gaps and what's
 > already done.
 > **Source for rubric weights / categories:** original Canteen rubric (see
-> [`archive/agora_project_analysis.md`](archive/agora_project_analysis.md) § 1
+> [`archive/agora_project_analysis.md`](../agora_project_analysis.md) § 1
 > for historical detail).
 
 ## The rubric
@@ -34,7 +38,7 @@
 | 30%    | Traction                | Real users, real transactions, real volume *during the event window* (arc-canteen telemetry is the scoreboard) |
 | 20%    | Circle Tool Usage       | Creative use of Wallets, CCTP, Gateway, App Kit, Contracts, USYC, USDC, Paymaster |
 | 20%    | Innovation              | Novel approaches, emergent behavior, research insight       |
-| **+**  | **Arc OSS Showcase**    | **Separate parallel competition — reusable open-source primitives** (see [`../ARC-OSS-SHOWCASE.md`](archive/agora-2026-05/ARC-OSS-SHOWCASE.md)) |
+| **+**  | **Arc OSS Showcase**    | **Separate parallel competition — reusable open-source primitives** (see [`../ARC-OSS-SHOWCASE.md`](ARC-OSS-SHOWCASE.md)) |
 
 ## TL;DR — Day-10 running score: ~28 / 40 ≈ 70%, plus a strong Arc OSS bid
 
@@ -155,11 +159,11 @@ arc-canteen status
 
 **What we have that no other AI-portfolio submission will have:**
 
-- ✅ **Strategy passport** ([`specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md)) — every strategy carries paper arxiv-id + methodology hash + curator signature + on-chain registration tx. Other AI portfolios make "trust me" claims; ours is bound to bleeding-edge academic research with a verifiable hash chain. **Shipped + visible in the live UI.**
-- ✅ **Selection-bias corrections — live, not aspirational** ([`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md)). DSR (Bailey & López de Prado 2014) + PBO (Bailey/Borwein/López de Prado/Zhu 2014) + walk-forward OOS + look-ahead static audit. **2 Tier-1 strategies pass the gate today; the failures are visible** (we don't hide them). Real 22-year SPY backtest data — every `is_backtest_placeholder=true` flag is gone.
+- ✅ **Strategy passport** ([`specs/strategy-passport-spec.md`](../../specs/strategy-passport-spec.md)) — every strategy carries paper arxiv-id + methodology hash + curator signature + on-chain registration tx. Other AI portfolios make "trust me" claims; ours is bound to bleeding-edge academic research with a verifiable hash chain. **Shipped + visible in the live UI.**
+- ✅ **Selection-bias corrections — live, not aspirational** ([`specs/selection-bias-corrections-spec.md`](../../specs/selection-bias-corrections-spec.md)). DSR (Bailey & López de Prado 2014) + PBO (Bailey/Borwein/López de Prado/Zhu 2014) + walk-forward OOS + look-ahead static audit. **2 Tier-1 strategies pass the gate today; the failures are visible** (we don't hide them). Real 22-year SPY backtest data — every `is_backtest_placeholder=true` flag is gone.
 - ✅ **Paper-claim deltas surfaced honestly** — `sharpe_vs_paper`, `cagr_vs_paper`, McLean-Pontiff (2016) post-publication-decay estimate. We show where the strategy was expected to live (paper) vs. where it actually lives (our re-run). Hidden by every competitor; surfaced by us as a feature.
 - ✅ **On-chain reasoning trace anchoring** — `ReasoningTraceRegistry` deployed; `chain/trace_publisher.py` anchors keccak256 hashes for every construct + fusion trace. Verifiable on Arc.
-- ✅ **10,000-paper q-fin corpus + DB-backed substrate + interactive Corpus Explorer** ([`corpus-architecture.md`](corpus-architecture.md)). The "research-grounded" claim is *quantitatively* real (10k papers across 9 q-fin categories, 2008–2026), not marketing copy.
+- ✅ **10,000-paper q-fin corpus + DB-backed substrate + interactive Corpus Explorer** ([`corpus-architecture.md`](../../corpus-architecture.md)). The "research-grounded" claim is *quantitatively* real (10k papers across 9 q-fin categories, 2008–2026), not marketing copy.
 - ✅ **Two-tier marketplace primitive coverage** — Tier 1 = paper-grounded + selection-bias-corrected + full agent; Tier 2 = freestyle + reasoning traces only. The badge means something concrete.
 - ✅ **Agentic LLM portfolio advisor with tool-use** (Day-10, `portfolio_agent.py`) — the only AI-portfolio submission running a multi-iteration agent loop that picks individual instruments (not just ETF baskets) and anchors each pick to a paper-grounded strategy passport.
 - ✅ **3-input fusion engine** — user brief × live market regime × research corpus → grounded strategy spec. Novel synthesis path that no competitor surfaces.
@@ -168,7 +172,7 @@ arc-canteen status
 
 **What's still missing:**
 
-- ⚠️ **Commit-reveal trace integrity** ([`specs/commit-reveal-trace-spec.md`](specs/commit-reveal-trace-spec.md)) — spec'd, not wired to the live anchor flow.
+- ⚠️ **Commit-reveal trace integrity** ([`specs/commit-reveal-trace-spec.md`](../../specs/commit-reveal-trace-spec.md)) — spec'd, not wired to the live anchor flow.
 - ⚠️ **Live arxiv-extraction demo** — `services/arxiv_pipeline.py` can extract a strategy from a fresh paper but isn't wired to a one-click demo path.
 
 **To get to 10/10:** add a recorded demo segment where Dan extracts a strategy from a fresh arxiv paper live on stage — extract → Claude → new strategy file → backtest gate → reasoning trace anchored on-chain in under 5 minutes. "We can turn a paper into an audited strategy on stage, right now."
@@ -177,7 +181,7 @@ arc-canteen status
 
 ## ⭐ NEW: Arc OSS Showcase — strong contender
 
-The Arc OSS Showcase is a parallel competition for codebases other Arc builders can fork. Our positioning lives in [`../ARC-OSS-SHOWCASE.md`](archive/agora-2026-05/ARC-OSS-SHOWCASE.md).
+The Arc OSS Showcase is a parallel competition for codebases other Arc builders can fork. Our positioning lives in [`../ARC-OSS-SHOWCASE.md`](ARC-OSS-SHOWCASE.md).
 
 **What we expose as forkable primitives:**
 
@@ -203,7 +207,7 @@ The Day-3 forcing function was *build the end-to-end loop*. That's now built. Th
 
 ### The minimal viable launch loop
 
-1. **The launch communique** ships through Discord (Canteen + Arc Builder), Twitter, and the relevant subreddits, in the 1–3 day window before submission (per [`archive/launch-plan-2026-05-19.md`](archive/launch-plan-2026-05-19.md)).
+1. **The launch communique** ships through Discord (Canteen + Arc Builder), Twitter, and the relevant subreddits, in the 1–3 day window before submission (per [`archive/launch-plan-2026-05-19.md`](../launch-plan-2026-05-19.md)).
 2. **Every conversation it generates** gets logged via `arc-canteen update-traction`.
 3. **Every meaningful ship** (this week: the agentic advisor, the multi-asset NAV vault, the stress engine, the spine-strip) gets logged via `arc-canteen update-product`.
 4. **The recorded demo video** ships — Loom or YouTube, ≤ 3 minutes, hitting the spine end-to-end (Generate → rigor verdict → Deploy → reasoning trace → Verify).
@@ -221,7 +225,7 @@ The Day-3 forcing function was *build the end-to-end loop*. That's now built. Th
 ## Recommendations for the final 3 days
 
 1. **Today (everyone):** verify `arc-canteen status` shows your contributions. Backfill any merged PR not yet logged via `update-product`.
-2. **Today (Marten as schedule owner):** drive the launch-timing convergence per [`archive/launch-plan-2026-05-19.md`](archive/launch-plan-2026-05-19.md). Pick a date; communicate in #standups.
+2. **Today (Marten as schedule owner):** drive the launch-timing convergence per [`archive/launch-plan-2026-05-19.md`](../launch-plan-2026-05-19.md). Pick a date; communicate in #standups.
 3. **Tomorrow:** record the ≤3-minute demo video. Even a rough cut is better than no cut. Re-record after polish.
 4. **This week:** execute the launch. Every team member shares through their own channels. Every reply gets logged via `update-traction`.
 5. **Stretch (any cycles left):** wire one of (a) commit-reveal trace integrity → "Verify" button, or (b) stress-engine table on `Portfolio.jsx`. Either gets the agentic score to 9, and Innovation to 10.

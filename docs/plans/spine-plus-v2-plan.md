@@ -129,7 +129,7 @@ Explore never appears on Portfolio. No surface overlap remains.
 
 ### 0.4 `docs/specs/portfolio-constructor-decision-tree.md`
 
-Per [survey gap cluster #5](../chuan-architecture-survey.md), four
+Per [survey gap cluster #5](../archive/agora-2026-05/chuan-architecture-survey.md), four
 constructors exist with no documented hierarchy:
 
 | File | Lines | Role (proposed) |
@@ -869,7 +869,7 @@ PR #136 (merge `2a5f319`) closed remaining gaps on #128/#130/#133:
 honest fusion rigor + real bar-by-bar equity curve, LLM-backend guard test,
 fusion rigor verdict persistence + `rejected` status.
 
-**Why this phase exists:** [`docs/chuan-architecture-survey.md`](../chuan-architecture-survey.md)
+**Why this phase exists:** [`docs/chuan-architecture-survey.md`](../archive/agora-2026-05/chuan-architecture-survey.md)
 identifies 14 gap clusters in `backend/archimedes/`. Of those, gaps #1, #2,
 #3, #5, #6 are *technical-debt cleanup* — well-bounded, mechanical, with
 clear acceptance criteria. They are the exact shape t2o2 executes well
@@ -961,7 +961,7 @@ Update this table at phase close. No prospective estimates.
 
 When the next session resumes:
 
-1. Read this doc + [`docs/chuan-architecture-survey.md`](../chuan-architecture-survey.md) for context.
+1. Read this doc + [`docs/chuan-architecture-survey.md`](../archive/agora-2026-05/chuan-architecture-survey.md) for context.
 2. Confirm branch hygiene: are we on `dbrowneup/spine-plus-v2`? Rebase onto latest `origin/main` (moves continuously).
 3. **Phases 0, 1, 2, 3a, 3b, 6, 7 are LANDED.** Phase 3c is skeleton-only (KB body deferred). `pytest -q` should be green.
 4. **Next: Phases 8 + 9** per [`phase8-9-landing-and-fusion-spec.md`](../handovers/phase8-9-landing-and-fusion-spec.md):
