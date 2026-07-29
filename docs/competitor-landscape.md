@@ -12,10 +12,12 @@
 > not taken on report. Where a figure is secondary-sourced or approximate, that
 > caveat is carried through rather than dropped.
 > **Scope note:** this document covers the technical ecosystem — who exists,
-> what they ship, what rigor (if any) they apply. It deliberately excludes
-> acquisition economics, fundraising read-throughs, and competitor-business-
-> strategy speculation; those belong in internal strategy material, not a
-> public technical reference.
+> what they ship, what rigor (if any) they apply, and what their architecture
+> structurally permits. Published unit-of-sale is in scope where it follows from
+> architecture (a broker-dealer rail cannot serve an agent wallet; a withdraw-only
+> vault is not deploying capital). Acquisition economics, fundraising
+> read-throughs, and speculation about competitors' intentions are out; those
+> belong in internal strategy material, not a public technical reference.
 
 ## What changed, and why the old version is void
 
@@ -43,7 +45,7 @@ recommendation — the products a trader actually chooses between today.
 
 | Company | Primary product | Validation rigor | Open source | Real money | Who it's for |
 |---|---|---|---|---|---|
-| **Archimedes** | Plain-English idea → multi-agent debate over a ~10k-paper arXiv corpus → cost-aware out-of-sample statistical gate → public strategy leaderboard, failures included | Commission-net, chronological 30% holdout, 90% one-sided confidence with HAC/Newey-West-robust standard errors. The agent-generated path additionally deflates the Deflated Sharpe Ratio by its own candidate pool. **The curated (paper-sourced) path currently runs single-trial — no cross-strategy multiple-testing correction is applied on that path today** ([`adr/rigor-gate-unification.md`](adr/rigor-gate-unification.md), [`rigor-methods.md`](rigor-methods.md)) | Yes — [Unlicense](../LICENSE), full public-domain dedication | No — Arc testnet only; non-custodial vaults, no live capital deployed | An individual trader or researcher who wants an idea checked before risking money on it |
+| **Archimedes** | Plain-English idea → multi-agent debate over a ~10k-paper arXiv corpus → cost-aware out-of-sample statistical gate → public strategy leaderboard, failures included | Commission-net, chronological 30% holdout, 90% one-sided confidence with HAC/Newey-West-robust standard errors. The agent-generated path additionally deflates that strategy's Sharpe against its own candidate pool (the Deflated Sharpe Ratio). **The curated (paper-sourced) path currently runs single-trial — no cross-strategy multiple-testing correction is applied on that path today** ([`adr/rigor-gate-unification.md`](adr/rigor-gate-unification.md), [`rigor-methods.md`](rigor-methods.md)) | Yes — [Unlicense](../LICENSE), full public-domain dedication | No — Arc testnet only; non-custodial vaults, no live capital deployed | An individual trader or researcher who wants an idea checked before risking money on it |
 | **Composer** (Composer by SoFi) | No-code natural-language strategy builder + automated live execution through a regulated broker-dealer | 2,000+ community-built strategies on the public Symphony Database; no published statistical correction for the multiple-testing exposure a supply-optimized marketplace creates, and no published rejection rate | No | Yes — regulated broker-dealer execution | Retail investors building and running rules-based strategies without writing code |
 | **Almanak** | Python SDK for building, backtesting, and deploying autonomous DeFi trading/LP agents; formerly paired with public pooled vaults | **Zero inferential statistics in the codebase** (independently verified — see below). Its optimizer runs 100 trials per walk-forward window and reports the winning Sharpe with no correction for the search | Yes — SDK is public on GitHub | Formerly — public vaults moved to withdraw-only, new deposits disabled, December 2025 | DeFi-native quant teams building and running their own on-chain execution agents |
 | **QuantConnect** | Algorithmic trading platform (the LEAN engine) + a named academic-grants program addressing the finance replication crisis | Owns the framing — a program literally titled *"Solving the Replication Crisis in Finance"* — but has not published a replication statistic for the papers it funds, and applies no DSR/PBO/equivalent gate to user-built strategies | Yes — LEAN, Apache-2.0 | Yes — live trading node | Developers and researchers building and running their own algorithms |
@@ -67,6 +69,46 @@ No product in either table runs a statistical gate on strategy alpha before a
 user or an agent can act on the strategy. That gap — not "on-chain," not
 "open source" — is the one that matters. See "The wedge, stated narrowly"
 below.
+
+### The second gap: nobody sells a verdict, and nobody an agent can buy one from
+
+The gate is one axis. There is a second, and it is structural rather than a
+matter of anyone's roadmap: **no product above prices an adjudication, and the
+two closest competitors are each architecturally precluded from selling one to
+an autonomous agent.** Stated as fact rather than as a knock — in both cases the
+architecture is correct for the product they are actually building.
+
+- **Composer executes through a regulated broker-dealer.** Its own launch
+  language positions it around *"clear, predefined rules"* and explicitly away
+  from continuous agentic trading. Broker-dealer rails require a KYC'd human
+  account holder; an autonomous agent with a wallet is not one, and cannot
+  become one without the human. This is not a gap Composer could close by
+  shipping a feature — it is the rail it deliberately chose, and it is the
+  opposite rail from agent-payable USDC settlement.
+- **Almanak exited capital deployment.** Public vaults moved to withdraw-only
+  with new deposits disabled from December 2025. What remains is an SDK — a tool
+  you clone and run yourself, not a service you call and pay. There is no
+  endpoint to charge and no adjudication being sold; the machine-checkable
+  permissioning described below governs an agent *you* operate, not a
+  transaction between you and Almanak.
+- **Neither charges per adjudication, and neither does anyone else in either
+  table.** Composer and Quantpedia charge subscriptions for access to a
+  platform or a library; Danelfin charges for a signal feed; QuantConnect
+  charges for compute and live-trading nodes; Almanak's SDK is free and its
+  revenue was vault-based. **The unit of sale is a seat, a feed, or a node.
+  Nobody prices the verdict itself.**
+
+Whether a verdict is a *good* thing to sell is an open question and this
+document does not claim to have answered it — see "Honest limitations." What is
+established is narrower and worth stating precisely: it is unoccupied, and the
+two nearest neighbours cannot occupy it without changing rails.
+
+**Archimedes' own position on this axis, stated with the same discipline:** the
+settlement machinery is real (a complete 402 → sign → verify → settle round-trip
+through Circle Gateway) and the service is agent-discoverable, but
+`PAYMENTS_DRY_RUN` is on in production, the route-level paywall on generation is
+not built, and **no agent has ever paid us.** The rail exists; it has carried
+nothing.
 
 ---
 
