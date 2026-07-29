@@ -21,10 +21,21 @@ from archimedes.services.backtest_mapper import (
     canonical_artifact_hash,
     map_artifact_to_backtest_result,
 )
-from archimedes.services.backtest_repository import insert_backtest_if_missing
+from archimedes.services.backtest_repository import get_daily_returns, insert_backtest_if_missing
 from archimedes.services.strategy_provider import default_provider
+from archimedes.services.vol_plausibility import (
+    VolPlausibilityError,
+    assess_strategy,
+    compute_vol_stats,
+    daily_returns_from_equity_curve,
+)
 
 logger = logging.getLogger(__name__)
+
+# The confirmed-correct reference strategy for the Rule-B equity-baseline-match
+# check (see services/vol_plausibility.py module docstring) — a stem match
+# against analytics-engine/strategies/pipeline_buy_hold.py.
+_BASELINE_STRATEGY_STEM = "pipeline_buy_hold"
 
 
 @dataclass(frozen=True)
@@ -113,6 +124,118 @@ def _read_config() -> RunConfig:
     )
 
 
+def _load_baseline_vol(strategy_by_path: dict) -> float | None:
+    """Best-effort fetch of the pipeline_buy_hold realized vol for Rule B.
+
+    Deliverable-2 permanent guard (audit 2026-07-27, services/vol_plausibility.py):
+    every strategy's freshly-computed backtest is checked against BOTH the
+    self-contained asset-class-band rule (Rule A) AND, when available, this
+    pre-existing equity baseline (Rule B) — the check that specifically catches a
+    diversified/non-equity strategy whose realized vol is suspiciously close to
+    pure S&P equity (the exact signature of the confirmed single-feed-default
+    fallback). Reads whatever ``pipeline_buy_hold`` last persisted BEFORE this
+    run started — one query, done once, not per strategy.
+
+    Returns ``None`` (never raises) when the reference strategy file is missing,
+    has no persisted backtest yet (e.g. a brand new clone before the first ever
+    run), or its own persisted series is degenerate/too short — every case logs
+    a clear warning so the "Rule B skipped this run" gap is visible, not silent.
+    """
+    baseline = next(
+        (s for s in strategy_by_path.values() if Path(s.strategy_code_path or "").stem == _BASELINE_STRATEGY_STEM),
+        None,
+    )
+    if baseline is None:
+        logger.warning(
+            "vol-plausibility guard: no strategy file matching stem %r found — "
+            "Rule B (equity-baseline match) skipped this run; only Rule A runs",
+            _BASELINE_STRATEGY_STEM,
+        )
+        return None
+
+    with get_session() as session:
+        baseline_returns = get_daily_returns(session, baseline.id)
+
+    if not baseline_returns:
+        logger.warning(
+            "vol-plausibility guard: %s has no persisted backtest yet — "
+            "Rule B (equity-baseline match) skipped this run; only Rule A runs",
+            _BASELINE_STRATEGY_STEM,
+        )
+        return None
+
+    stats = compute_vol_stats(baseline_returns)
+    if stats.annualized_vol is None:
+        logger.warning(
+            "vol-plausibility guard: %s's persisted series is degenerate/too short "
+            "(n_obs=%d) — Rule B (equity-baseline match) skipped this run; only Rule A runs",
+            _BASELINE_STRATEGY_STEM,
+            stats.n_obs,
+        )
+        return None
+
+    return stats.annualized_vol
+
+
+def _daily_returns_for_operation(artifact_payload: dict, operation: str | None) -> list[float] | None:
+    """Raw ``daily_returns`` for one named operation, read directly off the
+    parsed artifact payload — ``None`` if not found/empty.
+
+    ``AnalyticsArtifactModel``/``EngineMetricsModel`` (``backtest_mapper.py``)
+    declare ``extra="ignore"`` and never define a ``daily_returns`` field, so
+    the raw per-bar returns array the analytics engine actually wrote
+    (``archimedes_analytics_engine.cli.run_command``'s ``asdict(bt_result)``,
+    which includes ``daily_returns``) only survives in the plain-dict
+    ``artifact_payload`` from ``json.loads`` — not in the pydantic-validated
+    ``artifact`` object. Matches by operation name (case-insensitive), the same
+    identity ``select_operation_result`` (``backtest_mapper.py``) used to pick
+    the row ``map_artifact_to_backtest_result`` mapped from — so this reads the
+    CHOSEN operation's own series, never whichever entry happens to sit first
+    in ``results`` (see ``get_daily_returns`` in ``backtest_repository.py``,
+    which — unlike ``select_operation_result`` — does exactly that and is the
+    reason this guard cannot just reuse it).
+    """
+    if not operation:
+        return None
+    wanted = operation.upper()
+    for row in artifact_payload.get("results", []):
+        if str(row.get("operation", "")).upper() != wanted:
+            continue
+        raw = row.get("metrics", {}).get("daily_returns")
+        return [float(v) for v in raw] if raw else None
+    return None
+
+
+def _payload_with_selected_operation_first(artifact_payload: dict, operation: str | None) -> dict:
+    """``artifact_payload`` with the chosen operation's row moved to the front of
+    ``results`` — everything else preserved, order of the remaining rows intact.
+
+    Exists so that ``backtest_repository.get_daily_returns()``, which returns the
+    first non-empty ``daily_returns`` and ignores the ``operation`` column, reads
+    back the SAME series the write-time vol guard validated. Returns the payload
+    unchanged when there is nothing to do (no operation, single/zero result, or
+    the chosen row is already first), so the common single-operation case is
+    byte-identical and does not perturb ``canonical_artifact_hash``.
+    """
+    if not operation:
+        return artifact_payload
+    results = artifact_payload.get("results")
+    if not isinstance(results, list) or len(results) < 2:
+        return artifact_payload
+
+    wanted = operation.upper()
+    idx = next(
+        (i for i, row in enumerate(results) if str(row.get("operation", "")).upper() == wanted),
+        None,
+    )
+    if idx is None or idx == 0:
+        return artifact_payload
+
+    reordered = dict(artifact_payload)
+    reordered["results"] = [results[idx], *results[:idx], *results[idx + 1 :]]
+    return reordered
+
+
 def run_backtests() -> dict:
     repo_root = _repo_root()
     strategy_dir = _analytics_strategy_dir(repo_root)
@@ -128,6 +251,12 @@ def run_backtests() -> dict:
     }
 
     init_db()
+
+    # Deliverable-2 permanent guard: fetch the pre-existing equity baseline ONCE
+    # (not per strategy) so every freshly-computed artifact below can be checked
+    # against both plausibility rules before it is persisted. See
+    # services/vol_plausibility.py's module docstring for Rule A / Rule B.
+    baseline_vol = _load_baseline_vol(strategy_by_path)
 
     inserted = 0
     skipped = 0
@@ -164,7 +293,68 @@ def run_backtests() -> dict:
                 artifact,
                 strategy_id=strategy.id,
             )
+
+            # Persist the SELECTED operation first, and hash what we persist.
+            #
+            # Making the guard read the chosen operation's series (above) only
+            # closed half the gap: backtest_repository.get_daily_returns() —
+            # what the rigor gate and the audit script actually read back —
+            # ignores the `operation` column and returns the FIRST non-empty
+            # daily_returns in artifact_json["results"]. So with
+            # BACKTEST_OPERATIONS="NIKKEI,SPY" the guard would validate SPY
+            # while every downstream consumer graded NIKKEI. The divergence
+            # would just have moved rather than closed, and a guard that
+            # validates a different series than the gate reads is worse than
+            # no guard: it certifies the wrong thing.
+            #
+            # Reordering at write time makes "first entry" and "selected
+            # operation" the same row by construction, so the naive reader is
+            # correct without changing it. Fixing get_daily_returns() to honour
+            # the operation column is the better long-term shape, but it is a
+            # shared reader whose behaviour change would re-grade already
+            # persisted rows — that belongs in its own PR, not this guard's.
+            #
+            # No-op under the current default (BACKTEST_OPERATIONS="SPY" ⇒ one
+            # result), so no content_hash churn and no duplicate re-inserts for
+            # existing rows; it only starts mattering the moment a second
+            # operation is configured, which is exactly when it must be right.
+            artifact_payload = _payload_with_selected_operation_first(artifact_payload, selected_operation)
+            artifact_json = json.dumps(artifact_payload)
             content_hash = canonical_artifact_hash(artifact_payload)
+
+            # Deliverable-2 permanent guard (audit 2026-07-27): refuse to persist
+            # a backtest whose realized vol is wildly inconsistent with the
+            # strategy's own declared ASSET_UNIVERSE — this is exactly the
+            # confirmed "backtesting the wrong asset" defect class (e.g.
+            # capital_preservation_tbill declaring BIL but reading pure equity
+            # vol). Checked BEFORE insert_backtest_if_missing so a flagged
+            # artifact is never written, loudly, fail-closed.
+            #
+            # Pull the CHOSEN operation's raw daily_returns straight off the
+            # artifact payload rather than re-deriving them from
+            # mapped.equity_curve via pct-change: select_operation_result()
+            # (backtest_mapper.py) picks the row by NAME (searches for "SPY"
+            # regardless of position), but this file's own _load_baseline_vol()
+            # — and every other downstream reader, via
+            # backtest_repository.get_daily_returns() — reads artifact
+            # results[0], which is not guaranteed to be the same row once
+            # BACKTEST_OPERATIONS lists more than one op (e.g.
+            # "NIKKEI,SPY" puts SPY, the chosen op, at index 1). Deriving from
+            # mapped.equity_curve happened to coincide with the chosen op
+            # today, but named lookup is what actually keeps this guard
+            # checking the row that gets persisted and later re-read — falling
+            # back to the equity-curve derivation only if the raw field is
+            # absent (e.g. an older artifact schema).
+            candidate_returns = _daily_returns_for_operation(artifact_payload, selected_operation)
+            if not candidate_returns:
+                candidate_returns = daily_returns_from_equity_curve(mapped.equity_curve)
+            verdict = assess_strategy(strategy.asset_universe, candidate_returns, baseline_vol=baseline_vol)
+            if verdict.status in ("flagged", "degenerate"):
+                raise VolPlausibilityError(
+                    f"strategy {strategy.id} ({strategy.paper_title}) declares ASSET_UNIVERSE="
+                    f"{strategy.asset_universe!r}; realized vol/return check status={verdict.status!r}: "
+                    f"{'; '.join(verdict.reasons)}"
+                )
 
             with get_session() as session:
                 _, was_inserted = insert_backtest_if_missing(
@@ -185,6 +375,15 @@ def run_backtests() -> dict:
                 skipped += 1
                 logger.info("skip duplicate content hash: %s (%s)", strategy.paper_title, strategy.id)
 
+        except VolPlausibilityError as exc:
+            # Loud + fail-closed by construction: this exception is only ever
+            # raised AFTER the artifact was computed but BEFORE
+            # insert_backtest_if_missing — so nothing was written. ERROR (not
+            # WARNING) because this is the exact defect class the whole guard
+            # exists to catch, not a routine engine limitation.
+            failed += 1
+            errors[strategy.id] = f"VolPlausibilityError: {exc}"
+            logger.error("REFUSING to persist backtest for %s: %s", strategy_file.name, exc)
         except Exception as exc:
             failed += 1
             if typed_errors and isinstance(exc, typed_errors):
