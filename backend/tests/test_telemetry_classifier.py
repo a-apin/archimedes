@@ -3,29 +3,24 @@
 Covers the deterministic human-vs-agent classification and the middleware's
 fail-safe behaviour:
 
-  - valid SIWE session            → human
+  - valid Better Auth account state → human
   - valid X-Internal-Agent-Key    → agent (internal)
   - bot/script User-Agent         → agent (external)
   - browser UA, no session        → human (open demo default)
   - Redis-down                    → middleware never raises (no 5xx)
 
-No live Redis / Postgres / Anthropic / Arc RPC. The SIWE session is built with
-the real ``_sign_session`` (the auth layer's own signer) so the human path is
-exercised through production ``_verify_session`` rather than a mock. The Redis
-boundary is mocked via ``patch.object`` on the store's client accessor.
+No live Redis / Postgres / Anthropic / Arc RPC. Better Auth middleware state is
+set directly; Redis boundary is mocked via ``patch.object`` on store accessor.
 """
 
 from __future__ import annotations
 
-import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
+from archimedes.api.account_auth import CurrentUser
 from archimedes.api.telemetry_middleware import classify_request, telemetry_middleware
 from starlette.requests import Request
-
-_WALLET = "0x1111111111111111111111111111111111111111"
 
 
 def _make_request(
@@ -33,6 +28,7 @@ def _make_request(
     cookies: dict[str, str] | None = None,
     method: str = "GET",
     path: str = "/api/anything",
+    current_user: CurrentUser | None = None,
 ) -> Request:
     """Build a minimal ASGI ``Request`` with given headers/cookies (hermetic)."""
     raw_headers: list[tuple[bytes, bytes]] = []
@@ -48,16 +44,20 @@ def _make_request(
         "headers": raw_headers,
         "query_string": b"",
     }
-    return Request(scope)
+    request = Request(scope)
+    request.state.current_user = current_user
+    return request
 
 
 # ── classify_request ─────────────────────────────────────────────
 
 
-def test_siwe_session_classifies_as_human():
-    token = _sign_session(_WALLET, time.time())
-    request = _make_request(headers={"user-agent": "curl/8.0"}, cookies={_COOKIE_NAME: token})
-    # Even with a bot UA, a valid session wins → human.
+def test_account_session_classifies_as_human():
+    request = _make_request(
+        headers={"user-agent": "curl/8.0"},
+        current_user=CurrentUser(id="user-1", email="agent@example.test", name="Agent", email_verified=True),
+    )
+    # Even with bot UA, canonical account session wins → human.
     is_agent, agent_type = classify_request(request)
     assert is_agent is False
     assert agent_type == "human"
@@ -116,10 +116,11 @@ def test_browser_no_session_classifies_as_human():
     assert agent_type == "human"
 
 
-def test_expired_session_is_not_human_session():
-    # An expired session token fails _verify_session; with a bot UA it's external.
-    expired = _sign_session(_WALLET, time.time() - 10**9)
-    request = _make_request(headers={"user-agent": "curl/8.0"}, cookies={_COOKIE_NAME: expired})
+def test_legacy_wallet_cookie_is_not_account_session():
+    request = _make_request(
+        headers={"user-agent": "curl/8.0"},
+        cookies={"archimedes_session": "legacy-wallet-token"},
+    )
     is_agent, agent_type = classify_request(request)
     assert is_agent is True
     assert agent_type == "external"

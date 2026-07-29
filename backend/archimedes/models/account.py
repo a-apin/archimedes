@@ -1,6 +1,6 @@
 """Better Auth accounts and verified wallet links.
 
-Better Auth owns writes to the four ``auth_*`` tables. SQLAlchemy maps the
+Better Auth owns writes to the five ``auth_*`` tables. SQLAlchemy maps the
 same schema so application rows can reference the canonical user ID without
 parsing Better Auth cookies or duplicating account state.
 """
@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     text,
@@ -98,6 +99,15 @@ class AuthVerification(Base):
     updated_at: Mapped[datetime] = mapped_column(
         "updatedAt", DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
     )
+
+
+class AuthRateLimit(Base):
+    __tablename__ = "auth_rate_limits"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_request: Mapped[int] = mapped_column("lastRequest", BigInteger, nullable=False)
 
 
 class LinkedWallet(Base):

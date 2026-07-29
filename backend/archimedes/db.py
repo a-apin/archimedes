@@ -165,7 +165,7 @@ def init_db() -> None:
             "ALTER TABLE strategy_store ADD COLUMN IF NOT EXISTS on_chain_registration_tx VARCHAR(66)",
             "ALTER TABLE strategy_store ADD COLUMN IF NOT EXISTS on_chain_registration_block VARCHAR(32)",
             "ALTER TABLE strategy_store ADD COLUMN IF NOT EXISTS parent_id VARCHAR(64)",
-            # chat_messages.verified — SIWE-bound chat identity (issue #524).
+            # chat_messages.verified — cryptographically linked-wallet attribution.
             # Pre-existing rows default to FALSE: they were body-supplied, never verified.
             "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE",
         ]

@@ -458,8 +458,8 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
     path) — via the same ``run_rigor_gate`` primitive the curated path uses.
 
     Ownership (security-critical — copied verbatim from
-    ``strategies_routes.get_strategy``'s #850 pattern): a non-example,
-    unpublished ``strategy_store`` row is visible only to its ``owner_wallet``.
+    ``strategies_routes.get_strategy`` pattern): non-public generated row is
+    visible only to canonical owner, with linked-wallet fallback for legacy rows.
     Returns ``None`` for BOTH "no such strategy" and "exists but not visible to
     this caller" so the route 404s either way — existence must never leak to a
     non-owner via a different response shape.
@@ -468,7 +468,8 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
     branch above) when the strategy exists, is visible, but has fewer than 10
     persisted daily returns — the honest "Pending Backtest" case, not a 404.
     """
-    from archimedes.api.auth_siwe import get_verified_wallet
+    from archimedes.api.account_auth import get_current_user
+    from archimedes.api.wallet_routes import get_linked_wallet_address
     from archimedes.db import get_session, init_db
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.backtest_repository import get_daily_returns, latest_backtests_by_strategy
@@ -479,8 +480,15 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
         if row is None:
             return None
         if not row.is_example and not row.is_published:
-            caller = get_verified_wallet(request)
-            is_owner = bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
+            user = get_current_user(request)
+            caller = get_linked_wallet_address(request)
+            is_owner = bool(
+                user
+                and (
+                    row.owner_user_id == user.id
+                    or (row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower())
+                )
+            )
             if not is_owner:
                 return None
 

@@ -717,6 +717,7 @@ async def run_generation(
     mode: str | None = None,
     model: str | None = None,
     owner_wallet: str | None = None,
+    owner_user_id: str | None = None,
     dual_regime: bool = True,
 ) -> None:
     """Run the full streaming generation pipeline for one job.
@@ -731,11 +732,9 @@ async def run_generation(
     that model; when ``None`` it uses the shared singleton on the env default —
     behavior UNCHANGED.
 
-    ``owner_wallet`` is the SIWE-derived wallet from the job payload (bound
-    server-side by ``gate_generation`` — never client-supplied). It is stamped
-    onto every persisted candidate so generated strategies are per-user and
-    private-until-published. ``None`` (anonymous / flag off) persists an
-    ownerless row, preserving today's behavior.
+    ``owner_user_id`` is the canonical Better Auth owner, bound server-side.
+    ``owner_wallet`` is optional verified-wallet provenance retained for
+    on-chain compatibility. Neither value is client supplied.
 
     Designed to be called as a fire-and-forget asyncio task from the route
     handler. Exceptions are caught + emitted as ``error`` events so the SSE
@@ -1032,7 +1031,10 @@ async def run_generation(
         # must NOT accumulate as rejected StrategyRecords (the orphan pattern
         # the ownership purge removed).
         strategy_ids: dict[str, str] = {}  # candidate_id → strategy_id
-        sid, thash = await _persist_candidate(best, brief, owner_wallet=owner_wallet)
+        ownership = {"owner_wallet": owner_wallet}
+        if owner_user_id is not None:
+            ownership["owner_user_id"] = owner_user_id
+        sid, thash = await _persist_candidate(best, brief, **ownership)
         strategy_ids[best.candidate_id] = sid
         await emit.emit(
             "trace_hashed",
@@ -1045,7 +1047,7 @@ async def run_generation(
             strategy_id=sid,
             candidate_id=best.candidate_id,
             regime=best.regime,
-            redirect_url=f"/library?highlight={sid}",
+            redirect_url=f"/app/library?highlight={sid}",
         )
         strategy_id = strategy_ids.get(best.candidate_id, "")
 
@@ -1137,6 +1139,7 @@ async def run_generation(
                         else (cand.rigor_verdict or {}).get("reason") or "outranked by the society leader",
                     },
                     owner_wallet=owner_wallet,
+                    owner_user_id=owner_user_id,
                 )
         except Exception:
             pass  # Non-blocking per spec
@@ -1175,9 +1178,9 @@ async def run_generation(
             served_model=served_model,
         )
 
-        # Identity ledger (#1028, D2): only an IDENTIFIED run is ledgered — an
-        # anonymous generation (owner_wallet=None) has nothing to anchor a row
-        # to (D2a: pre-auth stays anonymous). Fail-safe; never affects the job.
+        # Legacy wallet identity ledger records only runs with linked-wallet
+        # provenance. Account-only runs remain owned by owner_user_id but have no
+        # wallet event to emit. Fail-safe; never affects job.
         emit_identity_event(
             wallet=owner_wallet,
             event_type="generation_completed",
@@ -1201,14 +1204,18 @@ async def run_generation(
 
 
 async def _persist_candidate(
-    c: _CandidateResult, brief: GenerateBrief, *, owner_wallet: str | None = None
+    c: _CandidateResult,
+    brief: GenerateBrief,
+    *,
+    owner_wallet: str | None = None,
+    owner_user_id: str | None = None,
 ) -> tuple[str, str]:
     """Upsert the candidate as a Strategy + return (strategy_id, trace_hash).
 
     Trace hash is the keccak of the canonical (brief, candidate) tuple — gives
     every generation a deterministic identifier mirrored on-chain in v1.5.
 
-    ``owner_wallet`` (SIWE-derived, threaded from run_generation) is stamped on
+    ``owner_wallet`` (optional linked-wallet provenance) is stamped on
     both the strategy_store row and its strategy_passports mirror.
     """
     from web3 import Web3
@@ -1247,6 +1254,7 @@ async def _persist_candidate(
                 provenance_hash=trace_hash,
                 is_example=False,
                 owner_wallet=owner_wallet,
+                owner_user_id=owner_user_id,
                 # Rebalancer decouple (Part A #1): persist the candidate's own
                 # validated DSL spec so a vault later deployed from this
                 # strategy can be autonomously rebalanced by the agent runner.
@@ -1298,6 +1306,7 @@ async def _persist_candidate(
                         generation_method=c.generation_method,
                         force_update=True,
                         owner_wallet=owner_wallet,
+                        owner_user_id=owner_user_id,
                     )
                     sess2.commit()
             except Exception as exc:

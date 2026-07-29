@@ -48,6 +48,15 @@ test('email login creates session and sign out revokes it', async () => {
   assert.equal(await auth.api.getSession({ headers: new Headers({ cookie }) }), null)
 })
 
+test('production rate limiter uses migrated auth table', async () => {
+  const database = new DatabaseSync(':memory:')
+  const auth = createAuth({ database, env: { ...env, NODE_ENV: 'production' } })
+  assert.equal(auth.options.rateLimit.modelName, 'auth_rate_limits')
+  await (await getMigrations(auth.options)).runMigrations()
+  const columns = database.prepare('PRAGMA table_info(auth_rate_limits)').all().map(row => row.name)
+  assert.deepEqual(columns, ['id', 'key', 'count', 'lastRequest'])
+})
+
 test('invalid session token is rejected', async () => {
   const auth = await testAuth()
   const session = await auth.api.getSession({

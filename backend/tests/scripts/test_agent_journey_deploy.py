@@ -1,7 +1,7 @@
 """DEPLOY + MONITOR unit coverage for the agent journey harness (#788 slice 2).
 
 Target: scripts/agent_journey.py (repo root — loaded via importlib, it isn't a
-package). Mirrors test_agent_journey_siwe.py's loader pattern. Three surfaces:
+package). Mirrors test_agent_journey_auth.py's loader pattern. Three surfaces:
 
   1. ``build_vault_create_payload`` — a pure function. Cross-checked here
      against the REAL ``VaultCreateRequest`` Pydantic model

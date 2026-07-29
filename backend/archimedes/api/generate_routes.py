@@ -17,14 +17,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from archimedes.agents.generation_pipeline import run_generation
-from archimedes.api.auth_siwe import _generation_auth_required, gate_generation, get_verified_wallet
+from archimedes.api.account_auth import CurrentUser, require_current_user
 from archimedes.api.funnel_middleware import record_funnel
 from archimedes.api.generate_schemas import (
     CandidatesListResponse,
@@ -36,7 +35,7 @@ from archimedes.api.generate_schemas import (
     JobSummary,
 )
 from archimedes.api.limiter import limiter
-from archimedes.services.generation_quota import enforce_generation_quota
+from archimedes.api.wallet_routes import get_linked_wallet_address
 from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import EVENT_LOG_TTL, get_job_store
 from archimedes.services.llm_backend import is_allowed_model
@@ -73,41 +72,14 @@ def _register_task(job_id: str, task: asyncio.Task) -> None:
     task.add_done_callback(lambda _t, jid=job_id: _RUNNING_TASKS.pop(jid, None))
 
 
-def _require_job_auth(caller_wallet: str | None) -> None:
-    """Pre-lookup auth gate for per-job READ endpoints (gating ON only).
-
-    Must run BEFORE the job-store lookup: answering 404 (missing) vs 401
-    (exists, auth required) from a post-lookup check lets an unauthenticated
-    caller probe job_id existence. With this guard an anonymous caller gets
-    401 for every job_id — real or not — and learns nothing (Copilot, #851).
-    """
-    if _generation_auth_required() and not caller_wallet:
-        raise HTTPException(status_code=401, detail="Authentication required. Connect your wallet and sign in.")
-
-
-def _require_job_access(job: dict, caller_wallet: str | None, job_id: str) -> None:
-    """Owner-scope per-job READ endpoints when SIWE-for-generation is ON.
-
-    Gating OFF (explicit local-dev opt-out) → no-op, preserving the historical
-    open behavior: anyone who knows a job_id can stream/read it.
-
-    Gating ON (secure default):
-      - no verified session → 401 (same contract as gate_generation);
-      - session wallet ≠ ``payload.owner_wallet`` → **404, not 403** — a
-        mismatched caller must not be able to confirm the job even exists
-        (existence-oracle avoidance; message identical to the not-found path);
-      - ownerless jobs (created while gating was off) stay readable by any
-        *authenticated* caller — no lock-out of pre-flip jobs, no anon leak.
-
-    Browser note: EventSource sends cookies on same-origin requests, so the
-    SSE stream authenticates exactly like fetch() does — no client change.
-    """
-    if not _generation_auth_required():
-        return
-    if not caller_wallet:
-        raise HTTPException(status_code=401, detail="Authentication required. Connect your wallet and sign in.")
-    owner_wallet = (job.get("payload") or {}).get("owner_wallet")
-    if owner_wallet and owner_wallet.lower() != caller_wallet.lower():
+def _require_job_access(job: dict, user_id: str, job_id: str, linked_wallet: str | None = None) -> None:
+    """Hide account-owned and unclaimed legacy jobs from other users."""
+    payload = job.get("payload") or {}
+    owner_user_id = payload.get("owner_user_id")
+    owner_wallet = payload.get("owner_wallet")
+    if owner_user_id and owner_user_id != user_id:
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
+    if not owner_user_id and owner_wallet and owner_wallet.lower() != (linked_wallet or "").lower():
         raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
 
 
@@ -117,26 +89,18 @@ async def start_generation(
     req: GenerateStartRequest,
     request: Request,  # used for slowapi rate-limit keying AND funnel attribution (#787)
     response: Response,  # noqa: ARG001
-    _wallet: str | None = Depends(gate_generation),  # 401 when REQUIRE_SIWE_FOR_GENERATION is on
+    user: CurrentUser = Depends(require_current_user),
 ) -> GenerateStartResponse:
-    """Create a generation job and start the pipeline in the background."""
-    # Anti-abuse (Dan, 2026-06-28): a STRICT per-IP daily cap on WALLET-LESS
-    # generations. The Generate path is open (value-before-wallet, #787), but an
-    # open LLM-spending endpoint is a flood risk — an agent in a loop could burn
-    # budget. Authenticated (SIWE) callers bypass it entirely; a wallet-less caller
-    # gets a small free daily allowance, then a 429 steering them to connect a
-    # wallet (so the cap doubles as a conversion prompt). Enforced BEFORE any work
-    # so a capped request burns nothing. Disabled under TESTING (conftest sets it),
-    # matching the slowapi limiter; the quota logic is unit-tested directly.
-    if not os.getenv("TESTING"):
-        await enforce_generation_quota(request, _wallet)
+    """Create account-owned generation job and start pipeline in background."""
+    linked_wallet = get_linked_wallet_address(request)
 
     # Paid-tier gating (T1.8): a premium (Anthropic) model requires a
     # wallet-connected entitlement. Enforced BEFORE the job is enqueued so a
     # non-entitled premium request is rejected (HTTP 402) without burning any
     # work — and is NOT silently downgraded to the free default model. Free
     # models (and the unset/default case) always pass.
-    enforce_model_entitlement(req.model, _wallet)
+    # Normal account use and free models need no wallet.
+    enforce_model_entitlement(req.model, linked_wallet)
 
     store = get_job_store()
     # Free-tier selection (defense in depth — the UI also restricts this).
@@ -149,17 +113,15 @@ async def start_generation(
     selected_model = req.model if is_allowed_model(req.model) else None
     if req.model and selected_model is None:
         logger.info("generate: ignoring non-allowlisted model %r; using env default", sanitize_log_value(req.model))
-    # Tag the job with its creator (audit 2026-06-14) so cancel can be scoped to
-    # the owner. When no SIWE session exists (flag off / anonymous), owner_wallet
-    # is None and the job stays cancellable by anyone — preserving today's open
-    # behavior with no flag-day risk. The same wallet is also threaded into
-    # run_generation below so persisted candidates carry per-user ownership.
+    # Canonical Better Auth ownership is server-derived and follows the job
+    # through persistence. Wallet provenance stays optional.
     job_id = await store.enqueue(
         job_type="generate",
         payload={
             "brief": req.brief.model_dump(),
             "n_candidates": req.n_candidates,
-            "owner_wallet": _wallet,
+            "owner_user_id": user.id,
+            "owner_wallet": linked_wallet,
             # The allowlist-filtered model the pipeline will actually use (None →
             # env default). enforce_model_entitlement (above) has already rejected
             # a non-entitled premium request with 402, so anything reaching here is
@@ -169,26 +131,26 @@ async def start_generation(
         },
     )
 
-    # Fire-and-forget the pipeline. The route doesn't await it; the SSE stream
-    # below tails the event log written by the pipeline as it runs.
-    # _wallet is the SIWE-derived owner from gate_generation — the SAME value
-    # stored in the job payload above; threading it into the pipeline stamps
-    # ownership onto every persisted candidate (never a client-supplied value).
+    # Fire-and-forget; the SSE stream tails events. User ownership is threaded
+    # from this authenticated request, never client-supplied.
     task = asyncio.create_task(
-        _run_with_cleanup(job_id, req.brief, req.n_candidates, req.mode, selected_model, _wallet)
+        _run_with_cleanup(
+            job_id,
+            req.brief,
+            req.n_candidates,
+            req.mode,
+            selected_model,
+            owner_user_id=user.id,
+            owner_wallet=linked_wallet,
+        )
     )
     _register_task(job_id, task)
 
     # Conversion funnel (#787): a generation actually started for this visitor —
     # the key "tried the product" transition. Fail-safe; never blocks the response.
     await record_funnel(request, "generation_started")
-
-    # Identity ledger (#1028, D2): only an IDENTIFIED start is ledgered — an
-    # anonymous request (flag off / no session) has no wallet to anchor a row
-    # to and is left to the anonymous funnel above (D2a: pre-auth stays
-    # anonymous). Fail-safe; never blocks the response.
     emit_identity_event(
-        wallet=_wallet,
+        wallet=linked_wallet,
         event_type="generation_started",
         actor_class="human",
         meta={"job_id": job_id, "model": selected_model},
@@ -207,6 +169,7 @@ async def _run_with_cleanup(
     n_candidates: int,
     mode: str | None = None,
     model: str | None = None,
+    owner_user_id: str | None = None,
     owner_wallet: str | None = None,
 ) -> None:
     try:
@@ -216,6 +179,7 @@ async def _run_with_cleanup(
             n_candidates=n_candidates,
             mode=mode,
             model=model,
+            owner_user_id=owner_user_id,
             owner_wallet=owner_wallet,
         )
     except asyncio.CancelledError:
@@ -228,21 +192,14 @@ async def _run_with_cleanup(
 async def stream_events(
     job_id: str,
     request: Request,
-    caller_wallet: str | None = Depends(get_verified_wallet),
+    user: CurrentUser = Depends(require_current_user),
 ) -> StreamingResponse:
-    """Server-Sent Events. Tails the job's Redis event log.
-
-    Honours ``Last-Event-ID`` for client resume after a disconnect (the spec
-    calls this out — the frontend stashes ``currentJobId`` in localStorage
-    and re-subscribes on mount). Owner-scoped when SIWE-for-generation is on
-    (see ``_require_job_access``); open when the gate is explicitly off.
-    """
-    _require_job_auth(caller_wallet)  # 401 BEFORE the lookup — no existence oracle
+    """Server-Sent Events for one account-owned generation job."""
     store = get_job_store()
     job = await store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
-    _require_job_access(job, caller_wallet, job_id)
+    _require_job_access(job, user.id, job_id, get_linked_wallet_address(request))
 
     try:
         last_event_id = int(request.headers.get("Last-Event-ID", "0"))
@@ -315,7 +272,8 @@ def _format_sse(ev: dict) -> str:
 @generate_router.post("/jobs/{job_id}/cancel")
 async def cancel_job(
     job_id: str,
-    caller_wallet: str | None = Depends(get_verified_wallet),
+    request: Request,
+    user: CurrentUser = Depends(require_current_user),
 ) -> dict[str, str]:
     """Cancel a running job. Idempotent.
 
@@ -334,14 +292,7 @@ async def cancel_job(
     if not job:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
 
-    # Owner scoping (audit 2026-06-14): if the job was created by a verified
-    # wallet, only that wallet may cancel it. Jobs created anonymously
-    # (owner_wallet is None) stay cancellable by anyone — preserving the open
-    # behavior when SIWE-for-generation is off. Prevents a third party who
-    # learns a job_id from killing another user's in-flight generation.
-    owner_wallet = (job.get("payload") or {}).get("owner_wallet")
-    if owner_wallet and owner_wallet.lower() != (caller_wallet or "").lower():
-        raise HTTPException(status_code=403, detail="This job belongs to a different wallet.")
+    _require_job_access(job, user.id, job_id, get_linked_wallet_address(request))
 
     if job["status"] in ("done", "error", "cancelled"):
         return {"job_id": job_id, "status": job["status"]}
@@ -370,28 +321,28 @@ async def cancel_job(
 
 @generate_router.get("/jobs", response_model=JobsListResponse)
 async def list_jobs(
+    request: Request,
     limit: int = Query(default=20, ge=1, le=100),
-    caller_wallet: str | None = Depends(get_verified_wallet),
+    user: CurrentUser = Depends(require_current_user),
 ) -> JobsListResponse:
     """Recent jobs for the GenerationStatus UI.
 
-    When SIWE-for-generation is ON the listing requires a session and is
-    filtered to the caller's own jobs (plus ownerless pre-flip jobs) — the
-    same no-existence-oracle stance as the per-job endpoints. When the gate
-    is explicitly off, the historical open listing is preserved.
+    Better Auth session is required. Results are filtered to canonical owner;
+    linked wallet resolves pre-migration wallet-owned jobs. Cross-user jobs stay hidden.
     """
-    gated = _generation_auth_required()
-    if gated and not caller_wallet:
-        raise HTTPException(status_code=401, detail="Authentication required. Connect your wallet and sign in.")
     store = get_job_store()
     raw = await store.list_recent_jobs(limit=limit)
+    linked_wallet = get_linked_wallet_address(request)
     summaries: list[JobSummary] = []
     for j in raw:
         if j.get("type") != "generate":
             continue
         payload = j.get("payload") or {}
+        owner_user_id = payload.get("owner_user_id")
         owner_wallet = payload.get("owner_wallet")
-        if gated and owner_wallet and owner_wallet.lower() != (caller_wallet or "").lower():
+        if owner_user_id and owner_user_id != user.id:
+            continue
+        if not owner_user_id and owner_wallet and owner_wallet.lower() != (linked_wallet or "").lower():
             continue
         brief = payload.get("brief") or {}
         result = j.get("result") or {}
@@ -418,18 +369,15 @@ def _normalize_state(s: str) -> str:
 @generate_router.get("/jobs/{job_id}/candidates", response_model=CandidatesListResponse)
 async def list_candidates(
     job_id: str,
-    caller_wallet: str | None = Depends(get_verified_wallet),
+    request: Request,
+    user: CurrentUser = Depends(require_current_user),
 ) -> CandidatesListResponse:
-    """Rejected-candidate viewer. Empty list until ``done``.
-
-    Owner-scoped when SIWE-for-generation is on (``_require_job_access``).
-    """
-    _require_job_auth(caller_wallet)  # 401 BEFORE the lookup — no existence oracle
+    """Rejected-candidate viewer. Empty list until ``done``."""
     store = get_job_store()
     job = await store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
-    _require_job_access(job, caller_wallet, job_id)
+    _require_job_access(job, user.id, job_id, get_linked_wallet_address(request))
     result = job.get("result") or {}
     cands = result.get("candidates", []) or []
     return CandidatesListResponse(

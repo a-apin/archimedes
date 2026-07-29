@@ -178,11 +178,13 @@ class TestUpsertEncryption:
 
             mock_req = _MagicMock(spec=StarletteRequest)
             mock_resp = _MagicMock(spec=StarletteResponse)
-            # upsert_profile (post Issue #402) requires a SIWE session matching
-            # payload.wallet_address. Patch get_verified_wallet to return the payload wallet.
-            with patch(
-                "archimedes.api.auth_siwe.get_verified_wallet",
-                return_value="0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            # Profile write requires canonical account plus matching linked wallet.
+            with (
+                patch("archimedes.api.user_routes.require_current_user", return_value=_MagicMock(id="test-user")),
+                patch(
+                    "archimedes.api.user_routes._extract_linked_wallet",
+                    return_value="0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                ),
             ):
                 asyncio.run(upsert_profile(payload, request=mock_req, response=mock_resp))
 

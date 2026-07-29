@@ -150,7 +150,7 @@ def test_alembic_strategy_spec_column_added_and_removed(tmp_path):
     assert upgrade.returncode == 0, upgrade.stderr
     assert _has_strategy_spec_column()
 
-    downgrade = _run_alembic("downgrade", "-1", database_url=database_url)
+    downgrade = _run_alembic("downgrade", "7b6e8d812331", database_url=database_url)
     assert downgrade.returncode == 0, downgrade.stderr
     assert not _has_strategy_spec_column()
 
@@ -184,6 +184,7 @@ def test_alembic_upgrade_head_matches_a_fresh_create_all_schema(tmp_path):
     create_all_db = tmp_path / "create_all.db"
     script = (
         "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthUser\n"
         "from archimedes.models.chat import Base\n"
         "from archimedes.models.identity import ControlledWallet, IdentityEvent, WalletIdentity\n"
         "from archimedes.models.request_snapshot import RequestCountSnapshot\n"
@@ -227,9 +228,9 @@ def test_alembic_strategy_store_matches_a_fresh_create_all_schema(tmp_path):
     create_all_db = tmp_path / "create_all_strategy_store.db"
     script = (
         "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthUser\n"
         "from archimedes.models.chat import Base\n"
-        # owner_wallet FKs into wallet_identities — must be registered too,
-        # or create_all() can't resolve the FK target table.
+        # Ownership FKs target auth_users and wallet_identities; register both.
         "from archimedes.models.identity import WalletIdentity\n"
         "from archimedes.models.strategy_store import StrategyRecord\n"
         f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"

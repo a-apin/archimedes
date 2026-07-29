@@ -28,7 +28,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from archimedes.models.chat import Base
 from archimedes.models.paper_ref import PaperRef
@@ -78,13 +78,18 @@ class StrategyPassportRecord(Base):
     curator_note = Column(Text, nullable=True)
 
     # ── Ownership (mirror of strategy_store.owner_wallet) ────
-    # SIWE-derived generating wallet, bound server-side; lowercase; NULL for
+    # Optional proof-linked generating wallet provenance; lowercase; NULL for
     # curated/legacy rows (backfilled to the D7 'system' identity in the issue
     # #1028 migration; stays nullable here — see strategy_store.owner_wallet
     # for the matching rationale). Visibility gating reads strategy_store
     # (source of truth); this mirror keeps the passport row self-describing.
     # FK retrofit (issue #1028, D1): every non-NULL value must be a known identity.
-    owner_wallet = Column(String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True)
+    owner_wallet: Mapped[str | None] = mapped_column(
+        String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True
+    )
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("auth_users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # ── Code binding ─────────────────────────────────────────
     strategy_code_path = Column(String(512), nullable=True)

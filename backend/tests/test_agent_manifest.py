@@ -21,16 +21,17 @@ async def test_agent_manifest_returns_200_with_expected_top_level_keys():
 
 
 @pytest.mark.asyncio
-async def test_agent_manifest_auth_scheme_is_siwe():
-    """The auth block advertises SIWE / EIP-4361 with the Arc chain id."""
+async def test_agent_manifest_auth_scheme_is_canonical_account_plus_wallet_link():
+    """Manifest separates Better Auth login from optional EIP-4361 wallet proof."""
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/agent/manifest")
 
     data = resp.json()
-    assert data["auth"]["scheme"] == "SIWE"
-    assert data["auth"]["spec"] == "EIP-4361"
+    assert data["auth"]["scheme"] == "Better Auth session"
+    assert data["auth"]["wallet_link_spec"] == "EIP-4361"
+    assert "emailPassword" in data["auth"]["methods"]
     assert data["auth"]["chain_id"] == 5042002
 
 

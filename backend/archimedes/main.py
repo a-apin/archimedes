@@ -14,7 +14,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
@@ -32,11 +32,12 @@ load_ssm_secrets()
 
 # Shared rate limiter (Redis-backed, falls back to in-memory).
 # Defined in a separate module to avoid circular imports with route modules.
+from archimedes.api.account_auth import better_auth_session_middleware, require_current_user
 from archimedes.api.agent_manifest_routes import agent_manifest_router
-from archimedes.api.auth_siwe import auth_router
 from archimedes.api.chat_routes import chat_router
 from archimedes.api.corpus_routes import corpus_router
 from archimedes.api.explore_routes import explore_router
+from archimedes.api.features_routes import features_router
 from archimedes.api.generate_routes import generate_router
 from archimedes.api.leaderboard_routes import leaderboard_router
 from archimedes.api.limiter import limiter
@@ -75,6 +76,7 @@ from archimedes.api.routes import (
 )
 from archimedes.api.selection_bias_routes import selection_bias_router
 from archimedes.api.user_routes import user_router
+from archimedes.api.wallet_routes import wallet_router
 from archimedes.db import init_db
 
 logger = logging.getLogger(__name__)
@@ -437,7 +439,7 @@ async def _limit_request_body(request: Request, call_next):
 
 # ── Telemetry middleware: human-vs-agent traction counter (issue #428) ──
 # Registered AFTER _limit_request_body and BEFORE include_router. It classifies
-# each request (SIWE session → human; internal-key / bot-UA → agent), increments
+# each request (Better Auth account → human; internal-key / bot-UA → agent), increments
 # the matching Redis counter, and tags the response with X-Telemetry-Agent.
 # Graceful-degrades on any error — telemetry never turns a request into a 5xx.
 from archimedes.api.telemetry_middleware import telemetry_middleware
@@ -455,6 +457,10 @@ app.middleware("http")(telemetry_middleware)
 from archimedes.api.funnel_middleware import ensure_visitor_id_middleware
 
 app.middleware("http")(ensure_visitor_id_middleware)
+
+# Resolve Better Auth once per request. Protected route dependencies consume
+# request.state.current_user; public routes keep working when no session exists.
+app.middleware("http")(better_auth_session_middleware)
 
 
 # Initialize database (creates chat tables if needed)
@@ -480,16 +486,23 @@ app.include_router(agent_router)
 app.include_router(chat_router)
 app.include_router(corpus_router)
 app.include_router(explore_router)
-app.include_router(generate_router)
+app.include_router(generate_router, dependencies=[Depends(require_current_user)])
 if marketplace_router is not None:
     app.include_router(marketplace_router)
 app.include_router(risk_router)
-app.include_router(portfolio_router)
+app.include_router(portfolio_router, dependencies=[Depends(require_current_user)])
 app.include_router(selection_bias_router)
 app.include_router(papers_router)
-app.include_router(user_router)
-app.include_router(auth_router)
-app.include_router(proposals_router)
+app.include_router(user_router, dependencies=[Depends(require_current_user)])
+app.include_router(wallet_router)
+# Legacy SIWE router remains test-only so signature-verification regression
+# tests exercise its reusable proof helpers without exposing wallet login live.
+if os.getenv("TESTING"):
+    from archimedes.api.auth_siwe import auth_router
+
+    app.include_router(auth_router)
+app.include_router(proposals_router, dependencies=[Depends(require_current_user)])
+app.include_router(features_router)
 app.include_router(metrics_router)
 app.include_router(metrics_private_router)
 app.include_router(leaderboard_router)
@@ -610,8 +623,7 @@ async def health():
     except Exception:
         logger.debug("telemetry counts read failed", exc_info=True)
 
-    # Distinct "real users" = human wallets in wallet_identities (issue #830,
-    # honest denominator per #1028 AC1 — see services/user_stats.py). Surfaced
+    # Distinct real users = canonical Better Auth accounts. Surfaced
     # next to the request tallies so no doc/monitor can conflate traffic with
     # users. Fail-safe: returns 0 on any DB error.
     real_users = 0

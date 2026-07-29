@@ -26,22 +26,18 @@ V = "archimedes.api.vaults_routes"
 
 @contextlib.contextmanager
 def _override_verified_wallet(app, wallet: str = "0x000000000000000000000000000000000000dEaD"):
-    """Override the SIWE wallet dependency, then RESTORE the prior override on exit.
+    """Override linked-wallet dependency, restoring prior override on exit."""
+    from archimedes.api.wallet_routes import require_linked_wallet
 
-    Restoring (rather than a global ``app.dependency_overrides.clear()``) keeps this
-    test from wiping overrides another test/fixture set on the shared ``app`` instance.
-    """
-    from archimedes.api.auth_siwe import require_verified_wallet
-
-    prev = app.dependency_overrides.get(require_verified_wallet)
-    app.dependency_overrides[require_verified_wallet] = lambda: wallet
+    prev = app.dependency_overrides.get(require_linked_wallet)
+    app.dependency_overrides[require_linked_wallet] = lambda: wallet
     try:
         yield
     finally:
         if prev is None:
-            app.dependency_overrides.pop(require_verified_wallet, None)
+            app.dependency_overrides.pop(require_linked_wallet, None)
         else:
-            app.dependency_overrides[require_verified_wallet] = prev
+            app.dependency_overrides[require_linked_wallet] = prev
 
 
 class _Strat:
@@ -165,7 +161,7 @@ async def test_create_vault_proceeds_when_rigor_passes():
 async def test_create_vault_writes_the_identity_ledger_vault_created_event():
     """Issue #1028 (D2): the SIWE-verified deployer's ``vault_created`` event
     lands in the ledger — the bottom-of-funnel identity write, unlike
-    Generate's flag-gated one, since ``require_verified_wallet`` always
+    Generate's account gate, since ``require_linked_wallet`` always
     identifies the caller here."""
     from archimedes.db import get_session
     from archimedes.main import app
@@ -259,7 +255,13 @@ class _FakeRequest:
     for calling `_strategy_record_visible` directly without a real HTTP call."""
 
     def __init__(self, wallet: str | None):
+        from types import SimpleNamespace
+
+        from archimedes.api.account_auth import CurrentUser
+
         self._wallet = wallet
+        user = CurrentUser(f"legacy-test:{wallet.lower()}", "Test", "test@example.com", True) if wallet else None
+        self.state = SimpleNamespace(current_user=user)
 
     @property
     def cookies(self):
@@ -309,7 +311,7 @@ def test_strategy_record_visible_fails_closed_on_db_error():
 def _siwe_cookies(wallet: str) -> dict[str, str]:
     """Real signed SIWE session cookie (same helper shape as
     test_strategy_ownership.py / test_user_routes.py). Needed here (rather
-    than the `require_verified_wallet` dependency override above) because
+    than the `require_linked_wallet` dependency override above) because
     `_strategy_record_visible` reads the wallet directly off the request
     cookie via `get_verified_wallet(request)`, not via the FastAPI dependency."""
     from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session

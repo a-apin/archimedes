@@ -81,6 +81,15 @@ def upgrade() -> None:
     )
     op.create_index("auth_verifications_identifier_idx", "auth_verifications", ["identifier"])
     op.create_table(
+        "auth_rate_limits",
+        sa.Column("id", sa.String(length=64), nullable=False),
+        sa.Column("key", sa.Text(), nullable=False),
+        sa.Column("count", sa.Integer(), nullable=False),
+        sa.Column("lastRequest", sa.BigInteger(), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("key"),
+    )
+    op.create_table(
         "linked_wallets",
         sa.Column("id", sa.String(length=32), nullable=False),
         sa.Column("user_id", sa.String(length=64), nullable=False),
@@ -141,6 +150,7 @@ def downgrade() -> None:
     op.drop_index("uq_linked_wallets_one_primary_per_user", table_name="linked_wallets")
     op.drop_index("ix_linked_wallets_user_id", table_name="linked_wallets")
     op.drop_table("linked_wallets")
+    op.drop_table("auth_rate_limits")
     op.drop_index("auth_verifications_identifier_idx", table_name="auth_verifications")
     op.drop_table("auth_verifications")
     op.drop_index("auth_accounts_userId_idx", table_name="auth_accounts")

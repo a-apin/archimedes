@@ -23,7 +23,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from archimedes.models.chat import Base
 
@@ -75,7 +75,7 @@ class StrategyRecord(Base):
     is_example = Column(Boolean, nullable=False, default=False)  # hand-curated static strategies
 
     # Ownership + visibility (per-user strategies, private-until-published).
-    # owner_wallet is ALWAYS the SIWE-derived wallet bound server-side (mirrors
+    # owner_wallet is optional proof-linked wallet provenance bound server-side (mirrors
     # VaultMetadata.creator_address) — never a client-supplied value. Stored
     # lowercase. NULL = legacy/anonymous row (backfilled to the D7 'system'
     # identity in the issue #1028 migration; the column itself stays nullable
@@ -85,7 +85,12 @@ class StrategyRecord(Base):
     # rows are visible only to their owner.
     # FK retrofit (issue #1028, D1): every non-NULL value must be a known
     # identity.
-    owner_wallet = Column(String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True, index=True)
+    owner_wallet: Mapped[str | None] = mapped_column(
+        String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True, index=True
+    )
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("auth_users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     is_published = Column(Boolean, nullable=False, default=False)
 
     # On-chain registration (populated when strategy passes rigor gate)
@@ -229,13 +234,14 @@ def upsert_strategy(
     provenance_hash: str | None = None,
     is_example: bool = False,
     owner_wallet: str | None = None,
+    owner_user_id: str | None = None,
     strategy_spec: dict | None = None,
 ) -> StrategyRecord:
     """Idempotent upsert: same content → same row, no duplicates.
 
-    ``owner_wallet`` must be the SIWE-derived wallet (never client-supplied);
-    it is normalized to lowercase. On a content-hash match, ownership is only
-    backfilled onto ownerless rows — an existing owner is never overwritten.
+    ``owner_user_id`` is the canonical Better Auth owner. ``owner_wallet`` is
+    optional verified-wallet provenance. On a content-hash match, ownership is
+    only backfilled onto ownerless rows — an existing owner is never overwritten.
 
     ``strategy_spec`` is the validated DSL spec dict (rebalancer decouple,
     Part A #1) — JSON-encoded when present, left NULL otherwise. On a
@@ -255,6 +261,9 @@ def upsert_strategy(
     existing = session.query(StrategyRecord).filter_by(content_hash=content_hash).first()
     if existing:
         # Backfill ownership on a legacy/anonymous row; never reassign an owner.
+        if owner_user_id and not existing.owner_user_id:
+            existing.owner_user_id = owner_user_id
+            session.flush()
         if owner_wallet and not existing.owner_wallet:
             existing.owner_wallet = owner_wallet
             existing.updated_at = datetime.now(UTC)
@@ -296,6 +305,7 @@ def upsert_strategy(
         provenance_hash=provenance_hash,
         is_example=is_example,
         owner_wallet=owner_wallet,
+        owner_user_id=owner_user_id,
         # `is not None` (not truthiness) — consistent with the backfill branch
         # above, which also treats "present vs None" as the distinction. A
         # bare truthiness check would silently drop an explicitly-provided

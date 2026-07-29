@@ -5,24 +5,21 @@ Endpoints:
   POST   /api/vaults/{address}/chat       — post a message
   GET    /api/vaults/{address}/chat/count  — message count
 
-Design (per ecosystem-design-spec.md § 16–17, identity hardened per issue #524):
-  - Fully open: any connected wallet can read/write
-  - Wallet address = identity. With a SIWE session the identity comes from the
-    session and the message is stored `verified=True`; a mismatched body wallet
-    is rejected with 403. Without a session, posts are accepted but explicitly
-    marked `verified=False` — attribution is never silently trusted.
-  - AI auto-responds to @archimedes mentions
+Design:
+  - Reads stay public.
+  - Writes require Better Auth account plus selected verified linked wallet.
+    Body wallet cannot override server-resolved link; stored attribution is verified.
+  - AI auto-responds to @archimedes mentions.
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from archimedes.api.auth_guard import require_internal_agent_key
-from archimedes.api.auth_siwe import _generation_auth_required, get_verified_wallet
+from archimedes.api.wallet_routes import require_linked_wallet
 from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
     ChatMessageListResponse,
@@ -31,8 +28,6 @@ from archimedes.api.schemas import (
     ChatPostResponse,
 )
 from archimedes.services.chat_service import chat_service
-
-_WALLET_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 chat_router = APIRouter(prefix="/api/vaults", tags=["chat"])
 
@@ -77,50 +72,18 @@ async def post_chat_message(
     body: ChatPostRequest,
     request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     response: Response,  # noqa: ARG001
-    session_wallet: str | None = Depends(get_verified_wallet),
+    session_wallet: str = Depends(require_linked_wallet),
 ):
-    """Post a message to a vault's chat. Triggers AI response if @archimedes is mentioned.
-
-    Identity binding (#524): with a SIWE session, the message is attributed to
-    the session wallet and stored verified; a body wallet that contradicts the
-    session is rejected with 403. Without a session, the body wallet is
-    accepted but the message is explicitly marked unverified.
-    """
+    """Post as a verified wallet linked to the canonical account."""
     if not body.message or not body.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     if len(body.message) > 2000:
         raise HTTPException(status_code=400, detail="Message too long (max 2000 chars)")
 
-    # Budget-drain guard (audit 2026-06-14): an @archimedes mention triggers a
-    # paid Claude completion inside chat_service.post_message. This is the same
-    # class of unauthenticated paid-LLM vector that the generation endpoints
-    # close via gate_generation, but on a separate code path. Gate the
-    # AI-triggering branch behind the same REQUIRE_SIWE_FOR_GENERATION flag:
-    # default OFF preserves today's open chat (no flag-day risk); when ON, an
-    # anonymous caller can still chat but cannot spend tokens without a session.
-    # The mention test mirrors chat_service.post_message ("@archimedes" in lower).
-    triggers_ai = "@archimedes" in body.message.lower()
-    if triggers_ai and _generation_auth_required() and session_wallet is None:
-        raise HTTPException(
-            status_code=401,
-            detail="Sign in with your wallet to mention @archimedes (AI responses require a verified session).",
-        )
-
-    if session_wallet is not None:
-        # SIWE-verified caller — session is the identity, not the body.
-        if body.wallet_address and body.wallet_address.lower() != session_wallet:
-            raise HTTPException(
-                status_code=403,
-                detail="wallet_address does not match the authenticated SIWE session",
-            )
-        wallet_address = session_wallet
-        verified = True
-    else:
-        # No session — open chat stays open, but attribution is unverified.
-        if not body.wallet_address or not _WALLET_RE.match(body.wallet_address):
-            raise HTTPException(status_code=422, detail="wallet_address must match ^0x[a-fA-F0-9]{40}$")
-        wallet_address = body.wallet_address
-        verified = False
+    if body.wallet_address and body.wallet_address.lower() != session_wallet:
+        raise HTTPException(status_code=403, detail="wallet_address is not linked to the authenticated account")
+    wallet_address = session_wallet
+    verified = True
 
     # post_message is fully synchronous and, when @archimedes is mentioned, makes
     # a blocking Anthropic call plus sync DB writes. Calling it directly inside

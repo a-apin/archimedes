@@ -17,7 +17,8 @@ import numpy as np
 from fastapi import APIRouter, Depends, Query, Request, Response
 
 from archimedes.api._route_helpers import strategy_provider
-from archimedes.api.auth_siwe import gate_generation, get_verified_wallet, require_verified_wallet
+from archimedes.api.account_auth import CurrentUser, get_current_user, require_current_user
+from archimedes.api.wallet_routes import get_linked_wallet_address as get_verified_wallet
 from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
     SignalResponse,
@@ -501,17 +502,20 @@ async def list_strategies(
 
 
 @strategies_router.get("/generated")
-async def list_generated_strategies(request: Request, limit: int = Query(50, ge=1, le=200)):
+async def list_generated_strategies(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+    user: CurrentUser = Depends(require_current_user),
+):
     """List fusion/architect-generated strategies from the strategy_store table.
 
-    Private-until-published: a row is visible when it ``is_published`` OR when
-    the caller's verified SIWE wallet matches ``owner_wallet`` (best-effort
-    session read — anonymous callers see only published rows). Legacy ownerless
-    rows are therefore invisible until purged (scripts/purge_orphan_generated.py)
+    Private-until-published: row is visible when published or owned by current
+    canonical user; verified linked wallet handles legacy ``owner_wallet`` rows.
+    Legacy ownerless rows remain invisible until purged (scripts/purge_orphan_generated.py)
     or published. Curated examples live on GET /api/strategies/ and stay public.
     """
 
-    from sqlalchemy import or_
+    from sqlalchemy import and_, or_
 
     from archimedes.db import get_session
     from archimedes.models.strategy_generators import wallet_can_publish
@@ -523,18 +527,15 @@ async def list_generated_strategies(request: Request, limit: int = Query(50, ge=
     try:
         with get_session() as session:  # type: _Session
             query = session.query(StrategyRecord).filter(StrategyRecord.is_example.is_(False))
+            owner_filters = [StrategyRecord.owner_user_id == user.id]
             if caller:
-                # owner_wallet is stored lowercase (upsert_strategy) and
-                # get_verified_wallet returns lowercase — compare directly so the
-                # owner_wallet index stays usable (no per-row func.lower()).
-                query = query.filter(
-                    or_(
-                        StrategyRecord.is_published.is_(True),
+                owner_filters.append(
+                    and_(
+                        StrategyRecord.owner_user_id.is_(None),
                         StrategyRecord.owner_wallet == caller.lower(),
                     )
                 )
-            else:
-                query = query.filter(StrategyRecord.is_published.is_(True))
+            query = query.filter(StrategyRecord.is_published.is_(True) | or_(*owner_filters))
             records = query.order_by(StrategyRecord.created_at.desc()).limit(limit).all()
             rows = []
             for r in records:
@@ -1489,7 +1490,7 @@ def _redact_owner_wallet(d: dict, caller: str | None) -> dict:
     return d
 
 
-def _visible_passports(session, records: list, caller: str | None) -> list:
+def _visible_passports(session, records: list, caller: str | None = None, caller_user_id: str | None = None) -> list:
     """Apply private-until-published to raw passport records.
 
     The passports table mirrors ``strategy_store`` ids, so leaving these
@@ -1521,7 +1522,10 @@ def _visible_passports(session, records: list, caller: str | None) -> list:
         if is_example or is_published:
             visible.append(r)
             continue
-        if caller and r.owner_wallet and r.owner_wallet.lower() == caller.lower():
+        if caller_user_id and r.owner_user_id == caller_user_id:
+            visible.append(r)
+            continue
+        if caller and r.owner_user_id is None and r.owner_wallet and r.owner_wallet.lower() == caller.lower():
             visible.append(r)
     return visible
 
@@ -1541,10 +1545,11 @@ async def list_strategy_passports(
     from archimedes.db import get_session
     from archimedes.services.passport_loader import list_passports
 
-    caller = get_verified_wallet(request)  # None when anonymous — never an error
+    caller = get_verified_wallet(request)  # optional linked-wallet compatibility
+    user = get_current_user(request)
     with get_session() as session:
         records = list_passports(session, status=status, regime_tag=regime_tag)
-        records = _visible_passports(session, records, caller)
+        records = _visible_passports(session, records, caller, user.id if user else None)
         passports = [_redact_owner_wallet(r.to_dict(), caller) for r in records[:limit]]
 
     return {"passports": passports, "total": len(passports), "source": "strategy_passports"}
@@ -1563,9 +1568,10 @@ async def get_strategy_passport(request: Request, strategy_id: str):
     from archimedes.services.passport_loader import get_passport
 
     caller = get_verified_wallet(request)
+    user = get_current_user(request)
     with get_session() as session:
         record = get_passport(session, strategy_id)
-        if record is None or not _visible_passports(session, [record], caller):
+        if record is None or not _visible_passports(session, [record], caller, user.id if user else None):
             raise HTTPException(status_code=404, detail="Passport not found")
         return _redact_owner_wallet(record.to_dict(), caller)
 
@@ -1719,7 +1725,9 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
 # nothing here alters the curated path.
 
 
-def _generated_strategy_responses(session, caller: str | None) -> list[StrategyResponse]:
+def _generated_strategy_responses(
+    session, caller: str | None = None, caller_user_id: str | None = None
+) -> list[StrategyResponse]:
     """GENERATED (non-curated) strategies visible to *caller*, as StrategyResponse.
 
     Same #850 ownership-visibility rule as ``list_generated_strategies`` /
@@ -1735,7 +1743,7 @@ def _generated_strategy_responses(session, caller: str | None) -> list[StrategyR
     records = [r for r in list_passports(session) if (r.generation_method or "").lower() != "curated"]
     if not records:
         return []
-    visible = _visible_passports(session, records, caller)
+    visible = _visible_passports(session, records, caller, caller_user_id)
     return [_passport_to_strategy_response(r, session) for r in visible]
 
 
@@ -1805,8 +1813,15 @@ async def get_strategy_returns(strategy_id: str, request: Request):
             if row is None:
                 raise HTTPException(status_code=404, detail="Strategy not found")
             if not row.is_example and not row.is_published:
+                user = get_current_user(request)
                 caller = get_verified_wallet(request)
-                is_owner = bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
+                is_owner = bool(
+                    user
+                    and (
+                        row.owner_user_id == user.id
+                        or (row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower())
+                    )
+                )
                 if not is_owner:
                     raise HTTPException(status_code=404, detail="Strategy not found")
 
@@ -1852,9 +1867,8 @@ async def get_strategy(strategy_id: str, request: Request):
     first; falls through to the strategy_passports table for fusion- and
     architect-generated strategies so they're clickable from Library.
 
-    Private-until-published: a non-example, unpublished strategy_store row is
-    404 unless the caller's verified SIWE wallet is its owner (best-effort
-    session read). 404 — not 403 — so non-owners can't probe for existence.
+    Private-until-published: non-public row is 404 unless canonical user owns it,
+    with linked-wallet fallback for legacy rows. 404 prevents existence probing.
     Curated strategies (provider path / is_example rows) stay fully public.
     """
     from fastapi import HTTPException
@@ -1870,8 +1884,15 @@ async def get_strategy(strategy_id: str, request: Request):
     with get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
         if row is not None and not row.is_example and not row.is_published:
+            user = get_current_user(request)
             caller = get_verified_wallet(request)
-            is_owner = bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
+            is_owner = bool(
+                user
+                and (
+                    row.owner_user_id == user.id
+                    or (row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower())
+                )
+            )
             if not is_owner:
                 raise HTTPException(status_code=404, detail="Strategy not found")
         record = get_passport(session, strategy_id)
@@ -1885,12 +1906,13 @@ async def get_strategy(strategy_id: str, request: Request):
 async def rename_strategy(
     strategy_id: str,
     payload: dict,
-    wallet: str = Depends(require_verified_wallet),
+    request: Request,
+    user: CurrentUser = Depends(require_current_user),
 ):
     """Rename an owned, generated strategy — ``{"name": "<1..80 chars>"}``.
 
-    Owner-gated: requires a verified SIWE session AND the caller must be the
-    row's ``owner_wallet``. Curated examples (``is_example``) are not renamable.
+    Owner-gated: requires Better Auth session and canonical row ownership.
+    Curated examples (``is_example``) are not renamable.
     The generation-time ``content_hash``/``provenance_hash`` are deliberately
     NOT recomputed — they are provenance of the original generation, not of the
     display name. The strategy_passports table carries no display-name column,
@@ -1915,7 +1937,11 @@ async def rename_strategy(
         if row is None or row.is_example:
             # Curated examples are not user-owned — same 404 as a missing row.
             raise HTTPException(status_code=404, detail="Strategy not found")
-        if not (row.owner_wallet and row.owner_wallet.lower() == wallet.lower()):
+        caller = get_verified_wallet(request)
+        is_owner = row.owner_user_id == user.id or (
+            row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower()
+        )
+        if not is_owner:
             # Hide unpublished rows from non-owners (404); published rows are
             # visible, so an honest 403 is returned instead.
             if row.is_published:
@@ -1934,13 +1960,13 @@ async def rename_strategy(
 @strategies_router.post("/generate", status_code=202)
 @limiter.limit("20/minute")
 async def generate_strategy(
-    request: Request,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
+    request: Request,
     response: Response,  # noqa: ARG001
     asset_classes: str = "",
     risk_appetite: str = "moderate",
     strategic_direction: str = "",
     max_papers: int = 4,
-    _wallet: str | None = Depends(gate_generation),  # 401 when REQUIRE_SIWE_FOR_GENERATION is on
+    user: CurrentUser = Depends(require_current_user),
 ):
     """Queue a strategy generation job. Returns 202 + job_id immediately.
 
@@ -1996,6 +2022,7 @@ async def generate_strategy(
     except Exception:
         logger.debug("market regime context read failed", exc_info=True)
 
+    linked_wallet = get_verified_wallet(request)
     store = JobStore()
     try:
         job_id = await store.enqueue(
@@ -2006,10 +2033,8 @@ async def generate_strategy(
                 "strategic_direction": strategic_direction,
                 "max_papers": max_papers,
                 "market_context": market_context,
-                # SIWE-derived owner (gate_generation) — server-bound, never
-                # client-supplied. Stamped on the persisted fusion strategy so
-                # this legacy path stops producing ownerless orphan rows.
-                "owner_wallet": _wallet,
+                "owner_user_id": user.id,
+                "owner_wallet": linked_wallet,
             },
         )
     finally:
@@ -2023,7 +2048,7 @@ async def generate_strategy(
 
 
 @strategies_router.get("/generate/{job_id}")
-async def get_generation_job(job_id: str):
+async def get_generation_job(job_id: str, user: CurrentUser = Depends(require_current_user)):
     """Poll a strategy generation job. Returns status + result when done."""
     from fastapi import HTTPException
 
@@ -2035,7 +2060,7 @@ async def get_generation_job(job_id: str):
     finally:
         await store.close()
 
-    if job is None:
+    if job is None or (job.get("payload") or {}).get("owner_user_id") not in {None, user.id}:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
@@ -2170,6 +2195,7 @@ async def _run_fusion_job(job_id: str) -> None:
                     provenance_hash=result.model,
                     rigor_verdict=rigor_verdict_dict,
                     owner_wallet=payload.get("owner_wallet"),
+                    owner_user_id=payload.get("owner_user_id"),
                 )
                 session.commit()
                 strategy_id = record.id
@@ -2316,9 +2342,8 @@ async def _run_fusion_job(job_id: str) -> None:
                     "fusion_reasoning": result.fusion_reasoning,
                     "novelty_rationale": result.novelty_rationale,
                 },
-                # SIWE-derived owner threaded from the job payload (stamped at
-                # enqueue time by generate_strategy — never client-supplied).
                 owner_wallet=payload.get("owner_wallet"),
+                owner_user_id=payload.get("owner_user_id"),
             )
         except Exception:
             pass  # Non-blocking per spec

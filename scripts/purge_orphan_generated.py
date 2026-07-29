@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Purge ownerless generated strategies (owner_wallet IS NULL, is_example=False).
+"""Purge ownerless generated strategies (no account or legacy wallet owner).
 
 Before per-user ownership landed (dbrowneup/strategy-ownership), every generated
 strategy was persisted with no owner. Those legacy rows are now invisible to
@@ -40,13 +40,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
 
 def find_orphans(session):
-    """Generated (non-example) strategies with no owner wallet."""
+    """Unpublished generated strategies with no canonical or legacy owner."""
     from archimedes.models.strategy_store import StrategyRecord
 
     return (
         session.query(StrategyRecord)
         .filter(
             StrategyRecord.is_example.is_(False),
+            StrategyRecord.owner_user_id.is_(None),
             StrategyRecord.owner_wallet.is_(None),
             # Published rows are deliberately public — never purge them, even
             # if ownerless (Copilot review, #850).
@@ -85,7 +86,7 @@ def purge_orphans(*, execute: bool = False) -> dict:
         passport_ids = {p.id for p in passports}
 
         mode = "EXECUTE" if execute else "DRY RUN"
-        print(f"[{mode}] orphan generated strategies (is_example=False, owner_wallet IS NULL): {len(orphans)}")
+        print(f"[{mode}] orphan generated strategies (owner_user_id and owner_wallet are NULL): {len(orphans)}")
         for r in orphans:
             created = r.created_at.isoformat() if r.created_at else "?"
             print(

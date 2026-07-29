@@ -5,8 +5,8 @@ how much of the live traffic is *humans* (browser sessions) vs *agents*
 (internal agent runner + external bots/scripts) so the "agents make markets"
 narrative is backed by a real, live number rather than a claim.
 
-Identity model (today, single-user MVP):
-  - HUMAN  = a valid SIWE wallet session cookie (``archimedes_session``).
+Identity model:
+  - HUMAN  = resolved Better Auth account or browser request.
   - AGENT  = a valid ``X-Internal-Agent-Key`` header (internal), OR no session
              plus a non-browser User-Agent (external bot/script).
   - Default (browser UA, no session) = HUMAN — the demo is open, so an
@@ -27,7 +27,7 @@ class MetricsResponse(BaseModel):
     Served by ``GET /api/metrics``. The ``*_count`` / ``total_requests`` fields are
     **cumulative per-request tallies (site traffic, NOT users, NOT visitors)** —
     lifetime totals since ``epoch_started_at``. ``real_users`` is the honest
-    distinct-identity number (human wallets anchored in ``wallet_identities``)
+    canonical account count from Better Auth ``auth_users``
     surfaced adjacent so the traffic tallies can never be read as a user count
     (issue #830, superseded by #1028 D1/AC1 — see ``services/user_stats.py``).
 
@@ -47,8 +47,8 @@ class MetricsResponse(BaseModel):
     real_users: int = Field(
         default=0,
         description=(
-            "Distinct real users = human wallets in wallet_identities "
-            "(issue #1028 AC1). The honest distinct-identity count."
+            "Distinct real users = canonical Better Auth accounts. "
+            "Linked-wallet and profile counts are separate metrics."
         ),
     )
     epoch_started_at: str | None = Field(
@@ -112,31 +112,31 @@ class FunnelResponse(BaseModel):
 class WalletIdentityOut(BaseModel):
     """One anchored human wallet (issue #1028 AC1)."""
 
-    wallet_address: str = Field(..., description="Lowercased SIWE-verified wallet address.")
+    wallet_address: str = Field(..., description="Lowercased cryptographically verified wallet address.")
     actor_class: str = Field(..., description="Always 'human' on this endpoint (see /api/metrics/wallets filter).")
     first_seen_at: str = Field(..., description="ISO-8601 UTC — first time this wallet was anchored.")
-    last_auth_at: str | None = Field(default=None, description="ISO-8601 UTC — most recent SIWE verification.")
+    last_auth_at: str | None = Field(default=None, description="ISO-8601 UTC — most recent wallet proof.")
 
 
 class WalletsResponse(BaseModel):
-    """Enumerable human-wallet list backing the /api/metrics real_users count (AC1)."""
+    """Legacy enumerable verified-wallet list; separate from canonical account count."""
 
-    real_users: int = Field(..., description="count(*) FROM wallet_identities WHERE actor_class='human'.")
+    real_users: int = Field(..., description="Legacy field: verified human-wallet count, not account count.")
     wallets: list[WalletIdentityOut] = Field(..., description="The wallets behind that count, oldest-first.")
     timestamp: str = Field(..., description="ISO-8601 UTC timestamp this snapshot was read.")
 
 
 class WalletConnectionOut(BaseModel):
-    """One wallet's first SIWE verification (issue #1028 AC2)."""
+    """One wallet's first cryptographic proof event."""
 
-    wallet: str = Field(..., description="Lowercased SIWE-verified wallet address.")
+    wallet: str = Field(..., description="Lowercased cryptographically verified wallet address.")
     connected_at: str = Field(..., description="ISO-8601 UTC — min(occurred_at) over its auth_verified events.")
 
 
 class WalletConnectionsResponse(BaseModel):
     """ "Which wallets connected, and when" — issue #1028 AC2, impossible before the ledger."""
 
-    count: int = Field(..., description="Number of distinct wallets that have ever completed SIWE verification.")
+    count: int = Field(..., description="Number of distinct wallets with cryptographic proof events.")
     connections: list[WalletConnectionOut] = Field(..., description="Earliest-first.")
     timestamp: str = Field(..., description="ISO-8601 UTC timestamp this snapshot was read.")
 

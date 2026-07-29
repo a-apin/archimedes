@@ -13,7 +13,7 @@ from functools import lru_cache
 
 import numpy as np
 import scipy.stats
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
 from archimedes.api.risk_schemas import (
     CVaRLevel,
@@ -25,6 +25,7 @@ from archimedes.api.risk_schemas import (
     StrategyGreeks,
     StrategyRiskSummary,
 )
+from archimedes.feature_flags import require_quant_feature
 from archimedes.services.strategy_provider import LocalStrategyProvider, default_provider
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ def _all_strategies(request: Request) -> list:
     """Curated ∪ generated strategy resolution shared by the risk endpoints
     (the "unify source" decouple — docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md
     Part A). Generated strategies are included via the SAME #850 ownership-visibility
-    rule as the rest of the app (is_example OR is_published OR owner_wallet == caller)
+    rule as rest of app (public OR canonical owner, with linked-wallet legacy fallback)
     — never curated-only, so a generated strategy's portfolio risk is no longer
     silently misreported as mock. Both halves then read metrics through the SAME
     source, ``_strategy_provider().get_backtest_result(id)`` (queries the shared
@@ -58,13 +59,15 @@ def _all_strategies(request: Request) -> list:
     """
     strategies: list = list(_strategy_provider().list_strategies())
     try:
-        from archimedes.api.auth_siwe import get_verified_wallet
+        from archimedes.api.account_auth import get_current_user
+        from archimedes.api.wallet_routes import get_linked_wallet_address
         from archimedes.api.strategies_routes import _generated_strategy_responses
         from archimedes.db import get_session
 
-        caller = get_verified_wallet(request)
+        caller = get_linked_wallet_address(request)
+        user = get_current_user(request)
         with get_session() as session:
-            strategies.extend(_generated_strategy_responses(session, caller))
+            strategies.extend(_generated_strategy_responses(session, caller, user.id if user else None))
     except Exception:
         logger.debug("risk: generated strategy resolution failed (non-fatal)", exc_info=True)
     return strategies
@@ -356,7 +359,7 @@ async def get_portfolio_risk(request: Request):
     )
 
 
-@risk_router.get("/cvar", response_model=PortfolioCVaRResponse)
+@risk_router.get("/cvar", response_model=PortfolioCVaRResponse, dependencies=[Depends(require_quant_feature)])
 async def get_portfolio_cvar(request: Request):
     """Portfolio-level CVaR at 90, 95, 99% confidence from persisted backtests.
 
@@ -468,7 +471,7 @@ def _bs_atm_greeks(sigma: float, tau: float, r: float, q: float) -> dict[str, fl
     return {"delta": delta, "gamma": gamma, "theta": theta, "vega": vega, "rho": rho}
 
 
-@risk_router.get("/greeks", response_model=PortfolioGreeksResponse)
+@risk_router.get("/greeks", response_model=PortfolioGreeksResponse, dependencies=[Depends(require_quant_feature)])
 async def get_portfolio_greeks(request: Request):
     """ATM call Black-Scholes Greeks per strategy and equal-weight portfolio aggregate.
 

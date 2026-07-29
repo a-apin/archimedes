@@ -1,0 +1,473 @@
+"""Verified wallet links for canonical Better Auth users."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import secrets
+from datetime import UTC, datetime, timedelta
+from typing import Literal
+from urllib.parse import urlsplit
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field, model_validator
+from sqlalchemy.exc import IntegrityError
+
+from archimedes.api.account_auth import CurrentUser, get_current_user, require_current_user
+from archimedes.db import get_session
+from archimedes.models.account import LinkedWallet, WalletLinkChallenge
+
+wallet_router = APIRouter(prefix="/api/wallets", tags=["wallets"])
+_CHALLENGE_TTL = timedelta(minutes=5)
+_NONCE_RE = re.compile(r"^[A-Za-z0-9]{8,}$")
+
+
+class WalletChallengeRequest(BaseModel):
+    address: str = Field(pattern=r"^0x[a-fA-F0-9]{40}$")
+    chain_id: int = Field(gt=0)
+    provider: Literal["metamask", "browser", "circle"]
+    circle_wallet_id: str | None = Field(default=None, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_circle_id(self):
+        if self.circle_wallet_id and self.provider != "circle":
+            raise ValueError("circle_wallet_id requires the circle provider")
+        return self
+
+
+class WalletVerifyRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4096)
+    signature: str = Field(min_length=1, max_length=8192)
+
+
+class WalletChallengeResponse(BaseModel):
+    message: str
+    expires_at: datetime
+
+
+class LinkedWalletResponse(BaseModel):
+    id: str
+    address: str
+    display_address: str
+    chain_id: int
+    provider: str
+    is_primary: bool
+    verified_at: datetime
+
+
+def _configured_site_url() -> str:
+    value = (os.getenv("PUBLIC_DOMAIN") or os.getenv("BETTER_AUTH_URL") or "").rstrip("/")
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=503, detail="Wallet linking is not configured")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _checksum_address(address: str) -> str:
+    from eth_utils.address import to_checksum_address
+
+    try:
+        return to_checksum_address(address)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid wallet address") from exc
+
+
+def _nonce_hash(nonce: str) -> str:
+    return hashlib.sha256(nonce.encode()).hexdigest()
+
+
+def _iso(value: datetime) -> str:
+    value = value.replace(tzinfo=value.tzinfo or UTC).astimezone(UTC)
+    return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _challenge_message(
+    *,
+    domain: str,
+    display_address: str,
+    uri: str,
+    chain_id: int,
+    nonce: str,
+    issued_at: datetime,
+    expires_at: datetime,
+) -> str:
+    return "\n".join(
+        [
+            f"{domain} wants you to sign in with your Ethereum account:",
+            display_address,
+            "",
+            "Link this wallet to your authenticated Archimedes account.",
+            "",
+            f"URI: {uri}",
+            "Version: 1",
+            f"Chain ID: {chain_id}",
+            f"Nonce: {nonce}",
+            f"Issued At: {_iso(issued_at)}",
+            f"Expiration Time: {_iso(expires_at)}",
+        ]
+    )
+
+
+def _wallet_response(wallet: LinkedWallet) -> LinkedWalletResponse:
+    return LinkedWalletResponse(
+        id=wallet.id,
+        address=wallet.address,
+        display_address=wallet.display_address,
+        chain_id=wallet.chain_id,
+        provider=wallet.provider,
+        is_primary=wallet.is_primary,
+        verified_at=wallet.verified_at,
+    )
+
+
+def issue_wallet_challenge(
+    session,
+    user: CurrentUser,
+    payload: WalletChallengeRequest,
+    *,
+    site_url: str | None = None,
+    now: datetime | None = None,
+) -> WalletChallengeResponse:
+    now = (now or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
+    expires_at = now + _CHALLENGE_TTL
+    site_url = (site_url or _configured_site_url()).rstrip("/")
+    parsed_site = urlsplit(site_url)
+    if parsed_site.scheme not in {"http", "https"} or not parsed_site.netloc:
+        raise HTTPException(status_code=503, detail="Wallet linking is not configured")
+
+    address = payload.address.lower()
+    display_address = _checksum_address(payload.address)
+    nonce = secrets.token_hex(16)
+    domain = parsed_site.netloc.lower()
+    message = _challenge_message(
+        domain=domain,
+        display_address=display_address,
+        uri=site_url,
+        chain_id=payload.chain_id,
+        nonce=nonce,
+        issued_at=now,
+        expires_at=expires_at,
+    )
+    session.add(
+        WalletLinkChallenge(
+            nonce_hash=_nonce_hash(nonce),
+            user_id=user.id,
+            address=address,
+            display_address=display_address,
+            chain_id=payload.chain_id,
+            provider=payload.provider,
+            circle_wallet_id=payload.circle_wallet_id,
+            domain=domain,
+            uri=site_url,
+            issued_at=now,
+            expires_at=expires_at,
+        )
+    )
+    session.commit()
+    return WalletChallengeResponse(message=message, expires_at=expires_at)
+
+
+def _parse_message(message: str) -> dict[str, object]:
+    lines = message.splitlines()
+    if len(lines) < 10 or " wants you to sign in with your Ethereum account:" not in lines[0]:
+        raise HTTPException(status_code=400, detail="Malformed wallet proof message")
+    fields: dict[str, str] = {}
+    for line in lines[2:]:
+        if ": " in line:
+            key, value = line.split(": ", 1)
+            fields[key] = value
+    required = {"URI", "Version", "Chain ID", "Nonce", "Issued At", "Expiration Time"}
+    if not required <= fields.keys() or not _NONCE_RE.fullmatch(fields["Nonce"]):
+        raise HTTPException(status_code=400, detail="Malformed wallet proof message")
+    try:
+        chain_id = int(fields["Chain ID"])
+        issued_at = datetime.fromisoformat(fields["Issued At"].replace("Z", "+00:00")).astimezone(UTC)
+        expires_at = datetime.fromisoformat(fields["Expiration Time"].replace("Z", "+00:00")).astimezone(UTC)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="Malformed wallet proof message") from exc
+    return {
+        "domain": lines[0].split(" wants you to sign in", 1)[0].strip().lower(),
+        "address": lines[1].strip().lower(),
+        "uri": fields["URI"],
+        "version": fields["Version"],
+        "chain_id": chain_id,
+        "nonce": fields["Nonce"],
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+    }
+
+
+async def _verify_wallet_proof(address: str, message: str, signature: str, _chain_id: int) -> bool:
+    from eth_account import Account
+    from eth_account.messages import encode_defunct
+
+    try:
+        recovered = Account.recover_message(encode_defunct(text=message), signature=signature)
+        if recovered.lower() == address:
+            return True
+    except Exception:
+        pass
+
+    from archimedes.api._erc6492 import verify_smart_wallet_signature
+
+    rpc_url = os.getenv("ARC_RPC_URL") or os.getenv("ARC_ARC_RPC_URL") or "https://rpc.testnet.arc.network"
+    return await verify_smart_wallet_signature(address, message, signature, rpc_url)
+
+
+def _claim_legacy_wallet_data(session, user_id: str, address: str) -> None:
+    from archimedes.models.chat import VaultMetadata
+    from archimedes.models.strategy_passport_record import StrategyPassportRecord
+    from archimedes.models.strategy_proposal import StrategyProposal
+    from archimedes.models.strategy_store import StrategyRecord
+    from archimedes.models.user_profile import UserProfile
+
+    for model, wallet_column in (
+        (StrategyRecord, StrategyRecord.owner_wallet),
+        (StrategyPassportRecord, StrategyPassportRecord.owner_wallet),
+        (StrategyProposal, StrategyProposal.owner_wallet),
+        (VaultMetadata, VaultMetadata.creator_address),
+    ):
+        session.query(model).filter(
+            wallet_column == address,
+            model.owner_user_id.is_(None),
+        ).update({model.owner_user_id: user_id}, synchronize_session=False)
+
+    existing_profile = session.query(UserProfile).filter(UserProfile.owner_user_id == user_id).first()
+    if existing_profile is None:
+        session.query(UserProfile).filter(
+            UserProfile.wallet_address == address,
+            UserProfile.owner_user_id.is_(None),
+        ).update({UserProfile.owner_user_id: user_id}, synchronize_session=False)
+
+
+def _link_verified_wallet(session, user: CurrentUser, challenge: WalletLinkChallenge, now: datetime) -> LinkedWallet:
+    from archimedes.models.identity import ControlledWallet, WalletIdentity
+
+    normalized_identity = f"{challenge.chain_id}:{challenge.address}"
+    existing = session.query(LinkedWallet).filter_by(normalized_identity=normalized_identity).first()
+    if existing:
+        if existing.user_id != user.id:
+            raise HTTPException(status_code=409, detail="Wallet is already linked to another account")
+        return existing
+
+    if session.get(ControlledWallet, challenge.address) is not None:
+        raise HTTPException(status_code=409, detail="Circle wallet is already platform-controlled")
+
+    if session.get(WalletIdentity, challenge.address) is None:
+        session.add(
+            WalletIdentity(
+                wallet_address=challenge.address,
+                actor_class="human",
+                first_seen_at=now,
+                last_auth_at=None,
+            )
+        )
+        session.flush()
+
+    linked = LinkedWallet(
+        user_id=user.id,
+        normalized_identity=normalized_identity,
+        address=challenge.address,
+        display_address=challenge.display_address,
+        chain_id=challenge.chain_id,
+        provider=challenge.provider,
+        circle_wallet_id=challenge.circle_wallet_id,
+        is_primary=session.query(LinkedWallet).filter_by(user_id=user.id).count() == 0,
+        verified_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(linked)
+    session.flush()
+    _claim_legacy_wallet_data(session, user.id, challenge.address)
+    session.commit()
+    session.refresh(linked)
+    return linked
+
+
+async def verify_wallet_challenge(
+    session,
+    user: CurrentUser,
+    payload: WalletVerifyRequest,
+    *,
+    verifier=_verify_wallet_proof,
+    now: datetime | None = None,
+) -> LinkedWallet:
+    now = (now or datetime.now(UTC)).astimezone(UTC)
+    proof = _parse_message(payload.message)
+    challenge = session.get(WalletLinkChallenge, _nonce_hash(str(proof["nonce"])))
+    if challenge is None or challenge.user_id != user.id:
+        raise HTTPException(status_code=401, detail="Wallet challenge is invalid or expired")
+    if challenge.consumed_at is not None:
+        raise HTTPException(status_code=409, detail="Wallet challenge was already used")
+    if challenge.expires_at.replace(tzinfo=challenge.expires_at.tzinfo or UTC) <= now:
+        raise HTTPException(status_code=401, detail="Wallet challenge is invalid or expired")
+
+    expected_message = _challenge_message(
+        domain=challenge.domain,
+        display_address=challenge.display_address,
+        uri=challenge.uri,
+        chain_id=challenge.chain_id,
+        nonce=str(proof["nonce"]),
+        issued_at=challenge.issued_at,
+        expires_at=challenge.expires_at,
+    )
+    if payload.message != expected_message:
+        raise HTTPException(status_code=401, detail="Wallet proof does not match its challenge")
+
+    expected = {
+        "domain": challenge.domain,
+        "address": challenge.address,
+        "uri": challenge.uri,
+        "version": "1",
+        "chain_id": challenge.chain_id,
+        "issued_at": challenge.issued_at.replace(tzinfo=challenge.issued_at.tzinfo or UTC).astimezone(UTC),
+        "expires_at": challenge.expires_at.replace(tzinfo=challenge.expires_at.tzinfo or UTC).astimezone(UTC),
+    }
+    if any(proof[key] != value for key, value in expected.items()):
+        raise HTTPException(status_code=401, detail="Wallet proof does not match its challenge")
+    if not await verifier(challenge.address, payload.message, payload.signature, challenge.chain_id):
+        raise HTTPException(status_code=401, detail="Invalid wallet signature")
+
+    consumed = (
+        session.query(WalletLinkChallenge)
+        .filter(
+            WalletLinkChallenge.nonce_hash == challenge.nonce_hash,
+            WalletLinkChallenge.user_id == user.id,
+            WalletLinkChallenge.consumed_at.is_(None),
+            WalletLinkChallenge.expires_at > now,
+        )
+        .update({WalletLinkChallenge.consumed_at: now}, synchronize_session=False)
+    )
+    session.commit()
+    if consumed != 1:
+        raise HTTPException(status_code=409, detail="Wallet challenge was already used")
+
+    try:
+        return _link_verified_wallet(session, user, challenge, now)
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Wallet is already linked") from exc
+
+
+def set_primary_wallet(session, user_id: str, wallet_id: str) -> LinkedWallet:
+    wallet = session.query(LinkedWallet).filter_by(id=wallet_id, user_id=user_id).first()
+    if wallet is None:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+    session.query(LinkedWallet).filter_by(user_id=user_id).update(
+        {LinkedWallet.is_primary: False}, synchronize_session=False
+    )
+    wallet.is_primary = True
+    session.commit()
+    session.refresh(wallet)
+    return wallet
+
+
+def _wallet_has_owned_data(session, address: str) -> bool:
+    from archimedes.models.chat import VaultMetadata
+    from archimedes.models.strategy_passport_record import StrategyPassportRecord
+    from archimedes.models.strategy_proposal import StrategyProposal
+    from archimedes.models.strategy_store import StrategyRecord
+    from archimedes.models.user_profile import UserProfile
+
+    return any(
+        session.query(model).filter(column == address).first() is not None
+        for model, column in (
+            (StrategyRecord, StrategyRecord.owner_wallet),
+            (StrategyPassportRecord, StrategyPassportRecord.owner_wallet),
+            (StrategyProposal, StrategyProposal.owner_wallet),
+            (VaultMetadata, VaultMetadata.creator_address),
+            (UserProfile, UserProfile.wallet_address),
+        )
+    )
+
+
+def unlink_wallet(session, user_id: str, wallet_id: str) -> None:
+    wallet = session.query(LinkedWallet).filter_by(id=wallet_id, user_id=user_id).first()
+    if wallet is None:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+    if _wallet_has_owned_data(session, wallet.address):
+        raise HTTPException(status_code=409, detail="Wallet backs existing Archimedes data and cannot be unlinked")
+    was_primary = wallet.is_primary
+    session.delete(wallet)
+    session.flush()
+    if was_primary:
+        replacement = (
+            session.query(LinkedWallet).filter_by(user_id=user_id).order_by(LinkedWallet.created_at.asc()).first()
+        )
+        if replacement:
+            replacement.is_primary = True
+    session.commit()
+
+
+def get_linked_wallet_address(request: Request) -> str | None:
+    user = get_current_user(request)
+    if user is None:
+        return None
+    requested = request.headers.get("x-wallet-address")
+    try:
+        chain_id = int(request.headers.get("x-wallet-chain-id", "5042002"))
+    except ValueError:
+        return None
+    with get_session() as session:
+        query = session.query(LinkedWallet).filter_by(user_id=user.id, chain_id=chain_id)
+        if requested:
+            if not re.fullmatch(r"0x[a-fA-F0-9]{40}", requested):
+                return None
+            query = query.filter(LinkedWallet.address == requested.lower())
+        else:
+            query = query.filter(LinkedWallet.is_primary.is_(True))
+        wallet = query.first()
+        return wallet.address if wallet else None
+
+
+def require_linked_wallet(request: Request) -> str:
+    if not isinstance(get_current_user(request), CurrentUser):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    wallet = get_linked_wallet_address(request)
+    if wallet is None:
+        raise HTTPException(status_code=403, detail="A verified linked wallet is required")
+    return wallet
+
+
+@wallet_router.get("", response_model=list[LinkedWalletResponse])
+def list_wallets(user: CurrentUser = Depends(require_current_user)):
+    with get_session() as session:
+        wallets = (
+            session.query(LinkedWallet)
+            .filter_by(user_id=user.id)
+            .order_by(LinkedWallet.is_primary.desc(), LinkedWallet.created_at.asc())
+            .all()
+        )
+        return [_wallet_response(wallet) for wallet in wallets]
+
+
+@wallet_router.post("/challenge", response_model=WalletChallengeResponse)
+def create_wallet_challenge(
+    payload: WalletChallengeRequest,
+    user: CurrentUser = Depends(require_current_user),
+):
+    with get_session() as session:
+        return issue_wallet_challenge(session, user, payload)
+
+
+@wallet_router.post("/verify", response_model=LinkedWalletResponse)
+async def verify_wallet(
+    payload: WalletVerifyRequest,
+    user: CurrentUser = Depends(require_current_user),
+):
+    with get_session() as session:
+        return _wallet_response(await verify_wallet_challenge(session, user, payload))
+
+
+@wallet_router.post("/{wallet_id}/primary", response_model=LinkedWalletResponse)
+def make_primary(wallet_id: str, user: CurrentUser = Depends(require_current_user)):
+    with get_session() as session:
+        return _wallet_response(set_primary_wallet(session, user.id, wallet_id))
+
+
+@wallet_router.delete("/{wallet_id}", status_code=204)
+def remove_wallet(wallet_id: str, user: CurrentUser = Depends(require_current_user)):
+    with get_session() as session:
+        unlink_wallet(session, user.id, wallet_id)

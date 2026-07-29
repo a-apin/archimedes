@@ -245,9 +245,14 @@ class TestRequireVerifiedWallet:
         assert exc_info.value.status_code == 401
 
     def test_returns_wallet_with_valid_session(self):
+        from types import SimpleNamespace
+
+        from archimedes.api.account_auth import CurrentUser
+
         token = _sign_session("0xabcd", time.time())
         request = MagicMock()
         request.cookies = {_COOKIE_NAME: token}
+        request.state = SimpleNamespace(current_user=CurrentUser("user-test", "Test", "test@example.com", True))
         assert require_verified_wallet(request) == "0xabcd"
 
 

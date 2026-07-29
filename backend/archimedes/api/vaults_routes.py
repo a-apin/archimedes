@@ -8,7 +8,8 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from archimedes.api._route_helpers import strategy_provider, vault_svc
-from archimedes.api.auth_siwe import require_verified_wallet
+from archimedes.api.account_auth import require_current_user
+from archimedes.api.wallet_routes import require_linked_wallet
 from archimedes.api.limiter import limiter
 from archimedes.chain.strategy_publisher import strategy_publisher
 from archimedes.services.log_scrubber import sanitize_log_value
@@ -102,8 +103,8 @@ def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
     Reuses the ``#850`` ownership rule verbatim (copied from
     ``selection_bias_routes._generated_strategy_rigor``, itself copied from
     ``strategies_routes.get_strategy`` — consolidation tracked in #1120): a
-    non-example, unpublished ``strategy_store`` row is visible only to its
-    ``owner_wallet``. Curated strategies are typically seeded into
+    non-public row is visible only to canonical owner, with linked-wallet legacy
+    fallback. Curated strategies are typically seeded into
     ``strategy_store`` with ``is_example=True`` at startup (``main.py``), so
     they resolve ``True`` here (visible to everyone); ``None`` (no row at
     all — an unseeded environment or an unknown id) falls through to the
@@ -114,7 +115,8 @@ def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
     a caller who knows a private generated strategy's id could learn its
     deployability and deploy a vault bound to it.
     """
-    from archimedes.api.auth_siwe import get_verified_wallet
+    from archimedes.api.account_auth import get_current_user
+    from archimedes.api.wallet_routes import get_linked_wallet_address
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
 
@@ -129,8 +131,15 @@ def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
                 return None
             if row.is_example or row.is_published:
                 return True
-            caller = get_verified_wallet(request)
-            return bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
+            user = get_current_user(request)
+            caller = get_linked_wallet_address(request)
+            return bool(
+                user
+                and (
+                    row.owner_user_id == user.id
+                    or (row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower())
+                )
+            )
     except HTTPException:
         raise
     except Exception:
@@ -329,15 +338,14 @@ async def create_vault(
     req: VaultCreateRequest,
     request: Request,  # used for slowapi rate-limit keying AND funnel attribution (#787)
     response: Response,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
-    wallet: str = Depends(require_verified_wallet),
+    wallet: str = Depends(require_linked_wallet),
 ):
     """Deploy a new vault on Arc via VaultFactory.
 
-    SIWE-gated: vault creation spends the backend signer's gas on-chain, so it
-    must require an authenticated wallet (rate-limiting alone left it open to an
-    unauthenticated gas-drain).
+    Account + linked-wallet gated: creation spends backend signer gas and assigns
+    on-chain ownership to caller's cryptographically verified wallet.
 
-    Non-custodial (T0.2): the SIWE-verified ``wallet`` is passed as the vault's
+    Non-custodial (T0.2): verified linked ``wallet`` is passed as vault's
     owner. ``create_vault`` creates the vault with the backend signer, then
     transfers Ownable ownership to this user and pins the backend as the
     rebalance-only agent — so ``owner == user`` and ``agent == backend``. A
@@ -376,8 +384,7 @@ async def create_vault(
 
     await record_funnel(request, "vault_deployed")
 
-    # Identity ledger (#1028, D2): `wallet` here is SIWE-verified (required_verified_wallet
-    # dependency) — always identified, unlike the anonymous-tolerant Generate path.
+    # Legacy wallet ledger keeps verified linked-wallet provenance beside canonical user ownership.
     from archimedes.services.identity_events import emit_identity_event
 
     emit_identity_event(
@@ -418,17 +425,19 @@ async def store_vault_metadata(
     req: VaultMetadataRequest,
     request: Request,
     response: Response,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
-    wallet: str = Depends(require_verified_wallet),
+    wallet: str = Depends(require_linked_wallet),
 ):
     """Store off-chain vault metadata (strategy associations, display name).
 
-    SIWE-gated and owner-scoped: this write triggers `_anchor_strategies_async`,
+    Linked-wallet gated and owner-scoped: this write triggers `_anchor_strategies_async`,
     a backend-signed on-chain transaction. The caller must be the vault's
     on-chain Ownable owner — the authoritative controller read from the
     contract, not "whoever wrote metadata first". This closes the IDOR (#916)
     where the first authenticated writer could claim `creator_address` on any
     vault that had no metadata row yet.
     """
+    user = require_current_user(request)
+
     # Casing fix (issue #1028): the on-chain vault address is EIP-55
     # checksummed (mixed case); chat_messages.vault_address is always stored
     # lowercase (chat_service.py), so the two could never join without this.
@@ -463,6 +472,9 @@ async def store_vault_metadata(
             meta = VaultMetadata(vault_address=vault_address)
             session.add(meta)
 
+        if meta.owner_user_id not in {None, user.id}:
+            raise HTTPException(status_code=409, detail="Vault metadata belongs to another account")
+        meta.owner_user_id = user.id
         meta.name = req.name
         meta.symbol = req.symbol
         # Record the writer, who the gate above proved is the on-chain owner.
@@ -520,11 +532,11 @@ async def derive_vault_allocations(
     req: SetAllocationsRequest,
     request: Request,
     response: Response,  # noqa: ARG001 — reserved for slowapi rate-limit headers
-    wallet: str = Depends(require_verified_wallet),  # noqa: ARG001 — SIWE gate (#917): auth required, wallet unused in body
+    wallet: str = Depends(require_linked_wallet),  # noqa: ARG001 — linked-wallet gate; wallet unused in body
 ):
     """Derive target allocations from selected strategies.
 
-    Gated behind a verified SIWE session (#917): the derivation runs a full
+    Gated behind account plus verified linked wallet: derivation runs a full
     strategy scan + on-chain reads, so it is not exposed to unauthenticated
     callers who could amplify it into a compute-DoS.
     """

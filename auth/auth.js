@@ -73,6 +73,7 @@ export function createAuth({ database, env = process.env } = {}) {
     rateLimit: {
       enabled: production,
       storage: 'database',
+      modelName: 'auth_rate_limits',
       customRules: {
         '/sign-in/email': { window: 60, max: 10 },
         '/sign-up/email': { window: 60, max: 5 },

@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+from tests.auth_helpers import auth_cookies
+
 
 def _client() -> TestClient:
     from archimedes.main import app
@@ -42,7 +44,7 @@ def _start(model_value):
         # Patch the background task factory so the pipeline never actually runs.
         patch("archimedes.api.generate_routes.asyncio.create_task", return_value=MagicMock()),
     ):
-        resp = _client().post("/api/generate/start", json=body)
+        resp = _client().post("/api/generate/start", json=body, cookies=auth_cookies())
     captured = store.enqueue.call_args.kwargs["payload"] if store.enqueue.call_args else {}
     return resp, captured
 

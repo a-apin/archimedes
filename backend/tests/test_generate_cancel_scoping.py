@@ -2,10 +2,8 @@
 
 POST /api/generate/jobs/{job_id}/cancel had no caller scoping — anyone who
 learned a job_id could cancel another user's in-flight generation. Jobs are now
-tagged with the creating wallet (``payload.owner_wallet``); a job created by a
-verified wallet may only be cancelled by that same wallet. Anonymous jobs
-(owner_wallet None) stay cancellable by anyone, preserving the open behavior
-when SIWE-for-generation is off.
+tagged with canonical user ownership; legacy wallet-owned jobs remain readable
+only through a verified link. Every cancellation now requires an account.
 
 Hermetic: the Redis-backed job store is mocked at the boundary; SIWE sessions
 are real signed cookies (test_chat_routes / test_user_routes precedent).
@@ -58,19 +56,18 @@ def test_owner_can_cancel_own_job():
 def test_other_wallet_cannot_cancel_owned_job():
     with patch("archimedes.api.generate_routes.get_job_store", return_value=_mock_store(_OWNER.lower())):
         resp = _client().post("/api/generate/jobs/job123/cancel", cookies=_cookies(_ATTACKER))
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 404, resp.text
 
 
 def test_anonymous_cannot_cancel_owned_job():
-    """No session at all → cannot cancel a job owned by a verified wallet."""
+    """No account can never cancel a wallet-owned job."""
     with patch("archimedes.api.generate_routes.get_job_store", return_value=_mock_store(_OWNER.lower())):
         resp = _client().post("/api/generate/jobs/job123/cancel")
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 401, resp.text
 
 
-def test_anonymous_job_still_cancellable_by_anyone():
-    """owner_wallet None (anonymous create) → open cancel preserved."""
+def test_legacy_ownerless_job_still_requires_account():
+    """Ownerless historical jobs never restore anonymous cancellation."""
     with patch("archimedes.api.generate_routes.get_job_store", return_value=_mock_store(None)):
         resp = _client().post("/api/generate/jobs/job123/cancel")
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "cancelled"
+    assert resp.status_code == 401, resp.text

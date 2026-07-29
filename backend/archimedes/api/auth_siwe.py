@@ -1,17 +1,9 @@
-"""SIWE (Sign-In with Ethereum) session authentication — EIP-4361.
+"""Legacy test-only SIWE session router and reusable EIP-4361 helpers.
 
-Implements wallet-signature-based auth so the X-Wallet-Address header
-is no longer trusted. Users prove wallet ownership by signing a nonce;
-the backend verifies the signature and issues a session cookie.
-
-Endpoints:
-  GET  /api/auth/nonce          — request a challenge nonce
-  POST /api/auth/verify         — submit signed message → session cookie
-  POST /api/auth/logout         — clear session cookie
-
-Session middleware:
-  get_verified_wallet(request)  — extract wallet from session cookie
-                                  Returns None if not authenticated.
+Production does not mount ``auth_router``. Better Auth supplies application
+sessions; ``api.wallet_routes`` uses signature helpers here only to verify
+optional linked-wallet control. Routes and cookie helpers remain solely for
+legacy regression tests during migration.
 
 References:
   - EIP-4361: https://eips.ethereum.org/EIPS/eip-4361
@@ -67,8 +59,7 @@ _NONCE_TTL_SECONDS = 300  # 5 minutes
 _CLOCK_SKEW_SECONDS = 120  # tolerate small client/server clock drift on Issued At
 
 # SIWE message binding — a valid signature must be for THIS site and chain, not
-# merely carry a live nonce. Must match what GET /api/auth/nonce advertises and
-# what the UI puts in the message (see ui/src/siwe.js).
+# merely carry a live nonce. Retained for legacy test-only challenge routes.
 #
 # No hardcoded literal fallback here (#940): a fallback like
 # "https://archimedes-arc.com" would mean every deployment that forgets to set
@@ -167,27 +158,21 @@ def _verify_session(token: str) -> str | None:
 
 
 def get_verified_wallet(request: Request) -> str | None:
-    """Extract the authenticated wallet address from the session cookie.
+    """Return selected wallet only when linked to current Better Auth user."""
+    from archimedes.api.wallet_routes import get_linked_wallet_address
 
-    Returns the lowercase wallet address if the session is valid, None otherwise.
-    This replaces the old X-Wallet-Address header trust model.
-    """
-    token = request.cookies.get(_COOKIE_NAME)
-    if not token:
-        return None
-    return _verify_session(token)
+    return get_linked_wallet_address(request)
 
 
 def require_verified_wallet(request: Request) -> str:
-    """FastAPI dependency: require a valid SIWE session. Raises 401 if not authenticated."""
-    wallet = get_verified_wallet(request)
-    if not wallet:
-        raise HTTPException(status_code=401, detail="Authentication required. Connect your wallet and sign in.")
-    return wallet
+    """Require account session plus verified linked wallet."""
+    from archimedes.api.wallet_routes import require_linked_wallet
+
+    return require_linked_wallet(request)
 
 
 def _generation_auth_required() -> bool:
-    """Whether expensive LLM-generation endpoints require a SIWE session.
+    """Legacy test-only generation gate retained for compatibility coverage.
 
     Secure by default (flipped 2026-07-01, agent-auth slice 2): with
     REQUIRE_SIWE_FOR_GENERATION unset, paid LLM endpoints require a verified
@@ -195,10 +180,9 @@ def _generation_auth_required() -> bool:
     2026-06-13 B12). Opt out explicitly with REQUIRE_SIWE_FOR_GENERATION=false
     (local dev / demo — documented in .env.example).
 
-    TESTING carve-out: the hermetic suite runs with TESTING=1 (conftest) and
-    exercises the open path throughout; when the flag is UNSET under TESTING the
-    gate stays off, mirroring how the slowapi limiter and the wallet-less quota
-    already treat TESTING. An explicit true/false always wins over the carve-out,
+    TESTING carve-out: hermetic suite runs with TESTING=1 and exercises this
+    retired path; when flag is unset under TESTING gate stays off. An explicit
+    true/false always wins over carve-out,
     so gating-on tests simply set REQUIRE_SIWE_FOR_GENERATION=true.
     """
     raw = os.getenv("REQUIRE_SIWE_FOR_GENERATION", "").strip().lower()
@@ -211,7 +195,7 @@ def _generation_auth_required() -> bool:
 
 
 def gate_generation(request: Request) -> str | None:
-    """FastAPI dependency for paid LLM-generation endpoints.
+    """Legacy test-only FastAPI dependency for paid generation endpoints.
 
     When REQUIRE_SIWE_FOR_GENERATION is enabled (the default — see
     ``_generation_auth_required``), behaves like ``require_verified_wallet``
@@ -220,9 +204,10 @@ def gate_generation(request: Request) -> str | None:
     a local-dev/demo opt-out. This closes the unauthenticated-LLM budget-drain
     vector (audit 2026-06-13).
     """
-    if _generation_auth_required():
-        return require_verified_wallet(request)
-    return get_verified_wallet(request)
+    wallet = get_verified_wallet(request)
+    if _generation_auth_required() and wallet is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return wallet
 
 
 # ── Endpoints ─────────────────────────────────────────────────
@@ -315,7 +300,7 @@ async def verify_signature(request: Request, response: Response):
 
     # The three EIP-4361 bindings below are REQUIRED, not best-effort: a message
     # that simply omits the domain / chain-id / issued-at lines must not slip
-    # through unbound. The UI always emits all three (see ui/src/siwe.js).
+    # through unbound. Legacy regression fixtures always emit all three.
 
     # Domain binding — a signature for another dApp's domain must not authenticate
     # here, even if it happens to carry a live Archimedes nonce. Compare on the

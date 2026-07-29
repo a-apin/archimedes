@@ -29,12 +29,24 @@ def test_better_auth_and_wallet_tables_use_explicit_models():
     Base.metadata.create_all(engine)
     tables = set(inspect(engine).get_table_names())
 
-    assert {"auth_users", "auth_accounts", "auth_sessions", "auth_verifications"} <= tables
+    assert {
+        "auth_users",
+        "auth_accounts",
+        "auth_sessions",
+        "auth_verifications",
+        "auth_rate_limits",
+    } <= tables
     assert {"linked_wallets", "wallet_link_challenges"} <= tables
     assert {column["name"] for column in inspect(engine).get_columns("auth_sessions")} >= {
         "token",
         "userId",
         "expiresAt",
+    }
+    assert {column["name"] for column in inspect(engine).get_columns("auth_rate_limits")} == {
+        "id",
+        "key",
+        "count",
+        "lastRequest",
     }
 
 

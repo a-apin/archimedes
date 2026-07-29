@@ -1,15 +1,16 @@
-"""User profile API — optional profile keyed by wallet address.
+"""Optional wallet-address profile API owned by canonical Better Auth user.
 
 Endpoints:
   GET  /api/user/profile/{wallet}   — retrieve profile (404 if not set)
-  POST /api/user/profile             — create or update profile
+  POST /api/user/profile            — create or update profile
 
-Wallet IS the identity.
+Wallet key is legacy provenance, not application identity. Writes require both
+account session and matching proof-linked wallet.
 
 Security (Issue #181):
   - Email is encrypted at rest via Fernet (services/email_crypto.py).
-  - Email / display_name / marketing_opt_in are only echoed to the owner wallet.
-  - Anonymous GET returns only public-safe fields.
+  - Email / display_name / marketing_opt_in are only echoed to account owner.
+  - Non-owner GET returns only public-safe fields.
   - All log output routes through log_scrubber to prevent PII leakage.
 """
 
@@ -22,6 +23,7 @@ from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
+from archimedes.api.account_auth import get_current_user, require_current_user
 from archimedes.api.limiter import limiter
 from archimedes.api.user_schemas import UserProfileCreate, UserProfileResponse
 from archimedes.db import get_session
@@ -33,15 +35,15 @@ logger = logging.getLogger(__name__)
 
 user_router = APIRouter(prefix="/api/user", tags=["user"])
 
-# Public-safe fields returned to anonymous callers.
+# Public-safe fields returned to non-owner callers.
 PUBLIC_FIELDS = ("wallet_address", "interests", "attribution")
 
 
 def _profile_to_response(p: UserProfile, *, owner: bool = False) -> UserProfileResponse:
     """Build a response from a UserProfile ORM object.
 
-    When *owner* is False (anonymous caller), PII fields are stripped.
-    When *owner* is True (caller matches the profile wallet), full data
+    When *owner* is False (non-owner caller), PII fields are stripped.
+    When *owner* is True (caller owns profile), full data
     is returned with email decrypted.
     """
     interests = json.loads(p.interests) if p.interests else None
@@ -75,25 +77,19 @@ def _profile_to_response(p: UserProfile, *, owner: bool = False) -> UserProfileR
     )
 
 
-def _extract_caller_wallet_siwe(request: Request) -> str | None:
-    """Extract wallet from SIWE session ONLY (cryptographic proof).
+def _extract_linked_wallet(request: Request) -> str | None:
+    """Return wallet proven and linked to current Better Auth account."""
+    from archimedes.api.wallet_routes import get_linked_wallet_address
 
-    Used for PII access — email and display_name are ONLY returned
-    when this function returns a verified wallet.
-    """
-    from archimedes.api.auth_siwe import get_verified_wallet
-
-    return get_verified_wallet(request)
+    return get_linked_wallet_address(request)
 
 
 @user_router.get("/profile/{wallet}", response_model=UserProfileResponse)
 async def get_profile(wallet: str, request: Request):
     """Retrieve a wallet's profile. Returns 404 if not set.
 
-    PII fields (email, display_name, marketing_opt_in) are only included
-    when the caller holds a verified SIWE session for the requested
-    profile wallet. The X-Wallet-Address header is not used for this
-    check — it is forgeable (see Issue #402).
+    PII fields are included only for canonical account owner. Unclaimed legacy
+    profile additionally requires current account's verified linked wallet.
     """
     session: Session = get_session()
     try:
@@ -102,8 +98,15 @@ async def get_profile(wallet: str, request: Request):
         if not profile:
             raise HTTPException(status_code=404, detail="Profile not found")
 
-        # PII requires SIWE session — header spoofing cannot access email/name
-        is_owner = _extract_caller_wallet_siwe(request) == wallet_lower
+        # PII follows canonical account ownership, never a body/header address.
+        user = get_current_user(request)
+        caller = _extract_linked_wallet(request)
+        is_owner = bool(
+            user
+            and (
+                profile.owner_user_id == user.id or (profile.owner_user_id is None and caller == profile.wallet_address)
+            )
+        )
         response = _profile_to_response(profile, owner=is_owner)
 
         logger.info(
@@ -122,17 +125,16 @@ async def get_profile(wallet: str, request: Request):
 async def upsert_profile(payload: UserProfileCreate, request: Request, response: Response):  # noqa: ARG001 — response param threaded for downstream cookie/header setting; not used in current body
     """Create or update a wallet's profile. All fields optional except wallet.
 
-    Email is encrypted at rest before storage. Caller must hold a valid SIWE
-    session matching `payload.wallet_address` — prevents one wallet from
-    writing another wallet's profile. The X-Wallet-Address header fallback
-    was dropped per Issue #402 because it is forgeable.
+    Email is encrypted at rest. Caller needs canonical account session and
+    matching verified linked wallet; client-supplied headers grant nothing.
     """
-    caller = _extract_caller_wallet_siwe(request)
+    user = require_current_user(request)
+    caller = _extract_linked_wallet(request)
     if caller is None:
-        raise HTTPException(status_code=403, detail="Forbidden: SIWE session required for profile writes")
+        raise HTTPException(status_code=403, detail="Forbidden: verified linked wallet required for profile writes")
     wallet = payload.wallet_address.lower()
     if caller != wallet:
-        raise HTTPException(status_code=403, detail="Forbidden: SIWE session wallet does not match payload wallet")
+        raise HTTPException(status_code=403, detail="Forbidden: linked wallet does not match payload wallet")
 
     session: Session = get_session()
     try:
@@ -142,6 +144,9 @@ async def upsert_profile(payload: UserProfileCreate, request: Request, response:
         encrypted_email = encrypt_email(payload.email)
 
         if profile:
+            if profile.owner_user_id not in {None, user.id}:
+                raise HTTPException(status_code=409, detail="Profile belongs to another account")
+            profile.owner_user_id = user.id
             # Update existing
             if payload.display_name is not None:
                 profile.display_name = payload.display_name
@@ -155,6 +160,7 @@ async def upsert_profile(payload: UserProfileCreate, request: Request, response:
             # Create new
             profile = UserProfile(
                 wallet_address=wallet,
+                owner_user_id=user.id,
                 display_name=payload.display_name,
                 email=encrypted_email,
                 interests=interests_json,

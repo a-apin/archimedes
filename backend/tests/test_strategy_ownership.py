@@ -61,6 +61,7 @@ def _mk_strategy(
     sid: str,
     *,
     owner: str | None = None,
+    owner_user: str | None = None,
     published: bool = False,
     example: bool = False,
     name: str = "Test Strategy",
@@ -80,6 +81,7 @@ def _mk_strategy(
             status="candidate",
             is_example=example,
             owner_wallet=owner.lower() if owner else None,
+            owner_user_id=owner_user,
             is_published=published,
         )
         session.add(row)
@@ -262,7 +264,7 @@ async def test_run_generation_threads_owner_wallet_to_store_and_passport(monkeyp
 # ── Visibility: /api/strategies/generated + single GET ───────────────────
 
 
-async def test_generated_list_anon_sees_only_published():
+async def test_generated_list_requires_account_even_for_published_rows():
     _mk_strategy("pub00000000000001", owner=_W_OTHER, published=True)
     _mk_strategy("own00000000000001", owner=_W_OWNER, published=False)
     _mk_strategy("orp00000000000001", owner=None, published=False)  # legacy orphan
@@ -271,9 +273,7 @@ async def test_generated_list_anon_sees_only_published():
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/strategies/generated")
-    assert resp.status_code == 200
-    ids = {s["id"] for s in resp.json()["strategies"]}
-    assert ids == {"pub00000000000001"}
+    assert resp.status_code == 401
 
 
 async def test_generated_list_owner_sees_own_unpublished():
@@ -392,7 +392,8 @@ def _purge_fixture_rows():
     _mk_strategy("orphan0000000001", owner=None)  # orphan → purged
     _mk_passport("orphan0000000001")
     _mk_backtest("orphan0000000001")
-    _mk_strategy("owned00000000001", owner=_W_OWNER)  # owned → kept
+    _mk_strategy("owned00000000001", owner=_W_OWNER)  # legacy wallet-owned → kept
+    _mk_strategy("account000000001", owner_user="test-user")  # canonical account-owned → kept
     _mk_strategy("examp00000000001", owner=None, example=True)  # curated example → kept
 
 
@@ -411,7 +412,7 @@ def test_purge_dry_run_is_default_and_deletes_nothing(capsys):
     assert "owned00000000001" not in out
 
     with db.get_session() as session:
-        assert session.query(StrategyRecord).count() == 3  # nothing deleted
+        assert session.query(StrategyRecord).count() == 4  # nothing deleted
 
 
 def test_purge_execute_deletes_orphans_and_cascades():
@@ -427,7 +428,7 @@ def test_purge_execute_deletes_orphans_and_cascades():
 
     with db.get_session() as session:
         remaining = {r.id for r in session.query(StrategyRecord).all()}
-        assert remaining == {"owned00000000001", "examp00000000001"}
+        assert remaining == {"owned00000000001", "account000000001", "examp00000000001"}
         assert session.query(StrategyPassportRecord).filter_by(id="orphan0000000001").first() is None
         assert session.query(PassportPaperRef).filter_by(passport_id="orphan0000000001").count() == 0
         assert session.query(BacktestResultRecord).filter_by(strategy_id="orphan0000000001").count() == 0
@@ -515,8 +516,11 @@ async def test_generated_list_redacts_owner_wallet_for_non_owners():
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        anon = (await client.get("/api/strategies/generated")).json()["strategies"]
-        assert all("owner_wallet" not in s for s in anon)
+        non_owner = (await client.get("/api/strategies/generated", cookies=_siwe_cookies(_W_OWNER))).json()[
+            "strategies"
+        ]
+        public_copy = next(s for s in non_owner if s["id"] == "prd00000000000001")
+        assert "owner_wallet" not in public_copy
         owned = (await client.get("/api/strategies/generated", cookies=_siwe_cookies(_W_OTHER))).json()["strategies"]
         mine = next(s for s in owned if s["id"] == "prd00000000000001")
         assert mine.get("owner_wallet") == _W_OTHER.lower()

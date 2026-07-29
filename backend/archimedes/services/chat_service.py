@@ -120,12 +120,12 @@ class ChatService:
     ) -> dict:
         """Post a user message and optionally trigger an AI response.
 
-        `verified` is True only when the caller proved wallet ownership via a
-        SIWE session (#524); body-supplied identities stay False.
+        `verified` is True only when caller proved and linked wallet to account;
+        body-supplied identities stay False.
         """
         # Identity ledger (#1028, D1/D2): chat allows unverified attribution
         # (`verified` above) — unlike every other wallet-FK'd write path in
-        # this codebase, this wallet may never have gone through SIWE, so
+        # this codebase, this wallet may never have been proof-linked, so
         # nothing else guarantees it's already anchored. Anchor it BEFORE the
         # insert below: chat_messages.wallet_address FKs to wallet_identities
         # (models/chat.py) on Postgres, so anchoring it after the fact would
