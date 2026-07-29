@@ -16,8 +16,9 @@ packaged on conda-forge.
 Run env-scoped tools with `conda run -n archimedes <cmd>` (or `conda activate archimedes`
 first) so you are always on the pinned versions, not whatever is on the system PATH.
 
-**On SAM's role:** the production stack is **ECS-on-EC2 + Aurora + ALB, managed by
-Terraform** — Terraform is the IaC backbone and SAM does not replace it. SAM is
+**On SAM's role:** the production stack is **ECS Fargate + Aurora + ALB, managed by
+Terraform** (cut over from EC2 2026-07-09) — Terraform is the IaC backbone and SAM does
+not replace it. SAM is
 purpose-built for **Lambda / API Gateway serverless** apps and local Lambda emulation.
 Treat it as *additive*: reach for it only when we introduce a concrete Lambda use-case
 (e.g. an event-driven nanopayment-settlement hook, a scheduled job, or lightweight glue),

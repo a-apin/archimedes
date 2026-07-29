@@ -25,7 +25,7 @@
 # REQUIREMENTS: gh (authenticated, with admin scope for --apply), python3 (for pretty JSON).
 set -euo pipefail
 
-REPO="${REPO:-hackagora/archimedes-arcadia}"
+REPO="${REPO:-a-apin/archimedes}"
 BRANCH="${BRANCH:-main}"
 
 # enforce_admins=false → admins (incl. the t2o2 build-on-deploy user) bypass the gate.
@@ -34,14 +34,34 @@ ENFORCE_ADMINS="${ENFORCE_ADMINS:-false}"
 
 # Hard-block CI contexts from quality-gate.yml. The informational checks
 # ("Lint — report table", "Complexity analysis", coverage) are deliberately NOT required.
+#
+# "Contracts — forge build + test" (.github/workflows/contracts-test.yml) is gated behind
+# INCLUDE_CONTRACTS_CHECK (default "false", i.e. NOT included) because that workflow is
+# scoped with `on.pull_request.paths: ["contracts/**", ...]`, so it never runs on a PR
+# that doesn't touch contracts/. GitHub's classic required-status-checks model leaves a
+# required check that never posts a status stuck at "Expected — waiting for status to be
+# reported" FOREVER, which blocks merging every non-contract PR too (a documented GitHub
+# limitation, not a bug in this script — see
+# https://github.com/orgs/community/discussions/44490 and #54877). Flipping this flag on
+# as-is would make every non-contract PR permanently unmergeable — do not do that. The
+# correct remedy is a fallback job in contracts-test.yml that runs on ALL PRs (no path
+# filter, or the inverse of contracts/**) and reports the SAME check name as a trivial
+# pass when contracts/** is untouched; that fallback job is what should be required, not
+# the path-filtered one. Once that job exists, set INCLUDE_CONTRACTS_CHECK=true here.
+# Tracked as a follow-up; deliberately not fixed in this sweep (touching
+# contracts-test.yml is CI/CD wiring that needs its own review).
+INCLUDE_CONTRACTS_CHECK="${INCLUDE_CONTRACTS_CHECK:-false}"
+
+CONTEXTS='"Backend — unit tests", "Ruff — format + critical lint rules"'
+if [ "$INCLUDE_CONTRACTS_CHECK" = "true" ]; then
+  CONTEXTS="${CONTEXTS}, \"Contracts — forge build + test\""
+fi
+
 read -r -d '' PAYLOAD <<JSON || true
 {
   "required_status_checks": {
     "strict": false,
-    "contexts": [
-      "Backend — unit tests",
-      "Ruff — format + critical lint rules"
-    ]
+    "contexts": [${CONTEXTS}]
   },
   "enforce_admins": ${ENFORCE_ADMINS},
   "required_pull_request_reviews": {
