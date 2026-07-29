@@ -38,8 +38,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # `bash <script>` rather than `./<script>` so the job does not depend on
+      # the executable bit surviving every checkout/copy path.
       - name: EC2 user-data stays under the 16 KB limit
-        run: ./infra/scripts/check-user-data-size.sh
+        run: bash ./infra/scripts/check-user-data-size.sh
 
   backend-tests:
     name: Backend — unit tests
