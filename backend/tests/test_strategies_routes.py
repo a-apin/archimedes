@@ -242,6 +242,50 @@ class TestSingleStrategyCohortContext:
         assert strategies_routes._live_rigor_result_for_one(lib[1]) is sentinel
         assert captured["cohort_ids"] == ["s0", "s1"]
 
+    @pytest.mark.asyncio
+    async def test_list_route_grades_full_library_not_the_page(self, monkeypatch):
+        """REGRESSION (#1173): the LIST badge must be graded over the whole library,
+        never the paginated window.
+
+        The detail route grades via ``_library_cohort_including`` (the test above
+        pins that), so grading the list over ``strats[offset:offset+limit]`` made
+        the same strategy's badge depend on which page it landed on — a short window
+        can fall under ``MIN_LIBRARY_N_FOR_PBO_GATING`` (criterion 4 skipped) and the
+        cohort-scoped PBO/CSCV value itself shifts with membership. Verified against
+        production before the fix: strategy ``d90b357a…4bbd`` graded False in a
+        5-item window but True in the full-library view and True on its own
+        detail/passport route — the exact list-vs-detail contradiction dfa8fc1 was
+        written to prevent.
+        """
+        from archimedes.api import strategies_routes
+        from archimedes.main import app
+
+        lib = [MagicMock(id=f"s{i}", status=None) for i in range(30)]
+        provider = MagicMock()
+        provider.list_strategies.return_value = lib
+        monkeypatch.setattr(strategies_routes, "strategy_provider", lambda: provider)
+
+        captured = {}
+
+        def _fake_batch(strategies):
+            captured["cohort_ids"] = [s.id for s in strategies]
+            return {}
+
+        monkeypatch.setattr(strategies_routes, "_live_rigor_results_for_strategies", _fake_batch)
+
+        # The cohort is handed to the gate BEFORE any response serialization, so we
+        # assert on it regardless of whether serializing these MagicMock strategies
+        # succeeds. raise_app_exceptions=False keeps a serialization 500 from
+        # masking the assertion we actually care about.
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/api/strategies/?limit=5&offset=25")
+
+        assert captured.get("cohort_ids") == [s.id for s in lib], (
+            "list route must grade the FULL library cohort; got a "
+            f"{len(captured.get('cohort_ids', []))}-item cohort for a 5-item page"
+        )
+
 
 class TestRigorGateVerdict:
     def test_passes_only_truthy_for_pass(self):
@@ -696,3 +740,73 @@ async def test_single_strategy_endpoint_numeric_fields_equal_live_gate(monkeypat
     assert served["out_of_sample_sharpe"] == pytest.approx(expected.oos_sharpe, rel=1e-9)
     assert served["deflated_sharpe_ratio"] == pytest.approx(expected.deflated_sharpe, rel=1e-9)
     assert served["passes_rigor_gate"] == expected.passes_all
+
+
+# ── Cohort invariance under the ?status= filter (#1172 review follow-up) ────
+#
+# Fixing the PAGINATION dependence alone left a second way for the same badge to
+# change with how it was requested: the route graded
+# `list_strategies(status=...)`, a SUBSET, while the detail/passport path grades
+# `_library_cohort_including()` — which calls `list_strategies()` with NO filter.
+# So `?status=candidate` and `?status=validated` could disagree with each other
+# and with the passport for one strategy. The cohort must be the full library;
+# `status` is a display concern only.
+
+
+@pytest.mark.asyncio
+async def test_list_route_grades_full_library_regardless_of_status_filter(monkeypatch):
+    """The graded cohort is byte-identical with and without ?status=, and equals
+    the unfiltered library — the same cohort _library_cohort_including() builds."""
+    import archimedes.api.strategies_routes as sr
+    from archimedes.main import app
+
+    seen_cohorts: list[list[str]] = []
+
+    def _spy(strategies):
+        seen_cohorts.append([s.id for s in strategies])
+        return {}
+
+    monkeypatch.setattr(sr, "_live_rigor_results_for_strategies", _spy)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_all = await client.get("/api/strategies/?limit=3")
+        r_candidate = await client.get("/api/strategies/?limit=3&status=candidate")
+        r_validated = await client.get("/api/strategies/?limit=3&status=validated")
+
+    assert r_all.status_code == 200
+    assert r_candidate.status_code == 200
+    assert r_validated.status_code == 200
+
+    full_library = [s.id for s in sr.strategy_provider().list_strategies()]
+    assert len(seen_cohorts) == 3, "each request must grade exactly one cohort"
+    for cohort in seen_cohorts:
+        assert cohort == full_library
+
+    # And the filter still actually filters the RESPONSE — the fix must not have
+    # turned ?status= into a no-op.
+    assert r_candidate.json()["total"] <= r_all.json()["total"]
+
+
+@pytest.mark.asyncio
+async def test_list_route_grades_full_library_regardless_of_pagination(monkeypatch):
+    """Companion to the above: the cohort is also independent of offset/limit,
+    which is the original #1173 defect. Pinned so neither can regress alone."""
+    import archimedes.api.strategies_routes as sr
+    from archimedes.main import app
+
+    seen_cohorts: list[list[str]] = []
+    monkeypatch.setattr(
+        sr,
+        "_live_rigor_results_for_strategies",
+        lambda strategies: (seen_cohorts.append([s.id for s in strategies]), {})[1],
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await client.get("/api/strategies/?limit=2&offset=0")
+        await client.get("/api/strategies/?limit=2&offset=4")
+        await client.get("/api/strategies/?limit=100&offset=0")
+
+    full_library = [s.id for s in sr.strategy_provider().list_strategies()]
+    assert len(seen_cohorts) == 3
+    for cohort in seen_cohorts:
+        assert cohort == full_library
