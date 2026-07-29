@@ -28,6 +28,19 @@ permissions:
   pull-requests: write
 
 jobs:
+  # Deliberately NOT path-filtered, and deliberately in this always-on
+  # workflow. A path-filtered job that is later marked a required status check
+  # never reports on a PR that misses its paths, so the check sits in
+  # "Expected" forever and that PR can never merge. This job runs on every PR,
+  # costs a couple of seconds, and is therefore safe to require.
+  infra-guards:
+    name: Infra — user-data size guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: EC2 user-data stays under the 16 KB limit
+        run: ./infra/scripts/check-user-data-size.sh
+
   backend-tests:
     name: Backend — unit tests
     runs-on: ubuntu-latest

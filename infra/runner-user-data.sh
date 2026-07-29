@@ -137,16 +137,10 @@ OUT="/opt/archimedes-runners/runner.env"
 # directly (truncate-then-append) is a real race: BOTH units run this as
 # ExecStartPre and each restarts independently every 10s, so one unit's
 # `docker run --env-file` can read $OUT while the other unit's fetch has
-# truncated it and is still appending — the container then boots with a
-# PARTIAL environment and no error anywhere. (Observed live: a read of
-# runner.env during a restart loop returned 10 of 15 parameters.) rename(2)
-# is atomic, so a reader sees either the whole old file or the whole new one.
-# It also means a mid-flight aws failure leaves the last-good file intact
-# instead of a truncated one.
-# mktemp, not "$OUT.tmp.$$": this file is rendered through Terraform's
-# templatefile(), where `$$` sits next to HCL's `$${` escape — mktemp sidesteps
-# the ambiguity entirely and also guarantees a unique name when both units
-# fetch concurrently.
+# truncated it and is still appending → the container boots with a PARTIAL
+# environment and no error. (Observed live: 10 of 15 params mid-restart-loop.)
+# rename(2) is atomic; a mid-flight aws failure also leaves the last-good file.
+# mktemp, not "$OUT.tmp.$$" — `$$` abuts HCL's `$${` escape under templatefile().
 umask 077
 TMP="$(mktemp "$OUT.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
@@ -163,13 +157,11 @@ while IFS=$'\t' read -r name value; do
   printf '%s=%s\n' "$key" "$value" >> "$TMP"
 done
 
-# LOAD-BEARING INPUT CHECK — be loud about exactly the inputs the runners
-# cannot function without, and silent about the rest. An AccessDenied already
-# fails hard (set -euo pipefail), but a SUCCESSFUL call that returns nothing
-# (wrong prefix, wiped namespace, wrong account) would otherwise write an
-# empty env file and boot a funds-adjacent container with no credentials and
-# no error — fail-soft on state the product needs is how an outage becomes a
-# silence. Names only; never a value.
+# LOAD-BEARING INPUT CHECK — loud about exactly the inputs the runners cannot
+# function without, silent about the rest. AccessDenied already fails hard, but
+# a SUCCESSFUL call returning nothing (wrong prefix/namespace/account) would
+# write an empty env file and boot a funds-adjacent container with no
+# credentials and no error. Names only; never a value.
 MISSING=""
 for required in DATABASE_URL REDIS_URL CIRCLE_API_KEY CIRCLE_ENTITY_SECRET WALLET_ID AGENT_DRY_RUN; do
   grep -q "^$required=" "$TMP" || MISSING="$MISSING $required"
@@ -220,14 +212,12 @@ chmod 700 /opt/archimedes-runners/ecr-login.sh
 #   - ship stdout/stderr to the /archimedes/runners CloudWatch log group via
 #     docker's native `awslogs` log driver (uses the instance role's
 #     credentials automatically — no CloudWatch agent needed)
-#     ⚠️ The option is `awslogs-stream` (an EXACT stream name). It is NOT
-#     `awslogs-stream-prefix` — that one is an *ECS task definition*
-#     logConfiguration option and is rejected by the docker daemon with
-#     `unknown log opt 'awslogs-stream-prefix' for awslogs log driver`,
-#     which fails `docker run` with exit 125 BEFORE the container starts.
-#     Because this file is `ignore_changes = [user_data]` (bootstrap-only),
-#     that mistake is not self-healing: it bricks the unit into a permanent
-#     `activating (auto-restart)` loop that no amount of restarting fixes.
+#     ⚠️ The option is `awslogs-stream` (EXACT name), NOT
+#     `awslogs-stream-prefix` — that is an *ECS task definition* option; the
+#     docker daemon rejects it ("unknown log opt") and `docker run` exits 125
+#     BEFORE the container starts. Under `ignore_changes = [user_data]` that
+#     mistake is not self-healing: it bricks the unit into a permanent
+#     `activating (auto-restart)` loop. Cost us 6072 restarts to find.
 #   - Restart=always — systemd itself is the box-local restart policy; the
 #     Redis lease in services/runner_lease.py is the SEPARATE, authoritative
 #     exactly-once control if this box is ever accidentally duplicated.
