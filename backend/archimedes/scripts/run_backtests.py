@@ -177,6 +177,35 @@ def _load_baseline_vol(strategy_by_path: dict) -> float | None:
     return stats.annualized_vol
 
 
+def _daily_returns_for_operation(artifact_payload: dict, operation: str | None) -> list[float] | None:
+    """Raw ``daily_returns`` for one named operation, read directly off the
+    parsed artifact payload — ``None`` if not found/empty.
+
+    ``AnalyticsArtifactModel``/``EngineMetricsModel`` (``backtest_mapper.py``)
+    declare ``extra="ignore"`` and never define a ``daily_returns`` field, so
+    the raw per-bar returns array the analytics engine actually wrote
+    (``archimedes_analytics_engine.cli.run_command``'s ``asdict(bt_result)``,
+    which includes ``daily_returns``) only survives in the plain-dict
+    ``artifact_payload`` from ``json.loads`` — not in the pydantic-validated
+    ``artifact`` object. Matches by operation name (case-insensitive), the same
+    identity ``select_operation_result`` (``backtest_mapper.py``) used to pick
+    the row ``map_artifact_to_backtest_result`` mapped from — so this reads the
+    CHOSEN operation's own series, never whichever entry happens to sit first
+    in ``results`` (see ``get_daily_returns`` in ``backtest_repository.py``,
+    which — unlike ``select_operation_result`` — does exactly that and is the
+    reason this guard cannot just reuse it).
+    """
+    if not operation:
+        return None
+    wanted = operation.upper()
+    for row in artifact_payload.get("results", []):
+        if str(row.get("operation", "")).upper() != wanted:
+            continue
+        raw = row.get("metrics", {}).get("daily_returns")
+        return [float(v) for v in raw] if raw else None
+    return None
+
+
 def run_backtests() -> dict:
     repo_root = _repo_root()
     strategy_dir = _analytics_strategy_dir(repo_root)
@@ -243,7 +272,25 @@ def run_backtests() -> dict:
             # capital_preservation_tbill declaring BIL but reading pure equity
             # vol). Checked BEFORE insert_backtest_if_missing so a flagged
             # artifact is never written, loudly, fail-closed.
-            candidate_returns = daily_returns_from_equity_curve(mapped.equity_curve)
+            #
+            # Pull the CHOSEN operation's raw daily_returns straight off the
+            # artifact payload rather than re-deriving them from
+            # mapped.equity_curve via pct-change: select_operation_result()
+            # (backtest_mapper.py) picks the row by NAME (searches for "SPY"
+            # regardless of position), but this file's own _load_baseline_vol()
+            # — and every other downstream reader, via
+            # backtest_repository.get_daily_returns() — reads artifact
+            # results[0], which is not guaranteed to be the same row once
+            # BACKTEST_OPERATIONS lists more than one op (e.g.
+            # "NIKKEI,SPY" puts SPY, the chosen op, at index 1). Deriving from
+            # mapped.equity_curve happened to coincide with the chosen op
+            # today, but named lookup is what actually keeps this guard
+            # checking the row that gets persisted and later re-read — falling
+            # back to the equity-curve derivation only if the raw field is
+            # absent (e.g. an older artifact schema).
+            candidate_returns = _daily_returns_for_operation(artifact_payload, selected_operation)
+            if not candidate_returns:
+                candidate_returns = daily_returns_from_equity_curve(mapped.equity_curve)
             verdict = assess_strategy(strategy.asset_universe, candidate_returns, baseline_vol=baseline_vol)
             if verdict.status in ("flagged", "degenerate"):
                 raise VolPlausibilityError(

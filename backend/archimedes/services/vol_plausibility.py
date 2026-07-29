@@ -68,7 +68,10 @@ have a persisted backtest (callers degrade gracefully — see ``assess_strategy`
 strategy that is legitimately, coincidentally close to the equity baseline (e.g. a
 genuinely fully-invested-in-SPY strategy with a near-no-op timing signal) will also
 trip this rule; that is still an actionable finding worth a human's eyes, not a false
-alarm to be tuned away.
+alarm to be tuned away. Like Rule A, Rule B is gated on
+``universe.is_fully_classified`` — a PARTIALLY-unclassified universe (some tickers
+resolve, others don't) never gets a baseline-match verdict, fabricated or otherwise;
+it always reports ``unclassified`` instead, same as a fully-unclassified one.
 
 This module itself stays pure and hermetic (no DB, no network — everything below
 takes plain lists/tuples of tickers and returns). Both callers do their own I/O
@@ -341,7 +344,12 @@ def compute_vol_stats(daily_returns: list[float] | np.ndarray) -> VolStats:
     Return: geometric CAGR over a synthetic equity curve built by compounding the
     daily returns from 1.0 — ``(curve[-1] / curve[0]) ** (252 / T) - 1`` — the same
     formula ``_annualized_metrics`` uses. Returns ``None`` if the series ever
-    drives the synthetic curve to <= 0 (a >= -100% day makes CAGR undefined).
+    drives the synthetic curve to <= 0 AT ANY POINT along the path (a >= -100%
+    day makes CAGR undefined) — checked over the whole curve, not just its last
+    value, because an EVEN number of sub-(-100%) days flips ``cumprod``'s sign
+    back positive: the curve can go negative mid-series and still end up
+    positive, which would otherwise produce a plausible-looking CAGR from an
+    economically impossible path.
 
     Degenerate check: ``np.ptp(arr) == 0.0`` — IDENTICAL to the guard
     ``services/_rigor_helpers.py::_sharpe_dsr_inputs`` uses to bail ``compute_dsr``
@@ -362,7 +370,11 @@ def compute_vol_stats(daily_returns: list[float] | np.ndarray) -> VolStats:
     ann_vol = sigma * math.sqrt(_ANNUALIZATION)
 
     curve = np.cumprod(1.0 + arr)
-    ann_return: float | None = None if curve[-1] <= 0 else float(curve[-1] ** (_ANNUALIZATION / n) - 1.0)
+    # Check the WHOLE curve, not just its last point: an even number of
+    # sub-(-100%) days flips cumprod's sign back positive, so the curve can go
+    # negative (or zero) mid-series — an economically impossible path — and
+    # still end up positive, producing a plausible-looking CAGR from garbage.
+    ann_return: float | None = None if bool((curve <= 0).any()) else float(curve[-1] ** (_ANNUALIZATION / n) - 1.0)
 
     return VolStats(
         n_obs=n, annualized_vol=ann_vol, annualized_return=ann_return, degenerate=False, insufficient_data=False
@@ -523,7 +535,16 @@ def assess_strategy(
     reasons.extend(_evaluate_class_band(universe, realized_vol, margin=margin))
 
     baseline_delta: float | None = None
-    if baseline_vol is not None:
+    # Gate Rule B on full classification too, same as Rule A (which returns []
+    # when universe.band is None). Without this, a PARTIALLY-unclassified
+    # universe whose vol happens to sit near the equity baseline would get a
+    # fabricated "matches the pipeline_buy_hold equity baseline" reason instead
+    # of the honest "unclassified" verdict — and since `if reasons:` below is
+    # checked before the `not universe.is_fully_classified` branch, that
+    # fabricated reason would win, contradicting this module's whole design
+    # goal (see module docstring: unclassifiable tickers get `unclassified`
+    # rather than a fabricated verdict).
+    if baseline_vol is not None and universe.is_fully_classified:
         baseline_delta = realized_vol - baseline_vol
         reasons.extend(
             _evaluate_baseline_match(

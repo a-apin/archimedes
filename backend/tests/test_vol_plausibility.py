@@ -146,6 +146,19 @@ def test_compute_vol_stats_pathological_wipeout_return_is_none_not_a_crash() -> 
     assert stats.annualized_vol is not None  # vol is still well-defined
 
 
+def test_compute_vol_stats_curve_goes_negative_mid_series_then_recovers_is_none() -> None:
+    """Regression: the docstring promises None if the synthetic curve EVER goes
+    <= 0, but checking only curve[-1] misses a curve that dips negative
+    mid-series and then flips back positive. Two sub-(-100%) days in a row
+    compound to a POSITIVE factor (-0.5 * -0.5 = +0.25) via cumprod, even
+    though the curve was actually negative for one step in between — an
+    economically impossible path (you cannot lose more than 100% and then
+    recover). Must be None, not a fabricated ~-100% CAGR."""
+    returns = [-1.5, -1.5] + [0.0] * 10
+    stats = vp.compute_vol_stats(returns)
+    assert stats.annualized_return is None
+
+
 def test_daily_returns_from_equity_curve_matches_pct_change() -> None:
     curve = [100.0, 101.0, 99.99]
     out = vp.daily_returns_from_equity_curve(curve)
@@ -255,6 +268,30 @@ def test_assess_strategy_unclassified_universe_flags_for_human_review() -> None:
     assert verdict.status == "unclassified"
     assert verdict.needs_attention is True
     assert "NOT_A_REAL_TICKER" in verdict.reasons[0]
+
+
+def test_assess_strategy_partially_unclassified_universe_near_baseline_is_unclassified_not_flagged() -> None:
+    """Regression: Rule A correctly returns [] when universe.band is None (any
+    unclassified ticker blanks the band), but Rule B had no equivalent guard —
+    only skipping the trivial pipeline_buy_hold self-match case. A PARTIALLY
+    unclassified universe (SPY resolves, the other ticker doesn't) whose vol
+    happens to sit near the equity baseline must come back 'unclassified' with
+    an honest 'unrecognized ticker(s)' reason — never a fabricated 'matches the
+    pipeline_buy_hold equity baseline' verdict just because it also happens to
+    contain SPY."""
+    baseline_returns = _spy_like_returns(seed=1)
+    baseline_vol = vp.compute_vol_stats(baseline_returns).annualized_vol
+
+    # Same distribution as the baseline (different seed) — realized vol lands
+    # well within Rule B's tolerance of baseline_vol, which is exactly the
+    # scenario that used to produce a fabricated baseline-match flag.
+    near_match_returns = _spy_like_returns(seed=2)
+
+    verdict = vp.assess_strategy(["SPY", "TOTALLY_MADE_UP_TICKER_XYZ"], near_match_returns, baseline_vol=baseline_vol)
+
+    assert verdict.status == "unclassified"
+    assert not any("equity baseline" in r for r in verdict.reasons)
+    assert any("TOTALLY_MADE_UP_TICKER_XYZ" in r for r in verdict.reasons)
 
 
 def test_assess_strategy_no_baseline_available_degrades_to_rule_a_only() -> None:

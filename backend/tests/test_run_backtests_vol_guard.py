@@ -99,6 +99,60 @@ def _artifact_payload(equity_curve: list[float], daily_returns: list[float], *, 
     }
 
 
+def _multi_op_artifact_payload(entries: list[tuple[str, list[float], list[float]]]) -> dict:
+    """Like ``_artifact_payload`` but with N result entries — one per
+    ``(operation, equity_curve, daily_returns)`` tuple, in the given order.
+    Lets a test put the CHOSEN operation somewhere other than ``results[0]``
+    (e.g. a ``BACKTEST_OPERATIONS=NIKKEI,SPY`` run where select_operation_result
+    finds "SPY" at index 1, not index 0)."""
+    return {
+        "run_id": "20260727T000000Z",
+        "strategy": {
+            "backtest_code_hash": "a" * 64,
+            "paper_claimed_sharpe": None,
+            "paper_claimed_cagr": None,
+            "paper_claimed_max_dd": None,
+        },
+        "assumptions": {
+            "transaction_cost_bps": 10,
+            "walk_forward_split": None,
+            "backtest_engine": "backtrader",
+        },
+        "integrity_flags": {
+            "lookahead_audit_passed": True,
+        },
+        "results": [
+            {
+                "operation": operation,
+                "symbol": operation,
+                "metrics": {
+                    "sharpe_ratio": 0.5,
+                    "sortino_ratio": 0.5,
+                    "calmar_ratio": 0.3,
+                    "max_drawdown_pct": 20.0,
+                    "cagr": 0.08,
+                    "total_trades": 0,
+                    "win_rate": None,
+                    "profit_factor": None,
+                    "avg_holding_period_days": None,
+                    "correlation_to_spy": None,
+                    "correlation_to_btc": None,
+                    "equity_curve": equity_curve,
+                    "monthly_returns": [0.01],
+                    "daily_returns": daily_returns,
+                    "transaction_cost_bps": 10,
+                    "slippage_bps": 5,
+                    "look_ahead_audit_passed": True,
+                    "backtest_engine": "backtrader",
+                    "backtest_start": "2004-01-02T00:00:00",
+                    "backtest_end": "2026-07-27T00:00:00",
+                },
+            }
+            for operation, equity_curve, daily_returns in entries
+        ],
+    }
+
+
 def _wire_hermetic_db(monkeypatch):
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     SessionLocal = sessionmaker(bind=engine)
@@ -273,3 +327,65 @@ def test_baseline_missing_degrades_to_rule_a_only_without_crashing(monkeypatch, 
 
     with SessionLocal() as session:
         assert session.query(BacktestResultRecord).count() == 1
+
+
+def test_guard_validates_chosen_operations_raw_series_not_results_zero_or_curve(monkeypatch, tmp_path) -> None:
+    """Regression for the write-time guard validating a different series than
+    downstream reads (audit 2026-07-27 follow-up): with a multi-operation
+    artifact (e.g. BACKTEST_OPERATIONS=NIKKEI,SPY), select_operation_result
+    picks the row by NAME — it finds "SPY" at index 1, not index 0 — so the
+    CHOSEN operation is NOT results[0].
+
+    results[0] ("NIKKEI") is a degenerate all-zero series that is never the
+    chosen operation and must be ignored entirely. results[1] ("SPY", the
+    chosen operation) deliberately carries an equity_curve that pct-changes to
+    a CLEAN low-vol series but a raw daily_returns field that is wildly
+    high-vol (annualized ~190%, far outside even the 1.5x-margined
+    broad_equity band of 8-35%) — an artificial split that isolates exactly
+    one thing: does the guard read the chosen operation's raw daily_returns
+    (correct — must flag) or silently re-derive a different, clean-looking
+    series from its equity_curve (the bug — would wrongly pass)?
+    """
+    repo_root = tmp_path
+    strategies_dir = repo_root / "analytics-engine" / "strategies"
+    artifacts_dir = repo_root / "analytics-engine" / "artifacts"
+    strategies_dir.mkdir(parents=True)
+    artifacts_dir.mkdir(parents=True)
+
+    _write_strategy(strategies_dir / "multi_op_strategy.py", asset_universe=["SPY"])
+
+    SessionLocal = _wire_hermetic_db(monkeypatch)
+
+    nikkei_returns = [0.0] * 20  # degenerate — must never be read (not chosen)
+    nikkei_curve = _equity_curve_from_returns(nikkei_returns)
+
+    spy_clean_returns = _spy_like_returns(n=300, seed=123)  # ~18% vol — passes Rule A
+    spy_clean_curve = _equity_curve_from_returns(spy_clean_returns)
+
+    rng = np.random.default_rng(456)
+    spy_raw_extreme_returns = rng.normal(loc=0.0, scale=0.12, size=300).tolist()  # ~190% vol — fails Rule A
+
+    def fake_run_command(**kwargs):
+        artifact_path = kwargs["artifact_dir"] / "20260727T000000Z.json"
+        payload = _multi_op_artifact_payload(
+            [
+                ("NIKKEI", nikkei_curve, nikkei_returns),
+                ("SPY", spy_clean_curve, spy_raw_extreme_returns),
+            ]
+        )
+        artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+        return {"run_id": "20260727T000000Z", "artifact_path": str(artifact_path)}
+
+    monkeypatch.setattr(run_backtests_mod, "_repo_root", lambda: repo_root)
+    monkeypatch.setattr(run_backtests_mod, "_load_run_command", lambda _repo: fake_run_command)
+
+    summary = run_backtests_mod.run_backtests()
+
+    assert summary["inserted"] == 0
+    assert summary["failed"] == 1
+    message = next(iter(summary["errors"].values()))
+    assert "VolPlausibilityError" in message
+    assert "plausible band" in message  # Rule A upper-bound violation, not "degenerate"
+
+    with SessionLocal() as session:
+        assert session.query(BacktestResultRecord).count() == 0
