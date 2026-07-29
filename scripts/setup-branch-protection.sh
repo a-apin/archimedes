@@ -35,28 +35,33 @@ ENFORCE_ADMINS="${ENFORCE_ADMINS:-false}"
 # Hard-block CI contexts from quality-gate.yml. The informational checks
 # ("Lint — report table", "Complexity analysis", coverage) are deliberately NOT required.
 #
-# "Contracts — forge build + test" (.github/workflows/contracts-test.yml) is included
-# below to close the gap where a Solidity PR could merge with red contract tests. READ
-# BEFORE RUNNING --apply: that workflow is scoped with `on.pull_request.paths:
-# ["contracts/**", ...]`, so it never runs on a PR that doesn't touch contracts/. GitHub's
-# classic required-status-checks model leaves a required check that never posts a status
-# stuck at "Expected — waiting for status to be reported" FOREVER, which blocks merging
-# every non-contract PR too (a documented GitHub limitation, not a bug in this script —
-# see https://github.com/orgs/community/discussions/44490 and #54877). Before applying
-# this payload, add a "skip-but-report-success" job to contracts-test.yml (GitHub's
-# documented workaround: a job that runs on the inverse path filter and always reports
-# the same check name as passed) — otherwise every PR that doesn't touch contracts/**
-# will hang unmergeable. Tracked as a follow-up; deliberately not fixed in this sweep
-# (touching contracts-test.yml is CI/CD wiring that needs its own review).
+# "Contracts — forge build + test" (.github/workflows/contracts-test.yml) is gated behind
+# INCLUDE_CONTRACTS_CHECK (default "false", i.e. NOT included) because that workflow is
+# scoped with `on.pull_request.paths: ["contracts/**", ...]`, so it never runs on a PR
+# that doesn't touch contracts/. GitHub's classic required-status-checks model leaves a
+# required check that never posts a status stuck at "Expected — waiting for status to be
+# reported" FOREVER, which blocks merging every non-contract PR too (a documented GitHub
+# limitation, not a bug in this script — see
+# https://github.com/orgs/community/discussions/44490 and #54877). Flipping this flag on
+# as-is would make every non-contract PR permanently unmergeable — do not do that. The
+# correct remedy is a fallback job in contracts-test.yml that runs on ALL PRs (no path
+# filter, or the inverse of contracts/**) and reports the SAME check name as a trivial
+# pass when contracts/** is untouched; that fallback job is what should be required, not
+# the path-filtered one. Once that job exists, set INCLUDE_CONTRACTS_CHECK=true here.
+# Tracked as a follow-up; deliberately not fixed in this sweep (touching
+# contracts-test.yml is CI/CD wiring that needs its own review).
+INCLUDE_CONTRACTS_CHECK="${INCLUDE_CONTRACTS_CHECK:-false}"
+
+CONTEXTS='"Backend — unit tests", "Ruff — format + critical lint rules"'
+if [ "$INCLUDE_CONTRACTS_CHECK" = "true" ]; then
+  CONTEXTS="${CONTEXTS}, \"Contracts — forge build + test\""
+fi
+
 read -r -d '' PAYLOAD <<JSON || true
 {
   "required_status_checks": {
     "strict": false,
-    "contexts": [
-      "Backend — unit tests",
-      "Ruff — format + critical lint rules",
-      "Contracts — forge build + test"
-    ]
+    "contexts": [${CONTEXTS}]
   },
   "enforce_admins": ${ENFORCE_ADMINS},
   "required_pull_request_reviews": {

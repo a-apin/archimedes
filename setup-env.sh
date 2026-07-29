@@ -14,7 +14,7 @@ fi
 # directory, and that common .git lives directly inside the main worktree's root
 # (git-worktree(1) § FILES). This makes the script portable across developers,
 # clone locations, and repo renames instead of assuming a specific $HOME layout.
-GIT_COMMON_DIR="$(cd "$SCRIPT_DIR" && git rev-parse --git-common-dir 2>/dev/null)"
+GIT_COMMON_DIR="$(cd "$SCRIPT_DIR" && git rev-parse --git-common-dir 2>/dev/null || true)"
 if [ -n "$GIT_COMMON_DIR" ]; then
   MAIN_WORKTREE="$(cd "$SCRIPT_DIR" && cd "$(dirname "$GIT_COMMON_DIR")" && pwd)"
   MAIN="$MAIN_WORKTREE/.env"

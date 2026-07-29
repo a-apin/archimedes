@@ -179,6 +179,14 @@ register`), which only runs when `CIRCLE_ENTITY_SECRET` is unset — use
 `rotate-secret.mjs` when a secret already exists and needs replacing without a
 gap in Circle-signed on-chain writes (oracle price pushes, agent rebalances).
 
+**Warning:** step 3's test-sign is a real state-changing `setPrice(uint256)`
+transaction, not a dry run, and its target contract address is hardcoded in
+`rotate-secret.mjs` from a pre-T3.2 deploy generation — it does not appear
+anywhere else in the repo. Before running this during an incident, verify the
+hardcoded address still resolves to a contract you intend to write to; on a
+stale address the call either 400s (halting rotation) or succeeds and
+overwrites a live oracle's price.
+
 ### 2. Configure Arc RPC and Contract Addresses
 
 ```bash
