@@ -112,13 +112,16 @@ def test_step_auth_ephemeral_creates_then_signs_in(monkeypatch):
     assert len(signup["password"]) >= 12
 
 
-def test_step_auth_without_credentials_fails_before_request(monkeypatch):
+def test_step_auth_without_credentials_fails_before_request(monkeypatch, capsys):
     monkeypatch.delenv("ARCHIMEDES_EMAIL", raising=False)
     monkeypatch.delenv("ARCHIMEDES_PASSWORD", raising=False)
     client = FakeClient()
 
     assert aj.step_auth(client, "https://test", ephemeral=False) is None
     assert client.post_calls == []
+    output = capsys.readouterr().out
+    assert "account email and password are required" in output
+    assert "ARCHIMEDES_PASSWORD" not in output
 
 
 def test_wallet_link_signs_exact_server_message(monkeypatch):

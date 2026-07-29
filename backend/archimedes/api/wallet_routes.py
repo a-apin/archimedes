@@ -213,6 +213,7 @@ async def _verify_wallet_proof(address: str, message: str, signature: str, chain
         if recovered.lower() == address:
             return True
     except Exception:
+        # EOA recovery failure is expected for smart wallets; try ERC-6492 below.
         pass
 
     from archimedes.api._erc6492 import verify_smart_wallet_signature

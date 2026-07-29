@@ -4,11 +4,11 @@ from datetime import UTC, datetime
 
 from archimedes.models.account import AuthUser
 from archimedes.models.chat import Base
-from archimedes.models.identity import WalletIdentity  # noqa: F401 — registers FK target
-from archimedes.models.strategy_passport_record import StrategyPassportRecord  # noqa: F401
-from archimedes.models.strategy_proposal import StrategyProposal  # noqa: F401
+from archimedes.models.identity import WalletIdentity
+from archimedes.models.strategy_passport_record import StrategyPassportRecord
+from archimedes.models.strategy_proposal import StrategyProposal
 from archimedes.models.strategy_store import StrategyRecord, upsert_strategy
-from archimedes.models.user_profile import UserProfile  # noqa: F401
+from archimedes.models.user_profile import UserProfile
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 
@@ -30,7 +30,14 @@ def test_application_owned_tables_reference_canonical_user():
     Base.metadata.create_all(engine)
     inspector = inspect(engine)
 
-    for table in ("strategy_store", "strategy_passports", "strategy_proposals", "user_profiles", "vault_metadata"):
+    assert WalletIdentity.__tablename__ in inspector.get_table_names()
+    for table in (
+        StrategyRecord.__tablename__,
+        StrategyPassportRecord.__tablename__,
+        StrategyProposal.__tablename__,
+        UserProfile.__tablename__,
+        "vault_metadata",
+    ):
         assert "owner_user_id" in {column["name"] for column in inspector.get_columns(table)}
 
 

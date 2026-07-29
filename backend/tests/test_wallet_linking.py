@@ -17,10 +17,10 @@ from archimedes.api.wallet_routes import (
 from archimedes.models.account import AuthUser, LinkedWallet
 from archimedes.models.chat import Base
 from archimedes.models.identity import ControlledWallet, WalletIdentity
-from archimedes.models.strategy_passport_record import StrategyPassportRecord  # noqa: F401
-from archimedes.models.strategy_proposal import StrategyProposal  # noqa: F401
+from archimedes.models.strategy_passport_record import StrategyPassportRecord
+from archimedes.models.strategy_proposal import StrategyProposal
 from archimedes.models.strategy_store import upsert_strategy
-from archimedes.models.user_profile import UserProfile  # noqa: F401
+from archimedes.models.user_profile import UserProfile
 from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -36,6 +36,9 @@ def _user(user_id: str) -> CurrentUser:
 
 def _session() -> Session:
     engine = create_engine("sqlite:///:memory:")
+    assert all(
+        model.__table__.metadata is Base.metadata for model in (StrategyPassportRecord, StrategyProposal, UserProfile)
+    )
     Base.metadata.create_all(engine)
     session = Session(engine)
     session.add_all(

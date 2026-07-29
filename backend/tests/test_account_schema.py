@@ -3,13 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from archimedes.models.account import AuthUser, LinkedWallet
+from archimedes.models.chat import Base
+from archimedes.models.identity import WalletIdentity
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
-from archimedes.models.account import AuthUser, LinkedWallet
-from archimedes.models.chat import Base
-from archimedes.models.identity import WalletIdentity  # noqa: F401 — registers FK target
 
 
 def _user(user_id: str, email: str) -> AuthUser:
@@ -36,7 +35,7 @@ def test_better_auth_and_wallet_tables_use_explicit_models():
         "auth_verifications",
         "auth_rate_limits",
     } <= tables
-    assert {"linked_wallets", "wallet_link_challenges"} <= tables
+    assert {WalletIdentity.__tablename__, "linked_wallets", "wallet_link_challenges"} <= tables
     assert {column["name"] for column in inspect(engine).get_columns("auth_sessions")} >= {
         "token",
         "userId",

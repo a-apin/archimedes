@@ -21,6 +21,9 @@ down_revision: str | Sequence[str] | None = "3f643d292e04"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+# Alembic reads these module globals reflectively.
+__all__ = ["branch_labels", "depends_on", "down_revision", "downgrade", "revision", "upgrade"]
+
 
 def upgrade() -> None:
     op.create_table(

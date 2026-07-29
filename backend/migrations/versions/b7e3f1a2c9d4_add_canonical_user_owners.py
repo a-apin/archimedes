@@ -20,6 +20,9 @@ down_revision: str | Sequence[str] | None = "9ad1c4e2b7f0"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+# Alembic reads these module globals reflectively.
+__all__ = ["branch_labels", "depends_on", "down_revision", "downgrade", "revision", "upgrade"]
+
 _TABLES = ("strategy_store", "strategy_passports", "strategy_proposals", "user_profiles", "vault_metadata")
 
 

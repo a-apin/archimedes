@@ -59,7 +59,7 @@ def step_auth(client: httpx.Client, _base: str, *, ephemeral: bool) -> str | Non
         email = os.environ.get(_EMAIL_ENV, "").strip()
         password = os.environ.get(_PASSWORD_ENV, "")
         if not email or not password:
-            print(f"  ✗ {_EMAIL_ENV} and {_PASSWORD_ENV} are required")
+            print("  ✗ account email and password are required")
             return None
 
     try:
