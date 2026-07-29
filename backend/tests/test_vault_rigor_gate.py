@@ -387,9 +387,11 @@ def test_strategy_record_visible_fails_closed_on_db_error():
     'no record — fall through to the ownership-blind badge', i.e. fail-open
     for private strategies exactly when the DB is down). It must raise a 503
     so the deploy is blocked loudly and recoverably."""
-    with patch("archimedes.db.get_session", side_effect=RuntimeError("db down")):
-        with pytest.raises(HTTPException) as exc_info:
-            _strategy_record_visible("any-id", _FakeRequest(_OWNER))
+    with (
+        patch("archimedes.db.get_session", side_effect=RuntimeError("db down")),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        _strategy_record_visible("any-id", _FakeRequest(_OWNER))
     assert exc_info.value.status_code == 503
 
 

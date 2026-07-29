@@ -44,7 +44,7 @@ def _load_address_defaults() -> tuple[dict[str, str], dict[str, str]]:
         tokens = {s: v["token"] for s, v in raw.items() if isinstance(v, dict) and v.get("token")}
         oracles = {s: v["oracle"] for s, v in raw.items() if isinstance(v, dict) and v.get("oracle")}
         return tokens, oracles
-    except Exception as exc:  # noqa: BLE001 — never let an address-file issue crash import
+    except Exception as exc:  # Never let an address-file issue crash import.
         logger.error("client: could not load %s (%s) — synth addresses resolve from env only", _ADDRESS_SSOT_PATH, exc)
         return {}, {}
 
