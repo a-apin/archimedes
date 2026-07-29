@@ -1,70 +1,59 @@
-# Authentication model — what's enforced, what's a known testnet gap
+# Authentication and authorization model
 
-> **Audience:** anyone reviewing the API for security (judges, auditors,
-> future contributors). Written 2026-05-27 to give an accurate picture after
-> the SIWE + internal-agent-key hardening, and to scope the one residual gap
-> honestly rather than leave it implicit.
+> Audience: API security reviewers and contributors. Updated 2026-07-28.
 
-## TL;DR
+## Trust boundaries
 
-| Surface | Protection | Forgeable? |
-| --- | --- | --- |
-| PII reads (email, display_name) | **SIWE session only** (`get_verified_wallet`) | No — cryptographic |
-| Trace publish (`POST /api/traces/publish`) | **Internal agent key** (`require_internal_agent_key`) | No |
-| Rebalance / regime chat events | **Internal agent key** | No |
-| AMM bootstrap | **Internal agent key** | No |
-| **Non-PII profile/chat writes** | SIWE **or** `X-Wallet-Address` header fallback | **Yes — see gap below** |
-| On-chain funds | Vault contract (agent has rebalance-only authority) | No — enforced on-chain |
+| Surface | Protection |
+| --- | --- |
+| Account/session | Better Auth email/password or configured OAuth provider |
+| PII/profile reads and writes | Better Auth session; row scoped by canonical user ID |
+| Strategy generation and job reads | Better Auth session; jobs scoped by canonical user ID |
+| Wallet linking | Better Auth session plus short-lived, single-use EIP-4361 proof |
+| Wallet-attributed chat and on-chain actions | Better Auth session plus wallet linked to same user |
+| Trace publish, rebalance/regime events, AMM bootstrap | Internal agent key |
+| On-chain funds | Vault contract ownership and agent-role constraints |
 
-## What is cryptographically enforced
+## Canonical identity
 
-1. **SIWE (Sign-In with Ethereum, EIP-4361).** [`api/auth_siwe.py`](../../backend/archimedes/api/auth_siwe.py)
-   issues a challenge nonce, verifies the signed message with
-   `Account.recover_message`, confirms the recovered address matches the
-   claimed wallet, and sets a signed session cookie. This is the trust anchor
-   for anything sensitive.
+Better Auth `auth_users.id` is application identity. FastAPI forwards request cookie to
+colocated auth service `/api/auth/get-session`; successful result is stored as immutable
+request state and authorization dependencies scope database access by user ID.
 
-2. **PII reads are SIWE-only.** [`api/user_routes.py`](../../backend/archimedes/api/user_routes.py)
-   gates email / display_name behind `_extract_caller_wallet_siwe()`, which
-   reads **only** the verified SIWE session — never the header. A forged
-   header cannot read another wallet's PII.
+Wallet address headers and wallet connection state never create or replace account
+session. Circle wallet passkeys authorize Circle wallets only. They are not Better Auth
+credentials.
 
-3. **Agent-authored writes require the internal agent key.** Trace publishing,
-   rebalance/regime chat events, and AMM bootstrap all depend on
-   `require_internal_agent_key` ([`api/auth_guard.py`](../../backend/archimedes/api/auth_guard.py)).
-   A user **cannot** forge a reasoning trace or inject agent chat events — these
-   are the integrity-critical surfaces, and they are not user-reachable.
+## Wallet proof
 
-   > This closes the most serious part of the earlier "anyone can forge
-   > traces/chat" concern: the provenance-bearing writes are agent-key-gated.
+`POST /api/wallets/challenge` creates exact EIP-4361 message bound to authenticated user,
+normalized `<chain-id>:<lowercase-address>`, domain, URI, provider, nonce hash, issue time,
+and five-minute expiry. `POST /api/wallets/verify` atomically consumes challenge before
+link insertion, preventing replay across workers.
 
-## The one residual gap (known testnet limitation)
+Verifier supports EOA recovery and ERC-6492/EIP-1271 smart-wallet signatures. Link identity
+is unique. Existing wallet owned by another user returns 409; ownership is never moved
+automatically. Matching unowned legacy rows may be claimed only after valid proof.
 
-**Non-PII profile/chat *writes* still accept a forgeable `X-Wallet-Address`
-header as a fallback** when no SIWE session is present
-(`_extract_caller_wallet` in `user_routes.py`). The write path enforces
-`caller == payload.wallet_address`, which blocks *mismatched* writes — but an
-attacker can simply set both the header and the payload to a victim's address
-and write to it.
+Selected wallet headers are hints only: backend accepts them only when address and chain
+resolve to current user's verified link. Sensitive account routes need no wallet.
 
-**Blast radius is limited:**
-- Only **non-PII** fields (display_name, interests, attribution,
-  marketing_opt_in) and user chat messages — **no funds, no PII reads, no
-  reasoning traces.**
-- On-chain funds are unaffected: the vault contract grants the agent
-  rebalance-only authority, with no withdraw-to-platform path, so no API-layer
-  auth bug can move user money.
+## Service credentials
 
-**Why the fallback still exists:** the live frontend lets a MetaMask user
-interact (e.g. save a display name) before completing a SIWE signature. Removing
-the header fallback outright would break that write path until the frontend
-requires SIWE login first — a coordinated frontend + backend change, tracked as
-a follow-up issue rather than a unilateral backend edit.
+Integrity-critical agent writes depend on `require_internal_agent_key` in
+[`api/auth_guard.py`](../../backend/archimedes/api/auth_guard.py). User sessions cannot
+forge reasoning traces or internal rebalance events.
 
-## The fix (tracked)
+Production Better Auth requires `BETTER_AUTH_SECRET` with at least 32 characters from SSM.
+FastAPI-to-auth calls use private ECS loopback; public auth routes pass through nginx.
+Cookies remain HttpOnly and Secure in production. Secrets must never enter logs or Git.
 
-Require a verified SIWE session for **all** write operations — drop the
-`X-Wallet-Address` header fallback in `_extract_caller_wallet` — paired with a
-frontend change that prompts SIWE sign-in before the first write. Until then,
-this gap is accepted for the testnet demo and documented here so it is not
-mistaken for an oversight.
+## Defense in depth
+
+nginx rejects anonymous `/app/*` requests through `auth_request`, UI repeats route guard,
+and FastAPI independently protects private APIs. Quant feature gate is server-owned and
+returns 404 when disabled. Same-origin checks, trusted origins, exact wallet-message
+bindings, database uniqueness, and no-existence-oracle 404s protect cross-user boundaries.
+
+See [`../account-authentication.md`](../account-authentication.md) for topology, rollout,
+and rollback details.

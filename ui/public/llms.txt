@@ -2,76 +2,54 @@
 
 > Agentic trading, grounded in research — settled on Arc. Archimedes turns a
 > natural-language investment intent into a research-grounded, rigor-gated portfolio
-> strategy, backed by a ~10,000-paper quantitative-finance corpus, and executes it into a
-> non-custodial USDC vault on the Arc testnet (chain ID 5042002). Every reasoning step is
-> traceable to a source paper and anchored on-chain.
+> strategy backed by quantitative-finance literature and executed in non-custodial USDC
+> vaults on Arc testnet (chain ID 5042002).
 
-Archimedes ships one human interface (a wallet-based React SPA), but the same journey is
-fully driveable over plain HTTP — no browser, no passkey. AI agents authenticate with a
-programmatic EOA wallet via Sign-In with Ethereum, then call the same `/api/*` surface the
-UI does. This file is the curated, low-token entry point; the full byte-for-byte contract
-is linked at the bottom.
+Same journey is driveable over HTTP. Better Auth user is canonical application identity.
+Wallet is optional verified external account and is required only for wallet/on-chain
+operations. Circle wallet passkeys control Circle wallets; they do not log in to Archimedes.
 
-## The agent journey
+## Agent journey
 
-1. **Read** — public, no auth required.
-   - `GET https://archimedes-arc.com/api/strategies/` — the curated/generated strategy library
-   - `GET https://archimedes-arc.com/api/explore/assets` — the tradable asset universe
-   - `GET https://archimedes-arc.com/api/health` — liveness + corpus/rigor/LLM diagnostics
-2. **Authenticate** — SIWE (EIP-4361) with a programmatic EOA. See the recipe below. Required
-   before generation (`REQUIRE_SIWE_FOR_GENERATION` is on by default).
-3. **Generate** — `POST https://archimedes-arc.com/api/generate/start` with a `brief`
-   (`intent`, `risk_appetite`), then tail `GET
-   https://archimedes-arc.com/api/generate/stream/{job_id}` (Server-Sent Events) for live
-   reasoning.
-4. **Rigor** — `GET https://archimedes-arc.com/api/generate/jobs/{job_id}/candidates` for the
-   externalized rigor verdict (Deflated Sharpe Ratio / Probability of Backtest Overfitting /
-   walk-forward OOS) and the considered-and-rejected alternatives; `GET
-   https://archimedes-arc.com/api/strategies/{strategy_id}` for the authoritative live
-   deployability gate (`rigor_gate_status`: `pass` | `fail` | `pending`).
-5. **Deploy, publish, subscribe, monitor** — *landing with the T3.2 contract redeploy
-   ([issue #588](https://github.com/a-apin/archimedes/issues/588))*. `POST /api/vaults/create`
-   (deploy), `POST /api/marketplace/publish` + `/subscribe` (the nanopayment marketplace), and
-   `GET /api/vaults/{address}/health` (monitor) are real endpoints today, but agent-driven
-   end-to-end use isn't wired until the redeploy ships. Read-only + generate-only agents are
-   fully supported now; don't expect a deploy call to close the loop yet.
+1. **Read** — public:
+   - `GET https://archimedes-arc.com/api/strategies/`
+   - `GET https://archimedes-arc.com/api/explore/assets`
+   - `GET https://archimedes-arc.com/api/health`
+2. **Authenticate** — retain cookies on one HTTP client:
+   - `GET /api/auth/providers`
+   - existing account: `POST /api/auth/sign-in/email` with
+     `{ "email": "...", "password": "..." }`
+   - new account: `POST /api/auth/sign-up/email` with
+     `{ "name": "...", "email": "...", "password": "..." }`, then sign in
+   - confirm: `GET /api/auth/get-session`
+3. **Generate** — `POST /api/generate/start` with `brief.intent` and
+   `brief.risk_appetite`; tail `GET /api/generate/stream/{job_id}` as SSE.
+4. **Rigor** — `GET /api/generate/jobs/{job_id}/candidates`, then
+   `GET /api/strategies/{strategy_id}`. `rigor_gate_status` is `pass`, `fail`, or
+   `pending`; never infer admission from headline Sharpe alone.
+5. **Wallet operations** — first link wallet using proof flow below. Deploy/publish/
+   subscribe remain subject to live contract status advertised by agent manifest.
 
-## SIWE for agents — no browser required
+## Optional wallet link (EIP-4361)
 
-1. `GET /api/auth/nonce` → `{ nonce, domain, issued_at, expiry_seconds }`
-2. Build the EIP-4361 message using the **server-advertised `domain`**, `Chain ID: 5042002`
-   (Arc testnet), the live nonce, and a fresh `Issued At` (UTC ISO-8601, within 5 minutes).
-3. Sign it with a programmatic EOA (e.g. `eth_account.Account.sign_message`).
-4. `POST /api/auth/verify` with `{ "message": ..., "signature": "0x..." }` → `200` +
-   `Set-Cookie: archimedes_session=...` (HttpOnly, Secure, SameSite=Strict). Keep the cookie
-   on your HTTP client — it authenticates everything else.
-5. `GET /api/auth/session` → `{ "authenticated": true, "wallet": "0x..." }` to confirm.
+Account session must already exist.
 
-A runnable reference implementation lives at
-[`scripts/agent_journey.py`](https://github.com/a-apin/archimedes/blob/main/scripts/agent_journey.py)
-in the repo:
+1. `POST /api/wallets/challenge` with
+   `{ "address": "0x...", "chain_id": 5042002, "provider": "browser" }`.
+2. Sign exact returned `message` with wallet. Do not rebuild it client-side.
+3. `POST /api/wallets/verify` with returned message and signature.
+4. `GET /api/wallets` confirms verified link.
 
-```bash
-# read-only smoke test, no auth, no LLM spend
-python scripts/agent_journey.py --base https://archimedes-arc.com --read-only --no-auth
+Challenge is user-bound, domain/URI/chain-bound, five-minute, and single-use. Linking never
+creates account session and never transfers wallet already linked to another user.
 
-# full journey with a throwaway in-memory wallet
-python scripts/agent_journey.py --base https://archimedes-arc.com --ephemeral
-```
+## Funding test wallet
 
-## Funding a test wallet
-
-Arc testnet uses USDC as gas. Get free testnet USDC from the Circle faucet:
-**https://faucet.circle.com/** (20 USDC / 2h). No real funds are ever at risk — Arc has no
-mainnet yet.
+Arc testnet uses USDC as gas. Faucet: **https://faucet.circle.com/**. No real funds.
 
 ## Machine-readable references
 
-- [`/api/agent/manifest`](https://archimedes-arc.com/api/agent/manifest) — small JSON
-  contract: auth scheme, grouped endpoints, faucet URL. Good for a first programmatic probe.
-- [`/.well-known/agent.json`](https://archimedes-arc.com/.well-known/agent.json) — A2A-style
-  agent card (name, service endpoint, auth scheme, skills).
-- [`docs/agent-api.md`](https://github.com/a-apin/archimedes/blob/main/docs/agent-api.md) —
-  the full, byte-for-byte agent contract: every endpoint, request/response shape, SSE event
-  ordering, job-endpoint ownership scoping, and the honest pass/fail/pending semantics of the
-  rigor gate. Read this before writing a production agent client.
+- `/api/agent/manifest`
+- `/.well-known/agent.json`
+- `docs/agent-api.md`
+- `docs/account-authentication.md`

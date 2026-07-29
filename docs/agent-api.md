@@ -1,16 +1,12 @@
 # Agent API — driving the Archimedes journey programmatically
 
-> Status: slice 2 complete — agent-auth (programmatic SIWE + wallet-required
-> generation) plus DEPLOY + MONITOR. Tracks
-> [issue #788](https://github.com/a-apin/archimedes/issues/788). `--deploy`
-> still defaults to a DRY RUN pending the #588 contract-redeploy keystone —
-> see "DEPLOY — create a vault" below for why.
+> Status: canonical Better Auth accounts, optional proof-linked wallets, generation,
+> DEPLOY, and MONITOR. `--deploy` remains DRY RUN by default; see DEPLOY below.
 
-Archimedes ships one human interface: a passkey/wallet React SPA. AI agents — the
-"new citizens" of the Agora thesis — can't drive a browser passkey, so today they
-**can't use the product or convert**. This document is the agent-facing contract:
-the exact `/api/*` calls that exercise the same journey a human does. The reference
-client is [`scripts/agent_journey.py`](../scripts/agent_journey.py).
+Archimedes exposes same journey to humans and HTTP clients. Better Auth user ID is
+canonical application identity. Wallet proof is separate and required only for wallet
+or on-chain actions. This document gives exact `/api/*` contract. Reference client is
+[`scripts/agent_journey.py`](../scripts/agent_journey.py).
 
 Two reasons this matters:
 1. **Dogfooding** — running the journey as code surfaces the bugs and rough edges a
@@ -19,24 +15,22 @@ Two reasons this matters:
    classified as an external agent by the telemetry middleware and its
    `generation_started` is attributed in the conversion funnel ([#787](https://github.com/a-apin/archimedes/issues/787)).
 
-The **READ** path needs no authentication. **GENERATE now requires a verified
-SIWE session by default** (`REQUIRE_SIWE_FOR_GENERATION` flipped to secure-by-default,
-2026-07): anonymous `POST /api/generate/start` returns 401, and the per-job
-stream/jobs/candidates reads are owner-scoped (see "Job-endpoint scoping" below).
-Agents authenticate with a programmatic EOA — no browser, no passkey.
+**READ** needs no authentication. **GENERATE requires Better Auth session**:
+anonymous `POST /api/generate/start` returns 401, and per-job stream/jobs/candidates
+reads are scoped by canonical user ID. Wallet connection alone never authenticates.
 
 ## Quick start
 
 ```bash
-# read-only smoke (no LLM spend, no auth):
+# read-only smoke (no LLM spend, no auth)
 python scripts/agent_journey.py --base https://archimedes-arc.com --read-only --no-auth
 
-# full journey, authenticated with your dev key (env only — never a CLI arg):
-AGENT_WALLET_KEY=0x<fresh-testnet-key> python scripts/agent_journey.py \
-  --base https://archimedes-arc.com \
+# full journey; credentials come from env, never CLI
+ARCHIMEDES_EMAIL=agent@example.test ARCHIMEDES_PASSWORD='<secret>' \
+  python scripts/agent_journey.py --base https://archimedes-arc.com \
   --intent "diversified low-volatility strategy for idle USDC" --risk moderate
 
-# full journey with a throwaway in-memory wallet:
+# isolated smoke account (creates disposable account)
 python scripts/agent_journey.py --base https://archimedes-arc.com --ephemeral
 ```
 
@@ -54,7 +48,7 @@ as an external agent in `/api/metrics`.
 | `GET /api/metrics/funnel` | distinct-visitor conversion funnel (`landed → generation_started → wallet_connected → vault_deployed`) with `pct_of_landed` + `step_conversion` per stage (#787). Add `?day=YYYY-MM-DD` for one day. |
 | `GET /api/strategies/` | the curated/example strategy library |
 
-### 2. GENERATE — start + stream (SIWE session required by default)
+### 2. GENERATE — start + stream (account session required)
 
 ```http
 POST /api/generate/start
@@ -141,69 +135,53 @@ GET /api/strategies/{strategy_id}
 > fusion/debate winner reads `pass`/`fail` like any other strategy. **Never weaken
 > the gate to force a `pass` — `pending`/`fail` are honest, deployable-only-on-`pass`.**
 
-## Slice 2 — agent-auth (SIWE) + wallet-required generation
+## Account authentication and optional wallet proof
 
-### The SIWE recipe (EIP-4361, programmatic EOA)
+### Better Auth recipe
 
-The backend is fully programmatic-EOA compatible — no browser, no passkey. The
-reference implementation is `step_auth`/`build_siwe_message` in
-[`scripts/agent_journey.py`](../scripts/agent_journey.py) (mirrors the backend
-test `test_auth_siwe.py::test_verify_with_valid_signature`). Exact calls:
+Keep cookies in one HTTP client. No browser or wallet is required.
 
-1. **Challenge** — `GET /api/auth/nonce` →
-   `{ "nonce": "...", "domain": "archimedes-arc.com", "issued_at": <epoch>, "expiry_seconds": 300 }`.
-   Use the **server-advertised `domain`** (the verifier binds on its
-   `PUBLIC_DOMAIN`) and convert `issued_at` to ISO-8601 UTC.
-2. **Message** — build the EIP-4361 text. Every binding is REQUIRED and enforced
-   server-side (domain match, `Chain ID: 5042002`, live single-use nonce,
-   `Issued At` fresh within 5 minutes):
+1. `GET /api/auth/providers` to discover email/password and configured OAuth providers.
+2. Create account when needed:
+   `POST /api/auth/sign-up/email` with
+   `{ "name": "Agent", "email": "...", "password": "..." }`.
+3. Sign in:
+   `POST /api/auth/sign-in/email` with `{ "email": "...", "password": "..." }`.
+4. Confirm `GET /api/auth/get-session` returns non-null user and session.
+5. Sign out with `POST /api/auth/sign-out`.
 
-   ```
-   {domain} wants you to sign in with your Ethereum account:
-   {wallet}
+Use `ARCHIMEDES_EMAIL` and `ARCHIMEDES_PASSWORD` for reference client. Never pass
+credentials as command-line arguments or commit them. `--ephemeral` creates disposable
+account for smoke testing.
 
-   Sign in to Archimedes.
+### Optional EIP-4361 wallet link
 
-   URI: https://{domain}
-   Version: 1
-   Chain ID: 5042002
-   Nonce: {nonce}
-   Issued At: {issued_at ISO-8601}
-   ```
-3. **Sign** — `eth_account`: `Account.sign_message(encode_defunct(text=message))`.
-4. **Verify** — `POST /api/auth/verify` with `{"message": ..., "signature": "0x..."}`
-   → 200 `{ "status": "authenticated", "wallet": "0x...", "expires_in": 86400 }`
-   and a `Set-Cookie: archimedes_session=...` (HttpOnly, Secure, SameSite=Strict).
-   Keep the cookie on your HTTP client; it authenticates everything below.
-5. **Check** — `GET /api/auth/session` → `{ "authenticated": true, "wallet": "0x..." }`.
+Wallet is needed only for wallet/on-chain operations. Account session must exist first.
 
-Key handling: the harness reads the private key ONLY from the
-`AGENT_WALLET_KEY` env var (never a CLI arg, never logged), or mints a
-throwaway with `--ephemeral`. Fresh testnet keys only.
+1. `POST /api/wallets/challenge` with
+   `{ "address": "0x...", "chain_id": 5042002, "provider": "browser" }`.
+2. Sign exact returned `message`; do not reconstruct it.
+3. `POST /api/wallets/verify` with returned message and signature.
+4. `GET /api/wallets` confirms link.
 
-### Wallet-required generation (secure by default)
+Challenge is bound to account, normalized address, chain, domain, URI, issue time, and
+five-minute expiry. It is consumed atomically and cannot replay. A wallet already linked
+to another account returns 409 and is never transferred automatically. EOA and
+ERC-6492/EIP-1271 smart-wallet proofs are supported.
 
-`REQUIRE_SIWE_FOR_GENERATION` now defaults **ON** when unset: the paid LLM
-endpoints (`POST /api/generate/start`, `/api/strategies/generate`,
-`/api/strategies/construct`, the AI vault-chat branch) return 401 without a
-verified session. Local-dev opt-out: `REQUIRE_SIWE_FOR_GENERATION=false` in
-`.env` (docker compose passes it through; `.env.example` documents it).
+### Job endpoint scoping
 
-### Job-endpoint scoping (when the gate is ON)
-
-Jobs are tagged with their creator (`payload.owner_wallet`). With gating on:
+Jobs are tagged with creator `owner_user_id`:
 
 | Endpoint | Rule |
 | --- | --- |
-| `GET /api/generate/stream/{job_id}` | session required (401); wallet must match the job owner — mismatch → **404** (no existence oracle) |
-| `GET /api/generate/jobs` | session required (401); listing filtered to the caller's own jobs (+ ownerless pre-flip jobs) |
-| `GET /api/generate/jobs/{job_id}/candidates` | same owner rule as the stream — mismatch → **404** |
-| `POST /api/generate/jobs/{job_id}/cancel` | owner-scoped since the 2026-06-14 audit (403 on mismatch) |
+| `GET /api/generate/stream/{job_id}` | account required (401); user mismatch → **404** (no existence oracle) |
+| `GET /api/generate/jobs` | account required; listing filtered to caller |
+| `GET /api/generate/jobs/{job_id}/candidates` | same owner rule as stream |
+| `POST /api/generate/jobs/{job_id}/cancel` | same owner rule as stream |
 
-Ownerless jobs (created while gating was off) stay readable by any
-*authenticated* caller. With gating explicitly OFF, all of the above preserve
-the historical open behavior. Browser `EventSource` sends cookies on
-same-origin requests, so the SSE stream authenticates without client changes.
+Legacy ownerless jobs remain readable to authenticated callers for migration
+compatibility. Browser `EventSource` sends same-origin cookies automatically.
 
 ### Funding an agent wallet (USDC is gas on Arc) — a DIFFERENT deploy path
 
@@ -230,7 +208,7 @@ python scripts/fund_agent_wallet.py --to 0x<agent-wallet> --mode faucet --execut
 
 ### DEPLOY — create a vault from the generated strategy
 
-With the SIWE session established, call the wallet-gated `POST
+With account session and verified linked wallet established, call `POST
 /api/vaults/create`. Reference implementation:
 `build_vault_create_payload` / `step_deploy` in
 [`scripts/agent_journey.py`](../scripts/agent_journey.py).
@@ -238,7 +216,7 @@ With the SIWE session established, call the wallet-gated `POST
 ```http
 POST /api/vaults/create
 Content-Type: application/json
-Cookie: archimedes_session=...
+Cookie: better-auth.session_token=...
 
 {
   "name": "Agent Journey 2026-07-10 12:00",
@@ -257,8 +235,8 @@ Response `200`:
 ```
 
 **Who pays gas — not the agent wallet.** The backend's own signer creates the
-vault on-chain, then transfers `Ownable` ownership to the caller's SIWE
-wallet and pins the backend as the rebalance-only agent (`owner == you`,
+vault on-chain, then transfers `Ownable` ownership to caller's selected linked
+wallet and pins backend as rebalance-only agent (`owner == you`,
 `agent == backend`; see `create_vault` in
 [`vaults_routes.py`](../backend/archimedes/api/vaults_routes.py)). See
 "Funding an agent wallet" above for the (different, not-yet-built) path that

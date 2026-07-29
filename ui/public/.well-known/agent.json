@@ -19,9 +19,10 @@
     "pushNotifications": false
   },
   "authentication": {
-    "schemes": ["SIWE"],
-    "description": "Sign-In with Ethereum (EIP-4361) via a programmatic EOA — no browser or passkey required. GET /api/auth/nonce, then POST /api/auth/verify.",
-    "chainId": 5042002
+    "schemes": ["Better Auth session"],
+    "methods": ["emailPassword", "google", "github"],
+    "description": "Use /api/auth/* and retain session cookie. Optional EIP-4361 wallet proof uses /api/wallets/* and never creates a session.",
+    "walletLinkChainId": 5042002
   },
   "skills": [
     {

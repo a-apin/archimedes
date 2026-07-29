@@ -70,7 +70,7 @@ Foundry, Circle wallet, and oracle targets (`compile`, `test`, `wallet`, `feed`,
 - **Real multi-asset market data** — fusion backtests pull real daily OHLCV via yfinance, resolved through the Chainlink-only universe SSOT, strictly inner-joined across assets (missing data = fail-closed, never synthetic unless the real fetch fails).
 - **Automated backtest refresh** — `backtest_scheduler.py` checks staleness on startup and on a 24h cadence, refreshing any curated strategy that has no persisted backtest or whose latest run is older than 7 days. No operator ritual required.
 - **Paper corpus + MiniLM semantic retrieval** — a ~10,000-paper quant-finance corpus (file-sourced, embedded at ingest) backs `paper_rag.py`, which runs `all-MiniLM-L6-v2` semantic reranking as a second pass over the keyword-pre-filtered candidate set. Scoring is embedding cosine similarity (TF-IDF fallback when the model is unavailable). `FUSION_SEMANTIC_RETRIEVAL=true` default; `/health` reports `paper_rag: live | degraded | disabled`.
-- **SIWE wallet authentication** — generation is wallet-gated (EIP-4361). Humans sign a nonce with their wallet; AI agents do the same via a programmatic EOA (see `scripts/agent_journey.py`). Public read routes (library, explore, corpus) stay open.
+- **Canonical Better Auth accounts** — email/password login is always available; Google/GitHub appear only when configured. `/app/*` and generation require account session. Wallets are optional EIP-4361 proof-linked accounts used only for wallet/on-chain actions.
 - **Multi-wallet UX** with EIP-6963 wallet discovery — MetaMask, Coinbase, and Circle Modular Wallets passkey paths all working.
 - **Unified `strategy_passports` store on Postgres** — both curated and generated strategies live in one typed table; the Considered-Alternatives panel reads from `strategy_proposals` so visitors see what was rejected and why.
 - **806+ backend tests** + 16 analytics-engine tests green; server-side ruff format guard (`main-format-guard.yml`) auto-heals direct-to-main commits if any land unformatted.
@@ -120,14 +120,15 @@ Archimedes is built for the Agora thesis that AI agents are first-class users. T
 # Read-only smoke (no auth needed)
 python scripts/agent_journey.py --base https://archimedes-arc.com --no-auth --read-only
 
-# Full journey with a throwaway wallet
+# Full journey with disposable account
 python scripts/agent_journey.py --base https://archimedes-arc.com --ephemeral
 
-# Full journey with a persistent agent EOA
-AGENT_WALLET_KEY=0x... python scripts/agent_journey.py --base https://archimedes-arc.com
+# Full journey with existing account
+ARCHIMEDES_EMAIL=agent@example.test ARCHIMEDES_PASSWORD='<secret>' \
+  python scripts/agent_journey.py --base https://archimedes-arc.com
 ```
 
-The script signs a SIWE (EIP-4361) nonce to establish the same session cookie a browser gets, then streams a generation job and prints the rigor verdict. It sends an explicit agent `User-Agent` so the telemetry classifier counts it as an external agent. Exit code is nonzero on any hard failure, making it a journey smoke test.
+Script retains Better Auth cookie, streams generation, and prints rigor verdict. `--deploy` additionally links wallet from `AGENT_WALLET_KEY` (or disposable wallet with `--ephemeral`) through EIP-4361. Explicit agent `User-Agent` keeps telemetry classification. Exit code is nonzero on hard failure.
 
 See [`scripts/agent_journey.py`](scripts/agent_journey.py) for the full implementation.
 
@@ -148,27 +149,29 @@ See [`scripts/agent_journey.py`](scripts/agent_journey.py) for the full implemen
 ```mermaid
 flowchart LR
   L[/Landing/]
-  G[/generate/]
-  ST[/strategy/:id/]
+  A[/sign-in/]
+  G[/app/generate/]
+  ST[/app/strategy/:id/]
   CV{CreateVaultModal}
   DF{DepositFlow stepper}
-  P[/portfolio/]
-  R[/reasoning?trace_id=X/]
+  P[/app/portfolio/]
+  R[/app/reasoning?trace_id=X/]
   V{Verify on-chain}
 
-  L -- 'Generate a Strategy →' --> G
+  L -- 'Open app →' --> A
+  A -- account session --> G
   G -- submit brief; SSE stream completes --> ST
-  ST -- 'Deploy as Vault →' (wallet required) --> CV
+  ST -- 'Deploy as Vault →' (linked wallet required) --> CV
   CV -- create succeeds --> DF
   DF -- 3 signatures: approve → deposit → setTargetAllocations --> P
   P -- click activity trace --> R
   R -- 'Verify on-chain' --> V
 
-  %% Alternate paths (allowed; not canonical)
-  L -. 'Browse Example Library' .-> LIB[/library?tab=examples/]
+  %% Alternate paths (allowed; account required)
+  G -. sidebar Library .-> LIB[/app/library?tab=examples/]
   LIB -. click row .-> ST
-  L -. sidebar Explore .-> E[/explore — read-only viewer/]
-  L -. sidebar Corpus .-> C[/corpus/]
+  G -. sidebar Explore .-> E[/app/explore/]
+  G -. sidebar Corpus .-> C[/app/corpus/]
   C -. paper detail → 'Generate from this' .-> G
 ```
 
@@ -202,6 +205,7 @@ archimedes/
 │
 ├── docs/                 ← design + planning + specs + ADRs + archive (see docs/README.md)
 ├── backend/              ← FastAPI app (Python 3.12) — see docs/chuan-architecture-survey.md
+├── auth/                 ← Better Auth Node sidecar (canonical accounts/sessions)
 ├── analytics-engine/     ← backtest engine (uv-managed)
 ├── contracts/            ← Solidity (Foundry layout) — 12 sources → 570 live instances on Arc testnet (T3.2 redeploy 2026-07-09)
 ├── ui/                   ← React 19 + Vite 8 + viem 2.48 (the live frontend)
@@ -224,7 +228,7 @@ archimedes/
 | Semantic retrieval | `all-MiniLM-L6-v2` (sentence-transformers) — paper RAG reranker for corpus selection    |
 | Smart contracts   | Solidity targeting Arc (EVM-compatible) + [Foundry](https://book.getfoundry.sh/)          |
 | On-chain          | Circle SDK (Wallets, Gateway, CCTP) + viem on the UI side                                 |
-| Auth              | SIWE (EIP-4361) — wallet-signature sessions for humans and agents                         |
+| Auth              | Better Auth accounts/sessions; EIP-4361 only for optional wallet linking                  |
 | Hackathon CLI     | [arc-canteen](https://github.com/the-canteen-dev/ARC-cli) (RPC proxy + telemetry)         |
 | Deployment        | ECS Fargate behind ALB/WAF (build-in-CI → ECR → Fargate); Aurora PostgreSQL + ElastiCache; docker compose = local dev mirror |
 

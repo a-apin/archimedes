@@ -1,5 +1,8 @@
-# Archimedes — System Architecture Map (2026-07-14)
+# Archimedes — System Architecture Map (updated 2026-07-28)
 
+> Identity and deploy topology amended for Better Auth account ownership. Historical
+> July 14 implementation references remain where unaffected.
+>
 > Commissioned for the Architecture-page redesign. Every claim below is grounded in a file
 > path in the `archimedes` repo (paths relative to `/Users/dbrowne/Desktop/Programming/GitHub/Agora/archimedes/`
 > unless noted). Facts from the 2026-07-14 merge train are marked **(PR #n, merged 2026-07-14)**; the only still-open PR is noted as such. Facts were
@@ -13,9 +16,9 @@
 ```
                      ┌──────────────────────────────────────────────────────────────┐
    USER / AGENT      │  React SPA (ui/) — Generate · Library · Portfolio · Reasoning │
-   (SIWE wallet,     │  Learnings · Explore · Leaderboard · Corpus · Marketplace     │
-    passkey, or      └──────────────────────────┬───────────────────────────────────┘
-    headless agent)                             │ HTTPS · SSE · session cookie
+   (Better Auth     │  Learnings · Explore · Leaderboard · Corpus · Marketplace     │
+    account; optional└──────────────────────────┬───────────────────────────────────┘
+    linked wallet)                              │ HTTPS · SSE · session cookie
                      ┌──────────────────────────▼───────────────────────────────────┐
    OFF-CHAIN         │  FastAPI (backend/archimedes/main.py)                        │
                      │   api/ routes ── agents/ debate society ── services/ rigor,  │
@@ -47,7 +50,7 @@ canvas `#09090B`).
 
 | Component | Path | Role |
 |---|---|---|
-| Router / page shell | `ui/src/App.jsx` | Path-based routes: landing, explore, leaderboard, corpus, architecture, generate, library, `strategy/:id`, portfolio, reasoning, learnings, marketplace, publish, subscriptions, insights, vault-detail |
+| Router / page shell | `ui/src/App.jsx` | Public `/`, `/architecture`, `/sign-in`, `/sign-up`; account-protected product routes under `/app/*` |
 | Sidebar nav | `ui/src/components/Layout.jsx` | Groups: Discover (Explore/Leaderboard/Corpus/Architecture), Build (Generate/Library), My Desk (Portfolio/Reasoning/Learnings), Marketplace (Marketplace/Publish/Subscriptions), Insights |
 | Generate surface | `ui/src/components/Generate.jsx`, `GenerationStream.jsx`, `FusionResult.jsx`, `RejectedCandidates.jsx`, `RigorStrictnessControl.jsx`, `ModelCostPanel.jsx` | Brief input → SSE stream of debate progress → K=1 winner + considered-rejects + rigor verdict + model cost picker |
 | Strategy passport | `ui/src/components/StrategyPassport.jsx` | Paper anchors, rigor verdict cards, backtest vs paper-claim deltas, trace verify |
@@ -56,7 +59,7 @@ canvas `#09090B`).
 | Trace viewer / verify | `ui/src/components/Reasoning.jsx` | Recompute keccak hash, check against `traceRegistry` on-chain |
 | Marketplace | `ui/src/components/MarketplacePage.jsx`, `PublishPage.jsx`, `SubscriptionsPage.jsx`, `StrategyDetailPage.jsx` | Publish / subscribe / earnings withdraw surfaces |
 | Corpus | `ui/src/components/CorpusExplorer.jsx`, `CorpusGraph.jsx`, `CorpusKG.jsx` | Renders real KB artifacts; explicit empty state on 503 (pipeline not yet run) |
-| Wallets | `ui/src/components/WalletConnect.jsx`, `WalletGate.jsx`, `ui/src/circle-wallet.js` | EIP-6963 injected wallets + Circle passkey smart account |
+| Wallets | `ui/src/components/WalletConnect.jsx`, `AccountSettings.jsx`, `ui/src/circle-wallet.js` | Optional EIP-6963 or Circle passkey wallets linked by short-lived EIP-4361 proof; never login credentials |
 | Chain config | `ui/src/config.js` (line 742) | Arc chain 5042002; `NEW_CONTRACTS` = the T3.2 2026-07-09 address set, converged with the backend env (the FE/BE split-brain is fixed by hand-sync; a runtime fetch from `/api/config/contracts` remains the durable fix). Full 281-synth universe comes from `GET /api/explore/assets`; only an 8-synth demo list is hardcoded |
 | Current Architecture page | `ui/src/components/Architecture.jsx` | **The page this project replaces** — staleness itemized in §10 |
 
@@ -64,8 +67,9 @@ canvas `#09090B`).
 
 | Router | Path | Role |
 |---|---|---|
-| SIWE auth | `api/auth_siwe.py` | EIP-4361: `GET /api/auth/nonce` → `POST /api/auth/verify` → HMAC-signed session cookie. EOA sign; ERC-1271/6492 fallback (`api/_erc6492.py`) for smart accounts. Works headless — the agent-native auth path |
-| Generate | `api/generate_routes.py` | SSE streaming generation jobs (SIWE-gated) |
+| Account auth | `auth/`, `api/account_auth.py` | Better Auth sidecar owns email/password and optional OAuth sessions; FastAPI resolves immutable canonical user IDs from cookies |
+| Linked wallets | `api/wallet_routes.py` | Account-bound, single-use EIP-4361 proof; EOA and ERC-1271/6492 verification; wallet never creates session |
+| Generate | `api/generate_routes.py` | Better Auth account-scoped SSE generation jobs; linked wallet optional |
 | Vaults | `api/vaults_routes.py` (line ~275) | Agent-API deploy path: backend signer creates the vault, **transfers Ownable ownership to the user, pins the backend as rebalance-only agent**; vault metadata writes gated on the on-chain owner (line 376) |
 | Rigor gate | `api/selection_bias_routes.py` | The external gate endpoint (`/api/selection-bias/gate/...`); strictness ladder |
 | Marketplace | `api/marketplace_routes.py` | `/api/marketplace/publish`, `/subscribe`, `/unsubscribe`, `/published`, `/my-published`, `/publish/{id}/withdraw`, `/my-subscriptions` |
@@ -73,7 +77,7 @@ canvas `#09090B`).
 | Config | `api/config_routes.py` | `GET /api/config/contracts` — serves the contract addresses from the ECS task env (`infra/ecs.tf`) |
 | Agent manifest | `api/agent_manifest_routes.py` | Agent-discoverability surface (`/api/agent/manifest`) per `docs/agent-api.md` |
 | Others | `explore_routes.py` (281-synth universe), `leaderboard_routes.py`, `portfolio_routes.py`, `traces_routes.py`, `regime_routes.py`, `proposals_routes.py` (owner-scoped), `user_routes.py`, `metrics_routes.py`, `risk_routes.py`, `swap_routes.py`, `papers_routes.py`, `chat_routes.py` | Product surfaces for the spine |
-| Middleware | `api/telemetry_middleware.py`, `api/funnel_middleware.py`, `api/limiter.py`, `api/auth_guard.py` | Telemetry, visitor funnel, rate limits, auth |
+| Middleware | `api/account_auth.py`, `api/telemetry_middleware.py`, `api/funnel_middleware.py`, `api/limiter.py` | Canonical session resolution, telemetry, visitor funnel, rate limits |
 
 `/health` + `/api/health` (`main.py:495-706`) expose honesty flags including `corpus_kg_built`
 (`main.py:631,684`) and a `paper_rag` degraded signal (`/health/paper-rag`, `main.py:708`) —
@@ -169,6 +173,7 @@ Addresses: `infra/ecs.tf` env + `ui/src/config.js`; SSOT endpoint above.
 See §7 for topology. Terraform: `vpc.tf`, `alb.tf`, `waf.tf`, `cloudfront.tf`, `aurora.tf`,
 `elasticache.tf`, `ecr.tf`, `ecs.tf` (Fargate task: nginx :8080 + backend :8000 on one ENI),
 `ecs_migrate.tf` (pre-rollout Alembic), `cloudwatch.tf`, legacy `asg.tf`/`ec2_iam.tf`.
+Fargate task runs nginx, FastAPI, and Better Auth sidecar on one ENI.
 CI: `deploy.yml` (build-in-CI → ECR → migrate → Fargate force-redeploy; OIDC, no long-lived
 keys), `quality-gate.yml`, `contracts-test.yml` (forge), `complexity-gate.yml`,
 `import-guard.yml`, `main-format-guard.yml`, `release-tag.yml`.
@@ -178,7 +183,7 @@ Runbook: `infra/runbooks/ecs-fargate-cutover.md`.
 
 ## 2. Flow — Generate (brief → rigor-gated strategy)
 
-1. **Auth**: wallet signs an EIP-4361 nonce → session cookie (`api/auth_siwe.py`); `REQUIRE_SIWE_FOR_GENERATION` is on. Passkey users get a Circle smart account (`ui/src/circle-wallet.js`); headless agents use the same endpoints (`docs/agent-api.md`, `scripts/agent_journey.py`).
+1. **Auth**: Better Auth email/password (or configured OAuth) establishes canonical account session. Headless agents use same cookie API; no wallet required. Optional wallet proof is separate (`docs/agent-api.md`, `scripts/agent_journey.py`).
 2. **Brief** → `POST /api/generate` (`api/generate_routes.py`) → SSE job (`agents/generation_pipeline.py`), events persisted per-job in Redis.
 3. **Retrieval**: keyword/asset-class pre-filter (`agents/strategy_fusion.py::select_candidates`) → MiniLM cosine rerank (`services/paper_rag.py`) → top-N papers, embargo-filtered (`services/embargo_filter.py`) and age-decayed (`services/time_aware_retrieval.py`). **Precheck: ≥2 corpus papers or `GENERATION_UNAVAILABLE`** — prod corpus hydration is the honest gap (issue #778).
 4. **Debate society** (`agents/debate_engine.py`): proposer pool fans LLM fusion calls (model = user's cost-picker choice via `services/llm_backend.py`) across regime-biased evidence sets → dedup by canonical spec hash → adversarial bull/bear transcript (surface, non-gating) → **C-rigor** deterministic backtest of every survivor → **C-null** vs buy-and-hold → **K=1 winner + considered-rejects**, or first-class ABSTAIN.
@@ -216,22 +221,23 @@ Runbook: `infra/runbooks/ecs-fargate-cutover.md`.
 4. **Retrieval at generate time**: keyword filter → MiniLM rerank (§2.3).
 5. **Honest state**: prod corpus is **sparsely hydrated** — the 10k number is manifest-scale, not fully-ingested-paper count (issue #778). Build decision: **HYBRID** — custom KB spine (Postgres + MiniLM, live now) + optional Bedrock-KB retrieval bridge; Neptune ruled out; a MiniLM-only no-AWS local option exists.
 
-## 6. Flow — Identity / SIWE
+## 6. Flow — Account identity + linked wallets
 
-1. `GET /api/auth/nonce` → challenge; wallet signs the EIP-4361 message; `POST /api/auth/verify` → signature verified (EOA; ERC-1271/6492 for smart accounts) → HMAC-signed session cookie (`api/auth_siwe.py`).
-2. Wallet-scoped authorization: proposals are owner-scoped (`api/proposals_routes.py`, `owner_wallet` column); vault metadata writes verify the **on-chain Ownable owner** and fail closed on read failure (`api/vaults_routes.py:374-379`).
-3. Same path for humans (MetaMask/Coinbase/passkey via EIP-6963 + Circle passkey) and headless agents (`docs/agent-api.md`, `scripts/agent_journey.py`, `api/agent_manifest_routes.py`) — the agent-native thesis (`Agora/docs/AGENT-NATIVE-STRATEGY-2026-07-08.md`).
+1. Better Auth creates canonical `auth_users.id` and PostgreSQL session; FastAPI resolves it through `api/account_auth.py` for protected routes.
+2. Optional wallet link: authenticated account requests five-minute challenge, signs exact EIP-4361 message, then backend atomically consumes nonce and verifies EOA or ERC-1271/6492 proof (`api/wallet_routes.py`). Unique identity is `<chain-id>:<lowercase-address>`; no automatic transfer.
+3. Application rows use nullable `owner_user_id`; legacy `owner_wallet` remains provenance/fallback. Vault/on-chain writes additionally require linked wallet and verify on-chain ownership where applicable.
+4. Human SPA and headless agents share Better Auth account flow. Circle passkeys control Circle wallets only; they do not authenticate Archimedes accounts (`docs/agent-api.md`).
 
 ---
 
 ## 7. Deploy topology (live picture, 2026-07-14)
 
 ```
-GitHub main ──deploy.yml (OIDC)──▶ ECR (backend + nginx images)
+GitHub main ──deploy.yml (OIDC)──▶ ECR (backend + auth + nginx images)
      │                                   │
      │ ecs_migrate task (alembic) ◀──────┤ force-redeploy
      ▼                                   ▼
-CloudFront ──▶ WAF + ALB ──▶ ECS Fargate task [nginx:8080 → backend:8000, one ENI]
+CloudFront ──▶ WAF + ALB ──▶ ECS Fargate task [nginx:8080 → backend:8000 + auth:3000, one ENI]
                                    │
                      ┌─────────────┼──────────────┐
                      ▼             ▼              ▼
@@ -284,5 +290,5 @@ model (now: debate society + external rigor gate), "10 smart contracts" (now 289
 chain-5042002 deploy incl. PaymentSplitter/StrategyRegistry), "keyword/TF-IDF today"
 (MiniLM rerank is live), "60s tick" (default 300 s), "4 wallet signatures" (2+3 client-signed
 steps), publish-after trace anchoring (now commit-before-trade, contract-enforced), no
-marketplace/x402, no SIWE/agent-native story, no leaderboard, and stat-card numbers hardcoded
+marketplace/x402, no account-auth/agent-native story, no leaderboard, and stat-card numbers hardcoded
 in JSX where live endpoints exist (`/health`, `/api/config/contracts`, `/api/explore/assets`).
