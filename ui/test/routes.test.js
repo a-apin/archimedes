@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import { parseFeatures } from '../src/features.js'
 import {
@@ -63,4 +64,12 @@ test('quant navigation and direct route share feature result', () => {
   assert.deepEqual(visibleNavigation(nav, { quant: false }), [{ id: 'library' }])
   assert.equal(resolveRoute('/app/quant', '', { quant: false }).kind, 'not-found')
   assert.equal(resolveRoute('/app/quant', '', { quant: true }).page, 'quant')
+})
+
+test('public shell lazy-loads wallet and protected application code', () => {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const authenticated = readFileSync(new URL('../src/AuthenticatedApp.jsx', import.meta.url), 'utf8')
+  assert.match(app, /lazy\(\(\) => import\('\.\/AuthenticatedApp'\)\)/)
+  assert.doesNotMatch(app, /from '\.\/config'/)
+  assert.match(authenticated, /from '\.\/config'/)
 })

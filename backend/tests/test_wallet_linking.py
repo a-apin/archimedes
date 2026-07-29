@@ -81,6 +81,18 @@ async def test_eoa_signature_verifies_real_challenge():
         assert await _verify_wallet_proof(account.address.lower(), challenge.message, signature, 5042002)
 
 
+def test_challenge_rejects_unsupported_chain():
+    with _session() as session, pytest.raises(HTTPException) as exc:
+        issue_wallet_challenge(
+            session,
+            _user("user-1"),
+            WalletChallengeRequest(address=ADDRESS, chain_id=1, provider="metamask"),
+            site_url="https://archimedes-arc.com",
+            now=NOW,
+        )
+    assert exc.value.status_code == 400
+
+
 @pytest.mark.asyncio
 async def test_connecting_without_signature_does_not_link_wallet():
     with _session() as session:
@@ -234,6 +246,29 @@ async def test_verified_link_claims_only_matching_unowned_legacy_data():
         )
         session.refresh(record)
         assert record.owner_user_id == "user-1"
+
+        late_record = upsert_strategy(
+            session,
+            generation_method="fusion",
+            strategy_name="Late legacy",
+            thesis="arrived after initial link",
+            source_papers=[],
+            asset_universe=["SPY"],
+            owner_wallet=ADDRESS,
+        )
+        session.commit()
+        retry = issue_wallet_challenge(
+            session, _user("user-1"), _challenge(), site_url="https://archimedes-arc.com", now=NOW
+        )
+        await verify_wallet_challenge(
+            session,
+            _user("user-1"),
+            _verify(retry.message),
+            verifier=AsyncMock(return_value=True),
+            now=NOW,
+        )
+        session.refresh(late_record)
+        assert late_record.owner_user_id == "user-1"
 
 
 @pytest.mark.asyncio

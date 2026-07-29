@@ -20,6 +20,7 @@ from archimedes.models.account import LinkedWallet, WalletLinkChallenge
 
 wallet_router = APIRouter(prefix="/api/wallets", tags=["wallets"])
 _CHALLENGE_TTL = timedelta(minutes=5)
+_SUPPORTED_CHAIN_ID = int(os.getenv("ARC_CHAIN_ID", "5042002"))
 _NONCE_RE = re.compile(r"^[A-Za-z0-9]{8,}$")
 
 
@@ -129,6 +130,8 @@ def issue_wallet_challenge(
     site_url: str | None = None,
     now: datetime | None = None,
 ) -> WalletChallengeResponse:
+    if payload.chain_id != _SUPPORTED_CHAIN_ID:
+        raise HTTPException(status_code=400, detail="Unsupported wallet chain")
     now = (now or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
     expires_at = now + _CHALLENGE_TTL
     site_url = (site_url or _configured_site_url()).rstrip("/")
@@ -198,7 +201,10 @@ def _parse_message(message: str) -> dict[str, object]:
     }
 
 
-async def _verify_wallet_proof(address: str, message: str, signature: str, _chain_id: int) -> bool:
+async def _verify_wallet_proof(address: str, message: str, signature: str, chain_id: int) -> bool:
+    if chain_id != _SUPPORTED_CHAIN_ID:
+        return False
+
     from eth_account import Account
     from eth_account.messages import encode_defunct
 
@@ -249,6 +255,9 @@ def _link_verified_wallet(session, user: CurrentUser, challenge: WalletLinkChall
     if existing:
         if existing.user_id != user.id:
             raise HTTPException(status_code=409, detail="Wallet is already linked to another account")
+        _claim_legacy_wallet_data(session, user.id, challenge.address)
+        session.commit()
+        session.refresh(existing)
         return existing
 
     if session.get(ControlledWallet, challenge.address) is not None:
