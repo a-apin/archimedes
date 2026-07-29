@@ -29,6 +29,8 @@ _W_UPDATE = "0x4444444444444444444444444444444444444444"
 _W_MINIMAL = "0x0000000000000000000000000000000000000002"
 _W_CASE = "0x5555555555555555555555555555555555555555"
 _W_ROTATED_KEY = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+_W_CANONICAL_PROFILE = "0x6666666666666666666666666666666666666666"
+_W_LEGACY_PROFILE = "0x7777777777777777777777777777777777777777"
 
 
 def _siwe_cookies(wallet: str) -> dict[str, str]:
@@ -387,3 +389,35 @@ class TestUserProfileRoutes:
         )
         assert res.status_code == 200
         assert res.json()["display_name"] == "SIWEUser"
+
+    def test_second_legacy_profile_returns_conflict_instead_of_500(self, client):
+        user_id = f"legacy-test:{_W_LEGACY_PROFILE.lower()}"
+        with get_session() as session:
+            session.query(UserProfile).filter(
+                (UserProfile.owner_user_id == user_id)
+                | (UserProfile.wallet_address.in_([_W_CANONICAL_PROFILE.lower(), _W_LEGACY_PROFILE.lower()]))
+            ).delete(synchronize_session=False)
+            session.add_all(
+                [
+                    UserProfile(
+                        wallet_address=_W_CANONICAL_PROFILE.lower(),
+                        owner_user_id=user_id,
+                        display_name="Canonical",
+                        interests="[]",
+                    ),
+                    UserProfile(
+                        wallet_address=_W_LEGACY_PROFILE.lower(),
+                        display_name="Legacy",
+                        interests="[]",
+                    ),
+                ]
+            )
+            session.commit()
+
+        res = client.post(
+            "/api/user/profile",
+            json={"wallet_address": _W_LEGACY_PROFILE, "display_name": "Updated"},
+            cookies=_siwe_cookies(_W_LEGACY_PROFILE),
+        )
+        assert res.status_code == 409
+        assert res.json()["detail"] == "Account already has a canonical profile"

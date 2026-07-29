@@ -146,7 +146,11 @@ async def upsert_profile(payload: UserProfileCreate, request: Request, response:
         if profile:
             if profile.owner_user_id not in {None, user.id}:
                 raise HTTPException(status_code=409, detail="Profile belongs to another account")
-            profile.owner_user_id = user.id
+            if profile.owner_user_id is None:
+                canonical_profile = session.query(UserProfile).filter(UserProfile.owner_user_id == user.id).first()
+                if canonical_profile is not None:
+                    raise HTTPException(status_code=409, detail="Account already has a canonical profile")
+                profile.owner_user_id = user.id
             # Update existing
             if payload.display_name is not None:
                 profile.display_name = payload.display_name
