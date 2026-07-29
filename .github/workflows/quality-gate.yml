@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install
@@ -57,10 +57,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: pip install --quiet ruff
+      # Pinned to match .pre-commit-config.yaml's ruff-pre-commit rev — an
+      # unpinned install here silently drifts to whatever ruff just released,
+      # which can reformat files differently than the last commit that ran
+      # `ruff format .` and fail every open PR for a reason unrelated to its
+      # diff. Bump both together when intentionally upgrading ruff.
+      - run: pip install --quiet ruff==0.15.13
       - name: ruff format --check
         run: ruff format --check .
       - name: ruff check (critical rules only)
@@ -72,10 +77,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: pip install --quiet ruff
+      # Pinned to match ruff-gate + .pre-commit-config.yaml (see comment there).
+      - run: pip install --quiet ruff==0.15.13
 
       - uses: actions/setup-node@v7
         with:
@@ -189,7 +195,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # Same torch/sentence-transformers skip as the unit-test job above (CDN-independent).
@@ -212,7 +218,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 

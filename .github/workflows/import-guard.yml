@@ -30,11 +30,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install guards
-        run: pip install --quiet ruff deptry
+        # ruff pinned to match quality-gate.yml + main-format-guard.yml +
+        # .pre-commit-config.yaml — unpinned installs drift to whatever ruff
+        # just released. Bump all four together when intentionally upgrading.
+        run: pip install --quiet ruff==0.15.13 deptry
       - name: Undefined names (F821) — catches aliased-import NameErrors
         run: ruff check backend/archimedes --select F821 --no-cache
       - name: Byte-compile (no syntax / obvious import-time breakage)

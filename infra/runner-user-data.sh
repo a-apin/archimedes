@@ -65,8 +65,14 @@ systemctl start docker
 # directly from AWS, same as infra/scripts/bake-backend-ami.sh does.
 # Arch-aware: hardcoding x86_64 would break bootstrap (and with it ECR login
 # + secret fetch) the day runner_instance_type moves to Graviton (review).
+# NOTE: Terraform renders this file through `templatefile()`, so a bare
+# dollar-brace sequence is TERRAFORM interpolation, not shell — including inside
+# comments, which the template engine does not treat as comments. Shell variables
+# must be doubled (`$${ARCH}`) so Terraform emits a single dollar-brace for bash
+# to expand at boot; same convention as the REGION line further down. Leaving it
+# undoubled fails `terraform plan` with: vars map does not contain key "ARCH".
 ARCH="$(uname -m)"   # x86_64 | aarch64 — matches AWS's installer naming
-curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o /tmp/awscliv2.zip
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$${ARCH}.zip" -o /tmp/awscliv2.zip
 unzip -q /tmp/awscliv2.zip -d /tmp
 /tmp/aws/install
 rm -rf /tmp/awscliv2.zip /tmp/aws
@@ -127,8 +133,23 @@ REGION="${aws_region}"
 PREFIX="/archimedes/prod"
 OUT="/opt/archimedes-runners/runner.env"
 
+# Build into a temp file and rename into place ATOMICALLY. Writing $OUT
+# directly (truncate-then-append) is a real race: BOTH units run this as
+# ExecStartPre and each restarts independently every 10s, so one unit's
+# `docker run --env-file` can read $OUT while the other unit's fetch has
+# truncated it and is still appending — the container then boots with a
+# PARTIAL environment and no error anywhere. (Observed live: a read of
+# runner.env during a restart loop returned 10 of 15 parameters.) rename(2)
+# is atomic, so a reader sees either the whole old file or the whole new one.
+# It also means a mid-flight aws failure leaves the last-good file intact
+# instead of a truncated one.
+# mktemp, not "$OUT.tmp.$$": this file is rendered through Terraform's
+# templatefile(), where `$$` sits next to HCL's `$${` escape — mktemp sidesteps
+# the ambiguity entirely and also guarantees a unique name when both units
+# fetch concurrently.
 umask 077
-: > "$OUT"
+TMP="$(mktemp "$OUT.XXXXXX")"
+trap 'rm -f "$TMP"' EXIT
 
 aws ssm get-parameters-by-path \
   --path "$PREFIX" \
@@ -139,10 +160,29 @@ aws ssm get-parameters-by-path \
   --output text |
 while IFS=$'\t' read -r name value; do
   key="$(basename "$name")"
-  printf '%s=%s\n' "$key" "$value" >> "$OUT"
+  printf '%s=%s\n' "$key" "$value" >> "$TMP"
 done
 
-chmod 600 "$OUT"
+# LOAD-BEARING INPUT CHECK — be loud about exactly the inputs the runners
+# cannot function without, and silent about the rest. An AccessDenied already
+# fails hard (set -euo pipefail), but a SUCCESSFUL call that returns nothing
+# (wrong prefix, wiped namespace, wrong account) would otherwise write an
+# empty env file and boot a funds-adjacent container with no credentials and
+# no error — fail-soft on state the product needs is how an outage becomes a
+# silence. Names only; never a value.
+MISSING=""
+for required in DATABASE_URL REDIS_URL CIRCLE_API_KEY CIRCLE_ENTITY_SECRET WALLET_ID AGENT_DRY_RUN; do
+  grep -q "^$required=" "$TMP" || MISSING="$MISSING $required"
+done
+if [ -n "$MISSING" ]; then
+  echo "fetch-secrets: FATAL — required parameter(s) absent from $PREFIX:$MISSING" >&2
+  echo "fetch-secrets: refusing to write $OUT; seed them with infra/scripts/setup-ssm-secrets.sh --apply" >&2
+  exit 4
+fi
+
+chmod 600 "$TMP"
+mv -f "$TMP" "$OUT"
+trap - EXIT
 echo "fetch-secrets: wrote $(wc -l < "$OUT") parameter(s) to $OUT (names only, never values, in this log line)"
 FETCHEOF
 chmod 700 /opt/archimedes-runners/fetch-secrets.sh
@@ -161,14 +201,33 @@ chmod 700 /opt/archimedes-runners/ecr-login.sh
 #   - pull the SAME archimedes-backend image (never build on-box)
 #   - refresh secrets from SSM on every (re)start (ExecStartPre)
 #   - pass ONLY static, non-redeploy-variable config as `-e` flags
-#     (AWS_REGION, ORACLE_INTERVAL_SECONDS/AGENT_INTERVAL_SECONDS,
-#     AGENT_DRY_RUN). Every mutable ARC_*_ADDRESS contract address comes from
+#     (AWS_REGION, ORACLE_INTERVAL_SECONDS/AGENT_INTERVAL_SECONDS).
+#     AGENT_DRY_RUN is deliberately NOT an `-e` flag: it is a funds-BEHAVIOUR
+#     switch, and `docker run -e` overrides `--env-file`, so hardcoding it here
+#     would make it unchangeable in practice — `aws_instance.runner` carries
+#     `lifecycle.ignore_changes = [ami, user_data]` (runner_ec2.tf), so whatever
+#     this file says at FIRST BOOT is baked in for the life of the instance.
+#     Sourcing it from SSM instead means Dan flips dry-run -> live with
+#     `setup-ssm-secrets.sh --apply` + `systemctl restart archimedes-agent`,
+#     with no instance replacement. Seed it as "true" and only flip to "false"
+#     after a dry-run smoke pass. If the SSM param is absent the app default
+#     applies (agent_runner.py: AGENT_DRY_RUN defaults to "false"), so ALWAYS
+#     seed it explicitly before the agent has working credentials.
+#     Every mutable ARC_*_ADDRESS contract address comes from
 #     the SSM-sourced --env-file instead — NEVER as an `-e` flag, which would
 #     override the env-file and re-hardcode a soon-to-be-stale address (see
 #     the fetch-secrets.sh preamble above for the full rationale).
 #   - ship stdout/stderr to the /archimedes/runners CloudWatch log group via
 #     docker's native `awslogs` log driver (uses the instance role's
 #     credentials automatically — no CloudWatch agent needed)
+#     ⚠️ The option is `awslogs-stream` (an EXACT stream name). It is NOT
+#     `awslogs-stream-prefix` — that one is an *ECS task definition*
+#     logConfiguration option and is rejected by the docker daemon with
+#     `unknown log opt 'awslogs-stream-prefix' for awslogs log driver`,
+#     which fails `docker run` with exit 125 BEFORE the container starts.
+#     Because this file is `ignore_changes = [user_data]` (bootstrap-only),
+#     that mistake is not self-healing: it bricks the unit into a permanent
+#     `activating (auto-restart)` loop that no amount of restarting fixes.
 #   - Restart=always — systemd itself is the box-local restart policy; the
 #     Redis lease in services/runner_lease.py is the SEPARATE, authoritative
 #     exactly-once control if this box is ever accidentally duplicated.
@@ -200,7 +259,7 @@ ExecStart=/usr/bin/docker run --rm --name archimedes-oracle \
   --log-driver=awslogs \
   --log-opt awslogs-region=${aws_region} \
   --log-opt awslogs-group=${log_group_name} \
-  --log-opt awslogs-stream-prefix=oracle \
+  --log-opt awslogs-stream=oracle \
   ${ecr_registry}:latest \
   python -m archimedes.chain.oracle_runner
 ExecStop=/usr/bin/docker stop archimedes-oracle
@@ -229,11 +288,10 @@ ExecStart=/usr/bin/docker run --rm --name archimedes-agent \
   --env-file /opt/archimedes-runners/runner.env \
   -e AWS_REGION=${aws_region} \
   -e AGENT_INTERVAL_SECONDS=300 \
-  -e AGENT_DRY_RUN=false \
   --log-driver=awslogs \
   --log-opt awslogs-region=${aws_region} \
   --log-opt awslogs-group=${log_group_name} \
-  --log-opt awslogs-stream-prefix=agent \
+  --log-opt awslogs-stream=agent \
   ${ecr_registry}:latest \
   python -m archimedes.chain.agent_runner
 ExecStop=/usr/bin/docker stop archimedes-agent

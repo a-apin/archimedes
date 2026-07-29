@@ -37,11 +37,18 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      - run: pip install --quiet ruff
+      # Pinned to match quality-gate.yml's ruff-gate + .pre-commit-config.yaml's
+      # ruff-pre-commit rev — an unpinned install here silently drifts to
+      # whatever ruff just released, which can change what "formatted" means
+      # (e.g. a version that starts reformatting Markdown) and make this
+      # self-heal job fight every open PR for a reason unrelated to their
+      # diffs. Bump alongside quality-gate.yml + .pre-commit-config.yaml when
+      # intentionally upgrading ruff.
+      - run: pip install --quiet ruff==0.15.13
 
       - name: ruff format --check (surface the violation)
         id: check

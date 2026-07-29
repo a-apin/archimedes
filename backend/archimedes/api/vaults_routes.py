@@ -67,7 +67,7 @@ async def _anchor_strategies_async(strategy_ids: list[str]) -> None:
             logger.warning("anchor failed for strategy %s (non-fatal): %s", sanitize_log_value(sid), exc)
 
 
-def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
+def _strategy_rigor_status(strategy_id: str, cohort_cache: dict | None = None) -> tuple[bool, bool]:
     """``(found, passes_rigor_gate)`` for a strategy id, resolved across the curated
     provider AND the generated ``strategy_passports`` table — the same two sources
     ``GET /api/strategies/{id}`` uses. Server-side source of truth for the deploy
@@ -76,10 +76,54 @@ def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
     Fail-closed: if the DB lookup raises (cannot verify a generated strategy), the
     strategy is reported as not-found so the caller refuses the deploy rather than
     waving through an unverifiable one.
+
+    ``cohort_cache`` (optional) is a caller-owned dict used to compute the curated
+    full-library verdict map at most ONCE per request. ``verdicts_for_strategies``
+    is uncached and does a fresh ``get_all_daily_returns`` read plus a full cohort
+    CSCV/PBO pass on every call (~6s), so a vault bound to k curated strategies
+    otherwise paid that k times inside a single deploy request. Only the canonical
+    full-library map is ever cached — see the in-cohort guard below.
     """
     strat = strategy_provider().get_strategy(strategy_id)
     if strat is not None:
-        return True, bool(getattr(strat, "passes_rigor_gate", False))
+        # Use the LIVE verdict, not the provider object's attribute (#1173).
+        # LocalStrategyProvider sets passes_rigor_gate = False unconditionally on
+        # every curated Strategy (fail-closed by construction, 56cc9bde); the real
+        # verdict is overlaid downstream in _to_strategy_response. Reading the raw
+        # attribute here therefore made EVERY curated strategy undeployable at the
+        # default strictness with the message "has not passed the rigor gate —
+        # server-side rigor enforcement", which is simply false. Perverse symptom:
+        # deploying at strictness >= 2 worked, because that path takes the
+        # _deployable_levels branch below, which already consults the live gate.
+        #
+        # Graded against the FULL library cohort — same cohort the list badge and
+        # the passport use — because the verdict is cohort-dependent (cohort-scoped
+        # PBO/CSCV; a cohort under MIN_LIBRARY_N_FOR_PBO_GATING skips criterion 4).
+        # Grading `strat` alone would let the deploy gate disagree with the badge.
+        from archimedes.services.live_rigor_gate import RigorGateVerdict, verdicts_for_strategies
+
+        try:
+            cohort = list(strategy_provider().list_strategies())
+            in_cohort = any(getattr(x, "id", None) == strategy_id for x in cohort)
+            # Reuse the cached map ONLY for a strategy that is genuinely in the
+            # library list. A strategy missing from it needs `strat` appended,
+            # which yields a different (one-off) cohort — caching that map would
+            # let a later missing strategy miss the dict and silently degrade to
+            # `pending` → fail-closed → a spurious "not passed the rigor gate".
+            if in_cohort and cohort_cache is not None and "verdicts" in cohort_cache:
+                verdicts = cohort_cache["verdicts"]
+            else:
+                if not in_cohort:
+                    cohort.append(strat)
+                verdicts = verdicts_for_strategies(cohort)
+                if in_cohort and cohort_cache is not None:
+                    cohort_cache["verdicts"] = verdicts
+            verdict = verdicts.get(strategy_id, RigorGateVerdict.pending())
+        except Exception:
+            # Fail closed, consistent with this function's contract.
+            logger.exception("live rigor verdict failed for %s — failing closed", sanitize_log_value(strategy_id))
+            return True, False
+        return True, bool(verdict.passes)
 
     from archimedes.db import get_session
     from archimedes.services.passport_loader import get_passport
@@ -258,6 +302,9 @@ def _assert_strategies_pass_rigor(
     # level 1, so no live per-level ladder computation is needed. This also keeps
     # the default deploy path unchanged for callers that don't opt into strictness.
     if level <= STRICTEST_LEVEL:
+        # Request-scoped: the curated full-library verdict map is computed at most
+        # once for this deploy, not once per strategy_id (see _strategy_rigor_status).
+        cohort_cache: dict = {}
         for sid in strategy_ids:
             # Ownership gate (#1073): `_strategy_rigor_status` below resolves the
             # passport badge without regard to ownership, so a private/unpublished
@@ -271,7 +318,7 @@ def _assert_strategies_pass_rigor(
                 if visible is False:
                     raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
 
-            found, passes = _strategy_rigor_status(sid)
+            found, passes = _strategy_rigor_status(sid, cohort_cache=cohort_cache)
             if not found:
                 raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
             if not passes:

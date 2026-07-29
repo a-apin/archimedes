@@ -8,6 +8,7 @@ survives anchor failures without breaking the DB write.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,10 +38,26 @@ def _make_passport(sid: str, methodology_hash: str | None = "abcd1234" * 8):
     return mock
 
 
+@contextlib.contextmanager
+def _rigor_passes():
+    """Stub the deploy gate to "this strategy is deployable".
+
+    These tests exercise metadata anchoring, not the rigor gate. They previously
+    passed only incidentally: the curated branch of ``_strategy_rigor_status`` read
+    ``getattr(strat, "passes_rigor_gate", False)`` off a ``MagicMock`` passport,
+    which is truthy for ANY attribute. Since #1173 that branch consults the live
+    gate (a MagicMock passport has no persisted returns → ``pending`` → 422), so the
+    intent has to be stated explicitly rather than ridden in on mock truthiness.
+    """
+    with patch("archimedes.api.vaults_routes._strategy_rigor_status", return_value=(True, True)):
+        yield
+
+
 class TestVaultMetadataAnchor:
     @patch("archimedes.api.vaults_routes.chain_executor.get_vault_owner", new_callable=AsyncMock)
     @patch("archimedes.api.vaults_routes.strategy_publisher")
     @patch("archimedes.api.vaults_routes.strategy_provider")
+    @_rigor_passes()
     def test_metadata_post_calls_anchor_once_per_strategy_id(self, mock_provider, mock_publisher, mock_owner):
         # strategy_provider is now a lazily-cached accessor (strategy_provider()),
         # so the mocked callable's return_value stands in for the provider instance.
@@ -68,6 +85,7 @@ class TestVaultMetadataAnchor:
     @patch("archimedes.api.vaults_routes.chain_executor.get_vault_owner", new_callable=AsyncMock)
     @patch("archimedes.api.vaults_routes.strategy_publisher")
     @patch("archimedes.api.vaults_routes.strategy_provider")
+    @_rigor_passes()
     def test_metadata_post_skips_passports_without_methodology_hash(self, mock_provider, mock_publisher, mock_owner):
         def get_strat(sid):
             if sid == "s2":
@@ -97,6 +115,7 @@ class TestVaultMetadataAnchor:
     @patch("archimedes.api.vaults_routes.chain_executor.get_vault_owner", new_callable=AsyncMock)
     @patch("archimedes.api.vaults_routes.strategy_publisher")
     @patch("archimedes.api.vaults_routes.strategy_provider")
+    @_rigor_passes()
     def test_metadata_post_succeeds_when_anchor_raises(self, mock_provider, mock_publisher, mock_owner):
         mock_provider.return_value.get_strategy.side_effect = _make_passport
         mock_publisher.anchor = AsyncMock(side_effect=RuntimeError("simulated chain failure"))
