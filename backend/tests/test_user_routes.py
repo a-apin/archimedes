@@ -421,3 +421,14 @@ class TestUserProfileRoutes:
         )
         assert res.status_code == 409
         assert res.json()["detail"] == "Account already has a canonical profile"
+
+        with get_session() as session:
+            session.query(UserProfile).filter(UserProfile.wallet_address == _W_LEGACY_PROFILE.lower()).delete()
+            session.commit()
+        res = client.post(
+            "/api/user/profile",
+            json={"wallet_address": _W_LEGACY_PROFILE, "display_name": "New second profile"},
+            cookies=_siwe_cookies(_W_LEGACY_PROFILE),
+        )
+        assert res.status_code == 409
+        assert res.json()["detail"] == "Account already has a canonical profile"

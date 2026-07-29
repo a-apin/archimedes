@@ -161,6 +161,8 @@ async def upsert_profile(payload: UserProfileCreate, request: Request, response:
                 profile.attribution = payload.attribution
             profile.marketing_opt_in = payload.marketing_opt_in
         else:
+            if session.query(UserProfile).filter(UserProfile.owner_user_id == user.id).first() is not None:
+                raise HTTPException(status_code=409, detail="Account already has a canonical profile")
             # Create new
             profile = UserProfile(
                 wallet_address=wallet,
