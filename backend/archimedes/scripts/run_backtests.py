@@ -206,6 +206,36 @@ def _daily_returns_for_operation(artifact_payload: dict, operation: str | None) 
     return None
 
 
+def _payload_with_selected_operation_first(artifact_payload: dict, operation: str | None) -> dict:
+    """``artifact_payload`` with the chosen operation's row moved to the front of
+    ``results`` — everything else preserved, order of the remaining rows intact.
+
+    Exists so that ``backtest_repository.get_daily_returns()``, which returns the
+    first non-empty ``daily_returns`` and ignores the ``operation`` column, reads
+    back the SAME series the write-time vol guard validated. Returns the payload
+    unchanged when there is nothing to do (no operation, single/zero result, or
+    the chosen row is already first), so the common single-operation case is
+    byte-identical and does not perturb ``canonical_artifact_hash``.
+    """
+    if not operation:
+        return artifact_payload
+    results = artifact_payload.get("results")
+    if not isinstance(results, list) or len(results) < 2:
+        return artifact_payload
+
+    wanted = operation.upper()
+    idx = next(
+        (i for i, row in enumerate(results) if str(row.get("operation", "")).upper() == wanted),
+        None,
+    )
+    if idx is None or idx == 0:
+        return artifact_payload
+
+    reordered = dict(artifact_payload)
+    reordered["results"] = [results[idx], *results[:idx], *results[idx + 1 :]]
+    return reordered
+
+
 def run_backtests() -> dict:
     repo_root = _repo_root()
     strategy_dir = _analytics_strategy_dir(repo_root)
@@ -263,6 +293,33 @@ def run_backtests() -> dict:
                 artifact,
                 strategy_id=strategy.id,
             )
+
+            # Persist the SELECTED operation first, and hash what we persist.
+            #
+            # Making the guard read the chosen operation's series (above) only
+            # closed half the gap: backtest_repository.get_daily_returns() —
+            # what the rigor gate and the audit script actually read back —
+            # ignores the `operation` column and returns the FIRST non-empty
+            # daily_returns in artifact_json["results"]. So with
+            # BACKTEST_OPERATIONS="NIKKEI,SPY" the guard would validate SPY
+            # while every downstream consumer graded NIKKEI. The divergence
+            # would just have moved rather than closed, and a guard that
+            # validates a different series than the gate reads is worse than
+            # no guard: it certifies the wrong thing.
+            #
+            # Reordering at write time makes "first entry" and "selected
+            # operation" the same row by construction, so the naive reader is
+            # correct without changing it. Fixing get_daily_returns() to honour
+            # the operation column is the better long-term shape, but it is a
+            # shared reader whose behaviour change would re-grade already
+            # persisted rows — that belongs in its own PR, not this guard's.
+            #
+            # No-op under the current default (BACKTEST_OPERATIONS="SPY" ⇒ one
+            # result), so no content_hash churn and no duplicate re-inserts for
+            # existing rows; it only starts mattering the moment a second
+            # operation is configured, which is exactly when it must be right.
+            artifact_payload = _payload_with_selected_operation_first(artifact_payload, selected_operation)
+            artifact_json = json.dumps(artifact_payload)
             content_hash = canonical_artifact_hash(artifact_payload)
 
             # Deliverable-2 permanent guard (audit 2026-07-27): refuse to persist

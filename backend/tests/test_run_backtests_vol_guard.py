@@ -389,3 +389,54 @@ def test_guard_validates_chosen_operations_raw_series_not_results_zero_or_curve(
 
     with SessionLocal() as session:
         assert session.query(BacktestResultRecord).count() == 0
+
+
+# ── The guard must validate the SAME series downstream reads back ──────────
+#
+# Making the guard read the chosen operation closed only half the gap:
+# backtest_repository.get_daily_returns() ignores the `operation` column and
+# returns the FIRST non-empty daily_returns in artifact_json["results"]. With
+# BACKTEST_OPERATIONS="NIKKEI,SPY" the guard validated SPY while the rigor gate
+# graded NIKKEI. A guard that certifies a different series than the gate reads
+# is worse than none. Write-time reordering makes them the same row.
+
+
+def test_persisted_payload_puts_selected_operation_first():
+    from archimedes.scripts.run_backtests import _payload_with_selected_operation_first
+
+    payload = {
+        "run_id": "r1",
+        "results": [
+            {"operation": "NIKKEI", "metrics": {"daily_returns": [0.9, -0.9]}},
+            {"operation": "SPY", "metrics": {"daily_returns": [0.01, -0.01]}},
+        ],
+    }
+    out = _payload_with_selected_operation_first(payload, "SPY")
+
+    assert [r["operation"] for r in out["results"]] == ["SPY", "NIKKEI"]
+    # What get_daily_returns() would return (first non-empty) is now the
+    # chosen operation's series, not NIKKEI's.
+    assert out["results"][0]["metrics"]["daily_returns"] == [0.01, -0.01]
+    # Non-results keys survive untouched.
+    assert out["run_id"] == "r1"
+    # Original is not mutated.
+    assert [r["operation"] for r in payload["results"]] == ["NIKKEI", "SPY"]
+
+
+def test_persisted_payload_is_untouched_in_the_single_operation_case():
+    """No content_hash churn for the current default (BACKTEST_OPERATIONS=SPY)."""
+    from archimedes.scripts.run_backtests import _payload_with_selected_operation_first
+
+    payload = {"results": [{"operation": "SPY", "metrics": {"daily_returns": [0.01]}}]}
+    assert _payload_with_selected_operation_first(payload, "SPY") is payload
+    # Already-first, multi-result case is also a pass-through.
+    two = {
+        "results": [
+            {"operation": "SPY", "metrics": {"daily_returns": [0.01]}},
+            {"operation": "NIKKEI", "metrics": {"daily_returns": [0.9]}},
+        ]
+    }
+    assert _payload_with_selected_operation_first(two, "SPY") is two
+    # Unknown/absent operation must not reorder or raise.
+    assert _payload_with_selected_operation_first(two, "GOLD") is two
+    assert _payload_with_selected_operation_first(two, None) is two
