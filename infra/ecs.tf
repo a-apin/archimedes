@@ -479,10 +479,12 @@ resource "aws_ecs_task_definition" "backend" {
       environment = [
         { name = "AWS_REGION", value = var.aws_region },
         { name = "AWS_SSM_PATH_PREFIX", value = "/archimedes/prod/" },
-        # PUBLIC_DOMAIN must include the scheme — it's used as a CORS allowed
-        # origin (main.py) and the SIWE expected domain, both of which compare
-        # against scheme-qualified origins. var.domain_name is the bare host.
+        # PUBLIC_DOMAIN includes scheme because CORS and wallet-link URI/domain
+        # bindings compare scheme-qualified origins. var.domain_name is bare host.
         { name = "PUBLIC_DOMAIN", value = "https://${var.domain_name}" },
+        { name = "BETTER_AUTH_INTERNAL_URL", value = "http://127.0.0.1:3000" },
+        { name = "APP_ENV", value = "production" },
+        { name = "FEATURE_QUANT", value = "false" },
         { name = "ARCHIMEDES_FUSION_ENABLED", value = "true" },
         # Runtime env-parity fix (PR #1041 correctness pass, 2026-07-07): the
         # prod EC2 box sets these three via docker-compose's `env_file: .env`
@@ -563,6 +565,56 @@ resource "aws_ecs_task_definition" "backend" {
       }
     },
     {
+      name      = "auth"
+      image     = "${aws_ecr_repository.auth.repository_url}:${var.backend_image_tag}"
+      essential = true
+
+      portMappings = [
+        { containerPort = 3000, protocol = "tcp" }
+      ]
+
+      healthCheck = {
+        command     = ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/health || exit 1"]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 15
+      }
+
+      environment = [
+        { name = "NODE_ENV", value = "production" },
+        { name = "BETTER_AUTH_URL", value = "https://${var.domain_name}" },
+        { name = "BETTER_AUTH_TRUSTED_ORIGINS", value = "https://${var.domain_name}" }
+      ]
+
+      # Optional providers remain absent unless explicitly enabled after both
+      # pair values are seeded. Missing optional SSM params therefore cannot
+      # prevent default email/password task startup.
+      secrets = concat(
+        [
+          { name = "DATABASE_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/DATABASE_URL" },
+          { name = "BETTER_AUTH_SECRET", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/BETTER_AUTH_SECRET" }
+        ],
+        var.google_oauth_enabled ? [
+          { name = "GOOGLE_CLIENT_ID", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/GOOGLE_CLIENT_ID" },
+          { name = "GOOGLE_CLIENT_SECRET", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/GOOGLE_CLIENT_SECRET" }
+        ] : [],
+        var.github_oauth_enabled ? [
+          { name = "GITHUB_CLIENT_ID", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/GITHUB_CLIENT_ID" },
+          { name = "GITHUB_CLIENT_SECRET", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/GITHUB_CLIENT_SECRET" }
+        ] : []
+      )
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.app.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "auth"
+        }
+      }
+    },
+    {
       name      = "nginx"
       image     = "${aws_ecr_repository.nginx.repository_url}:${var.backend_image_tag}"
       essential = true
@@ -578,6 +630,7 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "NGINX_ENVSUBST_FILTER", value = "^NGINX_" },
         { name = "NGINX_RESOLVER_LINE", value = "" },
         { name = "NGINX_BACKEND_UPSTREAM", value = "127.0.0.1:8000" },
+        { name = "NGINX_AUTH_UPSTREAM", value = "127.0.0.1:3000" },
         { name = "NGINX_UPSTREAM_RESOLVE", value = "" },
       ]
 
@@ -586,7 +639,8 @@ resource "aws_ecs_task_definition" "backend" {
       ]
 
       dependsOn = [
-        { containerName = "backend", condition = "HEALTHY" }
+        { containerName = "backend", condition = "HEALTHY" },
+        { containerName = "auth", condition = "HEALTHY" }
       ]
 
       logConfiguration = {

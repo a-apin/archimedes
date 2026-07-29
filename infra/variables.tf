@@ -97,6 +97,18 @@ variable "backend_image_tag" {
   default     = "latest"
 }
 
+variable "google_oauth_enabled" {
+  description = "Inject Google OAuth client ID/secret from SSM into Better Auth. Enable only after both /archimedes/prod/GOOGLE_CLIENT_* parameters exist."
+  type        = bool
+  default     = false
+}
+
+variable "github_oauth_enabled" {
+  description = "Inject GitHub OAuth client ID/secret from SSM into Better Auth. Enable only after both /archimedes/prod/GITHUB_CLIENT_* parameters exist."
+  type        = bool
+  default     = false
+}
+
 # ── Config consolidation (issue #1039 P5) ──────────────────────────────────
 # Public wallet addresses (not secrets — no private key material), but
 # operator-specific and NOT baked into the image or a box `.env` file. Set at
