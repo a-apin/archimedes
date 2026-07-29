@@ -285,7 +285,7 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
                 if (onNavigate) {
                   onNavigate('library', { highlight: c.strategy_id, tab: 'generated' })
                 } else {
-                  window.location.hash = `#/library?highlight=${c.strategy_id}`
+                  window.location.assign(`/app/library?highlight=${encodeURIComponent(c.strategy_id)}`)
                 }
               }
               const clickable = Boolean(c.strategy_id)

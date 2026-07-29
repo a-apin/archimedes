@@ -7,7 +7,14 @@
  * error string instead.
  */
 
+import { getAddress } from './config'
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
+
+function walletHeaders() {
+  const address = getAddress()
+  return address ? { 'X-Wallet-Address': address, 'X-Wallet-Chain-Id': '5042002' } : {}
+}
 
 /**
  * GET a JSON endpoint. Throws a clean error on non-2xx responses.
@@ -15,9 +22,10 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? ''
  * @returns {Promise<any>} parsed JSON
  */
 export async function apiGet(path) {
-  // credentials:'include' sends the SIWE session cookie so authenticated
-  // endpoints work whether or not the API is same-origin.
-  const res = await fetch(`${API_BASE}${path}`, { credentials: 'include' })
+  const res = await fetch(`${API_BASE}${path}`, {
+    credentials: 'include',
+    headers: walletHeaders(),
+  })
   if (!res.ok) {
     const err = new Error(`Backend returned ${res.status}`)
     err.status = res.status // so callers can distinguish 404 (not-deployed) from real failures
@@ -35,12 +43,14 @@ export async function apiGet(path) {
 export async function apiPost(path, body) {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include', // send SIWE session cookie
+    headers: { 'Content-Type': 'application/json', ...walletHeaders() },
+    credentials: 'include',
     body: JSON.stringify(body),
   })
   if (!res.ok) {
-    throw new Error(`Backend returned ${res.status}`)
+    const err = new Error(`Backend returned ${res.status}`)
+    err.status = res.status
+    throw err
   }
   return res.json()
 }
@@ -54,9 +64,12 @@ export async function apiDelete(path) {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'DELETE',
     credentials: 'include',
+    headers: walletHeaders(),
   })
   if (!res.ok) {
-    throw new Error(`Backend returned ${res.status}`)
+    const err = new Error(`Backend returned ${res.status}`)
+    err.status = res.status
+    throw err
   }
-  return res.json()
+  return res.status === 204 ? null : res.json()
 }

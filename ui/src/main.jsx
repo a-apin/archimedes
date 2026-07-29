@@ -3,9 +3,12 @@ import { createRoot } from 'react-dom/client'
 import 'virtual:uno.css'
 import './App.css'
 import App from './App.jsx'
+import { AuthProvider } from './AuthContext.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <App />
+    <AuthProvider>
+      <App />
+    </AuthProvider>
   </StrictMode>,
 )

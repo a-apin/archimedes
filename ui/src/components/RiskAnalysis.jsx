@@ -496,8 +496,8 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
       setLoading(true)
       try {
         const [cvarRes, greeksRes] = await Promise.all([
-          fetch(`${API_BASE}/api/risk/cvar`),
-          fetch(`${API_BASE}/api/risk/greeks`),
+          fetch(`${API_BASE}/api/risk/cvar`, { credentials: 'include' }),
+          fetch(`${API_BASE}/api/risk/greeks`, { credentials: 'include' }),
         ])
         if (!cancelled) {
           if (cvarRes.ok) setCvarData(await cvarRes.json())

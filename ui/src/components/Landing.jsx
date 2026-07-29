@@ -28,8 +28,8 @@ export default function Landing({ onNavigate }) {
             </button>
           </div>
           <p className="caption mt-4 text-[var(--text-4)]">
-            Sign in with a passkey to generate — no browser extension needed.
-            Deploying into a vault is free testnet USDC from the Circle faucet.
+            Create an account with email or enabled OAuth provider. Wallet needed only for on-chain actions.
+            Deploying into a vault uses free testnet USDC from Circle faucet.
           </p>
         </div>
       </section>

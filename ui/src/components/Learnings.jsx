@@ -42,7 +42,7 @@ export default function Learnings({ onNavigate }) {
           Why it isn't live yet: the rebalance-trace history needs to accumulate
           before per-strategy winner/loser splits become meaningful. The data
           model and reasoning surface are in place (see <a
-            href="/reasoning"
+            href="/app/reasoning"
             onClick={(e) => { e.preventDefault(); onNavigate?.('reasoning') }}
             style={{ color: 'var(--accent)' }}
           >Reasoning</a>); the per-strategy aggregation view lands after the
@@ -78,7 +78,7 @@ export default function Learnings({ onNavigate }) {
           performance + reasoning data. To get started:
         </p>
         <ol className="pl-5 leading-loose">
-          <li><strong>Generate</strong> a strategy from the <a href="/generate" onClick={goGenerate} className="text-[var(--accent)]">Generate</a> page.</li>
+          <li><strong>Generate</strong> a strategy from the <a href="/app/generate" onClick={goGenerate} className="text-[var(--accent)]">Generate</a> page.</li>
           <li>Connect your wallet and <strong>deploy it into a vault</strong> before the
             strategy expires — generated strategies are <strong>time-bound</strong> to the
             market context captured at generation time, so they go stale.</li>

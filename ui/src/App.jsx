@@ -1,347 +1,254 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+
+import { useAuth } from './AuthContext'
 import { disconnectWallet, reconnectWallet } from './config'
-import Layout from './components/Layout'
-import Landing from './components/Landing'
+import { defaultFeatures, fetchFeatures } from './features'
+import { listLinkedWallets } from './linked-wallets'
+import { pageToPath, resolveRoute } from './routes'
+import { apiPost } from './api'
+import AccountSettings from './components/AccountSettings'
+import Architecture from './components/Architecture'
+import AuthPage from './components/AuthPage'
+import CorpusExplorer from './components/CorpusExplorer'
 import Explore from './components/Explore'
 import Generate from './components/Generate'
-import Portfolio from './components/Portfolio'
-import Learnings from './components/Learnings'
 import Insights from './components/Insights'
+import Landing from './components/Landing'
 import Leaderboard from './components/Leaderboard'
-import Strategies from './components/Strategies'   // serves /library route ("Example Library")
-import StrategyPassport from './components/StrategyPassport'
-import CorpusExplorer from './components/CorpusExplorer'
-import Reasoning from './components/Reasoning'
-import Architecture from './components/Architecture'
-import QuantLab from './components/QuantLab'
-import VaultDetail from './components/VaultDetail'
-import OnboardingTour, { hasCompletedOnboarding } from './components/OnboardingTour'
-import WalletGate from './components/WalletGate'
+import Layout from './components/Layout'
+import Learnings from './components/Learnings'
 import MarketplacePage from './components/MarketplacePage'
-import StrategyDetailPage from './components/StrategyDetailPage'
+import OnboardingTour, { hasCompletedOnboarding } from './components/OnboardingTour'
+import Portfolio from './components/Portfolio'
+import PublicLayout from './components/PublicLayout'
 import PublishPage from './components/PublishPage'
+import QuantLab from './components/QuantLab'
+import Reasoning from './components/Reasoning'
+import Strategies from './components/Strategies'
+import StrategyDetailPage from './components/StrategyDetailPage'
+import StrategyPassport from './components/StrategyPassport'
 import SubscriptionsPage from './components/SubscriptionsPage'
-import { apiPost } from './api'
+import VaultDetail from './components/VaultDetail'
+import WalletGate from './components/WalletGate'
 import './App.css'
 
 const openConnectModal = () => window.dispatchEvent(new Event('open-wallet-modal'))
 
-// Spine routing per docs/user-stories.md. Anything not in this map is gone.
-// vault-detail is a deep-link only (reached from Portfolio); reasoning is a
-// top-level page until per-card trace-modal affordances are wired everywhere.
-const PAGE_TO_PATH = {
-  landing:   '/',
-  explore:   '/explore',
-  leaderboard: '/leaderboard',
-  generate:  '/generate',
-  architecture: '/architecture',
-  library:   '/library',
-  corpus:    '/corpus',
-  quant:     '/quant',
-  portfolio: '/portfolio',
-  reasoning: '/reasoning',
-  learnings: '/learnings',
-  insights:  '/insights',
-  about:     '/about',
-  imprint:   '/imprint',
-  marketplace: '/marketplace',
-  publish:     '/publish',
-  subscriptions: '/subscriptions',
+function currentRoute(features) {
+  return resolveRoute(window.location.pathname, window.location.search, features)
 }
-
-const PATH_TO_PAGE = Object.fromEntries(
-  Object.entries(PAGE_TO_PATH).map(([page, path]) => [path, page])
-)
-
-function resolveRoute(pathname = '/', search = '') {
-  const params = new URLSearchParams(search)
-  const highlight = params.get('highlight')
-  const traceId = params.get('trace_id')
-  const tab = params.get('tab')
-
-  if (PATH_TO_PAGE[pathname]) {
-    return { page: PATH_TO_PAGE[pathname], vaultAddress: null, traceId, strategyId: null, highlight, tab, matched: true }
-  }
-
-  if (pathname.startsWith('/portfolio/vaults/')) {
-    const rawAddress = pathname.replace('/portfolio/vaults/', '')
-    if (rawAddress) return { page: 'vault-detail', vaultAddress: rawAddress, traceId: null, strategyId: null, highlight, tab: null, matched: true }
-  }
-
-  if (pathname.startsWith('/reasoning/')) {
-    const id = pathname.replace('/reasoning/', '')
-    if (id) return { page: 'reasoning', vaultAddress: null, traceId: id, strategyId: null, highlight, tab: null, matched: true }
-  }
-
-  if (pathname.startsWith('/strategy/')) {
-    const id = pathname.replace('/strategy/', '')
-    if (id) return { page: 'strategy', vaultAddress: null, traceId: null, strategyId: id, highlight, tab: null, matched: true }
-  }
-
-  if (pathname.startsWith('/marketplace/strategy/')) {
-    const id = pathname.replace('/marketplace/strategy/', '')
-    if (id) return { page: 'market-strategy', vaultAddress: null, traceId: null, strategyId: decodeURIComponent(id), highlight, tab: null, matched: true }
-  }
-
-  // Legacy paths still in the wild — funnel them to the spine.
-  const vaultAddress = params.get('vault')
-  if (vaultAddress) return { page: 'vault-detail', vaultAddress, traceId: null, strategyId: null, highlight, tab: null, matched: true }
-
-  return { page: 'landing', vaultAddress: null, traceId: null, strategyId: null, highlight: null, tab: null, matched: false }
-}
-
-function pageToPath(page, selectedVault = null, highlight = null, strategyId = null, traceId = null, tab = null) {
-  if (page === 'vault-detail' && selectedVault) return `/portfolio/vaults/${selectedVault}`
-  if (page === 'strategy' && strategyId) return `/strategy/${encodeURIComponent(strategyId)}`
-  if (page === 'market-strategy' && strategyId) return `/marketplace/strategy/${encodeURIComponent(strategyId)}`
-  const base = PAGE_TO_PATH[page] ?? '/'
-  const params = new URLSearchParams()
-  if (highlight && page === 'library') params.set('highlight', highlight)
-  if (traceId && page === 'reasoning') params.set('trace_id', traceId)
-  if (tab && page === 'library') params.set('tab', tab)
-  const qs = params.toString()
-  return qs ? `${base}?${qs}` : base
-}
-
-// ─── Main App ────────────────────────────────────────────────
 
 export default function App() {
-  const initialRoute = resolveRoute(window.location.pathname, window.location.search)
-
-  const [page, setPage] = useState(initialRoute.page)
+  const { user, loading: authLoading } = useAuth()
+  const [features, setFeatures] = useState(defaultFeatures)
+  const [route, setRoute] = useState(() => currentRoute(defaultFeatures))
   const [walletAddr, setWalletAddr] = useState(null)
-  const [selectedVault, setSelectedVault] = useState(initialRoute.vaultAddress)
-  const [selectedStrategy, setSelectedStrategy] = useState(initialRoute.strategyId)
   const [tourOpen, setTourOpen] = useState(() => !hasCompletedOnboarding())
-  const [highlightStrategyId, setHighlightStrategyId] = useState(initialRoute.highlight)
-  const [defaultTab, setDefaultTab] = useState(initialRoute.tab)
 
-  // Reconnect a previously connected wallet on mount (silent — uses eth_accounts,
-  // no popup). The wallet-changed event keeps state in sync if the user changes
-  // accounts or chains from within the extension.
   useEffect(() => {
-    reconnectWallet().then(result => {
-      if (result) setWalletAddr(result.address)
-    })
+    fetchFeatures()
+      .then((next) => {
+        setFeatures(next)
+        setRoute(currentRoute(next))
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
-    const handler = (e) => setWalletAddr(e.detail.address)
+    if (route.kind !== 'redirect') return
+    window.history.replaceState({}, '', route.redirect)
+    setRoute(currentRoute(features))
+  }, [route, features])
+
+  useEffect(() => {
+    const onPopState = () => setRoute(currentRoute(features))
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [features])
+
+  useEffect(() => {
+    if (!user) {
+      setWalletAddr(null)
+      return
+    }
+    reconnectWallet().then(async (result) => {
+      if (!result) return
+      try {
+        const wallets = await listLinkedWallets()
+        if (wallets.some((wallet) => wallet.address === result.address.toLowerCase() && wallet.chain_id === 5042002)) {
+          setWalletAddr(result.address)
+        }
+      } catch {
+        // Account remains usable without wallet service.
+      }
+    })
+  }, [user])
+
+  useEffect(() => {
+    const handler = async (event) => {
+      const address = event.detail.address
+      if (!address || !user) {
+        setWalletAddr(null)
+        return
+      }
+      try {
+        const wallets = await listLinkedWallets()
+        setWalletAddr(wallets.some((wallet) => wallet.address === address.toLowerCase()) ? address : null)
+      } catch {
+        setWalletAddr(null)
+      }
+    }
     window.addEventListener('wallet-changed', handler)
     return () => window.removeEventListener('wallet-changed', handler)
-  }, [])
+  }, [user])
 
-  // Conversion funnel (#787): emit the top-of-funnel "landed" beacon once per
-  // browser session. This is JS-only, so crawlers (which dominate raw request
-  // counts but don't run JS) are naturally excluded — the funnel is a truer
-  // human signal than the cumulative request counters. As of #830 this same
-  // beacon is the single source of truth for "distinct visitor": the server
-  // records geography + device off it too (same archimedes_vid dedup key), so
-  // the funnel `landed` count and the geo/device counts agree by construction.
-  // Best-effort: a failed beacon must never affect the page.
   useEffect(() => {
     try {
       if (sessionStorage.getItem('archimedes_landed')) return
       sessionStorage.setItem('archimedes_landed', '1')
     } catch {
-      // sessionStorage unavailable (private mode / blocked) — still try once.
+      // Storage may be blocked; metric stays best-effort.
     }
     apiPost('/api/metrics/funnel/event', { stage: 'landed' }).catch(() => {})
   }, [])
 
-  const handleConnect = (addr) => setWalletAddr(addr)
+  useEffect(() => {
+    if (route.kind !== 'app' || authLoading || user) return
+    const next = `${window.location.pathname}${window.location.search}`
+    window.location.replace(`/sign-in?next=${encodeURIComponent(next)}`)
+  }, [route.kind, authLoading, user])
+
+  useEffect(() => {
+    const titles = {
+      landing: 'Archimedes',
+      explore: 'Explore · Archimedes',
+      leaderboard: 'Leaderboard · Archimedes',
+      generate: 'Generate · Archimedes',
+      architecture: 'Architecture · Archimedes',
+      library: 'Library · Archimedes',
+      corpus: 'Corpus · Archimedes',
+      quant: 'Quant Lab · Archimedes',
+      portfolio: 'Portfolio · Archimedes',
+      reasoning: 'Reasoning · Archimedes',
+      learnings: 'Learnings · Archimedes',
+      insights: 'Insights · Archimedes',
+      account: 'Account · Archimedes',
+      'vault-detail': 'Vault · Archimedes',
+      strategy: 'Strategy · Archimedes',
+      'sign-in': 'Sign in · Archimedes',
+      'sign-up': 'Create account · Archimedes',
+    }
+    document.title = titles[route.page] ?? 'Archimedes'
+  }, [route.page])
+
+  const navigateToPage = useCallback((page, options = {}) => {
+    const path = pageToPath(page, options)
+    if (`${window.location.pathname}${window.location.search}` !== path) {
+      window.history[options.replace ? 'replaceState' : 'pushState']({}, '', path)
+    }
+    setRoute(resolveRoute(window.location.pathname, window.location.search, features))
+  }, [features])
+
   const handleDisconnect = () => {
     disconnectWallet()
     setWalletAddr(null)
-    // Clear SIWE session cookie
-    import('./siwe').then(m => m.logout()).catch(() => {})
   }
 
-  const navigateToPage = useCallback((nextPage, opts = {}) => {
-    const nextVault = opts.vaultAddress ?? selectedVault
-    const nextStrategy = Object.prototype.hasOwnProperty.call(opts, 'strategyId')
-      ? opts.strategyId
-      : (nextPage === 'strategy' ? selectedStrategy : null)
-    const nextHighlight = Object.prototype.hasOwnProperty.call(opts, 'highlight')
-      ? opts.highlight
-      : (nextPage === 'library' ? highlightStrategyId : null)
-    const nextTraceId = Object.prototype.hasOwnProperty.call(opts, 'traceId')
-      ? opts.traceId
-      : null
-    const nextTab = Object.prototype.hasOwnProperty.call(opts, 'tab')
-      ? opts.tab
-      : null
-    const nextPath = pageToPath(nextPage, nextVault, nextHighlight, nextStrategy, nextTraceId, nextTab)
-    const method = opts.replace ? 'replaceState' : 'pushState'
+  if (route.kind === 'redirect') return null
 
-    if (window.location.pathname + window.location.search !== nextPath) {
-      window.history[method]({}, '', nextPath)
-    }
+  if (route.kind === 'auth') return <AuthPage mode={route.page} />
 
-    setPage(nextPage)
-    if (Object.prototype.hasOwnProperty.call(opts, 'vaultAddress')) {
-      setSelectedVault(opts.vaultAddress)
-    } else if (nextPage !== 'vault-detail') {
-      setSelectedVault(null)
-    }
-    if (Object.prototype.hasOwnProperty.call(opts, 'strategyId')) {
-      setSelectedStrategy(opts.strategyId)
-    } else if (nextPage !== 'strategy' && nextPage !== 'market-strategy') {
-      setSelectedStrategy(null)
-    }
-    setHighlightStrategyId(nextPage === 'library' ? nextHighlight : null)
-    setDefaultTab(nextPage === 'library' ? nextTab : null)
-  }, [selectedVault, selectedStrategy, highlightStrategyId])
+  if (route.kind === 'public') {
+    return (
+      <PublicLayout user={user}>
+        {route.page === 'architecture'
+          ? <Architecture onNavigate={navigateToPage} />
+          : <Landing onNavigate={navigateToPage} />}
+      </PublicLayout>
+    )
+  }
 
-  const selectVault = (addr) => navigateToPage('vault-detail', { vaultAddress: addr })
-  const backToPortfolio = () => navigateToPage('portfolio', { vaultAddress: null })
-  const selectTrace = (id) => navigateToPage('reasoning', { replace: false, traceId: id })
+  if (route.kind === 'not-found') {
+    return (
+      <PublicLayout user={user}>
+        <main className="min-h-[70vh] flex flex-col items-center justify-center gap-4 px-4 text-center">
+          <h1 className="serif text-[2rem]">Page not found</h1>
+          <a className="btn-primary" href={user ? '/app' : '/'}>{user ? 'Open app' : 'Go home'}</a>
+        </main>
+      </PublicLayout>
+    )
+  }
 
-  // Per-route document.title so browser tabs are distinguishable when users
-  // have multiple Archimedes tabs open.
-  useEffect(() => {
-    const titles = {
-      landing:        'Archimedes',
-      explore:        'Explore · Archimedes',
-      leaderboard:    'Leaderboard · Archimedes',
-      generate:       'Generate · Archimedes',
-      architecture:   'Architecture · Archimedes',
-      library:        'Library · Archimedes',
-      corpus:         'Corpus · Archimedes',
-      quant:          'Quant Lab · Archimedes',
-      portfolio:      'Portfolio · Archimedes',
-      reasoning:      'Reasoning · Archimedes',
-      learnings:      'Learnings · Archimedes',
-      'vault-detail': 'Vault · Archimedes',
-      strategy:       'Strategy · Archimedes',
-    }
-    document.title = titles[page] ?? 'Archimedes'
-  }, [page])
+  if (authLoading || !user) {
+    return <main className="min-h-screen grid place-items-center">Loading account…</main>
+  }
 
-  useEffect(() => {
-    if (!initialRoute.matched) {
-      window.history.replaceState({}, '', '/')
-    }
-    const onPopState = () => {
-      const route = resolveRoute(window.location.pathname, window.location.search)
-      setPage(route.page)
-      setSelectedVault(route.vaultAddress)
-      setSelectedStrategy(route.strategyId)
-      setHighlightStrategyId(route.highlight)
-      setDefaultTab(route.tab)
-    }
-    window.addEventListener('popstate', onPopState)
-    return () => window.removeEventListener('popstate', onPopState)
-  }, [initialRoute.matched])
+  const selectVault = (address) => navigateToPage('vault-detail', { vaultAddress: address })
+  const selectTrace = (traceId) => navigateToPage('reasoning', { traceId })
 
   const renderPage = () => {
-    switch (page) {
-      case 'landing':     return <Landing onNavigate={navigateToPage} />
-      case 'explore':      return <Explore />
-      case 'leaderboard':  return <Leaderboard />
-      case 'generate':     return (
-        <WalletGate
-          walletAddr={walletAddr}
-          pageName="Generate"
-          description="Generate uses an LLM-powered multi-agent pipeline against a 10,000-paper q-fin corpus. Connect a wallet — sign in with a passkey, no extension needed — to run the agent and persist your generated strategies in your library."
-          onConnect={openConnectModal}
-        >
-          <Generate onNavigate={navigateToPage} walletAddr={walletAddr} />
-        </WalletGate>
-      )
-      case 'architecture': return <Architecture onNavigate={navigateToPage} />
-      case 'library':      return (
-        <WalletGate
-          walletAddr={walletAddr}
-          pageName="Your Strategies"
-          description="Library shows strategies you've generated, plus a clearly-separated set of paper-grounded example strategies. Connect a wallet — sign in with a passkey, no extension needed — to see your generations and deploy them as vaults."
-          onConnect={openConnectModal}
-        >
-          <Strategies highlightStrategyId={highlightStrategyId} defaultTab={defaultTab} onNavigate={navigateToPage} />
-        </WalletGate>
-      )
-      case 'strategy':     return <StrategyPassport strategyId={selectedStrategy} onNavigate={navigateToPage} walletAddr={walletAddr} />
-      case 'corpus':       return <CorpusExplorer />
-      case 'quant':        return (
-        <WalletGate
-          walletAddr={walletAddr}
-          pageName="Quant Lab"
-          description="Quant Lab reads your live strategy library, vault holdings, and reasoning traces. Connect a wallet — sign in with a passkey, no extension needed — to analyze your own positions."
-          onConnect={openConnectModal}
-        >
-          <QuantLab />
-        </WalletGate>
-      )
-      case 'portfolio':    return (
+    switch (route.page) {
+      case 'explore': return <Explore />
+      case 'leaderboard': return <Leaderboard />
+      case 'generate': return <Generate onNavigate={navigateToPage} />
+      case 'library': return <Strategies highlightStrategyId={route.highlight} defaultTab={route.tab} onNavigate={navigateToPage} />
+      case 'strategy': return <StrategyPassport strategyId={route.strategyId} onNavigate={navigateToPage} walletAddr={walletAddr} />
+      case 'corpus': return <CorpusExplorer />
+      case 'quant': return <QuantLab />
+      case 'portfolio': return (
         <WalletGate
           walletAddr={walletAddr}
           pageName="Portfolio"
-          description="Portfolio shows your AUM, your deployed vaults, and the autonomous agent's rebalance decisions. Connect a wallet to deposit USDC and start tracking — this is a non-custodial vault you control, not an account on our platform."
+          description="Portfolio needs a verified linked wallet because vault deposits and withdrawals are on-chain actions."
           onConnect={openConnectModal}
         >
           <Portfolio walletAddr={walletAddr} onSelectVault={selectVault} onSelectTrace={selectTrace} onNavigate={navigateToPage} />
         </WalletGate>
       )
-      case 'reasoning':    return (
-        <WalletGate
-          walletAddr={walletAddr}
-          pageName="Reasoning"
-          description="Reasoning is the audit trail for every autonomous agent decision — hashed off-chain and anchored on Arc via the ReasoningTraceRegistry contract. Connect a wallet to inspect traces and verify hashes against the on-chain registry."
-          onConnect={openConnectModal}
-        >
-          <Reasoning onNavigate={navigateToPage} />
-        </WalletGate>
-      )
-      case 'learnings':    return (
+      case 'reasoning': return <Reasoning onNavigate={navigateToPage} />
+      case 'learnings': return (
         <WalletGate
           walletAddr={walletAddr}
           pageName="Learnings"
-          description="Learnings reviews the strategies you've deployed — winners and losers, both first-class — with the agent's reasoning available for each rebalance. Connect a wallet to see your deployments."
+          description="Link wallet controlling your deployed vaults to review their outcomes."
           onConnect={openConnectModal}
         >
           <Learnings onNavigate={navigateToPage} />
         </WalletGate>
       )
-      case 'insights':       return <Insights />
-      case 'vault-detail':   return <VaultDetail address={selectedVault} onBack={backToPortfolio} />
-      case 'marketplace':    return <MarketplacePage onNavigate={navigateToPage} />
-      case 'market-strategy': return <StrategyDetailPage strategyId={selectedStrategy} onNavigate={navigateToPage} />
-      case 'publish':        return <PublishPage onNavigate={navigateToPage} />
-      case 'subscriptions':  return <SubscriptionsPage onNavigate={navigateToPage} />
-      default:               return <NotFound page={page} onNavigate={navigateToPage} />
+      case 'insights': return <Insights />
+      case 'vault-detail': return <VaultDetail address={route.vaultAddress} onBack={() => navigateToPage('portfolio')} />
+      case 'marketplace': return <MarketplacePage onNavigate={navigateToPage} />
+      case 'market-strategy': return <StrategyDetailPage strategyId={route.strategyId} onNavigate={navigateToPage} />
+      case 'publish': return <PublishPage onNavigate={navigateToPage} />
+      case 'subscriptions': return <SubscriptionsPage onNavigate={navigateToPage} />
+      case 'account': return <AccountSettings walletAddr={walletAddr} onDisconnect={handleDisconnect} />
+      default: return null
     }
   }
 
   return (
     <>
       <Layout
-        page={page}
+        page={route.page}
         setPage={navigateToPage}
         walletAddr={walletAddr}
-        onConnect={handleConnect}
+        onConnect={setWalletAddr}
         onDisconnect={handleDisconnect}
         onOpenTour={() => setTourOpen(true)}
+        user={user}
+        features={features}
       >
         {renderPage()}
       </Layout>
-      <OnboardingTour open={tourOpen} onClose={() => { setTourOpen(false); try { localStorage.setItem('archimedes.onboarding.v1', 'completed') } catch { /* private mode / SSR — non-fatal */ } }} setPage={navigateToPage} />
+      <OnboardingTour
+        open={tourOpen}
+        onClose={() => {
+          setTourOpen(false)
+          try { localStorage.setItem('archimedes.onboarding.v1', 'completed') } catch { /* non-fatal */ }
+        }}
+        setPage={navigateToPage}
+      />
     </>
-  )
-}
-
-function NotFound({ page, onNavigate }) {
-  return (
-    <div className="max-w-[640px]">
-      <h2 className="font-serif text-[2rem] mb-3">Page not found</h2>
-      <p className="body mb-4">
-        We don't have a page at <code>{String(page)}</code>. The spine has six destinations:
-        Explore, Generate, Library, Corpus, Portfolio, and Reasoning. Use the sidebar
-        on the left, or jump back to the landing page.
-      </p>
-      <div className="flex gap-3">
-        <button className="btn-primary" onClick={() => onNavigate('landing')}>← Home</button>
-        <button className="btn-secondary" onClick={() => onNavigate('generate')}>Generate a Strategy</button>
-      </div>
-    </div>
   )
 }

@@ -4,8 +4,7 @@ import GenerationStatus from './GenerationStatus'
 import ModelCostPanel from './ModelCostPanel'
 import { EXAMPLE_BRIEFS } from '../data/exampleBriefs'
 import { ASSET_GROUPS, SUPPORTED_ASSETS } from '../data/assetUniverse'
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? ''
+import { apiPost } from '../api'
 
 // /generate spine page — redesigned per issue #872.
 //
@@ -27,20 +26,9 @@ const RISK_PROFILES = [
   { id: 'hyper_risky', label: 'Hyper-risky' },
 ]
 
-// Establish a SIWE session on demand. Generation is gated server-side only
-// when REQUIRE_SIWE_FOR_GENERATION is enabled; until then this is invoked
-// lazily on a 401 so the flow keeps working the moment the flag flips.
-async function ensureSiweSession() {
-  const { getAddress } = await import('../config')
-  const { authenticateWithSIWE } = await import('../siwe')
-  const address = getAddress()
-  if (!address) throw new Error('Connect your wallet, then sign in to generate.')
-  await authenticateWithSIWE(address)
-}
-
 // ─────────────────────────────────────────────────────────────
 
-export default function Generate({ onNavigate, walletAddr }) {
+export default function Generate({ onNavigate }) {
   // ── Brief form state ──
   const [intent, setIntent] = useState('')
   const [starting, setStarting] = useState(false)
@@ -81,24 +69,8 @@ export default function Generate({ onNavigate, walletAddr }) {
       },
       ...(selectedModel ? { model: selectedModel } : {}),
     }
-    const postStart = () =>
-      fetch(`${API_BASE}/api/generate/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(payload),
-      })
     try {
-      let res = await postStart()
-      if (res.status === 401) {
-        await ensureSiweSession()
-        res = await postStart()
-      }
-      if (!res.ok) {
-        if (res.status === 401) throw new Error('Sign in with your wallet to generate.')
-        throw new Error(`Generation start failed (${res.status})`)
-      }
-      const data = await res.json()
+      const data = await apiPost('/api/generate/start', payload)
       setLastJobId(data.job_id)
       // Stay on the page — the job table will show the new row.
     } catch (e) {
@@ -385,11 +357,7 @@ export default function Generate({ onNavigate, walletAddr }) {
       </div>
 
       {/* ── 3. JOB TABLE ── */}
-      <GenerationStatus
-        walletAddr={walletAddr}
-        activeJobId={lastJobId}
-        onDrillIn={handleDrillIn}
-      />
+      <GenerationStatus activeJobId={lastJobId} onDrillIn={handleDrillIn} />
     </div>
   )
 }

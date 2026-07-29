@@ -70,7 +70,7 @@ export default function WelcomeProfileModal({ walletAddr, onDone, mode = 'welcom
         headers: {
           'Content-Type': 'application/json',
         },
-        credentials: 'include',  // Issue #402: SIWE session cookie required for profile writes
+        credentials: 'include',  // Better Auth account + matching linked wallet required
         body: JSON.stringify(payload),
       })
       if (!res.ok) {
@@ -112,7 +112,7 @@ export default function WelcomeProfileModal({ walletAddr, onDone, mode = 'welcom
         <p className="mb-5 leading-relaxed" style={{ fontSize: '0.98rem', color: 'var(--text-2)' }}>
           {isEdit
             ? 'Update what we show alongside your wallet. All fields remain optional; leave any blank to clear it.'
-            : 'All fields are optional. Your wallet is your identity — this just helps us show a friendly name and tailor the experience. You can skip this entirely.'}
+            : 'All fields are optional. Your account is your identity; a verified linked wallet provides on-chain attribution. You can skip this entirely.'}
         </p>
 
         <div className="grid grid-cols-1 gap-4">

@@ -50,7 +50,7 @@ export default function WalletGate({ walletAddr, pageName, description, onConnec
         Connect Wallet
       </button>
       <p className="caption" style={{ marginTop: 20, fontSize: '0.72rem', color: 'var(--text-4)' }}>
-        Testnet only — no real funds at risk. Sign in with a passkey — no browser extension needed.
+        Connection requires signature proof before wallet links to account. Circle passkey controls Circle wallet only.
       </p>
     </div>
   )

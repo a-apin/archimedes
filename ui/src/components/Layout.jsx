@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import WalletConnect from './WalletConnect'
 import Breadcrumbs from './Breadcrumbs'
-import WelcomeProfileModal from './WelcomeProfileModal'
 import { NEW_CONTRACTS, getStoredWalletName } from '../config'
 import { getStoredTheme, applyTheme } from '../theme'
+import { visibleNavigation } from '../routes'
 import { lockBodyScroll, unlockBodyScroll } from '../utils/scrollLock'
 
 // Sidebar groups separate Home (anchor / landing) from the three product-state
@@ -52,6 +52,7 @@ const NAV = [
   ]},
   { group: 'Ops', items: [
     { id: 'insights', label: 'Insights', icon: 'i-lucide-bar-chart-3' },
+    { id: 'account', label: 'Account', icon: 'i-lucide-user-round-cog' },
   ]},
 ]
 
@@ -75,14 +76,12 @@ export const PAGE_LABELS = {
   'market-strategy': 'Strategy Detail',
   publish: 'Publish',
   subscriptions: 'Subscriptions',
+  account: 'Account',
 }
 
-export default function Layout({ page, setPage, walletAddr, onConnect, onDisconnect, onOpenTour, children }) {
+export default function Layout({ page, setPage, walletAddr, onConnect, onDisconnect, onOpenTour, user, features, children }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [userProfile, setUserProfile] = useState(null)
-  const [showWelcomeModal, setShowWelcomeModal] = useState(false)
-  const [showEditProfile, setShowEditProfile] = useState(false)
   const [theme, setTheme] = useState(getStoredTheme)
   const hamburgerRef = useRef(null)
   const blockLabel = Object.keys(NEW_CONTRACTS).length ? 'Arc · Testnet live' : 'Arc · Connecting'
@@ -118,51 +117,8 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
     setTheme(next)
   }
 
-  const API_BASE = import.meta.env.VITE_API_BASE ?? ''
-
-  // Fetch profile when wallet connects
-  useEffect(() => {
-    if (!walletAddr) {
-      setUserProfile(null)
-      return
-    }
-    // Check localStorage gate — only show welcome modal once per wallet
-    const seen = localStorage.getItem('archimedes.welcomeProfileSeen.' + walletAddr.toLowerCase())
-    fetch(`${API_BASE}/api/user/profile/${walletAddr}`, {
-        headers: { 'X-Wallet-Address': walletAddr },
-        credentials: 'include',  // Send SIWE session cookie
-      })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        setUserProfile(data)
-        // If no profile and not seen, show welcome modal
-        if (!data && !seen) {
-          setShowWelcomeModal(true)
-        }
-      })
-      .catch(() => {
-        // Profile fetch failed — show modal if not seen
-        if (!seen) setShowWelcomeModal(true)
-      })
-    // API_BASE is a module-level constant; excluded intentionally.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [walletAddr])
-
-  const handleWelcomeDone = (profile) => {
-    setShowWelcomeModal(false)
-    if (profile) setUserProfile(profile)
-  }
-
-  const handleEditProfileDone = (profile) => {
-    setShowEditProfile(false)
-    if (profile) setUserProfile(profile)
-  }
-
-  // Display-name fallback chain: backend profile display_name → wallet name
-  // saved at Circle passkey creation (localStorage, keyed by address) →
-  // WalletConnect renders the truncated address when this is null.
-  const displayName = userProfile?.display_name
-    || (walletAddr ? getStoredWalletName(walletAddr) : null)
+  // Circle wallet names describe wallet, never application identity.
+  const displayName = walletAddr ? getStoredWalletName(walletAddr) : null
 
   const handleNav = (id) => {
     setPage(id)
@@ -207,7 +163,7 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
           {NAV.map((group, gi) => (
             <div key={group.group || gi} className="nav-group">
               {group.group && <div className="nav-group-label">{group.group}</div>}
-              {group.items.map(item => (
+              {visibleNavigation(group.items, features).map(item => (
                 <button
                   key={item.id}
                   type="button"
@@ -282,35 +238,26 @@ export default function Layout({ page, setPage, walletAddr, onConnect, onDisconn
                 <span className="i-lucide-help-circle" style={{width:18,height:18}} />
               </button>
             )}
+            <button
+              type="button"
+              className="wallet-chip"
+              onClick={() => handleNav('account')}
+              title={user?.email}
+            >
+              <span className="i-lucide-user-round" style={{width:14,height:14}} />
+              <span>{user?.name || 'Account'}</span>
+            </button>
             <WalletConnect
               address={walletAddr}
               displayName={displayName}
               onConnect={onConnect}
               onDisconnect={onDisconnect}
-              onEditProfile={() => setShowEditProfile(true)}
+              onEditProfile={() => handleNav('account')}
             />
           </div>
         </div>
         <main className={`page-content page-${page}`}>{children}</main>
       </div>
-
-      {/* Welcome profile modal — opens once on first wallet connect */}
-      {showWelcomeModal && walletAddr && (
-        <WelcomeProfileModal
-          walletAddr={walletAddr}
-          onDone={handleWelcomeDone}
-        />
-      )}
-
-      {/* Edit profile modal — triggered from the wallet menu dropdown */}
-      {showEditProfile && walletAddr && (
-        <WelcomeProfileModal
-          walletAddr={walletAddr}
-          onDone={handleEditProfileDone}
-          mode="edit"
-          existingProfile={userProfile}
-        />
-      )}
     </div>
   )
 }

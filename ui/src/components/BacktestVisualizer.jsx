@@ -403,7 +403,7 @@ export default function BacktestVisualizer({ result, strategyId, weights, realTr
     setReturnsLoading(true)
     setRealReturns(null)
     setReturnsNoData(false)
-    // credentials:'include' sends the SIWE session cookie (same idiom as
+    // credentials:'include' sends the Better Auth session cookie (same idiom as
     // ui/src/api.js apiGet) so owners of private strategies get their returns
     // when VITE_API_BASE is cross-origin instead of always seeing the 404 state.
     fetch(`${API_BASE}/api/strategies/${encodeURIComponent(strategyId)}/returns`, {
@@ -469,6 +469,7 @@ export default function BacktestVisualizer({ result, strategyId, weights, realTr
       const res = await fetch(`${API_BASE}/api/portfolio/parameter-sweep`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           strategy_id: strategyId,
           weights,
