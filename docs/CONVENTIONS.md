@@ -106,3 +106,32 @@ Proposed → Accepted → Superseded-by-<slug>
 
 An ADR is never deleted and never silently rewritten. If the decision changed, the change is
 itself a decision and gets its own record.
+
+---
+
+## What is enforced, and what is only reported
+
+These rules stopped being advisory on 2026-07-28. `.github/workflows/docs-gate.yml`
+runs on every PR that touches `docs/**` or a root `*.md`, and the same checks run
+locally via `make docs-check` — run it before you push.
+
+| Rule | Enforcement | Script |
+|---|---|---|
+| Every relative markdown link resolves | **blocks the PR** | `.github/scripts/docs_links.py` |
+| Every `docs/**/*.md` is listed in `README.md` or a sub-index it links to | **blocks the PR** | `.github/scripts/docs_index.py` |
+| A `current` doc verified over 60 days ago | reported in the PR comment only | `.github/scripts/docs_staleness.py` |
+
+Staleness is deliberately not blocking. A stale date means nobody has re-checked the
+doc lately; that is a prompt to go and verify, not evidence the doc is wrong. Making it
+blocking would put every unrelated PR on the hook for someone else's un-refreshed doc,
+and the response would be rubber-stamp date bumps — which is precisely the signal the
+`updated` field exists to carry.
+
+Two deliberate holes in the link check, both in `SKIP_PREFIXES`: `submodules/` and
+`contracts/lib/`. Those are gitlinks and resolve only in an initialised checkout, so
+checking them in CI would keep the gate permanently red for a reason unrelated to any PR.
+
+**The docs gate is not a required status check, and must not be made one** without first
+adding an always-running fallback job. A path-filtered workflow marked required never
+reports on a PR outside its paths, and GitHub reads "never reported" as "pending forever" —
+it would block every non-docs PR in the repo. The reasoning is repeated in the workflow header.
