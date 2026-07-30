@@ -39,6 +39,7 @@ import uuid
 from datetime import UTC, datetime
 
 from archimedes.chain.client import chain_client
+from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
 from archimedes.chain.executor import InsufficientLiquidityError, chain_executor, compute_trade_id
 from archimedes.chain.oracle_updater import OracleUpdater
 from archimedes.chain.provenance_publisher import pin_public_provenance
@@ -608,6 +609,64 @@ class StrategyRunner:
 
         return strategy_evaluator.evaluate_strategies(gen_strategies, synth_assets)
 
+    async def _vault_fee_cap_refusal(self, vault_address: str) -> str | None:
+        """Fail-closed fee-cap gate for the agent's OWN state-changing call.
+
+        Issue #1138 follow-up (flagged by Dan on PR #1139's review): the
+        marketplace guard in ``marketplace_routes.py``/``vault_service.py``
+        only covers the surfaces a human reaches (publish/subscribe/list/
+        detail) — it never touched this loop, so an over-cap vault stayed
+        fully tradeable by the agent, which is the actual state-changing
+        path that triggers ``_accrueFees()`` in ``Vault.sol`` (rebalance()).
+        Read once here, right before Phase 2 TRADE (not earlier in
+        ``_process_vault``, since a no-drift tick never reaches this point
+        anyway — no extra RPC cost on the common path).
+
+        Returns a SKIP reason string when the vault must be refused, else
+        None. Mirrors ``_lease_ok``'s fail-closed shape: unreadable fees
+        refuse the same as over-cap fees, never silently proceed.
+        """
+        try:
+            mgmt_fee_bps, perf_fee_bps = await chain_executor.get_vault_fee_bps(vault_address)
+        except Exception as exc:
+            return f"Could not verify on-chain fees for vault {vault_address[:10]}: {exc} — refusing (fail-closed)"
+        if mgmt_fee_bps > MAX_MANAGEMENT_FEE_BPS or perf_fee_bps > MAX_PERFORMANCE_FEE_BPS:
+            return (
+                f"Vault {vault_address[:10]} fees exceed caps: "
+                f"managementFeeBps={mgmt_fee_bps} (cap {MAX_MANAGEMENT_FEE_BPS}), "
+                f"performanceFeeBps={perf_fee_bps} (cap {MAX_PERFORMANCE_FEE_BPS})"
+            )
+        return None
+
+    async def _vault_fee_cap_refusal(self, vault_address: str) -> str | None:
+        """Fail-closed fee-cap gate for the agent's OWN state-changing call.
+
+        Issue #1138 follow-up (flagged by Dan on PR #1139's review): the
+        marketplace guard in ``marketplace_routes.py``/``vault_service.py``
+        only covers the surfaces a human reaches (publish/subscribe/list/
+        detail) — it never touched this loop, so an over-cap vault stayed
+        fully tradeable by the agent, which is the actual state-changing
+        path that triggers ``_accrueFees()`` in ``Vault.sol`` (rebalance()).
+        Read once here, right before Phase 2 TRADE (not earlier in
+        ``_process_vault``, since a no-drift tick never reaches this point
+        anyway — no extra RPC cost on the common path).
+
+        Returns a SKIP reason string when the vault must be refused, else
+        None. Mirrors ``_lease_ok``'s fail-closed shape: unreadable fees
+        refuse the same as over-cap fees, never silently proceed.
+        """
+        try:
+            mgmt_fee_bps, perf_fee_bps = await chain_executor.get_vault_fee_bps(vault_address)
+        except Exception as exc:
+            return f"Could not verify on-chain fees for vault {vault_address[:10]}: {exc} — refusing (fail-closed)"
+        if mgmt_fee_bps > MAX_MANAGEMENT_FEE_BPS or perf_fee_bps > MAX_PERFORMANCE_FEE_BPS:
+            return (
+                f"Vault {vault_address[:10]} fees exceed caps: "
+                f"managementFeeBps={mgmt_fee_bps} (cap {MAX_MANAGEMENT_FEE_BPS}), "
+                f"performanceFeeBps={perf_fee_bps} (cap {MAX_PERFORMANCE_FEE_BPS})"
+            )
+        return None
+
     async def _process_vault(
         self,
         vault_address: str,
@@ -977,6 +1036,60 @@ class StrategyRunner:
                 commit_block=commit_block,
             )
             return
+
+        # Fee-cap guard (issue #1138 follow-up): refuse to submit the trade if
+        # this vault's immutable on-chain fees exceed the #1129 caps, or if
+        # they can't be read. rebalance() is what triggers Vault.sol's
+        # _accrueFees() — gating it here closes the gap the marketplace-only
+        # guard left open (see _vault_fee_cap_refusal docstring). Skipped
+        # under DRY_RUN, matching the _lease_ok check right below: no real
+        # write happens either way.
+        if not DRY_RUN:
+            fee_skip_reason = await self._vault_fee_cap_refusal(vault_address)
+            if fee_skip_reason is not None:
+                logger.error("[tick %s] %s", tick_id, fee_skip_reason)
+                await self._publish_trace(
+                    vault_address,
+                    DecisionType.SKIP,
+                    "fee_cap_exceeded",
+                    portfolio,
+                    [],
+                    all_signals,
+                    market_regime,
+                    consensus,
+                    tick_id,
+                    fee_skip_reason,
+                    commit_tx=commit_tx,
+                    commit_block=commit_block,
+                )
+                return
+
+        # Fee-cap guard (issue #1138 follow-up): refuse to submit the trade if
+        # this vault's immutable on-chain fees exceed the #1129 caps, or if
+        # they can't be read. rebalance() is what triggers Vault.sol's
+        # _accrueFees() — gating it here closes the gap the marketplace-only
+        # guard left open (see _vault_fee_cap_refusal docstring). Skipped
+        # under DRY_RUN, matching the _lease_ok check right below: no real
+        # write happens either way.
+        if not DRY_RUN:
+            fee_skip_reason = await self._vault_fee_cap_refusal(vault_address)
+            if fee_skip_reason is not None:
+                logger.error("[tick %s] %s", tick_id, fee_skip_reason)
+                await self._publish_trace(
+                    vault_address,
+                    DecisionType.SKIP,
+                    "fee_cap_exceeded",
+                    portfolio,
+                    [],
+                    all_signals,
+                    market_regime,
+                    consensus,
+                    tick_id,
+                    fee_skip_reason,
+                    commit_tx=commit_tx,
+                    commit_block=commit_block,
+                )
+                return
 
         # Phase 2: TRADE — execute the rebalance, submitting the SAME arrays
         # (trade_arrays) the tradeId above was derived from — never recomputed.
