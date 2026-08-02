@@ -225,6 +225,30 @@ class TestGetVaultMetrics:
         assert m["creator"] == "0x0000000000000000000000000000000000000000"
         assert m["tier"] == 2  # default
         assert m["is_agent_assisted"] is False
+        # Fees degrade to None (unknown), NOT 0 — "0% fees" on a trust surface
+        # would be a lie, and the #1138 guard fails closed on None (issue #1138).
+        assert m["management_fee_bps"] is None
+        assert m["performance_fee_bps"] is None
+
+
+# ── get_vault_fee_bps (issue #1138 fee guard) ─────────────────
+
+
+class TestGetVaultFeeBps:
+    def test_returns_both_fee_bps_as_ints(self, executor, mock_loader):
+        vault = mock_loader.vault.return_value
+        _vault_fn(vault, "managementFeeBps", return_value=500)
+        _vault_fn(vault, "performanceFeeBps", return_value=5000)
+        assert asyncio.run(executor.get_vault_fee_bps("0xVault")) == (500, 5000)
+
+    def test_raises_on_read_failure_so_callers_fail_closed(self, executor, mock_loader):
+        """No silent zero-default: the #1138 guard must refuse a vault whose
+        fees can't be verified, so the read raises instead of degrading."""
+        vault = mock_loader.vault.return_value
+        _vault_fn(vault, "managementFeeBps", side_effect=RuntimeError("revert"))
+        _vault_fn(vault, "performanceFeeBps", return_value=0)
+        with pytest.raises(RuntimeError):
+            asyncio.run(executor.get_vault_fee_bps("0xVault"))
 
 
 # ── get_all_vaults / get_vault_count ──────────────────────────

@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS
+
 
 class VaultCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     symbol: str = Field(..., min_length=1, max_length=16)
-    management_fee_bps: int = Field(0, ge=0, le=1000)
+    # Aligned with the Vault.sol constructor caps (PR #1129 / issue #1138) —
+    # the old le=1000 admitted requests the capped contract reverts. The
+    # performance cap stays at 3000 (30%): deliberately stricter than the
+    # on-chain hard ceiling of MAX_PERFORMANCE_FEE_BPS (5000), matching the
+    # ~10-20% industry norm with headroom.
+    management_fee_bps: int = Field(0, ge=0, le=MAX_MANAGEMENT_FEE_BPS)
     performance_fee_bps: int = Field(0, ge=0, le=3000)
     agent_assisted: bool = True
     # Off-chain metadata only — not passed to the contract.
