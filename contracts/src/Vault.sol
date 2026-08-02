@@ -470,7 +470,7 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
             uint256 minOut = _oracleMinOut(tokenOut, asset, amount);
             // #915 churn guard: this sell must move tokenOut toward its target weight
             // (over-allocated → sell) and not past it. sellValue is the synth's oracle NAV.
-            uint256 sellValue = (amount * PriceOracle(tokenOracle[tokenOut]).getPrice()) / 1e18;
+            uint256 sellValue = (amount * PriceOracle(tokenOracle[tokenOut]).getPrice()) / _tokenUnit(tokenOut);
             _requireTowardTarget(tokenOut, sellValue, false);
 
             // Approve router
@@ -683,15 +683,15 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
     // ─── Internal ────────────────────────────────────────────────────
 
     /// @notice A token's current value in USDC (6-decimal) terms, matching totalAssets()'s
-    ///         convention: USDC at face value, synths at balance(18) * price(6) / 1e18.
-    ///         Unpriced tokens contribute 0 (they can't be weighted); a rebalance touching
-    ///         such a token reverts earlier in _oracleMinOut anyway.
+    ///         convention: USDC at face value, synths at balance(decimals) * price(6) /
+    ///         10**decimals. Unpriced tokens contribute 0 (they can't be weighted); a
+    ///         rebalance touching such a token reverts earlier in _oracleMinOut anyway.
     function _tokenValueUsdc(address token) internal view returns (uint256) {
         uint256 bal = IERC20(token).balanceOf(address(this));
         if (token == address(asset)) return bal;
         address oracle = tokenOracle[token];
         if (oracle == address(0)) return 0;
-        return (bal * PriceOracle(oracle).getPrice()) / 1e18;
+        return (bal * PriceOracle(oracle).getPrice()) / _tokenUnit(token);
     }
 
     /// @notice Enforce that a rebalance swap moves `token` toward its target weight and does
@@ -883,8 +883,16 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
             if (navPerShare > highWaterMark) {
                 uint256 gain = navPerShare - highWaterMark;
                 uint256 perfFeePerShare = (gain * performanceFeeBps) / BPS;
-                // Convert to total shares
-                uint256 perfShares = (perfFeePerShare * _totalSupply) / 1e18;
+                // perfFeePerShare is USDC-per-share (1e18-scaled); multiplying by
+                // _totalSupply and dividing by 1e18 converts it to a USDC fee amount —
+                // NOT a share count. Minting that amount 1:1 as shares (the old bug)
+                // only breaks even when navPerShare == 1e18 exactly; once NAV/share has
+                // grown past $1, each share is worth more than $1 of assets, so minting
+                // $-amount-many shares hands the fee recipient more value than the fee.
+                // Standard dilution-mint conversion instead: shares = feeAssets *
+                // totalSupply / totalAssets (mirrors Yearn's report() fee-share calc).
+                uint256 totalPerfFeeAssets = (perfFeePerShare * _totalSupply) / 1e18;
+                uint256 perfShares = (totalPerfFeeAssets * _totalSupply) / _totalAssets;
 
                 if (perfShares > 0) {
                     uint256 platformShares = (perfShares * PLATFORM_FEE_BPS) / BPS;

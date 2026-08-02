@@ -49,6 +49,22 @@ contract MockToken8 is ERC20 {
     }
 }
 
+/// @dev A 6-decimal token — matches production synths (per Dan's #1129 review) — for
+///      the _tokenValueUsdc / churn-guard sellValue decimals regression.
+contract MockToken6 is ERC20 {
+    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
+        _mint(msg.sender, 1_000_000 * 10**6);
+    }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+}
+
 contract VaultTest is Test {
     MockUSDC public usdc;
     AMMRouter public router;
@@ -1131,6 +1147,75 @@ contract VaultTest is Test {
         assertGt(vault.totalAssets(), 20_000 * 10**6);
     }
 
+    /// @dev Regression for Dan's #1129 review: #942 fixed totalAssets()'s decimal scaling
+    ///      but missed two other call sites — _tokenValueUsdc() and the churn guard's
+    ///      sellValue in rebalance() — which kept dividing by a hardcoded 1e18. Production
+    ///      synths are 6-decimal, so for a 6-decimal holding the old code crushed the
+    ///      computed value by 10**12 (e.g. a $20k position priced as ~$0.00002).
+    ///      _requireTowardTarget() derives currentWeight from _tokenValueUsdc(), so under
+    ///      the bug a 6-decimal synth always looked like ~0% of NAV — meaning "currentWeight
+    ///      <= target + band" was always true and EVERY sell of an over-target 6-decimal
+    ///      synth reverted with RebalanceNotTowardTarget, no matter how overweight the vault
+    ///      actually was. Fixed by routing both sites through _tokenUnit(token) like
+    ///      totalAssets() already does.
+    function test_rebalance_sell_toward_target_succeeds_for_6_decimal_synth() public {
+        MockToken6 s6 = new MockToken6("Synthetic6", "S6");
+        PriceOracle o6 = new PriceOracle("S6", TSLA_PRICE, owner);
+
+        router.createPool(address(usdc), address(s6));
+        uint256 poolUsdc = 10_000_000 * 10**6;
+        uint256 poolS6 = 5_000_000 * 10**6; // 6-decimal reserves, same value ratio as TSLA_PRICE
+        usdc.mint(address(this), poolUsdc);
+        s6.mint(address(this), poolS6);
+        usdc.approve(address(router), poolUsdc);
+        s6.approve(address(router), poolS6);
+        router.addLiquidity(address(usdc), address(s6), poolUsdc, poolS6, 0);
+
+        address[] memory oracleTokens = new address[](1);
+        oracleTokens[0] = address(s6);
+        address[] memory oracles = new address[](1);
+        oracles[0] = address(o6);
+        vm.prank(agent);
+        vault.setTokenOracles(oracleTokens, oracles);
+
+        _depositAsAlice(50_000 * 10**6);
+
+        // Buy ~98% into the 6-decimal synth — no target set yet, so unconstrained.
+        address[] memory buyIn = _singleton(address(s6));
+        uint256[] memory buyAmt = _singletonUint(49_000 * 10**6);
+        address[] memory buyOutT = new address[](0);
+        uint256[] memory buyOutA = new uint256[](0);
+        _commitFor(buyIn, buyAmt, buyOutT, buyOutA);
+        vm.prank(agent);
+        vault.rebalance(buyIn, buyAmt, buyOutT, buyOutA);
+
+        // Arm a 50/50 USDC/s6 target — the vault is now deep over-target on s6.
+        address[] memory tgtTokens = new address[](2);
+        tgtTokens[0] = address(usdc);
+        tgtTokens[1] = address(s6);
+        uint256[] memory tgtWeights = new uint256[](2);
+        tgtWeights[0] = 5000;
+        tgtWeights[1] = 5000;
+        vm.prank(agent);
+        vault.setTargetAllocations(tgtTokens, tgtWeights);
+
+        // Selling toward target must succeed. Under the pre-fix /1e18 divisor this
+        // reverts with RebalanceNotTowardTarget, since _tokenValueUsdc(s6) collapses
+        // to ~0 for a 6-decimal balance and the guard never sees "over target".
+        address[] memory sellInT = new address[](0);
+        uint256[] memory sellInA = new uint256[](0);
+        address[] memory sellOutT = _singleton(address(s6));
+        uint256[] memory sellOutA = _singletonUint(10_000 * 10**6); // ~20k USDC of s6
+        _commitFor(sellInT, sellInA, sellOutT, sellOutA);
+        vm.prank(agent);
+        vault.rebalance(sellInT, sellInA, sellOutT, sellOutA);
+
+        uint256 s6Value = (s6.balanceOf(address(vault)) * o6.getPrice()) / 10**6;
+        uint256 weightAfter = (s6Value * 10000) / vault.totalAssets();
+        assertGt(weightAfter, 5000, "still over target after a partial toward-target sell");
+        assertLt(weightAfter, 9800, "sell actually moved weight down");
+    }
+
     // ─── Fee Tests ───────────────────────────────────────────────────
 
     function test_management_fee_accrues() public {
@@ -1160,6 +1245,57 @@ contract VaultTest is Test {
 
     function test_highWaterMark_initial() public view {
         assertEq(vault.highWaterMark(), 1e18);
+    }
+
+    /// @dev Regression for Dan's #1129 review: the old performance-fee mint treated a
+    ///      USDC-denominated fee amount as a 1:1 share count (`perfShares =
+    ///      perfFeePerShare * totalSupply / 1e18`), which only breaks even when
+    ///      navPerShare == 1e18. Once NAV/share has grown past $1 — exactly the
+    ///      condition required for a performance fee to be owed at all — each share is
+    ///      worth more than $1, so minting that many shares hands the fee recipients
+    ///      more value than the fee. Fixed to the same dilution-mint formula the
+    ///      management-fee branch two lines above already uses: shares = feeAssets *
+    ///      totalSupply / totalAssets.
+    ///
+    ///      Bob deposits 10,000 USDC (navPerShare = 1e18, matches the initial HWM).
+    ///      A 10,000 USDC donation (bypassing deposit(), so no shares are minted for
+    ///      it) doubles totalAssets without moving totalSupply, so navPerShare = 2e18
+    ///      when fees next accrue. At the 50% (cap) performance fee this is a $5,000
+    ///      fee on a $10,000 gain — the exact numbers below are what the fixed
+    ///      dilution formula mints; the old formula would have minted double
+    ///      (5,000e6 total / platform 500e6 / creator 4,500e6).
+    function test_performanceFee_shareMint_uses_dilution_formula_not_raw_assets() public {
+        // 50% performance fee. (Note: main doesn't carry the #1129 fee-bps cap yet —
+        // that PR is still open — so this uses a literal rather than
+        // Vault.MAX_PERFORMANCE_FEE_BPS(), which doesn't exist on this branch.)
+        vm.prank(alice);
+        address v = factory.createVault("Perf Fee Vault", "vPERF", 0, 5000, false);
+        Vault perfVault = Vault(payable(v));
+
+        uint256 deposit = 10_000 * 10**6;
+        vm.startPrank(bob);
+        usdc.approve(address(perfVault), deposit);
+        perfVault.deposit(deposit, bob);
+        vm.stopPrank();
+
+        assertEq(perfVault.totalSupply(), deposit, "1:1 mint on first deposit");
+
+        // Donate — doubles totalAssets, mints no shares, so navPerShare doubles too.
+        uint256 donation = 10_000 * 10**6;
+        usdc.mint(address(this), donation);
+        usdc.transfer(address(perfVault), donation);
+
+        // Trigger _accrueFees() via a trivial state-changing call; timeDelta must be > 0.
+        vm.warp(block.timestamp + 1);
+        usdc.mint(address(this), 2);
+        usdc.approve(address(perfVault), 2);
+        perfVault.deposit(2, address(this));
+
+        // Fixed dilution formula: totalPerfFeeAssets = 5,000e6 ("$5,000", 50% of the
+        // $10,000 gain); perfShares = 5,000e6 * 10,000e6 / 20,000e6 = 2,500e6 — split
+        // 10% platform / 90% creator (PLATFORM_FEE_BPS).
+        assertEq(perfVault.balanceOf(platformRecipient), 250 * 10**6, "platform perf-fee shares");
+        assertEq(perfVault.balanceOf(alice), 2_250 * 10**6, "creator perf-fee shares");
     }
 
     // ─── VaultFactory Tests ──────────────────────────────────────────
