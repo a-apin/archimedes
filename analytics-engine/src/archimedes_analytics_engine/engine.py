@@ -169,6 +169,36 @@ def _build_equity_curve(initial_cash: float, daily_pairs: list[tuple]) -> list[f
     return curve
 
 
+def _max_drawdown_from_curve(equity_curve: list[float]) -> tuple[float | None, int | None]:
+    """Peak-to-trough max drawdown (percent) and its duration (bars) from a
+    plain equity curve.
+
+    Same definition as backtrader's ``DrawDown`` analyzer (``(peak - value) /
+    peak * 100``), reimplemented here because :func:`combine_universe_results`
+    combines already-extracted per-asset results and has no cerebro run of its
+    own to attach an analyzer to.
+    """
+    if not equity_curve:
+        return None, None
+    peak = equity_curve[0]
+    max_dd = 0.0
+    max_len = 0
+    cur_len = 0
+    for value in equity_curve:
+        if value > peak:
+            peak = value
+            cur_len = 0
+        else:
+            cur_len += 1
+            if cur_len > max_len:
+                max_len = cur_len
+        if peak > 0:
+            dd = (peak - value) / peak * 100.0
+            if dd > max_dd:
+                max_dd = dd
+    return max_dd, max_len
+
+
 def _compute_sortino(daily_returns: list[float]) -> float | None:
     if not daily_returns:
         return None
@@ -497,6 +527,103 @@ def _extract_result(
         bars=bars,
         backtest_start=backtest_start,
         backtest_end=backtest_end,
+    )
+
+
+def combine_universe_results(
+    op_results: list[tuple[str, BacktestResult]],
+    *,
+    initial_cash: float,
+) -> BacktestResult:
+    """Equal-weighted composite of a strategy's per-declared-asset backtests
+    into ONE daily-return series, aligned on the INTERSECTION of trading dates.
+
+    A strategy with an N-asset ``ASSET_UNIVERSE`` is now backtested once per
+    declared asset (see ``cli.run_command``), but the rigor gate — and every
+    other downstream consumer of ``backend/.../get_daily_returns`` — needs a
+    single series to grade. Averaging the per-asset returns POSITIONALLY (by
+    index) would silently misalign calendars that genuinely differ (``^N225``
+    trades on the Tokyo calendar, ``CL=F`` is a futures contract with its own
+    session) and produce a plausible-looking but WRONG series — exactly the
+    bug class this module exists to fix. Aligning by DATE instead means only
+    bars present in *every* constituent's own series are averaged.
+
+    For a single-asset universe (``len(op_results) == 1``) the result is
+    numerically identical to that one run: an intersection of one date set is
+    just that series' own dates, and the equal-weighted mean of one value is
+    that value.
+
+    Trade-level stats (``total_trades``, ``win_rate``, ``profit_factor``,
+    ``avg_holding_period_days``) and cost-realism fields
+    (``turnover_annualized``, ``traded_notional``, ``total_commission_paid``,
+    ``cost_drag_annual_pct``, ``break_even_cost_bps``, ``gross_sharpe_ratio``)
+    have no well-defined meaning for a synthetic blended series — no single
+    backtrader run produced them — and are left at their dataclass defaults
+    rather than fabricated by summing/averaging across independent runs.
+
+    Raises
+    ------
+    ValueError
+        If ``op_results`` is empty, or if the constituent series share no
+        common trading dates at all.
+    """
+    if not op_results:
+        raise ValueError("combine_universe_results requires at least one operation result")
+
+    per_op_by_date: list[dict[str, float]] = [
+        dict(zip(result.daily_return_dates, result.daily_returns, strict=True)) for _, result in op_results
+    ]
+
+    common_dates = set(per_op_by_date[0])
+    for by_date in per_op_by_date[1:]:
+        common_dates &= set(by_date)
+    if not common_dates:
+        names = ", ".join(name for name, _ in op_results)
+        raise ValueError(f"universe constituents [{names}] share no common trading dates; cannot build composite")
+    sorted_dates = sorted(common_dates)
+
+    daily_returns = [statistics.fmean(by_date[d] for by_date in per_op_by_date) for d in sorted_dates]
+
+    equity_curve = _build_equity_curve(initial_cash, list(zip(sorted_dates, daily_returns, strict=True)))
+    bars = len(sorted_dates)
+    final_value = equity_curve[-1]
+    total_return_pct = ((final_value / initial_cash) - 1.0) * 100.0 if initial_cash else 0.0
+
+    sharpe = _sharpe_bt_convention(daily_returns)
+    sortino = _compute_sortino(daily_returns)
+    cagr = _compute_cagr(initial_cash, final_value, bars)
+
+    max_dd_pct, max_dd_len = _max_drawdown_from_curve(equity_curve)
+    calmar: float | None = None
+    if cagr is not None and max_dd_pct is not None and max_dd_pct > 0:
+        calmar = cagr / (max_dd_pct / 100.0)
+
+    look_ahead_passed = all(result.look_ahead_audit_passed for _, result in op_results)
+    # All constituent legs are run with the same tx-cost/slippage settings
+    # (cli.run_command applies one flat config to every per-asset call), so
+    # carrying the first leg's values forward is exact, not an approximation.
+    transaction_cost_bps = op_results[0][1].transaction_cost_bps
+    slippage_bps = op_results[0][1].slippage_bps
+
+    return BacktestResult(
+        final_value=final_value,
+        total_return_pct=total_return_pct,
+        equity_curve=equity_curve,
+        sharpe_ratio=sharpe,
+        sortino_ratio=sortino,
+        calmar_ratio=calmar,
+        max_drawdown_pct=max_dd_pct,
+        max_drawdown_duration_bars=max_dd_len,
+        cagr=cagr,
+        daily_returns=daily_returns,
+        daily_return_dates=sorted_dates,
+        transaction_cost_bps=transaction_cost_bps,
+        slippage_bps=slippage_bps,
+        look_ahead_audit_passed=look_ahead_passed,
+        backtest_engine=BACKTEST_ENGINE_TAG,
+        bars=bars,
+        backtest_start=sorted_dates[0] if sorted_dates else None,
+        backtest_end=sorted_dates[-1] if sorted_dates else None,
     )
 
 

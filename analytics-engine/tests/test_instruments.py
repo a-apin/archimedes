@@ -1,11 +1,15 @@
 import json
 from importlib import resources
+from pathlib import Path
 
 import archimedes_analytics_engine.instruments as instruments_mod
 from archimedes_analytics_engine.instruments import (
     OPERATION_TO_SYMBOL,
     resolve_operations,
 )
+from archimedes_analytics_engine.strategy_loader import load_strategy
+
+_STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
 
 
 def test_operations_include_required_assets() -> None:
@@ -69,3 +73,41 @@ def test_load_falls_back_when_resource_missing(monkeypatch) -> None:
     monkeypatch.setattr(instruments_mod, "_SSOT_RESOURCE", "data/does_not_exist.json")
     loaded = instruments_mod._load_operation_to_symbol()
     assert loaded == instruments_mod._FALLBACK_OPERATION_TO_SYMBOL
+
+
+# ─── Declared-universe backfill (backtest-vol audit) ──────────────────────
+#
+# BIL (capital_preservation_tbill) and TLT (gatev_2006_portfolio_of_pairs)
+# were the two ASSET_UNIVERSE tickers among the 34 curated strategies that
+# were not yet operation keys — cli.run_command's declared-universe routing
+# needs resolve_operations to succeed for every strategy's own universe.
+
+
+def test_all_curated_strategies_declared_universe_resolves() -> None:
+    strategy_files = sorted(_STRATEGIES_DIR.glob("*.py"))
+    assert len(strategy_files) == 34, (
+        f"expected 34 curated strategy files, found {len(strategy_files)} — "
+        "update this test if the curated library size changed intentionally"
+    )
+
+    unresolved: dict[str, list[str]] = {}
+    resolved_count = 0
+    for path in strategy_files:
+        bundle = load_strategy(path)
+        universe = bundle.metadata.get("asset_universe") or []
+        try:
+            resolve_operations(universe)
+            resolved_count += 1
+        except ValueError:
+            bad = [op for op in universe if op.upper() not in OPERATION_TO_SYMBOL]
+            unresolved[path.name] = bad
+
+    assert not unresolved, f"strategies with unresolved ASSET_UNIVERSE entries: {unresolved}"
+    assert resolved_count == 34
+
+
+def test_bil_and_tlt_are_operation_keys() -> None:
+    # BIL: SPDR Bloomberg 1-3 Month T-Bill ETF (capital_preservation_tbill's cash leg).
+    # TLT: iShares 20+ Year Treasury Bond ETF (gatev_2006_portfolio_of_pairs universe entry).
+    assert OPERATION_TO_SYMBOL["BIL"] == "BIL"
+    assert OPERATION_TO_SYMBOL["TLT"] == "TLT"

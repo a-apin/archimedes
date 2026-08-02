@@ -13,7 +13,15 @@ import backtrader as bt
 import pandas as pd
 
 from .data import fetch_ohlcv
-from .engine import BACKTEST_ENGINE_TAG, FeedArityError, required_feeds, run_backtest, run_pairs_backtest
+from .engine import (
+    BACKTEST_ENGINE_TAG,
+    BacktestResult,
+    FeedArityError,
+    combine_universe_results,
+    required_feeds,
+    run_backtest,
+    run_pairs_backtest,
+)
 from .instruments import OPERATION_TO_SYMBOL, resolve_operations
 from .strategy_loader import load_strategy
 
@@ -156,7 +164,26 @@ def run_command(
             }
         )
     else:
-        ops = resolve_operations(operations)
+        # Single-feed strategies must be backtested on the instruments they
+        # were actually designed for. A strategy's ASSET_UNIVERSE (module-
+        # level, read off `metadata` exactly like `_pair_legs` reads it above)
+        # is the strategy's OWN declared contract — the same status the pairs
+        # branch already gives it. `operations` (BACKTEST_OPERATIONS) is a
+        # benchmark/default selector for strategies that decline to declare a
+        # universe of their own; it must never override a declared one, or
+        # the engine silently substitutes the wrong return series. That
+        # silent substitution was the defect: every single-feed strategy —
+        # regardless of its own ASSET_UNIVERSE — was unconditionally
+        # backtested on BACKTEST_OPERATIONS (default ["SPY"]), so e.g.
+        # capital_preservation_tbill (declares ["BIL"], ~0.2% real vol) was
+        # graded on pure S&P-500 returns instead.
+        declared_universe = metadata.get("asset_universe")
+        if declared_universe:
+            ops = resolve_operations([str(o) for o in declared_universe])
+        else:
+            ops = resolve_operations(operations)
+
+        per_asset: list[tuple[str, BacktestResult]] = []
         for op in ops:
             symbol = OPERATION_TO_SYMBOL[op]
             prices = fetcher(symbol, start, end)
@@ -169,12 +196,35 @@ def run_command(
                 transaction_cost_bps=tx_cost_bps,
                 slippage_bps=slippage_bps,
             )
+            per_asset.append((op, bt_result))
 
             results.append(
                 {
                     "operation": op,
                     "symbol": symbol,
                     "metrics": asdict(bt_result),
+                }
+            )
+
+        # The rigor gate (backend get_daily_returns) grades ONE daily_returns
+        # series per strategy. With a declared multi-asset universe the loop
+        # above now produces N per-asset results, and grading only the first
+        # would be arbitrary — so emit an additional composite result
+        # representing the strategy applied across its whole declared
+        # universe (equal-weighted, date-intersection-aligned — see
+        # combine_universe_results), and let the backend select IT for
+        # persistence/grading (backtest_mapper.select_operation_result).
+        # Only meaningful when the ops actually came from a declared
+        # universe: a fallback run on the passed-in benchmark `operations`
+        # has no "declared universe" to composite over.
+        if declared_universe:
+            composite = combine_universe_results(per_asset, initial_cash=initial_cash)
+            results.append(
+                {
+                    "operation": "UNIVERSE",
+                    "symbol": "/".join(op for op, _ in per_asset),
+                    "constituent_operations": [op for op, _ in per_asset],
+                    "metrics": asdict(composite),
                 }
             )
 
