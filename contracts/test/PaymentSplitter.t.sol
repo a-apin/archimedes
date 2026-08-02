@@ -86,6 +86,14 @@ contract PaymentSplitterTest is Test {
         splitter.createPool(keccak256("p3"), creator, address(0));
     }
 
+    function test_createPool_emits_PoolCreated() public {
+        bytes32 id = keccak256("event_pool");
+        vm.expectEmit(true, true, true, false);
+        emit PaymentSplitter.PoolCreated(id, creator, platform);
+        vm.prank(owner);
+        splitter.createPool(id, creator, platform);
+    }
+
     // ── depositToPool ────────────────────────────────────────────
 
     function test_depositToPool() public {
@@ -205,6 +213,36 @@ contract PaymentSplitterTest is Test {
         emit PaymentSplitter.PaymentSplit(POOL_ID, amount, creatorShare, platformShare);
         vm.prank(stranger);
         splitter.withdraw(POOL_ID, amount);
+    }
+
+    // ── Pool balance isolation ──────────────────────────────────
+
+    function test_pool_balance_isolation() public {
+        bytes32 poolA = keccak256("pool_a");
+        bytes32 poolB = keccak256("pool_b");
+
+        vm.startPrank(owner);
+        splitter.createPool(poolA, creator, platform);
+        splitter.createPool(poolB, creator, platform);
+        vm.stopPrank();
+
+        _deposit(alice, poolA, 1_000 * 10**6);
+        _deposit(alice, poolB, 2_000 * 10**6);
+
+        (,,,, uint256 heldA,) = splitter.pools(poolA);
+        (,,,, uint256 heldB,) = splitter.pools(poolB);
+        assertEq(heldA, 1_000 * 10**6);
+        assertEq(heldB, 2_000 * 10**6);
+
+        // Drain pool A entirely.
+        vm.prank(stranger);
+        splitter.withdraw(poolA, 1_000 * 10**6);
+
+        // Pool A is empty; pool B must be untouched (no cross-pool contamination).
+        (,,,, heldA,) = splitter.pools(poolA);
+        (,,,, heldB,) = splitter.pools(poolB);
+        assertEq(heldA, 0);
+        assertEq(heldB, 2_000 * 10**6);
     }
 
     // ── deactivatePool ───────────────────────────────────────────
