@@ -259,6 +259,10 @@ class AssetMarketService:
         # Keyed by (symbol, range) — different ranges have different lookbacks.
         self._cache_history: dict[tuple[str, str], tuple[float, ExploreHistoryResponse]] = {}
         self._history_cache_ttl = 60.0  # seconds
+        # Guards the background refresh (see list_assets): at most one
+        # in-flight refresh at a time, so N requests landing in the same
+        # stale window don't each spawn their own oracle+yfinance rebuild.
+        self._refresh_task: asyncio.Task | None = None
 
     # ── On-chain oracle reads ────────────────────────────────────────────
 
@@ -406,9 +410,60 @@ class AssetMarketService:
     # ── Main list ─────────────────────────────────────────────────────────
 
     async def list_assets(self) -> ExploreAssetsResponse:
+        """Serve the asset list, stale-while-revalidate (#explore-latency).
+
+        The old shape awaited the full oracle+yfinance rebuild inline on
+        every cache miss: whichever request landed just after the 30s TTL
+        expired paid that cost synchronously. Measured in prod (2026-08-02):
+        12.7s-42.9s per rebuild (12s is the oracle-read budget alone, spent
+        even when the oracle path yields zero live prices — see
+        _read_oracle_prices' docstring on current on-chain oracle health).
+        That is the whole "Explore takes a long time to load" symptom for
+        an unlucky visitor.
+
+        Fix: once a cache exists at all, NEVER block a request behind a
+        rebuild. A stale cache is served immediately and a rebuild is
+        kicked off in the background (deduplicated via ``_refresh_task`` so
+        concurrent requests in the same stale window don't each start their
+        own rebuild); the NEXT request picks up the fresh result. Only the
+        very first request after cold start (no cache yet at all) pays the
+        synchronous cost — unavoidable, and no worse than today.
+        """
         now = time.time()
-        if self._cache and (now - self._cache_ts) < _CACHE_TTL_SECONDS:
+        if self._cache is not None:
+            if (now - self._cache_ts) < _CACHE_TTL_SECONDS:
+                return self._cache
+            self._kick_background_refresh()
             return self._cache
+
+        # Cold start — no cache yet. This request pays the one-time cost;
+        # every request after it hits the branches above.
+        return await self._refresh()
+
+    def _kick_background_refresh(self) -> None:
+        """Start a background rebuild if one isn't already in flight."""
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
+        self._refresh_task = asyncio.create_task(self._refresh(), name="explore-assets-refresh")
+
+        def _log_if_failed(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("explore: background refresh failed: %s", exc)
+
+        self._refresh_task.add_done_callback(_log_if_failed)
+
+    async def _refresh(self) -> ExploreAssetsResponse:
+        """Rebuild the asset list from oracle + yfinance and populate the cache.
+
+        This is the full-cost path (was the entire body of ``list_assets``
+        before the stale-while-revalidate wrapper above). Callers should go
+        through ``list_assets()``; this is called directly only for the
+        cold-start (no cache yet) case and from the background refresh task.
+        """
+        now = time.time()
 
         # The deploy-eligible SSOT universe — same set as the Generate picker.
         # See _explore_universe() for the source rationale.
