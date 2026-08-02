@@ -1039,18 +1039,6 @@ contract VaultTest is Test {
         assertEq(vault.performanceFeeBps(), 2000);
     }
 
-    function test_revert_createVault_managementFeeTooHigh() public {
-        vm.prank(agent);
-        vm.expectRevert(Vault.FeeBpsTooHigh.selector);
-        factory.createVault("High Fee", "vHIGH", 501, 2000, true);
-    }
-
-    function test_revert_createVault_performanceFeeTooHigh() public {
-        vm.prank(agent);
-        vm.expectRevert(Vault.FeeBpsTooHigh.selector);
-        factory.createVault("High Fee", "vHIGH", 150, 5001, true);
-    }
-
     function test_vault_creator() public view {
         assertEq(vault.creator(), agent);
     }
@@ -1190,6 +1178,85 @@ contract VaultTest is Test {
 
         assertEq(Vault(payable(v)).tier(), 2);
         assertEq(Vault(payable(v)).creator(), alice);
+    }
+
+    function test_revert_createVault_managementFeeTooHigh() public {
+        uint16 tooHigh = uint16(vault.MAX_MANAGEMENT_FEE_BPS()) + 1;
+        vm.prank(alice);
+        vm.expectRevert(Vault.ManagementFeeTooHigh.selector);
+        factory.createVault("Bad Vault", "vBAD", tooHigh, 1000, false);
+    }
+
+    function test_revert_createVault_performanceFeeTooHigh() public {
+        uint16 tooHigh = uint16(vault.MAX_PERFORMANCE_FEE_BPS()) + 1;
+        vm.prank(alice);
+        vm.expectRevert(Vault.PerformanceFeeTooHigh.selector);
+        factory.createVault("Bad Vault", "vBAD", 100, tooHigh, false);
+    }
+
+    function test_createVault_feesAtCap_succeed() public {
+        vm.prank(alice);
+        address v = factory.createVault(
+            "Capped Vault", "vCAP",
+            uint16(vault.MAX_MANAGEMENT_FEE_BPS()),
+            uint16(vault.MAX_PERFORMANCE_FEE_BPS()),
+            false
+        );
+        assertEq(Vault(payable(v)).managementFeeBps(), vault.MAX_MANAGEMENT_FEE_BPS());
+        assertEq(Vault(payable(v)).performanceFeeBps(), vault.MAX_PERFORMANCE_FEE_BPS());
+    }
+
+    /// @notice Regression test for the C1 fee-drain finding: a Tier-2 creator could
+    ///         previously set performanceFeeBps up to 65535 (655.35%), donate USDC
+    ///         directly to the vault (bypassing deposit(), so no shares are minted for
+    ///         the donation), then trigger _accrueFees() via any state-changing call —
+    ///         minting themselves fee-shares worth MORE than their own donation, at the
+    ///         expense of other depositors' principal. With performanceFeeBps now capped
+    ///         at MAX_PERFORMANCE_FEE_BPS (50%, i.e. <= 100%), the same donation trick can
+    ///         extract at most the donated amount back — never more, and never any of
+    ///         another depositor's principal.
+    function test_capped_performance_fee_donation_cannot_drain_other_depositors() public {
+        vm.prank(alice);
+        address v = factory.createVault(
+            "Attacker Vault", "vATK", 0, uint16(vault.MAX_PERFORMANCE_FEE_BPS()), false
+        );
+        Vault attackerVault = Vault(payable(v));
+
+        uint256 depositAmount = 10_000 * 10**6;
+
+        // Honest depositor
+        vm.startPrank(bob);
+        usdc.approve(address(attackerVault), depositAmount);
+        attackerVault.deposit(depositAmount, bob);
+        vm.stopPrank();
+
+        uint256 bobRedeemableBefore = attackerVault.previewRedeem(attackerVault.balanceOf(bob));
+
+        // Attacker donates directly (bypassing deposit() — no shares minted for this).
+        uint256 donation = 1_000 * 10**6;
+        usdc.mint(alice, donation);
+        vm.prank(alice);
+        usdc.transfer(address(attackerVault), donation);
+
+        // Advance time so _accrueFees()'s timeDelta > 0, then trigger it via a
+        // trivial state-changing call (mirrors the exploit walkthrough).
+        vm.warp(block.timestamp + 1);
+        vm.startPrank(alice);
+        usdc.mint(alice, 2);
+        usdc.approve(address(attackerVault), 2);
+        attackerVault.deposit(2, alice);
+        vm.stopPrank();
+
+        uint256 aliceRedeemable = attackerVault.previewRedeem(attackerVault.balanceOf(alice));
+
+        // Attacker's total extractable value never exceeds what they put in
+        // (their donation + their own tiny deposit) — no free money manufactured.
+        assertLe(aliceRedeemable, donation + 2);
+
+        // Bob's redeemable value must not have dropped below what it was before the
+        // attacker's donation+fee-harvest — i.e., no value was siphoned from his principal.
+        uint256 bobRedeemableAfter = attackerVault.previewRedeem(attackerVault.balanceOf(bob));
+        assertGe(bobRedeemableAfter, bobRedeemableBefore);
     }
 
     function test_factory_getVaults() public {
