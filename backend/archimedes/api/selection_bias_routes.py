@@ -473,16 +473,14 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.backtest_repository import get_daily_returns, latest_backtests_by_strategy
 
+    from archimedes.services.strategy_visibility import is_strategy_visible
+
     init_db()
     with get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-        if row is None:
+        caller = get_verified_wallet(request)
+        if not is_strategy_visible(row, caller):
             return None
-        if not row.is_example and not row.is_published:
-            caller = get_verified_wallet(request)
-            is_owner = bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
-            if not is_owner:
-                return None
 
         strategy_name = row.strategy_name
         daily_returns = get_daily_returns(session, strategy_id)

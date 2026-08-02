@@ -167,14 +167,14 @@ def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
         # re-running its schema inspection/patch pass per deploy request (× per
         # strategy id) is wasted DB work on a hot, funds-adjacent path. Direct
         # test callers create their own schema (see test_vault_rigor_gate.py).
+        from archimedes.services.strategy_visibility import is_strategy_visible
+
         with get_session() as session:
             row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
             if row is None:
                 return None
-            if row.is_example or row.is_published:
-                return True
             caller = get_verified_wallet(request)
-            return bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
+            return is_strategy_visible(row, caller)
     except HTTPException:
         raise
     except Exception:

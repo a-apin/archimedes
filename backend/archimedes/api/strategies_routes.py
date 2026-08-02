@@ -1831,15 +1831,13 @@ async def get_strategy_returns(strategy_id: str, request: Request):
         from archimedes.db import get_session
         from archimedes.models.strategy_store import StrategyRecord
 
+        from archimedes.services.strategy_visibility import is_strategy_visible
+
         with get_session() as session:
             row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-            if row is None:
+            caller = get_verified_wallet(request)
+            if not is_strategy_visible(row, caller):
                 raise HTTPException(status_code=404, detail="Strategy not found")
-            if not row.is_example and not row.is_published:
-                caller = get_verified_wallet(request)
-                is_owner = bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
-                if not is_owner:
-                    raise HTTPException(status_code=404, detail="Strategy not found")
 
     # ── 2. Load persisted daily returns from backtest_results ────────────────
     try:
@@ -1897,14 +1895,13 @@ async def get_strategy(strategy_id: str, request: Request):
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.passport_loader import get_passport
+    from archimedes.services.strategy_visibility import is_strategy_visible
 
     with get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-        if row is not None and not row.is_example and not row.is_published:
-            caller = get_verified_wallet(request)
-            is_owner = bool(row.owner_wallet and caller and row.owner_wallet.lower() == caller.lower())
-            if not is_owner:
-                raise HTTPException(status_code=404, detail="Strategy not found")
+        caller = get_verified_wallet(request)
+        if row is not None and not is_strategy_visible(row, caller):
+            raise HTTPException(status_code=404, detail="Strategy not found")
         record = get_passport(session, strategy_id)
         if record is not None:
             return _passport_to_strategy_response(record, session=session)
