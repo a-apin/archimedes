@@ -10,13 +10,17 @@
 
 name: import-guard
 
+# Deliberately NO top-level `on.pull_request.paths` filter here — do not
+# re-add one. If this workflow is ever marked a required status check in
+# branch protection, a paths filter means the job simply never *reports* on
+# PRs that don't touch those paths — GitHub then blocks merge forever
+# waiting on a check that will never post a result. There is no way to make
+# a required check "skip cleanly" via `paths:`; the only safe pattern is to
+# always run the job and gate the actual work inside it (see the
+# "Detect relevant changes" step below), so the check always reports and a
+# green early-exit is always achievable. See PR #1180.
 on:
   pull_request:
-    paths:
-      - "backend/**.py"
-      - "backend/requirements.txt"
-      - "environment.yml"
-      - ".github/workflows/import-guard.yml"
 
 # Least-privilege GITHUB_TOKEN: this workflow only reads the repo to run the
 # guards; it never writes. The explicit block satisfies CodeQL
@@ -30,20 +34,65 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history so the "relevant files changed" diff below can
+          # always resolve base...head, even on PRs with a deep or
+          # force-pushed history.
+          fetch-depth: 0
+      - name: Detect relevant changes
+        id: changes
+        # Mirrors what used to be the workflow-level `paths:` filter, but as
+        # an in-job gate instead: the job (and therefore the required check)
+        # always runs and always reports a result, it just no-ops fast when
+        # none of backend/**.py, backend/requirements.txt, environment.yml,
+        # or this workflow file changed. Never restore the top-level
+        # `paths:` filter — see the comment on `on:` above.
+        run: |
+          set -euo pipefail
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          changed_files="$(git diff --name-only "${base_sha}" "${head_sha}")"
+          echo "Changed files:"
+          echo "${changed_files}"
+          relevant=false
+          while IFS= read -r f; do
+            case "$f" in
+              backend/*.py|backend/requirements.txt|environment.yml|.github/workflows/import-guard.yml)
+                relevant=true
+                ;;
+            esac
+          done <<< "${changed_files}"
+          echo "relevant=${relevant}" >> "$GITHUB_OUTPUT"
+      - name: No relevant files changed — skipping
+        if: steps.changes.outputs.relevant == 'false'
+        run: echo "No backend/**.py, backend/requirements.txt, environment.yml, or workflow changes in this PR — nothing for import-guard to check."
       - uses: actions/setup-python@v7
+        if: steps.changes.outputs.relevant == 'true'
         with:
           python-version: "3.12"
       - name: Install guards
+        if: steps.changes.outputs.relevant == 'true'
         # ruff pinned to match quality-gate.yml + main-format-guard.yml +
         # .pre-commit-config.yaml. Pin deptry too: its CLI is not stable.
         run: pip install --quiet ruff==0.15.13 deptry==0.25.1
       - name: Undefined names (F821) — catches aliased-import NameErrors
+        if: steps.changes.outputs.relevant == 'true'
         run: ruff check backend/archimedes --select F821 --no-cache
       - name: Byte-compile (no syntax / obvious import-time breakage)
+        if: steps.changes.outputs.relevant == 'true'
         run: python -m compileall -q backend/archimedes
       - name: Dependency hygiene — undeclared / missing deps (incl. lazy imports)
+        if: steps.changes.outputs.relevant == 'true'
         # DEP002 is noisy for one shared requirements file. umap and paperqa are
-        # deliberate optional imports with runtime fallbacks.
+        # deliberate optional imports with runtime fallbacks. The
+        # --package-module-name-map entries exist because deptry can only
+        # resolve package-name -> import-name automatically by introspecting
+        # an *installed* package, and this job intentionally installs only
+        # `ruff deptry` (not the full backend dependency set) to stay fast.
+        # Without the map, deptry falls back to a naive guess
+        # (python-dotenv -> python_dotenv, scikit-learn -> scikit_learn,
+        # circle-titanoboa-sdk -> circle_titanoboa_sdk) and false-positives
+        # DEP001 on real, correctly-declared dependencies. See PR #1180.
         run: >-
           deptry backend/archimedes
           --requirements-files backend/requirements.txt
@@ -51,3 +100,4 @@ jobs:
           --known-first-party archimedes_analytics_engine
           --ignore DEP002
           --per-rule-ignores 'DEP001=umap|paperqa'
+          --package-module-name-map 'python-dotenv=dotenv,scikit-learn=sklearn,circle-titanoboa-sdk=circlekit'
