@@ -93,8 +93,9 @@ export default function RigorExplainer() {
             </div>
             <div className="caption" style={{ color: 'var(--text-3)' }}>
               Graded on its own Sharpe (N = 1, undeflated) with a standard error robust to
-              non-normality — the market's volatility-managed premium clears the bar without
-              relying on a multiple-testing correction.
+              non-normality and serial correlation (Newey–West HAC) — the market's
+              volatility-managed premium clears the bar without relying on a multiple-testing
+              correction.
             </div>
           </div>
         </div>

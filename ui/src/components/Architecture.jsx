@@ -346,9 +346,6 @@ function DebateSociety({ health, healthError }) {
 // correction)". The copy below states the defensible claim only, and names
 // the num_trials=1 caveat explicitly rather than burying it.
 function RigorGateSection({ leaderboard, leaderboardError }) {
-  const passingCount = leaderboard?.entries
-    ? leaderboard.entries.filter(e => e.passes_rigor_gate).length
-    : undefined
   const loading = !leaderboard && !leaderboardError
 
   return (
@@ -416,15 +413,17 @@ function RigorGateSection({ leaderboard, leaderboardError }) {
           multiple-testing correction) for those strategies.
         </p>
         <p className="caption" style={{ color: 'var(--text-3)', borderTop: '1px solid var(--glass-border)', paddingTop: 10 }}>
+          <strong style={{ color: 'var(--text-1)' }}>Not one paper-derived alpha strategy clears our bar.</strong>{' '}
+          Every curated-library candidate evaluated against the live gate has been rejected — that is
+          the gate doing its job, not the library sitting empty.{' '}
           {leaderboardError ? (
-            <span style={{ color: 'var(--text-4)' }}>Live proof line unavailable right now.</span>
+            <span style={{ color: 'var(--text-4)' }}>Live leaderboard count unavailable right now.</span>
           ) : loading ? (
-            <span style={{ color: 'var(--text-4)', animation: 'pulse 1.4s infinite' }}>Loading live gate results…</span>
+            <span style={{ color: 'var(--text-4)', animation: 'pulse 1.4s infinite' }}>Loading live leaderboard…</span>
           ) : (
             <>
-              <strong style={{ color: 'var(--text-1)' }}>{fmtNum(passingCount)}</strong> of{' '}
-              <strong style={{ color: 'var(--text-1)' }}>{fmtNum(leaderboard.total)}</strong> strategies on the
-              leaderboard currently pass the live gate.
+              <strong style={{ color: 'var(--text-1)' }}>{fmtNum(leaderboard.total)}</strong> strategies sit
+              on the leaderboard today.
             </>
           )}
         </p>

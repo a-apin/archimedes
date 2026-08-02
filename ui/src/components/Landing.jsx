@@ -5,8 +5,11 @@ import { apiGet } from '../api'
 // today (ConfigService.get_contract_addresses). `usdc` is Arc-native (Circle's,
 // not ours) so it is deliberately excluded from this count — see
 // ARCHITECTURE-MAP.md §1.7. strategy_registry / payment_splitter are NOT in the
-// live response yet (a known backend gap), so the derived count below is the
-// honest floor, not the full architectural singleton count.
+// live response yet (a known backend gap); `price_oracle` is ONE representative
+// address standing in for every per-asset oracle actually deployed; and
+// `contracts.vaults` is never folded into totalLive below. All of that makes
+// the derived count a floor, not an inventory — render it as "at least N" /
+// "N+", never as a complete census.
 const CORE_CONTRACT_FIELDS = [
   'synthetic_factory',
   'amm_router',
@@ -106,7 +109,7 @@ export default function Landing({ onNavigate }) {
               desc: contractsError
                 ? 'live count unavailable'
                 : totalLive != null
-                  ? `${totalLive} live instances`
+                  ? `≥${totalLive} live instances`
                   : '…',
             },
             { name: 'AWS Bedrock', desc: 'Nova Micro · Strategy extraction · Reasoning' },
@@ -158,14 +161,16 @@ export default function Landing({ onNavigate }) {
           <FeatureCard
             icon="scroll-text"
             title="Smart Contracts on Arc"
-            tag={contractsError ? 'Foundry' : totalLive != null ? `${totalLive} live · Foundry` : 'Foundry'}
+            tag={contractsError ? 'Foundry' : totalLive != null ? `≥${totalLive} live · Foundry` : 'Foundry'}
           >
             {contractsError ? (
               <>Live contract count unavailable right now — see the Architecture page for the full census.</>
             ) : totalLive != null ? (
               <>
-                {coreCount} core contracts, {synthCount} synthetic assets, and {poolCount} AMM pools deployed
-                on Arc — fetched live from the contract census, not hardcoded.
+                At least {coreCount} core contracts, {synthCount} synthetic assets, and {poolCount} AMM
+                pools deployed on Arc — fetched live from the contract census, not hardcoded, and reported
+                as a floor: some core singletons, per-asset oracles, and vault instances aren't all counted
+                yet.
               </>
             ) : (
               <>Loading the live contract census…</>

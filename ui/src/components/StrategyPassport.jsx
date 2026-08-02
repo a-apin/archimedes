@@ -457,7 +457,8 @@ export default function StrategyPassport({ strategyId, onNavigate, walletAddr })
             <>
               This strategy is graded on its own Sharpe (num_trials = 1 — no multiple-testing
               correction applied); the Deflated Sharpe Ratio here still uses a standard error
-              robust to non-normality (Bailey & López de Prado 2014).
+              robust to non-normality and serial correlation (Newey–West HAC; Bailey & López de
+              Prado 2014).
             </>
           )}{' '}
           PBO estimates how much of the in-sample Sharpe is overfit (Bailey et al. 2014). OOS
