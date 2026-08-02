@@ -6,6 +6,7 @@ Handles reading portfolio state, executing rebalance trades, and vault creation.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 
@@ -861,6 +862,7 @@ class ChainExecutor:
                 abi_params=[checksummed, weights_bps],
             )
             logger.info(f"setTargetAllocations via Circle: {tx_hash} for vault {vault_address}")
+            await self._write_price_baseline_if_absent(vault_address, checksummed, weights_bps)
             return tx_hash
 
         # Fallback: raw private key
@@ -891,7 +893,94 @@ class ChainExecutor:
         tx_hash = await chain_client.w3.eth.send_raw_transaction(signed.raw_transaction)
 
         logger.info(f"setTargetAllocations tx sent: {tx_hash.hex()} for vault {vault_address}")
+        await self._write_price_baseline_if_absent(vault_address, checksummed, weights_bps)
         return tx_hash.hex()
+
+    async def _write_price_baseline_if_absent(
+        self,
+        vault_address: str,
+        tokens: list[str],
+        weights_bps: list[int],
+    ) -> None:
+        """Persist the oracle-price baseline vault_service._compute_returns reads (#1103).
+
+        THIS is the writer the reader (``vault_service._compute_returns``, key
+        ``vault:prices:{vault_address}``) actually reads — PR #1152 wrote a
+        DIFFERENT key (``oracle:prices:latest``, global, keyed by symbol,
+        holding LATEST prices) that nothing downstream ever consumed, so every
+        vault fell through to a fabricated ASSET_EXPECTED_RETURN + MD5-noise
+        number. That mismatch is what this function fixes.
+
+        ``setTargetAllocations`` is called every agent tick (see
+        ``agent_runner.py`` / ``marketplace/service.py``), not once at vault
+        creation, so this write uses Redis ``SET NX`` — it only ever takes
+        effect the FIRST time a vault's allocations become known. Overwriting
+        the baseline on every subsequent tick would make creation_price drift
+        to match current_price and pin computed returns at ~0% forever, which
+        is a different bug, not a fix (do not "fix" this by writing LATEST
+        prices here).
+
+        Prices are read the SAME way ``_compute_returns`` reads "current"
+        prices (raw on-chain oracle value / 1e6) so the two sides of the
+        later comparison are apples-to-apples.
+
+        Fail-soft: ANY failure here (Redis unreachable, an oracle revert for
+        one token, etc.) is logged and swallowed — the on-chain
+        setTargetAllocations transaction has already succeeded and must never
+        be undone or blocked by a best-effort cache write. A vault that ends
+        up with no baseline just reads back as "returns unavailable"
+        downstream, never as a fabricated number — that asymmetry is the
+        entire point of #1103.
+        """
+        try:
+            import json as _json
+
+            import redis.asyncio as _aioredis
+
+            usdc = chain_client.settings.usdc_address.lower()
+            addr_to_symbol = {addr.lower(): sym for sym, addr in chain_client.settings.synth_addresses.items()}
+
+            prices: dict[str, float] = {}
+            for token, weight in zip(tokens, weights_bps, strict=False):
+                if weight <= 0:
+                    continue
+                token_lower = token.lower()
+                try:
+                    if token_lower == usdc:
+                        prices[token] = 1.0
+                        continue
+                    symbol = addr_to_symbol.get(token_lower)
+                    if symbol is None:
+                        continue  # unknown token — no oracle to price it against
+                    oracle = self.loader.oracle_for(symbol)
+                    raw = await oracle.functions.price().call()
+                    prices[token] = raw / 1e6
+                except Exception:
+                    logger.debug(
+                        "baseline price read failed for token %s on vault %s",
+                        token,
+                        vault_address,
+                        exc_info=True,
+                    )
+                    continue
+
+            if not prices:
+                return
+
+            redis_url = (
+                os.getenv("REDIS_URL")
+                or f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}/0"
+            )
+            r = _aioredis.from_url(redis_url, decode_responses=True)
+            try:
+                wrote = await r.set(f"vault:prices:{vault_address}", _json.dumps(prices), nx=True)
+                if wrote:
+                    logger.info("Wrote price baseline for vault %s (%d tokens)", vault_address, len(prices))
+            finally:
+                with contextlib.suppress(Exception):
+                    await r.aclose()
+        except Exception:
+            logger.debug("vault price baseline write failed for %s (non-fatal)", vault_address, exc_info=True)
 
     async def _usdc_value_to_token_raw(
         self,

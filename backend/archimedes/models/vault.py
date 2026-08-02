@@ -50,11 +50,17 @@ class VaultMetrics:
     share_price: float  # Current price per vault token in USDC
     high_water_mark: float  # HWM for performance fee calculation
 
-    # Performance metrics
-    return_24h: float = 0.0  # 24-hour return (fraction)
-    return_7d: float = 0.0  # 7-day return
-    return_30d: float = 0.0  # 30-day return
-    return_inception: float = 0.0  # Since inception return
+    # Performance metrics — nullable (#1103): a real value requires an oracle
+    # price baseline; there is no honest placeholder number for "we don't
+    # have one yet". `returns_source` mirrors RigorGateVerdict.source
+    # ("live_gate" | "pending" in live_rigor_gate.py) — "oracle_baseline" when
+    # these were actually computed from a persisted baseline, "unavailable"
+    # otherwise. Never synthesize a number here (see vault_service.py #1103).
+    return_24h: float | None = None  # 24-hour return (fraction)
+    return_7d: float | None = None  # 7-day return
+    return_30d: float | None = None  # 30-day return
+    return_inception: float | None = None  # Since inception return
+    returns_source: str = "unavailable"  # "oracle_baseline" | "unavailable"
     sharpe_ratio: float | None = None  # Rolling Sharpe (30d)
     max_drawdown: float | None = None  # Max drawdown since inception
     total_depositors: int = 0

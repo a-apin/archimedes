@@ -77,10 +77,15 @@ class VaultSummaryResponse(BaseModel):
     creator: str  # Wallet address
     aum_usdc: float
     share_price: float
-    return_24h: float
-    return_7d: float
-    return_30d: float
-    return_inception: float
+    # Nullable (#1103): a value here MUST come from a real oracle-price
+    # baseline comparison, never a synthesized placeholder. `returns_source`
+    # is the honest provenance marker for these fields — mirrors
+    # RigorGateVerdict.source ("live_gate" | "pending") in live_rigor_gate.py.
+    return_24h: float | None
+    return_7d: float | None
+    return_30d: float | None
+    return_inception: float | None
+    returns_source: Literal["oracle_baseline", "unavailable"]
     sharpe_ratio: float | None = None
     management_fee_pct: float  # e.g. 1.5
     performance_fee_pct: float  # e.g. 20.0
@@ -112,11 +117,12 @@ class VaultDetailResponse(BaseModel):
     holdings: list[VaultHolding]
     target_allocations: list[VaultHolding]  # Target weights
 
-    # Performance
-    return_24h: float
-    return_7d: float
-    return_30d: float
-    return_inception: float
+    # Performance — nullable (#1103): see VaultSummaryResponse.returns_source.
+    return_24h: float | None
+    return_7d: float | None
+    return_30d: float | None
+    return_inception: float | None
+    returns_source: Literal["oracle_baseline", "unavailable"]
     sharpe_ratio: float | None = None
     max_drawdown: float | None = None
 
