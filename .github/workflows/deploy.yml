@@ -40,6 +40,14 @@
 #                    definition revision pointing at the just-pushed <commit-sha>
 #                    image and force-redeploys the Fargate service behind the
 #                    existing ALB. NO docker build ever runs on a serving host.
+#                    Once the service reaches steady state, invalidates the
+#                    CloudFront cache for the unhashed SPA entry points (/ and
+#                    /index.html) — without this, CloudFront keeps serving the
+#                    OLD cached index.html, which references hashed asset
+#                    filenames the new deploy just deleted, until the html
+#                    cache policy's TTL expires (blank page / 404s in the
+#                    meantime). See "Invalidate CloudFront" step below and
+#                    infra/cloudfront.tf's `github_deploy_cloudfront` IAM grant.
 #                    (The legacy `deploy` job — SSM into the EC2 box + `docker
 #                    compose up` — was RETIRED in the #1039 observability
 #                    fast-follow: post-cutover the box is detached from the ALB,
@@ -599,3 +607,108 @@ jobs:
           echo "Waiting for the ECS service to reach steady state (deployment_circuit_breaker will auto-rollback a bad revision)..."
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
           echo "✅ ECS deploy complete — $ECS_SERVICE is stable on $NEW_TASK_DEF_ARN"
+
+      - name: Invalidate CloudFront (unhashed SPA entry points only)
+        if: steps.check.outputs.present == 'true'
+        # Runs only after the ECS service above is confirmed stable — the new
+        # image (with new hashed /assets/* filenames) is already serving.
+        #
+        # WHY THIS STEP EXISTS: CloudFront caches "/" and "/index.html" for 60s
+        # (infra/cloudfront.tf's aws_cloudfront_cache_policy.html, the
+        # default_cache_behavior). Without an invalidation, CloudFront keeps
+        # serving the OLD cached index.html — which <script>/<link> references
+        # the OLD build's hashed JS/CSS filenames — for up to that TTL after
+        # every deploy. Those old files no longer exist in the new ECS task's
+        # image, so the served page 404s on its own asset tags until the TTL
+        # rolls over: a blank-page window on every merge to main, not a
+        # one-off. (`git grep -nE "cloudfront|create-invalidation" --
+        # .github/workflows/` returned nothing before this PR.)
+        #
+        # PATHS ARE DELIBERATELY NARROW, not "/*": "/*" would invalidate every
+        # cached object indiscriminately, including the content-addressed,
+        # immutable /assets/* objects (a new build never reuses an old
+        # filename, so invalidating them buys zero correctness benefit) —
+        # explicitly NOT done here. Instead, three paths cover exactly the
+        # unhashed SPA entry points nginx actually serves unhashed
+        # (nginx/nginx.conf's `location /` + `try_files $uri $uri/
+        # /index.html`), INCLUDING their query-string cache-key variants:
+        #   "/"             — the bare root, no query string
+        #   "/?*"           — root with ANY query string (e.g. "/?utm=...")
+        #   "/index.html*"  — "/index.html" bare AND with any query string
+        #                     (a trailing "*" matches the empty suffix too,
+        #                     so this one pattern covers both)
+        # This is required because infra/cloudfront.tf's html cache policy
+        # sets query_string_behavior = "all" — every distinct query string is
+        # a DISTINCT cache entry, and CloudFront invalidation paths are
+        # exact-match unless wildcarded (AWS docs: "If you configured
+        # CloudFront to cache based on query string parameters... to
+        # invalidate all versions of the file regardless of query string
+        # values, use the * wildcard, e.g. /images/image.jpg*"). The earlier
+        # "/" + "/index.html" (no wildcards) version of this step left
+        # "/?utm=..." and "/index.html?x=1" — routine marketing/tracking
+        # links — serving stale cached HTML for the full 60s TTL after every
+        # deploy.
+        #
+        # COST: each path — wildcarded or literal — counts as exactly ONE
+        # path against CloudFront's 1,000-paths/month free tier (a wildcard
+        # does not cost more than a literal). Going from 2 paths to 3 is
+        # free; at one invalidation per deploy, hundreds of deploys/month
+        # would still be needed to approach the free-tier ceiling.
+        #
+        # RESIDUAL: a user who deep-links directly to a client-routed SPA path
+        # (e.g. "/generate") between deploy and invalidation can still get a
+        # stale cached copy of that specific path for up to the same 60s TTL —
+        # CloudFront caches each distinct URI separately under the same html
+        # cache policy, and enumerating every SPA route here isn't practical.
+        # That residual self-heals within the TTL either way; it is not the
+        # outage this step targets (which is the durable multi-minute+ staleness
+        # window "/" itself would otherwise sit in with no invalidation at all).
+        #
+        # IAM: needs cloudfront:CreateInvalidation + GetInvalidation on this
+        # distribution — granted via infra/cloudfront.tf's
+        # aws_iam_role_policy.github_deploy_cloudfront (added in the same PR
+        # as this step). GetInvalidation is actually used below (`aws
+        # cloudfront wait invalidation-completed`, which polls
+        # GetInvalidation under the hood) so the deploy job confirms the
+        # cache purge really completed instead of firing the API call and
+        # immediately moving on. That grant is INERT until Dan runs
+        # `terraform apply` in infra/ — until then this step logs a clear
+        # warning and exits 0 rather than failing the deploy (an ECS deploy
+        # that already succeeded and is serving traffic must not be marked
+        # failed over a CDN cache purge — see the non-`set -e`, explicit
+        # exit-code handling below; the completion wait is likewise
+        # non-fatal on timeout).
+        env:
+          # Literal constant, same pattern as EC2_INSTANCE_ID (top-level env
+          # block above) / ECS_CLUSTER / ECS_MIGRATE_TASK_FAMILY (this job's
+          # sibling steps): sourced from infra/cloudfront.tf's
+          # aws_cloudfront_distribution.main, output as `cloudfront_distribution_id`
+          # (infra/outputs.tf). Not read from a GitHub variable/secret because
+          # none exists for it today — this literal is the CI-side half of
+          # that sync contract, same as the other hardcoded infra ids in this
+          # file. Update if the distribution is ever recreated with a new id
+          # (`terraform output -raw cloudfront_distribution_id`).
+          CLOUDFRONT_DISTRIBUTION_ID: E34KG22GWPO075
+        run: |
+          set -uo pipefail
+          OUTPUT="$(aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/" "/?*" "/index.html*" 2>&1)"
+          RC=$?
+          if [ $RC -ne 0 ]; then
+            echo "::warning::CloudFront invalidation failed (aws cli exit $RC) — the ECS deploy above already succeeded and IS serving the new image; this does not fail the deploy. Stale HTML self-heals within the html cache policy's 60s TTL either way. Likely cause if this is an authorization error: infra/cloudfront.tf's aws_iam_role_policy.github_deploy_cloudfront grant has not been terraform-applied yet — Dan needs to run 'terraform apply' in infra/. Raw output:"
+            echo "$OUTPUT"
+            exit 0
+          fi
+          echo "$OUTPUT"
+          INVALIDATION_ID="$(printf '%s' "$OUTPUT" | jq -r '.Invalidation.Id // empty')"
+          if [ -z "$INVALIDATION_ID" ]; then
+            echo "::warning::CloudFront invalidation was created for distribution $CLOUDFRONT_DISTRIBUTION_ID but its Id could not be parsed from the CLI output above — skipping the completion wait (this does not fail the deploy)."
+            exit 0
+          fi
+          echo "CloudFront invalidation $INVALIDATION_ID created for distribution $CLOUDFRONT_DISTRIBUTION_ID (paths: / , /?* , /index.html*). Waiting for it to complete..."
+          if aws cloudfront wait invalidation-completed --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" --id "$INVALIDATION_ID"; then
+            echo "CloudFront invalidation $INVALIDATION_ID completed — the edge no longer serves the stale cached HTML."
+          else
+            echo "::warning::CloudFront invalidation $INVALIDATION_ID did not report completion within the CLI waiter's timeout — the ECS deploy above already succeeded and IS serving the new image; this does not fail the deploy. Check status manually: aws cloudfront get-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --id $INVALIDATION_ID"
+          fi
