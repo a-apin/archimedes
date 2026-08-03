@@ -43,6 +43,50 @@ jobs:
       - name: EC2 user-data stays under the 16 KB limit
         run: bash ./infra/scripts/check-user-data-size.sh
 
+  # The analytics engine had NO CI coverage at all until now. pytest.ini sets
+  # `testpaths = backend/tests` and lists analytics-engine under
+  # `norecursedirs`, and no workflow ran its suite — so its 227 tests never
+  # executed on a PR. That is how #1203 (which re-routed EVERY backtest to its
+  # declared ASSET_UNIVERSE, and therefore determines every number the product
+  # publishes) merged with a full row of green checks and zero automated
+  # verification of the code it changed. The engine sits on the MVP critical
+  # path; it gets its own gate.
+  #
+  # Deliberately NOT path-filtered, for the same reason as infra-guards above:
+  # a path-filtered job marked as a required check never reports on PRs that
+  # miss its paths, so the check sits in "Expected" forever and the PR can
+  # never merge.
+  engine-tests:
+    name: Analytics engine — unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install
+        # The engine declares its own deps in analytics-engine/pyproject.toml
+        # (backtrader/pandas/yfinance). Installed as a package so the suite
+        # exercises the same import path production uses. pytest-socket is what
+        # makes the "no network" claim below true rather than aspirational.
+        run: pip install --quiet ./analytics-engine "pytest>=8.2" pytest-socket
+      - name: Test
+        # --override-ini="pythonpath=" — analytics-engine/pyproject.toml sets
+        #   [tool.pytest.ini_options] pythonpath = ["src"], which PREPENDS the
+        #   working tree to sys.path under pytest. Without this override the
+        #   suite imports from analytics-engine/src/ and the pip install above
+        #   is decorative: a packaging or import-path break would pass CI.
+        #   Measured, not assumed — with the setting active the suite imports
+        #   from .../analytics-engine/src/...; with it overridden it imports
+        #   from .../site-packages/....
+        #
+        # --disable-socket — a GitHub runner has outbound network, so "hermetic"
+        #   is not free. A test that quietly reached yfinance would make this
+        #   gate flaky AND make a data-provider outage look like a code failure.
+        #   Blocking sockets makes that structurally impossible instead of
+        #   relying on nobody adding such a test later.
+        run: python -m pytest analytics-engine/tests -q --override-ini="pythonpath=" --disable-socket
+
   backend-tests:
     name: Backend — unit tests
     runs-on: ubuntu-latest
