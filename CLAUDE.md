@@ -173,6 +173,47 @@ created.** Prefer a PR for anything you'd want to find in `git log` later, inclu
 work. `!minor` = new user-facing capability; `!version-release` = major milestone, used
 sparingly; when in doubt, no marker.
 
+### Before you approve a merge — the green check may not mean what you think
+
+Applies to every reviewer, every session, and **every review subagent**. All four rules
+below come from defects that shipped past a full row of green checks in a single week.
+The common shape: **a signal was trusted for something it does not actually measure.**
+
+**1. A stale PR's green check describes a base that no longer exists.**
+GitHub freezes a PR's test-merge ref at its last push. A PR far behind `main` was tested
+against a base that may lack validators, columns, or behaviour that exist today — and
+"re-run failed jobs" replays the same frozen snapshot, so it can never pick up the fix.
+→ **If a PR is materially behind `main`, re-verify against current `main` before merging,
+whatever the checkmark says.** Push to the branch (or merge `main` in) to regenerate the
+ref, then read the *new* result.
+*Cost of learning it:* #1155 failed for exactly this reason; days later #1099 merged green
+and broke `main`, because its tests predated a `vault_address` validator.
+
+**2. Verify the merged result, not each PR.**
+Every PR being green does not make their union green. Semantic conflicts are textually
+clean and CI-invisible.
+→ **After merging anything non-trivial, re-run the suite on the merged `main`** — with the
+*exact* command CI uses, from the repo root. A local `pytest backend/tests` collects a
+different set than `pytest -m "not integration"` from the root, and the gap is where this
+hides.
+
+**3. A test that passes against the unfixed code proves nothing.**
+The specific trap: **passing the same literal to both sides of the boundary the bug lives
+on.** A Redis-key casing test that lower-cased the input before handing it to the reader
+made fixed and unfixed code produce identical keys — it passed either way and guarded
+nothing.
+→ **Before pushing a regression test, revert the fix and confirm the test fails.** If it
+passes both ways, it is not a regression guard; say so rather than counting it as coverage.
+
+**4. A guard must be shown to reject something.**
+Guards are where this repo's defects cluster: one checked presence but not value
+(`AGENT_DRY_RUN=1` silently meant LIVE), one measured the wrong compression state, one
+claimed "no network" and "installed package import path" while enforcing neither.
+→ **Build the input that *should* fail the guard, run it, confirm it fails — before
+pushing** — and put that demonstration in the PR body. This applies to claims made in
+**prose** too: a PR description asserting a property the code does not enforce is the same
+defect, just harder to grep for.
+
 ### Testing conventions (codified 2026-05-27)
 
 Hard-won during the post-hackathon test-coverage push and the env-flaky-test
