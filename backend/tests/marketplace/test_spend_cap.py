@@ -99,10 +99,10 @@ def test_spend_cap_usdc_non_numeric_falls_back_to_default_not_disabled(monkeypat
     the exact shape #1173/#1174 (AGENT_DRY_RUN=1 silently meaning LIVE) came
     from. Logs at ERROR, not WARNING, since this is a real misconfiguration,
     not a quiet routine default."""
-    monkeypatch.setenv("MARKETPLACE_SPEND_CAP_USDC", "50 USDC")
+    monkeypatch.setenv("MARKETPLACE_SPEND_CAP_USDC", "many dollars")
     with caplog.at_level(logging.ERROR, logger=spend_cap.__name__):
         result = spend_cap.spend_cap_usdc()
-    assert result == Decimal("50")
+    assert result == spend_cap._DEFAULT_CAP_USDC
     assert "not a valid non-negative number" in caplog.text
     assert "NOT disabling" in caplog.text
 
@@ -118,7 +118,7 @@ def test_spend_cap_usdc_negative_or_non_finite_falls_back_to_default(monkeypatch
     monkeypatch.setenv("MARKETPLACE_SPEND_CAP_USDC", raw)
     with caplog.at_level(logging.ERROR, logger=spend_cap.__name__):
         result = spend_cap.spend_cap_usdc()
-    assert result == Decimal("50")
+    assert result == spend_cap._DEFAULT_CAP_USDC
     assert "not a valid non-negative number" in caplog.text
 
 
