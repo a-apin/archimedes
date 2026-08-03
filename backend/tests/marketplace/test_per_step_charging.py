@@ -247,7 +247,11 @@ async def test_cant_pay_deferral(market: MarketService):
     market.record_subscriber_tick = _capture_record
 
     async def _charge_side_effect(pub, sub, strategy_id, tick_id, step, action_count):
-        return not (sub.sub_id == "0x" + "bad" * 32 and step == TickStep.REGIME_CLASSIFY)
+        # _charge_one returns (paid, halt_reason_override) since #713 — None
+        # here means "no override", i.e. the caller's generic message applies.
+        if sub.sub_id == "0x" + "bad" * 32 and step == TickStep.REGIME_CLASSIFY:
+            return False, None
+        return True, None
 
     with ExitStack() as stack:
         _patch_evaluator(stack)
@@ -305,7 +309,7 @@ async def test_mirror_failure(market: MarketService):
     with ExitStack() as stack:
         _patch_evaluator(stack)
         stack.enter_context(patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
-        stack.enter_context(patch.object(market, "_charge_one", AsyncMock(return_value=True)))
+        stack.enter_context(patch.object(market, "_charge_one", AsyncMock(return_value=(True, None))))
         mock_liability = stack.enter_context(patch.object(market, "_record_liability", AsyncMock()))
         stack.enter_context(
             patch.object(

@@ -94,6 +94,17 @@ def _mock_provision_publisher_wallet():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _mock_spend_cap_not_over():
+    """subscribe_strategy checks spend_cap.is_over_cap before provisioning a
+    wallet (#713). Default every test in this file to "not over cap" so the
+    existing subscribe-path tests exercise the happy path without a real
+    Redis round-trip; test_subscribe_rejects_over_spend_cap overrides this
+    to True to exercise the 429 refusal."""
+    with patch("archimedes.api.marketplace_routes.spend_cap.is_over_cap", new=AsyncMock(return_value=False)):
+        yield
+
+
 @pytest.fixture
 def app():
     """FastAPI app with marketplace router and a mock market service."""
@@ -226,6 +237,56 @@ def test_subscribe_rejects_blank_sub_id(client):
         },
     )
     assert resp.status_code == 400, resp.text
+
+
+def test_subscribe_rejects_over_spend_cap(client):
+    """A wallet at/over its rolling 24h marketplace spend cap gets 429 on a
+    NEW subscription (#713). The guard sits after the existing dedup checks
+    and BEFORE wallet provisioning — provision_subscriber_wallet must never
+    be reached when the check refuses."""
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": "0xvault"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    with (
+        patch("archimedes.api.marketplace_routes.spend_cap.is_over_cap", new=AsyncMock(return_value=True)),
+        patch(
+            "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+            new=AsyncMock(side_effect=AssertionError("must not provision a wallet when over the spend cap")),
+        ) as m_provision,
+    ):
+        resp = client.post(
+            "/api/marketplace/subscribe",
+            json={"strategy_id": "test_strat", "sub_id": "0x" + "f0" * 32, "ephemeral_wallet": "0xeph"},
+        )
+
+    assert resp.status_code == 429, resp.text
+    detail = resp.json()["detail"]
+    assert detail["reason"] == "marketplace_spend_cap_reached"
+    m_provision.assert_not_awaited()
+
+
+def test_subscribe_under_spend_cap_still_succeeds(client):
+    """Sanity-checks the mock boundary the opposite way: with is_over_cap
+    False (the file's autouse default), subscribe proceeds normally — guards
+    against an accidentally-inverted cap check silently 429-ing everything."""
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": "0xvault"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    with patch(
+        "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+        new=AsyncMock(return_value=("w-cap-ok", "0x0000000000000000000000000000000000000ee9")),
+    ):
+        resp = client.post(
+            "/api/marketplace/subscribe",
+            json={"strategy_id": "test_strat", "sub_id": "0x" + "f1" * 32, "ephemeral_wallet": "0xeph"},
+        )
+    assert resp.status_code == 200, resp.text
 
 
 def test_publish_duplicate_returns_409(client):

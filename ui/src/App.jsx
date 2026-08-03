@@ -302,10 +302,37 @@ export default function App() {
       )
       case 'insights':       return <Insights />
       case 'vault-detail':   return <VaultDetail address={selectedVault} onBack={backToPortfolio} />
-      case 'marketplace':    return <MarketplacePage onNavigate={navigateToPage} />
+      case 'marketplace':    return (
+        <WalletGate
+          walletAddr={walletAddr}
+          pageName="Marketplace"
+          description="Browse and subscribe to verified quantitative strategies. Connect a wallet to view subscription terms and manage your strategy subscriptions."
+          onConnect={openConnectModal}
+        >
+          <MarketplacePage onNavigate={navigateToPage} />
+        </WalletGate>
+      )
       case 'market-strategy': return <StrategyDetailPage strategyId={selectedStrategy} onNavigate={navigateToPage} />
-      case 'publish':        return <PublishPage onNavigate={navigateToPage} />
-      case 'subscriptions':  return <SubscriptionsPage onNavigate={navigateToPage} />
+      case 'publish':        return (
+        <WalletGate
+          walletAddr={walletAddr}
+          pageName="Publish Strategy"
+          description="Publish your quantitative strategy to the Archimedes marketplace for other users to discover and subscribe to."
+          onConnect={openConnectModal}
+        >
+          <PublishPage onNavigate={navigateToPage} />
+        </WalletGate>
+      )
+      case 'subscriptions':  return (
+        <WalletGate
+          walletAddr={walletAddr}
+          pageName="Subscriptions"
+          description="Manage your active strategy subscriptions and non-custodial USDC allowances. Connect a wallet to continue."
+          onConnect={openConnectModal}
+        >
+          <SubscriptionsPage onNavigate={navigateToPage} />
+        </WalletGate>
+      )
       default:               return <NotFound page={page} onNavigate={navigateToPage} />
     }
   }
