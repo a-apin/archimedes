@@ -111,10 +111,16 @@ def _mk_backtest(
     num_trials: int | None = 1,
     pbo: float | None = 0.05,
     look_ahead: bool = True,
+    backtest_engine: str | None = None,
 ):
     """Persist a BacktestResultRecord whose artifact_json carries daily_returns
     (mirrors how the real pipeline / analytics-engine writes them — see
-    backend/archimedes/services/backtest_repository.get_daily_returns)."""
+    backend/archimedes/services/backtest_repository.get_daily_returns).
+
+    ``backtest_engine`` defaults to None (matches every pre-existing caller in
+    this file — legacy/untagged row shape) — tests exercising the num_trials
+    PROVENANCE discriminator (V3) pass it explicitly.
+    """
     from archimedes.models.backtest_store import BacktestResultRecord
 
     artifact_json = None
@@ -131,6 +137,7 @@ def _mk_backtest(
                 pbo_score=pbo,
                 look_ahead_audit_passed=look_ahead,
                 source_pipeline="test",
+                backtest_engine=backtest_engine,
             )
         )
         session.commit()
@@ -269,3 +276,105 @@ def test_look_ahead_override_flips_blocked_verdict_to_pass():
     assert with_override.status == "pass"
     assert with_override.passes is True
     assert with_override.blocked_by_floor is False
+
+
+# ── 6. num_trials PROVENANCE discriminator (V3 / W3, num_trials-provenance audit 2026-08-03) ──
+#
+# `_generated_strategy_rigor` used to do a bare read of the persisted
+# `num_trials_in_selection` column — ANY populated value was trusted,
+# regardless of which pipeline wrote it. These tests prove the replacement
+# (`_num_trials_for_generated_row`) discriminates on `backtest_engine`
+# PROVENANCE instead, using a return series (seed=3, mu=0.0006, sigma=0.008,
+# n=300) deliberately chosen so num_trials=1 vs num_trials=25 flips the
+# DSR-gate verdict (PASS at N=1, FAIL at N=25) — an end-to-end, observable
+# consequence, not just an internal label.
+
+
+def _flip_sensitive_returns() -> list[float]:
+    """PASSES the DSR gate at num_trials=1 (p≈0.964 ≥ 0.90) and FAILS it at
+    num_trials=25 (p≈0.377 < 0.90) — verified directly against
+    rigor_evaluator.run_rigor_gate with these exact parameters."""
+    return np.random.default_rng(3).normal(0.0006, 0.008, 300).tolist()
+
+
+def test_num_trials_for_generated_row_discriminates_on_provenance():
+    """Unit-level: the discriminator trusts a stored value ONLY for engines
+    whose live writer tracks its own selection-pool size; everything else
+    (unknown/missing engine, or a search-tracked engine with no real value
+    stored) is forced to num_trials=1 with an explicit, honest scope label —
+    never a bare 'is the column populated' check."""
+    from archimedes.api.selection_bias_routes import (
+        _SCOPE_GENERATED_SEARCH_POOL,
+        _SCOPE_GENERATED_UNTRACKED_DEFAULT,
+        _num_trials_for_generated_row,
+    )
+
+    # Trusted: a search-tracking engine with a real stored pool size.
+    assert _num_trials_for_generated_row("dsl-fusion", 35) == (35, _SCOPE_GENERATED_SEARCH_POOL)
+    assert _num_trials_for_generated_row("portfolio-simulator-v1", 12) == (12, _SCOPE_GENERATED_SEARCH_POOL)
+
+    # Adversarial: an UNKNOWN/missing engine tag with a large stored value that
+    # LOOKS like a real search pool (exactly the shape a stale/borrowed
+    # library-size write would produce, e.g. the V1 bug) must NOT be trusted —
+    # this is the case the bare-read code got wrong.
+    assert _num_trials_for_generated_row(None, 25) == (1, _SCOPE_GENERATED_UNTRACKED_DEFAULT)
+    assert _num_trials_for_generated_row("backtrader", 25) == (1, _SCOPE_GENERATED_UNTRACKED_DEFAULT)
+    assert _num_trials_for_generated_row("some-future-engine", 999) == (1, _SCOPE_GENERATED_UNTRACKED_DEFAULT)
+
+    # A search-tracked engine with no real value stored (falsy) still forces 1.
+    assert _num_trials_for_generated_row("dsl-fusion", None) == (1, _SCOPE_GENERATED_UNTRACKED_DEFAULT)
+    assert _num_trials_for_generated_row("dsl-fusion", 0) == (1, _SCOPE_GENERATED_UNTRACKED_DEFAULT)
+
+
+async def test_dsl_fusion_engine_trusts_stored_search_pool_end_to_end():
+    """A row tagged 'dsl-fusion' with a stored num_trials is graded at THAT
+    N (trusted, real search-pool size) — verdict FAILS because num_trials=25
+    applies the full multiple-testing penalty to this return series."""
+    sid = "gen0000000000006"
+    _mk_strategy(sid, owner=_W_OWNER, published=False)
+    _mk_backtest(sid, returns=_flip_sensitive_returns(), num_trials=25, backtest_engine="dsl-fusion")
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(f"/api/selection-bias/gate/{sid}", cookies=_siwe_cookies(_W_OWNER))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["num_trials_scope"] == "generated_search_pool"
+    assert body["dsr_p_value"] < 0.90
+    assert body["passes_all"] is False
+
+
+async def test_untracked_engine_num_trials_forced_to_one_not_bare_column_read():
+    """THE adversarial case (V3): a row with NO recognized search-tracking
+    engine (backtest_engine=None — the untagged/legacy shape) but a stored
+    num_trials_in_selection=25 that LOOKS like a real cohort/search size.
+
+    Before the fix, `_generated_strategy_rigor` did a bare read of the
+    column: ``latest.num_trials_in_selection if latest and
+    latest.num_trials_in_selection else 1`` — this would have trusted 25 and
+    FAILED the gate (dsr_p≈0.377 < 0.90) on a return series that is
+    genuinely fine at its true (self-contained) trial count. The fix
+    discriminates on provenance: an untracked engine cannot prove it ran a
+    real 25-candidate search, so num_trials is forced to 1 and the gate
+    PASSES (dsr_p≈0.964 ≥ 0.90) — the honest verdict for this strategy.
+    """
+    sid = "gen0000000000007"
+    _mk_strategy(sid, owner=_W_OWNER, published=False)
+    _mk_backtest(sid, returns=_flip_sensitive_returns(), num_trials=25, backtest_engine=None)
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(f"/api/selection-bias/gate/{sid}", cookies=_siwe_cookies(_W_OWNER))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["num_trials_scope"] == "generated_untracked_default"
+    assert body["dsr_p_value"] >= 0.90, (
+        f"num_trials was not forced to 1 — the bare-column-read bug is back "
+        f"(dsr_p_value={body['dsr_p_value']} suggests the untrusted stored "
+        f"num_trials=25 was used instead)"
+    )
+    assert body["passes_all"] is True
