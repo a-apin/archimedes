@@ -134,10 +134,10 @@ Live picture: [`docs/architecture.md`](docs/architecture.md). Deployed contract 
 - **`main` is the only long-lived branch, and it is the deploy branch.** Every merge to
   `main` builds and deploys to the live Fargate stack. No `develop`/integration branch — it
   drifted unused and was retired ([ADR](docs/adr/build-on-deploy-main-only.md)).
-- **`main` moves continuously.** The agentic system (`t2o2`) merges and iterates on its own
-  CI failures directly on `main`, and Dan + Claude Code drive the core build in parallel
-  sessions. Branch late, rebase right before merging, merge in a tight window. Don't wait
-  for `main` to "settle" — it won't.
+- **`main` moves continuously.** Dan and teammates drive the build through parallel Claude
+  Code sessions and merge on their own authority, so `main` can take dozens of commits in a
+  day. Branch late, rebase right before merging, merge in a tight window. Don't wait for
+  `main` to "settle" — it won't.
 - Short-lived per-owner branches `<discord-handle>/<short-name>` → PR → merge; delete after.
 - **Merge commits only.** Squash- and rebase-merge are disabled in repo settings; use `gh pr
   merge <n> --merge`. Why: merge commits preserve branch topology, so `git log --merges` /
@@ -160,7 +160,7 @@ blocks and what does not**:
 
 | Workflow | Blocks? | |
 | --- | --- | --- |
-| `quality-gate.yml` | **YES** | `pytest -m "not integration"` (unit suite, no DB/Redis) **and** `ruff-gate`. Everything else it reports — full `ruff check`, `ui/` lint — is `continue-on-error`, posted as a PR comment. `t2o2` PRs also get a ≥60% coverage gate. |
+| `quality-gate.yml` | **YES** | `pytest -m "not integration"` (unit suite, no DB/Redis) **and** `ruff-gate`. Everything else it reports — full `ruff check`, `ui/` lint — is `continue-on-error`, posted as a PR comment. A ≥60% coverage gate is wired to PRs whose author is `t2o2`; that account is dormant (see § Spec-driven execution), so the gate currently never fires. |
 | `complexity-gate.yml` | no | Complexity/nesting table as a PR comment. **Informational only — never blocks.** Don't restructure code to satisfy it. |
 | `main-format-guard.yml` | n/a | On push to `main`, if `ruff format --check` fails it reformats, commits back with `[skip ci]`, and **fails its own run** so the violation stays visible. `main` self-heals, so open PRs aren't stranded with red ruff-gates. |
 | `deploy.yml` · `release-tag.yml` | n/a | Build → ECR → roll Fargate (superseded runs auto-cancel); semver tag per merged PR. |
@@ -227,8 +227,9 @@ in both environments. Read this before writing any new test.
   this specific gap.
 - **Coverage targets and gates.** Per-module ≥85% line coverage is the standard
   for new test work. Measure with `pytest --cov=archimedes.<module> --cov-report=term-missing
-  backend/tests/test_<module>.py`. The repo-level `--cov-fail-under=60` gate
-  fires only on `t2o2` agent PRs and is informational for non-Python PRs.
+  backend/tests/test_<module>.py`. The repo-level `--cov-fail-under=60` gate is
+  conditioned on `t2o2` being the PR author and is therefore **dormant** — nothing
+  enforces repo-level coverage today. See § Spec-driven execution.
 - **No skip-marks on flaky tests.** If a test is flaky, the cause is almost
   always a missing mock at a boundary or hidden environmental state. Fix the
   flakiness, don't `@pytest.mark.skip`. Skip-marks should be rare and load-bearing
@@ -298,7 +299,17 @@ work to the issue pipeline. Two recurring non-repo-specific traps — character 
 -m`, not `wc -c`) and zsh quoting — are in
 [`docs/agent-gotchas.md`](docs/agent-gotchas.md).
 
-### The agentic issue pipeline (highest-leverage workflow)
+### Spec-driven execution (highest-leverage workflow)
+
+> **Who executes, as of 2026-08-03.** The autonomous agent account `t2o2` (Chuan Bai's
+> system) is **not an active resource.** Chuan stepped back on 2026-06-24 and no work is
+> being dispatched to `t2o2`. Do not assign issues to it, do not plan around it, and do
+> not infer from older documents or from closed `*-t2o2-issue.md` specs that it is
+> available. Historical references to it are preserved as record, not as instruction.
+>
+> **The discipline below still applies in full** — it was always about spec quality, not
+> about which executor consumes the spec. Today the executor is a Claude Code session run
+> by a human teammate, working an issue on a branch and opening a PR.
 
 An agentic coding system is wired to this repo: it reads issues and writes code against
 them. **A well-specified issue is executable work** — often the highest-value thing a human
@@ -309,12 +320,13 @@ quality is the throughput lever. Skeleton:
 
 **Operational mechanics (hard-won 2026-05-18 — the spec is only half the job):**
 
-- **Trigger = assignment.** The system only picks up an issue **assigned to
-  `t2o2`** (`gh issue edit <n> --add-assignee t2o2`). The `APIN - <Area> - <Title>`
-  prefix is a naming convention, *not* the trigger. An unassigned judge-grade
-  spec sits idle.
-- **Assignment = authorization. Do not close on lane grounds.** If an issue is
-  assigned to the agentic system, execute it — regardless of which teammate's
+- **Trigger = a human picking it up.** There is no dispatch bot today. An issue is
+  executed when a teammate opens a session against it, so an unassigned judge-grade
+  spec sits idle until someone claims it. Assign the issue to the human who is doing
+  it, so two people don't start the same work. The `APIN - <Area> - <Title>` prefix is
+  a naming convention, not a trigger, and never was.
+- **A claimed issue is authorized. Do not close on lane grounds.** If a session has
+  taken an issue, execute it — regardless of which teammate's
   nominal lane it touches. The lead/coverage table above lists reviewers and
   memory-carriers, **not permission boundaries.** Closing an issue with "this is
   Dan's lane" / "this is Daniel's lane" / "not in my scope" is a failure mode,
@@ -331,11 +343,11 @@ quality is the throughput lever. Skeleton:
   thresholds, don't edit `pytest.ini`, don't add e2e deps") to bound blast radius.
 - **Cite a precedent.** Point at an existing good pattern to copy (a fixture, a
   sibling test file) — it reuses the right shape instead of inventing one.
-- **Verify independently — "closed" ≠ "fixed".** The system sometimes closes an
+- **Verify independently — "closed" ≠ "fixed".** Sessions sometimes close an
   issue without resolving it. Re-check against the acceptance command on a cold
   clone before trusting completion; reopen with evidence if unmet.
 - **Pre-close verification gate (added 2026-05-24).** Before closing *any* issue,
-  the agentic system MUST:
+  the executing session MUST:
   1. Run every acceptance-criteria command listed in the issue and verify the
      exact expected output matches.
   2. For every anti-goal / "DO NOT" directive (e.g. "DO NOT keep `setMode` in

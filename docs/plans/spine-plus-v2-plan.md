@@ -864,6 +864,11 @@ Phase 6 questions:
 
 # Phase 7 — Consolidation & dedup via t2o2
 
+> **Historical (2026-08-03).** Phase 7 shipped. It was executed by the `t2o2` agent
+> account, which is now dormant — see [`../../CLAUDE.md`](../../CLAUDE.md) § Spec-driven
+> execution. The dispatch mechanics described below no longer exist; the issue-shaping
+> discipline does. Do not file new work against `t2o2`.
+
 **Status:** ✅ LANDED — all 6 issues closed (#128, #129, #130, #131, #132, #133).
 PR #136 (merge `2a5f319`) closed remaining gaps on #128/#130/#133:
 honest fusion rigor + real bar-by-bar equity curve, LLM-backend guard test,
@@ -873,7 +878,7 @@ fusion rigor verdict persistence + `rejected` status.
 identifies 14 gap clusters in `backend/archimedes/`. Of those, gaps #1, #2,
 #3, #5, #6 are *technical-debt cleanup* — well-bounded, mechanical, with
 clear acceptance criteria. They are the exact shape t2o2 executes well
-(per CLAUDE.md's "agentic issue pipeline" section). Hand-implementing
+(per CLAUDE.md's "Spec-driven execution" section). Hand-implementing
 them would burn hosted-Claude budget on work t2o2 can do for ~free.
 
 **Phase 7 deliverable: 4 judge-grade issues filed + assigned to t2o2.**

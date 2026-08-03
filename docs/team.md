@@ -35,6 +35,12 @@ preferred contract reviewer** and other teammates who know the contract stack ab
 in. The funds-safety care is unchanged: contracts are high-stakes; two-eyes review is still
 wise.
 
+**The `t2o2` agent account is dormant (2026-08-03).** Chuan's autonomous agentic system
+executed a large share of the mid-May–June issue backlog; it is not an active resource now
+and no work is being dispatched to it. Closed `*-t2o2-issue.md` specs and the `t2o2`
+condition still present in `quality-gate.yml` are historical record, not a live capability
+— do not plan around either. Chuan remains in the Discord channel.
+
 Chuan formerly led on-chain integration, smart contracts, infra, and architecture; Dan now
 owns all four. Marten remains a backup on the on-chain layer. `api/` + `services/` +
 `models/` + `interfaces/` under `backend/archimedes/` remain led by Daniel R.; the `chain/`

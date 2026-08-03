@@ -5,11 +5,14 @@
 > **updated:** 2026-07-28
 > **superseded-by:** —
 
-The template for an issue the agentic system (`t2o2`) can execute without a human in the
-loop. The **gates** that make an issue safe to dispatch — trigger-is-assignment,
-machine-checkable acceptance, the pre-close verification gate — live in
-[`../../CLAUDE.md`](../../CLAUDE.md) § The agentic issue pipeline and are not repeated here.
-This file is just the shape.
+The template for an issue a Claude Code session can execute end-to-end, with the human in
+the loop at review rather than during the work. The **gates** that make an issue safe to
+hand off — a named owner, machine-checkable acceptance, the pre-close verification gate —
+live in [`../../CLAUDE.md`](../../CLAUDE.md) § Spec-driven execution and are not repeated
+here. This file is just the shape.
+
+There is no autonomous dispatch bot. `t2o2` is dormant (see CLAUDE.md); a spec is executed
+when a person opens a session against it.
 
 ```markdown
 ## Summary             <!-- one paragraph: the problem, why it matters -->
@@ -19,10 +22,10 @@ This file is just the shape.
 ## Anti-goals          <!-- what NOT to do; what NOT to touch -->
 ```
 
-Then dispatch it — the spec is inert until it is assigned:
+Then claim it — the spec is inert until someone picks it up:
 
 ```bash
-gh issue edit <n> --add-assignee t2o2
+gh issue edit <n> --add-assignee <your-github-handle>
 ```
 
 ## Section notes
