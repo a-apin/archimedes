@@ -103,4 +103,4 @@ sentence-transformers>=5.6.1  # all-MiniLM-L6-v2 semantic retrieval; baked at Do
 # AWS / S3
 boto3>=1.43.56
 # Imported directly for AWS exceptions/config; boto3 constrains compatibility.
-botocore>=1.43.56
+botocore>=1.43.60
