@@ -67,13 +67,25 @@ jobs:
       - name: Install
         # The engine declares its own deps in analytics-engine/pyproject.toml
         # (backtrader/pandas/yfinance). Installed as a package so the suite
-        # exercises the same import path production uses.
-        run: pip install --quiet ./analytics-engine "pytest>=8.2"
+        # exercises the same import path production uses. pytest-socket is what
+        # makes the "no network" claim below true rather than aspirational.
+        run: pip install --quiet ./analytics-engine "pytest>=8.2" pytest-socket
       - name: Test
-        # No network: the suite must stay hermetic. A test that reaches
-        # yfinance would make this gate flaky and, worse, make a data-provider
-        # outage look like a code failure.
-        run: python -m pytest analytics-engine/tests -q
+        # --override-ini="pythonpath=" — analytics-engine/pyproject.toml sets
+        #   [tool.pytest.ini_options] pythonpath = ["src"], which PREPENDS the
+        #   working tree to sys.path under pytest. Without this override the
+        #   suite imports from analytics-engine/src/ and the pip install above
+        #   is decorative: a packaging or import-path break would pass CI.
+        #   Measured, not assumed — with the setting active the suite imports
+        #   from .../analytics-engine/src/...; with it overridden it imports
+        #   from .../site-packages/....
+        #
+        # --disable-socket — a GitHub runner has outbound network, so "hermetic"
+        #   is not free. A test that quietly reached yfinance would make this
+        #   gate flaky AND make a data-provider outage look like a code failure.
+        #   Blocking sockets makes that structurally impossible instead of
+        #   relying on nobody adding such a test later.
+        run: python -m pytest analytics-engine/tests -q --override-ini="pythonpath=" --disable-socket
 
   backend-tests:
     name: Backend — unit tests
