@@ -42,6 +42,11 @@ _KEY_TTL_SECONDS = _WINDOW_SECONDS + 3600  # small margin past the window so an
 # nothing left in range after every member has aged out.
 _USDC_DECIMALS = 6
 
+# Placeholder, not a risk-modelled figure — see spend_cap_usdc()'s docstring.
+# Single source of truth for the value both the unset-env default AND the
+# malformed-env fallback resolve to, so the two paths can't drift apart.
+_DEFAULT_CAP_USDC = Decimal("50")
+
 # Lua: atomically check the wallet's rolling 24h spend window against the cap
 # and, if amount_raw fits, reserve it in the SAME round-trip (single EVAL — no
 # other command, including another caller's own EVAL, can interleave between
@@ -139,16 +144,24 @@ def spend_cap_usdc() -> Decimal:
     this default as a placeholder to be revisited once real pricing is live
     (PAYMENTS_DRY_RUN=false), not a considered number.
 
-    A cap of 0 (or unset — the default keeps it non-zero) disables the check
-    entirely, matching this codebase's general fail-open-when-unconfigured
-    convention for opt-in safety features.
+    Unset uses the default (cap enabled). An explicit 0 disables the check —
+    that is the ONLY way to disable it. A malformed value (a typo, a stray
+    unit suffix, bad shell-heredoc quoting) falls back to the default cap,
+    NOT to disabled: a funds guard failing open on a typo is the same
+    failure shape this repo has been dismantling elsewhere this week
+    (AGENT_DRY_RUN=1 silently meaning LIVE, #1173/#1174) and should not be
+    reintroduced here as "this codebase's convention."
     """
-    raw = os.getenv("MARKETPLACE_SPEND_CAP_USDC", "50")
+    raw = os.getenv("MARKETPLACE_SPEND_CAP_USDC", str(_DEFAULT_CAP_USDC))
     try:
         return Decimal(raw)
     except Exception:
-        logger.warning("MARKETPLACE_SPEND_CAP_USDC=%r is not a valid number — treating as disabled", raw)
-        return Decimal(0)
+        logger.error(
+            "MARKETPLACE_SPEND_CAP_USDC=%r is not a valid number — falling back to the default cap (%s), NOT disabling",
+            raw,
+            _DEFAULT_CAP_USDC,
+        )
+        return _DEFAULT_CAP_USDC
 
 
 def _key(subscriber_wallet: str) -> str:
