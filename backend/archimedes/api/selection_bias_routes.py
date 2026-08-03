@@ -533,7 +533,13 @@ def _num_trials_for_generated_row(backtest_engine: str | None, stored_num_trials
     ``backtest_engine``), not on whether ``stored_num_trials`` happens to be
     populated (V3). See the module comment above for the full rationale.
     """
-    if backtest_engine in _SEARCH_TRACKED_ENGINES and stored_num_trials:
+    # ``> 0``, not truthiness. A stored 0 or a negative is not a smaller search
+    # pool, it is a corrupt row: num_trials is a COUNT of candidates evaluated,
+    # so the only values with meaning are >= 1. Truthiness would reject 0 and
+    # silently ACCEPT -5, which then flows into the DSR deflation term and makes
+    # the correction weaker than no correction at all -- a bad row would grade
+    # more favourably than an honest one. Fail closed to 1 instead.
+    if backtest_engine in _SEARCH_TRACKED_ENGINES and (stored_num_trials or 0) > 0:
         return int(stored_num_trials), _SCOPE_GENERATED_SEARCH_POOL
     return 1, _SCOPE_GENERATED_UNTRACKED_DEFAULT
 

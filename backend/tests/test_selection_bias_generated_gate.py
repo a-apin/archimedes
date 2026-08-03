@@ -325,6 +325,19 @@ def test_num_trials_for_generated_row_discriminates_on_provenance():
     assert _num_trials_for_generated_row("dsl-fusion", None) == (1, _SCOPE_GENERATED_UNTRACKED_DEFAULT)
     assert _num_trials_for_generated_row("dsl-fusion", 0) == (1, _SCOPE_GENERATED_UNTRACKED_DEFAULT)
 
+    # NEGATIVES. This is the case a truthiness test cannot catch and the two
+    # above do not discriminate: 0 and None are already falsy, so they pass
+    # against a buggy ``and stored_num_trials`` implementation too. -5 is
+    # TRUTHY, so only a ``> 0`` check rejects it.
+    #
+    # Why it matters beyond hygiene: num_trials is a COUNT of candidates
+    # evaluated, and it feeds the DSR multiple-testing deflation. A negative
+    # would not merely be ignored -- it would make the correction weaker than
+    # applying no correction at all, so a corrupt row would grade MORE
+    # favourably than an honest one. Fail closed to 1.
+    assert _num_trials_for_generated_row("dsl-fusion", -5) == (1, _SCOPE_GENERATED_UNTRACKED_DEFAULT)
+    assert _num_trials_for_generated_row("portfolio-simulator-v1", -1) == (1, _SCOPE_GENERATED_UNTRACKED_DEFAULT)
+
 
 async def test_dsl_fusion_engine_trusts_stored_search_pool_end_to_end():
     """A row tagged 'dsl-fusion' with a stored num_trials is graded at THAT

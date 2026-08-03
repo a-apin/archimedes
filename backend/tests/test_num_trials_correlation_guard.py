@@ -28,7 +28,9 @@ IMPOSSIBLE (raises ``RuntimeError``) rather than merely unlikely. These tests:
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 
 import pytest
 from archimedes.services.rigor_evaluator import assert_self_contained_cohort_correlation
@@ -67,23 +69,58 @@ def test_guard_allows_genuinely_self_contained_multi_trial_with_zero_correlation
 
 # ── 3. Wiring: all three call sites actually invoke the guard ──────────────
 
+_GUARD = "assert_self_contained_cohort_correlation"
+
+
+def _invokes(func: object, target: str = _GUARD) -> bool:
+    """True only if ``func``'s own AST contains a real invocation of ``target``.
+
+    Deliberately NOT ``target in inspect.getsource(func)``. A substring check
+    passes on any occurrence of the name — including the one left behind in a
+    comment or docstring after the actual call was deleted. That is precisely
+    how a wiring guard stops guarding while still reporting green, so the guard
+    on the guard has to inspect structure, not text. Matches both ``guard(...)``
+    and ``mod.guard(...)`` forms.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    return any(
+        isinstance(node, ast.Call)
+        and (getattr(node.func, "id", None) == target or getattr(node.func, "attr", None) == target)
+        for node in ast.walk(tree)
+    )
+
+
+def test_the_wiring_check_itself_discriminates():
+    """Adversarial pass on our own guard-checker, per the pre-merge conventions:
+    a check is only worth trusting once it has been shown to REJECT something.
+    A function that merely mentions the guard's name in a comment and a string
+    -- but never calls it -- must NOT be reported as wired."""
+
+    def _mentions_but_never_calls():
+        # assert_self_contained_cohort_correlation(num_trials, corr)
+        return "assert_self_contained_cohort_correlation("
+
+    assert _invokes(_mentions_but_never_calls) is False
+
+    def _actually_calls():
+        return assert_self_contained_cohort_correlation(1, 0.0)
+
+    assert _invokes(_actually_calls) is True
+
 
 def test_selection_bias_routes_evaluate_rigor_gate_calls_the_guard():
     from archimedes.api.selection_bias_routes import evaluate_rigor_gate
 
-    src = inspect.getsource(evaluate_rigor_gate)
-    assert "assert_self_contained_cohort_correlation(" in src
+    assert _invokes(evaluate_rigor_gate)
 
 
 def test_strategies_routes_live_rigor_results_calls_the_guard():
     from archimedes.api.strategies_routes import _live_rigor_results_for_strategies
 
-    src = inspect.getsource(_live_rigor_results_for_strategies)
-    assert "assert_self_contained_cohort_correlation(" in src
+    assert _invokes(_live_rigor_results_for_strategies)
 
 
 def test_live_rigor_gate_verdicts_for_strategies_calls_the_guard():
     from archimedes.services.live_rigor_gate import verdicts_for_strategies
 
-    src = inspect.getsource(verdicts_for_strategies)
-    assert "assert_self_contained_cohort_correlation(" in src
+    assert _invokes(verdicts_for_strategies)
