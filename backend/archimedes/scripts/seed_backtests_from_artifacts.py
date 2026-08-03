@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 from archimedes.db import get_session, init_db
@@ -23,10 +24,30 @@ from archimedes.services.backtest_mapper import (
     canonical_artifact_hash,
     map_artifact_to_backtest_result,
 )
-from archimedes.services.backtest_repository import insert_backtest_if_missing
+from archimedes.services.backtest_repository import (
+    SOURCE_PIPELINE_SEED_FROM_ARTIFACTS,
+    insert_backtest_if_missing,
+)
 from archimedes.services.strategy_provider import default_provider
 
 logger = logging.getLogger(__name__)
+
+
+def _computed_at_from_payload(payload: dict) -> datetime | None:
+    """Parse the artifact's own ``timestamp_utc`` — this is the field that
+    matters most for THIS script: it seeds artifacts that were computed by an
+    earlier ``run_backtests.py`` invocation, possibly long before this seed
+    run inserts the row, so ``created_at`` alone would misrepresent when the
+    backtest actually ran. Returns ``None`` (never raises) on a missing/
+    malformed field; the caller then falls back to "now".
+    """
+    raw = payload.get("timestamp_utc")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def seed_from_artifacts(artifact_dir: Path | None = None) -> dict[str, int]:
@@ -113,6 +134,16 @@ def seed_from_artifacts(artifact_dir: Path | None = None) -> dict[str, int]:
                         run_id=artifact.run_id,
                         operation=selected_operation,
                         artifact_json=raw,
+                        source_pipeline=SOURCE_PIPELINE_SEED_FROM_ARTIFACTS,
+                        computed_at=_computed_at_from_payload(payload),
+                        # EXPLICIT None, not omission. This path replays an
+                        # artifact produced by some earlier, unrecorded commit;
+                        # the running build's SHA did NOT produce it. Omitting
+                        # the argument would stamp the current deploy SHA and
+                        # make every replayed row assert a provenance that is
+                        # simply false — in the column added to make provenance
+                        # trustworthy. NULL is the honest answer here.
+                        source_git_sha=None,
                     )
                     session.commit()
 
