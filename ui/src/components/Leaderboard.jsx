@@ -121,8 +121,10 @@ export default function Leaderboard() {
           }}
         >
           <strong style={{ color: 'var(--warning, #b45309)' }}>Provisional — figures are being re-computed.</strong>{' '}
-          Backtest data is being re-computed following a routing defect; figures shown are known to be
-          incorrect and will change.
+          Two defects are being corrected. A routing defect meant most strategies were backtested against the
+          wrong asset universe. Separately, the backtest and live-trading engines were found to interpret the
+          same strategy differently — so for some strategies these figures describe behaviour that differs
+          from what the strategy would actually do. Figures shown are known to be incorrect and will change.
         </div>
 
         {engine?.disclaimer && (
