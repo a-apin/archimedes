@@ -246,7 +246,7 @@ def test_subscribe_rejects_over_spend_cap(client):
     be reached when the check refuses."""
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("c1")},
     )
     assert resp.status_code == 200, resp.text
 
@@ -274,7 +274,7 @@ def test_subscribe_under_spend_cap_still_succeeds(client):
     against an accidentally-inverted cap check silently 429-ing everything."""
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("c2")},
     )
     assert resp.status_code == 200, resp.text
 
