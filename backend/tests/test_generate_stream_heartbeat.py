@@ -29,9 +29,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from httpx import ASGITransport, AsyncClient
-
 from archimedes.api.account_auth import CurrentUser, require_current_user
+from httpx import ASGITransport, AsyncClient
 
 _JOB_ID = "job-heartbeat-1"
 

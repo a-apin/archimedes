@@ -9,8 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from archimedes.api._route_helpers import strategy_provider, vault_svc
 from archimedes.api.account_auth import require_current_user
-from archimedes.api.wallet_routes import require_linked_wallet
 from archimedes.api.limiter import limiter
+from archimedes.api.wallet_routes import require_linked_wallet
 from archimedes.chain.strategy_publisher import strategy_publisher
 from archimedes.services.log_scrubber import sanitize_log_value
 
@@ -68,7 +68,7 @@ async def _anchor_strategies_async(strategy_ids: list[str]) -> None:
             logger.warning("anchor failed for strategy %s (non-fatal): %s", sanitize_log_value(sid), exc)
 
 
-def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
+def _strategy_rigor_status(strategy_id: str, cohort_cache: dict | None = None) -> tuple[bool, bool]:
     """``(found, passes_rigor_gate)`` for a strategy id, resolved across the curated
     provider AND the generated ``strategy_passports`` table — the same two sources
     ``GET /api/strategies/{id}`` uses. Server-side source of truth for the deploy
@@ -77,10 +77,54 @@ def _strategy_rigor_status(strategy_id: str) -> tuple[bool, bool]:
     Fail-closed: if the DB lookup raises (cannot verify a generated strategy), the
     strategy is reported as not-found so the caller refuses the deploy rather than
     waving through an unverifiable one.
+
+    ``cohort_cache`` (optional) is a caller-owned dict used to compute the curated
+    full-library verdict map at most ONCE per request. ``verdicts_for_strategies``
+    is uncached and does a fresh ``get_all_daily_returns`` read plus a full cohort
+    CSCV/PBO pass on every call (~6s), so a vault bound to k curated strategies
+    otherwise paid that k times inside a single deploy request. Only the canonical
+    full-library map is ever cached — see the in-cohort guard below.
     """
     strat = strategy_provider().get_strategy(strategy_id)
     if strat is not None:
-        return True, bool(getattr(strat, "passes_rigor_gate", False))
+        # Use the LIVE verdict, not the provider object's attribute (#1173).
+        # LocalStrategyProvider sets passes_rigor_gate = False unconditionally on
+        # every curated Strategy (fail-closed by construction, 56cc9bde); the real
+        # verdict is overlaid downstream in _to_strategy_response. Reading the raw
+        # attribute here therefore made EVERY curated strategy undeployable at the
+        # default strictness with the message "has not passed the rigor gate —
+        # server-side rigor enforcement", which is simply false. Perverse symptom:
+        # deploying at strictness >= 2 worked, because that path takes the
+        # _deployable_levels branch below, which already consults the live gate.
+        #
+        # Graded against the FULL library cohort — same cohort the list badge and
+        # the passport use — because the verdict is cohort-dependent (cohort-scoped
+        # PBO/CSCV; a cohort under MIN_LIBRARY_N_FOR_PBO_GATING skips criterion 4).
+        # Grading `strat` alone would let the deploy gate disagree with the badge.
+        from archimedes.services.live_rigor_gate import RigorGateVerdict, verdicts_for_strategies
+
+        try:
+            cohort = list(strategy_provider().list_strategies())
+            in_cohort = any(getattr(x, "id", None) == strategy_id for x in cohort)
+            # Reuse the cached map ONLY for a strategy that is genuinely in the
+            # library list. A strategy missing from it needs `strat` appended,
+            # which yields a different (one-off) cohort — caching that map would
+            # let a later missing strategy miss the dict and silently degrade to
+            # `pending` → fail-closed → a spurious "not passed the rigor gate".
+            if in_cohort and cohort_cache is not None and "verdicts" in cohort_cache:
+                verdicts = cohort_cache["verdicts"]
+            else:
+                if not in_cohort:
+                    cohort.append(strat)
+                verdicts = verdicts_for_strategies(cohort)
+                if in_cohort and cohort_cache is not None:
+                    cohort_cache["verdicts"] = verdicts
+            verdict = verdicts.get(strategy_id, RigorGateVerdict.pending())
+        except Exception:
+            # Fail closed, consistent with this function's contract.
+            logger.exception("live rigor verdict failed for %s — failing closed", sanitize_log_value(strategy_id))
+            return True, False
+        return True, bool(verdict.passes)
 
     from archimedes.db import get_session
     from archimedes.services.passport_loader import get_passport
@@ -116,7 +160,7 @@ def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
     deployability and deploy a vault bound to it.
     """
     from archimedes.api.account_auth import get_current_user
-    from archimedes.api.wallet_routes import get_linked_wallet_address
+    from archimedes.api.auth_siwe import get_verified_wallet
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
 
@@ -125,21 +169,22 @@ def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
         # re-running its schema inspection/patch pass per deploy request (× per
         # strategy id) is wasted DB work on a hot, funds-adjacent path. Direct
         # test callers create their own schema (see test_vault_rigor_gate.py).
+        from archimedes.services.strategy_visibility import is_strategy_visible
+
         with get_session() as session:
             row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
             if row is None:
                 return None
-            if row.is_example or row.is_published:
-                return True
+            caller = get_verified_wallet(request)
             user = get_current_user(request)
-            caller = get_linked_wallet_address(request)
-            return bool(
-                user
-                and (
-                    row.owner_user_id == user.id
-                    or (row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower())
-                )
-            )
+            # Same rule as every other visibility check, from the same
+            # predicate -- see the note in selection_bias_routes on why the
+            # canonical-owner logic is not re-implemented here, and why the
+            # legacy fallback compares the SIWE-verified wallet rather than the
+            # Better Auth linked one. This path gates a funds-adjacent deploy,
+            # so it is the last place that should carry its own copy of an
+            # authorization rule.
+            return is_strategy_visible(row, caller, caller_user_id=user.id if user else None)
     except HTTPException:
         raise
     except Exception:
@@ -267,6 +312,9 @@ def _assert_strategies_pass_rigor(
     # level 1, so no live per-level ladder computation is needed. This also keeps
     # the default deploy path unchanged for callers that don't opt into strictness.
     if level <= STRICTEST_LEVEL:
+        # Request-scoped: the curated full-library verdict map is computed at most
+        # once for this deploy, not once per strategy_id (see _strategy_rigor_status).
+        cohort_cache: dict = {}
         for sid in strategy_ids:
             # Ownership gate (#1073): `_strategy_rigor_status` below resolves the
             # passport badge without regard to ownership, so a private/unpublished
@@ -280,7 +328,7 @@ def _assert_strategies_pass_rigor(
                 if visible is False:
                     raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
 
-            found, passes = _strategy_rigor_status(sid)
+            found, passes = _strategy_rigor_status(sid, cohort_cache=cohort_cache)
             if not found:
                 raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
             if not passes:
@@ -410,7 +458,15 @@ async def get_vault_detail(address: str):
     """Get full vault detail including holdings, performance, traces."""
     from fastapi import HTTPException
 
-    detail = await vault_svc.get_vault_detail(address)
+    from archimedes.services.vault_service import VaultFeeGuardRefusal
+
+    try:
+        detail = await vault_svc.get_vault_detail(address)
+    except VaultFeeGuardRefusal as exc:
+        # Issue #1138: the vault exists but the fee guard refuses it — answer
+        # 400 (over-cap, reason names the values) or 502 (fees unverifiable,
+        # fail-closed) instead of conflating it with an unknown address.
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="Vault not found")
     return detail

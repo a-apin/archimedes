@@ -5,8 +5,18 @@ verified external accounts and existing wallet-keyed tables are unchanged by
 this revision; user ownership adapters land separately.
 
 Revision ID: 9ad1c4e2b7f0
-Revises: 3f643d292e04
+Revises: 363d1c6ff0c0
 Create Date: 2026-07-28 15:00:00.000000
+
+Re-pointed from 3f643d292e04 to 363d1c6ff0c0 when main was merged in. Both
+revisions had been authored against 3f643d292e04 independently, leaving the
+chain with TWO heads -- and ``alembic upgrade head`` refuses to run at all in
+that state, so this is not cosmetic: it would have failed the pre-rollout
+migration task and blocked every deploy, which is exactly how the deploy
+pipeline broke on 2026-08-03. Serialising is safe here because the two
+revisions are disjoint: 363d1c6ff0c0 adds provenance COLUMNS to the existing
+backtest_results table, while this revision creates NEW auth tables and touches
+neither that table nor its columns.
 """
 
 from __future__ import annotations
@@ -17,7 +27,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "9ad1c4e2b7f0"
-down_revision: str | Sequence[str] | None = "3f643d292e04"
+down_revision: str | Sequence[str] | None = "363d1c6ff0c0"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

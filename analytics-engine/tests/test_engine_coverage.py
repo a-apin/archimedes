@@ -19,12 +19,15 @@ from archimedes_analytics_engine.engine import (
     RF_ANNUAL,
     RF_DAILY,
     BacktestResult,
+    BuyAndHoldStrategy,
     _build_equity_curve,
     _compute_cagr,
     _compute_sortino,
+    _max_drawdown_from_curve,
     _safe_get,
     _sharpe_bt_convention,
     _trade_stats,
+    combine_universe_results,
     run_backtest,
     run_buy_and_hold,
 )
@@ -279,3 +282,71 @@ def test_buy_and_hold_deploys_capital_on_rising_feed() -> None:
     assert result.total_return_pct > 0
     assert result.traded_notional > 0.0
     assert len(result.equity_curve) == result.bars + 1
+
+
+# ── _max_drawdown_from_curve duration semantics ─────────────────────────────
+#
+# Regression coverage: the duration counter must reset whenever the CURRENT
+# bar sits exactly AT the running peak (drawdown == 0), matching backtrader's
+# own DrawDown analyzer (`r.len = r.len + 1 if drawdown else 0`) — not only on
+# a STRICTLY NEW all-time high. The old `value > peak` reset condition left a
+# bar that merely equals the prior peak still counted as "in drawdown".
+
+
+def test_max_drawdown_from_curve_duration_resets_when_curve_retouches_peak() -> None:
+    """Hand-verified against backtrader's own reset rule. The curve dips from
+    its opening peak (100), partially recovers, RETOUCHES that same peak
+    (100) without ever exceeding it, dips again, retouches it a second time,
+    then finally breaks to a genuine new high (110).
+
+    Correct (backtrader) semantics: the counter resets to 0 every time the
+    curve is back at 100 (drawdown == 0), so the longest streak is the
+    3-bar stretch [90, 80, 90] before the first retouch — max_len == 3.
+
+    The pre-fix implementation only reset on a STRICTLY new high
+    (`value > peak`), so retouching a prior peak without exceeding it did NOT
+    reset the counter: it kept incrementing through both retouches and every
+    down-day in between, hand-computed to max_len == 8 on this exact curve —
+    proving this test fails without the fix.
+    """
+    curve = [100, 90, 80, 90, 100, 95, 90, 100, 110, 100, 95]
+
+    max_dd, max_len = _max_drawdown_from_curve(curve)
+
+    assert max_dd == pytest.approx(20.0)  # peak-to-trough 100 -> 80, unaffected by the duration bug
+    assert max_len == 3
+    # The bug this pins: the old `value > peak`-only reset would have produced 8 here.
+    assert max_len != 8
+
+
+def test_max_drawdown_from_curve_duration_matches_backtrader_dd_analyzer() -> None:
+    """Cross-validate the reimplementation against a REAL cerebro run's own
+    ``bt.analyzers.DrawDown`` output (the ground truth _max_drawdown_from_curve
+    is standing in for, per its own docstring) via the single-asset composite
+    identity: ``combine_universe_results`` on a ONE-constituent list must
+    reproduce ``max_drawdown_duration_bars`` exactly, not just the equity
+    curve and daily returns the pre-existing composite test already pins.
+    """
+    idx = pd.date_range("2022-01-01", periods=11, freq="D")
+    # Same shape as the hand-verified curve above (dip, partial recovery
+    # retouching the open, dip again, retouch again, then a genuine new high)
+    # expressed as a price series so a REAL BuyAndHold cerebro run exercises
+    # backtrader's own DrawDown analyzer on it.
+    closes = [100.0, 100.0, 90.0, 80.0, 90.0, 100.0, 95.0, 90.0, 100.0, 110.0, 100.0]
+    prices = pd.DataFrame(
+        {
+            "Open": closes,
+            "High": [c + 1 for c in closes],
+            "Low": [c - 1 for c in closes],
+            "Close": closes,
+            "Volume": [1_000] * len(closes),
+        },
+        index=idx,
+    )
+
+    solo = run_backtest(prices, strategy_cls=BuyAndHoldStrategy, initial_cash=10_000.0, transaction_cost_bps=0)
+    assert solo.max_drawdown_duration_bars is not None  # the curve does draw down; guard against a vacuous pass
+
+    composite = combine_universe_results([("SOLO", solo)], initial_cash=10_000.0)
+
+    assert composite.max_drawdown_duration_bars == solo.max_drawdown_duration_bars

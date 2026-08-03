@@ -91,6 +91,11 @@ def runner_env(monkeypatch):
         patch("archimedes.chain.agent_runner.AgentStateStore") as mock_state_cls,
         patch("archimedes.chain.agent_runner.strategy_evaluator") as mock_eval,
     ):
+        # Fee-cap guard (issue #1138 follow-up) default: compliant (0, 0) fees so
+        # existing live-mode (DRY_RUN=False) tests that don't care about fees
+        # keep reaching Phase 2 TRADE unmodified. TestFeeCapGuardBlocksTradeOnHostileVault
+        # overrides this per-case to exercise the guard itself.
+        mock_executor.get_vault_fee_bps = AsyncMock(return_value=(0, 0))
         mock_client.settings = MagicMock(
             synth_addresses={"sSPY": "0xsspy", "sGOLD": "0xsgold"},
             usdc_address="0xusdc",
@@ -651,6 +656,104 @@ class TestCommitRevealGuardBlocksTradeOnFailedCommit:
         # Trade proceeds exactly as before commit-reveal existed — the guard
         # does not fire because supports_commit_reveal() is False.
         m["executor"].execute_trades.assert_awaited_once()
+
+
+class TestFeeCapGuardBlocksTradeOnHostileVault:
+    """Issue #1138 follow-up (Dan's PR #1139 review): the marketplace-only
+    fee guard never reached the agent's own rebalance() call — the actual
+    state-changing path that triggers Vault.sol's _accrueFees(). These cover
+    the gap: over-cap and unreadable fees must both refuse Phase 2 TRADE,
+    fail-closed, while an at-cap vault must still trade normally."""
+
+    async def test_over_cap_fees_skip_trade(self, runner_env, monkeypatch):
+        runner, m = runner_env
+        monkeypatch.setattr("archimedes.chain.agent_runner.DRY_RUN", False)
+
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        m["executor"].build_trade_arrays = AsyncMock(return_value=(["0x" + "11" * 20], [600_000000], [], []))
+        m["executor"].execute_trades = AsyncMock(side_effect=AssertionError("execute_trades must not be called"))
+        from archimedes.chain.constants import MAX_PERFORMANCE_FEE_BPS
+
+        m["executor"].get_vault_fee_bps = AsyncMock(return_value=(0, MAX_PERFORMANCE_FEE_BPS + 1))
+
+        m["publisher"].supports_commit_reveal = MagicMock(return_value=False)
+        m["publisher"].publish = AsyncMock(return_value=None)
+        runner._get_vault_strategy_ids = MagicMock(return_value=None)
+
+        await runner.tick()
+
+        m["executor"].execute_trades.assert_not_called()
+        m["state"].save_trace.assert_awaited()
+        saved = m["state"].save_trace.await_args.args[0]
+        assert saved["decision_type"] == "skip"
+        assert saved["trigger"] == "fee_cap_exceeded"
+
+    async def test_unreadable_fees_skip_trade_fail_closed(self, runner_env, monkeypatch):
+        """Unreadable fees refuse the same as over-cap — never silently proceed."""
+        runner, m = runner_env
+        monkeypatch.setattr("archimedes.chain.agent_runner.DRY_RUN", False)
+
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        m["executor"].build_trade_arrays = AsyncMock(return_value=(["0x" + "11" * 20], [600_000000], [], []))
+        m["executor"].execute_trades = AsyncMock(side_effect=AssertionError("execute_trades must not be called"))
+        m["executor"].get_vault_fee_bps = AsyncMock(side_effect=RuntimeError("rpc down"))
+
+        m["publisher"].supports_commit_reveal = MagicMock(return_value=False)
+        m["publisher"].publish = AsyncMock(return_value=None)
+        runner._get_vault_strategy_ids = MagicMock(return_value=None)
+
+        await runner.tick()
+
+        m["executor"].execute_trades.assert_not_called()
+        saved = m["state"].save_trace.await_args.args[0]
+        assert saved["decision_type"] == "skip"
+        assert saved["trigger"] == "fee_cap_exceeded"
+        assert "rpc down" in saved["reasoning"]
+
+    async def test_at_cap_fees_trade_proceeds(self, runner_env, monkeypatch):
+        """A vault at exactly the caps is allowed — the contract allows it too."""
+        runner, m = runner_env
+        monkeypatch.setattr("archimedes.chain.agent_runner.DRY_RUN", False)
+        from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
+
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        m["executor"].build_trade_arrays = AsyncMock(return_value=(["0x" + "11" * 20], [600_000000], [], []))
+        m["executor"].execute_trades = AsyncMock(return_value=["0xtradetx"])
+        m["executor"].get_vault_fee_bps = AsyncMock(return_value=(MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS))
+
+        m["publisher"].supports_commit_reveal = MagicMock(return_value=False)
+        m["publisher"].publish = AsyncMock(return_value=None)
+        runner._get_vault_strategy_ids = MagicMock(return_value=None)
+
+        await runner.tick()
+
+        m["executor"].execute_trades.assert_awaited_once()
+
+    async def test_dry_run_unaffected_by_fee_guard(self, runner_env):
+        """DRY_RUN never submits a real trade — the fee-cap read must not run
+        (and must not block the simulate path) under DRY_RUN."""
+        runner, m = runner_env  # runner_env fixture forces DRY_RUN=True
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        m["executor"].get_vault_fee_bps = AsyncMock(side_effect=AssertionError("must not be read under DRY_RUN"))
+        runner._get_vault_strategy_ids = MagicMock(return_value=None)
+
+        await runner.tick()
+
+        m["executor"].get_vault_fee_bps.assert_not_called()
+        saved = m["state"].save_trace.await_args.args[0]
+        assert saved["decision_type"] == "rebalance"
 
 
 # ── run() loop body ───────────────────────────────────────────

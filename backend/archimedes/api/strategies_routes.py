@@ -18,7 +18,6 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 
 from archimedes.api._route_helpers import strategy_provider
 from archimedes.api.account_auth import CurrentUser, get_current_user, require_current_user
-from archimedes.api.wallet_routes import get_linked_wallet_address as get_verified_wallet
 from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
     SignalResponse,
@@ -28,6 +27,7 @@ from archimedes.api.schemas import (
     StrategySignalResponse,
     StrategySignalsResponse,
 )
+from archimedes.api.wallet_routes import get_linked_wallet_address as get_verified_wallet
 from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.services.live_rigor_gate import (
     RigorGateVerdict,
@@ -482,10 +482,41 @@ async def list_strategies(
     from archimedes.models.strategy_generators import wallet_can_publish
 
     status_filter = StrategyStatus(status) if status else None
-    strats = strategy_provider().list_strategies(status=status_filter)
+
+    # Grade over the FULL library — never a filtered or paginated subset (#1173).
+    # The detail route grades via _library_cohort_including(), which calls
+    # list_strategies() with NO status filter, so the cohort here must match it
+    # exactly or the same strategy's badge changes depending on how it was
+    # requested. Two distinct ways that broke:
+    #
+    #   1. Pagination. Scoring over `window` made the badge depend on which page
+    #      a strategy landed on: a short window can fall under
+    #      MIN_LIBRARY_N_FOR_PBO_GATING (criterion 4 skipped) and the CSCV/PBO
+    #      value itself shifts with the cohort. Verified live: strategy
+    #      d90b357a…4bbd graded False in a 5-item window but True in the
+    #      full-library view and True on its own detail/passport route.
+    #   2. The `status` filter. Grading `list_strategies(status=...)` graded a
+    #      SUBSET, so `?status=candidate` and `?status=validated` could return
+    #      different verdicts for the same strategy, and both could disagree with
+    #      the passport. Same class of bug as (1), same fix — the filter is a
+    #      display concern and must not reach the cohort.
+    #
+    # Both are the list-vs-detail contradiction dfa8fc1 was written to prevent,
+    # and which this route's docstring asserts cannot happen.
+    #
+    # Bonus: the cache key (see cohort_key) is derived from the cohort's ids, so
+    # grading the full library collapses the previous one-cohort-computation-per
+    # -offset AND per-status-filter (~6s each) into a single shared entry.
+    library = strategy_provider().list_strategies()
+    rigor_results = _live_rigor_results_for_strategies(library)
+
+    # Filter/paginate only AFTER grading. Delegated to the provider rather than
+    # filtered in-process so the `status` semantics stay byte-identical to the
+    # previous behaviour (file-declared status, before the live-gate promotion
+    # overlay — see the docstring note above).
+    strats = strategy_provider().list_strategies(status=status_filter) if status_filter else library
     total = len(strats)
     window = strats[offset : offset + limit]
-    rigor_results = _live_rigor_results_for_strategies(window)
     caller = get_verified_wallet(request)
     responses: list[StrategyResponse] = []
     with get_session() as session:
@@ -1805,25 +1836,22 @@ async def get_strategy_returns(strategy_id: str, request: Request):
     is_curated = strat is not None
 
     if not is_curated:
+        from archimedes.api.auth_siwe import get_verified_wallet as get_siwe_wallet
         from archimedes.db import get_session
         from archimedes.models.strategy_store import StrategyRecord
+        from archimedes.services.strategy_visibility import is_strategy_visible
 
         with get_session() as session:
             row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-            if row is None:
+            # NOTE: this module aliases get_linked_wallet_address AS
+            # get_verified_wallet at import (line ~21), so the module-level name
+            # does NOT mean SIWE-verified here. The legacy-owner fallback must
+            # compare a wallet the caller has PROVEN control of, so import the
+            # real SIWE function explicitly rather than inheriting the alias.
+            caller = get_siwe_wallet(request)
+            user = get_current_user(request)
+            if not is_strategy_visible(row, caller, caller_user_id=user.id if user else None):
                 raise HTTPException(status_code=404, detail="Strategy not found")
-            if not row.is_example and not row.is_published:
-                user = get_current_user(request)
-                caller = get_verified_wallet(request)
-                is_owner = bool(
-                    user
-                    and (
-                        row.owner_user_id == user.id
-                        or (row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower())
-                    )
-                )
-                if not is_owner:
-                    raise HTTPException(status_code=404, detail="Strategy not found")
 
     # ── 2. Load persisted daily returns from backtest_results ────────────────
     try:
@@ -1877,24 +1905,20 @@ async def get_strategy(strategy_id: str, request: Request):
     if strat is not None:
         return _to_strategy_response(strat)
 
+    from archimedes.api.auth_siwe import get_verified_wallet as get_siwe_wallet
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.passport_loader import get_passport
+    from archimedes.services.strategy_visibility import is_strategy_visible
 
     with get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-        if row is not None and not row.is_example and not row.is_published:
-            user = get_current_user(request)
-            caller = get_verified_wallet(request)
-            is_owner = bool(
-                user
-                and (
-                    row.owner_user_id == user.id
-                    or (row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower())
-                )
-            )
-            if not is_owner:
-                raise HTTPException(status_code=404, detail="Strategy not found")
+        # Explicit SIWE import, not this module's get_verified_wallet alias --
+        # see the note at the sibling call site above.
+        caller = get_siwe_wallet(request)
+        user = get_current_user(request)
+        if row is not None and not is_strategy_visible(row, caller, caller_user_id=user.id if user else None):
+            raise HTTPException(status_code=404, detail="Strategy not found")
         record = get_passport(session, strategy_id)
         if record is not None:
             return _passport_to_strategy_response(record, session=session)

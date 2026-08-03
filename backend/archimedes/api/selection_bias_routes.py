@@ -469,28 +469,27 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
     persisted daily returns — the honest "Pending Backtest" case, not a 404.
     """
     from archimedes.api.account_auth import get_current_user
-    from archimedes.api.wallet_routes import get_linked_wallet_address
+    from archimedes.api.auth_siwe import get_verified_wallet
     from archimedes.db import get_session, init_db
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.backtest_repository import get_daily_returns, latest_backtests_by_strategy
+    from archimedes.services.strategy_visibility import is_strategy_visible
 
     init_db()
     with get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-        if row is None:
+        caller = get_verified_wallet(request)
+        user = get_current_user(request)
+        # Canonical-owner check lives in is_strategy_visible, not here. This
+        # branch previously re-implemented the owner_user_id rule inline right
+        # after already calling the shared predicate, which meant two copies of
+        # an authorization rule that could drift apart. The wallet passed for
+        # the legacy fallback is deliberately the SIWE-VERIFIED wallet, not the
+        # Better Auth linked wallet: legacy rows were created under the SIWE
+        # model, so accepting a merely-linked wallet would let someone claim a
+        # pre-migration row without ever proving control of it.
+        if not is_strategy_visible(row, caller, caller_user_id=user.id if user else None):
             return None
-        if not row.is_example and not row.is_published:
-            user = get_current_user(request)
-            caller = get_linked_wallet_address(request)
-            is_owner = bool(
-                user
-                and (
-                    row.owner_user_id == user.id
-                    or (row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower())
-                )
-            )
-            if not is_owner:
-                return None
 
         strategy_name = row.strategy_name
         daily_returns = get_daily_returns(session, strategy_id)

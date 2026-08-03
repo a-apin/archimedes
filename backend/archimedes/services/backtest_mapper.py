@@ -67,6 +67,10 @@ class OperationResultModel(BaseModel):
     operation: str
     symbol: str
     metrics: EngineMetricsModel
+    # Present only on the "UNIVERSE" composite row (analytics-engine
+    # cli.run_command's declared-universe path) — the per-asset operations it
+    # was averaged from. Absent/empty on every ordinary per-asset row.
+    constituent_operations: list[str] = Field(default_factory=list)
 
 
 class StrategyBlockModel(BaseModel):
@@ -128,6 +132,16 @@ def select_operation_result(
         for row in artifact.results:
             if row.operation.upper() == wanted:
                 return row
+
+    # The "UNIVERSE" composite (cli.run_command's declared-universe path —
+    # equal-weighted, date-aligned across every asset the strategy declares)
+    # represents the strategy applied across its own declared universe, not
+    # just one leg of it. Grade that ahead of "SPY", which is just one of
+    # potentially several declared assets and is no longer special once a
+    # genuine composite exists (backtest-vol audit; see cli.py).
+    for row in artifact.results:
+        if row.operation.upper() == "UNIVERSE":
+            return row
 
     for row in artifact.results:
         if row.operation.upper() == "SPY":

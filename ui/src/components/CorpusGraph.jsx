@@ -187,7 +187,7 @@ export default function CorpusGraph() {
       <div className="corpus-graph-error" style={{ padding: 24 }}>
         <div className="info-box warning">
           {error.includes('503') || error.includes('KB pipeline')
-            ? 'KB pipeline still running — first artifact pending. The graph will populate once embeddings are computed.'
+            ? "Knowledge-graph pipeline hasn't run yet (SPECTER2 clustering + entity extraction) — paper retrieval already uses live semantic embeddings (MiniLM); this similarity graph will populate once the KB pipeline produces its first artifact."
             : `Graph unavailable: ${error}`}
         </div>
       </div>

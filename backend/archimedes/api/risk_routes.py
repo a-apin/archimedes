@@ -60,8 +60,8 @@ def _all_strategies(request: Request) -> list:
     strategies: list = list(_strategy_provider().list_strategies())
     try:
         from archimedes.api.account_auth import get_current_user
-        from archimedes.api.wallet_routes import get_linked_wallet_address
         from archimedes.api.strategies_routes import _generated_strategy_responses
+        from archimedes.api.wallet_routes import get_linked_wallet_address
         from archimedes.db import get_session
 
         caller = get_linked_wallet_address(request)

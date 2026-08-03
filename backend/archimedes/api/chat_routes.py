@@ -19,7 +19,6 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from archimedes.api.auth_guard import require_internal_agent_key
-from archimedes.api.wallet_routes import require_linked_wallet
 from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
     ChatMessageListResponse,
@@ -27,6 +26,7 @@ from archimedes.api.schemas import (
     ChatPostRequest,
     ChatPostResponse,
 )
+from archimedes.api.wallet_routes import require_linked_wallet
 from archimedes.services.chat_service import chat_service
 
 chat_router = APIRouter(prefix="/api/vaults", tags=["chat"])

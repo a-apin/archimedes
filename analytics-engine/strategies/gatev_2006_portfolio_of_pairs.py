@@ -187,6 +187,10 @@ class GatevPortfolioOfPairs(bt.Strategy):
     ``engine.run_multi_backtest``.
     """
 
+    # Runner contract: this class trades across its whole declared 26-ETF
+    # universe (engine.required_feeds() / cli.run_command's N-feed branch).
+    REQUIRED_FEEDS = "UNIVERSE"
+
     params = (
         ("formation", 252),  # 12-month formation window (bars)
         ("trading", 126),  # 6-month trading window (bars)

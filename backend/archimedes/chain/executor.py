@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 # Production would raise this to $1000+.
 MIN_HEALTHY_LIQUIDITY_USDC = 5.0
 
+# The #1138 fee-cap constants live in archimedes.chain.constants (a module
+# with no import side effects) so schemas and tooling can use them without
+# instantiating the chain_executor singleton below.
+
 # Solidity types of Vault.rebalance()'s params, in order — MUST match
 # Vault.sol's `rebalance(address[] tokensIn, uint256[] amountsIn,
 # address[] tokensOut, uint256[] amountsOut)` exactly, since
@@ -707,14 +711,17 @@ class ChainExecutor:
             tier = await vault.functions.tier().call()
         except Exception:
             tier = 2
+        # Fee reads degrade to None (unknown), NOT 0 — rendering an unreadable
+        # vault as "0% fees" on a trust surface is a lie, and the #1138 guard
+        # needs to distinguish "free" from "couldn't verify" to fail closed.
         try:
             mgmt_fee_bps = await vault.functions.managementFeeBps().call()
         except Exception:
-            mgmt_fee_bps = 0
+            mgmt_fee_bps = None
         try:
             perf_fee_bps = await vault.functions.performanceFeeBps().call()
         except Exception:
-            perf_fee_bps = 0
+            perf_fee_bps = None
         try:
             is_agent = await vault.functions.isAgentAssisted().call()
         except Exception:
@@ -756,6 +763,19 @@ class ChainExecutor:
         except Exception as exc:
             logger.warning("Could not read on-chain owner for vault %s: %s", vault_address, exc)
             return None
+
+    async def get_vault_fee_bps(self, vault_address: str) -> tuple[int, int]:
+        """Read (managementFeeBps, performanceFeeBps) from the vault contract.
+
+        Raises on any read failure — this is the read behind the #1138 fee
+        guard, and its callers must fail CLOSED (refuse the vault) when the
+        fees can't be verified. No silent zero-default here; contrast with
+        get_vault_metrics, whose display path degrades to None instead.
+        """
+        vault = self.loader.vault(vault_address)
+        mgmt_fee_bps = await vault.functions.managementFeeBps().call()
+        perf_fee_bps = await vault.functions.performanceFeeBps().call()
+        return int(mgmt_fee_bps), int(perf_fee_bps)
 
     async def get_all_vaults(self) -> list[str]:
         """Get all vault addresses from VaultFactory."""

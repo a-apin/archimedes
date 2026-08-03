@@ -5,13 +5,22 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from archimedes.api.wallet_routes import require_linked_wallet as require_verified_wallet
 from archimedes.api.marketplace_routes import marketplace_router
+from archimedes.api.wallet_routes import require_linked_wallet as require_verified_wallet
+from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.db_isolation import redirect_to_tmp_sqlite
 
 TEST_WALLET = "0x0000000000000000000000000000000000000001"
+
+
+def _vaddr(byte: str) -> str:
+    """A valid 20-byte hex vault address built from one repeated byte.
+
+    Publish validates user-supplied vault_address format before the #1138
+    fee guard runs, so test addresses must be real-shaped."""
+    return "0x" + byte * 20
 
 
 @pytest.fixture(autouse=True)
@@ -85,6 +94,17 @@ def _mock_provision_publisher_wallet():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _mock_spend_cap_not_over():
+    """subscribe_strategy checks spend_cap.is_over_cap before provisioning a
+    wallet (#713). Default every test in this file to "not over cap" so the
+    existing subscribe-path tests exercise the happy path without a real
+    Redis round-trip; test_subscribe_rejects_over_spend_cap overrides this
+    to True to exercise the 429 refusal."""
+    with patch("archimedes.api.marketplace_routes.spend_cap.is_over_cap", new=AsyncMock(return_value=False)):
+        yield
+
+
 @pytest.fixture
 def app():
     """FastAPI app with marketplace router and a mock market service."""
@@ -104,6 +124,11 @@ def app():
     market.signer.execute_contract = AsyncMock()
     market.executor = MagicMock()
     market.executor.create_vault = AsyncMock(return_value="0xvault")
+    # Fee-cap guard (issue #1138): publish with a user-supplied vault_address and
+    # subscribe both read the vault's on-chain fee bps and refuse over-cap or
+    # unreadable vaults. Default the mock to a compliant (0, 0) vault; the guard
+    # tests override per-case.
+    market.executor.get_vault_fee_bps = AsyncMock(return_value=(0, 0))
     # Funding gate (D7): the publish route rejects (402) when the vault holds less
     # than MARKETPLACE_MIN_VAULT_FUNDS_RAW. Mock the vault as well-funded so the
     # publish-path tests exercise publishing rather than the funding gate; the
@@ -144,7 +169,7 @@ def test_publish_rejects_unknown_strategy(client):
     """
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "nonexistent", "vault_address": "0xvault"},
+        json={"strategy_id": "nonexistent", "vault_address": _vaddr("aa")},
     )
     assert resp.status_code == 404, resp.text
 
@@ -166,7 +191,7 @@ def test_publish_generated_strategy_not_in_curated_provider(client):
 
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "gen_strat", "vault_address": "0xvault_gen"},
+        json={"strategy_id": "gen_strat", "vault_address": _vaddr("a1")},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["strategy_id"] == "gen_strat"
@@ -177,7 +202,7 @@ def test_publish_creates_publisher_row(client):
     """Publish creates a MarketplaceAgent row with a derived pool_id."""
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault_pre"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("a2")},
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
@@ -193,7 +218,7 @@ def test_publish_underfunded_vault_returns_402(client):
     client.app.state.market._usdc_balance_of = AsyncMock(return_value=0)
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault_pre"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("a2")},
     )
     assert resp.status_code == 402, resp.text
     assert "below minimum" in resp.json()["detail"]
@@ -214,17 +239,67 @@ def test_subscribe_rejects_blank_sub_id(client):
     assert resp.status_code == 400, resp.text
 
 
+def test_subscribe_rejects_over_spend_cap(client):
+    """A wallet at/over its rolling 24h marketplace spend cap gets 429 on a
+    NEW subscription (#713). The guard sits after the existing dedup checks
+    and BEFORE wallet provisioning — provision_subscriber_wallet must never
+    be reached when the check refuses."""
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("c1")},
+    )
+    assert resp.status_code == 200, resp.text
+
+    with (
+        patch("archimedes.api.marketplace_routes.spend_cap.is_over_cap", new=AsyncMock(return_value=True)),
+        patch(
+            "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+            new=AsyncMock(side_effect=AssertionError("must not provision a wallet when over the spend cap")),
+        ) as m_provision,
+    ):
+        resp = client.post(
+            "/api/marketplace/subscribe",
+            json={"strategy_id": "test_strat", "sub_id": "0x" + "f0" * 32, "ephemeral_wallet": "0xeph"},
+        )
+
+    assert resp.status_code == 429, resp.text
+    detail = resp.json()["detail"]
+    assert detail["reason"] == "marketplace_spend_cap_reached"
+    m_provision.assert_not_awaited()
+
+
+def test_subscribe_under_spend_cap_still_succeeds(client):
+    """Sanity-checks the mock boundary the opposite way: with is_over_cap
+    False (the file's autouse default), subscribe proceeds normally — guards
+    against an accidentally-inverted cap check silently 429-ing everything."""
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("c2")},
+    )
+    assert resp.status_code == 200, resp.text
+
+    with patch(
+        "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+        new=AsyncMock(return_value=("w-cap-ok", "0x0000000000000000000000000000000000000ee9")),
+    ):
+        resp = client.post(
+            "/api/marketplace/subscribe",
+            json={"strategy_id": "test_strat", "sub_id": "0x" + "f1" * 32, "ephemeral_wallet": "0xeph"},
+        )
+    assert resp.status_code == 200, resp.text
+
+
 def test_publish_duplicate_returns_409(client):
     """Publishing the same strategy twice returns 409."""
     resp1 = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "dup_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "dup_strat", "vault_address": _vaddr("aa")},
     )
     assert resp1.status_code == 200
 
     resp2 = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "dup_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "dup_strat", "vault_address": _vaddr("aa")},
     )
     assert resp2.status_code == 409, resp2.text
 
@@ -234,7 +309,7 @@ def test_publish_pool_id_is_derived_not_accepted(client):
     # Validate that pool_id is non-zero, 66 chars, and starts with 0x
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "check_pool", "vault_address": "0xvault_a"},
+        json={"strategy_id": "check_pool", "vault_address": _vaddr("a3")},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["pool_id"].startswith("0x")
@@ -254,7 +329,7 @@ def test_subscribe_succeeds_live_mode_no_chain_calls(client, app):
     # Create publisher first
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("aa")},
     )
     assert resp.status_code == 200
 
@@ -302,7 +377,7 @@ def test_subscribe_rejects_duplicate_sub_id_from_other_wallet(client, app):
     """
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "dup_sid_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "dup_sid_strat", "vault_address": _vaddr("aa")},
     )
     assert resp.status_code == 200
 
@@ -344,7 +419,7 @@ def test_published_detail_public_surface_count_only(client, app):
     """
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "redact_strat", "vault_address": "0xvault"},
+        json={"strategy_id": "redact_strat", "vault_address": _vaddr("aa")},
     )
     assert resp.status_code == 200
 
@@ -383,7 +458,7 @@ def test_published_detail_public_surface_count_only(client, app):
 def test_unsubscribe_triggers_refund_and_returns_tx(client, app):
     """Unsubscribe auto-withdraws the subscriber's remaining DCW balance back to
     their wallet (issue #975 exit) and surfaces the tx in the response."""
-    resp = client.post("/api/marketplace/publish", json={"strategy_id": "refund_strat", "vault_address": "0xv"})
+    resp = client.post("/api/marketplace/publish", json={"strategy_id": "refund_strat", "vault_address": _vaddr("a5")})
     assert resp.status_code == 200
 
     with patch(
@@ -408,6 +483,133 @@ def test_unsubscribe_triggers_refund_and_returns_tx(client, app):
     assert kwargs["to_wallet"] == TEST_WALLET
 
 
+# ─── Fee-cap guard (issue #1138) ────────────────────────────────────────────
+# The live VaultFactory predates the #1129 constructor caps and fee bps are
+# immutable, so a pre-cap vault with hostile fees can never be fixed on-chain.
+# publish (user-supplied vault_address) and subscribe (the publisher's vault)
+# must refuse over-cap vaults with a 4xx naming the actual values, and must
+# fail CLOSED (502) when the fees can't be read.
+
+
+def _set_fees(app, mgmt: int, perf: int) -> None:
+    app.state.market.executor.get_vault_fee_bps = AsyncMock(return_value=(mgmt, perf))
+
+
+def test_publish_rejects_over_cap_management_fee(client, app):
+    _set_fees(app, MAX_MANAGEMENT_FEE_BPS + 100, 0)
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("bb")},
+    )
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    # The reason names the actual on-chain values and the caps.
+    assert f"managementFeeBps={MAX_MANAGEMENT_FEE_BPS + 100}" in detail
+    assert f"cap {MAX_MANAGEMENT_FEE_BPS}" in detail
+
+
+def test_publish_rejects_over_cap_performance_fee(client, app):
+    _set_fees(app, 0, MAX_PERFORMANCE_FEE_BPS + 1)
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("bb")},
+    )
+    assert resp.status_code == 400, resp.text
+    assert f"performanceFeeBps={MAX_PERFORMANCE_FEE_BPS + 1}" in resp.json()["detail"]
+
+
+def test_publish_allows_fees_exactly_at_caps(client, app):
+    """A vault at exactly the caps is allowed — the contract allows it too."""
+    _set_fees(app, MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS)
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("cc")},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_publish_fee_read_failure_fails_closed(client, app):
+    """Unreadable fees → refuse (502), never wave the vault through.
+
+    Fail-closed is deliberate: this guard is fund-adjacent — passing a vault
+    whose fees we couldn't verify exposes depositors to the C1 fee-drain.
+    """
+    app.state.market.executor.get_vault_fee_bps = AsyncMock(side_effect=RuntimeError("rpc down"))
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("dd")},
+    )
+    assert resp.status_code == 502, resp.text
+    assert "fail-closed" in resp.json()["detail"]
+
+
+def test_publish_rejects_malformed_vault_address(client, app):
+    """A malformed vault_address is a client error (400) caught BEFORE any
+    chain read — not a 502 from the fee guard's fail-closed path."""
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": "0xnot-an-address"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "vault_address" in resp.json()["detail"]
+    app.state.market.executor.get_vault_fee_bps.assert_not_awaited()
+
+
+def test_publish_created_vault_skips_fee_read(client, app):
+    """No user-supplied vault_address → backend creates the vault with 0/0 fees;
+    the guard must NOT run (a fee-read blip must not block the create path)."""
+    app.state.market.executor.get_vault_fee_bps = AsyncMock(side_effect=RuntimeError("rpc down"))
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat"},
+    )
+    assert resp.status_code == 200, resp.text
+    app.state.market.executor.get_vault_fee_bps.assert_not_awaited()
+
+
+def test_subscribe_rejects_over_cap_publisher_vault(client, app):
+    """A vault published before the guard existed stays reachable in the DB —
+    subscribe must re-check its fees on-chain and refuse, same as publish."""
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("ee")},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # The vault's immutable on-chain fees are hostile; the publish-time check
+    # is history. Subscribe reads them fresh.
+    _set_fees(app, 0, MAX_PERFORMANCE_FEE_BPS + 1000)
+    with patch(
+        "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+        new=AsyncMock(return_value=("w-fee", "0x0000000000000000000000000000000000000fe1")),
+    ):
+        r = client.post(
+            "/api/marketplace/subscribe",
+            json={"strategy_id": "test_strat", "sub_id": "0x" + "fe" * 32, "ephemeral_wallet": "0xeph"},
+        )
+    assert r.status_code == 400, r.text
+    assert f"performanceFeeBps={MAX_PERFORMANCE_FEE_BPS + 1000}" in r.json()["detail"]
+
+
+def test_subscribe_fee_read_failure_fails_closed(client, app):
+    resp = client.post(
+        "/api/marketplace/publish",
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("aa")},
+    )
+    assert resp.status_code == 200, resp.text
+
+    app.state.market.executor.get_vault_fee_bps = AsyncMock(side_effect=RuntimeError("rpc down"))
+    with patch(
+        "archimedes.marketplace.wallet_provisioner.provision_subscriber_wallet",
+        new=AsyncMock(return_value=("w-fee", "0x0000000000000000000000000000000000000fe2")),
+    ):
+        r = client.post(
+            "/api/marketplace/subscribe",
+            json={"strategy_id": "test_strat", "sub_id": "0x" + "fd" * 32, "ephemeral_wallet": "0xeph"},
+        )
+    assert r.status_code == 502, r.text
+
+
 # ─── Identity ledger (issue #1028, D1a/D2/D3) ──────────────────────────────
 # _setup_db redirects to a fresh isolated tmp DB around EACH test in this
 # file, so these assertions can be absolute (not delta-based) — no
@@ -424,7 +626,7 @@ def test_publish_registers_dcw_and_ledgers_strategy_published(client):
 
     resp = client.post(
         "/api/marketplace/publish",
-        json={"strategy_id": "test_strat", "vault_address": "0xvault_ledger"},
+        json={"strategy_id": "test_strat", "vault_address": _vaddr("a4")},
     )
     assert resp.status_code == 200, resp.text
 
@@ -449,7 +651,7 @@ def test_subscribe_registers_dcw_and_ledgers_marketplace_subscribed(client):
     from archimedes.db import get_session
     from archimedes.models.identity import ControlledWallet, IdentityEvent
 
-    pub = client.post("/api/marketplace/publish", json={"strategy_id": "test_strat", "vault_address": "0xvault"})
+    pub = client.post("/api/marketplace/publish", json={"strategy_id": "test_strat", "vault_address": _vaddr("aa")})
     assert pub.status_code == 200, pub.text
 
     dcw_address = "0x0000000000000000000000000000000000000eee"
@@ -483,7 +685,7 @@ def test_unsubscribe_ledgers_marketplace_unsubscribed(client, app):
     from archimedes.db import get_session
     from archimedes.models.identity import IdentityEvent
 
-    pub = client.post("/api/marketplace/publish", json={"strategy_id": "refund_strat", "vault_address": "0xv"})
+    pub = client.post("/api/marketplace/publish", json={"strategy_id": "refund_strat", "vault_address": _vaddr("a5")})
     assert pub.status_code == 200
 
     with patch(

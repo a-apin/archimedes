@@ -201,6 +201,7 @@ def seeded_db():
             run_id=artifact.run_id,
             operation=operation,
             artifact_json=FIXTURE_PATH.read_text(encoding="utf-8"),
+            source_pipeline="test",
         )
         session.commit()
     return buy_hold.id

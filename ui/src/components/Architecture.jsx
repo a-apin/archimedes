@@ -1,156 +1,190 @@
-// /architecture — single-page infographic explaining the agent + memory +
-// corpus architecture that powers Generate. Linked from Generate's
-// collapsible "How this works" panel and surfaced in the sidebar so
-// curious users can dig in without breaking the Generate-first spine.
+// /architecture — single-page infographic explaining how Archimedes actually
+// works today: brief → debate-society generation → external rigor gate →
+// non-custodial vault deploy → commit-before-trade execution → verify.
+//
+// Anti-rot rule (the reason the previous version of this page died): every
+// number on this page is live-fetched on mount from /api/config/contracts,
+// /health, and /api/leaderboard — never hardcoded. A failed fetch renders an
+// honest "—" + "live value unavailable" caption, never a stale or invented
+// number. See docs/architecture-redesign/ for the full design rationale.
 
-const AGENTS = [
-  {
-    name: 'Strategy Generation Agent',
-    role: 'What should be done?',
-    desc: 'Retrieves relevant papers from a 10,000-record q-fin metadata corpus, reads current market context, and synthesizes a candidate strategy that passes the rigor gate.',
-    subagents: [
-      { name: 'Paper Retrieval', detail: 'Keyword + TF-IDF ranking (SPECTER2 / KG walk: build target)' },
-      { name: 'Market Context', detail: 'Regime classifier + on-chain oracle + price history' },
-      { name: 'Strategy Synthesis', detail: 'LLM fusion: brief × papers × market' },
-      { name: 'Rigor Gate', detail: 'DSR + PBO + chronological OOS + look-ahead audit' },
-    ],
-    output: 'Strategy passport with paper anchors + rigor verdict',
-    authority: 'None — pure synthesis',
-  },
-  {
-    name: 'Portfolio Construction Agent',
-    role: 'How exactly do we do it?',
-    desc: 'Turns the strategy into a concrete set of assets, weights, and position sizes, and stress-tests it across six adverse scenarios.',
-    subagents: [
-      { name: 'Asset Selection', detail: 'Individual instruments, paper-anchored' },
-      { name: 'Sizing', detail: 'Kelly criterion + risk parity + USDC floor' },
-      { name: 'Stress Test', detail: 'Six scenario shocks (2008, COVID, vol spike, etc.)' },
-    ],
-    output: 'Vault deployment proposal (target weights, projected behavior)',
-    authority: 'None — produces the proposal you sign',
-  },
-  {
-    name: 'Live Execution Agent',
-    role: 'Given the vault is funded, what do we do this minute?',
-    desc: 'Continuous rebalance loop in the agent docker service. Each tick: read vault state from chain, evaluate the strategy DSL, decide rebalance vs hold, anchor the trace.',
-    subagents: [
-      { name: 'Signal Evaluation', detail: 'Does the strategy DSL say rebalance?' },
-      { name: 'Drift Calculation', detail: 'Target weights vs current weights' },
-      { name: 'Cost-Benefit', detail: 'Is the rebalance worth the fee + slippage?' },
-      { name: 'Trade Execution', detail: 'Circle signer → AMM swap on Arc' },
-      { name: 'Trace Publishing', detail: 'Canonical hash → ReasoningTraceRegistry' },
-    ],
-    output: 'Rebalance tx (or honest "hold" trace) — both anchored on-chain',
-    authority: 'Bounded — rebalance within signed allocations only',
-  },
-]
+import { useEffect, useState } from 'react'
+import { apiGet } from '../api'
+import flowDiagramSrc from '../assets/flow-diagram.svg'
 
-const MEMORY_LAYERS = [
-  {
-    tag: 'A.1',
-    name: 'Intra-step latent',
-    substrate: 'LLM KV cache (Amazon Nova Micro via AWS Bedrock)',
-    lifetime: 'Single forward pass',
-    why: 'Where one synthesis step does its thinking.',
-  },
-  {
-    tag: 'A.2',
-    name: 'Deterministic state · audit-truth',
-    substrate: 'On-chain vault state (read-only to the agent)',
-    lifetime: 'Live, externally written',
-    why: 'Ground truth for "what is my current position." Chain wins if the LLM\'s narrative diverges.',
-  },
-  {
-    tag: 'B',
-    name: 'Within-session scratchpad',
-    substrate: 'Redis (SSE event log per job)',
-    lifetime: 'Single session',
-    why: 'Streams progress + carries reasoning state across sub-agent steps.',
-  },
-  {
-    tag: 'C',
-    name: 'Cross-session episodic',
-    substrate: 'Postgres (StrategyStore, vaults, traces)',
-    lifetime: 'Persistent',
-    why: 'How the library compounds: every proposal, verdict, and reject is content-hashed and recallable.',
-  },
-  {
-    tag: 'D',
-    name: 'Investigation memory',
-    substrate: 'Per-job event log + recent-traces buffer',
-    lifetime: 'Task-scoped',
-    why: 'Lets the Live Execution Agent reason about its own recent history without re-querying Postgres.',
-  },
-  {
-    tag: 'E',
-    name: 'Semantic knowledge',
-    substrate: 'q-fin corpus (10,000 metadata records; embeddings + clusters + KG pending)',
-    lifetime: 'Persistent',
-    why: 'The substrate the Strategy Generation Agent retrieves from (keyword/TF-IDF today).',
-  },
-]
+function fmtNum(n) {
+  return typeof n === 'number' ? n.toLocaleString() : n
+}
 
-const PROTOCOLS = [
-  { name: 'Outcome Embargo', what: 'Papers retrieved at decision time are filtered to those published before the decision; on-chain anchor proves the filter held.' },
-  { name: 'Time-Aware Retrieval', what: 'Retrieval relevance decays by paper age; higher decay in volatile regimes. (Today over keyword/TF-IDF scores; SPECTER2 similarity once the KB pipeline runs.)' },
-  { name: 'Hierarchy of Truth', what: 'Chain state outranks LLM narrative; curated academic literature outranks uncurated sources.' },
-  { name: 'Source Tracking', what: 'Every cited paper carries (arxiv_id, version, content_hash). Anchored on Arc; anyone can recompute.' },
-]
+// ── Live data ──────────────────────────────────────────────────────────
+
+function useArchStats() {
+  const [contracts, setContracts] = useState(null)
+  const [contractsError, setContractsError] = useState(false)
+  const [health, setHealth] = useState(null)
+  const [healthError, setHealthError] = useState(false)
+  const [leaderboard, setLeaderboard] = useState(null)
+  const [leaderboardError, setLeaderboardError] = useState(false)
+
+  useEffect(() => {
+    apiGet('/api/config/contracts').then(setContracts).catch(() => setContractsError(true))
+    apiGet('/health').then(setHealth).catch(() => setHealthError(true))
+    apiGet('/api/leaderboard').then(setLeaderboard).catch(() => setLeaderboardError(true))
+  }, [])
+
+  return { contracts, contractsError, health, healthError, leaderboard, leaderboardError }
+}
+
+// ── §1 — Header + hero stats ──────────────────────────────────────────
 
 function PageHeader() {
   return (
     <div className="max-w-[820px] mb-7">
       <h2 className="serif text-[2rem] mb-2.5">How Archimedes works</h2>
       <p className="body mb-2">
-        A multi-agent system that turns a plain-English brief into a deployable on-chain vault —
-        paper-anchored, rigor-gated, and auditable end to end.
+        Archimedes turns quantitative-finance research into strategies you can actually inspect:
+        generated by a multi-agent debate, admitted only through a statistical rigor gate,
+        executed into a vault that stays yours, with every decision hashed on-chain before the
+        trade that acts on it.
       </p>
       <p className="body" style={{ color: 'var(--text-3)' }}>
-        Three top-level agents, six memory layers, a 10,000-record q-fin metadata corpus, and the{' '}
-        <code>ReasoningTraceRegistry</code> on Arc anchoring every decision.
+        Everything on this page describes the live system — what runs today on the Arc public
+        testnet, and what is landing next, labeled as such.
       </p>
     </div>
   )
 }
 
-function HeroStrip() {
-  const stats = [
-    { n: '3', l: 'Top-level agents', s: 'Generation · Construction · Execution' },
-    { n: '6', l: 'Memory layers', s: 'KV cache → on-chain ground truth' },
-    { n: '10,000', l: 'q-fin metadata records', s: 'embeddings + clusters + KG: build target' },
-    { n: '11', l: 'Smart contracts', s: 'Deployed on Arc testnet' },
-  ]
+// Skeleton → value → honest "—" on fetch error. Never renders undefined or
+// a stale literal. `loading` and `failed` are passed explicitly (rather than
+// inferred from `value == null`) so a genuine live "0" never gets mistaken
+// for a still-loading state.
+function StatTile({ label, value, caption, loading, failed }) {
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-7">
-      {stats.map(s => (
-        <div key={s.l} className="card-flat p-4">
-          <div className="text-[1.8rem] font-bold">{s.n}</div>
-          <div className="label mt-1">{s.l}</div>
-          <div className="caption mt-1.5" style={{ color: 'var(--text-3)' }}>{s.s}</div>
-        </div>
-      ))}
+    <div className="card-flat p-4">
+      <div className="text-[1.8rem] font-bold" style={{ minHeight: '2.15rem' }}>
+        {failed ? (
+          <span style={{ color: 'var(--text-4)' }}>—</span>
+        ) : loading ? (
+          <span style={{ color: 'var(--text-4)', animation: 'pulse 1.4s infinite' }}>···</span>
+        ) : (
+          fmtNum(value)
+        )}
+      </div>
+      <div className="label mt-1">{label}</div>
+      <div className="caption mt-1.5" style={{ color: 'var(--text-3)' }}>
+        {failed ? 'live value unavailable' : caption}
+      </div>
     </div>
   )
 }
 
-// The pipeline rendered as a single connected timeline. One continuous gold
-// rail threads numbered nodes top-to-bottom — reads as one flow, never the
-// cramped floating-arrow grid it replaced. The deploy step is accented as the
-// user's binding signing moment.
+function HeroStrip({ contracts, contractsError, health, healthError, leaderboard, leaderboardError }) {
+  const synthCount = contracts?.synthetics ? Object.keys(contracts.synthetics).length : undefined
+  const vaultCount = contracts?.vaults ? Object.keys(contracts.vaults).length : undefined
+  const contractsLoading = !contracts && !contractsError
+  const healthLoading = !health && !healthError
+  const leaderboardLoading = !leaderboard && !leaderboardError
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-7">
+      <StatTile
+        label="Tradable synthetic assets"
+        value={synthCount}
+        loading={contractsLoading}
+        failed={contractsError}
+        caption="live on Arc testnet"
+      />
+      <StatTile
+        label="Research papers in the corpus manifest"
+        value={health?.corpus_papers}
+        loading={healthLoading}
+        failed={healthError}
+        caption={health ? `${fmtNum(health.corpus_db_count)} ingested and retrievable today` : ''}
+      />
+      <StatTile
+        label="Strategies on the public leaderboard"
+        value={leaderboard?.total}
+        loading={leaderboardLoading}
+        failed={leaderboardError}
+        caption="ranked by real backtest + live rigor gate"
+      />
+      <StatTile
+        label="Live user vaults on Arc"
+        value={vaultCount}
+        loading={contractsLoading}
+        failed={contractsError}
+        caption="grows with every deploy"
+      />
+    </div>
+  )
+}
+
+// ── §2 — The system, in one picture ───────────────────────────────────
+
+function SystemFlowDiagram() {
+  return (
+    <div className="card p-5 mb-7">
+      <div className="label mb-3">The system, in one picture</div>
+      <div style={{ overflowX: 'auto' }}>
+        <img
+          src={flowDiagramSrc}
+          alt="Archimedes system flow: the user at top, Archimedes off-chain services in the
+            middle, and Arc testnet contracts at the bottom, separated by a dashed trust boundary.
+            The agent commits its reasoning hash on-chain before every trade and reveals the full
+            trace afterward."
+          style={{ width: '100%', minWidth: 640, display: 'block' }}
+        />
+      </div>
+      <p className="caption mt-3" style={{ color: 'var(--text-3)' }}>
+        Off-chain, Archimedes reasons; on-chain, it is held to account. The dashed line is the
+        trust boundary: everything below it is publicly verifiable on Arc, and the agent cannot
+        cross it without committing its reasoning first.
+      </p>
+    </div>
+  )
+}
+
+// ── §3 — The pipeline ──────────────────────────────────────────────────
+// Gold-rail numbered timeline, kept from the previous page (the pattern is
+// good — the content was stale). Corrected: no separate "Portfolio
+// Construction" stage (debate-society generation covers it), five wallet
+// signatures (not four — createVault + setAgent + approve + deposit +
+// allocate, per CreateVaultModal.jsx), no invented tick interval (the
+// backend doesn't expose AGENT_INTERVAL_SECONDS on any live endpoint, so it
+// is omitted rather than guessed).
 const PIPELINE_STEPS = [
-  { title: 'Your brief', sub: 'plain English, optional asset classes + risk profile' },
-  { title: 'Strategy Generation', sub: 'paper retrieval · market context · synthesis · rigor gate' },
-  { title: 'Portfolio Construction', sub: 'asset selection · Kelly sizing · stress test' },
   {
-    title: 'Deploy as Vault',
-    sub: '4 wallet signatures: create → approve → deposit → set allocations',
-    youAct: true,
+    title: 'Your brief',
+    sub: 'plain English, optional asset classes, risk profile, and a model cost picker · sign in with any wallet or a passkey',
   },
-  { title: 'Live Execution', sub: '60s tick rebalance loop · on-chain trace per decision' },
-  { title: 'Verify on-chain', sub: 'recompute hash · check against Arc anchor' },
+  {
+    title: 'Debate',
+    sub: 'proposer society drafts candidates from the research corpus and current market regime · adversarial critics + deterministic backtests cull them · one winner + considered-rejects',
+  },
+  {
+    title: 'Rigor gate',
+    sub: 'DSR, PBO, walk-forward out-of-sample, and a look-ahead audit — outside the generator, on real persisted returns',
+    youAct: true,
+    actLabel: 'review the passport',
+  },
+  {
+    title: 'Deploy as vault',
+    sub: 'you sign every binding step: create the vault, authorize the agent, approve, deposit, allocate · the agent gets rebalance authority only',
+    youAct: true,
+    actLabel: 'five wallet signatures, all yours',
+  },
+  {
+    title: 'Live execution',
+    sub: "the agent ticks over your vault: evaluates the strategy's rule, commits its reasoning hash on-chain, trades, then reveals the full trace",
+  },
+  {
+    title: 'Verify & explore',
+    sub: 'recompute any trace hash against the on-chain anchor · browse your compounding library, the leaderboard, and the research underneath',
+  },
 ]
 
-function PipelineStep({ index, title, sub, youAct, isLast }) {
+function PipelineStep({ index, title, sub, youAct, actLabel, isLast }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '34px 1fr', columnGap: 16 }}>
       {/* Gutter: numbered node sitting on the continuous rail */}
@@ -195,7 +229,7 @@ function PipelineStep({ index, title, sub, youAct, isLast }) {
           {title}
           {youAct && (
             <span className="label" style={{ color: 'var(--accent)' }}>
-              · you sign
+              · you act: {actLabel}
             </span>
           )}
         </div>
@@ -212,12 +246,7 @@ function PipelineFlow() {
     <div className="card p-5 mb-7">
       <div className="label mb-4">The pipeline</div>
       {PIPELINE_STEPS.map((step, i) => (
-        <PipelineStep
-          key={step.title}
-          index={i}
-          isLast={i === PIPELINE_STEPS.length - 1}
-          {...step}
-        />
+        <PipelineStep key={step.title} index={i} isLast={i === PIPELINE_STEPS.length - 1} {...step} />
       ))}
       <p
         className="caption mt-4"
@@ -227,128 +256,473 @@ function PipelineFlow() {
           paddingTop: 14,
         }}
       >
-        You stay in the loop at two binding moments: reviewing the passport and signing
-        the four deploy transactions. The agent gains rebalance authority only — it cannot
-        withdraw, cannot change allocations, cannot change vault ownership.
+        You stay in the loop at two binding moments: reviewing the passport and signing the
+        deploy steps. The agent cannot withdraw, cannot change what the vault may hold, and
+        cannot trade without a prior on-chain commitment. If nothing clears the bar, Archimedes
+        says so: <strong style={{ color: 'var(--text-2)' }}>abstaining is a first-class outcome, not a failure state.</strong>
       </p>
     </div>
   )
 }
 
-function AgentCards() {
-  return (
-    <div className="mb-7">
-      <div className="label mb-3">The three agents</div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {AGENTS.map(a => (
-          <div key={a.name} className="card p-4">
-            <div className="font-semibold mb-1" style={{ fontSize: '1rem' }}>{a.name}</div>
-            <div className="caption mb-3" style={{ color: 'var(--accent)' }}>{a.role}</div>
-            <p className="body mb-3" style={{ fontSize: '0.9rem', lineHeight: 1.5 }}>{a.desc}</p>
-            <div className="label mb-2">Sub-agents</div>
-            <ul className="mb-3" style={{ paddingLeft: '1.1rem', margin: 0, fontSize: '0.85rem' }}>
-              {a.subagents.map(s => (
-                <li key={s.name} style={{ marginBottom: 4 }}>
-                  <strong>{s.name}</strong> — <span style={{ color: 'var(--text-3)' }}>{s.detail}</span>
-                </li>
-              ))}
-            </ul>
-            <div className="caption" style={{ color: 'var(--text-3)' }}>
-              <div><strong>Output:</strong> {a.output}</div>
-              <div className="mt-1"><strong>Trade authority:</strong> {a.authority}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
+// ── §4 — Generation: the debate society ───────────────────────────────
+// Replaces the old "3 top-level agents / Strategy Generation Agent with a
+// Rigor Gate sub-agent" model. That architecture is wrong: generation is a
+// multi-agent debate society (agents/debate_engine.py), and the rigor gate
+// runs EXTERNAL to the generator (services/live_rigor_gate.py) so the thing
+// being graded cannot influence its own grade. The Strategy Architect was
+// removed entirely (PR #1074).
+const DEBATE_STAGES = [
+  {
+    name: 'Proposers',
+    detail:
+      'A pool of fusion agents, each drafting a strategy from a different slice of retrieved papers and regime context. Duplicate ideas are collapsed by content hash.',
+  },
+  {
+    name: 'Critics',
+    detail: 'An adversarial bull/bear round surfaces the strongest objections. It informs; it never decides.',
+  },
+  {
+    name: 'Deterministic judgment',
+    detail:
+      'Every surviving candidate is backtested in plain Python (zero LLM tokens), with the multiple-testing penalty counting every candidate tried, not just the winner.',
+  },
+  {
+    name: 'The null test',
+    detail:
+      'A candidate must beat simply buying and holding, net of costs. If none does, Archimedes abstains and shows you why.',
+  },
+]
 
-function MemoryPillar() {
+function DebateSociety({ health, healthError }) {
+  const modelLoading = !health && !healthError
   return (
     <div className="mb-7">
-      <div className="label mb-3">The 6-layer shared memory pillar</div>
-      <p className="caption mb-3" style={{ color: 'var(--text-3)' }}>
-        Adapted from a 5-layer cognitive memory model, extended with the on-chain audit-truth layer
-        split out so the LLM can never hallucinate over real vault state.
+      <div className="label mb-3">How a strategy is born</div>
+      <p className="body mb-4">
+        One agent brainstorming in a loop produces confident nonsense. Archimedes instead runs a{' '}
+        <strong>debate society</strong> — the sole generation path:
       </p>
-      <div className="flex flex-col gap-2">
-        {MEMORY_LAYERS.map(m => (
-          <div
-            key={m.tag}
-            className="card-flat memory-row"
-            style={{ padding: '12px 16px' }}
-          >
-            <span
-              className="font-bold"
-              style={{
-                background: 'var(--accent)',
-                color: 'var(--canvas)',
-                padding: '4px 10px',
-                borderRadius: 4,
-                fontSize: '0.82rem',
-                minWidth: 38,
-                textAlign: 'center',
-              }}
-            >
-              {m.tag}
-            </span>
-            <div>
-              <div className="font-semibold" style={{ fontSize: '0.9rem' }}>{m.name}</div>
-              <div className="caption mt-0.5" style={{ color: 'var(--text-3)' }}>{m.lifetime}</div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+        {DEBATE_STAGES.map(s => (
+          <div key={s.name} className="card-flat p-4">
+            <div className="font-semibold mb-1" style={{ fontSize: '0.92rem' }}>
+              {s.name}
             </div>
-            <div className="caption" style={{ fontSize: '0.82rem' }}>{m.substrate}</div>
-            <div className="caption" style={{ color: 'var(--text-3)', fontSize: '0.82rem' }}>{m.why}</div>
+            <p className="caption" style={{ color: 'var(--text-3)' }}>
+              {s.detail}
+            </p>
           </div>
         ))}
+      </div>
+      <div className="card p-4">
+        <div className="label mb-2">Output</div>
+        <p className="body mb-2" style={{ fontSize: '0.9rem' }}>
+          One winner + the considered-rejects panel — what else was on the table and why it lost.
+        </p>
+        <p className="caption" style={{ color: 'var(--text-3)' }}>
+          LLM in use today:{' '}
+          {healthError ? (
+            <span style={{ color: 'var(--text-4)' }}>— (live value unavailable)</span>
+          ) : modelLoading ? (
+            <span style={{ color: 'var(--text-4)', animation: 'pulse 1.4s infinite' }}>···</span>
+          ) : (
+            <code>{health.llm_model}</code>
+          )}{' '}
+          via AWS Bedrock's Converse backend. The cost picker lets you pick a different model,
+          bring your own key, or run fully local against Ollama.
+        </p>
       </div>
     </div>
   )
 }
 
-function CorpusPanel() {
+// ── §5 — The rigor gate ────────────────────────────────────────────────
+// The heaviest rewrite in this file. The spec's own draft copy ("corrected
+// for how many things were tried") risked implying automatic multiple-
+// testing correction. On the curated/library path, every strategy runs with
+// num_trials=1 — backend/archimedes/services/rigor_evaluator.py logs it
+// verbatim: "num_trials=1 — DSR runs UNDEFLATED (no multiple-testing
+// correction)". The copy below states the defensible claim only, and names
+// the num_trials=1 caveat explicitly rather than burying it.
+function RigorGateSection({ leaderboard, leaderboardError }) {
+  const loading = !leaderboard && !leaderboardError
+
   return (
     <div className="card p-5 mb-7">
-      <div className="label mb-3">The q-fin corpus — Layer E in detail</div>
+      <div className="label mb-3">The admission bar — computed live, never cached</div>
       <p className="body mb-4">
-        10,000 paper <strong>metadata records</strong> (arXiv preprints across q-fin, ML, math,
-        and agentic AI) seeded from a JSONL manifest into Postgres. The Strategy Generation Agent's{' '}
-        <strong>Paper Retrieval</strong> sub-agent ranks these records by keyword/TF-IDF relevance
-        when you submit a brief. The full KB pipeline — PyMuPDF full-text extraction, SPECTER2
-        embeddings, HDBSCAN clusters, and a REBEL + SciSpacy knowledge graph — is the build target;
-        it has not run yet, so embeddings, clusters, and graph edges are not live.
+        Most backtests lie by selection: try enough ideas and one will look brilliant by chance.
+        Over 20+ years of backtested returns net of realistic commission, a strategy's excess
+        Sharpe must be positive at 90% one-sided confidence under standard errors robust to
+        non-normality and autocorrelation, and must stay positive on a 30% chronological
+        holdout. On the generated path, a strategy's Sharpe is additionally deflated against the
+        size of its own candidate pool.
       </p>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[
-          { n: '1,360', l: 'Statistical Finance', s: 'arxiv q-fin.ST' },
-          { n: '1,292', l: 'Mathematical Finance', s: 'arxiv q-fin.MF' },
-          { n: '1,016', l: 'Computational Finance', s: 'arxiv q-fin.CP' },
-          { n: '950', l: 'Risk Management', s: 'arxiv q-fin.RM' },
-        ].map(b => (
-          <div key={b.l} className="card-flat p-3">
-            <div className="font-bold" style={{ fontSize: '1.1rem' }}>{b.n}</div>
-            <div className="caption" style={{ color: 'var(--text-1)' }}>{b.l}</div>
-            <div className="caption" style={{ color: 'var(--text-3)' }}>{b.s}</div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+        <div className="card-flat p-4">
+          <div className="font-semibold mb-1" style={{ fontSize: '0.92rem' }} title="Deflated Sharpe Ratio">
+            DSR
           </div>
-        ))}
+          <p className="caption" style={{ color: 'var(--text-3)' }}>
+            Deflated Sharpe Ratio: on generated strategies, deflates the Sharpe against how many
+            candidates were tried in that debate round; curated-path strategies run with a single
+            trial (see honesty note below).
+          </p>
+        </div>
+        <div className="card-flat p-4">
+          <div className="font-semibold mb-1" style={{ fontSize: '0.92rem' }} title="Probability of Backtest Overfitting">
+            PBO
+          </div>
+          <p className="caption" style={{ color: 'var(--text-3)' }}>
+            Probability of Backtest Overfitting: how likely the in-sample winner underperforms
+            out-of-sample.
+          </p>
+        </div>
+        <div className="card-flat p-4">
+          <div className="font-semibold mb-1" style={{ fontSize: '0.92rem' }} title="Out-of-sample">
+            Walk-forward OOS
+          </div>
+          <p className="caption" style={{ color: 'var(--text-3)' }}>
+            The strategy must hold up on data it never saw, with no in-sample/out-of-sample
+            cliff.
+          </p>
+        </div>
+        <div className="card-flat p-4">
+          <div className="font-semibold mb-1" style={{ fontSize: '0.92rem' }}>
+            Look-ahead audit
+          </div>
+          <p className="caption" style={{ color: 'var(--text-3)' }}>
+            Static analysis confirms no future data leaks into any decision.
+          </p>
+        </div>
       </div>
-      <p className="caption mt-3" style={{ color: 'var(--text-3)' }}>
-        10,000 metadata records across 41 categories (top four shown above), all seeded into
-        Postgres from the JSONL manifest. Metadata only — no full-text ingestion, embeddings,
-        or knowledge graph yet (that pipeline is the build target); no paper PDFs in S3 and no
-        per-paper index in DynamoDB.
-      </p>
+      <div className="card-flat p-4">
+        <div className="label mb-2">Honesty note</div>
+        <p className="caption mb-2" style={{ color: 'var(--text-3)' }}>
+          The verdict is tri-state: <strong style={{ color: 'var(--text-2)' }}>pass</strong>,{' '}
+          <strong style={{ color: 'var(--text-2)' }}>fail</strong>, or{' '}
+          <strong style={{ color: 'var(--text-2)' }}>pending</strong> (no real returns yet). A
+          pending strategy is honestly unknown — it never silently wears a badge. Paper claims vs
+          our replication are shown as deltas, not hidden behind a score. The gate is a bar, not
+          a guarantee: passing reduces the odds of a curve-fit artifact; it does not promise
+          alpha.
+        </p>
+        <p className="caption mb-3" style={{ color: 'var(--text-3)' }}>
+          On the curated library, <code>num_trials=1</code> — DSR runs undeflated (no
+          multiple-testing correction) for those strategies.
+        </p>
+        <p className="caption" style={{ color: 'var(--text-3)', borderTop: '1px solid var(--glass-border)', paddingTop: 10 }}>
+          <strong style={{ color: 'var(--text-1)' }}>Not one paper-derived alpha strategy clears our bar.</strong>{' '}
+          Every curated-library candidate evaluated against the live gate has been rejected — that is
+          the gate doing its job, not the library sitting empty.{' '}
+          {leaderboardError ? (
+            <span style={{ color: 'var(--text-4)' }}>Live leaderboard count unavailable right now.</span>
+          ) : loading ? (
+            <span style={{ color: 'var(--text-4)', animation: 'pulse 1.4s infinite' }}>Loading live leaderboard…</span>
+          ) : (
+            <>
+              <strong style={{ color: 'var(--text-1)' }}>{fmtNum(leaderboard.total)}</strong> strategies sit
+              on the leaderboard today.
+            </>
+          )}
+        </p>
+      </div>
     </div>
   )
 }
+
+// ── §6 — On-chain: your vault, the agent's leash ───────────────────────
+
+const AGENT_AUTHORITY = [
+  {
+    can: 'Rebalance within your signed allocation universe',
+    cannot: 'Withdraw funds — ever; withdrawals are yours alone',
+  },
+  {
+    can: 'Execute swaps bounded by an oracle price floor',
+    cannot: 'Change which tokens the vault may hold',
+  },
+  {
+    can: 'Anchor its reasoning traces on-chain',
+    cannot: 'Replace itself, pause the vault, or change fees',
+  },
+  {
+    can: 'Decide to hold (and say why)',
+    cannot: 'Trade without a prior on-chain reasoning commitment',
+  },
+]
+
+function OnChainAuthority({ contracts, contractsError }) {
+  return (
+    <div className="card p-5 mb-7">
+      <div className="label mb-3">Non-custodial by contract, not by promise</div>
+      <p className="body mb-4">
+        Your deposit lives in a vault contract on Arc that you own. The agent is a named address
+        with exactly one power. The contract — not our goodwill — enforces the split:
+      </p>
+      <div className="table-container mb-4">
+        <table>
+          <thead>
+            <tr>
+              <th>The agent can</th>
+              <th>The agent cannot</th>
+            </tr>
+          </thead>
+          <tbody>
+            {AGENT_AUTHORITY.map(row => (
+              <tr key={row.can}>
+                <td>
+                  <span className="i-lucide-check-circle-2 w-3.5 h-3.5" style={{ color: 'var(--positive)', marginRight: 6 }} />
+                  {row.can}
+                </td>
+                <td>
+                  <span className="i-lucide-x-circle w-3.5 h-3.5" style={{ color: 'var(--negative)', marginRight: 6 }} />
+                  {row.cannot}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="caption mb-3" style={{ color: 'var(--text-3)' }}>
+        Vault creation happens in your wallet — you sign <code>createVault</code> and{' '}
+        <code>setAgent</code> yourself, then approve → deposit → allocate. Owner: you. Agent:
+        rebalance-only. Settlement: USDC on Arc testnet
+        {contractsError ? (
+          ' (chain id unavailable right now)'
+        ) : contracts?.chain_id ? (
+          ` chain ${contracts.chain_id}`
+        ) : (
+          '…'
+        )}
+        .
+      </p>
+      <div
+        style={{
+          padding: '8px 12px',
+          borderLeft: '3px solid var(--warning)',
+          background: 'var(--warning-bg)',
+          borderRadius: 4,
+          fontSize: 13,
+          color: 'var(--text-2)',
+        }}
+      >
+        <strong style={{ color: 'var(--warning)' }}>Heads up.</strong> Price-oracle pushes are
+        being refreshed following the most recent contract redeploy, so some live pricing views
+        may lag. This page does not claim live vault NAV, minting, or burning is demonstrably
+        working right now.
+      </div>
+    </div>
+  )
+}
+
+// ── §7 — Provenance: commit → trade → reveal ───────────────────────────
+// New section — the old page described publish-after anchoring; the real
+// mechanism is commit-before-trade, contract-enforced (Vault.sol:422, #589).
+
+function CommitTradeRevealLoop() {
+  return (
+    <svg
+      viewBox="0 0 460 130"
+      width="100%"
+      height="130"
+      role="img"
+      aria-labelledby="ctr-title ctr-desc"
+      style={{ maxWidth: 460, display: 'block', margin: '0 auto' }}
+    >
+      <title id="ctr-title">Commit, trade, reveal — enforced ordering</title>
+      <desc id="ctr-desc">
+        Three-step loop: the agent commits a reasoning hash, the vault contract enforces that the
+        trade cannot happen without that commitment, then the full trace is revealed and
+        re-hashed on-chain to verify the match.
+      </desc>
+      <defs>
+        <marker id="ctrArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,1 L9,5 L0,9 Z" fill="#D4A853" />
+        </marker>
+        <marker id="ctrArrowGray" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,1 L9,5 L0,9 Z" fill="#71717A" />
+        </marker>
+      </defs>
+      <path d="M390,34 C390,6 70,6 70,34" fill="none" stroke="#71717A" strokeWidth="1.2" strokeDasharray="3,3" markerEnd="url(#ctrArrowGray)" />
+      <line x1="104" y1="65" x2="196" y2="65" stroke="#D4A853" strokeWidth="1.5" markerEnd="url(#ctrArrow)" />
+      <line x1="264" y1="65" x2="356" y2="65" stroke="#D4A853" strokeWidth="1.5" markerEnd="url(#ctrArrow)" />
+      <g>
+        <circle cx="70" cy="65" r="34" fill="#141419" stroke="#D4A853" strokeWidth="1.5" />
+        <text x="70" y="61" textAnchor="middle" fontSize="11" fontWeight="600" fill="#FAFAFA">1</text>
+        <text x="70" y="76" textAnchor="middle" fontSize="10" fill="#A1A1AA">Commit</text>
+      </g>
+      <g>
+        <circle cx="230" cy="65" r="34" fill="#141419" stroke="#D4A853" strokeWidth="1.5" />
+        <text x="230" y="61" textAnchor="middle" fontSize="11" fontWeight="600" fill="#FAFAFA">2</text>
+        <text x="230" y="76" textAnchor="middle" fontSize="10" fill="#A1A1AA">Trade</text>
+      </g>
+      <g>
+        <circle cx="390" cy="65" r="34" fill="#141419" stroke="#D4A853" strokeWidth="1.5" />
+        <text x="390" y="61" textAnchor="middle" fontSize="11" fontWeight="600" fill="#FAFAFA">3</text>
+        <text x="390" y="76" textAnchor="middle" fontSize="10" fill="#A1A1AA">Reveal</text>
+      </g>
+    </svg>
+  )
+}
+
+function ProvenanceSection() {
+  return (
+    <div className="card p-5 mb-7">
+      <div className="label mb-3">Reasoning you can't backdate</div>
+      <p className="body mb-4">
+        A hash anchored <em>after</em> a trade proves nothing — you could generate a hundred
+        rationales and keep the flattering one. Archimedes anchors <strong>before</strong>:
+      </p>
+      <div className="mb-4" style={{ overflowX: 'auto' }}>
+        <CommitTradeRevealLoop />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <div className="card-flat p-3">
+          <div className="font-semibold mb-1" style={{ fontSize: '0.88rem' }}>1. Commit</div>
+          <div className="caption" style={{ color: 'var(--text-3)' }}>
+            The agent hashes its full reasoning trace and records the hash + trade intent on the{' '}
+            <code>ReasoningTraceRegistry</code>.
+          </div>
+        </div>
+        <div className="card-flat p-3">
+          <div className="font-semibold mb-1" style={{ fontSize: '0.88rem' }}>2. Trade</div>
+          <div className="caption" style={{ color: 'var(--text-3)' }}>
+            The vault's <code>rebalance()</code> reverts unless that commitment exists — the
+            ordering is enforced by the contract, not by our code being well-behaved.
+          </div>
+        </div>
+        <div className="card-flat p-3">
+          <div className="font-semibold mb-1" style={{ fontSize: '0.88rem' }}>3. Reveal</div>
+          <div className="caption" style={{ color: 'var(--text-3)' }}>
+            After settlement, the full trace is published (IPFS-pointed) and the contract itself
+            re-hashes the content to verify it matches the commitment.
+          </div>
+        </div>
+      </div>
+      <div className="card-flat p-4">
+        <div className="label mb-2">Verify</div>
+        <p className="caption" style={{ color: 'var(--text-3)' }}>
+          Open any decision in <strong>Reasoning</strong> and check two things: the content hash
+          matches, and commit block &lt; trade block &lt; reveal block. This proves the trace
+          existed before the trade and was never rewritten. It does not prove the reasoning was
+          smart or the trade profitable — that honesty is the point.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// ── §8 — The marketplace ───────────────────────────────────────────────
+
+function MarketplaceSection() {
+  return (
+    <div className="mb-7">
+      <div className="label mb-3">Pay creators, not the house</div>
+      <p className="body mb-4">
+        Publish a strategy and others can subscribe to it for sub-cent USDC nanopayments (x402),
+        settled through Circle's Gateway. Every payment splits <strong>90/10</strong>{' '}
+        creator/platform through an on-chain <code>PaymentSplitter</code>. Subscribers get a
+        dedicated Circle wallet provisioned automatically; spend caps bound what a runaway agent
+        can spend. Archimedes earns generation and marketplace fees only — never a cut of
+        anyone's trading P&amp;L, and never the other side of your trade.
+      </p>
+      <div className="card-flat p-4">
+        <div className="label mb-2">Honesty note</div>
+        <p className="caption" style={{ color: 'var(--text-3)' }}>
+          Vault principal is non-custodial today and always. Marketplace fee custody is being
+          migrated to a fully non-custodial design; fee settlement is currently in dry-run.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// ── §9 — The research corpus ───────────────────────────────────────────
+// Corrects the stale keyword/TF-IDF claim: MiniLM semantic retrieval IS
+// live (/health: paper_rag "live", corpus_embedded true). The honest gap is
+// the knowledge graph, which has not been built (corpus_kg_built false).
+
+function CorpusSection({ health, healthError }) {
+  const loading = !health && !healthError
+  return (
+    <div className="card p-5 mb-7">
+      <div className="label mb-3">Where the ideas come from</div>
+      {healthError ? (
+        <p className="body mb-4" style={{ color: 'var(--text-4)' }}>
+          Live corpus stats are unavailable right now.
+        </p>
+      ) : loading ? (
+        <p className="body mb-4" style={{ color: 'var(--text-4)', animation: 'pulse 1.4s infinite' }}>
+          Loading live corpus stats…
+        </p>
+      ) : (
+        <p className="body mb-4">
+          Generation starts from a corpus of quantitative-finance research — a{' '}
+          {fmtNum(health.corpus_papers)}-paper arXiv manifest spanning statistical finance,
+          portfolio math, market microstructure, and agentic AI. At generate time, retrieval runs
+          in two stages: a keyword/asset-class filter, then a semantic rerank with MiniLM
+          sentence embeddings against your brief (
+          {health.paper_rag === 'live'
+            ? 'semantic retrieval is live today'
+            : 'semantic retrieval is currently degraded to a keyword-only fallback'}
+          ). Retrieved papers are embargo-filtered — nothing published after a decision point can
+          inform it — and every citation carries its arXiv ID and content hash.
+        </p>
+      )}
+      <div className="card-flat p-4">
+        <div className="label mb-2">Honesty note</div>
+        {healthError ? (
+          <p className="caption" style={{ color: 'var(--text-4)' }}>Live hydration status unavailable right now.</p>
+        ) : loading ? (
+          <p className="caption" style={{ color: 'var(--text-4)', animation: 'pulse 1.4s infinite' }}>Loading…</p>
+        ) : (
+          <p className="caption" style={{ color: 'var(--text-3)' }}>
+            {fmtNum(health.corpus_db_count)} of the {fmtNum(health.corpus_papers)} manifest papers
+            are fully ingested and retrievable today. The knowledge-graph layer (citation graph
+            over the corpus){' '}
+            {health.corpus_kg_built
+              ? 'has produced its first artifact'
+              : 'has not yet produced its first production artifact'}{' '}
+            — the Corpus page shows exactly that, rather than a synthesized graph. Generation
+            requires at least two relevant papers or it declines to run.
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── §10 — Reasoning protocols (Xia et al.) ─────────────────────────────
+// Kept panel shape; reworded the retrieval-mechanism line (MiniLM is the
+// live mechanism, not a "build target" caveat).
+const PROTOCOLS = [
+  {
+    name: 'Outcome Embargo',
+    what: 'Decisions only see papers published before the decision time.',
+  },
+  {
+    name: 'Time-Aware Retrieval',
+    what: 'Relevance decays with paper age, faster in volatile regimes.',
+  },
+  {
+    name: 'Hierarchy of Truth',
+    what: "Chain state outranks the LLM's narrative; V_check fails any rebalance where they disagree.",
+  },
+  {
+    name: 'Source Tracking',
+    what: 'Every cited paper carries (arXiv ID, version, content hash), anchored with the trace.',
+  },
+]
 
 function ProtocolsPanel() {
   return (
     <div className="card p-5 mb-7">
-      <div className="label mb-3">Reasoning protocols</div>
+      <div className="label mb-3">Enforced mechanisms, not guidelines</div>
       <p className="body mb-3">
-        Four named protocols from Xia et al. 2026 close the most common failure modes in
-        trading-agent design. Archimedes implements all four as enforced mechanisms.
+        Four protocols from Xia et al. 2026 — the audit of why most trading-agent research is
+        unreproducible — run as code in the live path.
       </p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {PROTOCOLS.map(p => (
@@ -362,44 +736,120 @@ function ProtocolsPanel() {
   )
 }
 
-function OnChainPanel() {
+// ── §11 — What's real today (honesty ledger) ────────────────────────────
+
+const LEDGER_TONES = {
+  live: 'var(--positive)',
+  pending: 'var(--warning)',
+  roadmap: 'var(--info)',
+}
+
+function LedgerStatus({ children, tone }) {
+  return <strong style={{ color: LEDGER_TONES[tone] ?? 'var(--text-3)' }}>{children}</strong>
+}
+
+function HonestyLedger({ health, healthError }) {
+  const loading = !health && !healthError
   return (
     <div className="card p-5 mb-7">
-      <div className="label mb-3">On-chain — what lives on Arc</div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <div className="card-flat p-3">
-          <div className="font-semibold mb-1">Vault</div>
-          <div className="caption" style={{ color: 'var(--text-3)' }}>
-            ERC-4626 non-custodial container. You own the shares; the agent has rebalance
-            authority only.
-          </div>
-        </div>
-        <div className="card-flat p-3">
-          <div className="font-semibold mb-1">ReasoningTraceRegistry</div>
-          <div className="caption" style={{ color: 'var(--text-3)' }}>
-            Every agent decision is canonical-hashed and anchored. Verify by recomputing the
-            hash and checking it against the on-chain anchor.
-          </div>
-        </div>
-        <div className="card-flat p-3">
-          <div className="font-semibold mb-1">PriceOracle &amp; AMM</div>
-          <div className="caption" style={{ color: 'var(--text-3)' }}>
-            Per-synth oracle pushes provide ground-truth prices; AMM router routes the
-            rebalance swaps.
-          </div>
-        </div>
+      <div className="label mb-3">The honest ledger</div>
+      <p className="body mb-4">
+        Archimedes runs on the Arc public testnet — real contracts, real signatures, faucet USDC,
+        no real funds at risk by design. Claims must be true on the live path; here is the
+        current state, kept current from the system's own health surface:
+      </p>
+      <div className="table-container mb-3">
+        <table>
+          <thead>
+            <tr>
+              <th>Surface</th>
+              <th>Status today</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Generate → rigor gate → passport</td>
+              <td><LedgerStatus tone="live">Live</LedgerStatus> — debate society, live tri-state gate</td>
+            </tr>
+            <tr>
+              <td>Non-custodial vault deploy + deposits</td>
+              <td><LedgerStatus tone="live">Live</LedgerStatus> — you sign everything; testnet USDC</td>
+            </tr>
+            <tr>
+              <td>Commit → trade → reveal provenance</td>
+              <td><LedgerStatus tone="live">Live</LedgerStatus> — contract-enforced ordering</td>
+            </tr>
+            <tr>
+              <td>Autonomous rebalance loop</td>
+              <td>
+                Runs on a schedule against every deployed vault; evaluates, commits, trades, and
+                reveals each tick
+              </td>
+            </tr>
+            <tr>
+              <td>Marketplace publish / subscribe</td>
+              <td>
+                <LedgerStatus tone="pending">Settlement in dry-run</LedgerStatus> — the real x402
+                pipeline runs end-to-end; final settlement is simulated
+              </td>
+            </tr>
+            <tr>
+              <td>Corpus retrieval</td>
+              <td>
+                {healthError ? (
+                  <span style={{ color: 'var(--text-4)' }}>— live value unavailable</span>
+                ) : loading ? (
+                  <span style={{ color: 'var(--text-4)', animation: 'pulse 1.4s infinite' }}>···</span>
+                ) : health.paper_rag === 'live' ? (
+                  <>
+                    <LedgerStatus tone="live">Live</LedgerStatus> — keyword + MiniLM; {fmtNum(health.corpus_db_count)} of{' '}
+                    {fmtNum(health.corpus_papers)} papers hydrated
+                  </>
+                ) : (
+                  <>
+                    <LedgerStatus tone="pending">Degraded</LedgerStatus> — keyword-only fallback active
+                  </>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td>Knowledge graph</td>
+              <td>
+                {healthError ? (
+                  <span style={{ color: 'var(--text-4)' }}>— live value unavailable</span>
+                ) : loading ? (
+                  <span style={{ color: 'var(--text-4)', animation: 'pulse 1.4s infinite' }}>···</span>
+                ) : health.corpus_kg_built ? (
+                  <><LedgerStatus tone="live">Live</LedgerStatus> — first artifact produced</>
+                ) : (
+                  <><LedgerStatus tone="pending">Not yet</LedgerStatus> — pipeline built, first artifact pending</>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td>Mainnet, real funds</td>
+              <td><LedgerStatus tone="roadmap">Roadmap</LedgerStatus> — Arc mainnet is upcoming; settlement architecture is an explicit deferred decision</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
+      <p className="caption" style={{ color: 'var(--text-3)' }}>
+        If a row here ever disagrees with what you see in the product, that's a bug — report it.
+        The badge only means something if it can fail.
+      </p>
     </div>
   )
 }
+
+// ── §12 — CTA ────────────────────────────────────────────────────────
 
 function CallToAction({ onNavigate }) {
   return (
     <div className="card p-5 text-center">
       <h3 className="serif mb-2" style={{ fontSize: '1.4rem' }}>Ready to try it?</h3>
       <p className="body mb-4" style={{ color: 'var(--text-3)', maxWidth: 520, margin: '0 auto 16px' }}>
-        Describe a strategy in plain English. Sign in with a passkey to generate — no
-        browser extension needed; deploying into a vault uses free testnet USDC.
+        Describe a strategy in plain English. Sign in with any wallet or a passkey; deploying into
+        a vault uses free testnet USDC.
       </p>
       <div className="flex justify-center gap-3 flex-wrap">
         <button className="btn btn-primary" onClick={() => onNavigate?.('generate')}>
@@ -408,22 +858,38 @@ function CallToAction({ onNavigate }) {
         <button className="btn btn-outline" onClick={() => onNavigate?.('corpus')}>
           Explore the Corpus
         </button>
+        <button className="btn btn-outline" onClick={() => onNavigate?.('leaderboard')}>
+          See the Leaderboard
+        </button>
       </div>
     </div>
   )
 }
 
 export default function Architecture({ onNavigate }) {
+  const { contracts, contractsError, health, healthError, leaderboard, leaderboardError } = useArchStats()
+
   return (
     <div>
       <PageHeader />
-      <HeroStrip />
+      <HeroStrip
+        contracts={contracts}
+        contractsError={contractsError}
+        health={health}
+        healthError={healthError}
+        leaderboard={leaderboard}
+        leaderboardError={leaderboardError}
+      />
+      <SystemFlowDiagram />
       <PipelineFlow />
-      <AgentCards />
-      <MemoryPillar />
-      <CorpusPanel />
+      <DebateSociety health={health} healthError={healthError} />
+      <RigorGateSection leaderboard={leaderboard} leaderboardError={leaderboardError} />
+      <OnChainAuthority contracts={contracts} contractsError={contractsError} />
+      <ProvenanceSection />
+      <MarketplaceSection />
+      <CorpusSection health={health} healthError={healthError} />
       <ProtocolsPanel />
-      <OnChainPanel />
+      <HonestyLedger health={health} healthError={healthError} />
       <CallToAction onNavigate={onNavigate} />
     </div>
   )

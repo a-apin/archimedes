@@ -410,13 +410,30 @@ class OracleUpdater:
         vix = vix_result[0] if vix_result is not None else None
         sp500_data = await asyncio.to_thread(self._fetch_sp500_moving_averages)
 
-        return MarketSnapshot(
+        snapshot = MarketSnapshot(
             timestamp=now,
             prices=price_map,
             vix=vix,
             sp500_ma50=sp500_data.get("ma50"),
             sp500_ma200=sp500_data.get("ma200"),
         )
+        await self._write_redis_price_snapshots(price_map)
+        return snapshot
+
+    async def _write_redis_price_snapshots(self, price_map: dict[str, float]) -> None:
+        """Publish oracle price snapshot to Redis (#1103)."""
+        try:
+            import redis.asyncio as _aioredis
+
+            redis_url = (
+                os.getenv("REDIS_URL")
+                or f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}/0"
+            )
+            r = _aioredis.from_url(redis_url, decode_responses=True)
+            await r.set("oracle:prices:latest", json.dumps(price_map))
+            await r.aclose()
+        except Exception:
+            logger.debug("Redis price snapshot write failed", exc_info=True)
 
     def get_cached_price(self, symbol: str) -> AssetPrice | None:
         return self._price_cache.get(symbol)

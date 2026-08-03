@@ -98,10 +98,19 @@ resource "aws_iam_role_policy" "runner_ssm_params" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "ReadAppSecrets"
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
-        Resource = "arn:aws:ssm:*:*:parameter/archimedes/prod/*"
+        Sid    = "ReadAppSecrets"
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+        # BOTH ARNs are required. ssm:GetParametersByPath authorizes against the PATH
+        # itself (".../parameter/archimedes/prod"), which the "/*" child pattern does
+        # NOT match — granting only the child pattern yields:
+        #   AccessDeniedException ... not authorized to perform: ssm:GetParametersByPath
+        #   on resource: arn:aws:ssm:us-east-1:<acct>:parameter/archimedes/prod
+        # The child ARN is still needed for GetParameter/GetParameters on individual keys.
+        Resource = [
+          "arn:aws:ssm:*:*:parameter/archimedes/prod",
+          "arn:aws:ssm:*:*:parameter/archimedes/prod/*",
+        ]
       },
       {
         Sid      = "DecryptSecureStringViaSSM"
@@ -217,12 +226,24 @@ resource "aws_instance" "runner" {
     http_put_response_hop_limit = 2
   }
 
-  user_data = templatefile("${path.module}/runner-user-data.sh", {
+  # base64gzip, NOT plain user_data. EC2 caps user-data at 16384 bytes BEFORE
+  # base64 encoding, and the rendered script had grown to 16383 raw — one
+  # comment away from the ceiling. It duly went over, and `terraform plan`
+  # then fails REPO-WIDE with "expected length of user_data to be in the range
+  # (0 - 16384)", blocking every unrelated apply. cloud-init detects the gzip
+  # magic bytes and decompresses automatically, which buys ~4x headroom and
+  # removes the whole class of failure. See the size guard in
+  # scripts/check-user-data-size.sh, wired into CI.
+  #
+  # user_data_base64 is in ignore_changes alongside user_data below: this is a
+  # bootstrap-only, funds-adjacent singleton that must never be replaced to
+  # pick up a script edit.
+  user_data_base64 = base64gzip(templatefile("${path.module}/runner-user-data.sh", {
     ecr_registry      = "${aws_ecr_repository.backend.repository_url}"
     ecr_registry_host = split("/", aws_ecr_repository.backend.repository_url)[0]
     aws_region        = var.aws_region
     log_group_name    = aws_cloudwatch_log_group.runners.name
-  })
+  }))
 
   tags = {
     Name    = "${var.project_name}-runner"
@@ -234,7 +255,7 @@ resource "aws_instance" "runner" {
     # `terraform apply` picking up a newer Ubuntu AMI, or a user-data.sh edit
     # that's bootstrap-only (runs once at first boot), must not silently
     # replace/reboot this live funds-adjacent singleton.
-    ignore_changes = [ami, user_data]
+    ignore_changes = [ami, user_data, user_data_base64]
   }
 }
 

@@ -55,12 +55,10 @@ def test_client_resolves_all_281_from_the_file(monkeypatch):
     for k in list(os.environ):
         if k.startswith("ARC_"):
             monkeypatch.delenv(k, raising=False)
-    # Reload so the module-level defaults re-read the file under a clean env.
-    import importlib
-
+    # Module defaults already come from the committed file; rebuilding settings
+    # is enough to apply the clean env without replacing shared module globals.
     from archimedes.chain import client as client_mod
 
-    importlib.reload(client_mod)
     settings = client_mod.ChainSettings()
     assert len(settings.synth_addresses) == 281
     assert len(settings.oracle_addresses) == 281

@@ -92,6 +92,10 @@ class RiskParityInverseVol(bt.Strategy):
     ``engine.run_multi_backtest``.
     """
 
+    # Runner contract: this class weights across its whole declared universe
+    # (engine.required_feeds() / cli.run_command's N-feed routing branch).
+    REQUIRED_FEEDS = "UNIVERSE"
+
     params = (
         ("lookback", 63),  # volatility-estimation window (~3 months)
         ("rebalance_every", 21),  # ~monthly

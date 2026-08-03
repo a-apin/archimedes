@@ -20,6 +20,10 @@ Universe notes (kept here for readers; the authoritative values live in
   ``VNQ``), and the nine SPDR sector ETFs (``XLB``…``XLY``). See
   ``docs/specs/second-wave-universe-experiment.md`` for which composition suits
   which strategy.
+* Declared-universe backfill (backtest-vol audit): ``BIL`` (SPDR 1-3 Month
+  T-Bill ETF) and ``TLT`` (iShares 20+ Year Treasury Bond ETF) as direct
+  operation keys, so every curated strategy's ``ASSET_UNIVERSE`` resolves
+  through ``resolve_operations`` — see ``cli.run_command``.
 
 If the JSON SSOT cannot be read (e.g. a stripped install that dropped package
 data), the module falls back to an in-module copy so the package never fails to
@@ -69,6 +73,15 @@ _FALLBACK_OPERATION_TO_SYMBOL: dict[str, str] = {
     "XLU": "XLU",
     "XLV": "XLV",
     "XLY": "XLY",
+    # Declared-universe backfill (backtest-vol audit): the two ASSET_UNIVERSE
+    # tickers among the 34 curated strategies that were not yet operation keys
+    # — capital_preservation_tbill declares BIL (SPDR 1-3 Month T-Bill ETF),
+    # gatev_2006_portfolio_of_pairs declares TLT (iShares 20+ Year Treasury
+    # Bond ETF) alongside its other direct-ticker entries. Added so
+    # cli.run_command can resolve every declared universe; TREASURY -> TLT
+    # (above) is a separate legacy alias and is kept unchanged.
+    "BIL": "BIL",
+    "TLT": "TLT",
 }
 
 

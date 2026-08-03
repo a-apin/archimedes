@@ -15,7 +15,7 @@ sqlalchemy>=2.0.51
 # `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` patches in db.py for retrofitting
 # the already-populated prod Postgres DB. MIT license, maintained by the
 # SQLAlchemy project itself.
-alembic>=1.13
+alembic>=1.18.5
 psycopg2-binary>=2.9.12
 redis>=8.0.1
 pydantic>=2.13.4
@@ -29,12 +29,12 @@ numpy>=2.5.1,<3.0
 # Docker build (latest available is 3.0.3). Floor lowered to the newest
 # non-yanked release. (NB: environment.yml still floors pandas>=2.2 — a
 # pre-existing local-vs-prod major drift to reconcile separately.)
-pandas>=3.0.3
+pandas>=3.0.5
 scipy>=1.18.0
 scikit-learn>=1.9.0  # GaussianMixture + StandardScaler for the data-driven GmmRegimeDetector (issue #661); BSD-3-Clause
 
 # Market data
-yfinance>=1.4.1
+yfinance>=1.5.2
 # Do NOT bump to >=2.34: arxiv (incl. 4.0.0) pins requests<2.34, so a fresh
 # `pip install -r requirements.txt` resolve fails and the Docker deploy breaks
 # (regression from Dependabot #702, caught on deploy 2026-06-25). Keep <2.34
@@ -70,7 +70,7 @@ backtrader>=1.9.78.123
 circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355
 
 # LLM
-anthropic>=0.120.0
+anthropic>=0.120.2
 
 # On-chain / Web3
 web3>=7.16.0
@@ -102,3 +102,5 @@ sentence-transformers>=5.6.1  # all-MiniLM-L6-v2 semantic retrieval; baked at Do
 
 # AWS / S3
 boto3>=1.43.56
+# Imported directly for AWS exceptions/config; boto3 constrains compatibility.
+botocore>=1.43.60

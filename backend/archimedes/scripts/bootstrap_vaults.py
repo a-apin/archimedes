@@ -165,16 +165,6 @@ async def mint_synthetic_tokens() -> dict[str, float]:
     """
     print("\n🏭 Step 2: Minting synthetic tokens...")
 
-    synth_vault_addresses = {
-        "sTSLA": "0xf0356600e26c6c403ec4f5b36b0e3380bb0609ab",
-        "sNVDA": "0x4c3cdc2bf44195ad8a4d201c8afbd453949a8781",
-        "sSPY": "0xd8d7855f76c384638cf1dfc3575ecff3538764b4",
-        "sBTC": "0x92990ed6f5c8cd72752ca9aeafad422269225c43",
-        "sGOLD": "0x124b5c5da57d209b28d4997aaf6d4e96711efd5a",
-        "sOIL": "0xfa942399e36959c8060c3a82a610d680a7ac6d22",
-        "sNKY": "0xb26029ca37c09400ca921f00fc541cd42143b508",
-    }
-
     wallet = os.getenv("WALLET_ADDRESS")
     usdc_address = chain_client.settings.usdc_address
     synth_addresses = chain_client.settings.synth_addresses
@@ -189,8 +179,29 @@ async def mint_synthetic_tokens() -> dict[str, float]:
             # valid symbols still get minted.
             print(f"  ⏭️  {symbol}: not in current synth_addresses SSOT — skipping")
             continue
-        vault_addr = synth_vault_addresses[symbol]
+
         token_addr = synth_addresses[symbol]
+        # Query SyntheticFactory on-chain for the vault address (#1102 SSOT)
+        vault_addr = None
+        try:
+            factory = get_contract_loader().synthetic_factory
+            vault_addr = await factory.functions.tokenVault(chain_client.to_checksum(token_addr)).call()
+        except Exception:
+            vault_addr = None
+
+        if not vault_addr or vault_addr == "0x0000000000000000000000000000000000000000":
+            # Fallback for offline/test environments
+            legacy_fallback = {
+                "sTSLA": "0xf0356600e26c6c403ec4f5b36b0e3380bb0609ab",
+                "sNVDA": "0x4c3cdc2bf44195ad8a4d201c8afbd453949a8781",
+                "sSPY": "0xd8d7855f76c384638cf1dfc3575ecff3538764b4",
+                "sBTC": "0x92990ed6f5c8cd72752ca9aeafad422269225c43",
+                "sGOLD": "0x124b5c5da57d209b28d4997aaf6d4e96711efd5a",
+                "sOIL": "0xfa942399e36959c8060c3a82a610d680a7ac6d22",
+                "sNKY": "0xb26029ca37c09400ca921f00fc541cd42143b508",
+            }
+            vault_addr = legacy_fallback.get(symbol)
+
         usdc_int = int(usdc_amount * 1e6)  # USDC has 6 decimals
 
         # Check existing balance first
@@ -619,6 +630,10 @@ async def main() -> None:
 
     if not circle_signer.is_configured:
         print("❌ Circle wallet not configured. Set CIRCLE_API_KEY, CIRCLE_ENTITY_SECRET, WALLET_ID.")
+        sys.exit(1)
+
+    if not os.getenv("WALLET_ADDRESS"):
+        print("❌ WALLET_ADDRESS is not set. Please set the WALLET_ADDRESS environment variable.")
         sys.exit(1)
 
     # Step 1: Set oracle prices

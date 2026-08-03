@@ -133,7 +133,14 @@ def test_alembic_strategy_spec_column_added_and_removed(tmp_path):
     """Rebalancer decouple (Part A #1): ``strategy_store.strategy_spec`` lands
     on upgrade, is gone on downgrade, and comes back on re-upgrade — the
     per-migration up/down/idempotent contract, exercised directly (not just
-    implied by the whole-chain tests above)."""
+    implied by the whole-chain tests above).
+
+    Downgrades to the strategy_spec revision's OWN ``down_revision`` (looked
+    up from the script directory, not hardcoded, and not a relative ``-1``)
+    so this test keeps targeting that specific migration's up/down contract
+    regardless of how many further revisions have since landed on top of it —
+    a relative ``-1`` from head silently started downgrading a *different*
+    migration the moment this one stopped being the head."""
     db_path = tmp_path / "spec_column.db"
     database_url = f"sqlite:///{db_path}"
 
@@ -146,11 +153,22 @@ def test_alembic_strategy_spec_column_added_and_removed(tmp_path):
         finally:
             con.close()
 
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    strategy_spec_revision = script.get_revision("3f643d292e04")
+    target = strategy_spec_revision.down_revision
+
     upgrade = _run_alembic("upgrade", "head", database_url=database_url)
     assert upgrade.returncode == 0, upgrade.stderr
     assert _has_strategy_spec_column()
 
-    downgrade = _run_alembic("downgrade", "7b6e8d812331", database_url=database_url)
+    # ``target`` is derived (strategy_spec_revision.down_revision), not a
+    # hardcoded hash: this branch pinned "7b6e8d812331" literally, which silently
+    # stops testing the intended migration the moment another revision is
+    # inserted into the chain -- and this branch inserts four.
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
     assert downgrade.returncode == 0, downgrade.stderr
     assert not _has_strategy_spec_column()
 

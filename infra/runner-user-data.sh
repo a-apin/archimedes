@@ -133,8 +133,17 @@ REGION="${aws_region}"
 PREFIX="/archimedes/prod"
 OUT="/opt/archimedes-runners/runner.env"
 
+# Build into a temp file and rename into place ATOMICALLY. Writing $OUT
+# directly (truncate-then-append) is a real race: BOTH units run this as
+# ExecStartPre and each restarts independently every 10s, so one unit's
+# `docker run --env-file` can read $OUT while the other unit's fetch has
+# truncated it and is still appending → the container boots with a PARTIAL
+# environment and no error. (Observed live: 10 of 15 params mid-restart-loop.)
+# rename(2) is atomic; a mid-flight aws failure also leaves the last-good file.
+# mktemp, not "$OUT.tmp.$$" — `$$` abuts HCL's `$${` escape under templatefile().
 umask 077
-: > "$OUT"
+TMP="$(mktemp "$OUT.XXXXXX")"
+trap 'rm -f "$TMP"' EXIT
 
 aws ssm get-parameters-by-path \
   --path "$PREFIX" \
@@ -145,10 +154,27 @@ aws ssm get-parameters-by-path \
   --output text |
 while IFS=$'\t' read -r name value; do
   key="$(basename "$name")"
-  printf '%s=%s\n' "$key" "$value" >> "$OUT"
+  printf '%s=%s\n' "$key" "$value" >> "$TMP"
 done
 
-chmod 600 "$OUT"
+# LOAD-BEARING INPUT CHECK — loud about exactly the inputs the runners cannot
+# function without, silent about the rest. AccessDenied already fails hard, but
+# a SUCCESSFUL call returning nothing (wrong prefix/namespace/account) would
+# write an empty env file and boot a funds-adjacent container with no
+# credentials and no error. Names only; never a value.
+MISSING=""
+for required in DATABASE_URL REDIS_URL CIRCLE_API_KEY CIRCLE_ENTITY_SECRET WALLET_ID AGENT_DRY_RUN; do
+  grep -q "^$required=" "$TMP" || MISSING="$MISSING $required"
+done
+if [ -n "$MISSING" ]; then
+  echo "fetch-secrets: FATAL — required parameter(s) absent from $PREFIX:$MISSING" >&2
+  echo "fetch-secrets: refusing to write $OUT; seed them with infra/scripts/setup-ssm-secrets.sh --apply" >&2
+  exit 4
+fi
+
+chmod 600 "$TMP"
+mv -f "$TMP" "$OUT"
+trap - EXIT
 echo "fetch-secrets: wrote $(wc -l < "$OUT") parameter(s) to $OUT (names only, never values, in this log line)"
 FETCHEOF
 chmod 700 /opt/archimedes-runners/fetch-secrets.sh
@@ -186,6 +212,12 @@ chmod 700 /opt/archimedes-runners/ecr-login.sh
 #   - ship stdout/stderr to the /archimedes/runners CloudWatch log group via
 #     docker's native `awslogs` log driver (uses the instance role's
 #     credentials automatically — no CloudWatch agent needed)
+#     ⚠️ The option is `awslogs-stream` (EXACT name), NOT
+#     `awslogs-stream-prefix` — that is an *ECS task definition* option; the
+#     docker daemon rejects it ("unknown log opt") and `docker run` exits 125
+#     BEFORE the container starts. Under `ignore_changes = [user_data]` that
+#     mistake is not self-healing: it bricks the unit into a permanent
+#     `activating (auto-restart)` loop. Cost us 6072 restarts to find.
 #   - Restart=always — systemd itself is the box-local restart policy; the
 #     Redis lease in services/runner_lease.py is the SEPARATE, authoritative
 #     exactly-once control if this box is ever accidentally duplicated.
@@ -217,7 +249,7 @@ ExecStart=/usr/bin/docker run --rm --name archimedes-oracle \
   --log-driver=awslogs \
   --log-opt awslogs-region=${aws_region} \
   --log-opt awslogs-group=${log_group_name} \
-  --log-opt awslogs-stream-prefix=oracle \
+  --log-opt awslogs-stream=oracle \
   ${ecr_registry}:latest \
   python -m archimedes.chain.oracle_runner
 ExecStop=/usr/bin/docker stop archimedes-oracle
@@ -249,7 +281,7 @@ ExecStart=/usr/bin/docker run --rm --name archimedes-agent \
   --log-driver=awslogs \
   --log-opt awslogs-region=${aws_region} \
   --log-opt awslogs-group=${log_group_name} \
-  --log-opt awslogs-stream-prefix=agent \
+  --log-opt awslogs-stream=agent \
   ${ecr_registry}:latest \
   python -m archimedes.chain.agent_runner
 ExecStop=/usr/bin/docker stop archimedes-agent

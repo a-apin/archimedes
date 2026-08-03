@@ -1,5 +1,5 @@
 .PHONY: help setup wallet fund compile test deploy feed balance \
-        up down logs pytest lint format ui-dev clean routes
+        up down logs pytest lint format ui-dev clean routes rotate-secret
 
 # ─── Help (default) ──────────────────────────────────
 
@@ -32,6 +32,8 @@ help:
 	@echo "    deploy       Run deploy.mjs"
 	@echo "    feed         Push current prices into the on-chain oracle"
 	@echo "    balance      Query wallet token balance"
+	@echo "    rotate-secret  Rotate the Circle entity secret (security hygiene — see"
+	@echo "                   backend/archimedes/chain/README.md § Rotating the Entity Secret)"
 	@echo ""
 	@echo "  Maintenance:"
 	@echo "    clean        Remove __pycache__/.pytest_cache/.ruff_cache"
@@ -46,6 +48,14 @@ register:
 
 wallet:
 	cd wallet-setup && node --env-file=../.env create-wallet.mjs
+
+# Generates a fresh entity secret, registers it with Circle, test-signs a call,
+# and overwrites CIRCLE_ENTITY_SECRET in .env — only once the new secret is
+# proven live. Run this periodically (rotation hygiene) or immediately if the
+# current secret may have leaked. See backend/archimedes/chain/README.md
+# § "Rotating the Entity Secret" for the full runbook.
+rotate-secret:
+	cd wallet-setup && node --env-file=../.env rotate-secret.mjs
 
 fund:
 	open https://console.circle.com/wallets/dev/wallets

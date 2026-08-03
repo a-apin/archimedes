@@ -13,7 +13,19 @@ import backtrader as bt
 import pandas as pd
 
 from .data import fetch_ohlcv
-from .engine import BACKTEST_ENGINE_TAG, FeedArityError, required_feeds, run_backtest, run_pairs_backtest
+from .engine import (
+    BACKTEST_ENGINE_TAG,
+    REQUIRED_FEEDS_UNIVERSE,
+    BacktestResult,
+    FeedArityError,
+    combine_universe_results,
+    coverage_summary,
+    required_feeds,
+    run_backtest,
+    run_multi_backtest,
+    run_pairs_backtest,
+    universe_date_coverage,
+)
 from .instruments import OPERATION_TO_SYMBOL, resolve_operations
 from .strategy_loader import load_strategy
 
@@ -80,6 +92,49 @@ def _pair_legs(
     return resolve_operations(legs[:2])
 
 
+def _multi_feed_legs(
+    strategy_cls: type[bt.Strategy],
+    metadata: dict[str, Any],
+    strategy_path: Path,
+    feeds_needed: int | str,
+) -> list[str]:
+    """Resolve the aligned N-feed universe for a cross-sectional / portfolio
+    strategy (``REQUIRED_FEEDS`` is the :data:`REQUIRED_FEEDS_UNIVERSE`
+    sentinel, or an explicit int > 2) from its declared ``ASSET_UNIVERSE``, in
+    DECLARED ORDER — order matters: strategies such as
+    ``frazzini_pedersen_2014_bab`` and ``ang_hodrick_2006_low_idiovol`` treat
+    ``self.datas[0]`` as the market benchmark and everything after it as the
+    investable universe. Mirrors :func:`_pair_legs`'s fail-closed contract
+    (dedupe case-insensitively, never silently accept too few legs) but for
+    N >= 2 feeds instead of exactly two, and additionally cross-checks an
+    EXPLICIT integer ``REQUIRED_FEEDS`` against what the universe actually
+    resolves to — the contract and the universe must never be allowed to
+    silently drift apart.
+    """
+    universe = metadata.get("asset_universe") or []
+    legs: list[str] = []
+    for symbol in universe:
+        normalized = str(symbol).upper()
+        if normalized and normalized not in legs:
+            legs.append(normalized)
+
+    if len(legs) < 2:
+        raise FeedArityError(
+            f"cross-sectional strategy {strategy_cls.__name__} ({strategy_path.name}) needs "
+            f">= 2 distinct instruments, but its declared ASSET_UNIVERSE {universe!r} resolves "
+            f"to {len(legs)} — failing closed rather than silently downgrading to a "
+            "single-feed run that would produce a plausible-looking but wrong number"
+        )
+    if isinstance(feeds_needed, int) and len(legs) != feeds_needed:
+        raise FeedArityError(
+            f"strategy {strategy_cls.__name__} ({strategy_path.name}) declares "
+            f"REQUIRED_FEEDS={feeds_needed}, but its declared ASSET_UNIVERSE {universe!r} "
+            f"resolves to {len(legs)} distinct instruments — the feed-count contract and the "
+            "universe have drifted out of sync; fix one or the other rather than guessing"
+        )
+    return resolve_operations(legs)
+
+
 def run_command(
     *,
     operations: list[str],
@@ -119,12 +174,18 @@ def run_command(
     results: list[dict] = []
     data_hashes: list[str] = []
 
+    # Route on the strategy's declared feed-count contract (engine.required_feeds):
+    #   1 feed              -> per-asset loop over the declared universe + UNIVERSE composite
+    #   2 feeds             -> run_pairs_backtest on the declared two-leg universe
+    #   N feeds (>= 2,       -> run_multi_backtest on the declared universe, in
+    #     REQUIRED_FEEDS_       declared order — the strategy ranks/weights across
+    #     UNIVERSE sentinel      its whole universe in one cerebro run, so that
+    #     or an explicit int)   single N-asset result IS the strategy result (no
+    #                           per-asset loop, no averaged composite over it).
+    # Every branch fails LOUD (FeedArityError) rather than silently downgrading
+    # a multi-feed strategy to a single-feed run — a plausible-looking wrong
+    # number is exactly the defect class this router exists to eliminate.
     feeds_needed = required_feeds(bundle.cls)
-    if feeds_needed > 2:
-        raise FeedArityError(
-            f"strategy {bundle.cls.__name__} declares REQUIRED_FEEDS={feeds_needed}, "
-            "but this runner supports 1 (single-feed) or 2 (pairs) feeds today"
-        )
 
     if feeds_needed == 2:
         # Pairs strategies trade their declared two-leg universe, not the
@@ -155,8 +216,27 @@ def run_command(
                 "metrics": asdict(bt_result),
             }
         )
-    else:
-        ops = resolve_operations(operations)
+    elif feeds_needed == 1:
+        # Single-feed strategies must be backtested on the instruments they
+        # were actually designed for. A strategy's ASSET_UNIVERSE (module-
+        # level, read off `metadata` exactly like `_pair_legs` reads it above)
+        # is the strategy's OWN declared contract — the same status the pairs
+        # branch already gives it. `operations` (BACKTEST_OPERATIONS) is a
+        # benchmark/default selector for strategies that decline to declare a
+        # universe of their own; it must never override a declared one, or
+        # the engine silently substitutes the wrong return series. That
+        # silent substitution was the defect: every single-feed strategy —
+        # regardless of its own ASSET_UNIVERSE — was unconditionally
+        # backtested on BACKTEST_OPERATIONS (default ["SPY"]), so e.g.
+        # capital_preservation_tbill (declares ["BIL"], ~0.2% real vol) was
+        # graded on pure S&P-500 returns instead.
+        declared_universe = metadata.get("asset_universe")
+        if declared_universe:
+            ops = resolve_operations([str(o) for o in declared_universe])
+        else:
+            ops = resolve_operations(operations)
+
+        per_asset: list[tuple[str, BacktestResult]] = []
         for op in ops:
             symbol = OPERATION_TO_SYMBOL[op]
             prices = fetcher(symbol, start, end)
@@ -169,6 +249,7 @@ def run_command(
                 transaction_cost_bps=tx_cost_bps,
                 slippage_bps=slippage_bps,
             )
+            per_asset.append((op, bt_result))
 
             results.append(
                 {
@@ -177,6 +258,94 @@ def run_command(
                     "metrics": asdict(bt_result),
                 }
             )
+
+        # The rigor gate (backend get_daily_returns) grades ONE daily_returns
+        # series per strategy. With a declared multi-asset universe the loop
+        # above now produces N per-asset results, and grading only the first
+        # would be arbitrary — so emit an additional composite result
+        # representing the strategy applied across its whole declared
+        # universe (equal-weighted, date-intersection-aligned — see
+        # combine_universe_results), and let the backend select IT for
+        # persistence/grading (backtest_mapper.select_operation_result).
+        # Only meaningful when the ops actually came from a declared
+        # universe: a fallback run on the passed-in benchmark `operations`
+        # has no "declared universe" to composite over.
+        if declared_universe:
+            composite = combine_universe_results(per_asset, initial_cash=initial_cash)
+            results.append(
+                {
+                    "operation": "UNIVERSE",
+                    "symbol": "/".join(op for op, _ in per_asset),
+                    "constituent_operations": [op for op, _ in per_asset],
+                    "date_coverage": universe_date_coverage(per_asset),
+                    "metrics": asdict(composite),
+                }
+            )
+    else:
+        # Cross-sectional / portfolio strategies (REQUIRED_FEEDS is the
+        # REQUIRED_FEEDS_UNIVERSE sentinel, or an explicit int > 2): the
+        # strategy ranks, weights, or otherwise reads every self.datas[i]
+        # together each bar (Jegadeesh-Titman momentum, Maillard risk parity,
+        # Frazzini-Pedersen BAB, the PCA stat-arb, ...). Running it once per
+        # asset and averaging the results — the single-feed branch above — is
+        # NOT the strategy: it silently replaces the cross-sectional signal
+        # with N independent single-asset runs, which is exactly the defect
+        # class this whole module exists to eliminate. Feed the strategy's
+        # DECLARED ASSET_UNIVERSE through run_multi_backtest in declared
+        # order instead — order matters (e.g. frazzini_pedersen_2014_bab
+        # treats self.datas[0] as the benchmark) — and feed-name each leg by
+        # its resolved SYMBOL (ticker), not its operation code: at least one
+        # strategy (antonacci_2014_dual_momentum) identifies its defensive
+        # leg by matching `self.data._name` against a hardcoded ticker
+        # ("TLT"), which only works if the feed is named by symbol.
+        #
+        # Belt-and-suspenders: required_feeds() only ever returns an int >= 1
+        # or the REQUIRED_FEEDS_UNIVERSE sentinel, so by construction this
+        # branch is only reached for the sentinel or an int >= 3 — but assert
+        # it explicitly rather than silently mis-routing if that contract
+        # ever changes without this router being updated to match.
+        if not (feeds_needed == REQUIRED_FEEDS_UNIVERSE or (isinstance(feeds_needed, int) and feeds_needed >= 3)):
+            raise FeedArityError(
+                f"strategy {bundle.cls.__name__} declares REQUIRED_FEEDS={feeds_needed!r}, which "
+                f"this router does not know how to serve (expected 1, 2, an int >= 3, or the "
+                f"{REQUIRED_FEEDS_UNIVERSE!r} sentinel) — failing closed rather than guessing"
+            )
+        ops = _multi_feed_legs(bundle.cls, metadata, strategy_path, feeds_needed)
+        symbols = [OPERATION_TO_SYMBOL[op] for op in ops]
+
+        prices_list: list[pd.DataFrame] = []
+        for symbol in symbols:
+            prices = fetcher(symbol, start, end)
+            prices_list.append(prices)
+            data_hashes.append(_hash_frame(prices))
+
+        bt_result = run_multi_backtest(
+            prices_list,
+            strategy_cls=bundle.cls,
+            initial_cash=initial_cash,
+            names=symbols,
+            transaction_cost_bps=tx_cost_bps,
+            slippage_bps=slippage_bps,
+        )
+
+        # The single N-asset result IS the strategy result — no per-asset rows,
+        # no equal-weighted composite averaged on top of an already-joint
+        # portfolio series (see combine_universe_results's own docstring on
+        # why that would be double-averaging). select_operation_result
+        # (backend/.../backtest_mapper.py) picks this the same way it already
+        # picks a pairs result: it isn't named "UNIVERSE" or "SPY", so it
+        # falls through to "the only row" — the same fallback pairs results
+        # already rely on.
+        per_constituent_bars = {op: len(df) for op, df in zip(ops, prices_list, strict=True)}
+        results.append(
+            {
+                "operation": "/".join(ops),
+                "symbol": "/".join(symbols),
+                "constituent_operations": ops,
+                "date_coverage": coverage_summary(per_constituent_bars, bt_result.bars),
+                "metrics": asdict(bt_result),
+            }
+        )
 
     # NOTE: look_ahead_audit_passed is a broker-execution-timing check only (no
     # cheat-on-close/cheat-on-open) — it is NOT a source-level audit of the

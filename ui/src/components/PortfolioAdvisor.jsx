@@ -288,10 +288,14 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
                 </div>
               </div>
               <p className="caption" style={{ marginTop: 12, color: 'var(--text-4)', lineHeight: 1.5 }}>
-                Deflated Sharpe (Bailey & López de Prado 2014) discounts multiple-testing inflation;
-                PBO (Bailey et al. 2014) estimates backtest-overfitting probability; chronological OOS
-                tests out-of-sample stability. Mean DSR p-value: {fmt(data.rigor_summary.avg_dsr_p_value, 3)},
-                mean PBO: {fmt(data.rigor_summary.avg_pbo_score, 3)}.
+                Deflated Sharpe (Bailey & López de Prado 2014) uses a standard error robust to
+                non-normality and serial correlation (Newey–West HAC), and discounts
+                multiple-testing inflation only when a pick has its own multi-candidate selection
+                pool (each library pick is otherwise graded on its own Sharpe — num_trials = 1,
+                undeflated); PBO (Bailey et al. 2014) estimates
+                backtest-overfitting probability; chronological OOS tests out-of-sample stability.
+                Mean DSR p-value: {fmt(data.rigor_summary.avg_dsr_p_value, 3)}, mean PBO:{' '}
+                {fmt(data.rigor_summary.avg_pbo_score, 3)}.
               </p>
             </div>
           )}

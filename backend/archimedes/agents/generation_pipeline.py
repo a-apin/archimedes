@@ -1406,7 +1406,10 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
 
         from archimedes.db import get_session
         from archimedes.models.backtest import BacktestResult
-        from archimedes.services.backtest_repository import insert_backtest_if_missing
+        from archimedes.services.backtest_repository import (
+            SOURCE_PIPELINE_DSL_FUSION,
+            insert_backtest_if_missing,
+        )
         from archimedes.services.live_rigor_gate import verdict_from_returns
 
         returns = list(c.return_series)
@@ -1478,6 +1481,7 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
                 result=result,
                 operation="DSL_FUSION",
                 artifact_json=artifact_json,
+                source_pipeline=SOURCE_PIPELINE_DSL_FUSION,
             )
             _refresh_passport_real_metrics(
                 session, c, strategy_id, result, passes_rigor_gate=live.passes, n_obs=len(returns)
@@ -1558,7 +1562,10 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         from archimedes.models.paper_ref import PaperRef
         from archimedes.models.strategy import StrategyPassport, StrategyStatus
         from archimedes.models.strategy_store import StrategyRecord
-        from archimedes.services.backtest_repository import insert_backtest_if_missing
+        from archimedes.services.backtest_repository import (
+            SOURCE_PIPELINE_PORTFOLIO_BACKTESTER,
+            insert_backtest_if_missing,
+        )
         from archimedes.services.passport_loader import ingest_passport
         from archimedes.services.portfolio_backtester import backtest_portfolio
 
@@ -1591,6 +1598,7 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
                 run_id=artifact.get("run_id"),
                 operation="PORTFOLIO",
                 artifact_json=artifact_json,
+                source_pipeline=SOURCE_PIPELINE_PORTFOLIO_BACKTESTER,
             )
 
             # 2. Refresh the strategy_passports row with real_* metrics.

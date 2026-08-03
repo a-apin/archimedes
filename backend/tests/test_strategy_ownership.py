@@ -109,7 +109,7 @@ def _mk_backtest(sid: str):
     from archimedes.models.backtest_store import BacktestResultRecord
 
     with db.get_session() as session:
-        session.add(BacktestResultRecord(strategy_id=sid, content_hash=f"bt_{sid}"))
+        session.add(BacktestResultRecord(strategy_id=sid, content_hash=f"bt_{sid}", source_pipeline="test"))
         session.commit()
 
 
