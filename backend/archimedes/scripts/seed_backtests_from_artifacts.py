@@ -136,6 +136,14 @@ def seed_from_artifacts(artifact_dir: Path | None = None) -> dict[str, int]:
                         artifact_json=raw,
                         source_pipeline=SOURCE_PIPELINE_SEED_FROM_ARTIFACTS,
                         computed_at=_computed_at_from_payload(payload),
+                        # EXPLICIT None, not omission. This path replays an
+                        # artifact produced by some earlier, unrecorded commit;
+                        # the running build's SHA did NOT produce it. Omitting
+                        # the argument would stamp the current deploy SHA and
+                        # make every replayed row assert a provenance that is
+                        # simply false — in the column added to make provenance
+                        # trustworthy. NULL is the honest answer here.
+                        source_git_sha=None,
                     )
                     session.commit()
 

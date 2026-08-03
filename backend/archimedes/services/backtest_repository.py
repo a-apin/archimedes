@@ -34,6 +34,20 @@ SOURCE_PIPELINE_PORTFOLIO_BACKTESTER = "generation_pipeline.portfolio_backtester
 SOURCE_PIPELINE_UNKNOWN_LEGACY = "unknown_pre_provenance"
 
 
+class _Unset:
+    """Sentinel distinguishing "argument omitted" from an explicit ``None``.
+
+    A plain ``None`` default cannot express both "use the running build's SHA"
+    and "this row's producing commit is unknowable" — and conflating them makes
+    replayed rows claim a commit that did not produce them.
+    """
+
+    __slots__ = ()
+
+
+_UNSET = _Unset()
+
+
 def insert_backtest_if_missing(
     session: Session,
     *,
@@ -45,7 +59,7 @@ def insert_backtest_if_missing(
     operation: str | None = None,
     artifact_json: str | None = None,
     computed_at: datetime | None = None,
-    source_git_sha: str | None = None,
+    source_git_sha: str | None | _Unset = _UNSET,
 ) -> tuple[BacktestResultRecord, bool]:
     """Insert row if strategy_id+content_hash missing. Returns (row, inserted).
 
@@ -55,9 +69,17 @@ def insert_backtest_if_missing(
     way to tell a row's origin apart. ``computed_at`` defaults to "now" (the
     common case: compute and persist in the same call); pass the artifact's
     own timestamp when replaying an older run (e.g.
-    ``seed_backtests_from_artifacts.py``). ``source_git_sha`` defaults to the
-    same ``ARCHIMEDES_GIT_SHA`` build-provenance env var ``/health`` reads
-    (issue #1039) — None when unset, an honest unknown rather than a guess.
+    ``seed_backtests_from_artifacts.py``). ``source_git_sha`` OMITTED means "stamp the
+    running build" and resolves from the same ``ARCHIMEDES_GIT_SHA`` env var
+    ``/health`` reads (issue #1039). Passing an EXPLICIT ``None`` means "the
+    producing commit is genuinely not knowable" and persists NULL.
+
+    Those two must stay distinguishable. ``seed_backtests_from_artifacts.py``
+    replays artifacts produced by some earlier, unrecorded commit; if omission
+    and explicit-unknown collapsed together, every replayed row would be
+    stamped with the CURRENT deploy SHA — a confident, wrong provenance claim
+    in the very column added to make provenance trustworthy. An honest NULL is
+    the whole point; a plausible wrong SHA is worse than no SHA.
     """
     existing = (
         session.query(BacktestResultRecord)
@@ -79,7 +101,9 @@ def insert_backtest_if_missing(
         artifact_json=artifact_json,
         source_pipeline=source_pipeline,
         computed_at=computed_at or datetime.now(UTC),
-        source_git_sha=source_git_sha if source_git_sha is not None else (os.getenv("ARCHIMEDES_GIT_SHA") or None),
+        source_git_sha=(os.getenv("ARCHIMEDES_GIT_SHA") or None)
+        if isinstance(source_git_sha, _Unset)
+        else source_git_sha,
     )
     session.add(row)
     session.flush()

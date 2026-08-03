@@ -105,3 +105,87 @@ def test_latest_backtests_by_strategy_picks_newest_row() -> None:
 
     assert latest["s1"].sharpe_ratio == 0.8
     assert latest["s2"].sharpe_ratio == 1.1
+
+
+def test_omitted_source_git_sha_stamps_the_running_build() -> None:
+    """Omitting the argument means "stamp the running build"."""
+    import os
+    from unittest.mock import patch
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    with patch.dict(os.environ, {"ARCHIMEDES_GIT_SHA": "deadbeefcafe"}), SessionLocal() as session:
+        row, _ = insert_backtest_if_missing(
+            session,
+            strategy_id="s1",
+            content_hash="omitted",
+            result=_sample_result("s1", sharpe=0.7),
+            run_id="run1",
+            source_pipeline="test",
+        )
+        assert row.source_git_sha == "deadbeefcafe"
+
+
+def test_explicit_none_source_git_sha_persists_null_even_with_env_set() -> None:
+    """An EXPLICIT None means "the producing commit is not knowable" and must
+    persist NULL — even when ARCHIMEDES_GIT_SHA is set.
+
+    This is the case that matters: seed_backtests_from_artifacts.py replays
+    artifacts produced by some earlier, unrecorded commit. If explicit-unknown
+    collapsed into omission, every replayed row would claim the CURRENT deploy
+    SHA — a confident, false provenance claim in the very column added to make
+    provenance trustworthy. A plausible wrong SHA is worse than no SHA.
+
+    Note the env var is deliberately SET here. With it unset the test would
+    pass whether or not the sentinel exists, and would prove nothing.
+    """
+    import os
+    from unittest.mock import patch
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    with patch.dict(os.environ, {"ARCHIMEDES_GIT_SHA": "deadbeefcafe"}), SessionLocal() as session:
+        row, _ = insert_backtest_if_missing(
+            session,
+            strategy_id="s2",
+            content_hash="explicit-none",
+            result=_sample_result("s2", sharpe=0.7),
+            run_id="run2",
+            source_pipeline="seed_from_artifacts",
+            source_git_sha=None,
+        )
+        assert row.source_git_sha is None
+
+
+def test_replay_script_passes_explicit_none() -> None:
+    """Wiring guard: the replay script must pass ``source_git_sha=None``.
+
+    Asserted against the parsed AST, not a substring of the source: a raw
+    ``"source_git_sha=None" in inspect.getsource(...)`` check would still pass
+    if the real keyword argument were deleted and the text survived in a
+    comment or docstring. That is the same vacuous-guard shape this repo keeps
+    producing, so the guard itself is written to be unfoolable.
+    """
+    import ast
+    import inspect
+
+    from archimedes.scripts import seed_backtests_from_artifacts as mod
+
+    tree = ast.parse(inspect.getsource(mod))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "insert_backtest_if_missing"
+    ]
+    assert calls, "seed_backtests_from_artifacts no longer calls insert_backtest_if_missing"
+
+    for call in calls:
+        kw = {k.arg: k.value for k in call.keywords}
+        assert "source_git_sha" in kw, "replay must pass source_git_sha explicitly, not omit it"
+        assert isinstance(kw["source_git_sha"], ast.Constant) and kw["source_git_sha"].value is None, (
+            "replay must pass source_git_sha=None (explicit unknown), not the running build's SHA"
+        )
