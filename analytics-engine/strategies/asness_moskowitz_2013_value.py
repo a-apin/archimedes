@@ -91,6 +91,10 @@ class AsnessMoskowitzValue(bt.Strategy):
     Expects N>=2 data feeds. Driven by ``engine.run_multi_backtest``.
     """
 
+    # Runner contract: this class ranks across its whole declared universe
+    # (engine.required_feeds() / cli.run_command's N-feed routing branch).
+    REQUIRED_FEEDS = "UNIVERSE"
+
     params = (
         ("value_window", 252),  # rolling mean window for cheapness proxy
         ("rebalance_every", 21),

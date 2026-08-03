@@ -94,6 +94,10 @@ class CrossSectionalMomentum(bt.Strategy):
     ``engine.run_multi_backtest``.
     """
 
+    # Runner contract: this class ranks across its whole declared universe
+    # (engine.required_feeds() / cli.run_command's N-feed routing branch).
+    REQUIRED_FEEDS = "UNIVERSE"
+
     params = (
         ("lookback", 252),  # formation window (bars)
         ("skip", 21),  # skip most-recent bars (short-term reversal control)

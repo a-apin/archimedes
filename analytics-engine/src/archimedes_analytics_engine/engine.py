@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import statistics
 from dataclasses import dataclass, field
@@ -10,32 +11,64 @@ import pandas as pd
 
 from archimedes_analytics_engine.costs import CostModel, TurnoverAnalyzer
 
+logger = logging.getLogger(__name__)
+
 ANNUALIZATION = 252
 RF_ANNUAL = 0.05  # 5% annual risk-free rate
 RF_DAILY = RF_ANNUAL / ANNUALIZATION
 BACKTEST_ENGINE_TAG = "backtrader"
 
+# Sentinel REQUIRED_FEEDS value: "as many aligned feeds as my own declared
+# ASSET_UNIVERSE lists", rather than one fixed integer. Cross-sectional /
+# portfolio strategies (Jegadeesh-Titman momentum, Maillard risk parity,
+# Frazzini-Pedersen BAB, ...) rank or weight across their WHOLE declared
+# universe, so hardcoding a literal count on the class would silently drift
+# out of sync the moment ASSET_UNIVERSE is edited — the sentinel keeps the
+# feed-count contract derived from the universe itself, always.
+REQUIRED_FEEDS_UNIVERSE = "UNIVERSE"
+
 
 class FeedArityError(ValueError):
-    """A strategy that hard-requires N aligned data feeds was given fewer.
+    """A strategy that hard-requires N aligned data feeds was given fewer (or
+    a mismatched/malformed feed-count contract).
 
     Raised fail-closed at the runner boundary (issue #887) instead of letting
-    a pairs strategy crash mid-run with a bare ``IndexError`` on
-    ``self.datas[1]``. The message is passport-grade: it says what the
-    strategy needs ("pairs needs >= 2 instruments") rather than where a list
-    index went out of range.
+    a pairs/cross-sectional strategy crash mid-run with a bare ``IndexError``
+    on ``self.datas[i]``, or letting the runner silently downgrade it to a
+    single-feed run that produces a plausible-looking but wrong number. The
+    message is passport-grade: it says what the strategy needs (e.g. "pairs
+    needs >= 2 instruments") rather than where a list index went out of range.
     """
 
 
-def required_feeds(strategy_cls: type[bt.Strategy]) -> int:
+def required_feeds(strategy_cls: type[bt.Strategy]) -> int | str:
     """How many aligned data feeds ``strategy_cls`` declares it hard-requires.
 
-    Strategies that index ``self.datas[1]`` (the pairs family) declare
-    ``REQUIRED_FEEDS = 2`` as a class attribute; anything undeclared or
-    malformed is treated as the single-feed default of 1.
+    Returns either a positive ``int`` (an exact feed count — ``1`` for
+    ordinary single-asset strategies, ``2`` for the pairs family) or the
+    :data:`REQUIRED_FEEDS_UNIVERSE` sentinel string for cross-sectional /
+    portfolio strategies that trade their whole declared ``ASSET_UNIVERSE``
+    at once (see ``cli.run_command``'s N-feed routing branch).
+
+    Strategies declare this via a ``REQUIRED_FEEDS`` class attribute;
+    anything undeclared is treated as the single-feed default of 1. A string
+    value that is NOT exactly ``REQUIRED_FEEDS_UNIVERSE`` is almost certainly
+    a typo (e.g. ``"Universe"`` or ``"univers"``) and raises loudly rather
+    than silently collapsing to 1 — the whole point of this contract is that
+    the router must never guess.
     """
+    raw = getattr(strategy_cls, "REQUIRED_FEEDS", 1)
+    if isinstance(raw, str):
+        if raw.strip().upper() == REQUIRED_FEEDS_UNIVERSE:
+            return REQUIRED_FEEDS_UNIVERSE
+        raise FeedArityError(
+            f"{strategy_cls.__name__} declares REQUIRED_FEEDS={raw!r} — a string value must be "
+            f"exactly {REQUIRED_FEEDS_UNIVERSE!r} (meaning 'match my ASSET_UNIVERSE'); anything "
+            "else is most likely a typo, so this fails closed instead of silently defaulting to "
+            "a single-feed run"
+        )
     try:
-        return max(1, int(getattr(strategy_cls, "REQUIRED_FEEDS", 1) or 1))
+        return max(1, int(raw or 1))
     except (TypeError, ValueError):
         return 1
 
@@ -167,6 +200,43 @@ def _build_equity_curve(initial_cash: float, daily_pairs: list[tuple]) -> list[f
         equity *= 1.0 + float(value)
         curve.append(float(equity))
     return curve
+
+
+def _max_drawdown_from_curve(equity_curve: list[float]) -> tuple[float | None, int | None]:
+    """Peak-to-trough max drawdown (percent) and its duration (bars) from a
+    plain equity curve.
+
+    Same definition as backtrader's ``DrawDown`` analyzer (``(peak - value) /
+    peak * 100``), reimplemented here because :func:`combine_universe_results`
+    combines already-extracted per-asset results and has no cerebro run of its
+    own to attach an analyzer to.
+
+    Duration counting matches backtrader's own ``DrawDown.next()`` exactly:
+    ``r.len = r.len + 1 if drawdown else 0`` — the streak resets whenever the
+    CURRENT bar sits exactly AT the running peak (``drawdown == 0``), not only
+    on a strictly NEW all-time high. Resetting on ``value > peak`` alone (the
+    previous implementation here) leaves a bar that merely equals the prior
+    peak still counted as "in drawdown", which both starts the counter
+    incrementing from bar 0 (``peak`` is seeded from ``equity_curve[0]``, so
+    the first comparison is against itself) and inflates every recovery that
+    round-trips back to a prior high before falling again.
+    """
+    if not equity_curve:
+        return None, None
+    peak = equity_curve[0]
+    max_dd = 0.0
+    max_len = 0
+    cur_len = 0
+    for value in equity_curve:
+        if value > peak:
+            peak = value
+        dd = (peak - value) / peak * 100.0 if peak > 0 else 0.0
+        cur_len = cur_len + 1 if dd else 0
+        if cur_len > max_len:
+            max_len = cur_len
+        if dd > max_dd:
+            max_dd = dd
+    return max_dd, max_len
 
 
 def _compute_sortino(daily_returns: list[float]) -> float | None:
@@ -376,12 +446,12 @@ def run_backtest(
         :func:`run_pairs_backtest` or :func:`run_multi_backtest`.
     """
     required = required_feeds(strategy_cls)
-    if required > 1:
+    if required != 1:
         raise FeedArityError(
             f"strategy {strategy_cls.__name__} requires {required} aligned data feeds "
-            "but the single-feed runner provides 1 — a pairs strategy needs >= 2 "
-            "instruments; run it via run_pairs_backtest/run_multi_backtest with its "
-            "declared asset universe"
+            "but the single-feed runner provides 1 — a pairs/cross-sectional strategy "
+            "needs >= 2 instruments; run it via run_pairs_backtest/run_multi_backtest "
+            "with its declared asset universe"
         )
 
     cerebro = bt.Cerebro(stdstats=False)
@@ -500,6 +570,175 @@ def _extract_result(
     )
 
 
+# Below this retained-fraction, a date/index intersection has lost enough of
+# the longest constituent's history that it needs a human's eyes. 90% is a
+# deliberately loose floor: ordinary calendar noise between liquid, actively
+# traded feeds (different market holidays, the odd half-day) costs
+# low-single-digit percent of trading days, not double digits. Losing more
+# than 10% of the longest constituent's bars usually means one feed's
+# AVAILABLE HISTORY is materially shorter than the others' — a late listing,
+# a yfinance gap, or a wrong date range — which is exactly the "truncated or
+# data-quality-broken" case this warning exists to surface rather than
+# silently averaging/aligning over.
+_COVERAGE_WARN_RATIO = 0.90
+
+
+def coverage_summary(per_constituent_bars: dict[str, int], intersection_bars: int) -> dict[str, Any]:
+    """Build the retained-date-coverage record attached to composite/multi-feed
+    artifacts: how many bars each constituent had available, how many survived
+    the intersection, and the ratio — so "this universe legitimately has
+    limited overlap" is distinguishable from "one feed is truncated or
+    data-quality-broken" (see :func:`combine_universe_results` and
+    :func:`run_multi_backtest`).
+    """
+    longest = max(per_constituent_bars.values()) if per_constituent_bars else 0
+    return {
+        "per_constituent_bars": dict(per_constituent_bars),
+        "intersection_bars": intersection_bars,
+        "longest_constituent_bars": longest,
+        "intersection_ratio": (intersection_bars / longest) if longest else None,
+    }
+
+
+def warn_on_truncated_coverage(context: str, coverage: dict[str, Any]) -> None:
+    """Log loudly when ``coverage`` (from :func:`coverage_summary`) shows a
+    materially-shorter-than-expected intersection. No-op (and safe on
+    zero-length input) otherwise.
+    """
+    longest = coverage.get("longest_constituent_bars") or 0
+    ratio = coverage.get("intersection_ratio")
+    if longest <= 0 or ratio is None:
+        return
+    if ratio < _COVERAGE_WARN_RATIO:
+        logger.warning(
+            "%s: retained %d bars, only %.1f%% of the longest constituent's %d bars "
+            "(per-constituent bar counts: %s) — investigate whether this is genuine "
+            "limited overlap or a truncated/data-quality-broken feed before trusting "
+            "this result",
+            context,
+            coverage.get("intersection_bars", 0),
+            ratio * 100.0,
+            longest,
+            coverage.get("per_constituent_bars", {}),
+        )
+
+
+def universe_date_coverage(op_results: list[tuple[str, BacktestResult]]) -> dict[str, Any]:
+    """:func:`coverage_summary` derived from a list of ``(name, BacktestResult)``
+    pairs — the shape :func:`combine_universe_results` and ``cli.run_command``'s
+    single-feed composite branch both work with.
+    """
+    per_constituent_bars = {name: len(result.daily_return_dates) for name, result in op_results}
+    if not op_results:
+        return coverage_summary(per_constituent_bars, 0)
+    common_dates = set(op_results[0][1].daily_return_dates)
+    for _, result in op_results[1:]:
+        common_dates &= set(result.daily_return_dates)
+    return coverage_summary(per_constituent_bars, len(common_dates))
+
+
+def combine_universe_results(
+    op_results: list[tuple[str, BacktestResult]],
+    *,
+    initial_cash: float,
+) -> BacktestResult:
+    """Equal-weighted composite of a strategy's per-declared-asset backtests
+    into ONE daily-return series, aligned on the INTERSECTION of trading dates.
+
+    A strategy with an N-asset ``ASSET_UNIVERSE`` is now backtested once per
+    declared asset (see ``cli.run_command``), but the rigor gate — and every
+    other downstream consumer of ``backend/.../get_daily_returns`` — needs a
+    single series to grade. Averaging the per-asset returns POSITIONALLY (by
+    index) would silently misalign calendars that genuinely differ (``^N225``
+    trades on the Tokyo calendar, ``CL=F`` is a futures contract with its own
+    session) and produce a plausible-looking but WRONG series — exactly the
+    bug class this module exists to fix. Aligning by DATE instead means only
+    bars present in *every* constituent's own series are averaged.
+
+    For a single-asset universe (``len(op_results) == 1``) the result is
+    numerically identical to that one run: an intersection of one date set is
+    just that series' own dates, and the equal-weighted mean of one value is
+    that value.
+
+    Trade-level stats (``total_trades``, ``win_rate``, ``profit_factor``,
+    ``avg_holding_period_days``) and cost-realism fields
+    (``turnover_annualized``, ``traded_notional``, ``total_commission_paid``,
+    ``cost_drag_annual_pct``, ``break_even_cost_bps``, ``gross_sharpe_ratio``)
+    have no well-defined meaning for a synthetic blended series — no single
+    backtrader run produced them — and are left at their dataclass defaults
+    rather than fabricated by summing/averaging across independent runs.
+
+    Raises
+    ------
+    ValueError
+        If ``op_results`` is empty, or if the constituent series share no
+        common trading dates at all.
+    """
+    if not op_results:
+        raise ValueError("combine_universe_results requires at least one operation result")
+
+    per_op_by_date: list[dict[str, float]] = [
+        dict(zip(result.daily_return_dates, result.daily_returns, strict=True)) for _, result in op_results
+    ]
+
+    common_dates = set(per_op_by_date[0])
+    for by_date in per_op_by_date[1:]:
+        common_dates &= set(by_date)
+    if not common_dates:
+        names = ", ".join(name for name, _ in op_results)
+        raise ValueError(f"universe constituents [{names}] share no common trading dates; cannot build composite")
+    sorted_dates = sorted(common_dates)
+
+    per_constituent_bars = {name: len(result.daily_return_dates) for name, result in op_results}
+    coverage = coverage_summary(per_constituent_bars, len(sorted_dates))
+    names = ", ".join(name for name, _ in op_results)
+    warn_on_truncated_coverage(f"combine_universe_results([{names}])", coverage)
+
+    daily_returns = [statistics.fmean(by_date[d] for by_date in per_op_by_date) for d in sorted_dates]
+
+    equity_curve = _build_equity_curve(initial_cash, list(zip(sorted_dates, daily_returns, strict=True)))
+    bars = len(sorted_dates)
+    final_value = equity_curve[-1]
+    total_return_pct = ((final_value / initial_cash) - 1.0) * 100.0 if initial_cash else 0.0
+
+    sharpe = _sharpe_bt_convention(daily_returns)
+    sortino = _compute_sortino(daily_returns)
+    cagr = _compute_cagr(initial_cash, final_value, bars)
+
+    max_dd_pct, max_dd_len = _max_drawdown_from_curve(equity_curve)
+    calmar: float | None = None
+    if cagr is not None and max_dd_pct is not None and max_dd_pct > 0:
+        calmar = cagr / (max_dd_pct / 100.0)
+
+    look_ahead_passed = all(result.look_ahead_audit_passed for _, result in op_results)
+    # All constituent legs are run with the same tx-cost/slippage settings
+    # (cli.run_command applies one flat config to every per-asset call), so
+    # carrying the first leg's values forward is exact, not an approximation.
+    transaction_cost_bps = op_results[0][1].transaction_cost_bps
+    slippage_bps = op_results[0][1].slippage_bps
+
+    return BacktestResult(
+        final_value=final_value,
+        total_return_pct=total_return_pct,
+        equity_curve=equity_curve,
+        sharpe_ratio=sharpe,
+        sortino_ratio=sortino,
+        calmar_ratio=calmar,
+        max_drawdown_pct=max_dd_pct,
+        max_drawdown_duration_bars=max_dd_len,
+        cagr=cagr,
+        daily_returns=daily_returns,
+        daily_return_dates=sorted_dates,
+        transaction_cost_bps=transaction_cost_bps,
+        slippage_bps=slippage_bps,
+        look_ahead_audit_passed=look_ahead_passed,
+        backtest_engine=BACKTEST_ENGINE_TAG,
+        bars=bars,
+        backtest_start=sorted_dates[0] if sorted_dates else None,
+        backtest_end=sorted_dates[-1] if sorted_dates else None,
+    )
+
+
 def _add_analyzers(cerebro: bt.Cerebro) -> None:
     cerebro.addanalyzer(bt.analyzers.TimeReturn, _name="timereturn")
     cerebro.addanalyzer(bt.analyzers.TimeReturn, _name="monthly", timeframe=bt.TimeFrame.Months)
@@ -605,6 +844,10 @@ def run_multi_backtest(
         common_index = common_index.intersection(prices.index)
     if len(common_index) == 0:
         raise ValueError("price frames share no common dates; cannot align feeds")
+
+    per_constituent_bars = {name: len(prices.index) for name, prices in zip(feed_names, prices_list, strict=True)}
+    coverage = coverage_summary(per_constituent_bars, len(common_index))
+    warn_on_truncated_coverage(f"run_multi_backtest([{', '.join(feed_names)}])", coverage)
 
     cerebro = bt.Cerebro(stdstats=False)
     transaction_cost_bps, slippage_bps = _configure_broker(

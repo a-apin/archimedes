@@ -101,6 +101,10 @@ class DualMomentum(bt.Strategy):
     cash. Driven by ``engine.run_multi_backtest``.
     """
 
+    # Runner contract: this class ranks/rotates across its whole declared
+    # universe (engine.required_feeds() / cli.run_command's N-feed branch).
+    REQUIRED_FEEDS = "UNIVERSE"
+
     params = (
         ("lookback", 252),  # trailing-return window (bars)
         ("rebalance_every", 21),  # ~monthly

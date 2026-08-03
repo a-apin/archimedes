@@ -135,6 +135,45 @@ def test_pairs_family_declares_required_feeds() -> None:
         assert bundle.metadata.get("required_feeds") == 2, f"{filename} missing REQUIRED_FEEDS=2"
 
 
+# The definitive cross-sectional / portfolio family (backtest-vol audit item
+# 1a): every strategy class whose next() reads self.datas beyond index 0 —
+# established by direct code inspection, not docstring grepping — and so
+# must route through engine.run_multi_backtest rather than the single-feed
+# per-asset loop. 13 strategies, not the 11 an initial docstring-only sweep
+# found: novy_marx_2012_quality_momentum and asness_moskowitz_2013_value are
+# genuinely cross-sectional (`for d in self.datas`) but were not covered by
+# any existing run_multi_backtest test file either.
+_CROSS_SECTIONAL_STRATEGY_FILES = [
+    "ang_hodrick_2006_low_idiovol.py",
+    "antonacci_2014_dual_momentum.py",
+    "arnott_2019_defensive_quality.py",
+    "asness_moskowitz_2013_value.py",
+    "avellaneda_lee_2010_pca_statarb.py",
+    "blitz_hanauer_2010_rmom.py",
+    "frazzini_pedersen_2014_bab.py",
+    "gatev_2006_portfolio_of_pairs.py",
+    "jegadeesh_titman_1993_cross_sectional_momentum.py",
+    "low_tan_wermers_2004_dividend_yield.py",
+    "maillard_2010_risk_parity.py",
+    "novy_marx_2012_quality_momentum.py",
+    "novy_marx_2013_qmj.py",
+]
+
+
+def test_cross_sectional_family_declares_required_feeds_universe() -> None:
+    """Every cross-sectional / portfolio strategy must carry the
+    REQUIRED_FEEDS="UNIVERSE" runner contract so cli.run_command routes it
+    through run_multi_backtest on its own declared universe instead of
+    silently averaging N independent single-asset runs (backtest-vol audit)."""
+    for filename in _CROSS_SECTIONAL_STRATEGY_FILES:
+        bundle = load_strategy(_STRATEGIES_DIR / filename)
+        assert bundle.metadata.get("required_feeds") == "UNIVERSE", f"{filename} missing REQUIRED_FEEDS='UNIVERSE'"
+        # Every one of these must also declare a >=2-asset universe for the
+        # sentinel to mean anything — a 1-asset "cross-sectional" strategy is
+        # a contradiction in terms.
+        assert len(bundle.metadata.get("asset_universe") or []) >= 2, f"{filename} declares too small a universe"
+
+
 def test_pairs_strategy_declares_two_asset_universe() -> None:
     """The Gatev pairs strategy must declare exactly two assets (it is multi-asset)."""
     import importlib.util

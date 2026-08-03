@@ -8,6 +8,7 @@ two-asset runners. Mirrors test_pairs_engine.py.
 
 from __future__ import annotations
 
+import logging
 import math
 
 import backtrader as bt
@@ -103,6 +104,33 @@ def test_run_multi_backtest_honors_named_feeds() -> None:
     result = run_multi_backtest(frames, strategy_cls=_EqualWeightStrategy, initial_cash=100_000.0, names=["SPY", "GLD"])
     assert isinstance(result, BacktestResult)
     assert result.bars == 30
+
+
+def test_run_multi_backtest_warns_loudly_on_material_truncation(caplog: pytest.LogCaptureFixture) -> None:
+    """One feed with much shorter available history than the others (a late
+    listing, a yfinance gap, ...) must produce a WARNING, not a silent N-way
+    intersection down to that feed's short window (item 3, extended to the
+    N-feed runner for the same reason combine_universe_results needs it)."""
+    long_feed = _synthetic_prices(50, start="2020-01-01", base=100.0)
+    short_feed = _synthetic_prices(5, start="2020-01-01", base=50.0)  # only 5 of 50 bars
+
+    with caplog.at_level(logging.WARNING, logger="archimedes_analytics_engine.engine"):
+        result = run_multi_backtest(
+            [long_feed, short_feed], strategy_cls=_EqualWeightStrategy, initial_cash=100_000.0, names=["LONG", "SHORT"]
+        )
+
+    assert result.bars == 5
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "retained 5 bars" in warnings[0].getMessage()
+    assert "50 bars" in warnings[0].getMessage()
+
+
+def test_run_multi_backtest_stays_quiet_on_full_overlap(caplog: pytest.LogCaptureFixture) -> None:
+    frames = [_synthetic_prices(40, base=100.0), _synthetic_prices(40, base=50.0)]
+    with caplog.at_level(logging.WARNING, logger="archimedes_analytics_engine.engine"):
+        run_multi_backtest(frames, strategy_cls=_EqualWeightStrategy, initial_cash=100_000.0)
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 def test_run_multi_backtest_matches_pairs_for_two_feeds() -> None:
