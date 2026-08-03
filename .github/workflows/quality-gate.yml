@@ -43,6 +43,38 @@ jobs:
       - name: EC2 user-data stays under the 16 KB limit
         run: bash ./infra/scripts/check-user-data-size.sh
 
+  # The analytics engine had NO CI coverage at all until now. pytest.ini sets
+  # `testpaths = backend/tests` and lists analytics-engine under
+  # `norecursedirs`, and no workflow ran its suite — so its 227 tests never
+  # executed on a PR. That is how #1203 (which re-routed EVERY backtest to its
+  # declared ASSET_UNIVERSE, and therefore determines every number the product
+  # publishes) merged with a full row of green checks and zero automated
+  # verification of the code it changed. The engine sits on the MVP critical
+  # path; it gets its own gate.
+  #
+  # Deliberately NOT path-filtered, for the same reason as infra-guards above:
+  # a path-filtered job marked as a required check never reports on PRs that
+  # miss its paths, so the check sits in "Expected" forever and the PR can
+  # never merge.
+  engine-tests:
+    name: Analytics engine — unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install
+        # The engine declares its own deps in analytics-engine/pyproject.toml
+        # (backtrader/pandas/yfinance). Installed as a package so the suite
+        # exercises the same import path production uses.
+        run: pip install --quiet ./analytics-engine "pytest>=8.2"
+      - name: Test
+        # No network: the suite must stay hermetic. A test that reaches
+        # yfinance would make this gate flaky and, worse, make a data-provider
+        # outage look like a code failure.
+        run: python -m pytest analytics-engine/tests -q
+
   backend-tests:
     name: Backend — unit tests
     runs-on: ubuntu-latest
