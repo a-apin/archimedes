@@ -96,6 +96,35 @@ export default function Leaderboard() {
           real rigor-gate and backtest results — the ugly numbers included. Build your track record now;
           it carries to mainnet.
         </p>
+        {/* PROVISIONAL-DATA BANNER — remove this whole block once the backtest
+            re-run completes and the figures below are trustworthy again.
+            A routing defect (fixed in #1203) meant most library strategies were
+            backtested against a hardcoded SPY default instead of their own
+            declared ASSET_UNIVERSE. Cross-sectional strategies fared worst:
+            given a single feed they had nothing to rank, so they emitted zero
+            trades and a flat 0% return, which the rigor gate then graded as
+            though it were a result.
+            Saying so out loud is the only option consistent with the product's
+            own thesis: taking the page down would hide the demonstration, and
+            leaving it silently wrong is the exact failure this product exists
+            to oppose. */}
+        <div
+          role="status"
+          style={{
+            marginTop: 10,
+            padding: '10px 14px',
+            borderLeft: '3px solid var(--warning, #b45309)',
+            background: 'var(--warning-muted, rgba(180,83,9,0.10))',
+            borderRadius: 4,
+            fontSize: 13,
+            color: 'var(--text-2)',
+          }}
+        >
+          <strong style={{ color: 'var(--warning, #b45309)' }}>Provisional — figures are being re-computed.</strong>{' '}
+          Backtest data is being re-computed following a routing defect; figures shown are known to be
+          incorrect and will change.
+        </div>
+
         {engine?.disclaimer && (
           <div style={{ marginTop: 10, padding: '8px 12px', borderLeft: '3px solid var(--accent)', background: 'var(--accent-muted)', borderRadius: 4, fontSize: 13, color: 'var(--text-2)' }}>
             <strong style={{ color: 'var(--accent)' }}>Testnet — paper/simulated.</strong> {engine.disclaimer}
