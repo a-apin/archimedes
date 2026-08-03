@@ -138,30 +138,40 @@ def _get_store() -> AgentStateStore:
 def spend_cap_usdc() -> Decimal:
     """The configured per-wallet 24h USDC spend cap.
 
-    Default (50) is NOT grounded in any specific risk analysis — today's
-    FLAT_FEE_PER_ACTION (100 raw units = $0.0001/action) makes any USDC-scale
-    cap enormously permissive relative to current testnet fee levels. Treat
-    this default as a placeholder to be revisited once real pricing is live
-    (PAYMENTS_DRY_RUN=false), not a considered number.
+    Default (currently _DEFAULT_CAP_USDC, 50) is NOT grounded in any specific
+    risk analysis — today's FLAT_FEE_PER_ACTION (100 raw units =
+    $0.0001/action) makes any USDC-scale cap enormously permissive relative
+    to current testnet fee levels. Treat this default as a placeholder to be
+    revisited once real pricing is live (PAYMENTS_DRY_RUN=false), not a
+    considered number.
 
     Unset uses the default (cap enabled). An explicit 0 disables the check —
-    that is the ONLY way to disable it. A malformed value (a typo, a stray
-    unit suffix, bad shell-heredoc quoting) falls back to the default cap,
-    NOT to disabled: a funds guard failing open on a typo is the same
-    failure shape this repo has been dismantling elsewhere this week
-    (AGENT_DRY_RUN=1 silently meaning LIVE, #1173/#1174) and should not be
-    reintroduced here as "this codebase's convention."
+    that is the ONLY way to disable it. Any value that isn't a valid,
+    finite, non-negative number (a typo, a stray unit suffix, bad
+    shell-heredoc quoting, "nan"/"inf", a negative figure) falls back to the
+    default cap, NOT to disabled: a funds guard failing open on bad
+    configuration is the same failure shape this repo has been dismantling
+    elsewhere this week (AGENT_DRY_RUN=1 silently meaning LIVE, #1173/#1174)
+    and should not be reintroduced here as "this codebase's convention."
     """
     raw = os.getenv("MARKETPLACE_SPEND_CAP_USDC", str(_DEFAULT_CAP_USDC))
     try:
-        return Decimal(raw)
+        value = Decimal(raw)
     except Exception:
+        value = None
+
+    # is_finite() rejects NaN/Infinity WITHOUT raising (unlike ordered
+    # comparisons on a NaN Decimal, which do) — checked before `value < 0` so
+    # a "nan" string can't reach that comparison at all.
+    if value is None or not value.is_finite() or value < 0:
         logger.error(
-            "MARKETPLACE_SPEND_CAP_USDC=%r is not a valid number — falling back to the default cap (%s), NOT disabling",
+            "MARKETPLACE_SPEND_CAP_USDC=%r is not a valid non-negative number — "
+            "falling back to the default cap (%s), NOT disabling",
             raw,
             _DEFAULT_CAP_USDC,
         )
         return _DEFAULT_CAP_USDC
+    return value
 
 
 def _key(subscriber_wallet: str) -> str:

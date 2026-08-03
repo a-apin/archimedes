@@ -103,8 +103,23 @@ def test_spend_cap_usdc_non_numeric_falls_back_to_default_not_disabled(monkeypat
     with caplog.at_level(logging.ERROR, logger=spend_cap.__name__):
         result = spend_cap.spend_cap_usdc()
     assert result == Decimal("50")
-    assert "not a valid number" in caplog.text
+    assert "not a valid non-negative number" in caplog.text
     assert "NOT disabling" in caplog.text
+
+
+@pytest.mark.parametrize("raw", ["-1", "-0.01", "nan", "inf", "-inf", "Infinity"])
+def test_spend_cap_usdc_negative_or_non_finite_falls_back_to_default(monkeypatch, caplog, raw):
+    """Decimal(raw) parses all of these without raising, so the except branch
+    above never catches them — but a negative or non-finite cap is exactly
+    as broken as a non-numeric one downstream (_atomic_check's `cap <= 0`
+    check would read a negative value as "disabled", and an ordered
+    comparison against a NaN Decimal raises). Same fallback, same reasoning
+    as the malformed-string case: default cap, not disabled."""
+    monkeypatch.setenv("MARKETPLACE_SPEND_CAP_USDC", raw)
+    with caplog.at_level(logging.ERROR, logger=spend_cap.__name__):
+        result = spend_cap.spend_cap_usdc()
+    assert result == Decimal("50")
+    assert "not a valid non-negative number" in caplog.text
 
 
 # ── round-trip: seeded spend -> get_24h_spend_usdc ──────────────────────
