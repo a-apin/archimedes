@@ -312,8 +312,11 @@ class TestListAssets:
 
         # Seed a cache directly — skip the cold-start path entirely.
         stale_resp = ExploreAssetsResponse(
-            assets=[], cache_ttl_seconds=_CACHE_TTL_SECONDS, generated_at="t0",
-            universe_size=0, priced_count=0,
+            assets=[],
+            cache_ttl_seconds=_CACHE_TTL_SECONDS,
+            generated_at="t0",
+            universe_size=0,
+            priced_count=0,
         )
         service._cache = stale_resp
         service._cache_ts = time.time() - (_CACHE_TTL_SECONDS + 1)  # already expired
@@ -326,8 +329,11 @@ class TestListAssets:
             rebuild_started.set()
             await rebuild_may_finish.wait()
             return ExploreAssetsResponse(
-                assets=[], cache_ttl_seconds=_CACHE_TTL_SECONDS, generated_at="t1",
-                universe_size=0, priced_count=0,
+                assets=[],
+                cache_ttl_seconds=_CACHE_TTL_SECONDS,
+                generated_at="t1",
+                universe_size=0,
+                priced_count=0,
             )
 
         with patch.object(service, "_refresh", side_effect=slow_refresh):
@@ -349,8 +355,11 @@ class TestListAssets:
         service = AssetMarketService()
 
         stale_resp = ExploreAssetsResponse(
-            assets=[], cache_ttl_seconds=_CACHE_TTL_SECONDS, generated_at="t0",
-            universe_size=0, priced_count=0,
+            assets=[],
+            cache_ttl_seconds=_CACHE_TTL_SECONDS,
+            generated_at="t0",
+            universe_size=0,
+            priced_count=0,
         )
         service._cache = stale_resp
         service._cache_ts = time.time() - (_CACHE_TTL_SECONDS + 1)
@@ -368,7 +377,12 @@ class TestListAssets:
             results = await asyncio.gather(*(service.list_assets() for _ in range(5)))
             assert all(r is stale_resp for r in results)
             finish.set()
-            await service._refresh_task
+            # Bind the result rather than awaiting for the side effect alone:
+            # a bare ``await task`` reads to a linter as a statement with no
+            # effect, and asserting on what the background refresh actually
+            # returned is a strictly stronger check than merely draining it.
+            refreshed = await service._refresh_task
+            assert refreshed is stale_resp
 
         assert call_count == 1  # deduplicated, not 5 separate rebuilds
 

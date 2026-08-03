@@ -415,9 +415,12 @@ class AssetMarketService:
         The old shape awaited the full oracle+yfinance rebuild inline on
         every cache miss: whichever request landed just after the 30s TTL
         expired paid that cost synchronously. Measured in prod (2026-08-02):
-        12.7s-42.9s per rebuild (12s is the oracle-read budget alone, spent
-        even when the oracle path yields zero live prices — see
-        _read_oracle_prices' docstring on current on-chain oracle health).
+        12.7s-42.9s per rebuild. The oracle read alone accounts for up to
+        ``_ORACLE_TOTAL_BUDGET_SECONDS`` of that, and it is spent whether or
+        not any price comes back: ``_read_oracle_prices`` runs its reads
+        sequentially under that budget and simply OMITS symbols that fail or
+        run past the deadline, so a fully unresponsive oracle costs the entire
+        budget and returns nothing.
         That is the whole "Explore takes a long time to load" symptom for
         an unlucky visitor.
 
@@ -451,7 +454,13 @@ class AssetMarketService:
                 return
             exc = task.exception()
             if exc is not None:
-                logger.warning("explore: background refresh failed: %s", exc)
+                # exc_info so the traceback survives. This path swallows a
+                # failure by design -- a stale cache is still served -- which
+                # makes the log the ONLY evidence the refresh is broken. A
+                # bare "%s" would reduce an rpc/yfinance/oracle stack trace to
+                # one uninformative line and leave the failure looking like a
+                # transient blip rather than a broken dependency.
+                logger.warning("explore: background refresh failed: %s", exc, exc_info=exc)
 
         self._refresh_task.add_done_callback(_log_if_failed)
 
