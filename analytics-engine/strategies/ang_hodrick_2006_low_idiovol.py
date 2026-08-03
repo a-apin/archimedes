@@ -119,6 +119,10 @@ class AngHodrickLowIdioVol(bt.Strategy):
     ``engine.run_multi_backtest``.
     """
 
+    # Runner contract: this class ranks across its whole declared universe
+    # (engine.required_feeds() / cli.run_command's N-feed routing branch).
+    REQUIRED_FEEDS = "UNIVERSE"
+
     params = (
         ("vol_window", 22),  # bars for residual-vol estimation
         ("beta_window", 63),  # bars for rolling OLS beta estimation (~quarter)

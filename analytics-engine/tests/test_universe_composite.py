@@ -10,8 +10,16 @@ test_multi_engine.py.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
-from archimedes_analytics_engine.engine import BacktestResult, combine_universe_results
+from archimedes_analytics_engine.engine import (
+    BacktestResult,
+    combine_universe_results,
+    coverage_summary,
+    universe_date_coverage,
+    warn_on_truncated_coverage,
+)
 
 
 def _result(dates: list[str], returns: list[float], *, tx_bps: int = 10, slip_bps: int = 5) -> BacktestResult:
@@ -115,3 +123,85 @@ def test_look_ahead_audit_passed_is_and_of_constituents() -> None:
 
     both_clean = combine_universe_results([("A", clean), ("B", clean)], initial_cash=100_000.0)
     assert both_clean.look_ahead_audit_passed is True
+
+
+# ── Date-coverage recording + loud-truncation warning (item 3) ──────────────
+
+
+def test_coverage_summary_shape() -> None:
+    summary = coverage_summary({"A": 100, "B": 80}, 75)
+    assert summary == {
+        "per_constituent_bars": {"A": 100, "B": 80},
+        "intersection_bars": 75,
+        "longest_constituent_bars": 100,
+        "intersection_ratio": pytest.approx(0.75),
+    }
+
+
+def test_coverage_summary_empty_constituents_has_no_ratio() -> None:
+    summary = coverage_summary({}, 0)
+    assert summary["longest_constituent_bars"] == 0
+    assert summary["intersection_ratio"] is None
+
+
+def test_universe_date_coverage_matches_combine_universe_results_intersection() -> None:
+    a = _result(["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"], [0.01, 0.02, 0.01, 0.0])
+    b = _result(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"], [0.01, 0.02, 0.01, 0.0])
+
+    coverage = universe_date_coverage([("A", a), ("B", b)])
+
+    assert coverage["per_constituent_bars"] == {"A": 4, "B": 4}
+    assert coverage["intersection_bars"] == 3  # 01-02, 01-03, 01-04 overlap
+    assert coverage["longest_constituent_bars"] == 4
+    assert coverage["intersection_ratio"] == pytest.approx(0.75)
+
+
+def test_combine_universe_results_warns_loudly_on_material_truncation(caplog: pytest.LogCaptureFixture) -> None:
+    """A constituent with much shorter available history than the others must
+    produce a WARNING naming the retained/longest bar counts — distinguishing
+    "legitimate limited overlap" from "one feed is truncated or
+    data-quality-broken" (item 3)."""
+    long_dates = [f"2024-{m:02d}-01" for m in range(1, 11)]  # 10 dates
+    short_dates = long_dates[:2]  # only the first 2 overlap — 20% retained
+    long_run = _result(long_dates, [0.01] * len(long_dates))
+    short_run = _result(short_dates, [0.02] * len(short_dates))
+
+    with caplog.at_level(logging.WARNING, logger="archimedes_analytics_engine.engine"):
+        composite = combine_universe_results([("LONG", long_run), ("SHORT", short_run)], initial_cash=100_000.0)
+
+    assert composite.bars == 2
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "retained 2 bars" in message
+    assert "10 bars" in message
+    assert "20.0%" in message
+
+
+def test_combine_universe_results_stays_quiet_on_ordinary_calendar_noise(caplog: pytest.LogCaptureFixture) -> None:
+    """Losing a small, ordinary fraction of bars (different market holidays
+    between two liquid feeds) must NOT trigger the loud-truncation warning —
+    only material loss should."""
+    dates_a = [f"2024-01-{d:02d}" for d in range(1, 21)]  # 20 dates
+    dates_b = [f"2024-01-{d:02d}" for d in range(1, 19)]  # 18 dates — 90% overlap
+    a = _result(dates_a, [0.01] * len(dates_a))
+    b = _result(dates_b, [0.01] * len(dates_b))
+
+    with caplog.at_level(logging.WARNING, logger="archimedes_analytics_engine.engine"):
+        combine_universe_results([("A", a), ("B", b)], initial_cash=100_000.0)
+
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+def test_warn_on_truncated_coverage_is_a_noop_below_threshold(caplog: pytest.LogCaptureFixture) -> None:
+    coverage = coverage_summary({"A": 100, "B": 95}, 95)  # 95% retained
+    with caplog.at_level(logging.WARNING, logger="archimedes_analytics_engine.engine"):
+        warn_on_truncated_coverage("test-context", coverage)
+    assert not caplog.records
+
+
+def test_warn_on_truncated_coverage_handles_zero_longest_without_error(caplog: pytest.LogCaptureFixture) -> None:
+    coverage = coverage_summary({}, 0)
+    with caplog.at_level(logging.WARNING, logger="archimedes_analytics_engine.engine"):
+        warn_on_truncated_coverage("test-context", coverage)
+    assert not caplog.records

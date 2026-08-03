@@ -116,6 +116,11 @@ class PCAStatArb(bt.Strategy):
     ``engine.run_multi_backtest``.
     """
 
+    # Runner contract: this class trades across its whole declared universe
+    # (engine.required_feeds() / cli.run_command's N-feed routing branch).
+    # ASSET_UNIVERSE above has 5 entries, comfortably above the N>=3 PCA needs.
+    REQUIRED_FEEDS = "UNIVERSE"
+
     params = (
         ("lookback", 60),  # return-matrix / PCA estimation window (bars)
         ("n_components", 2),  # number of leading principal components (factors)

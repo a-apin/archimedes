@@ -442,6 +442,165 @@ def test_universe_composite_aligns_on_date_intersection(tmp_path: Path) -> None:
     assert len(universe_dates) < len(by_op["OIL"]["metrics"]["daily_return_dates"])
 
 
+# ── Cross-sectional / N-feed routing (backtest-vol audit item 1) ───────────
+#
+# A strategy that ranks/weights across self.datas[i] for i beyond 0 must be
+# routed through run_multi_backtest on its declared ASSET_UNIVERSE, in
+# declared order, feed-named by resolved SYMBOL — never run once per asset
+# and averaged (that "single-feed-loop" path silently replaces the
+# cross-sectional signal with N independent single-asset runs).
+
+
+def _write_multi_feed_strategy(path: Path, universe: str = "['SPY', 'GOLD', 'OIL']") -> None:
+    path.write_text(
+        "import backtrader as bt\n\n"
+        f"ASSET_UNIVERSE = {universe}\n\n"
+        "class MultiFeedProbe(bt.Strategy):\n"
+        "    REQUIRED_FEEDS = 'UNIVERSE'\n\n"
+        "    def next(self):\n"
+        "        for d in self.datas:\n"
+        "            float(d.close[0])  # hard N-feed dependency: touches every feed\n"
+    )
+
+
+def test_run_command_routes_cross_sectional_strategy_through_multi_feed_runner(tmp_path: Path) -> None:
+    strategy_file = tmp_path / "multi_feed_probe.py"
+    _write_multi_feed_strategy(strategy_file)
+
+    fetcher = _make_fetcher(
+        {
+            "SPY": _symbol_series("SPY", "2024-01-01", [100.0, 101.0, 102.0, 103.0, 104.0]),
+            "GC=F": _symbol_series("GC=F", "2024-01-01", [1800.0, 1801.0, 1802.0, 1803.0, 1804.0]),
+            "CL=F": _symbol_series("CL=F", "2024-01-01", [50.0, 51.0, 52.0, 53.0, 54.0]),
+        }
+    )
+
+    output = run_command(
+        operations=["SPY"],  # benchmark ops are ignored — the declared universe wins
+        start="2024-01-01",
+        end="2024-01-10",
+        initial_cash=10000.0,
+        tx_cost_bps=10,
+        slippage_bps=5,
+        artifact_dir=tmp_path,
+        strategy_path=strategy_file,
+        fetcher=fetcher,
+    )
+
+    payload = json.loads(Path(output["artifact_path"]).read_text())
+    assert payload["operations"] == ["SPY", "GOLD", "OIL"]  # declared order preserved
+    assert set(fetcher.requested) == {"SPY", "GC=F", "CL=F"}
+
+    # Exactly ONE result row — no per-asset rows, no averaged UNIVERSE composite
+    # on top of the already-joint N-asset portfolio series.
+    assert len(payload["results"]) == 1
+    result = payload["results"][0]
+    assert result["operation"] == "SPY/GOLD/OIL"
+    assert result["symbol"] == "SPY/GC=F/CL=F"
+    assert result["constituent_operations"] == ["SPY", "GOLD", "OIL"]
+    assert result["metrics"]["bars"] == 5
+    assert result["metrics"]["look_ahead_audit_passed"] is True
+
+    # date_coverage is recorded (item 3): per-constituent + intersection sizes.
+    coverage = result["date_coverage"]
+    assert coverage["per_constituent_bars"] == {"SPY": 5, "GOLD": 5, "OIL": 5}
+    assert coverage["intersection_bars"] == 5
+    assert coverage["longest_constituent_bars"] == 5
+    assert coverage["intersection_ratio"] == pytest.approx(1.0)
+
+    assert len(payload["data_hashes"]) == 3  # one per declared-universe leg
+
+
+def test_run_command_names_multi_feeds_by_resolved_symbol_not_operation_code(tmp_path: Path) -> None:
+    """Regression: at least one real cross-sectional strategy
+    (antonacci_2014_dual_momentum) identifies a feed by matching
+    ``self.data._name`` against a hardcoded TICKER ("TLT"). Naming feeds by
+    their OPERATION code ("TREASURY") instead would silently break that
+    lookup — the strategy would never find its defensive leg and nothing
+    would raise, which is exactly the kind of silent wrong-number defect this
+    whole module exists to eliminate. This probe fails LOUDLY if the feeds
+    are misnamed, rather than silently."""
+    strategy_file = tmp_path / "name_probe.py"
+    strategy_file.write_text(
+        "import backtrader as bt\n\n"
+        "ASSET_UNIVERSE = ['SPY', 'TREASURY']\n\n"
+        "class NameProbe(bt.Strategy):\n"
+        "    REQUIRED_FEEDS = 'UNIVERSE'\n\n"
+        "    def next(self):\n"
+        "        names = {d._name for d in self.datas}\n"
+        "        if names != {'SPY', 'TLT'}:\n"
+        "            raise AssertionError(f'expected feeds named by SYMBOL, got {names!r}')\n"
+    )
+    fetcher = _make_fetcher(
+        {
+            "SPY": _symbol_series("SPY", "2024-01-01", [100.0] * 5),
+            "TLT": _symbol_series("TLT", "2024-01-01", [90.0] * 5),
+        }
+    )
+
+    output = run_command(
+        operations=["SPY"],
+        start="2024-01-01",
+        end="2024-01-10",
+        initial_cash=10000.0,
+        tx_cost_bps=10,
+        slippage_bps=5,
+        artifact_dir=tmp_path,
+        strategy_path=strategy_file,
+        fetcher=fetcher,
+    )
+    # No exception means the assertion inside next() never fired — feeds were
+    # correctly named "SPY"/"TLT", not "SPY"/"TREASURY".
+    payload = json.loads(Path(output["artifact_path"]).read_text())
+    assert payload["results"][0]["metrics"]["bars"] == 5
+
+
+def test_run_command_fails_closed_on_single_symbol_cross_sectional_universe(tmp_path: Path) -> None:
+    strategy_file = tmp_path / "degenerate_multi_feed.py"
+    _write_multi_feed_strategy(strategy_file, universe="['SPY', 'SPY']")  # dedupes to 1 distinct instrument
+
+    with pytest.raises(FeedArityError, match="needs >= 2 distinct instruments"):
+        run_command(
+            operations=["SPY"],
+            start="2024-01-01",
+            end="2024-01-10",
+            initial_cash=10000.0,
+            tx_cost_bps=10,
+            slippage_bps=5,
+            artifact_dir=tmp_path,
+            strategy_path=strategy_file,
+            fetcher=_fake_fetch,
+        )
+
+
+def test_run_command_fails_closed_on_explicit_required_feeds_universe_drift(tmp_path: Path) -> None:
+    """A strategy declaring an EXPLICIT int REQUIRED_FEEDS that no longer
+    matches its own ASSET_UNIVERSE length must fail loud rather than silently
+    running on however many legs happen to resolve."""
+    strategy_file = tmp_path / "drifted_contract.py"
+    strategy_file.write_text(
+        "import backtrader as bt\n\n"
+        "ASSET_UNIVERSE = ['SPY', 'GOLD', 'OIL']\n\n"
+        "class DriftedProbe(bt.Strategy):\n"
+        "    REQUIRED_FEEDS = 5\n\n"
+        "    def next(self):\n"
+        "        pass\n"
+    )
+
+    with pytest.raises(FeedArityError, match="drifted out of sync"):
+        run_command(
+            operations=["SPY"],
+            start="2024-01-01",
+            end="2024-01-10",
+            initial_cash=10000.0,
+            tx_cost_bps=10,
+            slippage_bps=5,
+            artifact_dir=tmp_path,
+            strategy_path=strategy_file,
+            fetcher=_fake_fetch,
+        )
+
+
 def test_pairs_strategy_has_no_universe_composite(tmp_path: Path) -> None:
     """Pairs strategies are unaffected by the declared-universe routing/composite
     change — they already resolve their two legs via _pair_legs."""

@@ -118,3 +118,47 @@ def test_select_operation_result_explicit_operation_still_wins_over_universe() -
     chosen = select_operation_result(artifact, operation="NIKKEI")
 
     assert chosen.operation == "NIKKEI"
+
+
+def _multi_feed_artifact() -> dict:
+    """Shape cli.run_command's N-feed (cross-sectional) branch produces: a
+    SINGLE result row whose operation is the "/"-joined declared universe —
+    not "UNIVERSE" and not "SPY" — because the joint N-asset run IS the
+    strategy result, with no per-asset rows or averaged composite on top."""
+    return {
+        "run_id": "r2",
+        "strategy": {"backtest_code_hash": "b" * 64, "paper_claimed_sharpe": None},
+        "assumptions": {"transaction_cost_bps": 10},
+        "integrity_flags": {"lookahead_audit_passed": True},
+        "results": [
+            {
+                "operation": "SPY/NIKKEI/GOLD/TREASURY/OIL",
+                "symbol": "SPY/^N225/GC=F/TLT/CL=F",
+                "constituent_operations": ["SPY", "NIKKEI", "GOLD", "TREASURY", "OIL"],
+                "metrics": _minimal_metrics(0.42),
+            }
+        ],
+    }
+
+
+def test_select_operation_result_picks_the_sole_multi_feed_row() -> None:
+    """Regression for backtest-vol-audit item 1d: a cross-sectional strategy's
+    single run_multi_backtest result — named by its whole joined universe,
+    never "UNIVERSE" or "SPY" — must still be selected via the same "only row"
+    fallback pairs results already rely on, with no special-casing needed."""
+    artifact = AnalyticsArtifactModel.model_validate(_multi_feed_artifact())
+
+    chosen = select_operation_result(artifact)
+
+    assert chosen.operation == "SPY/NIKKEI/GOLD/TREASURY/OIL"
+    assert chosen.metrics.sharpe_ratio == pytest.approx(0.42)
+    assert chosen.constituent_operations == ["SPY", "NIKKEI", "GOLD", "TREASURY", "OIL"]
+
+
+def test_map_artifact_to_backtest_result_returns_multi_feed_operation_label() -> None:
+    artifact = AnalyticsArtifactModel.model_validate(_multi_feed_artifact())
+
+    mapped, operation = map_artifact_to_backtest_result(artifact, strategy_id="strat")
+
+    assert operation == "SPY/NIKKEI/GOLD/TREASURY/OIL"
+    assert mapped.sharpe_ratio == pytest.approx(0.42)
