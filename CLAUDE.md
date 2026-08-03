@@ -163,7 +163,11 @@ blocks and what does not**:
 | `quality-gate.yml` | **YES** | `pytest -m "not integration"` (unit suite, no DB/Redis) **and** `ruff-gate`. Everything else it reports — full `ruff check`, `ui/` lint — is `continue-on-error`, posted as a PR comment. A ≥60% coverage gate is wired to PRs whose author is `t2o2`; that account is dormant (see § Spec-driven execution), so the gate currently never fires. |
 | `complexity-gate.yml` | no | Complexity/nesting table as a PR comment. **Informational only — never blocks.** Don't restructure code to satisfy it. |
 | `main-format-guard.yml` | n/a | On push to `main`, if `ruff format --check` fails it reformats, commits back with `[skip ci]`, and **fails its own run** so the violation stays visible. `main` self-heals, so open PRs aren't stranded with red ruff-gates. |
+| `import-guard.yml` | **YES** | Runs on every PR. Catches imports that resolve locally but not in a clean environment. |
+| `contracts-test.yml` | no | `forge build` + `forge test`. **Path-filtered to `contracts/**`, so it must not be made a required check** until an always-runs fallback job reports the same check name — see the boxed comment in `scripts/setup-branch-protection.sh`. |
+| `docs-gate.yml` | no | Link resolution and index completeness across `docs/` and root markdown; staleness reported but never blocking. **Path-filtered — same constraint as `contracts-test.yml`, and the same warning is boxed at the top of the workflow.** Run it locally with `make docs-check`. |
 | `deploy.yml` · `release-tag.yml` | n/a | Build → ECR → roll Fargate (superseded runs auto-cancel); semver tag per merged PR. |
+| `deploy-runners.yml` | n/a | `workflow_dispatch` only — the `push` trigger is deliberately commented out. Oracle + agent EC2 and the KB scheduled Fargate task. |
 
 **Release tags — two surprises.** (1) Bump markers are read from the PR title with an
 **end-of-title anchor**: `!version-release` → major, `!minor` → minor, anything else →
@@ -345,8 +349,9 @@ work to the issue pipeline. Two recurring non-repo-specific traps — character 
 > **Who executes, as of 2026-08-03.** The autonomous agent account `t2o2` (Chuan Bai's
 > system) is **not an active resource.** Chuan stepped back on 2026-06-24 and no work is
 > being dispatched to `t2o2`. Do not assign issues to it, do not plan around it, and do
-> not infer from older documents or from closed `*-t2o2-issue.md` specs that it is
-> available. Historical references to it are preserved as record, not as instruction.
+> not infer availability from older documents. The five `*-t2o2-issue.md` specs it
+> executed were removed by this series; they survive only as references inside
+> `docs/archive/`, and a reference is not a live capability. Historical references to it are preserved as record, not as instruction.
 >
 > **The discipline below still applies in full** — it was always about spec quality, not
 > about which executor consumes the spec. Today the executor is a Claude Code session run
