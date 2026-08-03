@@ -600,6 +600,7 @@ class TestStrategyReturnsEndpoint:
                 content_hash=content_hash,
                 result=result,
                 artifact_json=artifact_json,
+                source_pipeline="test",
             )
 
         session.commit()

@@ -63,6 +63,7 @@ def _insert_backtest(sid: str, created_at: datetime):
                 content_hash=content_hash,
                 artifact_json="{}",
                 created_at=created_at,
+                source_pipeline="test",
             )
         )
         session.commit()

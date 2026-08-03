@@ -21,7 +21,11 @@ from archimedes.services.backtest_mapper import (
     canonical_artifact_hash,
     map_artifact_to_backtest_result,
 )
-from archimedes.services.backtest_repository import get_daily_returns, insert_backtest_if_missing
+from archimedes.services.backtest_repository import (
+    SOURCE_PIPELINE_RUN_BACKTESTS,
+    get_daily_returns,
+    insert_backtest_if_missing,
+)
 from archimedes.services.strategy_provider import default_provider
 from archimedes.services.vol_plausibility import (
     VolPlausibilityError,
@@ -175,6 +179,26 @@ def _load_baseline_vol(strategy_by_path: dict) -> float | None:
         return None
 
     return stats.annualized_vol
+
+
+def _computed_at_from_payload(artifact_payload: dict) -> datetime | None:
+    """Parse the analytics-engine artifact's own ``timestamp_utc`` (cli.py's
+    ``run_command``) — when the backtest was actually COMPUTED, as opposed to
+    when this row lands in the DB (``created_at``). Usually near-identical for
+    this script (compute and persist in the same call), but this is the exact
+    field that makes ``computed_at`` meaningful for
+    ``seed_backtests_from_artifacts.py``, which loads artifacts written by an
+    earlier run. Returns ``None`` (never raises) on a missing/malformed field
+    — the caller falls back to "now", the same honest default as before this
+    column existed.
+    """
+    raw = artifact_payload.get("timestamp_utc")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _daily_returns_for_operation(artifact_payload: dict, operation: str | None) -> list[float] | None:
@@ -365,6 +389,8 @@ def run_backtests() -> dict:
                     run_id=artifact.run_id,
                     operation=selected_operation,
                     artifact_json=artifact_json,
+                    source_pipeline=SOURCE_PIPELINE_RUN_BACKTESTS,
+                    computed_at=_computed_at_from_payload(artifact_payload),
                 )
                 session.commit()
 

@@ -7,7 +7,9 @@ daily returns for the selection-bias rigor gate.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -16,6 +18,21 @@ from archimedes.models.backtest_store import BacktestResultRecord
 
 logger = logging.getLogger(__name__)
 
+# Canonical source_pipeline values — every writer through
+# insert_backtest_if_missing must pass one of these (the function has no
+# default; a caller that forgets fails loudly instead of writing an
+# unattributed row). The migration that added the column backfills historical
+# rows using the same vocabulary — see
+# backend/migrations/versions/363d1c6ff0c0_add_backtest_results_provenance.py.
+SOURCE_PIPELINE_RUN_BACKTESTS = "run_backtests"
+SOURCE_PIPELINE_SEED_FROM_ARTIFACTS = "seed_backtests_from_artifacts"
+SOURCE_PIPELINE_DSL_FUSION = "generation_pipeline.dsl_fusion"
+SOURCE_PIPELINE_PORTFOLIO_BACKTESTER = "generation_pipeline.portfolio_backtester"
+# Backfill-only sentinel — never stamped by a live writer. Existing rows whose
+# backtest_engine ('backtrader') is shared by two indistinguishable historical
+# writers land here rather than guessing which one wrote them.
+SOURCE_PIPELINE_UNKNOWN_LEGACY = "unknown_pre_provenance"
+
 
 def insert_backtest_if_missing(
     session: Session,
@@ -23,11 +40,25 @@ def insert_backtest_if_missing(
     strategy_id: str,
     content_hash: str,
     result: BacktestResult,
+    source_pipeline: str,
     run_id: str | None = None,
     operation: str | None = None,
     artifact_json: str | None = None,
+    computed_at: datetime | None = None,
+    source_git_sha: str | None = None,
 ) -> tuple[BacktestResultRecord, bool]:
-    """Insert row if strategy_id+content_hash missing. Returns (row, inserted)."""
+    """Insert row if strategy_id+content_hash missing. Returns (row, inserted).
+
+    ``source_pipeline`` is required (no default) — it is the field the
+    2026-08-03 audit found missing that let two writers (the analytics-engine
+    /backtrader path and the DSL-fusion path) silently share one table with no
+    way to tell a row's origin apart. ``computed_at`` defaults to "now" (the
+    common case: compute and persist in the same call); pass the artifact's
+    own timestamp when replaying an older run (e.g.
+    ``seed_backtests_from_artifacts.py``). ``source_git_sha`` defaults to the
+    same ``ARCHIMEDES_GIT_SHA`` build-provenance env var ``/health`` reads
+    (issue #1039) — None when unset, an honest unknown rather than a guess.
+    """
     existing = (
         session.query(BacktestResultRecord)
         .filter(
@@ -46,6 +77,9 @@ def insert_backtest_if_missing(
         run_id=run_id,
         operation=operation,
         artifact_json=artifact_json,
+        source_pipeline=source_pipeline,
+        computed_at=computed_at or datetime.now(UTC),
+        source_git_sha=source_git_sha if source_git_sha is not None else (os.getenv("ARCHIMEDES_GIT_SHA") or None),
     )
     session.add(row)
     session.flush()

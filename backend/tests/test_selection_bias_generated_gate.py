@@ -130,6 +130,7 @@ def _mk_backtest(
                 num_trials_in_selection=num_trials,
                 pbo_score=pbo,
                 look_ahead_audit_passed=look_ahead,
+                source_pipeline="test",
             )
         )
         session.commit()

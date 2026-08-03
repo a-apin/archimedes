@@ -79,9 +79,53 @@ class BacktestResultRecord(Base):
         nullable=False,
     )
 
+    # ── Row-level provenance (audit 2026-08-03) ─────────────────────────
+    # PR #1203's routing defect (single-feed strategies graded against a
+    # hardcoded SPY default; cross-sectional strategies run on one feed
+    # instead of their declared ASSET_UNIVERSE) went undetected in part
+    # because two independent pipelines write this table and a row gave no
+    # way to tell which one produced it. `backtest_engine` (above) already
+    # names the COMPUTE engine ('backtrader' | 'dsl-fusion' |
+    # 'portfolio-simulator-v1') and `backtest_code_hash` (above) already
+    # identifies per-row STRATEGY code — neither says which SCRIPT called
+    # `insert_backtest_if_missing`, which two different scripts can share
+    # the same engine tag (run_backtests.py and seed_backtests_from_artifacts.py
+    # both produce 'backtrader'-tagged artifacts through the same mapper).
+    # `source_pipeline` is that missing identity. Required (no default) —
+    # every writer must pass it explicitly; see backtest_repository.py's
+    # SOURCE_PIPELINE_* constants.
+    source_pipeline: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # When the backtest was actually COMPUTED — may predate `created_at`:
+    # seed_backtests_from_artifacts.py loads a pre-existing artifact file a
+    # much earlier run_backtests.py invocation produced and inserts it later.
+    # Defaults to "now" (mirrors created_at) for writers that compute and
+    # persist in the same call; run_backtests.py / seed_backtests_from_artifacts.py
+    # pass the artifact's own `timestamp_utc` when present for an accurate value.
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    # Git SHA of the backend code that computed this row — the SAME
+    # ARCHIMEDES_GIT_SHA build-provenance env var `/health`'s "version" field
+    # already reads (issue #1039), reused rather than inventing a second
+    # mechanism. NULL when unset (local/dev, or a historical row predating
+    # this column) — an honest unknown, never a fabricated value.
+    source_git_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    # True only for rows whose source_pipeline/computed_at/source_git_sha were
+    # RECONSTRUCTED after the fact by the 2026-08-03 backfill migration rather
+    # than stamped live by the writer at insert time (see that migration for
+    # exactly how each value was inferred). False for every row a
+    # provenance-aware writer stamps live from here on.
+    provenance_inferred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
     __table_args__ = (
         UniqueConstraint("strategy_id", "content_hash", name="uq_backtest_strategy_content"),
         Index("ix_backtest_strategy_created", "strategy_id", "created_at"),
+        Index("ix_backtest_source_pipeline", "source_pipeline"),
     )
 
     def to_backtest_result(self) -> BacktestResult:
@@ -124,15 +168,24 @@ class BacktestResultRecord(Base):
         strategy_id: str,
         content_hash: str,
         result: BacktestResult,
+        source_pipeline: str,
         run_id: str | None = None,
         operation: str | None = None,
         artifact_json: str | None = None,
+        computed_at: datetime | None = None,
+        source_git_sha: str | None = None,
     ) -> BacktestResultRecord:
+        kwargs: dict[str, object] = {}
+        if computed_at is not None:
+            kwargs["computed_at"] = computed_at
         return cls(
             strategy_id=strategy_id,
             content_hash=content_hash,
             run_id=run_id,
             operation=operation,
+            source_pipeline=source_pipeline,
+            source_git_sha=source_git_sha,
+            **kwargs,
             sharpe_ratio=result.sharpe_ratio,
             sortino_ratio=result.sortino_ratio,
             max_drawdown=result.max_drawdown,

@@ -125,6 +125,7 @@ def test_clean_strategy_passes(_db, tmp_path) -> None:
             content_hash="h1",
             result=_sample_result(strategy.id, _equity_curve_from_returns(returns)),
             artifact_json=_artifact_json_with_daily_returns(returns),
+            source_pipeline="test",
         )
         session.commit()
 
@@ -156,6 +157,7 @@ def test_bil_declared_strategy_with_equity_vol_is_flagged(_db, tmp_path) -> None
                 content_hash=f"h-{stem}",
                 result=_sample_result(strategy.id, _equity_curve_from_returns(equity_returns)),
                 artifact_json=_artifact_json_with_daily_returns(equity_returns),
+                source_pipeline="test",
             )
         session.commit()
 
@@ -216,6 +218,7 @@ def test_degenerate_all_zero_series_is_reported_not_passed_or_crashed(_db, tmp_p
             content_hash="h1",
             result=_sample_result(strategy.id, _equity_curve_from_returns(zero_returns)),
             artifact_json=_artifact_json_with_daily_returns(zero_returns),
+            source_pipeline="test",
         )
         session.commit()
 
@@ -254,6 +257,7 @@ def test_maillard_style_diversified_strategy_matching_baseline_is_flagged(_db, t
             content_hash="h-baseline",
             result=_sample_result(strategies["pipeline_buy_hold"].id, _equity_curve_from_returns(baseline_returns)),
             artifact_json=_artifact_json_with_daily_returns(baseline_returns),
+            source_pipeline="test",
         )
         insert_backtest_if_missing(
             session,
@@ -263,6 +267,7 @@ def test_maillard_style_diversified_strategy_matching_baseline_is_flagged(_db, t
                 strategies["maillard_2010_risk_parity"].id, _equity_curve_from_returns(near_match_returns)
             ),
             artifact_json=_artifact_json_with_daily_returns(near_match_returns),
+            source_pipeline="test",
         )
         session.commit()
 
@@ -296,6 +301,7 @@ def test_cross_store_delta_is_reported_when_stores_disagree(_db, tmp_path) -> No
             content_hash="h1",
             result=_sample_result(strategy.id, _equity_curve_from_returns(primary_returns)),
             artifact_json=_artifact_json_with_daily_returns(primary_returns),
+            source_pipeline="test",
         )
         session.commit()
 

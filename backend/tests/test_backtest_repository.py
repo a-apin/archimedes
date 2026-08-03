@@ -46,6 +46,7 @@ def test_insert_backtest_is_idempotent_on_content_hash() -> None:
             content_hash="abc123",
             result=_sample_result("s1", sharpe=0.7),
             run_id="run1",
+            source_pipeline="test",
         )
         row1_id = row1.id
         session.commit()
@@ -57,6 +58,7 @@ def test_insert_backtest_is_idempotent_on_content_hash() -> None:
             content_hash="abc123",
             result=_sample_result("s1", sharpe=0.9),
             run_id="run2",
+            source_pipeline="test",
         )
         session.commit()
 
@@ -79,6 +81,7 @@ def test_latest_backtests_by_strategy_picks_newest_row() -> None:
             content_hash="h1",
             result=_sample_result("s1", sharpe=0.5),
             run_id="run1",
+            source_pipeline="test",
         )
         insert_backtest_if_missing(
             session,
@@ -86,6 +89,7 @@ def test_latest_backtests_by_strategy_picks_newest_row() -> None:
             content_hash="h2",
             result=_sample_result("s1", sharpe=0.8),
             run_id="run2",
+            source_pipeline="test",
         )
         insert_backtest_if_missing(
             session,
@@ -93,6 +97,7 @@ def test_latest_backtests_by_strategy_picks_newest_row() -> None:
             content_hash="h3",
             result=_sample_result("s2", sharpe=1.1),
             run_id="run3",
+            source_pipeline="test",
         )
         session.commit()
 
