@@ -9,7 +9,7 @@ fastapi>=0.139.2
 # CVE-2026-54283 (CVE bump 2026-06-25). FastAPI's requires-dist is
 # starlette>=0.46.0 with no upper bound, so this floor resolves cleanly.
 starlette>=1.4.1
-uvicorn[standard]>=0.51.0
+uvicorn[standard]>=0.52.1
 sqlalchemy>=2.0.51
 # Schema migration tool (issue #1028) — replaces the hand-rolled idempotent
 # `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` patches in db.py for retrofitting
