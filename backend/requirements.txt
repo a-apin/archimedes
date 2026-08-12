@@ -76,7 +76,7 @@ anthropic>=0.120.2
 web3>=7.16.0
 eth-account>=0.13.7
 eth-utils>=6.0.0
-cryptography>=49.0.0
+cryptography>=50.0.0
 # direct import in marketplace/encoding.py (derive_pool_id); do not rely on web3 transitive.
 # Cap <6: eth-account declares `eth-abi>=4.0.0-b.2`, whose pre-release specifier lets pip
 # resolve the 6.0.0b1 BETA on a fresh build (observed 2026-07-13 in the Docker image) —
