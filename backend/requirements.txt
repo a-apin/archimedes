@@ -15,7 +15,7 @@ sqlalchemy>=2.0.51
 # `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` patches in db.py for retrofitting
 # the already-populated prod Postgres DB. MIT license, maintained by the
 # SQLAlchemy project itself.
-alembic>=1.18.5
+alembic>=1.19.0
 psycopg2-binary>=2.9.12
 redis>=8.0.1
 pydantic>=2.13.4
