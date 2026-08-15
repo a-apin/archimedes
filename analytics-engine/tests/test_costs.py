@@ -12,7 +12,13 @@ import math
 import backtrader as bt
 import pandas as pd
 import pytest
-from archimedes_analytics_engine.costs import CostModel, no_trade_band, position_weight
+from archimedes_analytics_engine.costs import (
+    DEFAULT_COST_MODEL,
+    CostModel,
+    cost_model_fingerprint,
+    no_trade_band,
+    position_weight,
+)
 from archimedes_analytics_engine.engine import run_backtest, run_multi_backtest
 
 
@@ -268,3 +274,115 @@ def test_no_trade_band_reduces_turnover_in_strategy() -> None:
     banded = run_backtest(prices, strategy_cls=_TightBandedRebalancer, initial_cash=100_000.0)
     assert banded.traded_notional < unbanded.traded_notional
     assert banded.total_commission_paid < unbanded.total_commission_paid
+
+
+# ── Cost SSOT: the floor every engine charges ─────────────────────────────────
+#
+# Three engines write into one backtest_results table and one gate grades them
+# without knowing which produced a row. Before DEFAULT_COST_MODEL existed, this
+# engine charged commission AND slippage while the two backend engines charged
+# commission only, so the path that grades *generated* strategies flattered
+# itself against the curated library it is ranked beside.
+
+
+def test_default_cost_model_charges_both_legs() -> None:
+    """A zero slippage leg is the exact defect this constant closed."""
+    assert DEFAULT_COST_MODEL.default_bps > 0
+    assert DEFAULT_COST_MODEL.slippage_bps > 0
+
+
+def test_apply_to_broker_installs_commission_and_slippage() -> None:
+    """Both legs reach the broker when an engine goes through the shared model.
+
+    grep for set_slippage returned exactly two hits before this work, both in
+    this engine. Pinning it here means an engine that adopts the model cannot
+    silently end up with commission only.
+    """
+    calls: list[str] = []
+
+    class _Broker:
+        def setcommission(self, **_kwargs: object) -> None:
+            calls.append("commission")
+
+        def set_slippage_perc(self, **_kwargs: object) -> None:
+            calls.append("slippage")
+
+    class _Cerebro:
+        def __init__(self) -> None:
+            self.broker = _Broker()
+
+    cerebro = _Cerebro()
+    DEFAULT_COST_MODEL.apply_to_broker(cerebro, ["SPY"])
+    assert calls.count("commission") >= 1
+    assert calls.count("slippage") == 1
+
+
+def test_zero_cost_model_installs_no_slippage() -> None:
+    """The zero-cost model stays zero-cost so the regression baseline holds."""
+    calls: list[str] = []
+
+    class _Broker:
+        def setcommission(self, **_kwargs: object) -> None:
+            calls.append("commission")
+
+        def set_slippage_perc(self, **_kwargs: object) -> None:
+            calls.append("slippage")
+
+    class _Cerebro:
+        def __init__(self) -> None:
+            self.broker = _Broker()
+
+    cerebro = _Cerebro()
+    CostModel(default_bps=0.0, slippage_bps=0.0).apply_to_broker(cerebro, ["SPY"])
+    assert "slippage" not in calls
+
+
+def test_fingerprint_is_stable_across_dict_ordering() -> None:
+    a = CostModel(default_bps=10, slippage_bps=5, per_symbol={"SPY": 2.0, "BIL": 1.0})
+    b = CostModel(default_bps=10, slippage_bps=5, per_symbol={"BIL": 1.0, "SPY": 2.0})
+    assert cost_model_fingerprint(a) == cost_model_fingerprint(b)
+
+
+def test_fingerprint_differs_when_costs_differ() -> None:
+    base = CostModel(default_bps=10, slippage_bps=5)
+    assert cost_model_fingerprint(base) != cost_model_fingerprint(CostModel(default_bps=10, slippage_bps=0))
+    assert cost_model_fingerprint(base) != cost_model_fingerprint(CostModel(default_bps=20, slippage_bps=5))
+    assert cost_model_fingerprint(base) != cost_model_fingerprint(
+        CostModel(default_bps=10, slippage_bps=5, per_symbol={"SPY": 2.0})
+    )
+
+
+def test_costed_run_is_strictly_below_zero_cost_run() -> None:
+    """The floor has to actually cost something on an identical trade list."""
+    prices = _wavy_prices(120)
+    free = run_backtest(
+        prices,
+        strategy_cls=_BandedRebalancer,
+        initial_cash=100_000.0,
+        cost_model=CostModel(default_bps=0.0, slippage_bps=0.0),
+    )
+    costed = run_backtest(
+        prices,
+        strategy_cls=_BandedRebalancer,
+        initial_cash=100_000.0,
+        cost_model=DEFAULT_COST_MODEL,
+    )
+    assert costed.final_value < free.final_value
+
+
+def test_slippage_is_a_separable_leg() -> None:
+    """Slippage must bite on its own, not be folded into the commission."""
+    prices = _wavy_prices(120)
+    commission_only = run_backtest(
+        prices,
+        strategy_cls=_BandedRebalancer,
+        initial_cash=100_000.0,
+        cost_model=CostModel(default_bps=DEFAULT_COST_MODEL.default_bps, slippage_bps=0.0),
+    )
+    both_legs = run_backtest(
+        prices,
+        strategy_cls=_BandedRebalancer,
+        initial_cash=100_000.0,
+        cost_model=DEFAULT_COST_MODEL,
+    )
+    assert both_legs.final_value < commission_only.final_value

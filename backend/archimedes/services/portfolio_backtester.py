@@ -53,6 +53,13 @@ DEFAULT_LOOKBACK_YEARS = 7
 DEFAULT_REBALANCE_DAYS = 21  # ~monthly
 DEFAULT_INITIAL_CASH = 100_000.0
 DEFAULT_TX_COST_BPS = 10  # round-trip; matches analytics-engine default
+# Proportional slippage, mirroring analytics-engine's DEFAULT_COST_MODEL so
+# every engine charges the same floor. Mirrored rather than imported because
+# this module sits in the request path and the analytics-engine package is an
+# optional install here (see run_backtests.py, which imports it lazily) — the
+# same reason DEFAULT_TX_COST_BPS above is a mirrored constant. Drift is
+# prevented by test_cost_parity.py, not by convention.
+DEFAULT_SLIPPAGE_BPS = 5
 ANNUALIZATION = 252
 RF_DAILY = 0.05 / ANNUALIZATION  # 5% annual risk-free rate, daily equivalent
 MIN_BARS_FOR_BACKTEST = 60  # ~3 months; refuse to backtest shorter windows
@@ -122,6 +129,7 @@ def _simulate_portfolio(
     rebalance_days: int,
     initial_cash: float,
     tx_cost_bps: int = 10,
+    slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
     gamma: float = 0.1,  # Almgren square-root impact coefficient — see note below
 ) -> tuple[list[float], list[float]]:
     """Run a periodic-rebalance simulation; returns ``(daily_returns, equity_curve)``.
@@ -150,6 +158,12 @@ def _simulate_portfolio(
         and conservative (it slightly overstates cost / understates CAGR rather
         than the reverse); callers who want to model a one-way-only fill should
         pass half the round-trip bps. See the ``linear_cost_dollars`` line below.
+      - ``slippage_bps`` is charged on the same two-sided turnover and exists so
+        this engine's cost FLOOR matches the backtrader engines, which apply
+        ``set_slippage_perc`` on top of commission. The Almgren impact term sits
+        on top of that shared floor, so this engine is stricter than the others
+        and never looser — which is the only direction that keeps a
+        cross-engine ranking defensible.
       - No leverage. Negative weights are clamped to zero at normalization
         (long-only enforcement matches the agent's actual output contract).
     """
@@ -247,8 +261,17 @@ def _simulate_portfolio(
             # test_linear_cost_is_round_trip_on_turnover. Do not "halve" this without
             # updating that test and the round-trip convention across the codebase.
             linear_cost_dollars = np.sum(delta_w) * equity * (tx_cost_bps / 10_000.0)
+            # Proportional slippage, charged on the same two-sided turnover as
+            # the linear cost. This exists so the cost FLOOR here matches the
+            # backtrader engines, which apply set_slippage_perc on top of
+            # commission. Without it this engine charged commission-only while
+            # the curated library was charged commission plus slippage, and the
+            # two sets of numbers were being ranked against each other.
+            # The Almgren impact term above stays on top of the floor, which
+            # makes this engine stricter than the others and never looser.
+            slippage_dollars = np.sum(delta_w) * equity * (slippage_bps / 10_000.0)
 
-            total_cost_dollars = impact_dollars + linear_cost_dollars
+            total_cost_dollars = impact_dollars + linear_cost_dollars + slippage_dollars
 
             cost_fraction = total_cost_dollars / equity if equity > 0 else 0.0
             r_t -= cost_fraction
@@ -506,7 +529,11 @@ def backtest_portfolio(
             "start": start_iso,
             "end": end_iso,
             "transaction_cost_bps": tx_cost_bps,
-            "slippage_bps": tx_cost_bps,
+            # Was reporting tx_cost_bps here, which claimed a slippage figure
+            # this engine did not actually charge and made the row look
+            # cost-comparable to the backtrader engines when it wasn't.
+            "slippage_bps": DEFAULT_SLIPPAGE_BPS,
+            "cost_model_id": f"cm1:d{tx_cost_bps:g}:s{DEFAULT_SLIPPAGE_BPS:g}+almgren",
             "lookahead_guard": "static_rebalance_no_signal_shift",
             "walk_forward_split": 0.70,
             "data_source": "yfinance",
