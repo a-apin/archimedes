@@ -16,7 +16,6 @@ References:
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -122,81 +121,23 @@ class BacktestResult:
             return None
         return self.paper_claimed_sharpe * 0.42
 
-    @property
-    def passes_validation(self) -> bool:
-        """Quick check against design.md § 4.2 validation criteria.
-
-        Trade-count rule: always-on and buy-and-hold strategies produce 0 or 1
-        closed trades in backtrader (position never exits). For these, trade
-        count is meaningless as a quality signal; the Sharpe/DD/CAGR checks are
-        sufficient. Tactical strategies with 2–9 trades have too few signal
-        events for statistical validation and are correctly blocked.
-        """
-        trade_count_ok = self.total_trades < 2 or self.total_trades >= 10
-        return (
-            self.sharpe_ratio > 0.5
-            and self.max_drawdown < 0.5
-            and self.cagr < 10.0  # Reject >1000% annual as unrealistic
-            and trade_count_ok
-        )
-
-    @property
-    def passes_rigor_gate(self) -> bool:
-        """Stricter check: selection-bias corrections must be present and pass.
-
-        Required for promotion from CANDIDATE → VALIDATED. Tier-1 vaults only
-        admit strategies that pass this gate.
-
-        Criteria:
-          - Base validation passes
-          - DSR populated (value, p-value, AND num_trials_in_selection)
-            and p-value > 0.95 (Sharpe credibly > 0)
-          - PBO populated and < 0.5 (not expected to underperform median OOS)
-          - OOS Sharpe populated and within 50% of in-sample Sharpe (no cliff)
-          - Look-ahead audit passed
-          - sharpe_vs_paper >= 0.5 if paper_claimed_sharpe is set
-        """
-        if not self.passes_validation:
-            return False
-        if self.deflated_sharpe_ratio is None or self.dsr_p_value is None:
-            return False
-        if self.num_trials_in_selection is None:
-            # DSR is meaningless without recording the N used; the spec
-            # requires it for reproducibility.
-            return False
-        if self.dsr_p_value < 0.95:
-            return False
-        if self.pbo_score is None or self.pbo_score >= 0.5:
-            return False
-        if not self.look_ahead_audit_passed:
-            return False
-        if self.out_of_sample_sharpe is None:
-            return False
-        in_sample_sharpe = self._in_sample_sharpe()
-        if (
-            in_sample_sharpe is not None
-            and math.isfinite(in_sample_sharpe)
-            and in_sample_sharpe > 0
-            and self.out_of_sample_sharpe / in_sample_sharpe < 0.5
-        ):
-            return False
-        vs_paper = self.sharpe_vs_paper
-        return not (vs_paper is not None and vs_paper < 0.5)
-
-    def _in_sample_sharpe(self) -> float | None:
-        """Annualized Sharpe on the in-sample (training) slice of equity_curve.
-
-        Mirrors RigorGateResult.passes_all's cliff check: the OOS/IS ratio must
-        compare like with like (both slices of the SAME series), not OOS against
-        the full-sample Sharpe (which already blends in the OOS tail and makes
-        the cliff trivially easy to pass). Returns None when equity_curve is too
-        short to split meaningfully (compute_in_sample_sharpe's own threshold).
-        """
-        from archimedes.services._rigor_helpers import compute_in_sample_sharpe
-
-        daily_returns = [
-            (self.equity_curve[i] - self.equity_curve[i - 1]) / self.equity_curve[i - 1]
-            for i in range(1, len(self.equity_curve))
-            if self.equity_curve[i - 1] > 0
-        ]
-        return compute_in_sample_sharpe(daily_returns, train_fraction=self.walk_forward_train_fraction)
+    # ── Deliberately NOT here: passes_validation / passes_rigor_gate ────────
+    #
+    # This dataclass used to carry its own gate, with its own thresholds
+    # (sharpe>0.5, dsr_p>0.95, pbo<0.5, oos/is>=0.5, sharpe_vs_paper>=0.5,
+    # max_dd<0.5). The curated read path grades through
+    # ``live_rigor_gate.verdict_from_returns`` and the strictness ladder in
+    # ``rigor_profiles``. So "generated and curated are graded on the same
+    # scale" was not true — there were two gates, and which one you got
+    # depended on which code path reached you.
+    #
+    # It was also broken in a way nobody could see: ``backtest_portfolio``
+    # leaves ``pbo_score=None`` (PBO is a library-level metric a later
+    # scheduler refreshes), and the property short-circuited to False whenever
+    # PBO was None. Every generated portfolio strategy failed it
+    # unconditionally, so the value was a constant rather than a grade.
+    #
+    # There is now one gate. Grade a return series with
+    # ``live_rigor_gate.verdict_from_returns`` and read ``verdict.passes``.
+    # Do not reintroduce a threshold here — a gate on a transport dataclass is
+    # invisible to the strictness ladder and drifts away from the real one.
