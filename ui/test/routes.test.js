@@ -71,5 +71,5 @@ test('public shell lazy-loads wallet and protected application code', () => {
   const authenticated = readFileSync(new URL('../src/AuthenticatedApp.jsx', import.meta.url), 'utf8')
   assert.match(app, /lazy\(\(\) => import\('\.\/AuthenticatedApp'\)\)/)
   assert.doesNotMatch(app, /from '\.\/config'/)
-  assert.match(authenticated, /from '\.\/config'/)
+  assert.match(authenticated, /from ["']\.\/config["']/)
 })

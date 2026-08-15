@@ -1,230 +1,406 @@
-import { useEffect, useState } from 'react'
-import { apiGet } from '../api'
+import { useEffect, useState } from "react";
+import { apiGet } from "../api";
 
-// Core singleton contract fields actually returned by GET /api/config/contracts
-// today (ConfigService.get_contract_addresses). `usdc` is Arc-native (Circle's,
-// not ours) so it is deliberately excluded from this count — see
-// ARCHITECTURE-MAP.md §1.7. strategy_registry / payment_splitter are NOT in the
-// live response yet (a known backend gap); `price_oracle` is ONE representative
-// address standing in for every per-asset oracle actually deployed; and
-// `contracts.vaults` is never folded into totalLive below. All of that makes
-// the derived count a floor, not an inventory — render it as "at least N" /
-// "N+", never as a complete census.
+// ConfigService returns these core singleton fields today. Arc-native USDC is
+// excluded; per-asset oracles and user vaults are not fully represented, so the
+// derived total is always shown as a floor rather than a complete inventory.
 const CORE_CONTRACT_FIELDS = [
-  'synthetic_factory',
-  'amm_router',
-  'vault_factory',
-  'reasoning_trace_registry',
-  'asset_registry',
-  'price_oracle',
-]
+	"synthetic_factory",
+	"amm_router",
+	"vault_factory",
+	"reasoning_trace_registry",
+	"asset_registry",
+	"price_oracle",
+];
+
+const RIGOR_CRITERIA = [
+	{
+		code: "DSR",
+		name: "Deflated Sharpe Ratio",
+		question: "Could this Sharpe be luck after testing many ideas?",
+		method: "Corrects for multiple testing and non-normal returns.",
+	},
+	{
+		code: "PBO",
+		name: "Probability of Backtest Overfitting",
+		question: "Is the result likely to collapse outside its best sample?",
+		method: "Compares many train and test splits, not one lucky cut.",
+	},
+	{
+		code: "OOS",
+		name: "Walk-forward out-of-sample",
+		question: "Does the method survive data it did not fit on?",
+		method: "Moves the test window forward through time.",
+	},
+	{
+		code: "LEAK",
+		name: "Look-ahead audit",
+		question: "Did future information leak into any decision?",
+		method: "Rejects strategy code that reads data before it existed.",
+	},
+];
 
 export default function Landing({ onNavigate }) {
-  // Live contract census — never hardcode a contract count (it has shipped
-  // wrong 8 different ways across this repo). Fetched once on mount; an
-  // honest "—" / unavailable state renders on failure, never a stale number.
-  const [contracts, setContracts] = useState(null)
-  const [contractsError, setContractsError] = useState(false)
+	const [contracts, setContracts] = useState(null);
+	const [contractsError, setContractsError] = useState(false);
 
-  useEffect(() => {
-    apiGet('/api/config/contracts')
-      .then(setContracts)
-      .catch(() => setContractsError(true))
-  }, [])
+	useEffect(() => {
+		apiGet("/api/config/contracts")
+			.then(setContracts)
+			.catch(() => setContractsError(true));
+	}, []);
 
-  const coreCount = contracts ? CORE_CONTRACT_FIELDS.filter(f => contracts[f]).length : null
-  const synthCount = contracts?.synthetics ? Object.keys(contracts.synthetics).length : null
-  const poolCount = contracts?.pools ? Object.keys(contracts.pools).length : null
-  const totalLive =
-    coreCount != null && synthCount != null && poolCount != null ? coreCount + synthCount + poolCount : null
+	const coreCount = contracts
+		? CORE_CONTRACT_FIELDS.filter((field) => contracts[field]).length
+		: null;
+	const synthCount = contracts?.synthetics
+		? Object.keys(contracts.synthetics).length
+		: null;
+	const poolCount = contracts?.pools
+		? Object.keys(contracts.pools).length
+		: null;
+	const totalLive =
+		coreCount != null && synthCount != null && poolCount != null
+			? coreCount + synthCount + poolCount
+			: null;
 
-  return (
-    <div className="min-h-screen bg-[var(--canvas)] overflow-x-hidden font-[var(--sans)]">
+	return (
+		<main className="public-landing">
+			<section className="public-hero" aria-labelledby="public-hero-title">
+				<div className="public-shell public-hero__grid">
+					<div className="public-hero__copy">
+						<p className="public-kicker">
+							Research <span>→</span> rigor <span>→</span> vault
+						</p>
+						<h1 id="public-hero-title">
+							Capital should follow
+							<em>a thesis it can prove.</em>
+						</h1>
+						<p className="public-hero__lede">
+							Archimedes turns a plain-language brief into a paper-grounded
+							strategy, tests it for selection bias, then runs accepted methods
+							in a non-custodial vault on Arc.
+						</p>
+						<div className="public-actions">
+							<button
+								type="button"
+								className="public-cta public-cta--primary"
+								onClick={() => onNavigate("generate")}
+							>
+								Generate a strategy <span aria-hidden="true">→</span>
+							</button>
+							<button
+								type="button"
+								className="public-cta public-cta--quiet"
+								onClick={() => onNavigate("library", { tab: "examples" })}
+							>
+								Browse example library
+							</button>
+						</div>
+						<p className="public-hero__note">
+							Research prototype on Arc public testnet. Start with an account;
+							your wallet appears only when you authorize an on-chain action.
+						</p>
+					</div>
 
-      {/* ── Hero ─────────────────────────────────────────────────── */}
-      <section className="pt-6 pb-10 px-4 text-center border-b border-[var(--glass-border)] bg-[var(--canvas)] sm:px-6 sm:pb-12 lg:px-12 lg:pb-16">
-        <div className="max-w-[760px] mx-auto">
-          <p className="font-serif italic text-[1rem] text-[var(--text-3)] mb-3 md:text-[1.1rem]">
-            Agentic trading, grounded in research.
-          </p>
-          <h1 className="font-serif text-[2.1rem] font-normal leading-[1.15] mb-5 text-[var(--text-1)] sm:text-[2.6rem] lg:text-[3.1rem]">
-            <span className="text-[var(--accent)]">Your Intent.</span>{' '}
-            <span className="text-[var(--text-3)]">Our Rigor.</span>
-          </h1>
-          <p className="text-[0.98rem] leading-[1.65] text-[var(--text-2)] max-w-[620px] mx-auto mb-8 md:text-[1.08rem]">
-            Tell Archimedes what you want in plain English. It fuses your intent
-            with the quant-finance literature, live market data, and statistical
-            rigor — into an autonomous trading strategy that runs in a
-            non-custodial vault on Arc, with every decision hashed and
-            verifiable on-chain.
-          </p>
-          <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:justify-center sm:items-center">
-            <button className="btn-primary" onClick={() => onNavigate('generate')}>
-              Generate a Strategy →
-            </button>
-            <button className="btn-secondary" onClick={() => onNavigate('library', { tab: 'examples' })}>
-              Browse Example Library
-            </button>
-          </div>
-          <p className="caption mt-4 text-[var(--text-4)]">
-            Create an account with email or enabled OAuth provider. Wallet needed only for on-chain actions.
-            Deploying into a vault uses free testnet USDC from Circle faucet.
-          </p>
-        </div>
-      </section>
+					<ProofSpiral
+						contractsError={contractsError}
+						coreCount={coreCount}
+						poolCount={poolCount}
+						synthCount={synthCount}
+						totalLive={totalLive}
+					/>
+				</div>
+			</section>
 
-      {/* ── Why Archimedes ───────────────────────────────────────── */}
-      <LSection>
-        <SectionTitle>Why Archimedes?</SectionTitle>
-        <div className="lg-grid-4">
-          <FeatureCard icon="file-text" title="Paper-Grounded Strategies" tag="SMA200 · TSMOM · Vol-Managed">
-            Every strategy is extracted from bleeding-edge academic research in
-            quantitative finance, machine learning, agentic systems, and pure
-            mathematics. No vibes, no hype — academic rigor meets autonomous execution.
-          </FeatureCard>
-          <FeatureCard icon="link" title="On-Chain Provenance" tag="Commit-Reveal · Verifiable">
-            Every rebalance decision gets a keccak256 hash anchored on Arc.
-            Verify the agent's reasoning trail — before and after each trade.
-          </FeatureCard>
-          <FeatureCard icon="bot" title="Autonomous Agent" tag="Live · scheduled rebalance loop">
-            The agent evaluates paper-grounded strategies against live market data,
-            detects regime shifts, and rebalances autonomously — USDC on Arc.
-          </FeatureCard>
-          <FeatureCard icon="lock" title="Non-Custodial Vaults" tag="ERC-4626 · Your Keys">
-            Your funds never pass through platform custody. ERC-4626 vault contracts
-            hold your USDC and synth tokens — agent has rebalance authority only.
-          </FeatureCard>
-        </div>
-      </LSection>
+			<EvidenceLedger />
 
-      {/* ── Built On ─────────────────────────────────────────────── */}
-      <LSection>
-        <SectionTitle>Built On</SectionTitle>
-        <div className="flex flex-nowrap gap-2 sm:gap-3 justify-center max-w-full mx-auto">
-          {[
-            { name: 'Arc',         desc: 'EVM · Sub-second finality' },
-            { name: 'Circle',      desc: 'USDC · Wallets · CCTP' },
-            {
-              name: 'Foundry',
-              desc: contractsError
-                ? 'live count unavailable'
-                : totalLive != null
-                  ? `≥${totalLive} live instances`
-                  : '…',
-            },
-            { name: 'AWS Bedrock', desc: 'Nova Micro · Strategy extraction · Reasoning' },
-            { name: 'React + viem',desc: 'Frontend · Wallet UX' },
-            { name: 'FastAPI',     desc: 'Backend · Agent runner' },
-          ].map(t => (
-            <div key={t.name} className="flex flex-col items-center text-center px-2 sm:px-4 py-3 flex-1 min-w-0 bg-[var(--surface-2)] border border-[var(--glass-border)] rounded-lg">
-              <span className="text-xs sm:text-sm font-semibold text-[var(--text-1)]">{t.name}</span>
-              <span className="text-[0.65rem] sm:text-xs text-[var(--text-3)] mt-0.5">{t.desc}</span>
-            </div>
-          ))}
-        </div>
-      </LSection>
+			<section
+				className="public-section public-rigor"
+				aria-labelledby="rigor-title"
+			>
+				<div className="public-shell">
+					<div className="public-section__intro">
+						<div>
+							<p className="public-kicker">Admission record</p>
+							<h2 id="rigor-title">Rigor is not a badge.</h2>
+						</div>
+						<p>
+							It is a rejection mechanism. Every criterion answers a different
+							way a backtest can fool you; every value remains visible whether a
+							candidate passes or fails.
+						</p>
+					</div>
+					<RigorMatrix />
+				</div>
+			</section>
 
-      {/* ── Rigor ────────────────────────────────────────────────── */}
-      <LSection>
-        <SectionTitle>Rigor is the Wedge</SectionTitle>
-        <p className="text-sm text-center text-[var(--text-2)] mb-8 max-w-lg mx-auto">
-          Every Tier 1 strategy passes four selection-bias correction gates before admission:
-        </p>
-        <div className="lg-grid-4">
-          {[
-            { n: '01', title: 'Deflated Sharpe Ratio',              desc: 'Bailey & López de Prado 2014 — 90% one-sided confidence, robust standard errors; deflated against candidate-pool size where one exists' },
-            { n: '02', title: 'Probability of Backtest Overfitting', desc: 'Bailey/Borwein/López de Prado/Zhu 2014 — detects curve-fitting' },
-            { n: '03', title: 'Walk-Forward OOS Sharpe',             desc: 'Rolling window validation with no in/out-of-sample cliff' },
-            { n: '04', title: 'Look-Ahead Audit',                    desc: 'Static lint for future-leaking function calls in strategy code' },
-          ].map(r => (
-            <div key={r.n} className="bg-[var(--surface-1)] border border-[var(--glass-border)] rounded-xl p-6">
-              <div className="font-mono text-[2.5rem] font-bold text-[var(--accent)] opacity-30 leading-none mb-2">{r.n}</div>
-              <h4 className="text-sm font-semibold text-[var(--text-1)] mb-1.5">{r.title}</h4>
-              <p className="text-xs text-[var(--text-3)] leading-relaxed">{r.desc}</p>
-            </div>
-          ))}
-        </div>
-      </LSection>
+			<AuthorityBoundary />
 
-      {/* ── Circle Ecosystem (live integrations only) ───────────── */}
-      <LSection>
-        <SectionTitle>Circle Ecosystem Integration</SectionTitle>
-        <div className="lg-grid-3">
-          <FeatureCard icon="wallet"            title="Developer-Controlled Wallets" tag="Agent Signing · RSA-OAEP">
-            Agent executes on-chain transactions (rebalances, trace publishing)
-            via Circle-managed developer wallet with entity secret encryption.
-          </FeatureCard>
-          <FeatureCard icon="circle-dollar-sign" title="USDC Settlement"             tag="Native USDC · 6 decimals">
-            All vault deposits, trades, and redemptions settle in USDC on Arc.
-            Native USDC at 0x3600…0000 on Arc testnet.
-          </FeatureCard>
-          <FeatureCard
-            icon="scroll-text"
-            title="Smart Contracts on Arc"
-            tag={contractsError ? 'Foundry' : totalLive != null ? `≥${totalLive} live · Foundry` : 'Foundry'}
-          >
-            {contractsError ? (
-              <>Live contract count unavailable right now — see the Architecture page for the full census.</>
-            ) : totalLive != null ? (
-              <>
-                At least {coreCount} core contracts, {synthCount} synthetic assets, and {poolCount} AMM
-                pools deployed on Arc — fetched live from the contract census, not hardcoded, and reported
-                as a floor: some core singletons, per-asset oracles, and vault instances aren't all counted
-                yet.
-              </>
-            ) : (
-              <>Loading the live contract census…</>
-            )}
-          </FeatureCard>
-        </div>
-      </LSection>
+			<section
+				className="public-section public-stack"
+				aria-labelledby="stack-title"
+			>
+				<div className="public-shell public-stack__layout">
+					<div>
+						<p className="public-kicker">Working substrate</p>
+						<h2 id="stack-title">Real rails, named plainly.</h2>
+					</div>
+					<ul aria-label="Platform integrations">
+						<li>
+							<strong>Arc</strong>
+							<span>public testnet settlement</span>
+						</li>
+						<li>
+							<strong>Circle</strong>
+							<span>native USDC</span>
+						</li>
+						<li>
+							<strong>AWS Bedrock</strong>
+							<span>strategy reasoning</span>
+						</li>
+						<li>
+							<strong>Foundry</strong>
+							<span>contract suite</span>
+						</li>
+						<li>
+							<strong>FastAPI + React</strong>
+							<span>agent and interface</span>
+						</li>
+					</ul>
+				</div>
+			</section>
 
-      {/* ── Footer band (closing tagline only) ──────────────────── */}
-      <section className="py-6 px-4 text-center border-b border-[var(--glass-border)] sm:px-6 lg:py-8 lg:px-12">
-        <p className="font-serif italic text-[1rem] text-[var(--text-3)] md:text-[1.05rem]">
-          The lever is academic research. The fulcrum is autonomous AI. The world is your portfolio.
-        </p>
-        <p className="mt-3 text-xs text-[var(--text-4)]">
-          Powered by{' '}
-          <strong className="text-[var(--text-2)]">Arc</strong>
-          {' × '}
-          <strong className="text-[var(--text-2)]">Circle</strong>
-          {' × '}
-          <strong className="text-[var(--text-2)]">Canteen</strong>
-        </p>
-      </section>
+			<section className="public-final" aria-labelledby="final-title">
+				<div className="public-shell public-final__layout">
+					<div>
+						<p className="public-kicker">Your next move</p>
+						<h2 id="final-title">Give your capital a thesis to prove.</h2>
+					</div>
+					<div>
+						<button
+							type="button"
+							className="public-cta public-cta--primary"
+							onClick={() => onNavigate("generate")}
+						>
+							Generate a strategy <span aria-hidden="true">→</span>
+						</button>
+						<p>
+							Past performance is not a promise. The gate reduces known sources
+							of false confidence; it cannot remove market risk.
+						</p>
+					</div>
+				</div>
+			</section>
 
-    </div>
-  )
+			<footer className="public-footer">
+				<div className="public-shell">
+					<span>Archimedes</span>
+					<span>
+						Research-grounded strategy generation · Arc public testnet
+					</span>
+				</div>
+			</footer>
+		</main>
+	);
 }
 
-/* ── Sub-components ──────────────────────────────────────────── */
+function ProofSpiral({
+	contractsError,
+	coreCount,
+	poolCount,
+	synthCount,
+	totalLive,
+}) {
+	return (
+		<figure className="proof-spiral">
+			<div className="proof-spiral__header">
+				<span>Proof instrument</span>
+				<span>r = a + bθ</span>
+			</div>
+			<svg
+				className="proof-spiral__plot"
+				viewBox="0 0 560 410"
+				role="img"
+				aria-labelledby="proof-spiral-title proof-spiral-description"
+			>
+				<title id="proof-spiral-title">
+					Brief, debate, rigor, vault proof flow
+				</title>
+				<desc id="proof-spiral-description">
+					An Archimedean spiral traces a strategy from the user brief through
+					multi-agent debate and the rigor gate to a user-authorized vault.
+				</desc>
+				<line
+					className="proof-spiral__axis"
+					x1="38"
+					x2="520"
+					y1="241"
+					y2="241"
+				/>
+				<line
+					className="proof-spiral__axis"
+					x1="285"
+					x2="285"
+					y1="34"
+					y2="374"
+				/>
+				<path
+					className="proof-spiral__track"
+					pathLength="100"
+					d="M285 241 C271 246 255 235 258 217 C262 191 293 179 317 197 C346 219 342 268 303 287 C255 311 193 277 199 216 C205 149 284 113 347 139 C418 168 434 272 365 323 C274 391 124 370 102 257 C83 159 147 75 270 70 C368 66 450 118 450 208"
+				/>
+				<path
+					className="proof-spiral__pulse"
+					pathLength="100"
+					d="M285 241 C271 246 255 235 258 217 C262 191 293 179 317 197 C346 219 342 268 303 287 C255 311 193 277 199 216 C205 149 284 113 347 139 C418 168 434 272 365 323 C274 391 124 370 102 257 C83 159 147 75 270 70 C368 66 450 118 450 208"
+				/>
+				<g className="proof-spiral__node proof-spiral__node--user">
+					<circle cx="285" cy="241" r="7" />
+					<text x="235" y="260">
+						Brief
+					</text>
+				</g>
+				<g className="proof-spiral__node proof-spiral__node--system">
+					<circle cx="317" cy="197" r="7" />
+					<text x="332" y="188">
+						Debate
+					</text>
+				</g>
+				<g className="proof-spiral__node proof-spiral__node--system">
+					<circle cx="303" cy="287" r="7" />
+					<text x="316" y="310">
+						Rigor
+					</text>
+				</g>
+				<g className="proof-spiral__node proof-spiral__node--user">
+					<circle cx="450" cy="208" r="7" />
+					<text x="463" y="228">
+						Vault
+					</text>
+				</g>
+			</svg>
 
-function LSection({ children }) {
-  return (
-    <section className="l-section">
-      {children}
-    </section>
-  )
+			<ol className="proof-spiral__legend" aria-label="Strategy proof flow">
+				<li className="is-user">Brief</li>
+				<li>Debate</li>
+				<li>Rigor</li>
+				<li className="is-user">Vault</li>
+			</ol>
+
+			<div className="proof-spiral__census" aria-live="polite">
+				{contractsError ? (
+					<>
+						<span className="census-state census-state--error">
+							Live census unavailable
+						</span>
+						<p>Contract API did not respond. No cached count substituted.</p>
+					</>
+				) : totalLive == null ? (
+					<>
+						<span className="census-state">Reading Arc contract census</span>
+						<p>Waiting for live deployment data…</p>
+					</>
+				) : (
+					<>
+						<span className="census-state census-state--live">
+							Arc census live
+						</span>
+						<p>
+							<strong>≥{totalLive}</strong> reported instances · {coreCount}{" "}
+							core · {synthCount} synths · {poolCount} pools
+						</p>
+					</>
+				)}
+			</div>
+		</figure>
+	);
 }
 
-function SectionTitle({ children }) {
-  return (
-    <h2 style={{fontFamily:'var(--serif)',fontSize:'1.6rem',fontWeight:400,textAlign:'center',marginBottom:'1.5rem',color:'var(--text-1)',width:'100%'}}>
-      {children}
-    </h2>
-  )
+function EvidenceLedger() {
+	return (
+		<section className="evidence-ledger" aria-label="Evidence standards">
+			<div className="public-shell">
+				<ul>
+					<li>
+						<span>Paper-grounded</span>
+						<p>Methods keep named source papers attached.</p>
+					</li>
+					<li>
+						<span>Bias-corrected</span>
+						<p>Gate values stay visible, including failures.</p>
+					</li>
+					<li>
+						<span>Commit-before-trade</span>
+						<p>A vault rebalance requires an earlier reasoning commitment.</p>
+					</li>
+				</ul>
+			</div>
+		</section>
+	);
 }
 
-function FeatureCard({ icon, title, tag, children }) {
-  return (
-    <div className="flex flex-col bg-[var(--surface-1)] border border-[var(--glass-border)] rounded-xl p-6 hover:border-[var(--accent)] transition-colors duration-200">
-      <span className={`i-lucide-${icon} w-7 h-7 mb-3`} style={{color: 'var(--accent)'}} />
-      <h3 className="text-[1rem] font-semibold mb-2 text-[var(--text-1)]">{title}</h3>
-      <p className="text-[0.85rem] leading-[1.6] text-[var(--text-2)] mb-3 flex-1">{children}</p>
-      <span className="inline-block self-start text-[0.7rem] font-semibold px-2.5 py-1 rounded" style={{color: 'var(--accent)', background: 'rgba(var(--accent-rgb),0.08)'}}>
-        {tag}
-      </span>
-    </div>
-  )
+function RigorMatrix() {
+	return (
+		<div className="rigor-matrix">
+			{RIGOR_CRITERIA.map((criterion) => (
+				<article key={criterion.code}>
+					<div className="rigor-matrix__label">
+						<span>{criterion.code}</span>
+						<span>candidate check</span>
+					</div>
+					<h3>{criterion.name}</h3>
+					<p>{criterion.question}</p>
+					<small>{criterion.method}</small>
+				</article>
+			))}
+		</div>
+	);
+}
+
+function AuthorityBoundary() {
+	return (
+		<section
+			className="public-section authority-boundary"
+			aria-labelledby="authority-title"
+		>
+			<div className="public-shell">
+				<div className="public-section__intro">
+					<div>
+						<p className="public-kicker">Custody boundary</p>
+						<h2 id="authority-title">Autonomy stops at ownership.</h2>
+					</div>
+					<p>
+						Agent receives enough authority to operate a strategy, never enough
+						to take custody. Contract rules keep those roles separate.
+					</p>
+				</div>
+
+				<div className="authority-boundary__grid">
+					<div className="authority-boundary__side authority-boundary__side--agent">
+						<p className="authority-boundary__owner">Agent may</p>
+						<ul>
+							<li>Read market conditions and research evidence</li>
+							<li>Propose allocations and rebalance within vault rules</li>
+							<li>Commit its reasoning before an enforced trade</li>
+						</ul>
+					</div>
+					<div className="authority-boundary__line" aria-hidden="true">
+						<span>contract boundary</span>
+					</div>
+					<div className="authority-boundary__side authority-boundary__side--user">
+						<p className="authority-boundary__owner">Only you may</p>
+						<ul>
+							<li>Authorize deposits with your wallet</li>
+							<li>Withdraw assets from your vault</li>
+							<li>Choose whether a validated strategy receives capital</li>
+						</ul>
+					</div>
+				</div>
+				<p className="authority-boundary__footnote">
+					Agent cannot withdraw to the platform or replace vault ownership.
+				</p>
+			</div>
+		</section>
+	);
 }
