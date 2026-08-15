@@ -75,6 +75,57 @@ aws logs tail /ecs/archimedes-backend --since 7d \
 
 Mainnet gate checklist (16 items + the 8 visibly-deferred, tagged out of scope) · claims ledger.
 
+## Results — executed 2026-08-16
+
+Recorded here so no later session re-derives any of it.
+
+**Check 1 (BLOCKING) — answered: NO.** `circlekit/constants.py` at pinned SHA `09828f3999` has
+23 `CHAIN_CONFIGS` entries. Arc appears once, `arcTestnet` / chain 5042002, in the testnet block.
+The 11 mainnet entries are ethereum, base, arbitrum, polygon, optimism, avalanche, sonic,
+unichain, worldChain, hyperEvm, sei. **Upstream HEAD is the same commit** (2026-03-24), so
+bumping the pin does not help.
+
+Two follow-on facts:
+- `CHAIN_ALIASES` maps `"mainnet"` → `"ethereum"`. `GATEWAY_CHAIN=mainnet` resolves to a **valid**
+  config and would settle real USDC on Ethereum rather than erroring. This is why
+  [cluster-6](cluster-6-boot-paywall.md)'s startup assertion #1 is load-bearing, not hygiene.
+- Mitigation without forking: `CHAIN_CONFIGS` is a plain module-level dict and `get_chain_config`
+  reads it at call time, so an Arc mainnet `ChainConfig` can be registered at runtime. 8 of 9
+  fields are available or derivable (`MAINNET_GATEWAY_WALLET` / `MAINNET_GATEWAY_MINTER` are
+  already SDK constants; USDC is likely the same `0x3600…` native sentinel). **The one field we
+  cannot invent is `gateway_domain`** — Circle's internal domain ID, `arcTestnet` is `26`.
+  → Tracked as the top item on the mainnet-gate issue.
+
+**Check 2 — no.** `contracts/foundry.toml` still has only `arc-testnet`;
+`ui/src/siwe.js:15` is `VITE_ARC_CHAIN_ID ?? '5042002'`.
+
+**Check 4 — meter ceiling.** Funnel on 2026-08-16: landed 301, wallet_connected 35,
+generation_started 22, vault_deployed 0. Versus 2026-08-10 (282/35/22/0): **+19 landings, zero
+new wallet connections, zero new generations in six days.** `/api/marketplace/published` still
+`[]`. Any ceiling is invisible at this volume — set it from observed p99 after
+`METER_ENFORCE=false` ships, per [cluster-5](cluster-5-meter.md).
+
+**Check 5 — confirmed** by code inspection; fixed in PR #1239.
+
+**A6 diagnostic — BLOCKED, reassigned.** No AWS credentials on Önder's machine and none
+available (Dan holds the account). The `aws logs tail` command is now an ask to Dan, not a
+local step. **Do not retry it locally.**
+
+**Environment facts** (each cost a round-trip to discover):
+- conda base is `/opt/homebrew/Caskroom/miniconda/base`; env at `.../envs/archimedes`,
+  Python 3.12.13, circlekit installed. `conda info --base` returns **empty** non-interactively —
+  it is shell-function-initialized in `.zshrc`. **Use the absolute path.**
+- `node` is **not** in the conda env despite CLAUDE.md; `/opt/homebrew/bin/node` is what exists.
+  `ui/node_modules` is present, so `./node_modules/.bin/eslint` works.
+- `tofu` (OpenTofu) is installed; `terraform` is not.
+- `aws` CLI is not installed.
+
+**Artifacts:** PR #1238 (sprint cards, CI green) · PR #1239 (both day-0 bug fixes) ·
+issue #1240 (mainnet gate) · issue #1241 (claims ledger).
+
+**Still open:** Dan message unsent · PyPI `archimedes-cli` unreserved (needs an account) ·
+merges held.
+
 ## Done when
 
 Asks sent · 2 merges landed with `/health` verified · circlekit mainnet answer known · PyPI name
