@@ -228,12 +228,14 @@ Platform-specific notes for macOS / Linux / Windows (Önder on macOS; WSL2 recom
 **Spinning up locally is one command** once `.env` is filled in:
 
 ```bash
-cp .env.example .env       # fill in ANTHROPIC_API_KEY + RPC at minimum
+cp .env.example .env       # generate BETTER_AUTH_SECRET; LLM/RPC are optional
 docker compose up -d --build
 ```
 
-Then <http://localhost> for the UI mockups and <http://localhost:8000/docs> for the
-backend API. See README § "Run Archimedes locally" for the full walkthrough.
+Local template publishes nginx on rootless-safe port 8080. Compose runs Alembic before
+starting auth/backend. Use <http://localhost:8080> for UI and
+<http://localhost:8080/docs> for backend docs through sole nginx ingress. See `SETUP.md`
+for full walkthrough.
 
 **The whole toolchain lives in the `archimedes` conda env — including Node.**
 `python` / `pytest` / `ruff` **and** `node` / `npm` / the `ui/` ESLint all come

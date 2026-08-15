@@ -23,11 +23,13 @@ Describe what you want; Archimedes fuses your intent with live market data and a
 
 ```bash
 git clone --recurse-submodules git@github.com:a-apin/archimedes-arcadia.git archimedes && cd archimedes
-cp .env.example .env       # fill in ANTHROPIC_AUTH_TOKEN (GLM via Canteen, or BYO Anthropic key)
+cp .env.example .env       # generate BETTER_AUTH_SECRET; LLM credentials are optional
 docker compose up -d --build
 ```
 
-Then open <http://localhost>. Full walkthrough: [`SETUP.md`](SETUP.md).
+Then open <http://localhost:8080>. Backend health and docs use the same ingress at
+<http://localhost:8080/health> and <http://localhost:8080/docs>. Full walkthrough:
+[`SETUP.md`](SETUP.md).
 
 > **`pytest` requires the docker stack to be running.** Before running the test suite,
 > always spin up the services first: `docker compose up -d --build` (the `--build` flag
@@ -41,7 +43,7 @@ The repo ships a [`Makefile`](Makefile) with shortcuts for the daily workflow.
 Run `make` (or `make help`) for the full list. Most useful:
 
 ```
-make up         # docker compose up -d --build (starts the stack)
+make up         # migrate schema, then build + start the stack
 make down       # stop the stack
 make logs       # tail backend logs
 make pytest     # run the backend test suite (stack must be up)

@@ -7,7 +7,7 @@ help:
 	@echo "Archimedes — common dev targets (run 'make <target>'):"
 	@echo ""
 	@echo "  Stack lifecycle:"
-	@echo "    up           Build + start the docker stack (postgres/redis/backend/oracle/nginx)"
+	@echo "    up           Migrate, build + start local postgres/redis/auth/backend/nginx"
 	@echo "    down         Stop the docker stack"
 	@echo "    logs         Tail backend logs (Ctrl-C to detach)"
 	@echo ""

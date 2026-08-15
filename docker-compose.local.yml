@@ -1,0 +1,32 @@
+# Local-only strict migration ordering. `.env.example` includes this file via
+# COMPOSE_FILE; production omits it and keeps its separate pre-rollout ECS task.
+services:
+  auth:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+        required: true
+
+  backend:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+        required: true
+
+  oracle:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+        required: true
+
+  agent:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+        required: true
+
+  kb-runner:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+        required: true

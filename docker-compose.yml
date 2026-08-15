@@ -100,6 +100,24 @@ services:
       timeout: 5s
       retries: 5
 
+  # ---------- Schema migration (LOCAL ONLY) ----------
+  # Production runs this same preflight as an ordered one-off ECS task before
+  # rollout. Local Compose needs its own one-shot because init_db intentionally
+  # never creates PostgreSQL tables. Base-file dependencies stay optional so
+  # production can omit localdb; docker-compose.local.yml makes them strict.
+  migrate:
+    image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
+    profiles: ["localdb"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "archimedes.scripts.alembic_migrate_preflight"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # ---------- Reverse proxy + Frontend ----------
   nginx:
     image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-nginx:${IMAGE_TAG:-latest}
@@ -128,7 +146,7 @@ services:
       # HTTP on :8080. No :443/8443 mapping and no cert mounts — the
       # in-container self-signed-cert stopgap is retired (the ALB→nginx hop is
       # plain HTTP, so large responses no longer 502 through that TLS layer).
-      - "80:8080"
+      - "${ARCHIMEDES_HTTP_PORT:-80}:8080"
     depends_on:
       backend:
         condition: service_started
@@ -161,6 +179,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
+      migrate:
+        condition: service_completed_successfully
         required: false
 
   # ---------- Oracle (price feeder) ----------
@@ -198,6 +219,9 @@ services:
         required: false
       redis:
         condition: service_healthy
+        required: false
+      migrate:
+        condition: service_completed_successfully
         required: false
 
   # ---------- Strategy Agent (autonomous portfolio runner) ----------
@@ -239,6 +263,9 @@ services:
         required: false
       redis:
         condition: service_healthy
+        required: false
+      migrate:
+        condition: service_completed_successfully
         required: false
 
   # ---------- Backend API ----------
@@ -303,6 +330,9 @@ services:
       redis:
         condition: service_healthy
         required: false
+      migrate:
+        condition: service_completed_successfully
+        required: false
 
   # ---------- KB pipeline runner (Phase 3c skeleton) ----------
   # Polls the corpus + artifact volume and re-runs the SPECTER2 / HDBSCAN /
@@ -340,6 +370,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
+      migrate:
+        condition: service_completed_successfully
         required: false
 
 volumes:
