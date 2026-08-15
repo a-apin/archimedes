@@ -218,3 +218,119 @@ class TestEngineBFloor:
         expected_floor = KNOWN_TURNOVER * ((DEFAULT_TX_COST_BPS + DEFAULT_SLIPPAGE_BPS) / 10_000.0)
         assert not np.isnan(defaulted[2])
         assert defaulted[2] == pytest.approx(PRE_COST_RETURN - expected_floor, abs=1e-12)
+
+
+class TestRowAttribution:
+    """A row nobody can attribute cannot be compared with one you can."""
+
+    def test_insert_refuses_an_unattributed_row(self) -> None:
+        """Fail closed rather than defaulting the engine tag.
+
+        backtest_engine has been a column since the 2026-08-03 provenance
+        audit, but nothing enforced it. Now that three engines feed the table
+        and one gate ranks them together, an unattributed row is one whose cost
+        basis cannot be established — and it would sit on the leaderboard beside
+        rows whose cost basis can. A default tag would be a guess wearing a
+        provenance column's name, so the write is refused instead.
+        """
+        from archimedes.models.backtest import BacktestResult
+        from archimedes.models.backtest_store import Base
+        from archimedes.services.backtest_repository import insert_backtest_if_missing
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        session = sessionmaker(bind=engine)()
+
+        unattributed = BacktestResult(
+            strategy_id="no-engine",
+            sharpe_ratio=1.0,
+            sortino_ratio=1.0,
+            max_drawdown=0.1,
+            cagr=0.1,
+            calmar_ratio=1.0,
+            win_rate=0.5,
+            profit_factor=1.2,
+            total_trades=10,
+            avg_holding_period_days=5.0,
+            correlation_to_spy=None,
+            correlation_to_btc=None,
+        )
+        with pytest.raises(ValueError, match="unattributed"):
+            insert_backtest_if_missing(
+                session,
+                strategy_id="no-engine",
+                content_hash="deadbeef",
+                result=unattributed,
+                source_pipeline="test",
+            )
+
+    def test_cost_model_id_survives_the_store_round_trip(self) -> None:
+        """The fingerprint has to reach the DB, not stop at a boundary.
+
+        backtest_engine already had this failure mode: a real column that
+        appeared in zero API schemas, so the information stopped at the store.
+        """
+        from archimedes.models.backtest import BacktestResult
+        from archimedes.models.backtest_store import BacktestResultRecord
+
+        result = BacktestResult(
+            strategy_id="round-trip",
+            sharpe_ratio=1.0,
+            sortino_ratio=1.0,
+            max_drawdown=0.1,
+            cagr=0.1,
+            calmar_ratio=1.0,
+            win_rate=0.5,
+            profit_factor=1.2,
+            total_trades=10,
+            avg_holding_period_days=5.0,
+            correlation_to_spy=None,
+            correlation_to_btc=None,
+            backtest_engine="backtrader",
+            cost_model_id="cm1:d10:s5",
+            look_ahead_audit_source="broker_config_only",
+        )
+        row = BacktestResultRecord.from_backtest_result(
+            strategy_id="round-trip",
+            content_hash="abc123",
+            result=result,
+            source_pipeline="test",
+        )
+        restored = row.to_backtest_result()
+
+        assert restored.cost_model_id == "cm1:d10:s5"
+        assert restored.look_ahead_audit_source == "broker_config_only"
+        assert restored.backtest_engine == "backtrader"
+
+    def test_missing_correlation_stays_none_instead_of_zero(self) -> None:
+        """0.0 asserts "uncorrelated to SPY", which is a claim nothing measured."""
+        from archimedes.models.backtest import BacktestResult
+        from archimedes.models.backtest_store import BacktestResultRecord
+
+        result = BacktestResult(
+            strategy_id="no-corr",
+            sharpe_ratio=1.0,
+            sortino_ratio=1.0,
+            max_drawdown=0.1,
+            cagr=0.1,
+            calmar_ratio=1.0,
+            win_rate=0.5,
+            profit_factor=1.2,
+            total_trades=10,
+            avg_holding_period_days=5.0,
+            correlation_to_spy=None,
+            correlation_to_btc=None,
+            backtest_engine="backtrader",
+        )
+        row = BacktestResultRecord.from_backtest_result(
+            strategy_id="no-corr",
+            content_hash="def456",
+            result=result,
+            source_pipeline="test",
+        )
+        restored = row.to_backtest_result()
+
+        assert restored.correlation_to_spy is None
+        assert restored.correlation_to_btc is None

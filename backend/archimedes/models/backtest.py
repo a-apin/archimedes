@@ -90,6 +90,25 @@ class BacktestResult:
     backtest_engine: str | None = None  # 'backtrader' | 'vectorbt' | 'custom-numpy'
     backtest_code_hash: str | None = None  # SHA-256 of executable backtest code
     transaction_cost_bps: int = 10  # Round-trip cost assumed; spec default
+    # Fingerprint of the cost model actually installed on the broker, e.g.
+    # "cm1:d10:s5". Three engines feed this table and one gate ranks them
+    # together, so two rows are only comparable when this matches. It carries
+    # the per-symbol overrides and any engine-specific extra (the portfolio
+    # simulator appends "+almgren" for its impact term) that transaction_cost_bps
+    # alone cannot express. None on rows written before the cost SSOT landed.
+    cost_model_id: str | None = None
+
+    # How look_ahead_audit_passed above was actually determined. The analytics
+    # engine's own check reads only cerebro.broker.p.coc/coo, which it never
+    # sets, so it is True for every run and says nothing about the strategy's
+    # signal logic — see _lookahead_audit_passed's docstring. The real AST audit
+    # is rigor_evaluator.look_ahead_audit and does not run on that path. Without
+    # this field a reader cannot tell a genuine audit pass from the constant.
+    #   "broker_config_only" — execution-timing check only, never fails
+    #   "ast_audit"          — rigor_evaluator.look_ahead_audit ran on real source
+    #   "self_attested"      — closed-DSL path, no inspectable source
+    #   None                 — unknown / pre-dates this field
+    look_ahead_audit_source: str | None = None
 
     @property
     def sharpe_vs_paper(self) -> float | None:

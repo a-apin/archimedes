@@ -45,8 +45,12 @@ class BacktestResultRecord(Base):
     total_trades: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     avg_holding_period_days: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
-    correlation_to_spy: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    correlation_to_btc: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Nullable: a missing correlation used to be stored as 0.0, which asserts
+    # "uncorrelated to SPY/BTC" — a real claim nothing measured. Populating
+    # these needs a benchmark feed in every run; until then NULL is the honest
+    # value and the UI renders it as unavailable rather than as zero.
+    correlation_to_spy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    correlation_to_btc: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     equity_curve_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     monthly_returns_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
@@ -70,6 +74,14 @@ class BacktestResultRecord(Base):
     backtest_engine: Mapped[str | None] = mapped_column(String(32), nullable=True)
     backtest_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     transaction_cost_bps: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    # Cost-model fingerprint, e.g. "cm1:d10:s5". Three engines write this table
+    # and one gate ranks them together; two rows are only comparable when this
+    # matches. NULL on rows written before the cost SSOT landed.
+    cost_model_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Provenance for look_ahead_audit_passed above — see BacktestResult for the
+    # vocabulary. Without it, a boolean produced by an execution-timing check
+    # that never fails is indistinguishable from a real AST audit pass.
+    look_ahead_audit_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     artifact_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -159,6 +171,8 @@ class BacktestResultRecord(Base):
             backtest_engine=self.backtest_engine,
             backtest_code_hash=self.backtest_code_hash,
             transaction_cost_bps=self.transaction_cost_bps,
+            cost_model_id=self.cost_model_id,
+            look_ahead_audit_source=self.look_ahead_audit_source,
         )
 
     @classmethod
@@ -214,5 +228,7 @@ class BacktestResultRecord(Base):
             backtest_engine=result.backtest_engine,
             backtest_code_hash=result.backtest_code_hash,
             transaction_cost_bps=result.transaction_cost_bps,
+            cost_model_id=result.cost_model_id,
+            look_ahead_audit_source=result.look_ahead_audit_source,
             artifact_json=artifact_json,
         )

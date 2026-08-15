@@ -588,6 +588,9 @@ class TestStrategyReturnsEndpoint:
                 correlation_to_spy=0.3,
                 correlation_to_btc=0.0,
                 equity_curve=equity,
+                # Required: insert_backtest_if_missing refuses an unattributed
+                # row, so a row can always be traced to its producing engine.
+                backtest_engine="backtrader",
             )
             artifact = {"results": [{"metrics": {"daily_returns": returns}}]}
             import hashlib

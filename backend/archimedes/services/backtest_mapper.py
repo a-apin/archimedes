@@ -59,6 +59,10 @@ class EngineMetricsModel(BaseModel):
 
     backtest_engine: str | None = None
     transaction_cost_bps: int | None = None
+    # Declared so `extra="ignore"` stops silently eating it at the boundary.
+    # The engine has been emitting a cost fingerprint since the cost SSOT
+    # landed; without a field here it never reached a BacktestResult.
+    cost_model_id: str | None = None
 
 
 class OperationResultModel(BaseModel):
@@ -88,6 +92,10 @@ class AssumptionsBlockModel(BaseModel):
     transaction_cost_bps: int = 10
     walk_forward_split: float | None = None
     backtest_engine: str | None = None
+    # cli.run_command writes the fingerprint into `assumptions`; the metrics
+    # block may also carry one. Metrics win when both are present, since they
+    # describe the individual run rather than the invocation's defaults.
+    cost_model_id: str | None = None
 
 
 class IntegrityFlagsModel(BaseModel):
@@ -162,9 +170,28 @@ def map_artifact_to_backtest_result(
 
     max_dd_fraction = _f(m.max_drawdown_pct) / 100.0 if m.max_drawdown_pct is not None else 0.0
 
-    lookahead = m.look_ahead_audit_passed
-    if not lookahead:
-        lookahead = artifact.integrity_flags.lookahead_audit_passed
+    # Both sides of this used to be OR'd together as if they were independent
+    # signals. They are not: cli.run_command derives
+    # integrity_flags.lookahead_audit_passed as
+    # `all(r["metrics"]["look_ahead_audit_passed"] for r in results)` — an AND
+    # over per-result copies of the very same field. So the OR compared a value
+    # against a reduction of itself and could never add information.
+    #
+    # Worse, the value it is reducing is not a look-ahead audit.
+    # engine._lookahead_audit_passed reads only cerebro.broker.p.coc/coo, which
+    # that engine never sets, so it is True for every run regardless of whether
+    # the strategy's signal logic peeks at future data. Its own docstring says
+    # so. The real AST audit is rigor_evaluator.look_ahead_audit, and it does
+    # not run on this path at all.
+    #
+    # Deliberately NOT flipping the value here. Setting it False would trip the
+    # always-on look-ahead floor at every strictness level and fail every
+    # curated strategy — a verdict-moving change that belongs with the library
+    # re-run and its before/after table, not a quiet mapper edit. What changes
+    # is that the row now says where the boolean came from, so nobody reads it
+    # as a passed audit. Tracked on the claims ledger.
+    lookahead = m.look_ahead_audit_passed or artifact.integrity_flags.lookahead_audit_passed
+    lookahead_source = "broker_config_only"
 
     result = BacktestResult(
         strategy_id=strategy_id,
@@ -177,8 +204,13 @@ def map_artifact_to_backtest_result(
         profit_factor=_f(m.profit_factor),
         total_trades=int(m.total_trades or 0),
         avg_holding_period_days=_f(m.avg_holding_period_days),
-        correlation_to_spy=_f(m.correlation_to_spy),
-        correlation_to_btc=_f(m.correlation_to_btc),
+        # Not _f(...): coercing a missing correlation to 0.0 asserts "this
+        # strategy is uncorrelated to SPY/BTC", which is a real claim and one
+        # nothing measured. Populating them needs a benchmark feed in every run,
+        # which is not this sprint's work, so serve the absence instead of
+        # inventing a number.
+        correlation_to_spy=m.correlation_to_spy,
+        correlation_to_btc=m.correlation_to_btc,
         equity_curve=list(m.equity_curve),
         monthly_returns=list(m.monthly_returns),
         backtest_start=_safe_iso_to_date(m.backtest_start),
@@ -194,6 +226,8 @@ def map_artifact_to_backtest_result(
         transaction_cost_bps=m.transaction_cost_bps
         if m.transaction_cost_bps is not None
         else artifact.assumptions.transaction_cost_bps,
+        cost_model_id=m.cost_model_id or artifact.assumptions.cost_model_id,
+        look_ahead_audit_source=lookahead_source,
     )
     return result, chosen.operation
 
