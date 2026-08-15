@@ -529,6 +529,16 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "LLM_PROVIDER", value = "bedrock_converse" },
         { name = "LLM_BEDROCK_MODEL", value = "amazon.nova-micro-v1:0" },
         { name = "PRICE_SOURCE", value = "cascade" },
+        # Money switches — pinned explicitly (2026-08-16). Both were unset here,
+        # in both compose files, and in setup-ssm-secrets.sh, so prod's values
+        # were an accident of main.py:203-204's defaults rather than a decision.
+        # An unset money switch is the bug regardless of which way it points.
+        # These values change ONLY alongside the written mainnet scope decision
+        # (payment-rail-only; PAYMENTS_DRY_RUN=false is scoped to the
+        # caller-signed metered-API path, never the DCW browser subscribe flow,
+        # which stays blocked on #975). Do not flip either one in a drive-by PR.
+        { name = "PAYMENTS_DRY_RUN", value = "true" },
+        { name = "PAPER_TRADING", value = "true" },
         # Daily generation caps (services/generation_quota.py, #1194 rev a).
         # Plumbed here EXPLICITLY: a cap that silently falls back to its
         # code default because it was never added to the task definition is a
