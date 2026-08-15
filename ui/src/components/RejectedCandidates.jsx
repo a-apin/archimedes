@@ -70,7 +70,10 @@ export default function RejectedCandidates({ jobId, onClose, onNavigate }) {
 
   useEffect(() => {
     let cancelled = false
-    fetch(`${API_BASE}/api/generate/jobs/${encodeURIComponent(jobId)}/candidates`)
+    // credentials:'include' sends the SIWE session cookie. The job endpoints are
+    // owner-scoped and REQUIRE_SIWE_FOR_GENERATION defaults on, so without it
+    // this 401s and the considered-alternatives panel renders empty.
+    fetch(`${API_BASE}/api/generate/jobs/${encodeURIComponent(jobId)}/candidates`, { credentials: 'include' })
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`Backend returned ${r.status}`)))
       .then(d => { if (!cancelled) setData(d) })
       .catch(e => { if (!cancelled) setError(e.message || 'Failed to load candidates') })
