@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from archimedes.db import get_session, init_db
+from archimedes.db import get_session
 from archimedes.models.backtest_fixtures_store import FIXTURE_FIELDS, StrategyBacktestFixture
 from archimedes.services.backtest_mapper import (
     AnalyticsArtifactModel,
@@ -21,6 +21,8 @@ from archimedes.services.backtest_mapper import (
 )
 from archimedes.services.backtest_repository import insert_backtest_if_missing
 from fastapi.testclient import TestClient
+
+from tests.db_isolation import redirect_to_tmp_sqlite
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "analytics_artifact_buy_hold.json"
 
@@ -41,38 +43,42 @@ def _utcnow():
 
 
 @pytest.fixture(autouse=True)
-def _use_tmp_db(tmp_path, monkeypatch):
-    """Point the DB at a temp SQLite so we don't pollute the real one."""
-    db_path = tmp_path / "test_archimedes.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    init_db()
+def _use_tmp_db(tmp_path):
+    """Point the DB at a genuinely fresh temp SQLite for every test (#1243).
 
-    # engine/SessionLocal in archimedes.db are constructed once at import
-    # time from the FIRST DATABASE_URL seen in this process — the
-    # monkeypatch above does not migrate an already-bound engine onto a new
-    # file. In practice that means this "tmp DB" can be shared across tests
-    # in the same run, so the seed below merges by primary key (upsert)
-    # rather than add()-ing, matching the if-missing convention
-    # insert_backtest_if_missing already uses for the same reason.
-    snapshot = json.loads(BACKTEST_FIXTURES_SNAPSHOT_PATH.read_text(encoding="utf-8"))
-    with get_session() as session:
-        for stem, rec in snapshot.items():
-            session.merge(StrategyBacktestFixture(stem=stem, **{field: rec[field] for field in FIXTURE_FIELDS}))
-        session.commit()
+    This used to monkeypatch DATABASE_URL and call init_db(), which the comment
+    here correctly described as not working: archimedes.db builds engine and
+    SessionLocal once at import time, so setting the env var afterwards rebinds
+    nothing and every get_session() call kept resolving the original engine.
+    The "tmp DB" was never written to. What the tests actually read was whatever
+    that first engine pointed at, which is why this file passed under the full
+    suite (an earlier file left a usable engine behind) and failed standalone
+    against a stale on-disk schema.
 
-    # The strategy_provider() accessor in _route_helpers is @lru_cache'd and
-    # is built once per pytest process from the DB state at first call.  If any
-    # earlier test (in another file) triggered that first call before this
-    # fixture had a chance to seed strategy_backtest_fixtures, the cached
-    # provider has real_sharpe=None for every strategy — causing the advisor
-    # and list endpoints to report "no strategies with real backtest data".
-    # Clearing the cache after each seed forces the next call to re-read the
-    # now-seeded DB so every test in this file sees real fixture data.
-    from archimedes.api._route_helpers import strategy_provider
+    redirect_to_tmp_sqlite reassigns the module attributes for real and restores
+    them in a finally, so nothing leaks into a later file either.
+    """
+    for _ in redirect_to_tmp_sqlite(tmp_path):
+        # The DB is genuinely per-test now, so a plain add() would be correct.
+        # merge() is kept because it is also correct and costs nothing — it just
+        # no longer papers over shared state that is no longer there.
+        snapshot = json.loads(BACKTEST_FIXTURES_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        with get_session() as session:
+            for stem, rec in snapshot.items():
+                session.merge(StrategyBacktestFixture(stem=stem, **{field: rec[field] for field in FIXTURE_FIELDS}))
+            session.commit()
 
-    strategy_provider.cache_clear()
+        # strategy_provider() in _route_helpers is @lru_cache'd and built once
+        # per pytest process from the DB state at first call. If an earlier test
+        # triggered that call before this seed ran, the cached provider has
+        # real_sharpe=None for every strategy and the advisor/list endpoints
+        # report "no strategies with real backtest data". Clearing after each
+        # seed forces the next call to re-read the freshly seeded DB.
+        from archimedes.api._route_helpers import strategy_provider
 
-    yield
+        strategy_provider.cache_clear()
+
+        yield
 
 
 @pytest.fixture()
