@@ -286,8 +286,7 @@ traces via the deployed `ReasoningTraceRegistry`.
   made social. Strengthens the pitch as a clear expansion path; building it doesn't
   fit the hackathon window.
 - **Mainnet + real-funds custody.** Requires the regulatory architecture (off-chain
-  redemptions, preset-strategy / RIA posture, exploit alerting) — see
-  [`competitor-landscape.md`](competitor-landscape.md) § Regulatory.
+  redemptions, preset-strategy / RIA posture, exploit alerting).
 - **The full KB-pipeline artifact (#101).** Substrate is scaffolded (named volume
   mounted, `cluster_id`/`topic_label` columns ready); the heavy embedding +
   clustering + KG build is deferred post-hackathon. Lightweight graph/kg endpoints
