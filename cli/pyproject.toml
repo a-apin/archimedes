@@ -1,0 +1,63 @@
+[project]
+name = "archimedes-cli"
+version = "0.0.1"
+description = "Run the Archimedes rigor gate over your own strategies and returns, from the command line."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Unlicense"
+license-files = ["LICENSE"]
+authors = [{ name = "Archimedes" }]
+keywords = ["quantitative-finance", "backtesting", "deflated-sharpe", "overfitting", "rigor"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business :: Financial :: Investment",
+]
+
+# Deliberately small. `login` / `meter` / `verify` need an HTTP client and an
+# argument parser and nothing else, so `pip install archimedes-cli` stays a
+# seconds-long install. Two dependencies are not yet listed because the commands
+# that need them are not written:
+#   eth-account  -> `login` (SIWE signing), lands in 0.1.0
+#   archimedes-analytics-engine -> the `[local]` extra behind `verify --local`
+#                                  and `backtest`, once that package is on PyPI
+# Listing either one now would be metadata describing code that does not exist.
+dependencies = [
+  "click>=8.1",
+  "httpx>=0.27",
+]
+
+[project.urls]
+Homepage = "https://archimedes-arc.com"
+Repository = "https://github.com/a-apin/archimedes"
+Issues = "https://github.com/a-apin/archimedes/issues"
+
+[project.scripts]
+archimedes = "archimedes_cli.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/archimedes_cli"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml"]
+# Hatchling also ships the repo-root .gitignore in the sdist and does not honour
+# an `exclude` for it (VCS metadata is force-included). Harmless, just noise.
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
