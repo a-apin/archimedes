@@ -10,6 +10,15 @@ triggers:
   - "is REQUIRE_SIWE_FOR_GENERATION on, and generation auth questions in general"
 ---
 
+> **⚠️ Auth model transition in flight (2026-08):** this skill documents `main`
+> as of 2026-08-19, where generation auth is SIWE-based
+> (`REQUIRE_SIWE_FOR_GENERATION`, secure-by-default). **PR #1194 replaces this
+> with Better Auth accounts as canonical identity** (`require_current_user` +
+> per-account/per-IP generation caps). When #1194 merges, update this skill's
+> auth section before trusting it — the endpoints stay, the identity model
+> changes.
+
+
 # Requesting a strategy verdict over HTTP
 
 This skill grounds every claim in the working tree. File:line citations refer to
