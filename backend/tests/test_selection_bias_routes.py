@@ -31,25 +31,26 @@ from archimedes.api.selection_bias_routes import (
 from archimedes.services.rigor_evaluator import run_rigor_gate
 from httpx import ASGITransport, AsyncClient
 
+from tests.db_isolation import redirect_to_tmp_sqlite
+
 # ── Hermetic DB fixture ────────────────────────────────────────────────
 
 
 @pytest.fixture(autouse=True)
-def _use_tmp_db(tmp_path, monkeypatch):
-    """Redirect DATABASE_URL to a per-test temp SQLite file.
+def _use_tmp_db(tmp_path):
+    """Bind archimedes.db to a per-test temp SQLite file.
 
-    The evaluate_rigor_gate endpoint calls init_db() before querying
-    persisted backtest data.  Without this fixture, init_db() falls back
-    to sqlite:///./archimedes_chat.db (CWD-relative), which accumulates
-    state across test runs and across parallel workers.  The fixture
-    isolates every test and satisfies the hermetic-test mandate.
+    The evaluate_rigor_gate endpoint queries persisted backtest data, so
+    without isolation it reads sqlite:///./archimedes_chat.db (CWD-relative),
+    which accumulates state across runs and across parallel workers.
+
+    Setting DATABASE_URL and calling init_db() did not achieve that (#1243):
+    archimedes.db builds engine/SessionLocal once at import, so the env var
+    rebinds nothing and get_session() kept resolving the original engine. This
+    file passed under the full suite only because an earlier file left a usable
+    engine bound, and failed standalone against a stale on-disk schema.
     """
-    from archimedes.db import init_db
-
-    db_path = tmp_path / "test_selection_bias.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    init_db()
-    yield
+    yield from redirect_to_tmp_sqlite(tmp_path)
 
 
 # ── CPCV honest not-run reporting (#771) ───────────────────────────────
