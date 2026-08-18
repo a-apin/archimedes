@@ -163,11 +163,29 @@ passport should be read (and summarized) that way.
 
 ## The five forbidden phrasings
 
-These are documented team-wide pitch-rigor anti-claims —
+These five are the claim-integrity rules for the rigor gate itself. The code
+contradicts every one of them on the curated path (`_rigor_helpers.py` sets
+`E_max_N = 0.0` when `N == 1`; `rigor_evaluator.py` logs verbatim
+"num_trials=1 — DSR runs UNDEFLATED (no multiple-testing correction)").
+**Never write, about a passport or the gate:**
+
+1. **"corrects for multiple testing"** — the curated path applies no
+   multiple-testing correction; only the generated path deflates, and only
+   against that strategy's own candidate pool.
+2. **"deflated for multiple testing"** — same reason; say *"deflated against
+   its own candidate pool"* for generated strategies only.
+3. **"corrects selection bias"** — board-level selection bias is *disclosed*,
+   not corrected (Benjamini–Hochberg helpers exist with zero non-test callers).
+4. **"statistically proven"** — nothing here is proven; the gate reduces the
+   false-positive rate under stated assumptions.
+5. **"95% confidence"** — the live gate is **90% one-sided** (0.90 since #901);
+   the 0.95 figure is a fossil from retired thresholds.
+
+## The pitch anti-claims (related, broader)
+
+Separately, the team-wide pitch-rigor anti-claims —
 [`docs/anti-features.md`](../../docs/anti-features.md), "Pitch-rigor anti-claims"
-section, lines 197–249 — restated here because a passport-summarizing skill is
-exactly where they get violated by accident. **Never claim any of the following
-when describing a passport, regardless of how good its numbers look:**
+section, lines 197–249 — also apply when summarizing a passport:
 
 1. **"Blockchain as memory" as the load-bearing claim.** (anti-features.md:203-214)
    The defensible framing is narrower: the on-chain registry is "the agent's
