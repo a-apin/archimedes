@@ -76,7 +76,18 @@ export function createAuth({ database, env = process.env } = {}) {
       modelName: 'auth_rate_limits',
       customRules: {
         '/sign-in/email': { window: 60, max: 10 },
-        '/sign-up/email': { window: 60, max: 5 },
+        // Signup friction (#1194 revision b). Email verification is the real
+        // answer but needs a sending capability this stack does not have yet
+        // (no SES/SMTP anywhere in infra/ — provisioning SES + leaving its
+        // sandbox is an external-turnaround dependency, tracked as the
+        // post-sprint follow-up in docs/account-authentication.md). Until
+        // then, account-minting is bounded by three layers: this rule
+        // (3 signups / 10 min per Better Auth's rate key), nginx's
+        // /api/auth/ limit_req zone, and — decisively — the per-IP DAILY
+        // generation cap (services/generation_quota.py): a fresh account
+        // does not raise its address's generation allowance, so disposable
+        // accounts gain nothing at the endpoint that actually spends money.
+        '/sign-up/email': { window: 600, max: 3 },
       },
     },
     advanced: {

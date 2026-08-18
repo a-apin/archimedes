@@ -57,6 +57,29 @@ complete pair in SSM, then set matching `TF_VAR_google_oauth_enabled=true` or
 `TF_VAR_github_oauth_enabled=true` and apply task-definition change. Flags default false
 so absent optional parameters cannot block email/password startup.
 
+### Signup friction and abuse bounds
+
+There is deliberately **no email verification yet**: nothing in this stack can
+send email (no SES/SMTP anywhere in `infra/`), and provisioning SES — domain
+DKIM/SPF verification plus a sandbox-exit request with external turnaround —
+did not fit the launch window. `email_verified` is captured on every account
+and enforced nowhere; treat it as data, not a gate.
+
+Until verification ships, disposable accounts are bounded by three layers:
+
+1. Better Auth's production rate limiter: `/sign-up/email` at 3 per 10
+   minutes (`auth/auth.js` `rateLimit.customRules`).
+2. nginx's `/api/auth/` `limit_req` zone.
+3. Decisively: the **per-IP daily generation cap**
+   (`backend/archimedes/services/generation_quota.py`). Generation is the
+   endpoint that spends money, and its IP bucket does not reset when a new
+   account is minted — so a signup farm gains nothing where it matters.
+
+Follow-up (post-launch): provision SES, verify the sending domain, exit
+sandbox, wire `requireEmailVerification` + `sendVerificationEmail` in
+`auth/auth.js`, and gate `require_current_user` on `email_verified`. Each
+step is small; the SES sandbox exit is the external dependency to start early.
+
 ## Wallet linking
 
 1. Authenticated user requests `POST /api/wallets/challenge` with address, chain ID,
