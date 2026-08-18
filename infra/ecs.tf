@@ -512,6 +512,13 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "ARCHIMEDES_STRATEGIES_DIR", value = "/app/analytics-engine/strategies" },
         { name = "ARCHIMEDES_CORPUS_MANIFEST", value = "/app/data/corpus/manifest.jsonl" },
         { name = "KB_ARTIFACT_DIR", value = "/app/data/corpus-artifact" },
+        # Backtest run artifacts (scripts/run_backtests.py). The packaged
+        # analytics-engine/artifacts dir is NOT writable by the nonroot task
+        # user, which killed every scheduled backtest refresh at the artifact
+        # write and froze the leaderboard at its 2026-07-01 rows. Task-local
+        # scratch is the deliberate choice: the durable record is the DB row's
+        # artifact_json, not the file.
+        { name = "ARCHIMEDES_ARTIFACT_DIR", value = "/tmp/archimedes-artifacts" },
         # Deployed Arc testnet contract addresses — T3.2 redeploy 2026-07-09
         # (deployer 0x03AaB3C91873f0Ec606c1Ed7528FE4CDCD6a4092, chain 5042002).
         # One authoritative set; converges the prior FE/BE split-brain. Not secrets.
