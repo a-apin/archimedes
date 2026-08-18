@@ -31,6 +31,9 @@ def _sample_result(strategy_id: str, sharpe: float) -> BacktestResult:
         monthly_returns=[0.01],
         backtest_start=date(2020, 1, 1),
         backtest_end=date(2020, 12, 31),
+        # Required: insert_backtest_if_missing refuses an unattributed row, so
+        # a row can always be traced to the engine that produced it.
+        backtest_engine="backtrader",
     )
 
 

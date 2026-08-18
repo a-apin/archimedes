@@ -54,6 +54,9 @@ def _sample_result(strategy_id: str, equity_curve: list[float]) -> BacktestResul
         correlation_to_btc=0.1,
         equity_curve=equity_curve,
         monthly_returns=[0.01],
+        # Required: insert_backtest_if_missing refuses an unattributed row, so
+        # a row can always be traced to the engine that produced it.
+        backtest_engine="backtrader",
     )
 
 

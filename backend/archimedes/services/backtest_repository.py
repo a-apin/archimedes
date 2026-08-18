@@ -81,6 +81,21 @@ def insert_backtest_if_missing(
     in the very column added to make provenance trustworthy. An honest NULL is
     the whole point; a plausible wrong SHA is worse than no SHA.
     """
+    # Fail closed on an unattributed row. `backtest_engine` has been a column
+    # since before the 2026-08-03 provenance audit, but nothing enforced it, so
+    # a writer could land a row that no reader could attribute to an engine.
+    # That matters now that three engines feed this table and one gate ranks
+    # them together: an unattributed row is one whose cost basis cannot be
+    # established, and it would be ranked beside rows whose cost basis can.
+    # Refusing the write is the only version of this that stays true — a
+    # default tag would just be a guess wearing a provenance column's name.
+    if not result.backtest_engine:
+        raise ValueError(
+            f"refusing to persist an unattributed backtest for strategy_id={strategy_id!r}: "
+            "backtest_engine is required so every row can be traced to the engine that "
+            "produced it and compared on a known cost basis"
+        )
+
     existing = (
         session.query(BacktestResultRecord)
         .filter(
