@@ -688,6 +688,7 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
 @limiter.limit("10/minute")
 async def evaluate_strategy_rigor(
     request: Request,
+    response: Response,  # noqa: ARG001 — slowapi injects rate-limit headers into it; omitting it 500s every SUCCESSFUL call (#1182)
     strategy_id: str,
     strictness: int = Query(DEFAULT_LEVEL, ge=STRICTEST_LEVEL, le=LOOSEST_LEVEL),
 ):
