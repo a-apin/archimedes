@@ -788,7 +788,10 @@ tickers the mechanism trades from the user's selected assets (in user_steer); th
 platform overrides this with the user's chosen universe, so do not default to a \
 single broad-market proxy. Valid rebalance_frequency values: \
 daily, weekly, monthly. Valid indicators: sma_N, ema_N, rsi_N, momentum_N (replace \
-N with an integer period). Entry/exit conditions use comparison ops (gt, lt, gte, lte) \
+N with an integer period). momentum_N is the trailing N-bar RETURN, centred on 0 \
+(+0.05 means +5%); write momentum thresholds on that scale — e.g. \
+{"gt": ["momentum_20", 0]} means "trailing 20-bar return is positive". \
+Entry/exit conditions use comparison ops (gt, lt, gte, lte) \
 or logic ops (and, or, not). Position sizing types: full_invested_when_in_market, \
 equal_weight, volatility_target (needs annual_pct). look_ahead_safe MUST be true. \
 parameter_variants is OPTIONAL: a dict mapping indicator aliases to 2-8 numeric \

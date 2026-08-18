@@ -74,7 +74,17 @@ def _make_indicator(
     if name == "rsi":
         return bt.indicators.RSI(data_line, period=period)
     if name == "momentum":
-        return data_line / data_line(-period)
+        # TRAILING RETURN (centred on 0.0), not a price ratio (centred on 1.0).
+        # The distinction decides whether momentum conditions mean anything:
+        # every hand-authored momentum condition in this repo is written as
+        # {"gt": ["momentum_N", 0]}, and close prices are always positive, so
+        # under the ratio convention that entry filter is a tautology — the
+        # backtest enters long on a 10% DECLINE (ratio 0.9 > 0). The live
+        # signal path (strategy_signal_evaluator._compute_indicator_value),
+        # _tsmom_signal, and rank_market all already subtract 1.0; this was
+        # the lone ratio-convention outlier, and it is the backtest — i.e.
+        # the side whose numbers get published.
+        return data_line / data_line(-period) - 1.0
     raise DSLError(f"unsupported indicator: {name}")
 
 
