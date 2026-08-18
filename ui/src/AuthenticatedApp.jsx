@@ -35,7 +35,11 @@ export default function AuthenticatedApp({
 	user,
 }) {
 	const [walletAddr, setWalletAddr] = useState(null);
-	const [tourOpen, setTourOpen] = useState(() => !hasCompletedOnboarding());
+	// No auto-tour for anonymous visitors (#1194 revision d): its cards
+	// spotlight Generate and Library, which would bounce a logged-out browser
+	// straight to /sign-in — a modal ad for a door that's locked. The manual
+	// help-icon path still works for everyone.
+	const [tourOpen, setTourOpen] = useState(() => (user ? !hasCompletedOnboarding() : false));
 	const [journeyStage, setJourneyStage] = useState(null);
 	// A detected-but-unlinked browser wallet that backs pre-account (SIWE-era)
 	// data — drives the relink banner below (#1194 revision e).
@@ -45,7 +49,11 @@ export default function AuthenticatedApp({
 		if (route.page !== "generate") setJourneyStage(null);
 	}, [route.page]);
 
+	const userId = user?.id ?? null;
 	useEffect(() => {
+		// Wallets link to ACCOUNTS — with no session there is nothing to link
+		// (and the linked-wallet/legacy-check calls would just 401).
+		if (!userId) return;
 		reconnectWallet().then(async (result) => {
 			if (!result) return;
 			try {
@@ -73,7 +81,10 @@ export default function AuthenticatedApp({
 				// Account remains usable without wallet service.
 			}
 		});
-	}, []);
+		// Keyed on the account id, not []: with the anonymous guard above, a
+		// visitor who signs in after an anonymous mount still gets their wallet
+		// reconnected when the session resolves.
+	}, [userId]);
 
 	useEffect(() => {
 		const handler = async (event) => {

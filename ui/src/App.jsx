@@ -58,10 +58,14 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (route.kind !== 'app' || authLoading || user) return
+    // Anonymous-OK app pages (Explore/Leaderboard/Corpus/strategy detail —
+    // #1194 revision d) never bounce to sign-in; auth is required only to
+    // generate, pay, or paper-deploy. Keep in lockstep with the nginx
+    // carve-outs, which enforce the same split server-side.
+    if (route.kind !== 'app' || route.anonymousOk || authLoading || user) return
     const next = `${window.location.pathname}${window.location.search}`
     window.location.replace(`/sign-in?next=${encodeURIComponent(next)}`)
-  }, [route.kind, authLoading, user])
+  }, [route.kind, route.anonymousOk, authLoading, user])
 
   useEffect(() => {
     const titles = {
@@ -118,7 +122,12 @@ export default function App() {
     )
   }
 
-  if (authLoading || !user) {
+  // Anonymous-OK pages render immediately with user === null rather than
+  // blocking on auth resolution — a public Explore that shows "Loading
+  // account…" to a visitor with no account is a broken front door. If the
+  // visitor IS signed in, the user object arrives when auth resolves and the
+  // chrome upgrades in place.
+  if (!route.anonymousOk && (authLoading || !user)) {
     return <main className="min-h-screen grid place-items-center">Loading account…</main>
   }
 

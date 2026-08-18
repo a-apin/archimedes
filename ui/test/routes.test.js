@@ -89,7 +89,9 @@ test("feature payload accepts booleans only", () => {
 
 test("quant navigation and direct route share feature result", () => {
 	const nav = [{ id: "library" }, { id: "quant" }];
-	assert.deepEqual(visibleNavigation(nav, { quant: false }), [
+	// Third arg = user. Passing one exercises the authenticated filter; the
+	// anonymous default is pinned separately below.
+	assert.deepEqual(visibleNavigation(nav, { quant: false }, { id: "u1" }), [
 		{ id: "library" },
 	]);
 	assert.equal(
@@ -108,4 +110,43 @@ test("public shell lazy-loads wallet and protected application code", () => {
 	assert.match(app, /lazy\(\(\) => import\('\.\/AuthenticatedApp'\)\)/);
 	assert.doesNotMatch(app, /from '\.\/config'/);
 	assert.match(authenticated, /from ["']\.\/config["']/);
+});
+
+test("anonymous browse pages resolve as app routes that allow no session (#1194 rev d)", () => {
+	for (const path of ["/app", "/app/explore", "/app/leaderboard", "/app/corpus"]) {
+		const route = resolveRoute(path);
+		assert.equal(route.kind, "app", path);
+		assert.equal(route.anonymousOk, true, path);
+	}
+	// Strategy DETAIL deep links are anonymous too — a leaderboard row must be
+	// openable by the skeptic who clicked it.
+	assert.equal(resolveRoute("/app/strategy/alpha").anonymousOk, true);
+});
+
+test("auth-required pages stay auth-required", () => {
+	for (const path of [
+		"/app/generate",
+		"/app/library",
+		"/app/portfolio",
+		"/app/account",
+		"/app/portfolio/vaults/0x123",
+	]) {
+		const route = resolveRoute(path);
+		assert.equal(route.kind, "app", path);
+		assert.equal(route.anonymousOk, false, path);
+	}
+});
+
+test("anonymous nav shows browse + the Generate conversion path, nothing stateful", () => {
+	const nav = [
+		{ id: "explore" },
+		{ id: "generate" },
+		{ id: "portfolio" },
+		{ id: "marketplace" },
+		{ id: "account" },
+	];
+	assert.deepEqual(visibleNavigation(nav, { quant: true }, null), [
+		{ id: "explore" },
+		{ id: "generate" },
+	]);
 });

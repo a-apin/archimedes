@@ -26,6 +26,21 @@ const APP_PATHS = {
   '/app/subscriptions': 'subscriptions',
 }
 
+// Pages under /app an anonymous visitor may browse (#1194 revision d, Dan's
+// explicit product call): Explore, Leaderboard, Corpus and the strategy
+// detail page stay login-free; auth is required only to generate, pay, or
+// paper-deploy. DELIBERATELY a marker set, not a carve-out from APP_PATHS —
+// PAGE_PATHS and LEGACY_PATHS are both derived from APP_PATHS, so removing
+// entries there silently breaks pageToPath (corpus/leaderboard nav clicks
+// would fall through to '/app' and land on Explore). Keep the paths where
+// they are; mark them anonymous-OK instead. Must stay in lockstep with the
+// nginx carve-outs in nginx/nginx.conf (the server-side half of this gate).
+const ANON_APP_PAGES = new Set(['explore', 'leaderboard', 'corpus', 'strategy'])
+
+export function isAnonymousAppPage(page) {
+  return ANON_APP_PAGES.has(page)
+}
+
 const PAGE_PATHS = Object.fromEntries(Object.entries(APP_PATHS).map(([path, page]) => [page, path]))
 const LEGACY_PATHS = Object.fromEntries(
   Object.entries(APP_PATHS)
@@ -42,6 +57,7 @@ const route = (kind, page, extras = {}) => ({
   highlight: null,
   tab: null,
   redirect: null,
+  anonymousOk: kind === 'app' && ANON_APP_PAGES.has(page),
   ...extras,
 })
 
@@ -122,6 +138,14 @@ export function postAuthPath(search = '') {
   return query && !next.includes('?') && !next.includes('#') ? `${next}?${query}` : next
 }
 
-export function visibleNavigation(items, features) {
-  return items.filter((item) => featureEnabled(item.id, features))
+// Nav ids an anonymous visitor should see: the browsable pages plus Generate,
+// which is the conversion path (clicking it routes to sign-in). Everything
+// else — portfolio, learnings, marketplace, account and friends — reads the
+// signed-in user's own state and is noise on a logged-out screen.
+const ANON_NAV_IDS = new Set(['landing', 'explore', 'corpus', 'architecture', 'leaderboard', 'generate'])
+
+export function visibleNavigation(items, features, user = null) {
+  return items.filter(
+    (item) => featureEnabled(item.id, features) && (user != null || ANON_NAV_IDS.has(item.id)),
+  )
 }

@@ -216,12 +216,22 @@ export default function Layout({
 				</div>
 
 				<nav>
-					{NAV.map((group, gi) => (
+					{NAV.map((group) => ({
+						...group,
+						// Anonymous visitors see only the browsable pages plus
+						// Generate (#1194 revision d) — visibleNavigation owns
+						// the id list. Groups left empty by the filter are
+						// skipped entirely below so a logged-out sidebar never
+						// shows a bare "Position"/"Market" header over nothing.
+						items: visibleNavigation(group.items, features, user),
+					}))
+						.filter((group) => group.items.length > 0)
+						.map((group, gi) => (
 						<div key={group.group || gi} className="nav-group">
 							{group.group && (
 								<div className="nav-group-label">{group.group}</div>
 							)}
-							{visibleNavigation(group.items, features).map((item) => (
+							{group.items.map((item) => (
 								<button
 									key={item.id}
 									type="button"
@@ -322,25 +332,45 @@ export default function Layout({
 								/>
 							</button>
 						)}
-						<button
-							type="button"
-							className="wallet-chip account-chip"
-							onClick={() => handleNav("account")}
-							title={user?.email}
-						>
-							<span
-								className="i-lucide-user-round"
-								style={{ width: 14, height: 14 }}
-							/>
-							<span>{user?.name || "Account"}</span>
-						</button>
-						<WalletConnect
-							address={walletAddr}
-							displayName={displayName}
-							onConnect={onConnect}
-							onDisconnect={onDisconnect}
-							onEditProfile={() => handleNav("account")}
-						/>
+						{user ? (
+							<>
+								<button
+									type="button"
+									className="wallet-chip account-chip"
+									onClick={() => handleNav("account")}
+									title={user?.email}
+								>
+									<span
+										className="i-lucide-user-round"
+										style={{ width: 14, height: 14 }}
+									/>
+									<span>{user?.name || "Account"}</span>
+								</button>
+								<WalletConnect
+									address={walletAddr}
+									displayName={displayName}
+									onConnect={onConnect}
+									onDisconnect={onDisconnect}
+									onEditProfile={() => handleNav("account")}
+								/>
+							</>
+						) : (
+							// Anonymous browse (#1194 revision d): the account
+							// chip would navigate into an auth-gated page and
+							// the wallet widget links wallets to ACCOUNTS, so
+							// with no session both collapse into the one honest
+							// affordance — sign in. Deep-link preserved via
+							// ?next so the visitor returns to the page they
+							// were reading.
+							<a
+								className="btn-primary"
+								href={`/sign-in?next=${encodeURIComponent(
+									`${window.location.pathname}${window.location.search}`,
+								)}`}
+							>
+								Sign in
+							</a>
+						)}
 					</div>
 				</div>
 				<main className={`page-content page-${page}`}>
