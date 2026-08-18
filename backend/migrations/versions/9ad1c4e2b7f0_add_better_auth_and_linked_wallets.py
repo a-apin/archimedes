@@ -5,18 +5,23 @@ verified external accounts and existing wallet-keyed tables are unchanged by
 this revision; user ownership adapters land separately.
 
 Revision ID: 9ad1c4e2b7f0
-Revises: 363d1c6ff0c0
+Revises: b41c7d9e2a05
 Create Date: 2026-07-28 15:00:00.000000
 
-Re-pointed from 3f643d292e04 to 363d1c6ff0c0 when main was merged in. Both
-revisions had been authored against 3f643d292e04 independently, leaving the
-chain with TWO heads -- and ``alembic upgrade head`` refuses to run at all in
-that state, so this is not cosmetic: it would have failed the pre-rollout
-migration task and blocked every deploy, which is exactly how the deploy
-pipeline broke on 2026-08-03. Serialising is safe here because the two
-revisions are disjoint: 363d1c6ff0c0 adds provenance COLUMNS to the existing
-backtest_results table, while this revision creates NEW auth tables and touches
-neither that table nor its columns.
+Re-pointed TWICE as main moved under this long-lived branch — the recurring
+failure mode for feature branches that carry migrations:
+  1. 3f643d292e04 -> 363d1c6ff0c0 (2026-08-03, main's backtest-provenance
+     migration was serialized in when main was first merged).
+  2. 363d1c6ff0c0 -> b41c7d9e2a05 (2026-08-18, PR #1242's cost/look-ahead
+     provenance migration landed on main while this PR was in review; the
+     chain forked again and CI's alembic-upgrade-head test caught it on the
+     MERGE ref while the branch alone still looked linear).
+``alembic upgrade head`` refuses to run with two heads, so an unserialized
+chain fails the pre-rollout migration task and blocks every deploy — exactly
+how the pipeline broke on 2026-08-03. Serialising is safe in both cases
+because the revisions are disjoint: main's add provenance COLUMNS to the
+existing backtest_results table, while this revision creates NEW auth tables
+and touches neither that table nor its columns.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "9ad1c4e2b7f0"
-down_revision: str | Sequence[str] | None = "363d1c6ff0c0"
+down_revision: str | Sequence[str] | None = "b41c7d9e2a05"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

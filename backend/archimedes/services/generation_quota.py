@@ -202,10 +202,7 @@ def _quota_429(scope: str, cap: int) -> HTTPException:
             "The allowance resets daily — or reach out if you need more."
         )
     else:
-        message = (
-            f"This network address has reached today's generation limit ({cap}/day). "
-            "The allowance resets daily."
-        )
+        message = f"This network address has reached today's generation limit ({cap}/day). The allowance resets daily."
     return HTTPException(
         status_code=429,
         detail={"message": message, "reason": "generation_daily_cap", "scope": scope, "cap": cap},

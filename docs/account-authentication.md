@@ -141,13 +141,13 @@ preservation:
 
 ```bash
 cd backend
-alembic downgrade 363d1c6ff0c0
+alembic downgrade b41c7d9e2a05
 ```
 
-The target is `363d1c6ff0c0` — NOT `3f643d292e04`, this branch's original fork
-point. When `main` was merged in, its backtest-provenance migration
-(`363d1c6ff0c0`) was serialized between the fork point and this feature's two
-migrations (see the re-pointing note in
+The target is `b41c7d9e2a05` — the revision immediately below this feature's
+own two migrations, NOT `3f643d292e04`, this branch's original fork point. As `main` moved, its backtest-provenance migrations (`363d1c6ff0c0`, then
+#1242's `b41c7d9e2a05`) were serialized between the fork point and this
+feature's two migrations (see the re-pointing note in
 `migrations/versions/9ad1c4e2b7f0_add_better_auth_and_linked_wallets.py`).
 Downgrading past it to `3f643d292e04` would collaterally drop four
 `backtest_results` provenance columns unrelated to auth — and that damage does

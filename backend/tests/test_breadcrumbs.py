@@ -1,4 +1,4 @@
-"""Regression: Breadcrumbs CRUMB_MAP must stay in sync with App.jsx PAGE_TO_PATH (#1219).
+"""Regression: Breadcrumbs CRUMB_MAP must stay in sync with routes.js pages (#1219).
 
 Fourth surface carrying the retired navigation scheme — the first three were
 fixed in #1192. A dead key fails silently (Breadcrumbs returns null), so the
@@ -14,7 +14,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BREADCRUMBS = REPO_ROOT / "ui" / "src" / "components" / "Breadcrumbs.jsx"
-APP = REPO_ROOT / "ui" / "src" / "App.jsx"
+ROUTES = REPO_ROOT / "ui" / "src" / "routes.js"
 
 
 def _extract_crumb_keys(text: str) -> set[str]:
@@ -30,11 +30,23 @@ def _extract_crumb_keys(text: str) -> set[str]:
 
 
 def _extract_page_to_path_keys(text: str) -> set[str]:
-    m = re.search(r"const\s+PAGE_TO_PATH\s*=\s*\{(.*?)\n\}", text, re.DOTALL)
-    assert m, "PAGE_TO_PATH block not found in App.jsx"
-    block = m.group(1)
-    keys = re.findall(r"^\s*['\"]?([a-z0-9_-]+)['\"]?\s*:", block, re.MULTILINE | re.IGNORECASE)
-    return set(keys)
+    """Every routable page name from ui/src/routes.js — the navigation SSOT.
+
+    #1194 moved routing out of App.jsx's PAGE_TO_PATH literal into routes.js,
+    so the invariant's anchor moved with it. Pages come from three places
+    there: the VALUES of PUBLIC_PATHS and APP_PATHS ({'/app/explore':
+    'explore', ...}), and the second element of each deepRoutes row
+    (['/app/strategy/', 'strategy', 'strategyId']).
+    """
+    pages: set[str] = set()
+    for map_name in ("PUBLIC_PATHS", "APP_PATHS"):
+        m = re.search(rf"const\s+{map_name}\s*=\s*\{{(.*?)\n\}}", text, re.DOTALL)
+        assert m, f"{map_name} block not found in routes.js"
+        pages.update(re.findall(r":\s*'([a-z0-9_-]+)'", m.group(1)))
+    m = re.search(r"const\s+deepRoutes\s*=\s*\[(.*?)\n\s*\]", text, re.DOTALL)
+    assert m, "deepRoutes block not found in routes.js"
+    pages.update(re.findall(r"\[\s*'[^']*'\s*,\s*'([a-z0-9_-]+)'", m.group(1)))
+    return pages
 
 
 def _extract_crumb_groups(text: str) -> list[str | None]:
@@ -72,12 +84,12 @@ def _extract_crumb_group_pages(text: str) -> list[str | None]:
 
 def test_crumb_map_keys_subset_of_page_to_path() -> None:
     crumbs = _extract_crumb_keys(BREADCRUMBS.read_text(encoding="utf-8"))
-    pages = _extract_page_to_path_keys(APP.read_text(encoding="utf-8"))
+    pages = _extract_page_to_path_keys(ROUTES.read_text(encoding="utf-8"))
     extra = crumbs - pages
     assert not extra, (
-        f"CRUMB_MAP contains keys not in PAGE_TO_PATH: {sorted(extra)}. "
-        f"CRUMB_MAP={sorted(crumbs)} PAGE_TO_PATH={sorted(pages)}. "
-        "Remove stale keys or add the page to App.jsx PAGE_TO_PATH (latter is wrong per #1219 anti-goals)."
+        f"CRUMB_MAP contains keys not in routes.js pages: {sorted(extra)}. "
+        f"CRUMB_MAP={sorted(crumbs)} routes_pages={sorted(pages)}. "
+        "Remove stale keys or add the page to routes.js (latter is wrong per #1219 anti-goals)."
     )
 
 
@@ -116,7 +128,7 @@ def test_crumb_map_group_labels_are_current_nav() -> None:
 
 
 def test_crumb_map_group_pages_are_valid() -> None:
-    pages = _extract_page_to_path_keys(APP.read_text(encoding="utf-8"))
+    pages = _extract_page_to_path_keys(ROUTES.read_text(encoding="utf-8"))
     group_pages = _extract_crumb_group_pages(BREADCRUMBS.read_text(encoding="utf-8"))
     bad = [p for p in group_pages if p is not None and p not in pages]
     assert not bad, f"CRUMB_MAP groupPage values not in PAGE_TO_PATH: {bad} — must be a valid page or null"
