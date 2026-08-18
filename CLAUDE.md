@@ -25,7 +25,10 @@ Arcadia** · live at [`archimedes-arc.com`](https://archimedes-arc.com/) (Arc te
 `5042002` / `0x4cef52`; `.com` is the sole domain — the `.app` split caused the Circle
 passkey rpId bug and was decommissioned) · [Unlicense](docs/adr/unlicense-public-domain.md).
 The build roadmap lives **privately** in the `docs` repo (`consolidated/ROADMAP.md`) —
-**Dan owns it**, ask him for access.
+**Dan owns it**, ask him for access. Competitive landscape, pricing, and business model are
+**not in this repo** either — that material lives in the private docs repo by policy; this
+repo carries code and technical documentation only. Ask Dan. (Do not re-create a competitor
+doc here — that has happened twice.)
 
 ### The hard constraint, above everything else
 
