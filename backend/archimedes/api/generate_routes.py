@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -36,6 +37,7 @@ from archimedes.api.generate_schemas import (
 )
 from archimedes.api.limiter import limiter
 from archimedes.api.wallet_routes import get_linked_wallet_address
+from archimedes.services.generation_quota import enforce_generation_quota
 from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import EVENT_LOG_TTL, get_job_store
 from archimedes.services.llm_backend import is_allowed_model
@@ -93,6 +95,15 @@ async def start_generation(
 ) -> GenerateStartResponse:
     """Create account-owned generation job and start pipeline in background."""
     linked_wallet = get_linked_wallet_address(request)
+
+    # Daily volume caps (per-account AND per-IP, both must pass) — the rebuilt
+    # generation_quota (#1194 revision a). Runs FIRST: cheapest anti-abuse
+    # check before any entitlement or enqueue work, same ordering the old
+    # wallet-less cap had. Disabled under TESTING (conftest sets it), matching
+    # the slowapi limiter; the quota logic is unit-tested directly in
+    # test_generation_quota.py.
+    if not os.getenv("TESTING"):
+        await enforce_generation_quota(request, user.id)
 
     # Paid-tier gating (T1.8): a premium (Anthropic) model requires a
     # wallet-connected entitlement. Enforced BEFORE the job is enqueued so a

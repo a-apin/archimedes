@@ -509,6 +509,13 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "LLM_PROVIDER", value = "bedrock_converse" },
         { name = "LLM_BEDROCK_MODEL", value = "amazon.nova-micro-v1:0" },
         { name = "PRICE_SOURCE", value = "cascade" },
+        # Daily generation caps (services/generation_quota.py, #1194 rev a).
+        # Plumbed here EXPLICITLY: a cap that silently falls back to its
+        # code default because it was never added to the task definition is a
+        # config-drift failure this file has already had (see KNOWN GAP list).
+        # Not secrets. Both layers must pass; <= 0 disables a layer.
+        { name = "GENERATION_DAILY_CAP_PER_USER", value = "10" },
+        { name = "GENERATION_DAILY_CAP_PER_IP", value = "20" },
         # KNOWN GAP #2 (see file header): these three paths have no Fargate
         # equivalent of the docker-compose host bind mount yet.
         { name = "ARCHIMEDES_STRATEGIES_DIR", value = "/app/analytics-engine/strategies" },
