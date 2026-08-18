@@ -140,8 +140,19 @@ def _format_market_scan(market_ranking: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _format_strategies(strategies: list[Any]) -> str:
-    """Render paper strategies with their backtest stats + signal rules."""
+def _format_strategies(strategies: list[Any], rigor_statuses: dict[str, str] | None = None) -> str:
+    """Render paper strategies with their backtest stats + signal rules.
+
+    ``rigor_statuses`` maps strategy id → LIVE tri-state gate status
+    ("pass" | "fail" | "pending"), computed by the caller (the advisor route
+    runs the same memoized live-gate batch that serves the library badge).
+    ``Strategy.passes_rigor_gate`` on the in-memory object is a fail-closed
+    sentinel (always ``False``, #821) and must never be presented to the LLM
+    as a verdict — before this parameter existed, every curated strategy was
+    labeled ``candidate``, so the model was systematically told the whole
+    library had failed rigor. A missing map or id renders ``pending``:
+    "verdict not computed" is honest; "candidate"/"fail" from a sentinel is not.
+    """
     rule_summary = {
         "faber": "long when price > 200-day SMA, else flat",
         "moreira": "scale exposure by target_vol / realized_vol (vol-managed)",
@@ -159,14 +170,18 @@ def _format_strategies(strategies: list[Any]) -> str:
                 return rule
         return "see paper"
 
+    _RIGOR_LABELS = {"pass": "PASS (live gate)", "fail": "FAIL (live gate)", "pending": "pending (no live verdict)"}
+
     lines: list[str] = []
     for s in strategies:
         sr = s.real_sharpe if s.real_sharpe is not None else float("nan")
         cagr = (s.real_cagr or 0.0) * 100
         rule = _summarize_rule(s)
+        status = (rigor_statuses or {}).get(s.id, "pending")
+        rigor_label = _RIGOR_LABELS.get(status, "pending (no live verdict)")
         lines.append(
             f"  - id={s.id[:8]}  title={s.paper_title}\n"
-            f"      sharpe={sr:.2f}  cagr={cagr:+.1f}%  rigor={'PASS' if s.passes_rigor_gate else 'candidate'}\n"
+            f"      sharpe={sr:.2f}  cagr={cagr:+.1f}%  rigor={rigor_label}\n"
             f"      signal rule: {rule}"
         )
     return "\n".join(lines)
@@ -181,6 +196,7 @@ def _build_user_prompt(
     market_ranking: list[dict],
     strategies: list[Any],
     scan_universe_synths: set[str],
+    rigor_statuses: dict[str, str] | None = None,
 ) -> str:
     return (
         f"## CONTEXT\n"
@@ -191,7 +207,7 @@ def _build_user_prompt(
         f"## TOP MARKET OPPORTUNITIES (live 90-day risk-adjusted ranking)\n"
         f"{_format_market_scan(market_ranking)}\n\n"
         f"## PAPER STRATEGIES (you must anchor every pick to one of these ids)\n"
-        f"{_format_strategies(strategies)}\n\n"
+        f"{_format_strategies(strategies, rigor_statuses)}\n\n"
         f"## AVAILABLE UNIVERSE (pick any of these tickers; * = appeared in top scan)\n"
         f"{_format_universe(scan_universe_synths)}\n\n"
         f"## YOUR TASK\n"
@@ -290,6 +306,7 @@ class PortfolioAgent:
         strategies: list,
         scan_universe_synths: set[str],
         price_histories: dict,
+        rigor_statuses: dict[str, str] | None = None,
     ) -> AgentPortfolio | None:
         """Multi-turn tool-use portfolio construction.
 
@@ -322,6 +339,7 @@ class PortfolioAgent:
             market_ranking,
             strategies,
             scan_universe_synths,
+            rigor_statuses,
         )
 
         messages: list[dict] = [{"role": "user", "content": user}]
@@ -451,6 +469,7 @@ class PortfolioAgent:
         market_ranking: list[dict],
         strategies: list[Any],
         scan_universe_synths: set[str],
+        rigor_statuses: dict[str, str] | None = None,
     ) -> AgentPortfolio | None:
         if not self.available:
             logger.info("PortfolioAgent unavailable — no LLM backend configured")
@@ -472,6 +491,7 @@ class PortfolioAgent:
             market_ranking,
             strategies,
             scan_universe_synths,
+            rigor_statuses,
         )
 
         try:
@@ -825,6 +845,7 @@ def _build_tool_user_prompt(
     market_ranking: list[dict],
     strategies: list,
     scan_universe_synths: set[str],
+    rigor_statuses: dict[str, str] | None = None,
 ) -> str:
     """Same context as single-turn, but framed for an investigative agent."""
     return (
@@ -836,7 +857,7 @@ def _build_tool_user_prompt(
         f"## TOP MARKET OPPORTUNITIES (live 90-day risk-adjusted ranking)\n"
         f"{_format_market_scan(market_ranking)}\n\n"
         f"## PAPER STRATEGIES (anchor every pick to one of these ids)\n"
-        f"{_format_strategies(strategies)}\n\n"
+        f"{_format_strategies(strategies, rigor_statuses)}\n\n"
         f"## AVAILABLE UNIVERSE (pick from here; * = appeared in top market scan)\n"
         f"{_format_universe(scan_universe_synths)}\n\n"
         f"## YOUR PROCESS\n"

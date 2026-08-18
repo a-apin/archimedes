@@ -750,6 +750,22 @@ async def get_portfolio_advisor(
     except Exception:
         market_ranking = []
 
+    # Live rigor gate (#821/#868) — computed BEFORE the portfolio LLM runs, as
+    # ONE memoized batch (the same machinery + cache entry the library list
+    # uses), serving three consumers from a single computation:
+    #   * the LLM prompt's per-strategy rigor label — the in-memory
+    #     Strategy.passes_rigor_gate is a fail-closed sentinel (always False),
+    #     and presenting it to the model as a verdict told it every curated
+    #     strategy had failed the gate;
+    #   * the per-pick badge in the response (_rigor_fields);
+    #   * the five numeric rigor statistics in the response, previously served
+    #     from the frozen fixture fields on the in-memory objects.
+    # Both layers fail closed without raising: an empty batch result maps every
+    # id to a "pending" verdict, never a fabricated pass.
+    advisor_results = await asyncio.to_thread(_live_rigor_results_for_strategies, strategies)
+    advisor_verdicts = {s.id: _verdict_from_result(advisor_results.get(s.id)) for s in strategies}
+    rigor_statuses = {sid: v.status for sid, v in advisor_verdicts.items()}
+
     agent = get_portfolio_agent()
     agent_portfolio = None
     if agent.available and market_ranking:
@@ -766,6 +782,7 @@ async def get_portfolio_advisor(
                     strategies,
                     set(DEFAULT_SCAN_UNIVERSE),
                     price_histories,
+                    rigor_statuses,
                 ),
                 timeout=120.0,
             )
@@ -784,6 +801,7 @@ async def get_portfolio_advisor(
                         market_ranking,
                         strategies,
                         set(DEFAULT_SCAN_UNIVERSE),
+                        rigor_statuses,
                     ),
                     timeout=60.0,
                 )
@@ -808,13 +826,8 @@ async def get_portfolio_advisor(
 
     strat_by_id = {s.id: s for s in strategies}
 
-    # Live rigor verdicts (#821): the advisor's per-pick badge must come from the
-    # LIVE gate on real persisted returns, NOT the in-memory Strategy.passes_rigor_gate
-    # (which strategy_provider initialises to False/fail-closed so no fixture leaks).
-    # Computed once here and reused by _rigor_fields so this surface matches the
-    # library list. verdicts_for_strategies is itself fail-closed (→ all "pending"),
-    # so it never raises into this route.
-    advisor_verdicts = verdicts_for_strategies(strategies)
+    # advisor_verdicts / advisor_results were computed above, BEFORE the
+    # portfolio LLM call, so the prompt and this response share one live-gate run.
 
     from archimedes.services.stress_engine import stress_all as _stress_all
 
@@ -924,14 +937,22 @@ async def get_portfolio_advisor(
         # the in-memory object). Fail-closed to "pending" if the strategy isn't in the
         # verdict map (it always should be, but never claim an unearned pass).
         _verdict = advisor_verdicts.get(st.id)
+        # Numeric rigor stats from the SAME live gate run that produced the badge
+        # (#868 contract, mirrored from _to_strategy_response): the fixture fields
+        # on the in-memory object are frozen values the live gate never wrote, so
+        # serving them next to a live badge let the advisor's numbers disagree
+        # with GET /api/selection-bias/gate. Fall back to the stored fixture value
+        # only when the live gate could not run for this strategy — the fallback
+        # is the documented #868 behavior, only the preferred source changes.
+        _live = advisor_results.get(st.id)
         return {
             "passes_rigor_gate": _verdict.passes if _verdict else False,
             "rigor_gate_status": _verdict.status if _verdict else "pending",
-            "deflated_sharpe_ratio": st.deflated_sharpe_ratio,
-            "dsr_p_value": st.dsr_p_value,
-            "num_trials_in_selection": st.num_trials_in_selection,
-            "pbo_score": st.pbo_score,
-            "out_of_sample_sharpe": st.out_of_sample_sharpe,
+            "deflated_sharpe_ratio": _live.deflated_sharpe if _live else st.deflated_sharpe_ratio,
+            "dsr_p_value": _live.dsr_p_value if _live else st.dsr_p_value,
+            "num_trials_in_selection": _live.num_trials if _live else st.num_trials_in_selection,
+            "pbo_score": _live.pbo_score if _live else st.pbo_score,
+            "out_of_sample_sharpe": _live.oos_sharpe if _live else st.out_of_sample_sharpe,
             "paper_claimed_sharpe": st.paper_claimed_sharpe,
             "paper_claimed_cagr": st.paper_claimed_cagr,
             "paper_claimed_max_dd": st.paper_claimed_max_dd,

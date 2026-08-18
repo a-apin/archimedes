@@ -759,6 +759,92 @@ class TestAdvisorRoutes:
         # Without Redis the regime defaults to "transition"
         assert data["regime"] == "transition"
 
+    def test_advisor_serves_live_rigor_numbers_not_fixture(self, client, seeded_db):
+        """M1: the five numeric rigor stats must come from the SAME live-gate
+        batch that produces the badge, not the frozen fixture fields on the
+        in-memory Strategy objects. The sentinel values below exist in no
+        fixture; against the pre-fix route (which served ``st.<field>``)
+        every assertion here fails."""
+        from archimedes.api import strategies_routes as sr
+        from archimedes.services.rigor_evaluator import RigorGateResult
+
+        def fake_batch(strategies):
+            return {
+                s.id: RigorGateResult(
+                    strategy_id=s.id,
+                    deflated_sharpe=1.2468,
+                    dsr_p_value=0.97531,
+                    num_trials=1,
+                    pbo_score=0.13579,
+                    oos_sharpe=0.86421,
+                    look_ahead_passed=True,
+                )
+                for s in strategies
+            }
+
+        with patch.object(sr, "_live_rigor_results_for_strategies", side_effect=fake_batch):
+            resp = client.get("/api/strategies/advisor?risk_profile=moderate")
+        assert resp.status_code == 200
+        allocations = resp.json()["allocations"]
+        assert allocations, "advisor returned no allocations to check"
+        for alloc in allocations:
+            assert alloc["deflated_sharpe_ratio"] == pytest.approx(1.2468)
+            assert alloc["dsr_p_value"] == pytest.approx(0.97531)
+            assert alloc["num_trials_in_selection"] == 1
+            assert alloc["pbo_score"] == pytest.approx(0.13579)
+            assert alloc["out_of_sample_sharpe"] == pytest.approx(0.86421)
+
+    def test_advisor_passes_live_rigor_statuses_to_portfolio_llm(self, client, seeded_db):
+        """M2: the portfolio LLM must receive the LIVE tri-state statuses,
+        computed BEFORE the agent call. The in-memory ``passes_rigor_gate``
+        sentinel (always False) told the model every curated strategy had
+        failed the gate; pre-fix the route passed no status map at all, so
+        the captured final positional arg here is not a status dict and the
+        assertions fail."""
+        from archimedes.services.strategy_signal_evaluator import strategy_evaluator
+
+        captured = {}
+
+        class _StubAgent:
+            available = True
+            model_id = "stub"
+
+            def propose_portfolio_with_tools(self, *args):
+                captured["with_tools"] = args
+                return None
+
+            def propose_portfolio(self, *args):
+                captured["plain"] = args
+                return None
+
+        fake_ranking = [
+            {
+                "synth": "sSPY",
+                "display": "SPY",
+                "asset_class": "equity_us",
+                "score": 1.0,
+                "momentum_90d": 0.1,
+                "vol_ann": 0.2,
+                "exchange": "US",
+            }
+        ]
+
+        with (
+            # get_portfolio_agent is imported inside the route function, so it
+            # must be patched at its source module.
+            patch("archimedes.agents.portfolio_agent.get_portfolio_agent", return_value=_StubAgent()),
+            patch.object(strategy_evaluator, "rank_market", return_value=fake_ranking),
+        ):
+            resp = client.get("/api/strategies/advisor?risk_profile=moderate")
+        assert resp.status_code == 200
+        assert "with_tools" in captured, "portfolio agent was never invoked"
+        statuses = captured["with_tools"][-1]
+        assert isinstance(statuses, dict) and statuses, "final arg must be the rigor-status map"
+        assert all(isinstance(k, str) and v in {"pass", "fail", "pending"} for k, v in statuses.items())
+        # The plain (non-tool) fallback call must carry the same map.
+        assert "plain" in captured
+        assert captured["plain"][-1] == statuses
+
 
 class TestFusionEvaluatorIntegration:
     """Tests for fusion_evaluator wiring in _run_fusion_job.

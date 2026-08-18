@@ -334,3 +334,111 @@ class TestGenerateAiResponse:
         finally:
             monkeypatch.delenv("CHAT_MODEL", raising=False)
             importlib.reload(mod)
+
+
+class TestVaultContextLiveRigor:
+    """The vault-chat context's rigor line must be a LIVE verdict or absent.
+
+    ``Strategy.passes_rigor_gate`` on the in-memory provider object is a
+    fail-closed sentinel (always ``False``, #821). Pre-fix,
+    ``_build_vault_context`` rendered it as "Rigor gate: not passed" for every
+    curated strategy — the vault chat LLM was told the whole library had
+    failed. The builder's own law is "missing data is omitted, never
+    invented": when no live status is available the rigor line must be
+    OMITTED, not fabricated from the sentinel. Every stub strategy here is
+    poisoned so a sentinel-reading mutant renders the wrong text and fails.
+    """
+
+    def _context_with(self, statuses: dict[str, str]) -> str:
+        from archimedes.services.chat_service import ChatService
+
+        meta = MagicMock()
+        meta.name = "Test Vault"
+        meta.get_strategy_ids.return_value = ["sid1"]
+        session, _ = _make_session([meta])
+
+        strat = MagicMock()
+        strat.id = "sid1"
+        strat.paper_title = "Faber TAA"
+        strat.methodology_summary = "10-month SMA timing"
+        strat.asset_universe = ["SPY"]
+        strat.passes_rigor_gate = False  # POISON: sentinel-reader renders "not passed"
+
+        provider = MagicMock()
+        provider.get_strategy.return_value = strat
+
+        with (
+            patch("archimedes.db.get_session", return_value=session),
+            patch("archimedes.services.strategy_provider.default_provider", return_value=provider),
+            patch("archimedes.services.chat_service._curated_rigor_statuses", return_value=statuses),
+        ):
+            return ChatService()._build_vault_context("0xVault")
+
+    def test_live_pass_renders_passed_never_the_sentinel(self) -> None:
+        ctx = self._context_with({"sid1": "pass"})
+        assert "Rigor gate: passed (live gate)" in ctx
+        assert "not passed" not in ctx
+
+    def test_live_fail_renders_failed(self) -> None:
+        ctx = self._context_with({"sid1": "fail"})
+        assert "Rigor gate: failed (live gate)" in ctx
+
+    def test_pending_is_stated_honestly(self) -> None:
+        ctx = self._context_with({"sid1": "pending"})
+        assert "Rigor gate: pending — no live backtest verdict yet" in ctx
+
+    def test_no_live_status_omits_the_line_never_invents_it(self) -> None:
+        # Batch failure → {}: pre-fix code invented "Rigor gate: not passed"
+        # from the poisoned sentinel; the fixed builder omits the line.
+        ctx = self._context_with({})
+        assert "Rigor gate" not in ctx
+        assert "Faber TAA" in ctx  # the rest of the context still renders
+
+
+class TestCuratedRigorStatuses:
+    """_curated_rigor_statuses reduces the memoized live-gate batch to tri-states."""
+
+    def _statuses(self, batch_results, batch_raises=False):
+        from archimedes.services.chat_service import _curated_rigor_statuses
+
+        strat = MagicMock()
+        strat.id = "sid1"
+
+        provider = MagicMock()
+        provider.list_strategies.return_value = []
+
+        if batch_raises:
+
+            def batch(_cohort):
+                raise RuntimeError("db down")
+        else:
+
+            def batch(_cohort):
+                return batch_results
+
+        with (
+            patch("archimedes.services.strategy_provider.default_provider", return_value=provider),
+            patch("archimedes.api.strategies_routes._live_rigor_results_for_strategies", side_effect=batch),
+        ):
+            return _curated_rigor_statuses([strat])
+
+    def test_passing_result_maps_to_pass(self) -> None:
+        result = MagicMock()
+        result.passes_all = True
+        assert self._statuses({"sid1": result}) == {"sid1": "pass"}
+
+    def test_failing_result_maps_to_fail(self) -> None:
+        result = MagicMock()
+        result.passes_all = False
+        assert self._statuses({"sid1": result}) == {"sid1": "fail"}
+
+    def test_absent_result_maps_to_pending(self) -> None:
+        assert self._statuses({}) == {"sid1": "pending"}
+
+    def test_batch_failure_returns_empty_so_caller_omits(self) -> None:
+        assert self._statuses(None, batch_raises=True) == {}
+
+    def test_empty_input_short_circuits(self) -> None:
+        from archimedes.services.chat_service import _curated_rigor_statuses
+
+        assert _curated_rigor_statuses([]) == {}
