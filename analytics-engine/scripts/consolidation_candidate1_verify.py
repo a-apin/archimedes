@@ -408,11 +408,26 @@ def main() -> None:
     # ---------------------------------------------------------------------
     from archimedes.services.rigor_evaluator import run_rigor_gate
 
-    # num_trials: current (unmodified) library-count convention — the doc's
-    # own Part A #2 flags this convention as a known issue for a SEPARATE PR;
-    # this script does not change it, only uses it as every curated strategy
-    # is graded today.
-    NUM_CURATED_FILES = len(list(STRATEGIES_DIR.glob("*.py")))
+    # num_trials = 1 (audit 2026-08-03, V2): candidate #1 is a hand-fused blend
+    # of THREE hand-implemented published papers (Antonacci/Maillard/T-bill),
+    # combined with a fixed, untuned 1/3 weight — there is no search of ours
+    # here, so its selection-set size is 1, exactly like any other curated
+    # strategy (Dan's decision, 2026-07-27: "For a hand-curated implementation
+    # of one published paper there is no search of ours, so num_trials = 1").
+    # The PREVIOUS convention (`len(STRATEGIES_DIR.glob("*.py"))` == the
+    # curated library's file count, 34 as of this fix) deflated this candidate
+    # by the WHOLE library's size, which is exactly the cohort-deflation
+    # pattern the decision retires (mirrors V1's regen_fixtures.py bug, and
+    # decouple #2 for the live selection-bias routes) — it was never this
+    # candidate's own trial count. Restated at num_trials=1 the verdict is
+    # STILL a FAIL at the badge/strictest level (dsr_p_value rises from 0.0198
+    # to 0.5997 — the far more lenient number — but the badge threshold is
+    # 0.90; min_passing_level moves from None to 5, i.e. it only clears the
+    # loosest/Speculative rung, never the strictest one) — the corrected
+    # number changes, the conclusion does not. See
+    # docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md and the
+    # 2026-08-03 num_trials-provenance audit for the full restatement.
+    CANDIDATE1_NUM_TRIALS = 1
     look_ahead_ok = (
         all(results[s].look_ahead_audit_passed for s in ("antonacci_2014_dual_momentum", "maillard_2010_risk_parity"))
         and tbill_result.look_ahead_audit_passed
@@ -421,7 +436,7 @@ def main() -> None:
     verdict = run_rigor_gate(
         strategy_id="candidate1_fused_tactical_riskparity_cashfloor",
         daily_returns=fused_returns,
-        num_trials=NUM_CURATED_FILES,
+        num_trials=CANDIDATE1_NUM_TRIALS,
         look_ahead_audit_passed=look_ahead_ok,
         library_pbo=fused_pbo,
         pbo_library_size=len(cohort_returns),
@@ -433,7 +448,7 @@ def main() -> None:
     _log(f"n_obs (fused, date-aligned)   = {len(fused_returns)}")
     _log(f"date range                    = {fused_dates[0]} .. {fused_dates[-1]}")
     _log(f"look_ahead_audit_passed       = {look_ahead_ok}")
-    _log(f"num_trials (library count)    = {NUM_CURATED_FILES}")
+    _log(f"num_trials (self-contained)   = {CANDIDATE1_NUM_TRIALS}")
     _log(f"deflated_sharpe               = {verdict.deflated_sharpe}")
     _log(f"dsr_p_value (HAC)             = {verdict.dsr_p_value}")
     _log(f"dsr_p_value (IID, advisory)   = {verdict.dsr_p_value_iid}")
@@ -487,7 +502,7 @@ def main() -> None:
         v = run_rigor_gate(
             strategy_id=label,
             daily_returns=returns,
-            num_trials=NUM_CURATED_FILES,
+            num_trials=CANDIDATE1_NUM_TRIALS,
             look_ahead_audit_passed=look_ahead_passed,
             library_pbo=fused_pbo,
             pbo_library_size=len(cohort_returns),
@@ -553,7 +568,7 @@ def main() -> None:
         "in_sample_sharpe": verdict.in_sample_sharpe,
         "pbo_score": verdict.pbo_score,
         "pbo_library_size": verdict.pbo_library_size,
-        "num_trials": NUM_CURATED_FILES,
+        "num_trials": CANDIDATE1_NUM_TRIALS,
         "passes_all": verdict.passes_all,
         "min_passing_level": verdict.min_passing_level,
         "blocked_by_floor": verdict.blocked_by_floor,

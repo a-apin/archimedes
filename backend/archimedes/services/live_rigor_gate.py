@@ -216,6 +216,7 @@ def verdicts_for_strategies(strategies: list) -> dict[str, RigorGateVerdict]:
         from archimedes.db import get_session, init_db
         from archimedes.services.backtest_repository import get_all_daily_returns
         from archimedes.services.rigor_evaluator import (
+            assert_self_contained_cohort_correlation,
             compute_average_pairwise_correlation,
             compute_pbo,
         )
@@ -243,6 +244,13 @@ def verdicts_for_strategies(strategies: list) -> dict[str, RigorGateVerdict]:
         pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
         num_trials = 1
         avg_correlation = compute_average_pairwise_correlation(valid_returns) if len(valid_returns) >= 2 else 0.0
+        # V4 guard (num_trials-provenance audit 2026-08-03): cohort-wide
+        # avg_correlation is INERT at num_trials=1 — makes it IMPOSSIBLE for a
+        # future edit to silently reintroduce num_trials>1 here without
+        # re-coupling every strategy's badge DSR to the library's correlation
+        # structure; it raises instead (caught below, same fail-closed
+        # contract — a pending badge, never a wrong PASS).
+        assert_self_contained_cohort_correlation(num_trials, avg_correlation)
     except Exception as exc:
         logger.warning("live rigor gate batch: cohort-context compute failed (all → pending): %s", exc)
         return {sid: RigorGateVerdict.pending() for sid in strategy_ids}

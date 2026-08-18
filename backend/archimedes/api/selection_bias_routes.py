@@ -14,6 +14,7 @@ from fastapi import APIRouter, Query, Request, Response
 
 from archimedes.api.limiter import limiter
 from archimedes.services.rigor_evaluator import (
+    assert_self_contained_cohort_correlation,
     compute_average_pairwise_correlation,
     compute_library_pbo,
     compute_pbo,
@@ -114,6 +115,15 @@ class StrategyRigorResult(BaseModel):
     strictness_level: int = 1
     min_passing_level: int | None = None
     blocked_by_floor: bool = False
+    # PROVENANCE of the num_trials this verdict was graded at (num_trials-
+    # provenance audit, 2026-08-03 — the "central item"): num_trials is the
+    # number of candidates the selection process that produced THIS result
+    # actually evaluated, never borrowed from a neighbour or a cohort. See
+    # ``_num_trials_for_generated_row`` for the values this takes and why.
+    # "unspecified" is the safe default for shapes (pending/no-data) that never
+    # got far enough to compute a num_trials at all — never silently implies a
+    # trustworthy value.
+    num_trials_scope: str = "unspecified"
 
 
 class RigorGateResponse(BaseModel):
@@ -313,7 +323,17 @@ async def evaluate_rigor_gate(
         # The strategy library is the multiple-testing selection set; correlated
         # strategies (overlapping assets/signals) carry fewer independent trials, so
         # the DSR effective-N correction relaxes the penalty via N_eff = N/(1+(N-1)ρ̄).
+        #
+        # NOTE: this cohort-wide correlation is INERT today because num_trials=1
+        # above (see _dsr_from_stats: E[max_N]=0 when N==1) — it is computed and
+        # threaded through for whichever criteria might use it, but cannot move
+        # the DSR verdict at num_trials=1. The guard below (V4, num_trials-
+        # provenance audit 2026-08-03) makes that invariant IMPOSSIBLE to
+        # silently break: if a future edit ever reintroduces num_trials>1 here,
+        # this raises loudly instead of quietly re-coupling every curated
+        # strategy's DSR to the library's correlation structure again.
         avg_correlation = compute_average_pairwise_correlation(valid_returns) if len(valid_returns) >= 2 else 0.0
+        assert_self_contained_cohort_correlation(num_trials, avg_correlation)
 
         # Run rigor gate for each strategy
         computed: list[StrategyRigorResult] = []
@@ -405,6 +425,7 @@ async def evaluate_rigor_gate(
                     strictness_level=strictness,
                     min_passing_level=gate_result.min_passing_level,
                     blocked_by_floor=gate_result.blocked_by_floor,
+                    num_trials_scope=_SCOPE_CURATED_SELF_CONTAINED,
                 )
             )
         return computed
@@ -438,6 +459,89 @@ async def evaluate_rigor_gate(
         library_pbo=library_pbo,
         strictness_level=strictness,
     )
+
+
+# ── num_trials provenance discriminator (W3, the central item) ──────────────
+#
+# The rule (Dan, 2026-07-27): num_trials is the number of candidates the
+# selection process that produced THIS result actually evaluated.
+#   curated  (a hand-implemented published paper — no search of ours) -> 1
+#   generated (the candidate pool IS the search)                      -> selection_pool_size
+#
+# For curated strategies (`evaluate_rigor_gate` above) that's unconditional —
+# num_trials=1 is hardcoded regardless of any stored value (see the comment at
+# `num_trials = 1` above). For GENERATED strategies (this function, DB-
+# persisted `strategy_store` rows) num_trials has to come from a STORED
+# column, and V3 is exactly the bug that read it bare: ANY populated
+# ``num_trials_in_selection`` was trusted, regardless of which pipeline wrote
+# it. That conflates two different things a positive integer in that column
+# could mean — "a real generation search evaluated N candidates" vs. "some
+# writer's default/forgotten argument happened to be N" — which the stored
+# value alone cannot distinguish (traced concretely: debate_engine.py's
+# dsl-fusion path and generation_pipeline.py's portfolio-simulator-v1 path
+# both funnel through `_society_num_trials(pool_size)` at their one live call
+# site today, but `_backtest_and_persist`'s own signature defaults
+# `num_trials: int = 1` — a FUTURE caller that forgets to pass the real pool
+# size would silently write the same num_trials=1 a genuinely self-contained
+# strategy writes, with nothing in the column to tell them apart).
+#
+# The fix: discriminate on PROVENANCE — which pipeline actually computed and
+# persisted this row — not on whether the column happens to be populated.
+# `backtest_engine` (NOT NULL-reliable for the three pipelines that exist
+# today: 'backtrader' | 'dsl-fusion' | 'portfolio-simulator-v1' — confirmed by
+# repo-wide grep, num_trials-provenance audit 2026-08-03) is the only
+# currently-persisted signal that says which pipeline wrote a row, so it is
+# the discriminator used here. Only 'dsl-fusion' and 'portfolio-simulator-v1'
+# are pipelines whose live writer stamps a genuine, tracked selection-pool
+# size (both call `_society_num_trials(n_candidates)` — generation_pipeline.py
+# passes it to both `_persist_real_returns` and `_backtest_and_persist`
+# identically) — a row tagged with one of those AND carrying a truthy stored
+# value can be trusted. Anything else reaching this DB-persisted (generated)
+# code path — an unknown/missing engine tag, or a search-tracked engine whose
+# writer left num_trials unset/zero — has NOT proven it tracks its own search
+# count, so per the rule it must record num_trials=1 and say so explicitly
+# via ``num_trials_scope``, rather than silently borrowing whatever number
+# happens to be sitting in the column.
+#
+# Deliberately NOT a new persisted DB column (the task's "decide whether a
+# dedicated deflation_scope field is warranted" question): (1) `backtest_engine`
+# is already a reliable, live discriminator for every pipeline that exists
+# today — there is nothing this needs that isn't already on the row; (2) a
+# separate provenance-column migration (source_pipeline/computed_at/
+# provenance_inferred) already exists as its own open, unreviewed PR
+# (branch `provenance-backtest-results-work`) — landing an overlapping schema
+# change here would fork that review and create an avoidable merge conflict
+# instead of building on it later; (3) this scope label is a DERIVED,
+# request-time classification of already-persisted, reliable data, not new
+# ground truth — computing it at read time keeps ONE source of truth
+# (`backtest_engine`) instead of two independently-writable columns that could
+# drift apart. ``num_trials_scope`` on the response is the "carry an explicit
+# scope marker" the task asks for — visible to callers/tests without a schema
+# change.
+_SEARCH_TRACKED_ENGINES = frozenset({"dsl-fusion", "portfolio-simulator-v1"})
+
+# Scope labels for StrategyRigorResult.num_trials_scope.
+_SCOPE_CURATED_SELF_CONTAINED = "curated_self_contained"  # hand-implemented paper, no search of ours -> 1
+_SCOPE_GENERATED_SEARCH_POOL = "generated_search_pool"  # trusted: engine's own tracked selection-pool size
+_SCOPE_GENERATED_UNTRACKED_DEFAULT = "generated_untracked_default"  # untrusted/absent -> forced to 1, explicitly
+
+
+def _num_trials_for_generated_row(backtest_engine: str | None, stored_num_trials: int | None) -> tuple[int, str]:
+    """``(num_trials, scope)`` for a DB-persisted (generated) strategy row.
+
+    Discriminates on PROVENANCE (which pipeline wrote the row via
+    ``backtest_engine``), not on whether ``stored_num_trials`` happens to be
+    populated (V3). See the module comment above for the full rationale.
+    """
+    # ``> 0``, not truthiness. A stored 0 or a negative is not a smaller search
+    # pool, it is a corrupt row: num_trials is a COUNT of candidates evaluated,
+    # so the only values with meaning are >= 1. Truthiness would reject 0 and
+    # silently ACCEPT -5, which then flows into the DSR deflation term and makes
+    # the correction weaker than no correction at all -- a bad row would grade
+    # more favourably than an honest one. Fail closed to 1 instead.
+    if backtest_engine in _SEARCH_TRACKED_ENGINES and (stored_num_trials or 0) > 0:
+        return int(stored_num_trials), _SCOPE_GENERATED_SEARCH_POOL
+    return 1, _SCOPE_GENERATED_UNTRACKED_DEFAULT
 
 
 def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: int) -> StrategyRigorResult | None:
@@ -503,9 +607,14 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
             )
 
         # Persisted context from the latest backtest row — never recomputed
-        # against any cohort (curated or otherwise). A missing num_trials
-        # defaults to 1 (run_rigor_gate's own documented "genuinely single-trial"
-        # fallback, logged loudly there); a missing pbo_score stays None, which
+        # against any cohort (curated or otherwise). num_trials is resolved by
+        # PROVENANCE, not a bare column read (V3 — see
+        # ``_num_trials_for_generated_row`` above for the full rationale): only
+        # a row from a pipeline whose live writer tracks its own selection-pool
+        # size ('dsl-fusion' | 'portfolio-simulator-v1') is trusted to carry a
+        # real N; anything else is forced to num_trials=1 with an explicit
+        # ``num_trials_scope`` marker rather than silently trusting whatever
+        # happens to be in the column. A missing pbo_score stays None, which
         # run_rigor_gate treats fail-closed (criterion 4 FAILs rather than
         # silently passing) — exactly the same fail-closed contract the curated
         # path relies on.
@@ -520,7 +629,10 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
         # judged on its face, never softened by a library-size argument it doesn't
         # have) — consistent with "never weaken the gate", not an oversight.
         latest = latest_backtests_by_strategy(session, [strategy_id]).get(strategy_id)
-        num_trials = latest.num_trials_in_selection if latest and latest.num_trials_in_selection else 1
+        num_trials, num_trials_scope = _num_trials_for_generated_row(
+            latest.backtest_engine if latest else None,
+            latest.num_trials_in_selection if latest else None,
+        )
         persisted_pbo = latest.pbo_score if latest else None
         persisted_look_ahead = bool(latest.look_ahead_audit_passed) if latest else False
 
@@ -559,6 +671,7 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
         strictness_level=strictness,
         min_passing_level=gate_result.min_passing_level,
         blocked_by_floor=gate_result.blocked_by_floor,
+        num_trials_scope=num_trials_scope,
     )
 
 

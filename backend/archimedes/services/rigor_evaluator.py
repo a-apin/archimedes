@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from archimedes.services._rigor_helpers import (
     _ANNUALIZATION,
     _RF_DAILY,
+    assert_self_contained_cohort_correlation,  # noqa: F401 - re-exported for the 3 cohort call sites (V4 guard)
     benjamini_hochberg_fdr,  # noqa: F401 - re-exported for test_rigor_evaluator
     bonferroni_correction,  # noqa: F401 - re-exported for test_rigor_evaluator
     classify_regimes,  # used by run_rigor_gate (regime-robustness) + re-exported for test_rigor_regime
