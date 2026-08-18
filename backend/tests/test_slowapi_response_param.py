@@ -29,12 +29,11 @@ API_DIR = Path(__file__).resolve().parents[2] / "backend" / "archimedes" / "api"
 
 def _limited_functions(tree: ast.Module):
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if any(
-                isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "limit"
-                for d in node.decorator_list
-            ):
-                yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+            isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "limit"
+            for d in node.decorator_list
+        ):
+            yield node
 
 
 def _satisfies_slowapi_contract(func: ast.AST) -> bool:
@@ -74,9 +73,7 @@ def test_the_invariant_catches_a_missing_response_param():
     evaluate_strategy_rigor (#1182) must be flagged, and the fixed shape must
     not be."""
     broken = ast.parse(
-        "@limiter.limit('10/minute')\n"
-        "async def gate(request: Request, strategy_id: str):\n"
-        "    return {'ok': True}\n"
+        "@limiter.limit('10/minute')\nasync def gate(request: Request, strategy_id: str):\n    return {'ok': True}\n"
     )
     assert [f.name for f in _limited_functions(broken)] == ["gate"]
     assert not _satisfies_slowapi_contract(next(_limited_functions(broken)))
@@ -89,8 +86,6 @@ def test_the_invariant_catches_a_missing_response_param():
     assert _satisfies_slowapi_contract(next(_limited_functions(fixed)))
 
     returns_response = ast.parse(
-        "@limiter.limit('10/minute')\n"
-        "async def stream(request: Request):\n"
-        "    return StreamingResponse(gen())\n"
+        "@limiter.limit('10/minute')\nasync def stream(request: Request):\n    return StreamingResponse(gen())\n"
     )
     assert _satisfies_slowapi_contract(next(_limited_functions(returns_response)))
