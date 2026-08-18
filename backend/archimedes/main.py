@@ -41,6 +41,7 @@ from archimedes.api.features_routes import features_router
 from archimedes.api.generate_routes import generate_router
 from archimedes.api.leaderboard_routes import leaderboard_router
 from archimedes.api.limiter import limiter
+from archimedes.api.paper_routes import paper_router
 
 # FAIL-SOFT import: marketplace_routes → service → payments imports circlekit
 # (the circle-titanoboa-sdk VCS dependency). If that dependency fails to IMPORT
@@ -338,6 +339,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             # lifetime instead of being reaped once this function returns.
             _app.state.backtest_refresh_task = asyncio.create_task(backtest_refresh_loop())
             _logger.info("startup: backtest refresh scheduler armed")
+            # Paper-trading ledgers advance on the same cadence family: one
+            # appended bar per deployment per day, replayed on the graded
+            # engine (services/paper_trading.py). Same RUF006 reference rule.
+            from archimedes.services.paper_trading import paper_advance_loop
+
+            _app.state.paper_advance_task = asyncio.create_task(paper_advance_loop())
+            _logger.info("startup: paper-trading advance scheduler armed")
         else:
             _logger.info("startup: backtest refresh scheduler disabled")
     except Exception as exc:
@@ -485,6 +493,7 @@ app.include_router(config_router)
 app.include_router(agent_router)
 app.include_router(chat_router)
 app.include_router(corpus_router)
+app.include_router(paper_router)
 app.include_router(explore_router)
 app.include_router(generate_router, dependencies=[Depends(require_current_user)])
 if marketplace_router is not None:
