@@ -134,6 +134,11 @@ Script retains Better Auth cookie, streams generation, and prints rigor verdict.
 
 See [`scripts/agent_journey.py`](scripts/agent_journey.py) for the full implementation.
 
+Reaching for the API surface directly (not via the script)? See
+[`skills/`](skills/README.md) for grounded, file:line-cited agent skills on the
+generate/verdict flow, reading a strategy passport honestly, and the x402
+marketplace payment flow.
+
 ## Why Archimedes
 
 | Category                  | Examples                                  | What's missing                                            |
