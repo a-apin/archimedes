@@ -66,16 +66,16 @@ def test_format_strategies_without_statuses_says_pending_never_candidate():
 def test_both_prompt_builders_thread_the_status_map():
     strategies = [_Strategy("dddd4444", poisoned_gate=True)]
     statuses = {"dddd4444": "fail"}
-    common = dict(
-        regime="risk_on",
-        regime_confidence=0.8,
-        risk_profile="moderate",
-        usdc_floor=0.2,
-        synth_budget=0.8,
-        market_ranking=[],
-        strategies=strategies,
-        scan_universe_synths=set(),
-    )
+    common = {
+        "regime": "risk_on",
+        "regime_confidence": 0.8,
+        "risk_profile": "moderate",
+        "usdc_floor": 0.2,
+        "synth_budget": 0.8,
+        "market_ranking": [],
+        "strategies": strategies,
+        "scan_universe_synths": set(),
+    }
     for builder in (_build_user_prompt, _build_tool_user_prompt):
         prompt = builder(**common, rigor_statuses=statuses)
         assert "rigor=FAIL (live gate)" in prompt

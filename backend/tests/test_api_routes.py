@@ -811,11 +811,9 @@ class TestAdvisorRoutes:
 
             def propose_portfolio_with_tools(self, *args):
                 captured["with_tools"] = args
-                return None
 
             def propose_portfolio(self, *args):
                 captured["plain"] = args
-                return None
 
         fake_ranking = [
             {
