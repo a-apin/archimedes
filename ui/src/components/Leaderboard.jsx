@@ -114,7 +114,7 @@ export default function Leaderboard() {
             marginTop: 10,
             padding: '10px 14px',
             borderLeft: '3px solid var(--warning, #b45309)',
-            background: 'var(--warning-muted, rgba(180,83,9,0.10))',
+            background: 'var(--warning-bg, rgba(180,83,9,0.10))',
             borderRadius: 4,
             fontSize: 13,
             color: 'var(--text-2)',
