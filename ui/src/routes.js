@@ -88,7 +88,18 @@ export function resolveRoute(pathname = '/', search = '', features = { quant: tr
   for (const [prefix, deepPage, key] of deepRoutes) {
     if (!pathname.startsWith(prefix)) continue
     const value = pathname.slice(prefix.length)
-    if (value) return route('app', deepPage, { ...query, [key]: decodeURIComponent(value) })
+    if (value) {
+      // Deep routes go through the SAME feature gate as flat routes. This loop
+      // previously skipped featureEnabled(), so a feature-disabled page stayed
+      // reachable via its deep link — latent today (only quant is gated, and
+      // quant has no deep route), but it becomes a real page-hiding bypass the
+      // moment featureEnabled() gates more pages (the UI-hide work folds its
+      // gating in here precisely so this check is the single gate for both
+      // nav and routing).
+      return featureEnabled(deepPage, features)
+        ? route('app', deepPage, { ...query, [key]: decodeURIComponent(value) })
+        : route('not-found', null)
+    }
   }
 
   if (LEGACY_PATHS[pathname]) return route('redirect', null, { redirect: `${LEGACY_PATHS[pathname]}${search}` })
