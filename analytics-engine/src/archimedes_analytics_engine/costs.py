@@ -28,6 +28,7 @@ Conventions (documented once, used everywhere):
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 
 import backtrader as bt
@@ -76,6 +77,46 @@ class CostModel:
                 cerebro.broker.setcommission(commission=self.per_symbol[name] / 10_000, name=name)
         if self.slippage_bps > 0:
             cerebro.broker.set_slippage_perc(perc=self.slippage_bps / 10_000)
+
+
+#: The cost floor every engine charges, so that a number produced by one
+#: engine can be compared with a number produced by another.
+#:
+#: Three engines write into ``backtest_results`` and one gate grades them all
+#: without knowing which produced a row. Before this constant existed the
+#: curated backtrader engine charged commission AND slippage, while the DSL
+#: engine that grades *generated* strategies charged commission only — so the
+#: generated path systematically flattered itself against the library it is
+#: ranked beside. These values are the CLI's long-standing defaults (10 bps
+#: per side, 5 bps slippage), promoted to a shared constant rather than
+#: re-picked per call site.
+#:
+#: The portfolio backtester keeps its extra Almgren square-root impact term on
+#: top of this floor. That makes it stricter than the floor, never looser,
+#: which is the direction we can defend.
+DEFAULT_COST_MODEL = CostModel(default_bps=10.0, slippage_bps=5.0)
+
+
+def cost_model_fingerprint(model: CostModel) -> str:
+    """Stable, human-readable id for a cost model, stamped on every result row.
+
+    Two rows carrying the same fingerprint were charged the same way and are
+    therefore comparable; two rows carrying different fingerprints are not,
+    and the difference is now visible on the row instead of being something a
+    reader has to know. Format::
+
+        cm1:d10:s5            # no per-symbol overrides
+        cm1:d10:s5:ob13fdb7c  # with overrides, digest of the sorted table
+
+    The digest covers the override table only, so adding a symbol changes the
+    fingerprint while reordering the dict does not.
+    """
+    base = f"cm1:d{model.default_bps:g}:s{model.slippage_bps:g}"
+    if not model.per_symbol:
+        return base
+    payload = ";".join(f"{sym}={model.per_symbol[sym]:g}" for sym in sorted(model.per_symbol))
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
+    return f"{base}:o{digest}"
 
 
 class TurnoverAnalyzer(bt.Analyzer):

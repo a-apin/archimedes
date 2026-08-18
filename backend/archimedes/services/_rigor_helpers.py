@@ -575,6 +575,53 @@ def compute_average_pairwise_correlation(
     return max(0.0, min(1.0, float(np.mean(upper))))
 
 
+def assert_self_contained_cohort_correlation(num_trials: int, average_correlation: float) -> None:
+    """Guard against the num_trials / cohort-correlation re-coupling trap
+    (num_trials-provenance audit 2026-08-03, V4).
+
+    Three call sites (``selection_bias_routes.evaluate_rigor_gate``,
+    ``strategies_routes._live_rigor_results_for_strategies``,
+    ``live_rigor_gate.verdicts_for_strategies``) each compute a COHORT-WIDE
+    ``average_correlation`` across every strategy in the curated library with
+    enough persisted returns, then grade each individual strategy at
+    ``num_trials=1`` (Dan's decouple #2 principle, 2026-07-09 / restated
+    2026-07-27: a curated strategy's rigor depends only on itself, never on
+    its neighbours). At ``num_trials=1`` that cohort-wide correlation is INERT
+    by construction — ``_dsr_from_stats``'s ``E[max_N]`` term is unconditionally
+    ``0.0`` when ``N == 1``, so ``average_correlation`` cannot move the DSR
+    verdict no matter what value it holds.
+
+    That inertness is exactly what makes ``num_trials=1`` + a cohort-wide
+    correlation SAFE today — and exactly what would make a future edit that
+    reintroduces ``num_trials > 1`` at one of those call sites DANGEROUS: the
+    cohort-wide correlation would silently start relaxing the multiple-testing
+    penalty using OTHER strategies' correlation structure, re-coupling the
+    library the decision retired. Nothing else flags it — the code would just
+    silently compute a different, wrong DSR for every strategy in the cohort.
+
+    Call this immediately after computing a cohort-wide ``average_correlation``
+    and before it is used, at any call site that holds ``num_trials=1`` by
+    contract. Raises ``RuntimeError`` (never a bare ``assert``, which ``-O``
+    can strip) so the violation is IMPOSSIBLE to silently pass through, not
+    merely unlikely. Does nothing when ``average_correlation == 0.0`` — an
+    N>1 caller with its OWN, non-cohort correlation context (a strategy's own
+    generation search pool or parameter-variant grid) is legitimate and
+    unaffected; only the COMBINATION of num_trials>1 with a nonzero
+    correlation reaching this specific guard is disallowed.
+    """
+    if num_trials != 1 and average_correlation != 0.0:
+        raise RuntimeError(
+            f"cohort-wide average_correlation={average_correlation!r} combined with "
+            f"num_trials={num_trials!r} != 1 — this re-couples a curated/self-contained "
+            "strategy's DSR to a cohort's correlation structure, exactly what the "
+            "decouple #2 decision (2026-07-09, restated 2026-07-27) forbids outside "
+            "Leaderboard/Marketplace. If this call site legitimately needs num_trials>1 "
+            "(e.g. a strategy's own generation search pool or parameter-variant grid), "
+            "compute average_correlation from THAT search's own candidates — never from "
+            "the curated cohort."
+        )
+
+
 # ─── 3b. Combinatorial Purged Cross-Validation OOS Sharpe ────────────
 
 

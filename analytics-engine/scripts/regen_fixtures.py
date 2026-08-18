@@ -21,8 +21,16 @@ PBO caveat:
     strategy's daily-return series simultaneously. Since we cannot faithfully
     reproduce the legacy return series, PBO here is computed over the NEW
     cohort only and is reported as such. It is a cohort-overfit signal, not the
-    full-library value. ``num_trials_in_selection`` IS set to the full library
-    size (legacy + new) so the DSR multiple-testing penalty is conservative.
+    full-library value.
+
+    ``num_trials_in_selection`` is set to 1 for every entry (V1 fix,
+    num_trials-provenance audit 2026-08-03): each strategy here is a
+    hand-implemented published paper, not the output of a search of ours, so
+    there is no candidate pool to deflate against — never the curated
+    library's size (Dan's decision, 2026-07-27). A PREVIOUS version of this
+    script stamped the post-add library size into every new entry instead;
+    that was the cross-strategy coupling the decision forbids outside
+    Leaderboard/Marketplace, not a genuine per-strategy trial count.
 
 DSR math (compute_dsr / compute_oos_sharpe / compute_kelly) is imported from
 ``regen_buy_hold_fixture`` so there is a single source for the rigor formulas
@@ -257,6 +265,24 @@ def _build_entry(result, *, metadata: dict, num_trials: int, corr_spy: float | N
     }
 
 
+def curated_num_trials(existing_fixture_count: int, new_entry_count: int) -> int:
+    """``num_trials_in_selection`` for every curated fixture entry this script
+    writes (V1 fix, num_trials-provenance audit 2026-08-03).
+
+    ALWAYS 1: every strategy backtested here is a hand-implemented published
+    paper, not the output of a search of ours, so there is no candidate pool
+    to deflate against — never the curated library's size (Dan's decision,
+    2026-07-27: "For a hand-curated implementation of one published paper
+    there is no search of ours, so num_trials = 1"). The arguments exist only
+    so this function's contract is independently unit-testable against the
+    PREVIOUS (buggy) formula it replaces — ``existing_fixture_count +
+    new_entry_count`` (the post-add library size) — without needing to run
+    the whole fetch-and-backtest pipeline; the fix is that this now ignores
+    both.
+    """
+    return 1
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -285,10 +311,29 @@ def main(write: bool = False) -> None:
         print("Nothing to add — all catalog specs are already in the fixture file.")
         return
 
-    # num_trials_in_selection = full library size *after* this add (conservative DSR
-    # multiple-testing penalty). Counts existing fixtures + the genuinely-new specs.
-    num_trials = len(fixtures) + len(pending_single) + len(pending_pair) + len(pending_multi)
-    print(f"Library size after add: {num_trials} strategies (num_trials_in_selection)")
+    # num_trials_in_selection = 1 for every curated fixture entry this script
+    # writes (V1 fix, num_trials-provenance audit 2026-08-03). Every strategy
+    # backtested here is a hand-implemented published paper — the fixture
+    # generation process is not itself a search, so there is nothing to deflate
+    # against (Dan's decision, 2026-07-27: "For a hand-curated implementation
+    # of one published paper there is no search of ours, so num_trials = 1").
+    #
+    # The PREVIOUS convention below stamped the count of every curated fixture
+    # in the file (existing + newly-added) into EACH new entry's
+    # num_trials_in_selection, deflating each individually-authored strategy by
+    # how many OTHER strategies happen to sit in the library — exactly the
+    # cross-strategy coupling the decision forbids outside Leaderboard/
+    # Marketplace, and the same library-size-into-num_trials shape as the
+    # num_trials ∈ {25, 4} buckets observed live in production
+    # `backtest_results` rows tagged backtest_engine='backtrader' (this script
+    # writes to a separate table, `strategy_backtest_fixtures`, not
+    # `backtest_results` — the two were never mechanically linked — but it is
+    # the same anti-pattern, and fixing it here closes off the one remaining
+    # place in the codebase that still manufactures a library-size num_trials
+    # value for a curated entry):
+    #   num_trials = len(fixtures) + len(pending_single) + len(pending_pair) + len(pending_multi)
+    num_trials = curated_num_trials(len(fixtures), len(pending_single) + len(pending_pair) + len(pending_multi))
+    print(f"num_trials_in_selection for every new entry: {num_trials} (curated = no search of ours)")
 
     print(f"Fetching SPY benchmark {BACKTEST_START} → {BACKTEST_END}…")
     spy = fetch_ohlcv("SPY", BACKTEST_START, BACKTEST_END)

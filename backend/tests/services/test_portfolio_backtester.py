@@ -117,7 +117,14 @@ class TestSimulate:
             After the +20% SPY move they drift to [0.6, 0.5] → normalized to
             [6/11, 5/11], so ``Δw = [1/22, 1/22]`` and ``sum(|Δw|) = 1/11``.
           - Pre-cost bar-2 return is 0.5 * 0.20 = 0.10; the realized (post-cost)
-            return is ``0.10 - sum(|Δw|) * (tx_cost_bps / 10_000)``.
+            return is ``0.10 - sum(|Δw|) * ((tx_cost_bps + slippage_bps) / 10_000)``.
+
+        Slippage joined the floor when the three engines were put on a common
+        cost model: this simulator charged commission only while the curated
+        backtrader engine charged commission plus ``set_slippage_perc``, and the
+        two sets of numbers were being ranked against each other. Slippage is
+        charged on the same two-sided turnover, so the round-trip convention
+        this test exists to pin is unchanged — only the rate it applies to.
         """
         idx = pd.bdate_range("2020-01-02", periods=3)
         # SPY: flat, flat, then +20%. TLT: flat throughout.
@@ -127,6 +134,7 @@ class TestSimulate:
         vols = pd.DataFrame({"SPY": pd.Series([1e6] * 3, index=idx), "TLT": pd.Series([1e6] * 3, index=idx)})
 
         tx_cost_bps = 30
+        slippage_bps = 7
         rets, _eq = _simulate_portfolio(
             panel=panel,
             volume_panel=vols,
@@ -134,21 +142,36 @@ class TestSimulate:
             rebalance_days=2,
             initial_cash=100_000.0,
             tx_cost_bps=tx_cost_bps,
+            slippage_bps=slippage_bps,
             gamma=0.0,  # isolate the linear bps cost from Almgren impact
         )
 
         turnover = 1.0 / 11.0  # sum(|Δw|) — two-sided, sell leg + buy leg
         pre_cost_return = 0.10  # 0.5 SPY weight * +20% move
-        round_trip_cost_fraction = turnover * (tx_cost_bps / 10_000.0)
+        round_trip_cost_fraction = turnover * ((tx_cost_bps + slippage_bps) / 10_000.0)
 
         # Realized return on the rebalance bar equals pre-cost minus the
-        # round-trip linear cost fraction, to machine precision.
+        # round-trip cost fraction, to machine precision.
         assert rets[2] == pytest.approx(pre_cost_return - round_trip_cost_fraction, abs=1e-12)
 
         # And it must NOT match the one-way (halved) charge — the convention is
         # round-trip, so a per-leg-only cost is the wrong model here.
-        one_way_cost_fraction = turnover * (tx_cost_bps / 2 / 10_000.0)
+        one_way_cost_fraction = turnover * ((tx_cost_bps + slippage_bps) / 2 / 10_000.0)
         assert rets[2] != pytest.approx(pre_cost_return - one_way_cost_fraction, abs=1e-12)
+
+        # Slippage must be a real, separable leg rather than something folded
+        # into the commission — drop it and the cost falls by exactly its share.
+        rets_no_slip, _ = _simulate_portfolio(
+            panel=panel,
+            volume_panel=vols,
+            target_weights={"SPY": 0.5, "TLT": 0.5},
+            rebalance_days=2,
+            initial_cash=100_000.0,
+            tx_cost_bps=tx_cost_bps,
+            slippage_bps=0,
+            gamma=0.0,
+        )
+        assert rets_no_slip[2] - rets[2] == pytest.approx(turnover * (slippage_bps / 10_000.0), abs=1e-12)
 
     def test_all_zero_weights_raises(self) -> None:
         panel, vols = _flat_panel(["SPY", "TLT"], n_bars=120)

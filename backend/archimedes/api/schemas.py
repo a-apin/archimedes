@@ -223,6 +223,19 @@ class StrategyResponse(BaseModel):
     backtest_start: str | None = None
     backtest_end: str | None = None
 
+    # ── Engine attribution ──────────────────────────────────────────────────
+    # Three engines write backtest_results and one gate ranks them together, so
+    # a reader needs to know which produced a row and on what cost basis before
+    # comparing two of them. Both columns already existed on the store;
+    # neither reached any API schema, so the information stopped at the DB.
+    # None on rows written before each was introduced.
+    backtest_engine: str | None = None
+    cost_model_id: str | None = None
+    # Where look_ahead_audit_passed came from: "broker_config_only" (an
+    # execution-timing check that never fails) | "ast_audit" | "self_attested".
+    # Without it a constant True reads as a passed audit.
+    look_ahead_audit_source: str | None = None
+
     # Equity curve for charting
     equity_curve: list[PricePoint] = []
 

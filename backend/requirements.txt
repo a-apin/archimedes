@@ -9,7 +9,7 @@ fastapi>=0.139.2
 # CVE-2026-54283 (CVE bump 2026-06-25). FastAPI's requires-dist is
 # starlette>=0.46.0 with no upper bound, so this floor resolves cleanly.
 starlette>=1.4.1
-uvicorn[standard]>=0.52.1
+uvicorn[standard]>=0.52.3
 sqlalchemy>=2.0.51
 # Schema migration tool (issue #1028) — replaces the hand-rolled idempotent
 # `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` patches in db.py for retrofitting
@@ -17,7 +17,7 @@ sqlalchemy>=2.0.51
 # SQLAlchemy project itself.
 alembic>=1.19.0
 psycopg2-binary>=2.9.12
-redis>=8.0.1
+redis>=8.1.0
 pydantic>=2.13.4
 pydantic-settings>=2.14.2
 python-dotenv>=1.2.2
@@ -87,9 +87,9 @@ eth-abi>=5.2.0,<6
 slowapi>=0.1.10
 
 # Paper ingestion
-arxiv>=4.0.0
+arxiv>=4.0.1
 # Floor raised to 6.13.3 to close 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25).
-pypdf>=6.14.2
+pypdf>=6.16.0
 
 # Semantic retrieval — MiniLM embeddings for paper_rag.py (issue #874).
 # CPU-only torch wheel: the extra-index-url below resolves torch to the
@@ -101,6 +101,6 @@ torch>=2.13.0,<3.0  # CPU-only wheel via pytorch whl index (see extra-index-url 
 sentence-transformers>=5.6.1  # all-MiniLM-L6-v2 semantic retrieval; baked at Docker build time
 
 # AWS / S3
-boto3>=1.43.66
+boto3>=1.43.71
 # Imported directly for AWS exceptions/config; boto3 constrains compatibility.
 botocore>=1.43.60

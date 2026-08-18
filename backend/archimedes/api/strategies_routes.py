@@ -340,6 +340,7 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
 
     def _compute() -> dict[str, RigorGateResult]:
         from archimedes.services.rigor_evaluator import (
+            assert_self_contained_cohort_correlation,
             compute_average_pairwise_correlation,
             compute_pbo,
             run_rigor_gate,
@@ -362,6 +363,13 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
             # #2). PBO/avg_correlation stay cohort-wide (out of scope here).
             num_trials = 1
             avg_correlation = compute_average_pairwise_correlation(valid_returns) if len(valid_returns) >= 2 else 0.0
+            # V4 guard (num_trials-provenance audit 2026-08-03): cohort-wide
+            # avg_correlation is INERT at num_trials=1 (E[max_N]=0 when N==1) —
+            # this makes it IMPOSSIBLE for a future edit to silently reintroduce
+            # num_trials>1 here without re-coupling every strategy's DSR to the
+            # library's correlation structure; it raises instead (caught below,
+            # same fail-closed contract as the rest of this cohort-context block).
+            assert_self_contained_cohort_correlation(num_trials, avg_correlation)
         except Exception as exc:
             logger.warning("live rigor result batch: cohort-context compute failed (all → stale fallback): %s", exc)
             return {}

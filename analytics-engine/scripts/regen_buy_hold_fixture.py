@@ -230,6 +230,21 @@ def _compute_passes_rigor_gate(
     return not (full_sharpe is not None and full_sharpe > 0 and oos_sharpe / full_sharpe < 0.5)
 
 
+def curated_num_trials(existing_fixture_count: int) -> int:
+    """``num_trials_in_selection`` for the ``pipeline_buy_hold`` fixture entry
+    (V1 sibling fix, num_trials-provenance audit 2026-08-03).
+
+    ALWAYS 1: a buy-and-hold benchmark is hand-implemented, not the output of
+    a search of ours, so there is no candidate pool to deflate against — never
+    the curated library's size (Dan's decision, 2026-07-27). ``existing_fixture_count``
+    exists only so this function's contract is independently unit-testable
+    against the PREVIOUS (buggy) formula it replaces — ``len(fixtures)`` (the
+    library size) — without needing to run the whole fetch-and-backtest
+    pipeline; the fix is that this now ignores it.
+    """
+    return 1
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -248,7 +263,7 @@ def main(write: bool = False) -> None:
             "snapshot first: conda run -n archimedes python "
             "backend/scripts/export_backtest_fixtures.py"
         ) from exc
-    num_trials = len(fixtures)
+    num_trials = curated_num_trials(len(fixtures))
     existing = fixtures.get("pipeline_buy_hold", {})
 
     print(f"Fetching SPY {BACKTEST_START} → {BACKTEST_END}…")

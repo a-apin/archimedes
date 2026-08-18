@@ -12,6 +12,7 @@ from typing import Any
 import backtrader as bt
 import pandas as pd
 
+from .costs import CostModel, cost_model_fingerprint
 from .data import fetch_ohlcv
 from .engine import (
     BACKTEST_ENGINE_TAG,
@@ -154,9 +155,27 @@ def run_command(
     paper_claimed_max_dd: float | None = None,
     walk_forward_split: float | None = None,
     fetcher: Callable[[str, str, str], pd.DataFrame] = fetch_ohlcv,
+    cost_model: CostModel | None = None,
 ) -> dict:
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     bundle = load_strategy(strategy_path, strategy_class)
+
+    # Build a CostModel from the flat bps arguments when the caller didn't
+    # supply one, then pass it to every runner. Two reasons this matters
+    # beyond tidiness:
+    #
+    # 1. The per-symbol override path in CostModel was unreachable from here —
+    #    run_command only ever forwarded two scalars, so _configure_broker
+    #    took its flat branch every time even though it already knows how to
+    #    honour a model.
+    # 2. Every result row can now be stamped with a cost_model_id, so a reader
+    #    can tell whether two numbers were charged the same way instead of
+    #    assuming it.
+    #
+    # The flat arguments stay authoritative when no model is given, so callers
+    # that pass tx_cost_bps/slippage_bps keep their exact current behaviour.
+    if cost_model is None:
+        cost_model = CostModel(default_bps=float(tx_cost_bps), slippage_bps=float(slippage_bps))
 
     metadata = _merge_metadata(
         bundle.metadata,
@@ -207,6 +226,7 @@ def run_command(
             name_b=ops[1],
             transaction_cost_bps=tx_cost_bps,
             slippage_bps=slippage_bps,
+            cost_model=cost_model,
         )
 
         results.append(
@@ -248,6 +268,7 @@ def run_command(
                 initial_cash=initial_cash,
                 transaction_cost_bps=tx_cost_bps,
                 slippage_bps=slippage_bps,
+                cost_model=cost_model,
             )
             per_asset.append((op, bt_result))
 
@@ -326,6 +347,7 @@ def run_command(
             names=symbols,
             transaction_cost_bps=tx_cost_bps,
             slippage_bps=slippage_bps,
+            cost_model=cost_model,
         )
 
         # The single N-asset result IS the strategy result — no per-asset rows,
@@ -381,6 +403,11 @@ def run_command(
             "end": end,
             "transaction_cost_bps": tx_cost_bps,
             "slippage_bps": slippage_bps,
+            # Fingerprint of the model actually installed on the broker. The
+            # two bps fields above describe the flat arguments; this describes
+            # what was charged, including any per-symbol overrides, and is what
+            # makes two rows from different engines comparable.
+            "cost_model_id": cost_model_fingerprint(cost_model),
             "lookahead_guard": "signals_t_execute_t_plus_1",
             "walk_forward_split": walk_forward_split,
             "data_source": "yfinance",

@@ -24,18 +24,23 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from tests.db_isolation import redirect_to_tmp_sqlite
+
 # ── DB isolation fixture ────────────────────────────────────────────────────
 
 
 @pytest.fixture(autouse=True)
-def _use_tmp_db(tmp_path, monkeypatch):
-    """Per-test SQLite DB so each test starts empty."""
-    from archimedes.db import init_db
+def _use_tmp_db(tmp_path):
+    """Per-test SQLite DB so each test starts empty.
 
-    db_path = tmp_path / "passport_honesty.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    init_db()
-    yield
+    Setting DATABASE_URL and calling init_db() did not give one (#1243):
+    archimedes.db builds engine/SessionLocal once at import, so the env var
+    rebinds nothing and get_session() kept resolving the original engine — the
+    tmp file was never written to. This file passed under the full suite only
+    because an earlier file left a usable engine bound, and failed standalone
+    against a stale on-disk schema.
+    """
+    yield from redirect_to_tmp_sqlite(tmp_path)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -588,6 +593,9 @@ class TestStrategyReturnsEndpoint:
                 correlation_to_spy=0.3,
                 correlation_to_btc=0.0,
                 equity_curve=equity,
+                # Required: insert_backtest_if_missing refuses an unattributed
+                # row, so a row can always be traced to its producing engine.
+                backtest_engine="backtrader",
             )
             artifact = {"results": [{"metrics": {"daily_returns": returns}}]}
             import hashlib

@@ -72,7 +72,6 @@ The five spec files below shipped on `main` between 2026-05-23 and 2026-05-24 an
 
 | Doc | What it is |
 |---|---|
-| [`competitor-landscape.md`](competitor-landscape.md) | Tiered competitive thesis grounded in real Morpho/Gauntlet numbers + the Nov-2025 curation crisis. The deck's argument lives here. |
 | [`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md) | 3-min pitch + 2-min demo + Q&A structure; 9-slide deck; honesty rules baked in. |
 | [`pitch-talking-points-rigor-track.md`](pitch-talking-points-rigor-track.md) | One-page handout for the rigor / provenance / agent track. Supplements the demo script. |
 | [`portfolio-advisor-demo-cues.md`](portfolio-advisor-demo-cues.md) | 60-second verbatim cue card for the Portfolio Advisor moment inside the live demo. |

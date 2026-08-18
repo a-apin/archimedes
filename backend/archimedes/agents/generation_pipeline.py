@@ -1318,6 +1318,23 @@ async def _persist_candidate(
     return strategy_id, trace_hash
 
 
+def _portfolio_daily_returns(artifact: dict) -> list[float]:
+    """Pull the daily return series out of a ``backtest_portfolio`` artifact.
+
+    The live gate grades a return series, so the series has to come back out of
+    the artifact the simulator just built. Returns an empty list when the shape
+    is not what we expect, which the gate reads as ``pending`` rather than as a
+    pass — the same fail-closed direction ``verdict_from_returns`` already takes
+    for a short series.
+    """
+    results = artifact.get("results") or []
+    if not results:
+        return []
+    metrics = results[0].get("metrics") or {}
+    returns = metrics.get("daily_returns") or []
+    return [float(r) for r in returns]
+
+
 def _refresh_passport_real_metrics(
     session: Any, c: _CandidateResult, strategy_id: str, result: Any, *, passes_rigor_gate: bool, n_obs: int
 ) -> None:
@@ -1566,6 +1583,7 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
             SOURCE_PIPELINE_PORTFOLIO_BACKTESTER,
             insert_backtest_if_missing,
         )
+        from archimedes.services.live_rigor_gate import verdict_from_returns
         from archimedes.services.passport_loader import ingest_passport
         from archimedes.services.portfolio_backtester import backtest_portfolio
 
@@ -1583,10 +1601,29 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         artifact_json = _json.dumps(artifact, default=str)
         content_hash = hashlib.sha256(artifact_json.encode("utf-8")).hexdigest()
 
-        # Same passes_rigor_gate rule the strategies_routes._to_strategy_response
-        # check uses on curated strategies — keeps generated and curated graded
-        # on the same scale.
-        passes = bool(result.passes_rigor_gate)
+        # Re-grade the REAL returns through the live gate, exactly as the DSL
+        # sibling above does and as strategies_routes._to_strategy_response does
+        # for curated strategies. This is what actually keeps generated and
+        # curated on one scale.
+        #
+        # It previously read BacktestResult.passes_rigor_gate, a second gate
+        # carrying its own thresholds (sharpe>0.5, dsr_p>0.95, pbo<0.5,
+        # oos/is>=0.5, max_dd<0.5) while the curated read path used
+        # verdict.passes from live_rigor_gate. The comment here claimed the two
+        # matched. They did not, and the mismatch ran in the fail-closed
+        # direction for every generated portfolio strategy ever produced:
+        # backtest_portfolio sets pbo_score=None (PBO is a library-level metric
+        # a later scheduler refreshes), and that property short-circuits to
+        # False whenever pbo_score is None. So this line was a constant False,
+        # not a grade.
+        daily_returns = _portfolio_daily_returns(artifact)
+        live = verdict_from_returns(
+            strategy_id,
+            daily_returns,
+            num_trials=max(1, num_trials),
+            look_ahead_audit_passed=result.look_ahead_audit_passed,
+        )
+        passes = live.passes
 
         with get_session() as session:
             # 1. Persist the backtest_results row.

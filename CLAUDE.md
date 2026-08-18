@@ -1157,7 +1157,10 @@ rubric score. Adding team / coordination risks:
 - The full architecture — see [`docs/design.md`](docs/design.md) (note: §5.2/§5.3 are
   superseded history per PR #710; architecture decisions now route to Dan)
 - Pitch deck content — see [`docs/demo-script-pitch-deck-outline.md`](docs/demo-script-pitch-deck-outline.md)
-- Competitive landscape — see [`docs/competitor-landscape.md`](docs/competitor-landscape.md)
+- Competitive landscape, pricing, and business model — **not in this repo.** Competitive
+  and commercial material lives in the private docs repo by policy; this repo carries code
+  and technical documentation. Ask Dan. (Do not re-create a competitor doc here — that has
+  happened twice.)
 - The current build roadmap + tier breakdown — see **`ARCHIMEDES-ROADMAP-v3.md`**
   (Lepton Sprint; the canonical sequence and Lepton scoring map; a team artifact
   pending consolidation into `docs/` under roadmap T3.3)

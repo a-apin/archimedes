@@ -93,12 +93,33 @@ def test_spend_cap_usdc_zero_disables(monkeypatch):
     assert spend_cap.spend_cap_usdc() == Decimal("0")
 
 
-def test_spend_cap_usdc_non_numeric_disables_and_warns(monkeypatch, caplog):
-    monkeypatch.setenv("MARKETPLACE_SPEND_CAP_USDC", "not-a-number")
-    with caplog.at_level(logging.WARNING, logger=spend_cap.__name__):
+def test_spend_cap_usdc_non_numeric_falls_back_to_default_not_disabled(monkeypatch, caplog):
+    """A malformed value (typo, stray unit, bad quoting) must fall back to the
+    default cap, not to disabled — a funds guard failing open on a typo is
+    the exact shape #1173/#1174 (AGENT_DRY_RUN=1 silently meaning LIVE) came
+    from. Logs at ERROR, not WARNING, since this is a real misconfiguration,
+    not a quiet routine default."""
+    monkeypatch.setenv("MARKETPLACE_SPEND_CAP_USDC", "many dollars")
+    with caplog.at_level(logging.ERROR, logger=spend_cap.__name__):
         result = spend_cap.spend_cap_usdc()
-    assert result == Decimal("0")
-    assert "not a valid number" in caplog.text
+    assert result == spend_cap._DEFAULT_CAP_USDC
+    assert "not a valid non-negative number" in caplog.text
+    assert "NOT disabling" in caplog.text
+
+
+@pytest.mark.parametrize("raw", ["-1", "-0.01", "nan", "inf", "-inf", "Infinity"])
+def test_spend_cap_usdc_negative_or_non_finite_falls_back_to_default(monkeypatch, caplog, raw):
+    """Decimal(raw) parses all of these without raising, so the except branch
+    above never catches them — but a negative or non-finite cap is exactly
+    as broken as a non-numeric one downstream (_atomic_check's `cap <= 0`
+    check would read a negative value as "disabled", and an ordered
+    comparison against a NaN Decimal raises). Same fallback, same reasoning
+    as the malformed-string case: default cap, not disabled."""
+    monkeypatch.setenv("MARKETPLACE_SPEND_CAP_USDC", raw)
+    with caplog.at_level(logging.ERROR, logger=spend_cap.__name__):
+        result = spend_cap.spend_cap_usdc()
+    assert result == spend_cap._DEFAULT_CAP_USDC
+    assert "not a valid non-negative number" in caplog.text
 
 
 # ── round-trip: seeded spend -> get_24h_spend_usdc ──────────────────────
