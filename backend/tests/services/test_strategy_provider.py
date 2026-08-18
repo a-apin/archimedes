@@ -568,3 +568,47 @@ class TestExtractFromPaper:
             result = provider.extract_from_paper("2401.12345")
         assert result is not None
         assert result.paper_title == "Extracted Paper"
+
+
+class TestRigorOverlayFailClosed:
+    """G4 (test-suite audit, 2026-08-18): the #821 fail-closed overlay was
+    guarded by nothing. ``strategy_provider.py`` hardcodes
+    ``passes_rigor_gate = False`` so a stored fixture boolean can never leak
+    as a served badge — the live gate overlay is the ONLY path to True. A
+    one-line revert to ``fx.get("passes_rigor_gate")`` restored the
+    cached-pass anti-pattern with every test in the repo green: the ten
+    existing ``assert ... is False`` tests all use fixtures whose stored
+    value is ALSO false, so they cannot tell the hardcode from the leak.
+
+    The fixture here stores ``passes_rigor_gate: true`` — the poisoned value
+    the overlay exists to suppress. The sibling assertion on ``dsr_p_value``
+    proves the fixture genuinely loaded (a fixture that silently failed to
+    load would ALSO yield False, making the headline assertion vacuous).
+    Mutation-verified: reverting the hardcode to the fixture read fails this
+    test and only this test.
+    """
+
+    def test_stored_fixture_pass_never_leaks_into_the_built_strategy(self, strategies_dir, monkeypatch):
+        import json
+
+        poisoned = {
+            "test_momentum": {
+                "sharpe_ratio": 2.5,
+                "dsr_p_value": 0.987,
+                "passes_rigor_gate": True,  # the value that must NOT surface
+            }
+        }
+        fixture_file = strategies_dir / "poisoned_fixtures.json"
+        fixture_file.write_text(json.dumps(poisoned))
+        monkeypatch.setenv("ARCHIMEDES_FIXTURES_PATH", str(fixture_file))
+        monkeypatch.delenv("ARCHIMEDES_FIXTURES_URL", raising=False)
+
+        provider = _make_provider(strategies_dir)
+        strategy = next(s for s in provider.list_strategies() if s.paper_title == "Test Momentum Strategy")
+
+        # Anti-vacuity: the fixture DID load — its other fields came through.
+        assert strategy.dsr_p_value == 0.987
+
+        # The guard itself: the stored True is suppressed; only the live gate
+        # overlay (api/strategies_routes) may ever set this True.
+        assert strategy.passes_rigor_gate is False
