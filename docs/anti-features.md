@@ -11,6 +11,13 @@
 > in [`user-stories.md`](user-stories.md). Reconciled with the ecosystem pivot in
 > [`specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md) and the red-team
 > critique in [`archive/agora_project_analysis.md`](archive/agora_project_analysis.md).
+>
+> **CORRECTION (2026-07-27) — the Marketplace anti-feature no longer holds.** The
+> marketplace **shipped** and is live behind the `PAYMENTS_DRY_RUN` flag. It lives in
+> `backend/archimedes/marketplace/`, `backend/archimedes/api/marketplace_routes.py`, and
+> `ui/src/pages/{MarketplacePage,PublishPage,SubscriptionsPage}.jsx`. **Do not delete those
+> files** on the authority of this document — the "deleted Marketplace" note below records
+> the state of PR #118 in May 2026, not current scope policy.
 
 ## Why this doc exists
 
@@ -64,7 +71,7 @@ unblocking the wedge.
 
 ### NOT building: tax-loss harvesting
 
-**Why not:** Mentioned in RFB 04 and in Chuan's [`design.md` § 4.3.1](design.md), but
+**Why not:** Mentioned in RFB 04 and in Chuan's [`design.md` § 4.3.1](archive/agora-2026-05/design.md), but
 classified as v1.5. Tax-loss harvesting requires accounting infrastructure (cost basis
 tracking, wash-sale rules, jurisdiction-specific tax codes) that's a real product on its
 own.
@@ -157,7 +164,7 @@ trace generation in v1. Fine-tuning is a v2+ conversation.
 ### NOT building: an Arc smart contract upgrade pattern
 
 **Why not:** Per [`docs/specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md)
-and following Chuan's [`design.md` § 5.2](design.md), contracts are immutable in v1. If a
+and following Chuan's [`design.md` § 5.2](archive/agora-2026-05/design.md), contracts are immutable in v1. If a
 bug surfaces, we deploy a new contract and migrate. Upgrade patterns add their own bug
 surface (the proxy / delegatecall failure mode is non-trivial); we hold the line on
 immutability for v1.

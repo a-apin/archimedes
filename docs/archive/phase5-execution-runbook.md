@@ -1,8 +1,12 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/runbooks/arc-testnet-e2e.md`](../runbooks/arc-testnet-e2e.md)**
+>
+> Planning-only Phase 5 runbook written overnight in May 2026, gated on a kickoff from a contributor who left the project on 2026-06-24. Never executed as written.
+
 # Phase 5 — Real Testnet Trade Execution Runbook
 
 > **Status:** Planning-only — spec + verification runbook + open questions. No
 > code in this PR. Drafted overnight per `dbrowneup/phase5-execution-runbook`
-> while Dan slept; per [`docs/specs/spine-plus-v2-plan.md` § Phase 5](spine-plus-v2-plan.md)
+> while Dan slept; per [`docs/specs/spine-plus-v2-plan.md` § Phase 5](../plans/spine-plus-v2-plan.md)
 > the implementation needs Chuan's kickoff (signing setup, AMM liquidity
 > verification, `setTargetAllocations` semantics, USDC-as-gas) before the code
 > goes in.

@@ -4,17 +4,18 @@
 > **Purpose:** Establish the design philosophy underneath the strategy passport, the
 > on-chain reasoning-trace anchoring, and the non-custodial vault. The "why" doc;
 > the "what" details live in the specs in [`specs/`](specs/) and in
-> [`design.md`](design.md).
+> [`design.md`](archive/agora-2026-05/design.md).
 > **Status:** Day-10 update (2026-05-22). The four primitives below — paper-claim
 > binding, reasoning trace, tool-call provenance, selection-bias correction — are
-> **all shipped and live** as of Day-10. The selection-bias gate has 2 Tier-1
-> strategies that currently pass (Faber 2007 SMA-200, Moreira-Muir 2017
-> vol-managed) against 22 years of real SPY data. The four primitives remain the
+> **all shipped and live** as of Day-10. The selection-bias gate runs against
+> real price history on every curated strategy; how many currently pass is not
+> stated here — the live rigor gate is the only authority on which strategies currently pass; see the PASS/CANDIDATE badges in the app and `backend/archimedes/services/live_rigor_gate.py`.
+> Faber 2007 SMA-200 does *not* pass — see [`analysis/faber-dsr-finding.md`](analysis/faber-dsr-finding.md). The four primitives remain the
 > philosophical core; Day-10 added a *fifth* operational capability — the LLM-driven
-> agentic portfolio advisor ([`portfolio_agent.py`](../backend/archimedes/services/portfolio_agent.py))
+> agentic portfolio advisor ([`portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py))
 > — which sits *on top of* the four primitives (it cannot bypass the passport,
 > rigor gate, or trace anchor). See
-> [`chuan-architecture-survey.md`](chuan-architecture-survey.md) for the current
+> [`chuan-architecture-survey.md`](archive/agora-2026-05/chuan-architecture-survey.md) for the current
 > shipped-state per file.
 
 ## The frame: portfolio agents that don't ship verifiable history don't earn trust
@@ -53,8 +54,7 @@ Three independent arguments converge:
    machines; reasoning traces ARE information. RFB 04's "Adaptive Portfolio Manager" lives
    most credibly when each adaptation has an auditable reasoning trail.
 3. **Past performance does not persist out-of-sample.** This is the canonical failure mode
-   of leaderboard-based reputation (see [`reputation-and-vertical-selection.md`](reputation-and-vertical-selection.md)
-   in the prior agent-marketplace work; the same principle applies). A portfolio agent
+   of leaderboard-based reputation (see `reputation-and-vertical-selection.md` in the prior agent-marketplace work (external, not in this repo); the same principle applies). A portfolio agent
    that claims "X% returns last year, so you can trust me" inherits the regression-to-mean
    problem of every leaderboard. **Verifiable reasoning history bypasses the prediction
    problem**: we don't claim the past predicts the future; we claim the past is auditable.
@@ -133,8 +133,12 @@ For every strategy admitted to the Tier-1 library, the
 [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md)
 contract requires:
 
-- **Deflated Sharpe Ratio (DSR)** — Sharpe corrected for non-normality and multiple
-  testing (Bailey & López de Prado 2014). `dsr_p_value >= 0.95`.
+- **Deflated Sharpe Ratio (DSR)** — excess Sharpe positive at 90% one-sided confidence
+  under standard errors robust to non-normality and autocorrelation; on the generated path
+  additionally deflated against that strategy's own candidate pool (Bailey & López de Prado
+  2014). `dsr_p_value >= 0.90`. On the curated library `num_trials = 1`, so DSR runs
+  **undeflated** — no multiple-testing correction on that path
+  ([`adr/num-trials-self-containment.md`](adr/num-trials-self-containment.md)).
 - **Probability of Backtest Overfitting (PBO)** — CSCV-framework probability that the
   in-sample-optimal strategy underperforms the OOS median (Bailey, Borwein, López de
   Prado, Zhu 2014). `pbo_score < 0.5`.
@@ -153,6 +157,46 @@ uncertainty so the user can audit it.
 
 **Tier-2 community vaults are exempt from primitive 4.** That is by design — see the
 two-tier section below.
+
+## Fail-soft is correct for optional configuration and wrong for anything a claim depends on
+
+The four primitives above describe what the product must prove. This principle describes the
+most common way it stops proving it without anyone noticing.
+
+For credentials and for measured values, the correct degraded state is a **loud, visible
+absence** — a `NOT_RUN`, an em-dash, a startup abort, a CloudWatch alarm — never a plausible
+substitute. A fail-soft default converts an outage into a silence, and silence is
+indistinguishable from working. That is the whole failure: nobody investigates a system that
+looks fine.
+
+The fix is not "always crash". Fail-soft is genuinely correct for optional configuration — an
+absent feature flag, an unset local override, a missing dev-only endpoint. The distinction is
+whether a *claim* rests on the value. A function that loads secrets should know which
+parameters are load-bearing and be loud about **those** while genuinely optional ones stay
+quiet. The same applies to a number rendered in the UI: if it is presented as measured, there
+must be no code path that substitutes something else for it.
+
+Three instances of the same failure were found in one week:
+
+| Instance | Mechanism | Cost |
+|---|---|---|
+| SSM credentials | `load_ssm_secrets()` catches the IAM denial and boots degraded by design | Marketplace publish never worked in production. 19 days, silent, no alarm. |
+| Leaderboard fixture fallback | Numeric fields fall back to migrated fixture columns when live compute is unavailable | Fabricated statistics presented as measured, on the flagship public page |
+| T-bill / Maillard rows | Persisted return series bound to the wrong asset | The top-ranked strategy graded the null benchmark's returns |
+
+Note what the three have in common: each one was a *deliberate* design choice at the time,
+each looked like defensive engineering, and each removed the signal that would have revealed
+it. None of them threw. None of them alarmed. All three were found by reading code, not by
+being told.
+
+The rigor gate already gets this right. Its verdict is tri-state — `pass` / `fail` /
+`pending` — and `pending` is a first-class, rendered state meaning "no real returns yet, we
+honestly do not know." A strategy never silently wears a badge it did not earn. That is the
+pattern the other three subsystems needed and did not have.
+
+**Applying it.** When reviewing a fallback, ask: if this path fires in production, what tells
+someone? If the answer is "nothing" and a user-visible claim depends on the value, the
+fallback is a defect regardless of how defensively it reads.
 
 ## Two-tier marketplace: how the primitives apply to each tier
 

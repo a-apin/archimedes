@@ -1,7 +1,11 @@
 # ADR: GLM → AWS Bedrock LLM migration
 
 > **Audience:** Archimedes team (decision owner: Dan)
-> **Status:** **Decided.** Initial Bedrock backend in [commit 199132c](https://github.com/a-apin/archimedes/commit/199132c); multi-model + Nova Micro default in [PR #717](https://github.com/a-apin/archimedes/pull/717). Live since 2026-06-24.
+> **Status:** Accepted
+> **Date:** 2026-06-24
+> **Owner:** Dan Browne
+> **Supersedes:** —
+> **Superseded-by:** —
 > **Question being decided:** Which LLM provider for the live backend — GLM via z.ai's anthropic-compatible bridge, or AWS Bedrock?
 > **Related:** CLAUDE.md § "LLM", `backend/archimedes/services/llm_backend.py` (`make_llm_backend`, the Converse backend).
 
@@ -15,7 +19,7 @@ The backend's LLM factory supported direct Anthropic (BYOK), GLM via z.ai's `ant
 
 ## Decision
 
-1. **`LLM_PROVIDER=bedrock_converse` is the live default** (EC2 instance-role auth); model resolves from config, defaulting to Amazon Nova Micro.
+1. **`LLM_PROVIDER=bedrock_converse` is the live default**; model resolves from config, defaulting to Amazon Nova Micro. Bedrock auth is by AWS role, not static keys — the ECS task role today ([`infra/ecs.tf`](../../infra/ecs.tf)), the EC2 instance role when this ADR was written.
 2. **A multi-provider Converse abstraction** wraps the bedrock-runtime client so any Bedrock model is selectable via one API; it degrades gracefully when a model doesn't accept a system prompt in the Converse shape.
 3. **Server-side free-tier model allowlist** governs which models a free user can pick (Nova family, open-source models, and GLM preserved as an option). Premium Anthropic-on-Bedrock models are gated behind the paid-tier entitlement (see [paid-tier gating], #723) and pending T3.8 activation.
 4. **Provenance via `response.model`** — every completion records the model that actually answered, the source of truth across the GLM→Bedrock era.

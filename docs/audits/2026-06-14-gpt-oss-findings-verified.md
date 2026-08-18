@@ -188,10 +188,15 @@ No action needed.
 
 ## 6️⃣ Dead / stale / orphaned code — **REAL**, all three confirmed present and unreferenced
 
-- `backend/archimedes/api/marketplace_routes.py`, `marketplace_schemas.py`,
+- ~~`backend/archimedes/api/marketplace_routes.py`, `marketplace_schemas.py`,
   `backend/archimedes/services/marketplace_service.py` (+ `__pycache__`):
   `main.py` carries "removed (Issue #381)" comments at the import/mount sites;
-  zero test files reference marketplace. → `onder/remove-dead-marketplace-files`
+  zero test files reference marketplace. → `onder/remove-dead-marketplace-files`~~
+  **RETRACTED 2026-07-27 — DO NOT ACT ON THIS.** The marketplace was subsequently
+  built out and **shipped**; it is live behind the `PAYMENTS_DRY_RUN` flag
+  (`backend/archimedes/marketplace/`, `api/marketplace_routes.py`,
+  `ui/src/pages/{MarketplacePage,PublishPage,SubscriptionsPage}.jsx`). Deleting these
+  files would remove shipped product surface.
 - `backend/archimedes/services/_deprecated/` (`kelly_portfolio.py`,
   `portfolio_constructor.py`, `__init__.py`): zero references outside the
   folder; fully superseded by `portfolio_optimizer.py` +

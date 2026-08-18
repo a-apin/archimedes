@@ -1,26 +1,68 @@
 # Architecture Decision Records
 
-> **Status:** Day-10 (2026-05-22; updated 2026-06-27 — Phase-7 back-fill of historical
-> decisions). Ten ADRs. The ADR pattern is: capture a non-trivial technical decision
+> **Status:** current (last updated 2026-07-28). The ADR pattern is: capture a non-trivial technical decision
 > once, with the alternatives considered and the reasoning, so future contributors can
 > understand the choice without needing to relitigate it. The records below were written
 > as decisions landed; the 2026-06-27 batch back-fills decisions that shipped before the
 > ADR habit was established (each cites the PR/commit/spec it documents).
 
+## Status vocabulary
+
+Every ADR carries the same five-field front-matter block directly under its title:
+
+```
+> **Status:** Proposed | Accepted | Superseded-by-NNNN | Rejected
+> **Date:** YYYY-MM-DD
+> **Owner:** <name>
+> **Supersedes:** <adr> or —
+> **Superseded-by:** <adr> or —
+```
+
+- **Proposed** — written, not yet decided. A `Proposed` ADR is the only kind that is still
+  open to argument.
+- **Accepted** — decided and in force. Do not relitigate an `Accepted` ADR in a spec, a
+  handover, or a comment; open a superseding ADR instead.
+- **Superseded-by-NNNN** — reversed or replaced. The record stays (the reasoning is still
+  the history), and `Superseded-by` names the ADR that replaced it. This directory
+  identifies ADRs by slug rather than number, so the slug stands in for `NNNN` —
+  e.g. `Superseded-by-debate-society-sole-generation-pipeline`.
+- **Rejected** — considered and declined. Kept so the option is not re-proposed blind.
+
+A decision that has shipped but is awaiting a named reviewer's sign-off is recorded as
+`Accepted, pending <lane> sign-off` — accepted because it is live in code, pending because
+the review named in the code has not happened.
+
 ## Index
 
-| ADR | Decision |
-|---|---|
-| [`backtrader-vs-vectorbt-decision-memo.md`](backtrader-vs-vectorbt-decision-memo.md) | Why we picked **backtrader** over **vectorbt** for the v1 backtest engine |
-| [`chainlink-primary-oracle.md`](chainlink-primary-oracle.md) | Why on-chain prices are **Chainlink-primary** with a thin, bounded admin fallback that **degrades (not reverts)** on feed outage (#724) |
-| [`build-on-deploy-main-only.md`](build-on-deploy-main-only.md) | Why `main` is the only long-lived branch and every merge auto-deploys (no `develop`) |
-| [`aws-account-migration.md`](aws-account-migration.md) | Why prod moved to Dan's own AWS account (`037613907429`/`us-east-1`) post-Agora |
-| [`k1-generation-external-rigor-gate.md`](k1-generation-external-rigor-gate.md) | Why generation emits **K=1** winner + considered-rejects, with the rigor gate run **externally** |
-| [`rigor-gate-unification.md`](rigor-gate-unification.md) | Why the four selection-bias controls run through **one** authoritative gate, surfaced honestly (post-#710) |
-| [`non-custodial-vault-owner-agent.md`](non-custodial-vault-owner-agent.md) | Why vaults separate **owner (withdrawal)** from **agent (rebalance-only)** so a compromised agent key can't drain (#731) |
-| [`fusion-primary-generation.md`](fusion-primary-generation.md) | Why strategy generation is **fusion-primary** (paper-grounded), not free-form LLM (#751) |
-| [`glm-to-bedrock-llm-migration.md`](glm-to-bedrock-llm-migration.md) | Why the live LLM moved from **GLM to AWS Bedrock** (Nova Micro default, Converse backend) (#717) |
-| [`portfolio-constructor-consolidation.md`](portfolio-constructor-consolidation.md) | Why legacy constructors were retired and a **dual-signal** (regime × consensus) sizer activated (#131, #662) |
+Eighteen records. Status and date are authoritative in each ADR's front-matter block;
+this table mirrors them.
+
+| ADR | Status | Date | Owner | Decision |
+|---|---|---|---|---|
+| [`unlicense-public-domain.md`](unlicense-public-domain.md) | Accepted | initial commit `292f543` | Dan Browne | Why the project is released under **the Unlicense** — a public-domain dedication — and what that costs: the code is not an ownable asset, and contributors retain copyright independent of it |
+| [`arc-settlement-chain.md`](arc-settlement-chain.md) | Accepted | 2026-05-13 | Dan Browne | Arc testnet (chain `5042002`) settles, with **USDC as both settlement asset and native gas token**; Circle Developer-Controlled Wallets on the write path |
+| [`two-tier-marketplace.md`](two-tier-marketplace.md) | Accepted | 2026-05-13 | Dan Browne | The Day-3 pivot from a single vault to a **Verified / Community two-tier marketplace**, with rigor as a badge rather than an entry requirement |
+| [`backtrader-backtest-engine.md`](backtrader-backtest-engine.md) | Accepted | 2026-05-13 | Dan Browne | Why we picked **backtrader** over **vectorbt** for the v1 backtest engine |
+| [`build-on-deploy-main-only.md`](build-on-deploy-main-only.md) | Accepted | 2026-05-18 | Dan Browne | Why `main` is the only long-lived branch and every merge auto-deploys (no `develop`) |
+| [`portfolio-constructor-decision-tree.md`](portfolio-constructor-decision-tree.md) | Accepted | 2026-05-22 | Önder Akkaya | Which portfolio constructor runs when |
+| [`k1-generation-external-rigor-gate.md`](k1-generation-external-rigor-gate.md) | Accepted | 2026-05-23 | Dan Browne | Why generation emits **K=1** winner + considered-rejects, with the rigor gate run **externally** |
+| [`aws-account-migration.md`](aws-account-migration.md) | Accepted | 2026-06-24 | Dan Browne | Why prod moved to Dan's own AWS account (`037613907429`/`us-east-1`) post-Agora |
+| [`glm-to-bedrock-llm-migration.md`](glm-to-bedrock-llm-migration.md) | Accepted | 2026-06-24 | Dan Browne | Why the live LLM moved from **GLM to AWS Bedrock** (Nova Micro default, Converse backend) (#717) |
+| [`non-custodial-vault-owner-agent.md`](non-custodial-vault-owner-agent.md) | Accepted | 2026-06-26 | Dan Browne | Why vaults separate **owner (withdrawal)** from **agent (rebalance-only)** so a compromised agent key can't drain (#731) |
+| [`portfolio-constructor-consolidation.md`](portfolio-constructor-consolidation.md) | Accepted | 2026-06-26 | Önder Akkaya | Why legacy constructors were retired and a **dual-signal** (regime × consensus) sizer activated (#131, #662) |
+| [`rigor-gate-unification.md`](rigor-gate-unification.md) | Accepted | 2026-06-26 | Dan Browne | Why the four selection-bias controls run through **one** authoritative gate, surfaced honestly (post-#710) |
+| [`fusion-primary-generation.md`](fusion-primary-generation.md) | **Superseded-by-debate-society-sole-generation-pipeline** | 2026-06-26 | Dan Browne | Why strategy generation was **fusion-primary** (paper-grounded), not free-form LLM (#751). Routing tree retired 2026-07-09 |
+| [`chainlink-primary-oracle.md`](chainlink-primary-oracle.md) | Accepted | 2026-07-01 | Dan Browne (reviewer: Bogdan Sivochkin) | Why on-chain prices are **Chainlink-primary** with a thin, bounded admin fallback that **degrades (not reverts)** on feed outage (#724) |
+| [`ec2-to-ecs-fargate-cutover.md`](ec2-to-ecs-fargate-cutover.md) | Accepted | 2026-07-09 | Dan Browne | Why the serving tier moved from one docker-compose EC2 box to an **ECS Fargate** service behind the existing ALB (#1039, #1056–#1059) |
+| [`debate-society-sole-generation-pipeline.md`](debate-society-sole-generation-pipeline.md) | Accepted | 2026-07-09 | Dan Browne | Why the **debate society is the only generation path** — no routing tree, no flag, no silent fallback (#1064/#1074) |
+| [`num-trials-self-containment.md`](num-trials-self-containment.md) | **Accepted, pending quant sign-off** | 2026-07-09 | Dan Browne (quant reviewer: Önder Akkaya) | Why a strategy's DSR trial count depends **only on that strategy** — never `N + library_size`; curated single-paper strategies grade at `num_trials = 1` |
+| [`aurora-postgres-alembic-datastore.md`](aurora-postgres-alembic-datastore.md) | Accepted | 2026-07-28 | Dan Browne | Why **Aurora PostgreSQL Serverless v2 (18.3)** is the system of record, **Alembic** the only schema-change mechanism, **Redis 7.1** ephemeral-only |
+
+### Open review debt
+
+- [`num-trials-self-containment.md`](num-trials-self-containment.md) is live in code but the
+  portfolio-math sign-off named in two code comments has never been obtained. It is the
+  largest outstanding rigor risk in the tree: it loosens a statistical control.
 
 ## When to add an ADR
 

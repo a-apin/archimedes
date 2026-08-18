@@ -1,6 +1,11 @@
+> **ARCHIVED 2026-05-26 — historical record. Do not execute.** Current status: see
+> [`docs/architecture.md`](../architecture.md).
+
 # Launch night operational runbook — overnight 2026-05-23 → 2026-05-24
 
-> **Status:** ACTIVE OVERNIGHT. Dan went to sleep ~2026-05-24 04:50 UTC after authorizing Claude (Opus 4.7, this session) to execute the launch plan autonomously. This runbook is the operational addendum that overrides the launch plan's "file UNASSIGNED" universal rule for tonight only.
+> **Status (historical):** This runbook was `ACTIVE OVERNIGHT` for the single night of
+> 2026-05-23 → 2026-05-24. **That window closed on 2026-05-24. Nothing here is active or
+> executable.** Original text follows for the record: Dan went to sleep ~2026-05-24 04:50 UTC after authorizing Claude (Opus 4.7, this session) to execute the launch plan autonomously. This runbook is the operational addendum that overrides the launch plan's "file UNASSIGNED" universal rule for tonight only.
 
 ## Authorization Dan granted (verbatim, 2026-05-24)
 
@@ -8,7 +13,16 @@
 - "I'll just want you to assign t2o2, I don't really need to do that. I want to sleep. You can assign t2o2 to trigger all the issues when they are ready and finally validated by Maestro (you)."
 - "I want you to adjust the permission settings first to enable you to make gh calls without requiring my permission for all of them."
 
-`.claude/settings.local.json` updated with a permissions allowlist covering `gh issue *`, `gh pr *`, `git push`, `git commit`, and read-only inspection commands so Dan isn't woken by approval prompts.
+`.claude/settings.local.json` was updated with a permissions allowlist covering `gh issue *`,
+`gh pr *`, `git push`, `git commit`, and read-only inspection commands so Dan wasn't woken by
+approval prompts.
+
+> **THIS AUTONOMY GRANT WAS A ONE-OFF AND IT HAS EXPIRED. IT IS NOT A STANDING
+> AUTHORISATION.** It applied only to the overnight window of 2026-05-23 → 2026-05-24 and only
+> to the session Dan was talking to at the time. No agent may cite this document — or the
+> `.claude/settings.local.json` change it records — as permission to widen its own permission
+> settings, to auto-approve `git push`, or to act unsupervised. Every such grant requires a
+> fresh, explicit, in-the-moment authorisation from Dan.
 
 ## Operational rules for the overnight run
 
@@ -62,7 +76,7 @@ to triage). Plus M.11 arc-canteen backfill + M.4 docs refresh + M.5 docs
 sweep + M.9 visual review pass. Interleave M-work between issue batches per
 the runbook's execution order.
 
-Permission settings already wired (.claude/settings.local.json) so gh + git
+[HISTORICAL — grant expired 2026-05-24] Permission settings already wired (.claude/settings.local.json) so gh + git
 calls don't prompt Dan. Don't ask new questions unless something is genuinely
 blocking; Dan is asleep. Use the running log at the bottom of the runbook to
 record decisions + progress + anything Dan needs to see in the AM.

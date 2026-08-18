@@ -1,7 +1,11 @@
 # ADR: Portfolio-constructor consolidation — retire legacy paths, activate dual-signal sizing
 
 > **Audience:** Archimedes team (decision owner: Önder, portfolio math; Dan, agent integration)
-> **Status:** **Decided.** Legacy retired in Phase 7 ([#131](https://github.com/a-apin/archimedes/issues/131), [commit a4a09fb](https://github.com/a-apin/archimedes/commit/a4a09fb)); dual-signal path wired in [commit c74e825](https://github.com/a-apin/archimedes/commit/c74e825) for [#662](https://github.com/a-apin/archimedes/issues/662).
+> **Status:** Accepted
+> **Date:** 2026-06-26 (recorded; decision date [unestablished — needs Dan])
+> **Owner:** Önder Akkaya
+> **Supersedes:** —
+> **Superseded-by:** —
 > **Question being decided:** Which portfolio-construction path is canonical — the legacy `kelly_portfolio` + old generic `portfolio_constructor`, or a new dual-signal implementation that throttles by market regime × ensemble consensus?
 > **Related:** [#659](https://github.com/a-apin/archimedes/issues/659) (consensus rename), [#660](https://github.com/a-apin/archimedes/issues/660) (regime detector), `backend/archimedes/services/portfolio_constructor.py`, `backend/archimedes/chain/agent_runner.py`.
 

@@ -9,7 +9,7 @@
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](LICENSE)
 [![Hackathon: Agora](https://img.shields.io/badge/hackathon-Agora%20Agents-violet.svg)](https://luma.com/7i50p2r9)
 [![Settled on: Arc](https://img.shields.io/badge/settled%20on-Arc-2A4DD1.svg)](https://www.arc.network/)
-[![Arc OSS Showcase](https://img.shields.io/badge/Arc%20OSS-showcase-7B2CBF.svg)](ARC-OSS-SHOWCASE.md)
+[![Arc OSS Showcase](https://img.shields.io/badge/Arc%20OSS-showcase-7B2CBF.svg)](docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md)
 
 ## TL;DR
 
@@ -181,11 +181,11 @@ Three documents are the front door for different audiences:
 | If you want to… | Read |
 |---|---|
 | Run Archimedes locally | [`SETUP.md`](SETUP.md) |
-| Operate the live stack + understand the RPC | [`OPERATIONS.md`](OPERATIONS.md) |
-| Understand Arc / Circle integration | [`ARC.md`](ARC.md) |
+| Operate the live stack + understand the RPC | [`docs/runbooks/operations.md`](docs/runbooks/operations.md) |
+| Understand Arc / Circle integration | [`docs/arc-integration.md`](docs/arc-integration.md) |
 | Know what the product *is* (the locked spine) | [`docs/user-stories.md`](docs/user-stories.md) |
 | Browse all design + planning docs | [`docs/README.md`](docs/README.md) |
-| Submit Archimedes to the Arc OSS Showcase | [`ARC-OSS-SHOWCASE.md`](ARC-OSS-SHOWCASE.md) |
+| Submit Archimedes to the Arc OSS Showcase | [`docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`](docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md) |
 | Project context for a Claude Code session | [`CLAUDE.md`](CLAUDE.md) |
 
 ## Repository structure (top level)
@@ -194,13 +194,11 @@ Three documents are the front door for different audiences:
 archimedes/
 ├── README.md             ← this file
 ├── SETUP.md              ← prerequisites + 5-step install + platform notes + test suite
-├── OPERATIONS.md         ← run the stack + RPC deep-dive + LLM backends + traction logging + security
-├── ARC.md                ← Arc testnet reference + Circle sponsor alignment + context-arc submodule
-├── ARC-OSS-SHOWCASE.md   ← positioning + forkable primitives for the Arc OSS Showcase
 ├── CLAUDE.md             ← project context for Claude Code sessions
 ├── LICENSE               ← Unlicense (public-domain dedication)
 │
-├── docs/                 ← design + planning + specs + ADRs + archive (see docs/README.md)
+├── docs/                 ← the whole documentation tree: architecture, specs, ADRs, runbooks,
+│                         quant, audits, handovers, plans, archive (index: docs/README.md)
 ├── backend/              ← FastAPI app (Python 3.12) — see docs/chuan-architecture-survey.md
 ├── analytics-engine/     ← backtest engine (uv-managed)
 ├── contracts/            ← Solidity (Foundry layout) — 12 sources → 570 live instances on Arc testnet (T3.2 redeploy 2026-07-09)
@@ -219,7 +217,7 @@ archimedes/
 | Frontend          | React 19 + Vite 8 + [viem](https://viem.sh/) 2.48 (plain CSS)                             |
 | Database          | PostgreSQL 16 + Redis 7                                                                   |
 | LLM               | Provider-agnostic (`LLM_*` env): GLM via z.ai, Anthropic, OpenAI, Ollama                  |
-| Backtesting       | [backtrader](https://github.com/mementum/backtrader) ([ADR](docs/adr/backtrader-vs-vectorbt-decision-memo.md)) |
+| Backtesting       | [backtrader](https://github.com/mementum/backtrader) ([ADR](docs/adr/backtrader-backtest-engine.md)) |
 | Generation        | Multi-agent debate society (regime × mechanism steer grid, deterministic critics, K=1)    |
 | Semantic retrieval | `all-MiniLM-L6-v2` (sentence-transformers) — paper RAG reranker for corpus selection    |
 | Smart contracts   | Solidity targeting Arc (EVM-compatible) + [Foundry](https://book.getfoundry.sh/)          |
@@ -228,11 +226,11 @@ archimedes/
 | Hackathon CLI     | [arc-canteen](https://github.com/the-canteen-dev/ARC-cli) (RPC proxy + telemetry)         |
 | Deployment        | ECS Fargate behind ALB/WAF (build-in-CI → ECR → Fargate); Aurora PostgreSQL + ElastiCache; docker compose = local dev mirror |
 
-Full architecture: [`docs/architecture-redesign/ARCHITECTURE-MAP.md`](docs/architecture-redesign/ARCHITECTURE-MAP.md)
+Full architecture: [`docs/architecture.md`](docs/architecture.md)
 (2026-07-14 system map) with the repo-map figure
-[`docs/architecture-redesign/file-tree.svg`](docs/architecture-redesign/file-tree.svg) and dataflow diagram
-[`docs/architecture-redesign/flow-diagram.svg`](docs/architecture-redesign/flow-diagram.svg);
-historical lineage: [`docs/design.md`](docs/design.md) + [`docs/chuan-architecture-survey.md`](docs/chuan-architecture-survey.md).
+[`docs/reference/file-tree.svg`](docs/reference/file-tree.svg) and dataflow diagram
+[`docs/reference/flow-diagram.svg`](docs/reference/flow-diagram.svg);
+historical lineage: [`docs/design.md`](docs/archive/agora-2026-05/design.md) + [`docs/chuan-architecture-survey.md`](docs/archive/agora-2026-05/chuan-architecture-survey.md).
 
 ## Development workflow
 

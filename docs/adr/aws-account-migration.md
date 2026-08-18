@@ -1,9 +1,13 @@
 # ADR: Migrate production to Dan's own AWS account
 
 > **Audience:** Archimedes team (decision owner: Dan Browne, AWS account holder)
-> **Status:** **Adopted and completed 2026-06-24** (Lepton Sprint, post-Agora).
+> **Status:** Accepted
+> **Date:** 2026-06-24
+> **Owner:** Dan Browne
+> **Supersedes:** —
+> **Superseded-by:** —
 > **Question being decided:** After the hackathon, who owns the production AWS infrastructure?
-> **Related:** CLAUDE.md § "Project / Status" (2026-06-24 revision), [`docs/infra-setup.md`](../infra-setup.md), `infra/`.
+> **Related:** CLAUDE.md § "Project / Status" (2026-06-24 revision), [`docs/architecture.md`](../architecture.md), `infra/`.
 
 ## TL;DR
 
@@ -17,7 +21,7 @@ The hackathon (May 11–25) provided a shared cloud account for the demo. Post-e
 
 **Migrate the full stack to Dan's account in `us-east-1` (complete 2026-06-24):**
 1. **Ownership** — Dan is the human owner of record. Teammates get IAM users on request (`SecurityAudit` + `ViewOnlyAccess`, MFA, keys via a secure channel — never Discord/email). Long-term: migrate to IAM Identity Center (no long-lived keys).
-2. **What moved** — CloudFront → nginx → EC2, Postgres, Redis, deploy credentials, all re-pointed. The docker-compose stack is unchanged; only the hosting account changes.
+2. **What moved** — CloudFront → WAF → ALB → the serving tier, Postgres, Redis, deploy credentials, all re-pointed. At the time of the migration the serving tier was a single EC2 box running docker-compose; only the hosting account changed. *(Mechanism note, 2026-07-28: the serving tier is now an ECS Fargate service — see [`ec2-to-ecs-fargate-cutover.md`](ec2-to-ecs-fargate-cutover.md). The account decision recorded here is unaffected.)*
 3. **CI/CD** — GitHub Actions re-pointed to the new account; auto-redeploy on every merge to `main`.
 4. **Secrets** — in AWS Secrets Manager / SSM (no plaintext in git or Actions), fetched at boot.
 5. **Terraform state** — S3 backend, versioned + encrypted (SSE-S3) + TLS-only bucket policy + S3-native locking; treated as a secrets store with scoped IAM read.

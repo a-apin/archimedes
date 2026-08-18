@@ -1,9 +1,22 @@
 # ADR: Fusion-primary strategy generation — paper-grounded, not vibes-first
 
 > **Audience:** Archimedes team (decision owner: Dan, strategy engine + backend lead)
-> **Status:** **Accepted.** Wired into the live Generate path in [PR #751](https://github.com/a-apin/archimedes/pull/751).
+> **Status:** Superseded-by-debate-society-sole-generation-pipeline
+> **Date:** 2026-06-26 (recorded; decision date [unestablished — needs Dan])
+> **Owner:** Dan Browne
+> **Supersedes:** —
+> **Superseded-by:** [`debate-society-sole-generation-pipeline.md`](debate-society-sole-generation-pipeline.md) (2026-07-09)
 > **Question being decided:** How does the generation engine route between free-form LLM generation, curated-library selection, and multi-paper fusion? Which is primary?
-> **Related:** [`docs/corpus-architecture.md`](../corpus-architecture.md), `backend/archimedes/agents/generation_pipeline.py`, `backend/archimedes/services/strategy_fusion.py`.
+> **Related:** [`docs/corpus-architecture.md`](../corpus-architecture.md), `backend/archimedes/agents/generation_pipeline.py`, `backend/archimedes/agents/strategy_fusion.py`.
+
+> **⛔ SUPERSEDED 2026-07-09 — the fusion/architect/agent routing tree described below is
+> retired.** The multi-agent debate society is now the sole generation pipeline:
+> `_pick_pipeline()` returns `"debate"` unconditionally
+> ([`backend/archimedes/agents/generation_pipeline.py:79-89`](../../backend/archimedes/agents/generation_pipeline.py)),
+> and the Strategy Architect was deleted in PR #1074 / commit `ccf4f2f`. Fusion survives
+> only as a *step inside* the society (the synthesizer), not as a top-level route.
+> **Current record:** [`debate-society-sole-generation-pipeline.md`](debate-society-sole-generation-pipeline.md).
+> Retained for the paper-grounding rationale, which the society inherits.
 
 ## TL;DR
 

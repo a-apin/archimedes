@@ -93,7 +93,7 @@ Archimedes as taking the best primitive from two RFBs.
 ## RFB 06 — Social Trading Intelligence (adjacent showcase)
 
 Archimedes is not a copy-trading platform, but the strategy-performance leaderboard
-[design.md § 4.2](design.md) is structurally a "follow top-performing strategies" surface.
+[design.md § 4.2](agora-2026-05/design.md) is structurally a "follow top-performing strategies" surface.
 The differentiation from RFB 06's example builds:
 
 - **SmartMirror** picks top 5 traders by risk profile. **Archimedes** picks top N strategies

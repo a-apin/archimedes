@@ -17,13 +17,12 @@ repos:
   # Python linting + formatting — MIRRORS the CI ruff-gate blocking subset
   # (.github/workflows/quality-gate.yml :: ruff-gate). Deliberately scoped to
   # the same rules so pre-commit can't pass while CI fails (or vice versa).
-  # Add F82 here once PR-4 cluster fixes the remaining undefined-name bugs.
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.13
     hooks:
       - id: ruff
         name: ruff check (critical rules only — matches CI ruff-gate)
-        args: ['--select', 'E9,F63,F7,F40']
+        args: ['--select', 'E9,F63,F7,F40,F82']
       - id: ruff-format
         name: ruff format (check only; no auto-fix on commit)
         args: ['--check']

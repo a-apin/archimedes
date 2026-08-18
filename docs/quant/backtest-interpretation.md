@@ -64,9 +64,11 @@ answers at the library level. `compute_pbo(returns_matrix)` runs CSCV across
 `C(16,8) = 12,870` symmetric IS/OOS splits and asks how often the in-sample winner
 survives out-of-sample. **`PBO ≥ 0.5`** means the selection procedure systematically
 picks strategies that underperform the OOS median — the hallmark of fitting noise.
-At the single-strategy level, the **Deflated Sharpe Ratio** (`compute_dsr`) deflates
-the Sharpe by the expected best-of-`N` trials, so a Sharpe that only looks good
-because many variants were tried gets pushed below the `p ≥ 0.95` bar.
+At the single-strategy level, the **Deflated Sharpe Ratio** (`compute_dsr`) widens the
+Sharpe's standard error for non-normality and autocorrelation, and — **where a candidate
+pool exists** — additionally deflates by the expected best-of-`N`, so a Sharpe that only
+looks good because many variants were tried gets pushed below the `p ≥ 0.90` bar. On the
+curated library `num_trials = 1`: no deflation, no multiple-testing correction.
 
 ### 3. The unrealistically smooth equity curve / no slippage
 
@@ -215,8 +217,10 @@ When you open a strategy passport, scan in this order:
 1. **`gate_details`** — are all four gates `PASS`? Any `FAIL` tells you *which*
    failure mode tripped; any `MISSING` tells you a check could not be computed
    (usually too little data, or CPCV without a combinatorial matrix).
-2. **DSR p-value** — is it `≥ 0.95`? If not, the Sharpe has not cleared
-   multiple-testing deflation; treat the headline Sharpe as unproven.
+2. **DSR p-value** — is it `≥ 0.90`? If not, the excess Sharpe is not positive at 90%
+   one-sided confidence under robust standard errors; treat the headline Sharpe as
+   unproven. Note what this does *not* say on the curated path: `num_trials = 1` there,
+   so no multiple-testing deflation was applied.
 3. **PBO** — is it `< 0.5`? If not, the *library's selection* is overfit, and this
    strategy's apparent edge is suspect by association.
 4. **OOS/IS ratio** — is it `≥ 0.5`, and is the OOS Sharpe positive? This is the

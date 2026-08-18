@@ -1,7 +1,7 @@
 # Page Roles Spec
 
 > **Status:** Drafted 2026-05-22 as Phase 0 of the
-> [Spine+ v2 plan](./spine-plus-v2-plan.md). Authoritative for the spine UI;
+> [Spine+ v2 plan](../plans/spine-plus-v2-plan.md). Authoritative for the spine UI;
 > supersedes any conflicting layout description in earlier docs.
 >
 > **Lineage:** Locks the spine narrowed to 7 nav items in the strip-to-spine

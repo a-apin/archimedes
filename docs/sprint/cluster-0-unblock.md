@@ -49,14 +49,14 @@ re-run, never during (collides with A7 and B4's `num_trials_source`).
 
 ## Two live bug fixes — same PR, ~3 lines total
 
-- [`ui/src/components/RejectedCandidates.jsx:73`](../../ui/src/components/RejectedCandidates.jsx:73)
+- [`ui/src/components/RejectedCandidates.jsx:73`](../../ui/src/components/RejectedCandidates.jsx#L73)
   — bare `fetch()` with no `credentials: 'include'`. **Verified still broken 2026-08-16.** Sole
   outlier against a universal convention (`api.js` + seven components). With
   `REQUIRE_SIWE_FOR_GENERATION` on this 401/404s, so the visible proof of the K=1-plus-rejects
   architecture is dead on the one surface that converts.
 - **`PAYMENTS_DRY_RUN` is unset** in `infra/ecs.tf`, both compose files, and
   `setup-ssm-secrets.sh`. Its prod value is an accident of
-  [`main.py:203`](../../backend/archimedes/main.py:203)'s default. Set it explicitly — even to
+  [`main.py:203`](../../backend/archimedes/main.py#L203)'s default. Set it explicitly — even to
   `true`. An unset money switch is the bug regardless of which way it points.
 
 ## A6 diagnostic — one command, do it here

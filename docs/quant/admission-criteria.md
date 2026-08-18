@@ -26,7 +26,7 @@ are exactly the conditions checked in `RigorGateResult.passes_all`:
 
 | # | Control | Function | Threshold (the literal gate) |
 |---|---|---|---|
-| 1 | Deflated Sharpe Ratio | `compute_dsr` | `dsr_p_value ≥ 0.95` (and not `None`) |
+| 1 | Deflated Sharpe Ratio | `compute_dsr` | `dsr_p_value ≥ 0.90` (and not `None`) — recalibrated from 0.95 in PR #901 |
 | 2 | Probability of Backtest Overfitting | `compute_pbo` | `pbo_score < 0.5` (and not `None`) |
 | 3a | Walk-forward OOS Sharpe — absolute floor | `compute_oos_sharpe` | `oos_sharpe > 0` (and not `None`) |
 | 3b | Walk-forward OOS Sharpe — the cliff | `compute_oos_sharpe` | `oos_sharpe / in_sample_sharpe ≥ 0.5` |
@@ -35,17 +35,39 @@ are exactly the conditions checked in `RigorGateResult.passes_all`:
 
 Notes on each threshold, with the *why* behind the number:
 
-### 1. DSR p-value ≥ 0.95
+### 1. DSR p-value ≥ 0.90
 
-The Deflated Sharpe Ratio (Bailey & López de Prado 2014) returns a probability that
-the true Sharpe is positive *after* deflating for multiple testing and
-non-normality. The `0.95` bar is the conventional 95%-confidence threshold:
-admission requires 95% confidence that the Sharpe is not a selection-and-luck
-artifact. When `num_trials = 1` no deflation is applied (there was no selection);
-the orchestrator passes `N = len(strategy_library)` so the correction is real, and
-the effective-N correction (`average_correlation`) prevents a correlated parameter
-sweep from being over-penalized as `N` independent tests. See
-[`methodology.md`](methodology.md) §1 for the full formula.
+The published statement of the gate — the wording the app carries on the Architecture
+page, which these thresholds must match:
+
+> Over 20+ years of backtested returns net of realistic commission, a strategy's excess Sharpe
+> must be positive at 90% one-sided confidence under standard errors robust to non-normality
+> and autocorrelation, and must stay positive on a 30% chronological holdout. On the generated
+> path, the Sharpe is additionally deflated against that strategy's own candidate pool.
+>
+> **On the curated library, `num_trials=1` — DSR runs undeflated (no multiple-testing
+> correction).**
+
+The Deflated Sharpe Ratio (Bailey & López de Prado 2014) returns a probability that the
+excess Sharpe is positive under standard errors robust to non-normality and
+autocorrelation, *and*, where a candidate pool exists, after deflating by the expected
+best-of-`N` under the null. The bar was recalibrated from `0.95` to **`0.90` in PR #901**:
+admission requires 90% one-sided confidence.
+
+**What `N` is, and is not.** On the **generated** path `num_trials` is that strategy's own
+candidate pool — the search we ran. On the **curated library** `num_trials = 1`, so
+`E[max_N] = 0` and **no deflation is applied**: there was no search of ours to charge for,
+and promoting a strategy into a larger library must not retroactively move its score (see
+[`../adr/num-trials-self-containment.md`](../adr/num-trials-self-containment.md);
+`rigor_evaluator.py` logs the undeflated case verbatim). Where a pool does exist, the
+effective-N correction (`average_correlation`) prevents a correlated parameter sweep from
+being over-penalized as `N` independent tests. See [`methodology.md`](methodology.md) §1
+for the full formula.
+
+**Disclosure is not correction.** The board-level selection bias a user incurs by picking
+the best of N displayed strategies is *disclosed*, not *corrected*. Benjamini–Hochberg
+helpers exist in `_rigor_helpers.py:1199` with zero non-test callers — written down,
+unimplemented. Do not describe this gate as correcting selection bias across the library.
 
 ### 2. PBO < 0.5
 
@@ -144,10 +166,12 @@ Mechanics:
    strategy's PBO `≥ 0.5` (or any other gate below threshold) returns it to
    `CANDIDATE`. Validation is a *standing* property, not a one-time stamp.
 
-Today **2 of the library's strategies pass all four gates** (Faber 2007 SMA200
-timing and Moreira–Muir 2017 volatility-managed), per
-[`../rigor-methods.md`](../rigor-methods.md). The rest remain honest CANDIDATEs with
-their failing gate shown openly.
+How many of the library's strategies pass all four gates is deliberately not written
+down here — the live rigor gate is the only authority on which strategies currently pass; see the PASS/CANDIDATE badges in the app and `backend/archimedes/services/live_rigor_gate.py`.
+The rest remain honest CANDIDATEs with their failing gate shown openly. (This
+paragraph previously named Faber 2007 as a passing strategy, contradicting
+[`../analysis/faber-dsr-finding.md`](../analysis/faber-dsr-finding.md) and
+[`../rigor-methods.md`](../rigor-methods.md), which both record it as failing.)
 
 ---
 
@@ -159,7 +183,7 @@ thresholds is an explicit anti-goal).
 
 ### A. Diversification benefit vs. a marginally lower DSR
 
-A strategy that *just* misses the `0.95` DSR bar but is **genuinely
+A strategy that *just* misses the `0.90` DSR bar but is **genuinely
 decorrelated** from the rest of the validated set can be more valuable to the
 portfolio than a higher-DSR strategy that duplicates an existing bet. The portfolio
 math is the justification: adding a low-correlation sleeve lowers portfolio variance
@@ -236,7 +260,7 @@ no longer passes returns to `CANDIDATE` automatically.
 ## Summary
 
 - Admission = all four controls pass in `RigorGateResult.passes_all`:
-  DSR `p ≥ 0.95`, PBO `< 0.5`, OOS Sharpe `> 0` and OOS/IS `≥ 0.5`
+  DSR `p ≥ 0.90`, PBO `< 0.5`, OOS Sharpe `> 0` and OOS/IS `≥ 0.5`
   (plus CPCV `positive_fraction ≥ 0.5` when computable), look-ahead `PASS`.
 - Promotion is `CANDIDATE → VALIDATED`; failures stay `CANDIDATE` with the failing
   gate shown openly; re-evaluation can demote.

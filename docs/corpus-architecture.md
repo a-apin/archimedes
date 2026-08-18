@@ -193,8 +193,8 @@ point at specific papers that informed it. **That's the rigor wedge externalized
 - [x] Persistent named volume `archimedes-corpus-artifact` mounted in compose
 - [x] Rigor gate (DSR + PBO + Kelly + MVO + look-ahead audit) on every generated
       strategy
-- [x] 2 Tier-1 strategies passing all four gates (Faber 2007 SMA200,
-      Moreira-Muir 2017 vol-managed)
+- [x] Four-gate admission enforced on the curated library. How many strategies
+      currently pass is not recorded here — the live rigor gate is the only authority on which strategies currently pass; see the PASS/CANDIDATE badges in the app and `backend/archimedes/services/live_rigor_gate.py`.
 
 ### Scaffolded but not running yet
 
@@ -257,7 +257,7 @@ small enough to commit, fast enough to seed, and rich enough to retrieve.
 ## See also
 
 - [`backend/archimedes/services/corpus_service.py`](../backend/archimedes/services/corpus_service.py) — the seed + intake implementation
-- [`backend/archimedes/services/strategy_fusion.py`](../backend/archimedes/services/strategy_fusion.py) — `load_corpus()` + fusion prompt build
+- [`backend/archimedes/agents/strategy_fusion.py`](../backend/archimedes/agents/strategy_fusion.py) — `load_corpus()` + fusion prompt build
 - [`backend/archimedes/models/corpus_store.py`](../backend/archimedes/models/corpus_store.py) — `PaperRecord` + `CorpusMetaRecord` schemas
 - [`docs/qfin-paper-corpus-seed.md`](archive/qfin-paper-corpus-seed.md) — the original
   seed-curation spec (largely historical now that #97 expanded to 10k via bulk ingest)

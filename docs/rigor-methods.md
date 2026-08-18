@@ -1,6 +1,7 @@
 # Rigor Methods — How Archimedes Stress-Tests Every Strategy
 
-> **Status:** Shipped — all four gates (DSR, PBO, walk-forward OOS, look-ahead audit) are live in [`services/rigor_evaluator.py`](../backend/archimedes/services/rigor_evaluator.py) (canonical) and gate every Tier-1 strategy. 2 Tier-1 strategies (Faber 2007, Moreira-Muir 2017) pass all four today.
+> **Status:** Shipped — all four gates (DSR, PBO, walk-forward OOS, look-ahead audit) are live in [`services/rigor_evaluator.py`](../backend/archimedes/services/rigor_evaluator.py) (canonical) and gate every Tier-1 strategy. How many strategies pass all four is not recorded in this document — the live rigor gate is the only authority on which strategies currently pass; see the PASS/CANDIDATE badges in the app and `backend/archimedes/services/live_rigor_gate.py`.
+> Faber 2007 does *not* pass — see [`analysis/faber-dsr-finding.md`](analysis/faber-dsr-finding.md).
 >
 > **Audience:** Judges, team members, and anyone reading a strategy passport who is not a quant.
 > **Author:** Önder Akkaya (Lead Quant)
@@ -32,22 +33,53 @@ this. If a strategy looks good on all three, the Sharpe ratio is not an accident
 
 ## 1. Deflated Sharpe Ratio (DSR)
 
-**The question it answers:** "After accounting for the fat tails in returns and the
-fact that we tested multiple strategy variants, is this Sharpe ratio statistically
-significant?"
+**What the gate actually states.** This is the wording the app publishes on the
+Architecture page, and it is the only defensible form — docs match the app, not the other
+way round:
 
-**The idea in one sentence:** A raw Sharpe ratio is misleading when returns are
-skewed or when you've tried many versions of a strategy. DSR corrects both at once.
+> Over 20+ years of backtested returns net of realistic commission, a strategy's excess Sharpe
+> must be positive at 90% one-sided confidence under standard errors robust to non-normality
+> and autocorrelation, and must stay positive on a 30% chronological holdout. On the generated
+> path, the Sharpe is additionally deflated against that strategy's own candidate pool.
+>
+> **On the curated library, `num_trials=1` — DSR runs undeflated (no multiple-testing
+> correction).**
+
+**The question it answers:** "Once the standard errors account for the fat tails and
+autocorrelation in these returns, is the excess Sharpe distinguishable from zero?"
+
+**The idea in one sentence:** A raw Sharpe ratio is misleading when returns are skewed,
+kurtotic or autocorrelated; the Deflated Sharpe Ratio widens the standard error to
+account for that, and — *where a search actually happened* — additionally deflates by the
+expected best-of-`N` under the null.
 
 **What the number means:**
 - DSR is displayed as the **p-value** of the test (range 0–1).
-- A p-value ≥ 0.95 means we have 95% confidence the Sharpe is not luck.
-- Below 0.95 means the strategy has not yet cleared the statistical bar — it may still
-  be a good strategy, but we cannot distinguish it from noise with this sample.
+- A p-value ≥ 0.90 clears the bar: the excess Sharpe is positive at 90% one-sided
+  confidence under non-normality- and autocorrelation-robust standard errors.
+- Below 0.90 means the strategy has not cleared the bar — it may still be a good
+  strategy, but we cannot distinguish it from noise with this sample.
+
+**Where the deflation does and does not apply.** On the **generated** path the Sharpe is
+deflated against that strategy's own candidate pool — the search we ran is the search we
+pay for. On the **curated library** `num_trials = 1`, so `E[max_N] = 0` and DSR runs
+**undeflated**: there was no search of ours to charge for, and a published strategy's
+score must not change because the library around it grew (see
+[`adr/num-trials-self-containment.md`](adr/num-trials-self-containment.md)).
+`rigor_evaluator.py` logs this verbatim when it fires. Do not describe the curated gate as
+correcting for multiple testing; on that path it does not.
+
+**Disclosure is not correction.** The product *discloses* the board-level selection bias a
+user incurs by choosing the best of N displayed strategies; it does not *correct* it.
+Benjamini–Hochberg helpers exist in
+[`_rigor_helpers.py:1199`](../backend/archimedes/services/_rigor_helpers.py) with **zero
+non-test callers** — a written-down, unimplemented decision. Saying otherwise would claim
+a control the live path does not run.
 
 **Why it's better than raw Sharpe:** The standard Sharpe assumes returns are normally
-distributed and that you only ran one backtest. Neither is true in practice. DSR
-applies corrections from Bailey & López de Prado (2014) to penalize both.
+distributed, serially independent, and that you only ran one backtest. None of those is
+reliably true. DSR relaxes the first two always, and the third when a candidate pool
+exists (Bailey & López de Prado 2014).
 
 ---
 

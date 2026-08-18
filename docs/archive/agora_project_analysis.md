@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-07-28 — historical. Current: [`docs/architectural-principles.md`](../architectural-principles.md)**
+>
+> Day-2 red-team synthesis for the May-2026 Agora hackathon. Header still says "Draft for team review" and carries no date; it is neither current nor under review.
+
 # Agora Hackathon Project Analysis — Working Document
 
 **Purpose:** Synthesis of a conversation analyzing a proposed hackathon submission for the Agora Agents Hackathon (Canteen × Circle, on Arc). Combines the team's working idea description, supporting evidence, critical pushback, and a thorough regulatory survey across jurisdictions.
