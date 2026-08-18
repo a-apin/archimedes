@@ -8,8 +8,9 @@
 >
 > **Date:** 2026-05-19. **Canonical strategy doc for "how Archimedes aligns to,
 > and builds in, the Arc/Circle world."** Read with
-> [`user-stories.md`](../../user-stories.md) (the spine), [`competitor-landscape.md`](../../competitor-landscape.md)
-> (the tiered thesis), and issue #84 (Circle Agent Stack adoption).
+> [`user-stories.md`](../../user-stories.md) (the spine), `competitor-landscape.md`
+> (the tiered thesis — since moved to the private docs repo by policy), and issue #84
+> (Circle Agent Stack adoption).
 > Sourcing: `/tmp/research/arc-circle.md` (2026-05-19 research pass) + `submodules/context-arc/`.
 
 ## Why this doc
@@ -35,8 +36,8 @@ This is a **strategic strength, stated plainly**:
   there is no RIA trigger, no custody risk, no redemption-liquidity problem *yet*.
   Off-chain redemptions, preset-strategy / RIA posture, and exploit alerting
   (Hypernative-class) become a **designed-for-mainnet business-plan story**, not
-  hackathon debt. See [`competitor-landscape.md`](../../competitor-landscape.md)
-  § Regulatory.
+  hackathon debt. See `competitor-landscape.md` § Regulatory (since moved to the private
+  docs repo by policy).
 
 ## 2. What we already use (real Arc/Circle integration)
 
@@ -88,7 +89,7 @@ decision hashed and verifiable on Arc."*
 
 ## 6. Strategic posture vs the curation-infra tier
 
-Per [`competitor-landscape.md`](../../competitor-landscape.md): the live-mainnet
+Per `competitor-landscape.md` (since moved to the private docs repo by policy): the live-mainnet
 curation incumbents (Morpho/Gauntlet/Upshift) run **trust-based** curation —
 Nov-2025 proved that layer breaks on rigor. Archimedes is the **proof-based**
 answer, and being **Arc-native + testnet-honest** is consistent with that: we

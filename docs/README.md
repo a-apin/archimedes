@@ -140,6 +140,12 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`plans/second-wave-multi-asset-strategies.md`](plans/second-wave-multi-asset-strategies.md) | plan | Önder Akkaya | 2026-06-11 | Second-wave multi-asset strategies. |
 | [`plans/paper-replication-spec.md`](plans/paper-replication-spec.md) | plan | Önder Akkaya | — | Replication and original-extension workflow. |
 
+## Sprint session cards (current)
+
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`sprint/README.md`](sprint/README.md) | current | Dan Browne | 2026-08-16 | Index of per-session working cards for the Arc-mainnet sprint, sharded so each session reads ~50 lines instead of the full plan. |
+
 ## Audits and findings
 
 | Doc | Status | Owner | Last verified | What it is |

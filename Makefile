@@ -1,9 +1,5 @@
 .PHONY: help setup wallet fund compile test deploy feed balance \
-<<<<<<< HEAD
-        up down logs pytest lint format ui-dev clean routes rotate-secret
-=======
-        up down logs pytest lint format ui-dev clean routes docs-check
->>>>>>> 20907f2c ([docs] Enforce the documentation contract in CI)
+        up down logs pytest lint format ui-dev clean routes rotate-secret docs-check
 
 # ─── Help (default) ──────────────────────────────────
 

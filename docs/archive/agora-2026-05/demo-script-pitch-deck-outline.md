@@ -8,7 +8,7 @@
 > **Status:** Day-13 date-bump (2026-05-25 — submission day) on top of the Day-10
 > update (2026-05-22) atop the 2026-05-19 rewrite to the **locked product spine**
 > ([`user-stories.md`](../../user-stories.md)) and the **tiered competitive thesis**
-> ([`competitor-landscape.md`](../../competitor-landscape.md)). The Day-10 deltas — agentic
+> (`competitor-landscape.md`, since moved to the private docs repo by policy). The Day-10 deltas — agentic
 > portfolio advisor ([`portfolio_agent.py`](../../../backend/archimedes/agents/portfolio_agent.py))
 > picking individual instruments anchored to passports, the stress engine
 > ([`stress_engine.py`](../../../backend/archimedes/services/stress_engine.py)) with 6
