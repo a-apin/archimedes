@@ -17,7 +17,7 @@ are authoritative.
 | [`methodology.md`](methodology.md) | The full quantitative methodology — selection-bias corrections (DSR, PBO/CSCV, walk-forward OOS, look-ahead, FDR vs FWER, circular block bootstrap) and portfolio construction (MVO, GMV, Max-Sharpe, Kelly, HRP, Black–Litterman, Ledoit–Wolf shrinkage). |
 | [`backtest-interpretation.md`](backtest-interpretation.md) | How to read a backtest adversarially — the red flags (IS/OOS cliff, parameter sensitivity, smooth curves, concentration, regime turnover, correlation clustering) and green lights, each mapped to the detector in our codebase. |
 | [`admission-criteria.md`](admission-criteria.md) | The four-gate Tier-1 admission contract, the CANDIDATE → VALIDATED flow, principled exceptions, and post-admission monitoring. |
-| [`strategy-library.md`](strategy-library.md) | A per-strategy reference for the 25 files in `analytics-engine/strategies/`, grouped by sleeve, with the honest paper-vs-v1 adaptation caveats. |
+| [`strategy-library.md`](strategy-library.md) | A per-strategy reference for the strategy files in `analytics-engine/strategies/`, grouped by sleeve, with the honest paper-vs-v1 adaptation caveats. |
 
 **Read in this order** if you are new: `methodology.md` → `backtest-interpretation.md`
 → `admission-criteria.md` → `strategy-library.md`.

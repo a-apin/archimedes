@@ -1,5 +1,5 @@
 .PHONY: help setup wallet fund compile test deploy feed balance \
-        up down logs pytest lint format ui-dev clean routes rotate-secret
+        up down logs pytest lint format ui-dev clean routes rotate-secret docs-check
 
 # ─── Help (default) ──────────────────────────────────
 
@@ -16,6 +16,9 @@ help:
 	@echo "    lint         ruff check"
 	@echo "    format       ruff format"
 	@echo "    routes       Dump FastAPI route inventory"
+	@echo ""
+	@echo "  Docs:"
+	@echo "    docs-check   Run the docs gate locally (links + index block; staleness informs)"
 	@echo ""
 	@echo "  Frontend:"
 	@echo "    ui-dev       Run the Vite dev server (ui/)"
@@ -132,3 +135,16 @@ balance:
 		const c = initiateDeveloperControlledWalletsClient({ apiKey: process.env.CIRCLE_API_KEY, entitySecret: process.env.CIRCLE_ENTITY_SECRET });\
 		const r = await c.getWalletTokenBalance({ id: process.env.WALLET_ID });\
 		console.log(JSON.stringify(r.data, null, 2));"
+
+# ─── Docs ────────────────────────────────────────────
+
+# Same three checks .github/workflows/docs-gate.yml runs, in the same order.
+# links and index are blocking (non-zero exit); staleness is informational and
+# never fails the target. Stdlib only — no venv, no install.
+docs-check:
+	@echo "── links ──────────────────────────────────────"
+	@python3 .github/scripts/docs_links.py
+	@echo "── index ──────────────────────────────────────"
+	@python3 .github/scripts/docs_index.py
+	@echo "── staleness (informational) ──────────────────"
+	@python3 .github/scripts/docs_staleness.py || true

@@ -1,7 +1,7 @@
 # UI simplification proposal — from 12 pages to 5
 
 > **Status:** Day-9 draft (2026-05-20) for team review. The proposal flows from the
-> Day-9 rewrite of [`user-stories.md`](user-stories.md); read that first if you
+> Day-9 rewrite of [`user-stories.md`](../user-stories.md); read that first if you
 > haven't. Author: Dan; reviewers: Marten, Daniel R., Chuan, Önder.
 > **Scope:** structural navigation + page consolidation. Visual polish (CSS, typography,
 > spacing) is out of scope for this doc — Daniel R. is the lead on visual polish.
@@ -9,7 +9,7 @@
 ## TL;DR
 
 Today the live app surfaces **12 user-facing pages** across 4 nav groups. The user
-story spine (per [`user-stories.md`](user-stories.md)) only needs **5 top-level
+story spine (per [`user-stories.md`](../user-stories.md)) only needs **5 top-level
 pages plus one modal**. We can consolidate without losing functionality and the
 result is more legible to the capable-non-expert archetype we're actually building
 for. The structural moves are bounded enough to ship pre-launch if we decide to;
@@ -17,7 +17,7 @@ the visual polish phase can follow.
 
 ## The problem
 
-The capable-non-expert archetype (per [`user-stories.md` § Primary archetype](user-stories.md#the-primary-archetype--the-capable-non-expert))
+The capable-non-expert archetype (per [`user-stories.md` § Primary archetype](../user-stories.md#the-primary-archetype--the-capable-non-expert))
 should be able to land on `/`, understand what Archimedes does, generate a strategy,
 and decide whether to deposit — without bouncing between 12 pages or having to
 infer the difference between "Explore" and "Strategies" or between "Mint/Burn" and
@@ -29,7 +29,7 @@ different shapes.
 
 ## Current page inventory
 
-Per [`ui/src/components/Layout.jsx`](../ui/src/components/Layout.jsx):
+Per [`ui/src/components/Layout.jsx`](../../ui/src/components/Layout.jsx):
 
 ### Home
 - **Landing** — first-visit framing
@@ -278,9 +278,9 @@ standup).
 
 ## See also
 
-- [`user-stories.md`](user-stories.md) — the user stories this proposal serves
-- [`claude-design-prompts.md`](claude-design-prompts.md) — Prompts 3 (UI refinement
+- [`user-stories.md`](../user-stories.md) — the user stories this proposal serves
+- [`claude-design-prompts.md`](agora-2026-05/claude-design-prompts.md) — Prompts 3 (UI refinement
   toward this page tree) and 12 (current-vs-proposed page-map diagram)
-- [`corpus-architecture.md`](corpus-architecture.md) — what the Library Papers tab
+- [`corpus-architecture.md`](../corpus-architecture.md) — what the Library Papers tab
   is actually serving
-- [`launch-plan.md`](launch-plan.md) — what needs to be true at launch
+- [`launch-plan-2026-05-19.md`](launch-plan-2026-05-19.md) — what needs to be true at launch

@@ -24,8 +24,8 @@ strategies are graded by different gates today.** The comment above that call cl
 `_to_strategy_response`; verified false — that route uses `verdict.passes` from `live_rigor_gate`.
 
 Verified present 2026-08-16:
-- [`models/backtest.py:126`](../../backend/archimedes/models/backtest.py:126) `passes_validation`
-- [`models/backtest.py:144`](../../backend/archimedes/models/backtest.py:144) `passes_rigor_gate`
+- [`models/backtest.py:126`](../../backend/archimedes/models/backtest.py#L126) `passes_validation`
+- [`models/backtest.py:144`](../../backend/archimedes/models/backtest.py#L144) `passes_rigor_gate`
 - `:159` `if not self.passes_validation` — internal caller inside `passes_rigor_gate`, so the
   two delete together cleanly.
 

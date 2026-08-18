@@ -34,10 +34,12 @@ We reconstructed the DSR numerically (`scripts`-free, via
 `archimedes.services.rigor_evaluator.compute_dsr`) to isolate what drives the
 gap. Two candidates were eliminated:
 
-- **Number of trials (N).** Both strategies are scored with the same
-  `num_trials` = library size (the multiple-testing correction is applied
-  identically across the selection set in `selection_bias_routes.py`). N
-  cannot separate them.
+- **Number of trials (N).** Both strategies are scored with the *same* `num_trials`,
+  so N is common-mode and cannot separate them. (At the time of this analysis
+  `selection_bias_routes.py` derived N from the library size; the curated path has
+  since settled on `num_trials = 1` — no deflation at all — per
+  [`../adr/num-trials-self-containment.md`](../adr/num-trials-self-containment.md).
+  Either way N is identical for both strategies, so the finding stands.)
 - **Track length (T).** Both report the identical `2004-01-02 → 2026-04-30`
   backtest window at daily frequency, so both feed ≈ 5,500 daily bars into
   `compute_dsr`. A synthetic Gaussian series at Sharpe 0.634 over that many

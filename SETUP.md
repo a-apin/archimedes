@@ -2,7 +2,7 @@
 
 This doc walks you from a fresh clone to a working local Archimedes stack. Works on **macOS, Linux, and Windows**. Once you can run [`docker compose up -d --build`](#step-2--spin-up-the-stack-recommended-path), see the migration exit successfully, and see services pass their health checks, you're done — everything else here is optional polish.
 
-> **Status:** Day-10 (2026-05-22). Lead: Chuan (infra); cross-platform support: Marten (Windows / WSL2), Daniel R. (Linux), Dan + Chuan + Önder (macOS).
+> **Status:** Day-10 (2026-05-22); owner review 2026-07-28. Owner: Dan Browne (infra). Platform coverage is best-effort: macOS is the only routinely exercised path.
 
 ## Prerequisites
 
@@ -36,7 +36,7 @@ If you already cloned without `--recurse-submodules`, populate them now:
 git submodule update --init --recursive
 ```
 
-The `submodules/` directory carries Circle's [`context-arc`](submodules/context-arc/) (Arc + Circle developer docs and 5 sample codebases) plus two reference projects ([`KnowledgeBase`](submodules/KnowledgeBase/) — paper-analysis pipeline; [`Linus`](submodules/Linus/) — AI orchestration project, reference only). Full Arc + Circle reference index in [`ARC.md`](ARC.md).
+The `submodules/` directory carries Circle's [`context-arc`](submodules/context-arc/) (Arc + Circle developer docs and 5 sample codebases) plus two reference projects ([`KnowledgeBase`](submodules/KnowledgeBase/) — paper-analysis pipeline; [`Linus`](submodules/Linus/) — AI orchestration project, reference only). Full Arc + Circle reference index in [`docs/arc-integration.md`](docs/arc-integration.md).
 
 ## Step 2 — Spin up the stack (recommended path)
 
@@ -44,7 +44,8 @@ The `submodules/` directory carries Circle's [`context-arc`](submodules/context-
 cp .env.example .env
 # REQUIRED: generate a local auth secret, then paste it after BETTER_AUTH_SECRET=
 python -c "import secrets; print(secrets.token_urlsafe(48))"
-# Optional: configure an LLM provider — see .env.example. Without one, generation uses canned fallback.
+# Optional: configure an LLM provider — see .env.example and docs/runbooks/operations.md
+# § LLM backends. Without one, generation uses the canned fallback.
 docker compose up -d --build
 ```
 
@@ -117,7 +118,7 @@ arc-canteen login        # GitHub device flow
 arc-canteen --help
 ```
 
-After login, the CLI writes credentials to `~/.arc-canteen/env`. **The token in there is a secret.** See [`OPERATIONS.md` § Security notes](OPERATIONS.md#security-notes) before pasting it anywhere.
+After login, the CLI writes credentials to `~/.arc-canteen/env`. **The token in there is a secret.** See [`docs/runbooks/operations.md` § Security notes](docs/runbooks/operations.md#security-notes) before pasting it anywhere.
 
 To get `$RPC` available in every new shell:
 
@@ -125,7 +126,7 @@ To get `$RPC` available in every new shell:
 echo '[ -f ~/.arc-canteen/env ] && . ~/.arc-canteen/env' >> ~/.zshrc   # or ~/.bashrc
 ```
 
-Full RPC walkthrough: [`OPERATIONS.md` § Understanding the RPC URL](OPERATIONS.md#understanding-the-rpc-url).
+Full RPC walkthrough: [`docs/runbooks/operations.md` § Understanding the RPC URL](docs/runbooks/operations.md#understanding-the-rpc-url).
 
 ### Foundry (for smart contract dev)
 

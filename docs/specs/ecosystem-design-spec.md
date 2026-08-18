@@ -13,9 +13,9 @@
 > per-vault chat (cut from MVP).
 > The original Day-3 architecture below remains the canonical reference for
 > what each component *does*. Cross-reference current shipped state in
-> [`../chuan-architecture-survey.md`](../chuan-architecture-survey.md) and
+> [`../chuan-architecture-survey.md`](../archive/agora-2026-05/chuan-architecture-survey.md) and
 > [`../user-stories.md`](../user-stories.md) (the locked product spine).
-> **Supersedes:** Original single-vault architecture in [`design.md` § 5.2](../design.md)
+> **Supersedes:** Original single-vault architecture in [`design.md` § 5.2](../archive/agora-2026-05/design.md)
 > **Scope:** Hackathon MVP of the full ecosystem vision
 
 ## Executive Summary
@@ -34,6 +34,13 @@ The ecosystem is self-contained on Arc with USDC settlement.
 ---
 
 ## 1. Design Decisions (Resolved)
+
+> Decisions 2, 5, 9 and 14 (the two-tier marketplace, the vault token as the copy-trade
+> primitive, agent-as-a-service and the marketplace-as-landing-page) are recorded in
+> [`../adr/two-tier-marketplace.md`](../adr/two-tier-marketplace.md); settlement (decisions
+> 3, 7, 11) in [`../adr/arc-settlement-chain.md`](../adr/arc-settlement-chain.md); vault
+> custody in [`../adr/non-custodial-vault-owner-agent.md`](../adr/non-custodial-vault-owner-agent.md).
+> The ADRs carry the alternatives and consequences; this table is the summary index.
 
 | # | Decision | Choice |
 |---|----------|--------|
@@ -696,10 +703,10 @@ Platform revenue streams:
 
 | Existing Doc | Status |
 |---|---|
-| [`design.md`](../design.md) | **Partially superseded.** Strategy engine (§4.1), backtesting (§4.2), regime detection (§4.3.3) survive. Smart contract architecture (§5.2) replaced by this spec. |
+| [`design.md`](../archive/agora-2026-05/design.md) | **Partially superseded.** Strategy engine (§4.1), backtesting (§4.2), regime detection (§4.3.3) survive. Smart contract architecture (§5.2) replaced by this spec. |
 | [`mvp-scope-memo.md`](../archive/mvp-scope-memo.md) | **Scope expanded.** The three locked decisions (RFB 04, both on-chain stories, curated library) still hold but are now embedded in a larger ecosystem. |
 | [`architectural-principles.md`](../architectural-principles.md) | **Survives intact.** Paper-grounded provenance = Tier 1. Reasoning traces = all agent-managed vaults. Non-custodial = vault architecture. Verifiable history = ReasoningTraceRegistry. |
-| [`strategy-passport-spec.md`](specs/strategy-passport-spec.md) | **Survives for Tier 1 vaults.** Strategy passports apply to Archimedes-curated strategies. Community vaults don't require paper backing. |
+| [`strategy-passport-spec.md`](strategy-passport-spec.md) | **Survives for Tier 1 vaults.** Strategy passports apply to Archimedes-curated strategies. Community vaults don't require paper backing. |
 | [`anti-features.md`](../anti-features.md) | **Needs update.** "No third-party strategy onboarding" is now reversed — community vaults ARE third-party strategies. |
 
 ---

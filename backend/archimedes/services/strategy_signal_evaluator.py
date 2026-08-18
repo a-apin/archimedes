@@ -993,25 +993,46 @@ def _indicator_periods(spec: StrategySpec) -> dict[str, tuple[str, int]]:
 def _compute_indicator_value(name: str, period: int, prices: pd.Series) -> float:
     """Compute the latest value of one indicator from a price Series.
 
-    Uses the SAME numpy/pandas primitives the 5 hardcoded evaluators use, so the
-    live spec path produces values consistent with both them and the backtrader
-    interpreter's indicators:
+    Same numpy/pandas primitives as the 5 hardcoded evaluators, aligned with
+    the backtrader interpreter's indicators (the backtest is what gets graded,
+    so the live value must be computed the way the graded value was):
       - sma           → rolling(N).mean().iloc[-1]
-      - ema           → ewm(span=N).mean().iloc[-1]
-      - rsi           → standard Wilder-style RSI over N
+      - ema           → ewm(span=N).mean().iloc[-1]  (first-value seeded; bt
+                        seeds with an SMA — converges, known-benign F10)
+      - rsi           → Wilder SMMA smoothing, seeded with the first-N SMA —
+                        the algorithm behind bt.indicators.RSI's default
+                        MovAv.Smoothed. NOT a plain rolling mean: that is
+                        Cutler's RSI, a different indicator (7+ points apart
+                        on short windows), and shipping it here while the
+                        backtest used Wilder meant a threshold like rsi > 65
+                        could pass in the graded backtest and fail live on
+                        identical data (divergence audit F5).
       - momentum      → prices.iloc[-1] / prices.iloc[-N-1] - 1   (matches _tsmom_signal)
-      - realized_vol  → pct_change().tail(N).std() * sqrt(252)    (matches _vol_managed_signal)
+      - realized_vol  → pct_change().tail(N).std() * sqrt(252)    (matches _vol_managed_signal;
+                        NO backtest counterpart yet — interpret_spec raises
+                        DSLError for it, divergence audit F6)
     """
     if name == "sma":
         return float(prices.rolling(period).mean().iloc[-1])
     if name == "ema":
         return float(prices.ewm(span=period, adjust=False).mean().iloc[-1])
     if name == "rsi":
-        delta = prices.diff()
+        delta = prices.diff().dropna()
+        if len(delta) < period:
+            return float("nan")
         gain = delta.clip(lower=0.0)
         loss = -delta.clip(upper=0.0)
-        avg_gain = gain.rolling(period).mean().iloc[-1]
-        avg_loss = loss.rolling(period).mean().iloc[-1]
+        # Wilder smoothing: seed with the plain mean of the first `period`
+        # moves, then recurse avg = (avg*(period-1) + current) / period.
+        # This is exactly backtrader's MovAv.Smoothed (SMA seed + recursive
+        # exponential with alpha = 1/period), so the live RSI now equals the
+        # backtested RSI to float precision on the same series — pinned by
+        # the bt-parity test in test_dsl_rsi_parity.py.
+        avg_gain = float(gain.iloc[:period].mean())
+        avg_loss = float(loss.iloc[:period].mean())
+        for g, lo in zip(gain.iloc[period:], loss.iloc[period:], strict=True):
+            avg_gain = (avg_gain * (period - 1) + float(g)) / period
+            avg_loss = (avg_loss * (period - 1) + float(lo)) / period
         if avg_loss == 0:
             return 100.0
         rs = avg_gain / avg_loss

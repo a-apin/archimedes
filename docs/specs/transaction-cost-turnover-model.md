@@ -1,8 +1,8 @@
 # Transaction-cost + turnover model (analytics-engine)
 
 > **Status:** Shipped 2026-06-11 (third wave, item 1 of
-> [`third-wave-handover.md`](third-wave-handover.md) §2 / Priority 2.2 of
-> [`quant-roadmap.md`](quant-roadmap.md)). Author: Önder (quant lane).
+> [`third-wave-handover.md`](../handovers/third-wave-handover.md) §2 / Priority 2.2 of
+> [`quant-roadmap.md`](../plans/quant-roadmap.md)). Author: Önder (quant lane).
 > Code: `analytics-engine/src/archimedes_analytics_engine/costs.py` + wiring in
 > `engine.py`. Tests: `analytics-engine/tests/test_costs.py`.
 

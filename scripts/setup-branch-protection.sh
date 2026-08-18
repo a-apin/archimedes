@@ -10,6 +10,13 @@
 #   re-running converges to the same state.
 #
 # THE t2o2 / build-on-deploy TRADEOFF  (the team-decision knob — read before applying)
+#
+#   ⚠ REVISIT (2026-08-03): the justification below is stale. The `t2o2` agent account is
+#   dormant and nothing is being dispatched to it, so the direct-push exemption that
+#   enforce_admins=false exists to preserve is no longer buying anything. Every human
+#   admin still bypasses branch protection as a side effect. This should be re-decided,
+#   not inherited. Tracked as a follow-up; not changed here because flipping it affects
+#   live merge behaviour for the whole team.
 #   The `t2o2` agentic user pushes directly to `main` (build-on-deploy is the accepted
 #   workflow per CLAUDE.md). Branch protection would normally block that. We preserve it
 #   with `enforce_admins=false`: repo *admins* (which includes t2o2) keep their direct-push

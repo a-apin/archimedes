@@ -2,7 +2,7 @@
 
 > **Audience:** strategy engine owner + backend engineers.
 > **Status:** Day-10 update (2026-05-22). The original spec was implemented in
-> [`backend/archimedes/services/strategy_fusion.py`](../../backend/archimedes/services/strategy_fusion.py)
+> [`backend/archimedes/agents/strategy_fusion.py`](../../backend/archimedes/agents/strategy_fusion.py)
 > (650 lines, feature-flagged, DB-first corpus reads with file fallback). **What ships
 > today:** the 3-input fusion engine (`POST /api/strategies/generate`) consuming
 > user brief × live market regime × 10,000-paper corpus → grounded strategy spec.
@@ -10,10 +10,11 @@
 > (GitHub issue `#96`, now *unblocked* after `#95` engine v2 merged; previously
 > keyword-only selection). See also
 > [`../corpus-architecture.md`](../corpus-architecture.md) for the corpus end-to-end
-> + [`fusion-to-backtest-t2o2-issue.md`](fusion-to-backtest-t2o2-issue.md) for the
-> outstanding fusion→backtest pipeline issue.
+> The fusion→backtest pipeline issue (#128) shipped; its spec file was removed
+> 2026-07-27 and is recoverable from git history.
 > Additive to, and deliberately decoupled from,
-> [`strategy_architect.py`](../../backend/archimedes/services/strategy_architect.py).
+> `strategy_architect.py` (**deleted in PR #1074** — the debate engine is now the sole
+> generation pipeline).
 > **Prerequisite reading:** [`../architectural-principles.md`](../architectural-principles.md)
 > for the verifiability philosophy; [`strategy-passport-spec.md`](strategy-passport-spec.md)
 > for the provenance primitive this extends.
@@ -39,7 +40,7 @@ contract-review-grade (the `ReasoningTraceRegistry` contract is live — see
 multi-paper fusion would be a load-bearing change to an audited path under hackathon time
 pressure. Instead:
 
-- **Additive.** A new `backend/archimedes/services/strategy_fusion.py`. Nothing imports it
+- **Additive at the time of writing.** A new `backend/archimedes/agents/strategy_fusion.py`. (Since superseded by adoption: it is now imported by the API routes, the debate engine, and tests — this spec describes its introduction, not its current wiring.) Originally nothing imported it
   yet; wiring it into a route is a later, separately reviewable step.
 - **Flagged.** `ARCHIMEDES_FUSION_ENABLED` (default OFF). Flag-off is a hard inert path:
   no LLM call, no corpus read, returns a self-describing sentinel.

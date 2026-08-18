@@ -9,7 +9,7 @@
 > Cross-lane contributions are now the norm; the agentic system (`t2o2`) holds the
 > plurality of commits across the backend. The table below documents the *original*
 > ownership intent; the actual current authorship per file is in
-> [`../chuan-architecture-survey.md`](../chuan-architecture-survey.md).
+> [`../chuan-architecture-survey.md`](../archive/agora-2026-05/chuan-architecture-survey.md).
 
 ## Original team ownership intent (Day-3 — historical context)
 

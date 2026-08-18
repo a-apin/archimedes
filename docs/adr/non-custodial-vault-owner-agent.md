@@ -1,7 +1,11 @@
 # ADR: Non-custodial vault architecture — owner ≠ agent
 
 > **Audience:** Archimedes team (decision owner: Dan; preferred contract reviewer: Bogdan `mnemonik-dev`)
-> **Status:** **Accepted.** Implemented in [PR #731](https://github.com/a-apin/archimedes/pull/731) (owner≠agent vaults + `transferOwnership`); live on Arc testnet.
+> **Status:** Accepted
+> **Date:** 2026-06-26 (recorded; PR #731 merge date [unestablished — needs Dan])
+> **Owner:** Dan Browne (contract reviewer: Bogdan Sivochkin)
+> **Supersedes:** —
+> **Superseded-by:** —
 > **Question being decided:** Who holds withdrawal authority in user vaults? Can a compromised agent key drain user funds?
 > **Related:** [`docs/specs/ecosystem-design-spec.md` § 3.2](../specs/ecosystem-design-spec.md), [`docs/architectural-principles.md`](../architectural-principles.md) (primitive #3), `contracts/src/Vault.sol`, `contracts/src/VaultFactory.sol`.
 

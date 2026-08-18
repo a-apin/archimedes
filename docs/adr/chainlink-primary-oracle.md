@@ -1,7 +1,11 @@
 # ADR: Chainlink-primary price oracles with a thin, bounded admin fallback
 
 > **Audience:** Archimedes team (decision owner: Dan, contract + on-chain-integration owner; preferred contract reviewer: Bogdan `mnemonik-dev`)
-> **Status:** **Accepted (2026-07-01).** Ratified **Chainlink-only** by Bogdan (`mnemonik-dev`, contract reviewer), accepted by Dan (owner): Chainlink-primary + thin bounded admin fallback — a *single* well-validated feed, **not** a multi-source composition. See the 2026-07-01 update below.
+> **Status:** Accepted
+> **Date:** 2026-07-01
+> **Owner:** Dan Browne (contract reviewer / ratifier: Bogdan Sivochkin)
+> **Supersedes:** —
+> **Superseded-by:** —
 > **Question being decided:** Where does the on-chain USD price that feeds vault collateral math come from — our admin-set `PriceOracle`, a well-validated external oracle (Chainlink), or some composition of the two?
 > **Related issues/PRs:** [#724](https://github.com/a-apin/archimedes/pull/724) (Chainlink-first read path **+ the #724-review hardening**), [#731](https://github.com/a-apin/archimedes/pull/731) (owner≠agent non-custodial vaults — closed the drain vector). Feed-outage telemetry/alerting is operational follow-up.
 

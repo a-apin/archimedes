@@ -1,159 +1,202 @@
 # `docs/` — Documentation Index
 
-Navigation aid for everything under `docs/`. Grouped by purpose so you can find the right doc without grep'ing. Last updated 2026-05-25 (Day-14, submission day).
+**A doc not listed here does not exist.** If you wrote something and it is not in this table, either add a row or delete the file. If a row is wrong, fix the row in the same commit as the doc.
 
-Every doc carries a `> **Status:** …` line in its header so judges/readers can tell at a glance what's shipped, what's spec, what's archived, and what's been filed as a live GitHub issue. The tables below mirror that.
+Last rebuilt **2026-07-28**.
 
-For repo-level setup + operations, start at the **repo root**:
+`last-verified` is the date someone last checked the doc against the running system — not the date it was last edited. `—` means nobody has verified it since it was written; treat those claims as unproven.
 
-- [`../README.md`](../README.md) — project overview + status + documentation map
-- [`../SETUP.md`](../SETUP.md) — prerequisites + 5-step install + platform notes + test suite
-- [`../OPERATIONS.md`](../OPERATIONS.md) — run the stack + RPC deep-dive + LLM backends + traction + security
-- [`../ARC.md`](../ARC.md) — Arc testnet reference + Circle sponsor alignment
-- [`../ARC-OSS-SHOWCASE.md`](../ARC-OSS-SHOWCASE.md) — Arc OSS Showcase positioning + forkable primitives
-- [`../CLAUDE.md`](../CLAUDE.md) — project context for Claude Code sessions
+Everything under [`archive/`](archive/) is historical by definition and is indexed separately in [`archive/README.md`](archive/README.md). Archived docs carry an `ARCHIVED` banner naming their replacement.
 
-## Product spine (canonical — read these first)
+| Archived doc | Status | Owner | Archived | What it is |
+|---|---|---|---|---|
+| [`archive/deployment-runbook.md`](archive/deployment-runbook.md) | archived | Dan Browne | 2026-07-28 | EC2-era manual / break-glass AWS deploy runbook. **Do not execute** — it routes to an instance detached from the ALB target group. Kept for its incident history and diagrams. The Fargate-era replacement is unwritten; the gap is named in [`runbooks/README.md`](runbooks/README.md). |
 
-| Doc | What it is |
-|---|---|
-| [`user-stories.md`](user-stories.md) | The locked product spine. Primary archetype = capable non-expert. Per-page stories. Honesty rules. **Canonical reference for what the product *is*.** |
 
-## Architecture (current shipped state)
+Repo root: [`../README.md`](../README.md) · [`../SETUP.md`](../SETUP.md) · [`../CLAUDE.md`](../CLAUDE.md) · [`../AGENTS.md`](../AGENTS.md)
 
-| Doc | Status | What it is |
-|---|---|---|
-| [`design.md`](design.md) | superseded for product framing | Original single-vault design. Architecture lineage; the canonical product framing is `user-stories.md`. Component-level shipped state in `chuan-architecture-survey.md`. |
-| [`architectural-principles.md`](architectural-principles.md) | shipped | The four primitives (paper-claim binding, reasoning trace, tool-call provenance, selection-bias correction). All four live. |
-| [`chuan-architecture-survey.md`](chuan-architecture-survey.md) | snapshot — Day-11 | File-by-file survey of `backend/archimedes/` (~89 files). Aggregate gap clusters with t2o2-issue cross-refs. |
-| [`corpus-architecture.md`](corpus-architecture.md) | partial | The q-fin corpus end-to-end: 3-layer substrate (seed → DB → artifact), fusion path, wired-vs-not-yet table. |
+Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **Önder Akkaya** — portfolio math and the rigor gate. **Bogdan Sivochkin** (`mnemonik-dev`) — preferred reviewer for contract changes.
 
-## Specs — architectural contracts
+---
 
-Durable implementation contracts. Spec-only items are tracked under their respective phase plan.
+## Architecture — start here
 
-| Doc | Status | What it is |
-|---|---|---|
-| [`specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md) | shipped | The strategy passport schema + provenance contract. Live in the UI. |
-| [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md) | shipped | DSR + PBO + walk-forward OOS + look-ahead audit math + thresholds. 2 Tier-1 strategies pass today. |
-| [`specs/strategy-fusion-spec.md`](specs/strategy-fusion-spec.md) | shipped | Multi-paper fusion engine. SPECTER2 + RAG upgrade is the unblocked `#96` follow-on. |
-| [`specs/strategy-lifecycle-spec.md`](specs/strategy-lifecycle-spec.md) | shipped (Phase 0) | Generated → Validated → Deployed → Active → Completed/Expired/Rejected. The state machine fusion-evaluator output enters. |
-| [`specs/portfolio-constructor-decision-tree.md`](specs/portfolio-constructor-decision-tree.md) | shipped (Phase 0) | Names `portfolio_agent.py` (top-level) + `portfolio_optimizer.py` (math leaf) as canonical; retirement of the other two filed as [#131](https://github.com/a-apin/archimedes-arcadia/issues/131). |
-| [`specs/page-roles-spec.md`](specs/page-roles-spec.md) | shipped (Phase 0) | Per-page ownership in the spine — what each page is for + isn't for. Backs the Reasoning restructure + Library deep-link work. |
-| [`specs/vault-semantics-spec.md`](specs/vault-semantics-spec.md) | spec-only — Phase 4 | Vault lifecycle + trade-window semantics. Waits on Marten/Chuan alignment. |
-| [`specs/generation-streaming-spec.md`](specs/generation-streaming-spec.md) | shipped (Phase 2) | SSE streaming protocol for `/api/generate/*`. Backs the streaming Generate UI. |
-| [`specs/kb-integration-spec.md`](specs/kb-integration-spec.md) | partial (Phase 3c) | KB pipeline integration. Skeleton landed; production body waits on Dan's Linus-side iteration. |
-| [`specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md) | substantially shipped | Day-3 marketplace pivot — 4-layer architecture (Synthetic Protocol + AMM + Vault Factory + Agent-as-a-Service). |
-| [`specs/component-interfaces-spec.md`](specs/component-interfaces-spec.md) | shipped (interfaces); ownership softened | Original frozen `I*` Protocol contracts. Interfaces are architecturally correct; ownership has evolved to lead+coverage per CLAUDE.md. |
-| [`specs/ipfs-reasoning-traces-design-note.md`](specs/ipfs-reasoning-traces-design-note.md) | design note — not wired | Hash → Pinata CID → on-chain anchor (Rosetta-Alpha pattern). |
-| [`specs/commit-reveal-trace-spec.md`](specs/commit-reveal-trace-spec.md) | spec-only — v1.5 | Promotes "trace existed at T" to "trace existed *before* the trade". |
-| [`specs/ecosystem-architecture.html`](specs/ecosystem-architecture.html) | diagram | Visual diagram of the ecosystem architecture (HTML render). |
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`architecture.md`](architecture.md) | current | Dan Browne | 2026-07-28 | System architecture map. ECS Fargate + ALB + CloudFront + WAF, Aurora PostgreSQL 18.3, ElastiCache Redis 7.1. Every claim is a link to a file. |
+| [`reference/file-tree.md`](reference/file-tree.md) | reference | Dan Browne | 2026-07-14 | Repository map generated alongside the architecture map. |
+| [`reference/flow-diagram.mmd`](reference/flow-diagram.mmd) | reference | Dan Browne | 2026-07-14 | Request/generation flow, Mermaid source (`flow-diagram.svg`, `file-tree.svg` render it). |
+| [`database-architecture.md`](database-architecture.md) | current | Dan Browne | 2026-06-28 | Data stores, schemas, migration posture. |
+| [`deployment.md`](deployment.md) | current | Dan Browne | 2026-07-28 | Local vs production topology from one compose file. |
+| [`architectural-principles.md`](architectural-principles.md) | current | Dan Browne | 2026-07-28 | The four primitives the product is built to defend. |
+| [`anti-features.md`](anti-features.md) | current | Dan Browne | 2026-07-28 | What Archimedes deliberately does not build. |
 
-## Specs — phase plans
+## Product
 
-| Doc | Status | What it is |
-|---|---|---|
-| [`specs/spine-plus-v2-plan.md`](specs/spine-plus-v2-plan.md) | active — Phases 0–3 shipped + Phase 6 (onboarding tour) merged; Phase 7 all shipped via t2o2; Phases 4 & 5 in-flight | The master plan for the spine-plus-v2 effort. |
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`user-stories.md`](user-stories.md) | current | Dan Browne | 2026-05-20 | The locked product spine. Canonical statement of what the product is. |
+| [`agent-api.md`](agent-api.md) | current | Dan Browne | — | Driving the full journey programmatically; the agent-native surface. |
+| [`asset-universe.md`](asset-universe.md) | current | Dan Browne | — | Tradable universe and how it is assembled. |
+| [`demo-script-lepton.md`](demo-script-lepton.md) | current | Dan Browne | 2026-07-06 | Current demo video script. |
 
-## Specs — t2o2 issue specs (all closed and archived)
+## Quant and rigor — the math layer
 
-The five spec files below shipped on `main` between 2026-05-23 and 2026-05-24 and were moved to [`archive/`](archive/) as historical artifacts. They are kept for traceability of intent + acceptance shape that the bot executed against, but are not load-bearing for current architecture.
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`quant/README.md`](quant/README.md) | current | Önder Akkaya | 2026-07-28 | Index for the quant docs. Read this before any strategy claim. |
+| [`quant/methodology.md`](quant/methodology.md) | current | Önder Akkaya | 2026-06-12 | The math layer end to end. |
+| [`quant/admission-criteria.md`](quant/admission-criteria.md) | current | Önder Akkaya | 2026-07-28 | Tier-1 admission. DSR badge threshold is 0.90. |
+| [`quant/backtest-interpretation.md`](quant/backtest-interpretation.md) | current | Önder Akkaya | 2026-06-12 | How to read a backtest without fooling yourself. |
+| [`quant/strategy-library.md`](quant/strategy-library.md) | current | Önder Akkaya | 2026-07-28 | Curated library reference. Pass/fail status is whatever the live gate returns, not a number in a doc. |
+| [`quant/library-pbo.md`](quant/library-pbo.md) | findings | Önder Akkaya | 2026-06-11 | Library-level PBO findings (fourth wave). |
+| [`quant/third-wave-retest.md`](quant/third-wave-retest.md) | findings | Önder Akkaya | 2026-06-11 | Third-wave candidates through the cost model and walk-forward. |
+| [`quant/second-wave-universe-experiment.md`](quant/second-wave-universe-experiment.md) | findings | Önder Akkaya | 2026-06-11 | Does a bigger universe rescue the second-wave strategies. |
+| [`rigor-methods.md`](rigor-methods.md) | current | Önder Akkaya | 2026-07-28 | The four gates: DSR, PBO, walk-forward OOS, look-ahead audit. |
+| [`analysis/faber-dsr-finding.md`](analysis/faber-dsr-finding.md) | findings | Önder Akkaya | — | Why Faber 2007 fails the gate, and why that is the correct outcome. |
+| [`benchmarks/stockbench-results.md`](benchmarks/stockbench-results.md) | findings | Önder Akkaya | — | StockBench evaluation results (`stockbench-results.json`, `stockbench-vs-baselines.png`). |
+| [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md) | spec | Önder Akkaya | 2026-07-28 | DSR + PBO + walk-forward + look-ahead audit math and thresholds. |
+| [`specs/transaction-cost-turnover-model.md`](specs/transaction-cost-turnover-model.md) | shipped | Önder Akkaya | 2026-06-11 | Transaction-cost and turnover model in the analytics engine. |
 
-| Spec file | Status | Issue |
-|---|---|---|
-| [`archive/fusion-to-backtest-t2o2-issue.md`](archive/fusion-to-backtest-t2o2-issue.md) | ✓ closed — foundation `bd6935b` + wiring `2f7f871` | [#128](https://github.com/a-apin/archimedes-arcadia/issues/128) |
-| [`archive/phase7-rigor-consolidation-t2o2-issue.md`](archive/phase7-rigor-consolidation-t2o2-issue.md) | ✓ closed — shipped `e030ee4` | [#129](https://github.com/a-apin/archimedes-arcadia/issues/129) |
-| [`archive/phase7-llm-backend-unification-t2o2-issue.md`](archive/phase7-llm-backend-unification-t2o2-issue.md) | ✓ closed — shipped `dc91b43` | [#130](https://github.com/a-apin/archimedes-arcadia/issues/130) |
-| [`archive/phase7-portfolio-constructor-retirement-t2o2-issue.md`](archive/phase7-portfolio-constructor-retirement-t2o2-issue.md) | ✓ closed — shipped `a4a09fb` | [#131](https://github.com/a-apin/archimedes-arcadia/issues/131) |
-| [`archive/phase7-routes-py-split-t2o2-issue.md`](archive/phase7-routes-py-split-t2o2-issue.md) | ✓ closed — shipped `be9260b` | [#132](https://github.com/a-apin/archimedes-arcadia/issues/132) |
-| (no file — drafted inline as fast-follow to #128) | ✓ closed — shipped `2f7f871` | [#133](https://github.com/a-apin/archimedes-arcadia/issues/133) |
+## Corpus and generation
 
-## Strategy + launch + marketing
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`corpus-architecture.md`](corpus-architecture.md) | current | Dan Browne | 2026-07-28 | 10,000 arXiv preprints (not peer-reviewed). MiniLM rerank live; knowledge graph not built. |
+| [`specs/multi-agent-debate-spec.md`](specs/multi-agent-debate-spec.md) | shipped | Dan Browne | 2026-07-28 | The debate society — the sole generation pipeline. |
+| [`specs/strategy-fusion-spec.md`](specs/strategy-fusion-spec.md) | shipped | Dan Browne | 2026-07-28 | Multi-paper synthesis feeding the debate proposals. |
+| [`specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md) | shipped | Dan Browne | — | Paper-grounding contract carried by every strategy. |
+| [`specs/strategy-dsl-spec.md`](specs/strategy-dsl-spec.md) | spec | Dan Browne | — | Strategy DSL. |
+| [`specs/strategy-lifecycle-spec.md`](specs/strategy-lifecycle-spec.md) | spec | Dan Browne | — | Draft → generated → published lifecycle. |
+| [`specs/generation-streaming-spec.md`](specs/generation-streaming-spec.md) | spec | Dan Browne | — | SSE contract for the Generate page. |
+| [`specs/kb-integration-spec.md`](specs/kb-integration-spec.md) | spec | Dan Browne | — | KnowledgeBase submodule integration. |
+| [`specs/page-roles-spec.md`](specs/page-roles-spec.md) | spec | Dan Browne | — | What each page is for. |
+| [`specs/component-interfaces-spec.md`](specs/component-interfaces-spec.md) | spec | Dan Browne | — | Component interfaces and the team work split. |
+| [`specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md) | spec | Dan Browne | — | Marketplace/ecosystem design. Marketplace ships behind `PAYMENTS_DRY_RUN`. |
+| [`specs/xia-2026-protocols.md`](specs/xia-2026-protocols.md) | spec | Dan Browne | — | Xia et al. 2026 named protocols as implemented here. |
+| [`specs/architecture-page-design.md`](specs/architecture-page-design.md) | implemented | Dan Browne | 2026-07-28 | Design for the Architecture page, **implemented in PR #1192**. Should leave `specs/` for `architecture/` or `archive/` once #1192 merges, per `CONVENTIONS.md` § 1. |
+| [`diagrams/strategy-passport-architecture.md`](diagrams/strategy-passport-architecture.md) | reference | Dan Browne | — | Passport architecture diagram + reference. |
+| [`bedrock-model-cost-comparison.md`](bedrock-model-cost-comparison.md) | reference | Dan Browne | — | Bedrock model costs, us-east-1 on-demand. LLM is `bedrock_converse` / `amazon.nova-micro-v1:0`. |
+| [`cost-estimates/generate-llm-costs.md`](cost-estimates/generate-llm-costs.md) | reference | Dan Browne | — | Per-generation LLM cost estimate. |
 
-| Doc | What it is |
-|---|---|
-| [`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md) | 3-min pitch + 2-min demo + Q&A structure; 9-slide deck; honesty rules baked in. |
-| [`pitch-talking-points-rigor-track.md`](pitch-talking-points-rigor-track.md) | One-page handout for the rigor / provenance / agent track. Supplements the demo script. |
-| [`portfolio-advisor-demo-cues.md`](portfolio-advisor-demo-cues.md) | 60-second verbatim cue card for the Portfolio Advisor moment inside the live demo. |
-| [`claude-design-prompts.md`](claude-design-prompts.md) | Paste-ready prompts for [Claude Design](https://claude.ai/design) — logo, slide deck, UI screens, plus explainer diagrams. |
-| [`arc-alignment.md`](arc-alignment.md) | Arc testnet posture as a strategic strength + Circle Agent Stack opportunity framing. |
-| [`traction-logging.md`](traction-logging.md) | Operational cheat sheet for `arc-canteen update-product` + `update-traction` (the 30% rubric weight). |
+## On-chain and Arc
 
-## Benchmarks + diagrams + runbooks
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`arc-integration.md`](arc-integration.md) | current | Dan Browne | 2026-07-28 | Arc testnet reference and Circle integration. |
+| [`specs/vault-semantics-spec.md`](specs/vault-semantics-spec.md) | spec | Dan Browne | 2026-07-28 | Vault lifecycle and trade-window semantics. |
+| [`specs/commit-reveal-trace-spec.md`](specs/commit-reveal-trace-spec.md) | spec | Dan Browne | — | Commit-before-trade reasoning-trace anchoring. Contract review: Bogdan Sivochkin. |
+| [`specs/ipfs-reasoning-traces-design-note.md`](specs/ipfs-reasoning-traces-design-note.md) | design note | Dan Browne | — | IPFS pinning for reasoning traces. Not a spec. |
+| [`specs/execution-trading-agent-society-spec.md`](specs/execution-trading-agent-society-spec.md) | draft | Dan Browne | 2026-06-28 | Execution/trading agent society. Seed-and-refine draft. |
 
-| Path | What it is |
-|---|---|
-| [`benchmarks/stockbench-results.md`](benchmarks/stockbench-results.md) | Archimedes #15/15 on Chen et al. 2026 StockBench (honest, surfaced not hidden). |
-| [`diagrams/strategy-passport-architecture.md`](diagrams/strategy-passport-architecture.md) | Mermaid + reference doc for the passport flow + on-chain anchoring. |
-| [`runbooks/arc-testnet-e2e.md`](runbooks/arc-testnet-e2e.md) | End-to-end smoke test runbook (`verify_arc_e2e.py`). Evidence file is generated by `--execute`. |
-| [`runbooks/github-security-toggles.md`](runbooks/github-security-toggles.md) | One-time GitHub Settings toggles for Dependabot + secret scanning + push protection. |
+## Security
 
-## Reference / process
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`security/auth-model.md`](security/auth-model.md) | current — open gap | Dan Browne | — | What authentication is actually enforced and the known testnet gap. Read before exposing anything. |
+| [`runbooks/github-security-toggles.md`](runbooks/github-security-toggles.md) | runbook | Dan Browne | — | Repository security settings. |
 
-| Doc | What it is |
-|---|---|
-| [`judging-rubric-assessment.md`](judging-rubric-assessment.md) | Day-13 self-assessment against the rubric (Agentic Sophistication + Traction + Circle Tool Usage + Innovation + **Arc OSS Showcase**). |
-| [`rigor-methods.md`](rigor-methods.md) | Plain-English summary of the rigor methods (DSR / PBO / Kelly / MVO) that the selection-bias spec implements. Reader-friendly companion. |
-| [`anti-features.md`](anti-features.md) | What Archimedes is *not* building, with rationale. Back-pressure document for scope creep. |
-| [`infra-setup.md`](infra-setup.md) | EC2 deploy + CI/CD + Terraform reference. Lead: Chuan. |
-| [`architecture-diagram.html`](architecture-diagram.html) | Visual system architecture diagram (HTML render). |
+## Runbooks and operations
 
-## Architecture Decision Records ([`adr/`](adr/))
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`runbooks/README.md`](runbooks/README.md) | current | Dan Browne | 2026-07-28 | Index of every runbook, and an explicit list of the runbooks that do **not** exist yet — including the missing Fargate break-glass procedure. |
+| [`runbooks/operations.md`](runbooks/operations.md) | current | Dan Browne | 2026-07-28 | Run the stack, RPC deep-dive, LLM backends, security notes. |
+| [`runbooks/arc-testnet-e2e.md`](runbooks/arc-testnet-e2e.md) | runbook | Dan Browne | — | End-to-end testnet smoke test. |
+| [`runbooks/arc-testnet-e2e-evidence.md`](runbooks/arc-testnet-e2e-evidence.md) | evidence | Önder Akkaya | 2026-05-26 | Replayable on-chain evidence for SPEC-1. |
+| [`runbooks/spec-1-walkthrough.md`](runbooks/spec-1-walkthrough.md) | runbook | Dan Browne | — | SPEC-1 user-journey walkthrough. |
+| [`runbooks/t3.2-contract-redeploy.md`](runbooks/t3.2-contract-redeploy.md) | runbook | Dan Browne | — | Contract redeploy procedure and secret handling. |
 
-Durable technical decisions captured once, with alternatives + reasoning, so future contributors understand the choice without relitigating.
+## Decisions (ADRs)
 
-| ADR | Decision |
-|---|---|
-| [`adr/backtrader-vs-vectorbt-decision-memo.md`](adr/backtrader-vs-vectorbt-decision-memo.md) | Why backtrader over vectorbt for v1 backtest engine |
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-07-28 | ADR index and status vocabulary. All eighteen records are listed there. |
+| [`adr/unlicense-public-domain.md`](adr/unlicense-public-domain.md) | accepted | Dan Browne | initial commit | The Unlicense as a public-domain dedication, and its ownership/contributor consequences. |
+| [`adr/arc-settlement-chain.md`](adr/arc-settlement-chain.md) | accepted | Dan Browne | 2026-05-13 | Arc testnet 5042002; USDC as settlement asset and native gas token. |
+| [`adr/two-tier-marketplace.md`](adr/two-tier-marketplace.md) | accepted | Dan Browne | 2026-05-13 | Verified / Community tiers; rigor as the wedge. |
+| [`adr/backtrader-backtest-engine.md`](adr/backtrader-backtest-engine.md) | accepted | Dan Browne | 2026-05-13 | backtrader chosen as the v1 backtest engine. |
+| [`adr/build-on-deploy-main-only.md`](adr/build-on-deploy-main-only.md) | accepted | Dan Browne | 2026-05-18 | Build-on-deploy, main-only branch model. |
+| [`adr/portfolio-constructor-decision-tree.md`](adr/portfolio-constructor-decision-tree.md) | accepted | Önder Akkaya | 2026-05-22 | Which constructor runs when. |
+| [`adr/k1-generation-external-rigor-gate.md`](adr/k1-generation-external-rigor-gate.md) | accepted | Dan Browne | 2026-05-23 | K=1 generation with an externalised rigor gate. |
+| [`adr/aws-account-migration.md`](adr/aws-account-migration.md) | accepted | Dan Browne | 2026-06-24 | Production moved to account 037613907429 / us-east-1. |
+| [`adr/glm-to-bedrock-llm-migration.md`](adr/glm-to-bedrock-llm-migration.md) | accepted | Dan Browne | 2026-06-24 | GLM → Bedrock. |
+| [`adr/non-custodial-vault-owner-agent.md`](adr/non-custodial-vault-owner-agent.md) | accepted | Dan Browne | 2026-06-26 | Owner ≠ agent; non-custodial vaults. |
+| [`adr/portfolio-constructor-consolidation.md`](adr/portfolio-constructor-consolidation.md) | accepted | Önder Akkaya | 2026-06-26 | Legacy constructor paths retired; dual-signal sizer activated. |
+| [`adr/rigor-gate-unification.md`](adr/rigor-gate-unification.md) | accepted | Dan Browne | 2026-06-26 | One source of selection-bias truth. |
+| [`adr/fusion-primary-generation.md`](adr/fusion-primary-generation.md) | superseded | Dan Browne | 2026-06-26 | Fusion-primary routing. Superseded by the debate-society record (2026-07-09). |
+| [`adr/chainlink-primary-oracle.md`](adr/chainlink-primary-oracle.md) | accepted | Dan Browne | 2026-07-01 | Chainlink-primary oracles with a thin, bounded admin fallback. |
+| [`adr/ec2-to-ecs-fargate-cutover.md`](adr/ec2-to-ecs-fargate-cutover.md) | accepted | Dan Browne | 2026-07-09 | Serving tier moved from one EC2 box to ECS Fargate behind the existing ALB. |
+| [`adr/debate-society-sole-generation-pipeline.md`](adr/debate-society-sole-generation-pipeline.md) | accepted | Dan Browne | 2026-07-09 | The debate society is the only generation path; no fallback. |
+| [`adr/num-trials-self-containment.md`](adr/num-trials-self-containment.md) | accepted, **pending quant sign-off** | Dan Browne | 2026-07-09 | DSR trial count depends only on the strategy's own search; curated strategies grade at num_trials = 1. |
+| [`adr/aurora-postgres-alembic-datastore.md`](adr/aurora-postgres-alembic-datastore.md) | accepted | Dan Browne | 2026-07-28 | Aurora Serverless v2 (18.3) + Alembic; Redis 7.1 ephemeral-only. |
 
-[`adr/README.md`](adr/README.md) covers the ADR convention + when to add a new one.
+## Plans and roadmaps (intent, not state)
 
-## Historical ([`archive/`](archive/))
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`plans/quant-roadmap.md`](plans/quant-roadmap.md) | plan | Önder Akkaya | — | The portfolio-math and backtest-rigor lane. |
+| [`plans/spine-plus-v2-plan.md`](plans/spine-plus-v2-plan.md) | plan | Dan Browne | — | Spine+ v2 phase plan. |
+| [`plans/second-wave-multi-asset-strategies.md`](plans/second-wave-multi-asset-strategies.md) | plan | Önder Akkaya | 2026-06-11 | Second-wave multi-asset strategies. |
+| [`plans/paper-replication-spec.md`](plans/paper-replication-spec.md) | plan | Önder Akkaya | — | Replication and original-extension workflow. |
 
-Docs that were authoritative at an earlier phase and have since been superseded. Kept for traceability but **not the current shape of the product**. Always prefer the current doc that supersedes it (each archive entry names its replacement in [`archive/README.md`](archive/README.md)).
+## Sprint session cards (current)
 
-| Archived doc | Now superseded by |
-|---|---|
-| [`archive/mvp-scope-memo.md`](archive/mvp-scope-memo.md) | [`user-stories.md`](user-stories.md) (spine) + [`dead-code-audit-2026-05-24-v2.md`](dead-code-audit-2026-05-24-v2.md) § Submission-day execution plan (current scope) |
-| [`archive/launch-plan-2026-05-19.md`](archive/launch-plan-2026-05-19.md) | [`dead-code-audit-2026-05-24-v2.md`](dead-code-audit-2026-05-24-v2.md) § Submission-day execution plan |
-| [`archive/ui-simplification-proposal-2026-05-20.md`](archive/ui-simplification-proposal-2026-05-20.md) | [`specs/page-roles-spec.md`](specs/page-roles-spec.md) + spine Phases 0–7 shipped per [`specs/spine-plus-v2-plan.md`](specs/spine-plus-v2-plan.md) |
-| [`archive/evening-execution-plan-2026-05-24.md`](archive/evening-execution-plan-2026-05-24.md) | Shipped via PRs #220–#241; reality captured in [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) and [`dead-code-audit-2026-05-24-v2.md`](dead-code-audit-2026-05-24-v2.md) |
-| [`archive/sunday-night-handoff-2026-05-24.md`](archive/sunday-night-handoff-2026-05-24.md) | [`dead-code-audit-2026-05-24-v2.md`](dead-code-audit-2026-05-24-v2.md) § Submission-day execution plan |
-| [`archive/rfb-alignment.md`](archive/rfb-alignment.md) | [`arc-alignment.md`](arc-alignment.md) + [`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md) |
-| [`archive/qfin-paper-corpus-seed.md`](archive/qfin-paper-corpus-seed.md) | [`corpus-architecture.md`](corpus-architecture.md) |
-| [`archive/agora_project_analysis.md`](archive/agora_project_analysis.md) | [`architectural-principles.md`](architectural-principles.md) + [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md) |
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`sprint/README.md`](sprint/README.md) | current | Dan Browne | 2026-08-16 | Index of per-session working cards for the Arc-mainnet sprint, sharded so each session reads ~50 lines instead of the full plan. |
 
-### Operational artifacts (archived 2026-05-24)
+## Audits and findings
 
-Same-day execution plans, phase-specific runbooks, and the launch-night operational runbook. Useful for traceability of how the build was sequenced; not load-bearing for product or architecture.
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`audits/2026-06-14-full-tree-audit.md`](audits/2026-06-14-full-tree-audit.md) | audit — lineage head | Dan Browne | 2026-06-14 | Full-repo audit. Carries the only resolution ledger; supersedes the earlier audit chain. |
+| [`audits/2026-06-14-gpt-oss-findings-verified.md`](audits/2026-06-14-gpt-oss-findings-verified.md) | audit | Dan Browne | 2026-07-28 | GPT-OSS findings, verified. |
+| [`audits/2026-06-13-Onder-findings.md`](audits/2026-06-13-Onder-findings.md) | audit | Önder Akkaya | 2026-06-13 | Resilience and stress-test report. |
+| [`audits/2026-07-09-curated-consolidation.md`](audits/2026-07-09-curated-consolidation.md) | audit | Önder Akkaya | 2026-07-09 | Curated-example consolidation build and verification. |
+| [`audits/merge-handoff-2026-06-10.md`](audits/merge-handoff-2026-06-10.md) | historical log | Dan Browne | 2026-06-10 | Merge handoff for the 2026-06-10 remediation PRs. |
+| [`audits/rigor-gate-fixes.md`](audits/rigor-gate-fixes.md) | needs owner | Önder Akkaya | — | A bare patch list with no findings, owner or dates. Should be tracked issues, then deleted. |
 
-| Archived doc | What it was |
-|---|---|
-| [`archive/morning-execution-plan-2026-05-24.md`](archive/morning-execution-plan-2026-05-24.md) | Sunday-morning workstream sequencing artifact |
-| [`archive/afternoon-execution-plan-2026-05-24.md`](archive/afternoon-execution-plan-2026-05-24.md) | Sunday-afternoon merge-train + subagent research artifact |
-| [`archive/launch-execution-plan-2026-05-23.md`](archive/launch-execution-plan-2026-05-23.md) | Day-12 launch sequencing plan (210KB) |
-| [`archive/launch-night-operational-runbook.md`](archive/launch-night-operational-runbook.md) | Launch-night ops + rollback procedure |
-| [`archive/phase5-execution-runbook.md`](archive/phase5-execution-runbook.md) | Phase-5 execution runbook |
+## Handovers and session logs (historical — not current state)
 
-## Research ([`research/`](research/))
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`handovers/2026-07-14-architecture-review.md`](handovers/2026-07-14-architecture-review.md) | historical log | Dan Browne | 2026-07-28 | Architecture-page redesign summary; evidence behind `architecture.md` §10. Its "what's stale" section describes a page that no longer exists — the redesign was **implemented in PR #1192**. |
+| [`handovers/second-wave-handover.md`](handovers/second-wave-handover.md) | historical log | Önder Akkaya | — | Second-wave brief. |
+| [`handovers/third-wave-handover.md`](handovers/third-wave-handover.md) | historical log | Önder Akkaya | — | Third-wave (fidelity) brief. |
+| [`handovers/fourth-wave-handover.md`](handovers/fourth-wave-handover.md) | historical log | Önder Akkaya | — | Fourth-wave (gate-as-product) brief. |
+| [`handovers/phase8-9-landing-and-fusion-spec.md`](handovers/phase8-9-landing-and-fusion-spec.md) | historical log | Dan Browne | 2026-05-24 | Phase 8/9 end-of-context session log. Named like a spec; it is not one. |
 
-Research artifacts that don't fit the spine + architecture + specs hierarchy but are referenced by other docs. Currently the Linus↔Archimedes lineage comparison + the Archimedes→Linus port-backs that came out of the Day-9 cross-repo work.
+## Research and prompts
 
-## Conventions for this folder
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`research/README.md`](research/README.md) | reference | Dan Browne | — | Research artifacts index. |
+| [`research/linus-archimedes-comparison.md`](research/linus-archimedes-comparison.md) | reference | Dan Browne | — | Bidirectional architecture comparison with Linus. |
+| [`research/archimedes-to-linus-portbacks.md`](research/archimedes-to-linus-portbacks.md) | reference | Dan Browne | — | What Archimedes sends back to Linus. |
+| [`prompts/quant-audit-prompt.md`](prompts/quant-audit-prompt.md) | template | Önder Akkaya | — | LLM prompt template for a quant audit. Not an audit. |
+| [`prompts/agentic-issue-skeleton.md`](prompts/agentic-issue-skeleton.md) | template | Dan Browne | 2026-07-28 | Copy-paste skeleton for a judge-grade issue spec dispatched to the agentic system. |
 
-- **Every doc has a `> **Status:**` line** in its second-block header. The Day-11 cleanup pass standardized vocabulary: `shipped` · `partial` · `spec-only` · `snapshot — <date>` · `archived` · `filed as #NNN` (for t2o2 issues) · `superseded by …`. Add the most specific status that fits.
-- **Cross-references use relative paths** within `docs/` (e.g. `[corpus-architecture.md](corpus-architecture.md)`); root-level docs use the `../` prefix.
-- **t2o2 issue specs** carry a status line linking to their GitHub issue. The file is the source-of-truth for the spec body; the issue is the source-of-truth for PR and review activity.
-- **Archived docs stay archived** — don't move them back. If something in an archived doc is still load-bearing, fold it into the current canonical doc + leave the archive in place.
-- **ADRs are immutable** — capture a decision once, supersede with a new ADR if it changes; don't edit the original.
+---
 
-## How to add a new doc
+## Working with the repo and the team
 
-1. Decide which group it belongs to (Product spine? Architecture? Architectural spec? Phase plan? t2o2 issue? Strategy? Reference? ADR?).
-2. Pick a filename (kebab-case, descriptive, no dates). For t2o2 issue specs, suffix `-t2o2-issue.md`.
-3. Add a `> **Status:** <vocabulary> · <one-liner>` header.
-4. Link from this index (`docs/README.md`) under the right group.
-5. Cross-link from related docs in the same group.
-6. If it's a t2o2 issue spec: file it as a GitHub issue with `gh issue create … --assignee t2o2` and back-link the issue # in the spec's status block.
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`CONVENTIONS.md`](CONVENTIONS.md) | current | Dan Browne | 2026-07-28 | Where a new doc goes, how it is named, its front-matter, and the ADR lifecycle. Read before adding any file. |
+| [`team.md`](team.md) | current | Dan Browne | 2026-07-28 | Roster, lanes, review coverage, timezones, sync window. Extracted from `CLAUDE.md`. |
+| [`agent-gotchas.md`](agent-gotchas.md) | current | Dan Browne | 2026-07-28 | Character-limited message surfaces (`wc -m`, not `wc -c`) and zsh quoting traps. Both were paid for. |
+| [`submodules.md`](submodules.md) | current | Dan Browne | 2026-07-28 | The three submodules, what each is for, and the sticky-config one-liner a fresh clone needs. |
 
-If you're unsure where it goes, default to `docs/<your-doc>.md` (top-level docs/) and ask in #standups if a subdirectory is warranted.
+---
+
+## Conventions
+
+- **No dates in top-level filenames.** Dated files belong in `audits/`, `handovers/` or `archive/`, named `YYYY-MM-DD-slug.md`.
+- **A decision is stated once, in one ADR.** Prose docs link to the record; they do not
+  restate or re-argue it. If a spec disagrees with an `Accepted` ADR, the spec is wrong —
+  open a superseding ADR, do not patch the prose.
+- **One kind per directory.** `specs/` holds specs. Session logs go to `handovers/`, roadmaps to `plans/`, findings to `quant/`, decisions to `adr/`, prompt templates to `prompts/`.
+- **Never state a curated-library pass count in a doc.** Strategy pass/fail is whatever the live rigor gate returns; a number written here goes stale silently and has been wrong before. Point readers at the gate.
+- **Contract counts come from `GET /api/config/contracts`**, not from prose. The tree currently holds 12 Solidity sources / 22 `.sol` files / 21 ABIs.
+- **Archiving is a move plus a banner**, not a deletion: `> **ARCHIVED <date> — historical. Current: <path>**`.

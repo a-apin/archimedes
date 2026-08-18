@@ -43,7 +43,7 @@ of the market reading the same paper. The classical canon is the control group w
 This does not abandon rigor — it relocates it. We do not trust a preprint because it is new;
 we trust a strategy because it survives the four-primitive selection-bias gate (DSR + PBO +
 walk-forward OOS + look-ahead audit, per
-[`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md)).
+[`specs/selection-bias-corrections-spec.md`](../specs/selection-bias-corrections-spec.md)).
 Novelty decides *what enters the funnel*; rigor decides *what survives it*. The old seed
 list inverted that — it used fame as a proxy for rigor and never looked for novelty at all.
 

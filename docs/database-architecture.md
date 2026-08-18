@@ -5,8 +5,8 @@
 > ElastiCache). Reflects the actual code paths and the actual data at cutover —
 > claims here are cross-checked against the source, not against the spec.
 >
-> **Companion docs:** [`docs/aws-architecture.md`](aws-architecture.md) (the infra
-> the stores run on), [`docs/design.md`](design.md) (the system architecture),
+> **Companion docs:** [`docs/aws-architecture.md`](archive/agora-2026-05/aws-architecture.md) (the infra
+> the stores run on), [`docs/design.md`](archive/agora-2026-05/design.md) (the system architecture),
 > [`docs/corpus-architecture.md`](corpus-architecture.md) (how the 10k-paper corpus
 > is built and where it lives), and [`backend/archimedes/chain/README.md`](../backend/archimedes/chain/README.md)
 > (the on-chain anchor that the off-chain reasoning-trace store hashes into).
@@ -261,7 +261,7 @@ next tick — so it lives in Redis, not Postgres.
 The application code is **identical** across local and prod — only the
 `DATABASE_URL` and `REDIS_URL` env values change. The 2026-06-28 cutover moved prod
 off the in-stack Docker Postgres/Redis containers (the topology described in
-[`docs/aws-architecture.md`](aws-architecture.md) §1) onto managed Aurora +
+[`docs/aws-architecture.md`](archive/agora-2026-05/aws-architecture.md) §1) onto managed Aurora +
 ElastiCache, without touching the data-access code.
 
 ---

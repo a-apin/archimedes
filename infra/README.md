@@ -169,6 +169,8 @@ force squash/rebase). The informational checks (lint-report, complexity) stay no
 
 **Build-on-deploy tradeoff:** the script ships with `enforce_admins=false` so repo admins
 (including the `t2o2` agentic user) keep their direct-push path while non-admins are gated.
+**Stale as of 2026-08-03:** `t2o2` is dormant, so this exemption now only benefits human
+admins. See the REVISIT note in `scripts/setup-branch-protection.sh`.
 Flipping `ENFORCE_ADMINS=true` gates everyone but forces the agentic system onto PRs — that
 is a team decision (Chuan, as repo admin, owns it).
 

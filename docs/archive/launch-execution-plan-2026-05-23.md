@@ -1,8 +1,12 @@
+> **ARCHIVED 2026-05-26 — historical record. Do not execute.** Current status: see
+> [`docs/architecture.md`](../architecture.md).
+
 # Archimedes Launch Execution Plan
 
 **Window:** Saturday 2026-05-23 → Sunday 2026-05-24 (target submission) → Monday 2026-05-25 23:59 ET (hard deadline; buffer day).
 **Author:** Daniel Browne, with Claude (Opus 4.7) as planner. Marten + Chuan signed off on Phase 4/5 driver authority 2026-05-23 AM. Chuan confirmed full AWS provisioning autonomy for the `t2o2` bot system 2026-05-23 AM.
-**Status:** Locked. Issue specs ready to file.
+**Status (historical):** Was "Locked. Issue specs ready to file." on 2026-05-23. **No longer
+actionable** — the issues were filed and closed in May 2026 and this plan is archived.
 
 ---
 
@@ -1853,7 +1857,7 @@ Goal: ship the **Strategy Passport** to its full architectural promise — multi
 
 **Reference docs:**
 - [docs/diagrams/strategy-passport-architecture.md](../diagrams/strategy-passport-architecture.md) — canonical architecture reference (multi-paper, regime-aware, unified store, on-chain anchor; multiple mermaid diagrams)
-- [docs/specs/strategy-passport-spec.md](strategy-passport-spec.md) — implementation contract (rewritten in T-PE.4 to match the unified architecture)
+- [docs/specs/strategy-passport-spec.md](../specs/strategy-passport-spec.md) — implementation contract (rewritten in T-PE.4 to match the unified architecture)
 - Xia et al. 2026 (arxiv 2605.19337) — protocol critique that motivates R3 reproducibility target
 - Chen et al. 2026 (arxiv 2510.02209, StockBench) — empirical bear-market vulnerability that motivates Layers 1-3 of the bear-strategy architecture
 
@@ -3310,4 +3314,6 @@ copy if any, (4) empty-state copy, (5) error-state copy.
 
 ---
 
-*End of launch execution plan. Next read: pick up your assigned Maestro track prompt in § 9.*
+*End of launch execution plan. **The "pick up your assigned Maestro track prompt in § 9"
+instruction is historical and expired — do not act on it.** For current work, see
+[`docs/architecture.md`](../architecture.md).*

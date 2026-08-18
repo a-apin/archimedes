@@ -1,8 +1,8 @@
 # T1.1 — Multi-Agent Debate Engine Spec (v2, replacement-scope)
 
-**Status:** design / not yet built · **Owner:** Dan Browne · **Track:** Lepton Tier-1 vertical (Agentic Sophistication, 30%)
+**Status:** SHIPPED 2026-07 — the debate society is the sole generation pipeline. This document is retained as design rationale, not as a build instruction. · **Owner:** Dan Browne · **Track:** Lepton Tier-1 vertical (Agentic Sophistication, 30%)
 **Slot-in:** `pipeline_name="debate"` runner in `backend/archimedes/agents/generation_pipeline.py` (`run_generation` dispatch)
-**Flag:** `ARCHIMEDES_DEBATE_ENABLED` (default OFF) · **Last verified against source:** 2026-06-28 (branch `dbrowneup/t1.1-debate-spec`)
+**Last verified against source:** 2026-06-28 (branch `dbrowneup/t1.1-debate-spec`)
 
 This is a complete, self-contained, build-ready design. It is the **v2 replacement-scope rewrite** that resolves PR #766. The earlier draft framed the debate as a *fourth, flag-gated peer* alongside fusion/architect/agent with a byte-identical live path. **Dan's call is the opposite: the debate society becomes the only generation pipeline, fusion folds in as an internal capability, and the architect + single-agent paths are deleted.** The flag exists for the *cutover window* (default OFF until the replacement is verified on the live path), and the end state has no legacy generation path to guard — **but the deletions are deferred to a separate cutover PR (Phase 3); Phase 1 is strictly additive** (see §5a and the delete-vs-byte-identical resolution below).
 
@@ -212,6 +212,13 @@ One line: *the larger pool + top-10 leaderboard live at the cheap debate-over-sh
 
 ## 5. Integration — replacement scope (additive in Phase 1, deletions deferred to cutover)
 
+> **The Phase-3 cutover has happened (2026-07-09).** The society is the sole generation
+> pipeline, the Strategy Architect is deleted (`ccf4f2f`, PR #1074) and
+> `ARCHIMEDES_DEBATE_ENABLED` is retired. Decision record:
+> [`../adr/debate-society-sole-generation-pipeline.md`](../adr/debate-society-sole-generation-pipeline.md).
+> The phased plan below is retained as the *record of how it was sequenced*, not as
+> current state — the flag and the legacy runners it describes no longer exist.
+
 The society **becomes** the sole generation pipeline as the end state — but the path there is **additive first, delete later**. Phase 1 *adds* the `"debate"` branch behind `ARCHIMEDES_DEBATE_ENABLED` (default OFF) and leaves every legacy runner untouched; the deletions land in a separate Phase-3 cutover PR after the society is verified on the live path. Reuse stays ~80% (the persist/backtest/episodic tail, `evaluate_fusion_spec`, `StrategyFusion.propose`, `select_candidates`, SSE vocabulary, the external gate). The ~20% new is the society runner + the deterministic critics + the synthesizer adapter.
 
 ### 5a. Phase 1 is additive; the deletions are the Phase-3 cutover PR (fix A2)
@@ -360,7 +367,12 @@ The new shape proposes a **larger pool** (~15–20), but the critics and **all 1
 
 > **PR: "feat: debate society as flag-gated generation pipeline (additive, deterministic-critic, tool-free) !minor"**
 
-**Scope fence (fix A2):** ADD the `"debate"` branch behind `ARCHIMEDES_DEBATE_ENABLED` (default OFF). **Do NOT delete** the architect path, the `portfolio_agent` runners, or the duplicate endpoint — those move to the Phase-3 cutover PR. Generation-only; no execution-agent code.
+> **SUPERSEDED — do not follow this scope fence.** The Phase-3 cutover happened: the
+> debate branch is no longer flag-gated (`ARCHIMEDES_DEBATE_ENABLED` is gone) and
+> `backend/archimedes/agents/strategy_architect.py` was **deleted in PR #1074**. The debate
+> engine is the sole generation pipeline. The original Phase-1 fence read: *"ADD the `\"debate\"`
+> branch behind `ARCHIMEDES_DEBATE_ENABLED` (default OFF). Do NOT delete the architect path,
+> the `portfolio_agent` runners, or the duplicate endpoint."* That instruction is historical.
 
 > **🚧 Phase-1 blocker (explicit — per Bogdan's #808 review): the flag stays OFF until A1 is wired.** The strict-rigor path (`pool_size` → the external selection-bias gate) is **not wired yet** — `api/selection_bias_routes.py` derives `num_trials` internally from library size. Flipping `ARCHIMEDES_DEBATE_ENABLED` ON before the §5c gate-wiring delta lands risks a **false-PASS on the rigor badge**, which violates the #1 "claims must be true" rule. A1 (thread `pool_size` into the gate) + its test #5 are therefore hard Phase-1 acceptance gates for flag-ON; the flag-OFF additive skeleton may merge before A1, but **must not be enabled on the live path until A1 is proven there.**
 
