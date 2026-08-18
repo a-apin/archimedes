@@ -109,11 +109,14 @@ async def test_redis_error_fails_closed_with_error_sentinel():
 
 
 def _patched_enforce(monkeypatch, redis_mock):
-    """Route the module-level GenerationQuota construction through our mock."""
-    import archimedes.services.generation_quota as gq
+    """Route the module-level GenerationQuota construction through our mock.
 
+    String-target setattr, deliberately: the module is already imported via
+    ``from ... import`` at the top, and importing it a second way just to
+    hand monkeypatch an object tripped the both-import-styles lint.
+    """
     q = _quota_with(redis_mock)
-    monkeypatch.setattr(gq, "GenerationQuota", lambda *a, **k: q)
+    monkeypatch.setattr("archimedes.services.generation_quota.GenerationQuota", lambda *a, **k: q)
     return q
 
 
