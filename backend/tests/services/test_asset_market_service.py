@@ -15,11 +15,14 @@ timeout. All tests are hermetic — yfinance / chain boundaries are mocked.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from archimedes.api.explore_schemas import ExploreAssetsResponse
 from archimedes.services.asset_market_service import (
+    _CACHE_TTL_SECONDS,
     AssetMarketService,
     _explore_universe,
     _pct_change,
@@ -295,6 +298,93 @@ class TestListAssets:
             resp2 = await service.list_assets()
 
         assert resp1 is resp2  # Same object (cached)
+
+    @pytest.mark.asyncio
+    async def test_stale_cache_served_immediately_not_blocked_on_rebuild(self):
+        """Stale-while-revalidate (explore-latency fix): once ANY cache exists,
+        a request past the TTL must never await the rebuild inline — it gets
+        the last-good (stale) response immediately, and a background task
+        does the rebuild. This is what turns the measured 12.7s-42.9s prod
+        stall (cache-miss request pays the full oracle+yfinance cost) into a
+        sub-millisecond cache read for every request except the very first.
+        """
+        service = AssetMarketService()
+
+        # Seed a cache directly — skip the cold-start path entirely.
+        stale_resp = ExploreAssetsResponse(
+            assets=[],
+            cache_ttl_seconds=_CACHE_TTL_SECONDS,
+            generated_at="t0",
+            universe_size=0,
+            priced_count=0,
+        )
+        service._cache = stale_resp
+        service._cache_ts = time.time() - (_CACHE_TTL_SECONDS + 1)  # already expired
+
+        # A rebuild that would hang forever if this test ever awaited it inline.
+        rebuild_started = asyncio.Event()
+        rebuild_may_finish = asyncio.Event()
+
+        async def slow_refresh():
+            rebuild_started.set()
+            await rebuild_may_finish.wait()
+            return ExploreAssetsResponse(
+                assets=[],
+                cache_ttl_seconds=_CACHE_TTL_SECONDS,
+                generated_at="t1",
+                universe_size=0,
+                priced_count=0,
+            )
+
+        with patch.object(service, "_refresh", side_effect=slow_refresh):
+            t0 = time.monotonic()
+            resp = await asyncio.wait_for(service.list_assets(), timeout=1.0)
+            elapsed = time.monotonic() - t0
+
+            assert resp is stale_resp  # served the stale cache, not the rebuild
+            assert elapsed < 0.5  # never blocked on the (hung) rebuild
+            await asyncio.wait_for(rebuild_started.wait(), timeout=1.0)  # rebuild WAS kicked off
+
+            rebuild_may_finish.set()
+            await service._refresh_task  # let the background task finish cleanly
+
+    @pytest.mark.asyncio
+    async def test_stale_cache_concurrent_requests_dedupe_background_refresh(self):
+        """N requests landing in the same stale window must not each start
+        their own oracle+yfinance rebuild — only one refresh in flight."""
+        service = AssetMarketService()
+
+        stale_resp = ExploreAssetsResponse(
+            assets=[],
+            cache_ttl_seconds=_CACHE_TTL_SECONDS,
+            generated_at="t0",
+            universe_size=0,
+            priced_count=0,
+        )
+        service._cache = stale_resp
+        service._cache_ts = time.time() - (_CACHE_TTL_SECONDS + 1)
+
+        call_count = 0
+        finish = asyncio.Event()
+
+        async def counting_refresh():
+            nonlocal call_count
+            call_count += 1
+            await finish.wait()
+            return stale_resp
+
+        with patch.object(service, "_refresh", side_effect=counting_refresh):
+            results = await asyncio.gather(*(service.list_assets() for _ in range(5)))
+            assert all(r is stale_resp for r in results)
+            finish.set()
+            # Bind the result rather than awaiting for the side effect alone:
+            # a bare ``await task`` reads to a linter as a statement with no
+            # effect, and asserting on what the background refresh actually
+            # returned is a strictly stronger check than merely draining it.
+            refreshed = await service._refresh_task
+            assert refreshed is stale_resp
+
+        assert call_count == 1  # deduplicated, not 5 separate rebuilds
 
 
 # ── Universe alignment (#759 follow-up to #842) ────────────────────────────
