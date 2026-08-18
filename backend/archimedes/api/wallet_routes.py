@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.exc import IntegrityError
 
@@ -393,6 +393,47 @@ def _wallet_has_owned_data(session, address: str) -> bool:
     )
 
 
+def _wallet_has_unclaimed_legacy_data(session, user_id: str, address: str) -> bool:
+    """Would ``_claim_legacy_wallet_data(user_id, address)`` claim anything?
+
+    DELIBERATELY a separate function from ``_wallet_has_owned_data`` above,
+    which asks the OPPOSITE question ("does this wallet back any data at all",
+    claimed or not) and guards unlinking — extending that one with an
+    ``owner_user_id IS NULL`` filter would invert the unlink guard's meaning
+    for exactly the wallets that back real data. This predicate mirrors the
+    claim loop's models and filters one-for-one, so the relink prompt fires
+    iff linking would actually attach something (#1194 revision e).
+    """
+    from archimedes.models.chat import VaultMetadata
+    from archimedes.models.strategy_passport_record import StrategyPassportRecord
+    from archimedes.models.strategy_proposal import StrategyProposal
+    from archimedes.models.strategy_store import StrategyRecord
+    from archimedes.models.user_profile import UserProfile
+
+    for model, wallet_column in (
+        (StrategyRecord, StrategyRecord.owner_wallet),
+        (StrategyPassportRecord, StrategyPassportRecord.owner_wallet),
+        (StrategyProposal, StrategyProposal.owner_wallet),
+        (VaultMetadata, VaultMetadata.creator_address),
+    ):
+        if session.query(model).filter(wallet_column == address, model.owner_user_id.is_(None)).first() is not None:
+            return True
+
+    # The claim loop only attaches a legacy profile when the account has none —
+    # mirror that condition so the prompt never promises a claim that the link
+    # would in fact skip.
+    account_has_profile = session.query(UserProfile).filter(UserProfile.owner_user_id == user_id).first() is not None
+    if not account_has_profile:
+        legacy_profile = (
+            session.query(UserProfile)
+            .filter(UserProfile.wallet_address == address, UserProfile.owner_user_id.is_(None))
+            .first()
+        )
+        if legacy_profile is not None:
+            return True
+    return False
+
+
 def unlink_wallet(session, user_id: str, wallet_id: str) -> None:
     wallet = session.query(LinkedWallet).filter_by(id=wallet_id, user_id=user_id).first()
     if wallet is None:
@@ -451,6 +492,25 @@ def list_wallets(user: CurrentUser = Depends(require_current_user)):
             .all()
         )
         return [_wallet_response(wallet) for wallet in wallets]
+
+
+@wallet_router.get("/check")
+def check_wallet_legacy_data(
+    address: str = Query(pattern=r"^0x[a-fA-F0-9]{40}$"),
+    user: CurrentUser = Depends(require_current_user),
+):
+    """Does linking ``address`` reclaim pre-account (SIWE-era) data for me?
+
+    Powers the relink prompt for the ~10 wallet users who predate canonical
+    identity (#1194 revision e): their strategies stay invisible until they
+    link the old wallet, and nothing told them so. Returns only a boolean —
+    counts stay behind the signature proof, since the caller has not yet
+    proven control of the address. Session-gated, so it cannot be used to
+    anonymously sweep addresses for "has data" signals at scale beyond what
+    the caller's own rate limits allow.
+    """
+    with get_session() as session:
+        return {"has_legacy_data": _wallet_has_unclaimed_legacy_data(session, user.id, address.lower())}
 
 
 @wallet_router.post("/challenge", response_model=WalletChallengeResponse)

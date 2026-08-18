@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { disconnectWallet, reconnectWallet } from "./config";
-import { listLinkedWallets } from "./linked-wallets";
+import { checkLegacyWallet, listLinkedWallets } from "./linked-wallets";
 import AccountSettings from "./components/AccountSettings";
 import CorpusExplorer from "./components/CorpusExplorer";
 import Explore from "./components/Explore";
@@ -37,6 +37,9 @@ export default function AuthenticatedApp({
 	const [walletAddr, setWalletAddr] = useState(null);
 	const [tourOpen, setTourOpen] = useState(() => !hasCompletedOnboarding());
 	const [journeyStage, setJourneyStage] = useState(null);
+	// A detected-but-unlinked browser wallet that backs pre-account (SIWE-era)
+	// data — drives the relink banner below (#1194 revision e).
+	const [legacyWalletDetected, setLegacyWalletDetected] = useState(null);
 
 	useEffect(() => {
 		if (route.page !== "generate") setJourneyStage(null);
@@ -55,6 +58,16 @@ export default function AuthenticatedApp({
 					)
 				) {
 					setWalletAddr(result.address);
+				} else {
+					// The browser wallet is present but NOT linked to this
+					// account. If it backs pre-account (SIWE-era) data, the
+					// user's strategies are sitting invisible until they
+					// relink — surface that instead of silently dropping the
+					// address (#1194 revision e).
+					const { has_legacy_data } = await checkLegacyWallet(
+						result.address,
+					);
+					if (has_legacy_data) setLegacyWalletDetected(result.address);
 				}
 			} catch {
 				// Account remains usable without wallet service.
@@ -201,6 +214,62 @@ export default function AuthenticatedApp({
 				features={features}
 				journeyStage={journeyStage}
 			>
+				{legacyWalletDetected && !walletAddr && (
+					<div
+						role="status"
+						style={{
+							margin: "12px 16px 0",
+							padding: "10px 14px",
+							borderLeft: "3px solid var(--accent)",
+							background: "var(--accent-muted)",
+							borderRadius: 4,
+							fontSize: 13,
+							color: "var(--text-2)",
+							display: "flex",
+							alignItems: "center",
+							gap: 12,
+							flexWrap: "wrap",
+						}}
+					>
+						<span style={{ flex: "1 1 320px" }}>
+							<strong style={{ color: "var(--accent)" }}>
+								Your earlier strategies are waiting.
+							</strong>{" "}
+							We found data tied to wallet{" "}
+							{`${legacyWalletDetected.slice(0, 6)}…${legacyWalletDetected.slice(-4)}`}{" "}
+							from before you had an account. Connect and sign with
+							that wallet to bring it into this account — nothing is
+							deleted, and only you can claim it.
+						</span>
+						<button
+							type="button"
+							className="btn-primary"
+							onClick={() =>
+								// The connect modal's listener lives in
+								// WalletConnect (mounted inside Layout). NOT
+								// Layout's onConnect prop — that is a state
+								// setter, not the modal opener.
+								window.dispatchEvent(new Event("open-wallet-modal"))
+							}
+						>
+							Connect wallet
+						</button>
+						<button
+							type="button"
+							onClick={() => setLegacyWalletDetected(null)}
+							aria-label="Dismiss"
+							style={{
+								background: "none",
+								border: "none",
+								cursor: "pointer",
+								color: "var(--text-2)",
+								fontSize: 16,
+							}}
+						>
+							×
+						</button>
+					</div>
+				)}
 				{renderPage()}
 			</Layout>
 			<OnboardingTour

@@ -18,5 +18,8 @@ export async function linkConnectedWallet({ address, provider }) {
 }
 
 export const listLinkedWallets = () => apiGet('/api/wallets')
+// Would linking this address reclaim pre-account (SIWE-era) data for the
+// current session's account? Boolean only — counts stay behind signature proof.
+export const checkLegacyWallet = (address) => apiGet(`/api/wallets/check?address=${encodeURIComponent(address)}`)
 export const makePrimaryWallet = (id) => apiPost(`/api/wallets/${encodeURIComponent(id)}/primary`, {})
 export const removeLinkedWallet = (id) => apiDelete(`/api/wallets/${encodeURIComponent(id)}`)

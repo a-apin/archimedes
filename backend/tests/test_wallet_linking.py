@@ -326,3 +326,65 @@ def test_primary_selection_and_safe_unlink():
         assert session.get(LinkedWallet, "wallet-2").is_primary is True
         unlink_wallet(session, "user-1", "wallet-2")
         assert session.get(LinkedWallet, "wallet-1").is_primary is True
+
+
+# ── Relink prompt predicate (#1194 revision e) ──────────────────────────────
+
+
+def test_unclaimed_legacy_data_detected_and_claimed_data_is_not():
+    """The relink prompt must fire iff linking would actually claim something.
+
+    Two properties in one flow: (1) an unclaimed legacy row (owner_user_id IS
+    NULL, matching wallet) triggers the predicate; (2) once claimed, the SAME
+    row must stop triggering it — this is what makes the predicate a different
+    question from _wallet_has_owned_data (the unlink guard), which stays True
+    after a claim. Collapsing the two functions inverts the unlink guard.
+    """
+    from archimedes.api.wallet_routes import (
+        _claim_legacy_wallet_data,
+        _wallet_has_owned_data,
+        _wallet_has_unclaimed_legacy_data,
+    )
+
+    with _session() as session:
+        upsert_strategy(
+            session,
+            generation_method="fusion",
+            strategy_name="Legacy",
+            thesis="pre-account data",
+            source_papers=[],
+            asset_universe=["SPY"],
+            owner_wallet=ADDRESS,
+        )
+        session.commit()
+
+        # Unclaimed: prompt fires; a different wallet's check does not.
+        assert _wallet_has_unclaimed_legacy_data(session, "user-1", ADDRESS) is True
+        assert _wallet_has_unclaimed_legacy_data(session, "user-1", OTHER_ADDRESS) is False
+
+        _claim_legacy_wallet_data(session, "user-1", ADDRESS)
+        session.commit()
+
+        # Claimed: the prompt goes quiet -- but the unlink guard must still
+        # hold, proving the two predicates genuinely diverge here.
+        assert _wallet_has_unclaimed_legacy_data(session, "user-1", ADDRESS) is False
+        assert _wallet_has_owned_data(session, ADDRESS) is True
+
+
+def test_legacy_profile_only_counts_when_account_has_no_profile():
+    """Mirrors _claim_legacy_wallet_data's profile condition exactly: a legacy
+    profile is only claimable when the account has none, so the prompt must
+    not promise a claim the link would skip."""
+    from archimedes.api.wallet_routes import _wallet_has_unclaimed_legacy_data
+
+    with _session() as session:
+        session.add(UserProfile(wallet_address=ADDRESS, display_name="old me", owner_user_id=None))
+        session.commit()
+        # user-1 has no profile: the legacy profile is claimable -> prompt.
+        assert _wallet_has_unclaimed_legacy_data(session, "user-1", ADDRESS) is True
+
+        session.add(UserProfile(wallet_address=OTHER_ADDRESS, display_name="new me", owner_user_id="user-1"))
+        session.commit()
+        # user-1 now HAS a profile: the claim loop would skip the legacy one,
+        # so the prompt must not fire on profile evidence alone.
+        assert _wallet_has_unclaimed_legacy_data(session, "user-1", ADDRESS) is False
