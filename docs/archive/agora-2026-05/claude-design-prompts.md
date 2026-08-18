@@ -231,7 +231,7 @@ that looks like it could be a generic crypto logo.
 
 **Setup notes:** Use Claude Design's **Slide deck** mode. Make sure the design system is
 set (or paste the palette/typography block inline). The deck structure mirrors
-[`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md). The
+``demo-script-pitch-deck-outline.md`` (routed to the private docs repo, 2026-08-19). The
 substantive shifts the deck must reflect: the product is framed as **"Linus for
 quantitative finance"** (a strategy-generation *instrument*, not a static menu); the
 3-input fusion engine (engine v2) is live; the rigor wedge is real with 22 years of
@@ -242,9 +242,9 @@ inventory. The deck should sound like the product, not aspire to it.
 **Source materials (paste these alongside the prompt below — Claude Design can fetch
 or you can drop the contents inline):**
 
-- [`docs/demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md) —
+- ``docs/demo-script-pitch-deck-outline.md`` (routed to the private docs repo, 2026-08-19) —
   the master deck/script (Dan's canonical voice + slide order)
-- [`docs/pitch-talking-points-rigor-track.md`](pitch-talking-points-rigor-track.md) —
+- ``docs/pitch-talking-points-rigor-track.md`` (routed to the private docs repo, 2026-08-19) —
   **Önder's rigor / agent / on-chain-provenance handout (closes issue #127).** Four
   credibility moves with verbatim lines for the rigor slides, the
   "96-other-submissions" discriminator table for SLIDE 6, an explicit don't-say list,
@@ -376,8 +376,6 @@ RFB tagline: "RFB 04 primary. RFB 02 math primitive. RFB 06 adjacent."
 SLIDE 8 — Why now (one slide, 3 numbers)
 Title: The agent economy is real, but unaccountable.
 Three big-number callouts:
-- $222M — Circle Arc presale at $3B FDV, May 11, 2026 (BlackRock among investors)
-- $400M+ — DeFi curated-vault losses in the Nov 2025 curation crisis
 - 18,000+ — AI agents deployed via Virtuals Protocol ($470M aGDP)
 Sub-tagline: "Capital is flowing into agentic finance faster than accountability is
 being built. Archimedes is the accountability layer."

@@ -68,7 +68,7 @@ principle here.
 
 > **Day 3 update:** The fourth primitive — selection-bias correction — was added on
 > 2026-05-13 after the red-team review documented in
-> [`agora_project_analysis.md`](archive/agora_project_analysis.md) § 5.3. The three original
+> ``agora_project_analysis.md`` (routed to the private docs repo, 2026-08-19) § 5.3. The three original
 > primitives address *auditability*; the fourth addresses *credibility* of admission to
 > the library in the first place.
 

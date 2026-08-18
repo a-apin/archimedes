@@ -5,7 +5,7 @@
 # Portfolio Advisor — 60-second demo cue card
 
 > **Status:** Supplement, not replacement. Dan owns the master pitch deck +
-> demo script at [`demo-script-pitch-deck-outline.md`](demo-script-pitch-deck-outline.md).
+> demo script at ``demo-script-pitch-deck-outline.md`` (routed to the private docs repo, 2026-08-19).
 > This file is **the verbatim cues for the Portfolio Advisor moment** inside
 > that demo — the WOW #3 (post-fusion, post-corpus): "here's what Archimedes
 > actually recommends, with every number defensible."

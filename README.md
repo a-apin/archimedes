@@ -190,7 +190,7 @@ Three documents are the front door for different audiences:
 | Understand Arc / Circle integration | [`docs/arc-integration.md`](docs/arc-integration.md) |
 | Know what the product *is* (the locked spine) | [`docs/user-stories.md`](docs/user-stories.md) |
 | Browse all design + planning docs | [`docs/README.md`](docs/README.md) |
-| Submit Archimedes to the Arc OSS Showcase | [`docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`](docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md) |
+| Submit Archimedes to the Arc OSS Showcase | ``docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`` (routed to the private docs repo, 2026-08-19) |
 | Project context for a Claude Code session | [`CLAUDE.md`](CLAUDE.md) |
 
 ## Repository structure (top level)

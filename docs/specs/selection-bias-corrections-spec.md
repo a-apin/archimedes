@@ -5,7 +5,7 @@
 > **Consumers:** Dan (strategy validation gate), Daniel R. (analytics-engine
 > output), Daniel S. (passport UI), Chuan (orchestrator's rigor gate)
 > **Status:** Draft — ready for Önder review and implementation
-> **Prerequisite reading:** [`../agora_project_analysis.md`](../archive/agora_project_analysis.md)
+> **Prerequisite reading:** ``../agora_project_analysis.md`` (routed to the private docs repo, 2026-08-19)
 > § 5.3, [`./strategy-passport-spec.md`](./strategy-passport-spec.md),
 > [`../architectural-principles.md`](../architectural-principles.md)
 

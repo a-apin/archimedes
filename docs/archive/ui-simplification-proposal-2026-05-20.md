@@ -283,4 +283,4 @@ standup).
   toward this page tree) and 12 (current-vs-proposed page-map diagram)
 - [`corpus-architecture.md`](../corpus-architecture.md) — what the Library Papers tab
   is actually serving
-- [`launch-plan-2026-05-19.md`](launch-plan-2026-05-19.md) — what needs to be true at launch
+- ``launch-plan-2026-05-19.md`` (routed to the private docs repo, 2026-08-19) — what needs to be true at launch

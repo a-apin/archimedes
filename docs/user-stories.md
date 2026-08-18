@@ -6,7 +6,7 @@
 > [`docs/research/linus-archimedes-comparison.md`](research/linus-archimedes-comparison.md)
 > so it doesn't crowd the user-facing story. Read alongside
 > [`design.md`](archive/agora-2026-05/design.md), [`corpus-architecture.md`](corpus-architecture.md), and
-> [`demo-script-pitch-deck-outline.md`](archive/agora-2026-05/demo-script-pitch-deck-outline.md).
+> ``demo-script-pitch-deck-outline.md`` (routed to the private docs repo, 2026-08-19).
 
 ## One-line definition
 

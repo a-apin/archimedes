@@ -51,8 +51,8 @@ Two corollaries an agent gets wrong by default:
 ## Team
 
 Roster, bios, timezones, sync window, and the 2026-06-24 ownership change (Chuan Bai out;
-Dan owns contracts + on-chain + infra + architecture; Bogdan is preferred contract
-reviewer): [`docs/team.md`](docs/team.md). Two things stay here because they change how you
+Dan owns contracts + on-chain + infra + architecture and is the sole required
+contract approver): [`docs/team.md`](docs/team.md). Two things stay here because they change how you
 behave:
 
 > **Lanes are descriptive of strengths, not prescriptive of boundaries.** The table below
