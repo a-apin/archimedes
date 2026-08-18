@@ -37,40 +37,10 @@ resource "aws_sns_topic_subscription" "alerts_email" {
 }
 
 # ── EC2 (application host) ───────────────────────────────────────────────────
-
-resource "aws_cloudwatch_metric_alarm" "ec2_cpu_high" {
-  alarm_name          = "${var.project_name}-ec2-cpu-high"
-  alarm_description   = "EC2 host CPU > 85% for 10 min — app host saturated."
-  namespace           = "AWS/EC2"
-  metric_name         = "CPUUtilization"
-  statistic           = "Average"
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 85
-  period              = 300
-  evaluation_periods  = 2
-  dimensions          = { InstanceId = aws_instance.archimedes.id }
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-  treat_missing_data  = "missing"
-  tags                = { Project = var.project_name }
-}
-
-resource "aws_cloudwatch_metric_alarm" "ec2_status_check_failed" {
-  alarm_name          = "${var.project_name}-ec2-status-check-failed"
-  alarm_description   = "EC2 instance/system status check failed — host unhealthy."
-  namespace           = "AWS/EC2"
-  metric_name         = "StatusCheckFailed"
-  statistic           = "Maximum"
-  comparison_operator = "GreaterThanThreshold"
-  threshold           = 0
-  period              = 60
-  evaluation_periods  = 3
-  dimensions          = { InstanceId = aws_instance.archimedes.id }
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-  ok_actions          = [aws_sns_topic.alerts.arn]
-  treat_missing_data  = "breaching"
-  tags                = { Project = var.project_name }
-}
+# ec2_cpu_high / ec2_status_check_failed (both dimensioned on
+# aws_instance.archimedes) were removed 2026-08-19 with the EC2 decommission
+# (main.tf). The runner box has its own equivalent status-check alarm
+# (runner_ec2.tf's runner_ec2_status_check_failed).
 
 # ── ALB (edge) ───────────────────────────────────────────────────────────────
 
@@ -194,18 +164,12 @@ resource "aws_cloudwatch_metric_alarm" "aurora_connections_high" {
 resource "aws_cloudwatch_dashboard" "ops" {
   dashboard_name = "${var.project_name}-ops"
   dashboard_body = jsonencode({
+    # The "EC2 CPU" widget (aws_instance.archimedes) was removed 2026-08-19
+    # with the EC2 decommission (main.tf); the remaining three widgets were
+    # reflowed to fill the freed x=0,y=0 slot rather than leaving a gap.
     widgets = [
       {
         type = "metric", x = 0, y = 0, width = 12, height = 6,
-        properties = {
-          title   = "EC2 CPU",
-          region  = var.aws_region,
-          view    = "timeSeries",
-          metrics = [["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.archimedes.id]]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 0, width = 12, height = 6,
         properties = {
           title  = "ALB requests / 5xx",
           region = var.aws_region,
@@ -217,7 +181,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
         }
       },
       {
-        type = "metric", x = 0, y = 6, width = 12, height = 6,
+        type = "metric", x = 12, y = 0, width = 12, height = 6,
         properties = {
           title   = "ALB target latency (p95)",
           region  = var.aws_region,
@@ -227,7 +191,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
         }
       },
       {
-        type = "metric", x = 12, y = 6, width = 12, height = 6,
+        type = "metric", x = 0, y = 6, width = 12, height = 6,
         properties = {
           title  = "Aurora CPU / connections",
           region = var.aws_region,
@@ -300,9 +264,10 @@ resource "aws_cloudwatch_metric_alarm" "nat_egress_anomaly" {
   tags                = { Project = var.project_name }
 }
 
-# NAT health + auto-recovery (issue #1039 N1). Mirrors the app box's own
-# `ec2_status_check_failed` alarm above (same alarm-name suffix pattern,
-# SNS action, tags), with two deliberate deltas from an exact mirror:
+# NAT health + auto-recovery (issue #1039 N1). Mirrors the former app box's
+# `ec2_status_check_failed` alarm (removed 2026-08-19 with the EC2
+# decommission, main.tf) — same alarm-name suffix pattern, SNS action,
+# tags — with two deliberate deltas from an exact mirror:
 #
 # 1. Metric is `StatusCheckFailed_System`, NOT the combined `StatusCheckFailed`
 #    the app box alarm uses. This isn't stylistic — it's an AWS hard
@@ -718,92 +683,12 @@ resource "aws_cloudwatch_dashboard" "vpc_nat" {
   })
 }
 
-# ── EC2 backend dashboard ────────────────────────────────────────────────────
-# Memory/disk are NOT default EC2 metrics — they require the CloudWatch agent on
-# the host emitting to the CWAgent namespace. The widgets reference CWAgent so
-# they light up once the agent is installed (separate infra task); until then
-# they render empty, which is the honest state.
-
-resource "aws_cloudwatch_dashboard" "ec2_backend" {
-  dashboard_name = "${var.project_name}-ec2-backend"
-  dashboard_body = jsonencode({
-    widgets = [
-      {
-        type = "metric", x = 0, y = 0, width = 12, height = 6,
-        properties = {
-          title  = "CPU utilization (%)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.archimedes.id]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 0, width = 12, height = 6,
-        properties = {
-          title  = "Network in / out (bytes / 5 min)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          stat   = "Sum",
-          metrics = [
-            ["AWS/EC2", "NetworkIn", "InstanceId", aws_instance.archimedes.id],
-            ["AWS/EC2", "NetworkOut", "InstanceId", aws_instance.archimedes.id]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 0, y = 6, width = 12, height = 6,
-        properties = {
-          title  = "Memory used (%) — requires CloudWatch agent (CWAgent)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["CWAgent", "mem_used_percent", "InstanceId", aws_instance.archimedes.id]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 6, width = 12, height = 6,
-        properties = {
-          title  = "Disk used (%) root volume — requires CloudWatch agent (CWAgent)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["CWAgent", "disk_used_percent", "InstanceId", aws_instance.archimedes.id, "path", "/"]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 0, y = 12, width = 12, height = 6,
-        properties = {
-          title  = "EBS read/write bytes (container/Docker IO proxy)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          stat   = "Sum",
-          metrics = [
-            ["AWS/EC2", "EBSReadBytes", "InstanceId", aws_instance.archimedes.id],
-            ["AWS/EC2", "EBSWriteBytes", "InstanceId", aws_instance.archimedes.id]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 12, width = 12, height = 6,
-        properties = {
-          title  = "Status check failed (host health — container-restart proxy)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          stat   = "Maximum",
-          metrics = [
-            ["AWS/EC2", "StatusCheckFailed", "InstanceId", aws_instance.archimedes.id],
-            ["AWS/EC2", "StatusCheckFailed_Instance", "InstanceId", aws_instance.archimedes.id],
-            ["AWS/EC2", "StatusCheckFailed_System", "InstanceId", aws_instance.archimedes.id]
-          ]
-        }
-      }
-    ]
-  })
-}
+# ── EC2 backend dashboard: REMOVED 2026-08-19 ───────────────────────────────
+# aws_cloudwatch_dashboard.ec2_backend was 100% dimensioned on
+# aws_instance.archimedes (CPU/network/memory/disk/EBS/status-check, all
+# InstanceId = the old box) and had no content left once that instance was
+# decommissioned (main.tf), so the whole dashboard resource was deleted
+# rather than emptied.
 
 # ── ALB dashboard ────────────────────────────────────────────────────────────
 
@@ -1022,8 +907,9 @@ output "ops_dashboard_name" {
 }
 
 # All CloudWatch dashboard names (issue #418 acceptance — `terraform output
-# cloudwatch_dashboard_names`). Includes the pre-existing ops dashboard plus the
-# six per-subsystem dashboards added for Layer 1.
+# cloudwatch_dashboard_names`). Includes the pre-existing ops dashboard plus
+# the per-subsystem dashboards added for Layer 1 (originally six; ec2_backend
+# was removed 2026-08-19 with the EC2 decommission, leaving five).
 output "cloudwatch_dashboard_names" {
   description = "Names of every CloudWatch dashboard managed by Terraform."
   value = [
@@ -1031,7 +917,6 @@ output "cloudwatch_dashboard_names" {
     aws_cloudwatch_dashboard.aurora.dashboard_name,
     aws_cloudwatch_dashboard.elasticache.dashboard_name,
     aws_cloudwatch_dashboard.vpc_nat.dashboard_name,
-    aws_cloudwatch_dashboard.ec2_backend.dashboard_name,
     aws_cloudwatch_dashboard.alb.dashboard_name,
     aws_cloudwatch_dashboard.waf.dashboard_name,
   ]

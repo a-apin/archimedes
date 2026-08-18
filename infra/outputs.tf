@@ -1,27 +1,6 @@
-output "instance_id" {
-  description = "EC2 instance ID"
-  value       = aws_instance.archimedes.id
-}
-
-output "public_ip" {
-  description = "Public IP address of the EC2 instance"
-  value       = aws_instance.archimedes.public_ip
-}
-
-output "public_dns" {
-  description = "Public DNS name of the EC2 instance"
-  value       = aws_instance.archimedes.public_dns
-}
-
-output "ssh_command" {
-  description = "SSH command to connect"
-  value       = "ssh -i infra/${var.key_name}.pem ubuntu@${aws_instance.archimedes.public_ip}"
-}
-
-output "api_url" {
-  description = "Backend API URL"
-  value       = "http://${aws_instance.archimedes.public_ip}:8000"
-}
+# instance_id / public_ip / public_dns / ssh_command / api_url were removed
+# 2026-08-19 with aws_instance.archimedes (main.tf) — the single-EC2 Docker
+# host decommission. See main.tf's decommission note for the full rationale.
 
 output "private_key_path" {
   description = "Path to the SSH private key"
