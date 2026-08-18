@@ -305,7 +305,12 @@ class TestVaultSettersRawKey:
         with patch("archimedes.chain.executor.circle_signer") as signer:
             signer.is_configured = False
             tx = asyncio.run(executor.set_target_allocations("0xVault", [STSLA], [10000]))
-        assert tx == sent.hex() if sent.hex().startswith("0x") else "0x" + sent.hex()
+        # Unconditional exact assert (G11): the old form
+        # `assert tx == sent.hex() if cond else "0x" + ...` parsed as
+        # `assert (X if cond else <truthy string>)` — had HexBytes.hex() ever
+        # dropped its 0x prefix, the assert would have silently passed on the
+        # bare string regardless of tx.
+        assert tx == sent.hex()
 
     def test_set_token_oracles_no_account_raises(self, executor):
         executor._mock_cc.settings.agent_account = None

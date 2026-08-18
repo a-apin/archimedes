@@ -180,23 +180,90 @@ async def test_anchor_via_circle_signer(mock_signer, mock_client, publisher):
 @pytest.mark.asyncio
 @patch("archimedes.chain.strategy_publisher.chain_client")
 @patch("archimedes.chain.strategy_publisher.circle_signer")
-async def test_anchor_falls_back_to_raw_key(mock_signer, mock_client, publisher, mock_loader):
-    """anchor falls back to raw key path when Circle fails and agent_account is set.
+async def test_anchor_circle_down_and_no_account_returns_none(mock_signer, mock_client, publisher, mock_loader):
+    """Circle fails and NO agent account is configured → graceful None.
 
-    Verifies the error handling: Circle fails → raw key path attempted → web3
-    unavailable → graceful None return (not an exception)."""
+    (Renamed from test_anchor_falls_back_to_raw_key — audit G11: that name
+    promised the raw-key fallback while setting agent_account=None, which
+    SKIPS the very path the name claimed to test. The real fallback test is
+    below.)"""
     mock_client.settings.strategy_registry_address = "0x728C264d0681b71c4Cc1D26a4fb14Ec29D9a90e4"
     mock_client.to_checksum.return_value = "0x728C264d0681b71c4Cc1D26a4fb14Ec29D9a90e4"
     mock_signer.is_configured = True
     mock_signer.execute_contract = AsyncMock(side_effect=Exception("Circle down"))
 
-    # No agent_account → raw key path is skipped → returns None
     mock_client.settings.agent_account = None
     result = await publisher.anchor(
         strategy_id="0x" + "ab" * 32,
         methodology_hash="0x" + "cd" * 32,
     )
     assert result is None
+
+
+@pytest.mark.asyncio
+@patch("archimedes.chain.strategy_publisher.chain_client")
+@patch("archimedes.chain.strategy_publisher.circle_signer")
+async def test_anchor_raw_key_fallback_signs_and_broadcasts_for_real(mock_signer, mock_client, publisher, mock_loader):
+    """G11: the raw private-key fallback actually exercised — this is the code
+    that keeps anchoring alive during a Circle outage. Asserts the built
+    transaction's fields, that sign_transaction receives the built tx, that
+    send_raw_transaction receives the SIGNED payload, and that the return
+    equals sent.hex() exactly (no invented prefix)."""
+    from hexbytes import HexBytes
+
+    mock_client.settings.strategy_registry_address = "0x728C264d0681b71c4Cc1D26a4fb14Ec29D9a90e4"
+    mock_client.to_checksum.return_value = "0x728C264d0681b71c4Cc1D26a4fb14Ec29D9a90e4"
+    mock_client.settings.chain_id = 5042002
+    mock_signer.is_configured = True
+    mock_signer.execute_contract = AsyncMock(side_effect=Exception("Circle down"))
+
+    account = MagicMock()
+    account.address = "0xAgent0000000000000000000000000000000001"
+    signed = MagicMock()
+    signed.raw_transaction = b"\x02\x99signed-bytes"
+    account.sign_transaction.return_value = signed
+    mock_client.settings.agent_account = account
+
+    built_tx = {"from": account.address, "nonce": 7, "chainId": 5042002, "gas": 300_000, "gasPrice": 1_000_000_000}
+    mock_loader.strategy_registry.functions.registerStrategy.return_value.build_transaction = AsyncMock(
+        return_value=built_tx
+    )
+    sent = HexBytes("0x" + "ab" * 32)
+    mock_client.w3.eth.get_transaction_count = AsyncMock(return_value=7)
+    mock_client.w3.eth.gas_price = _awaitable_gas_price(1_000_000_000)
+    mock_client.w3.eth.send_raw_transaction = AsyncMock(return_value=sent)
+
+    result = await publisher.anchor(
+        strategy_id="0x" + "ab" * 32,
+        methodology_hash="0x" + "cd" * 32,
+        regime_tag="bull",
+        metadata_uri="ipfs://QmExample",
+    )
+
+    assert result == sent.hex()  # unconditional exact — no invented 0x
+    # The tx was built FROM the agent account at the pending nonce:
+    build_kwargs = mock_loader.strategy_registry.functions.registerStrategy.return_value.build_transaction.call_args[0][
+        0
+    ]
+    assert build_kwargs["from"] == account.address
+    assert build_kwargs["nonce"] == 7
+    assert build_kwargs["chainId"] == 5042002
+    # sign received the BUILT tx; broadcast received the SIGNED payload:
+    account.sign_transaction.assert_called_once_with(built_tx)
+    mock_client.w3.eth.send_raw_transaction.assert_awaited_once_with(signed.raw_transaction)
+
+
+def _awaitable_gas_price(value: int):
+    """`w3.eth.gas_price` is awaited as a property — return a fresh coroutine."""
+
+    class _GasPrice:
+        def __await__(self):
+            async def _v():
+                return value
+
+            return _v().__await__()
+
+    return _GasPrice()
 
 
 # ── strategy_count tests ──────────────────────────────────────────────────
