@@ -40,7 +40,7 @@ contract-review-grade (the `ReasoningTraceRegistry` contract is live — see
 multi-paper fusion would be a load-bearing change to an audited path under hackathon time
 pressure. Instead:
 
-- **Additive.** A new `backend/archimedes/agents/strategy_fusion.py`. Nothing imports it
+- **Additive at the time of writing.** A new `backend/archimedes/agents/strategy_fusion.py`. (Since superseded by adoption: it is now imported by the API routes, the debate engine, and tests — this spec describes its introduction, not its current wiring.) Originally nothing imported it
   yet; wiring it into a route is a later, separately reviewable step.
 - **Flagged.** `ARCHIMEDES_FUSION_ENABLED` (default OFF). Flag-off is a hard inert path:
   no LLM call, no corpus read, returns a self-describing sentinel.
