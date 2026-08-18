@@ -101,6 +101,6 @@ torch>=2.13.0,<3.0  # CPU-only wheel via pytorch whl index (see extra-index-url 
 sentence-transformers>=5.6.1  # all-MiniLM-L6-v2 semantic retrieval; baked at Docker build time
 
 # AWS / S3
-boto3>=1.43.66
+boto3>=1.43.71
 # Imported directly for AWS exceptions/config; boto3 constrains compatibility.
 botocore>=1.43.60
