@@ -12,7 +12,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from archimedes.api.limiter import limiter
@@ -137,7 +137,7 @@ class ScenarioAnalysisRequest(BaseModel):
 
 @portfolio_router.post("/optimize")
 @limiter.limit("5/minute")
-async def optimize_portfolio(req: OptimizeRequest, request: Request) -> dict:  # noqa: ARG001 — slowapi @limiter.limit inspects param name
+async def optimize_portfolio(req: OptimizeRequest, request: Request, response: Response) -> dict:  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     """Compute optimal synth-asset weights with the requested optimizer.
 
     Returns {method, optimizer, risk_profile, usdc_weight, weights, symbols_used,
@@ -210,7 +210,7 @@ async def optimize_portfolio(req: OptimizeRequest, request: Request) -> dict:  #
 
 @portfolio_router.post("/parameter-sweep")
 @limiter.limit("5/minute")
-async def parameter_sweep(req: ParameterSweepRequest, request: Request) -> dict:  # noqa: ARG001 — slowapi @limiter.limit inspects param name
+async def parameter_sweep(req: ParameterSweepRequest, request: Request, response: Response) -> dict:  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     """Run a 2D sensitivity sweep over two backtest parameters.
 
     Returns a heatmap-ready grid_2d with rows=param1 values, cols=param2 values,
@@ -290,7 +290,7 @@ async def parameter_sweep(req: ParameterSweepRequest, request: Request) -> dict:
 
 @portfolio_router.post("/scenario-analysis")
 @limiter.limit("10/minute")
-async def scenario_analysis(req: ScenarioAnalysisRequest, request: Request) -> dict:  # noqa: ARG001 — slowapi @limiter.limit inspects param name
+async def scenario_analysis(req: ScenarioAnalysisRequest, request: Request, response: Response) -> dict:  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     """Apply mark-to-model stress shocks to a portfolio and return per-scenario P&L.
 
     Uses predefined scenarios when none are supplied. Applies a 1.2x stress beta
