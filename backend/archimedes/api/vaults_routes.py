@@ -30,11 +30,18 @@ from archimedes.api.vault_schemas import (
 )
 from archimedes.chain.executor import chain_executor
 from archimedes.models.chat import VaultMetadata
+from archimedes.models.portfolio import RiskProfile
 from archimedes.services.live_rigor_gate import verdicts_for_strategies
+from archimedes.services.portfolio_constructor import KellyRegimePortfolioConstructor
 from archimedes.services.rigor_profiles import STRICTEST_LEVEL, clamp_level
 from archimedes.services.strategy_sizer import kelly_weighted_allocations, scale_to_budget, size_strategies
 
 vaults_router = APIRouter(prefix="/api/vaults", tags=["vaults"])
+
+# Module-level singleton (matches strategy_evaluator's convention below) — the
+# class is pure computation (no I/O), so one shared instance is safe across
+# requests. See KellyRegimePortfolioConstructor's docstring (issue #1264).
+_portfolio_constructor = KellyRegimePortfolioConstructor()
 
 
 async def _anchor_strategies_async(strategy_ids: list[str]) -> None:
@@ -600,7 +607,23 @@ async def derive_vault_allocations(
     sized_fractions = size_strategies(strategies, req.risk_profile, deployable_ids=deployable_ids)
     sized_fractions = scale_to_budget(sized_fractions, 1.0 - usdc_floor)
     excluded = sorted(sid for sid, frac in sized_fractions.items() if frac <= 0.0)
-    target_weights = kelly_weighted_allocations(all_signals, sized_fractions, usdc_floor=usdc_floor)
+    kelly_weights = kelly_weighted_allocations(all_signals, sized_fractions, usdc_floor=usdc_floor)
+
+    # Route the Kelly-sized weights through IPortfolioConstructor (#1264) so
+    # this endpoint gains the regime tilt for free once a live regime feed is
+    # wired to it. No live feed is wired here today — regime=None is the
+    # documented neutral default (see KellyRegimePortfolioConstructor's
+    # docstring) — so this is a behavior-preserving pass-through of
+    # `kelly_weights` for every caller of this endpoint today.
+    allocs = _portfolio_constructor.construct(
+        risk_profile=RiskProfile(req.risk_profile),
+        strategies=strategies,
+        backtest_results={},
+        regime=None,
+        ensemble_consensus=None,
+        base_weights=kelly_weights,
+    )
+    target_weights = {a.symbol: a.weight for a in allocs}
 
     allocations: list[AllocationTarget] = []
 
