@@ -298,3 +298,66 @@ class TestTraceResponseClaimGuard:
         # honest even when the stronger temporal binding is absent.
         r = self._resp(is_verified=True, temporal_binding_source="none")
         assert r.is_verified is True
+
+
+class TestRevealFailureAfterTradeExecuted:
+    """G9 (audit 2026-08-18): trade + commit succeed, then the reveal FAILS.
+
+    The mirror of the guarded commit-fails mode (which skips the trade). Here
+    the money already moved on-chain, so the only acceptable behaviors are
+    loud honesty and zero fabricated verification. Adjudicated against
+    current code: a loud ERROR fires and the trace persists as UNVERIFIED
+    (``is_verified`` False, reveal fields None, temporal binding invalid) with
+    the dangling commit preserved. What does NOT exist is a reconciliation
+    path that retries the reveal on a later tick — tracked as a follow-up
+    issue; these tests pin the never-fabricate contract that any future
+    reconciliation must keep.
+    """
+
+    def test_reveal_failure_is_loud_and_persists_an_honest_unverified_trace(self, runner_env, caplog):
+        runner, mock_tp = runner_env
+        mock_tp.supports_commit_reveal = MagicMock(return_value=True)
+        mock_tp.reveal = AsyncMock(side_effect=RuntimeError("execution reverted: reveal window"))
+        mock_tp.publish = AsyncMock(return_value=None)
+
+        with caplog.at_level("ERROR"):
+            asyncio.run(
+                runner._reveal_trace(
+                    _make_trace(),
+                    trace_id=42,
+                    tick_id="t9",
+                    tx_hashes=["0xtrade"],
+                    commit_tx="0xcommit",
+                    commit_block=100,
+                    trade_block=101,
+                )
+            )  # must NOT raise — a failed reveal can never kill the tick
+
+        assert "REVEAL publish FAILED" in caplog.text  # the loud, alertable signal
+        saved = _saved(runner)
+        assert saved["trade_tx_hash"] == "0xtrade"  # the executed trade stays visible…
+        assert saved["is_verified"] is False  # …but is never claimed verified
+        assert saved["reveal_tx_hash"] is None
+        assert saved["reveal_block_number"] is None
+        assert saved["temporal_binding_valid"] is False
+        # The dangling commitment is preserved — the raw material any future
+        # reconciliation pass needs to retry the reveal.
+        assert saved["commit_tx_hash"] == "0xcommit"
+        assert saved["commit_block_number"] == 100
+
+    def test_publish_fallback_failure_keeps_the_same_honest_contract(self, runner_env, caplog):
+        """Pre-v1.5 registries (#588): publishTrace raising must degrade
+        identically — loud, unverified, trade visible."""
+        runner, mock_tp = runner_env
+        mock_tp.supports_commit_reveal = MagicMock(return_value=True)
+        mock_tp.reveal = AsyncMock(return_value=("0xNEVER", 0))
+        mock_tp.publish = AsyncMock(side_effect=RuntimeError("rpc down"))
+
+        with caplog.at_level("ERROR"):
+            asyncio.run(runner._reveal_trace(_make_trace(), trace_id=None, tick_id="t9b", tx_hashes=["0xtrade"]))
+
+        assert "REVEAL publish FAILED" in caplog.text
+        saved = _saved(runner)
+        assert saved["is_verified"] is False
+        assert saved["trade_tx_hash"] == "0xtrade"
+        assert saved["temporal_binding_valid"] is False
