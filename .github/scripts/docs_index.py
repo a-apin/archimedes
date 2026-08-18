@@ -71,9 +71,7 @@ def main() -> int:
 
     # Sub-indexes: any README.md under docs/ that the root index links to.
     sub_indexes = sorted(
-        root / t
-        for t in root_targets
-        if t.startswith("docs/") and t.endswith("README.md") and (root / t).is_file()
+        root / t for t in root_targets if t.startswith("docs/") and t.endswith("README.md") and (root / t).is_file()
     )
 
     covered: set[str] = set(root_targets) | set(ALWAYS_COVERED)
