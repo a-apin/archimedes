@@ -2,7 +2,7 @@
 
 > **Audience:** Archimedes team
 > **Status:** **Accepted, pending quant sign-off** (Önder Akkaya, portfolio math — see "Ratification" below)
-> **Date:** 2026-07-09 (reversal shipped); spec addendum 2026-07-14
+> **Date:** 2026-07-09 (reversal shipped); spec addendum 2026-07-14; amended 2026-08-19 (fixture-leak class)
 > **Owner:** Dan Browne (quant reviewer of record: Önder Akkaya)
 > **Supersedes:** the `N + library_size` DSR convention from [#770](https://github.com/a-apin/archimedes/issues/770) / #811 / [#820](https://github.com/a-apin/archimedes/issues/820)
 > **Superseded-by:** —
@@ -153,3 +153,32 @@ rests on.
   honest floor; the residual author-side selection bias is a known, unmodelled term.
 - **Keep a portfolio-level correction inside the gate — rejected** as answering the wrong
   question at the wrong surface; see the open gap above.
+
+## Amendment (2026-08-19): the fixture-leak class
+
+The convention marker (Decision #4) protects verdicts computed *by the gate*. The
+2026-08 test-suite/chaff audit found a failure class it does not protect against:
+**surfaces that serve rigor values from the frozen strategy fixtures instead of a live
+gate run.** The fixture fields (`Strategy.dsr_p_value`, `num_trials_in_selection`,
+`pbo_score`, `deflated_sharpe_ratio`, `out_of_sample_sharpe`, and the
+`passes_rigor_gate` boolean) are stored values the live gate never rewrites — most
+predate the 2026-07-09 reversal, so a surface serving them next to a live badge
+**silently mixes conventions**, exactly what the marker exists to prevent, without ever
+touching the marker.
+
+Live instance (audit finding M1, fixed in
+[PR #1272](https://github.com/a-apin/archimedes/pull/1272)): `/api/strategies/advisor`
+served five fixture statistics — including a fixture-era `num_trials_in_selection` —
+with only the badge live-corrected, so its numbers could disagree with
+`GET /api/selection-bias/gate` for the same strategy at the same moment. The sibling
+finding (M2, same PR) was the *sentinel* variant: readers presenting the fail-closed
+in-memory `passes_rigor_gate = False` (#821) to LLM prompts as if it were a verdict.
+
+**Rule this amendment records:** a served rigor statistic or verdict must come from a
+live `run_rigor_gate` computation (directly or via the honest memoized batch in
+`rigor_cache` — a cache hit serves exactly what the miss would have computed). Fixture
+fields may appear only as the explicitly-documented fallback when the live gate cannot
+run for a strategy (#868 contract), and the fail-closed sentinel is never a verdict —
+downstream consumers render "pending"/omission, not "fail". The leaderboard (#868), the
+library badge (#821), the advisor, the portfolio LLM prompt, and vault chat (#1272) now
+all comply; any new consumer of these fields starts from this rule.
