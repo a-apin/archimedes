@@ -169,8 +169,16 @@ function toBase64(str) {
  * wallet-link precondition to reach this state), never fabricated.
  */
 export function buildDryRunPaymentHeader(payerAddress) {
-	const from = payerAddress || "";
-	return toBase64(JSON.stringify({ payload: { authorization: { from } } }));
+	// Loud contract for #1298's implementer: a payment header with no payer is
+	// never meaningful — dry-run happens not to read it today, but real x402
+	// signing will, and the server's payer binding (#1296) requires the LINKED
+	// wallet. Callers must resolve a payer first (linked wallet preferred,
+	// active browser wallet as fallback) and handle the none-available case in
+	// the UI rather than shipping an empty `from` here.
+	if (!payerAddress) {
+		throw new Error("buildDryRunPaymentHeader requires a payer address (the caller's linked wallet)");
+	}
+	return toBase64(JSON.stringify({ payload: { authorization: { from: payerAddress } } }));
 }
 
 /**

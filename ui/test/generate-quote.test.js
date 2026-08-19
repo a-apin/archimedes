@@ -184,10 +184,24 @@ test("buildDryRunPaymentHeader: base64-JSON carrying the REAL payer, decodable t
 	assert.equal(decoded.payload.authorization.from, "0xPayerAddress");
 });
 
-test("buildDryRunPaymentHeader: never silently fabricates a payer for a falsy address", () => {
-	const header = buildDryRunPaymentHeader(null);
-	const decoded = JSON.parse(globalThis.Buffer.from(header, "base64").toString("utf8"));
-	assert.equal(decoded.payload.authorization.from, "");
+test("buildDryRunPaymentHeader: REFUSES a falsy payer (loud contract for #1298)", () => {
+	// A payment header with no payer is never meaningful. Strengthened from
+	// the original "encode an empty from honestly" (#1295 review nit): the
+	// server's payer binding (#1296) requires the linked wallet, so an
+	// empty payer at this seam is a caller bug — throw, don't encode.
+	assert.throws(() => buildDryRunPaymentHeader(null), /requires a payer address/);
+	assert.throws(() => buildDryRunPaymentHeader(""), /requires a payer address/);
+});
+
+test("Generate.jsx resolves the test-mode payer linked-wallet-first with a no-payer guard", () => {
+	// Reaching a 402 proves the SERVER-side link, not that the browser wallet
+	// is connected or the linked-wallets fetch succeeded — the component must
+	// resolve linked-first, fall back to the active wallet, and bail with a
+	// message (no submit) when neither resolves.
+	const generateSrc = readFileSync(new URL("../src/components/Generate.jsx", import.meta.url), "utf8");
+	assert.match(generateSrc, /primaryLinkedWallet\(linkedWallets\) \|\| walletAddr/);
+	assert.match(generateSrc, /No payment was attempted/);
+	assert.match(generateSrc, /buildDryRunPaymentHeader\(payer\)/);
 });
 
 // ── extractReceipt: the PAYMENT-RESPONSE settlement receipt ───────────────
