@@ -268,3 +268,122 @@ async def test_sweep_skips_missing_wallet_info(sweeper, pub):
         await sweeper.sweep_publisher(pub)
         mock_a.assert_not_called()
         mock_b.assert_not_called()
+
+
+# ── G1: the live money-out paths (audit 2026-08-18: withdraw_subscriber was
+# 4/18 statements covered, withdraw_publisher 4/16 — only dry-run and guard
+# clauses executed; the balance read, executor construction, and ERC-20
+# transfer had never run under test). Everything below exercises the LIVE
+# path with a stubbed executor at the module boundary.
+
+
+@pytest.mark.asyncio
+async def test_withdraw_publisher_live_calls_splitter_withdraw(sweeper, pub, splitter_addr):
+    """Stage C live: the exact PaymentSplitter.withdraw calldata, from the
+    publisher's own executor, and the tx hash surfaced to the caller."""
+    executor = MagicMock()
+    executor._submit_and_wait = MagicMock(return_value="0xtxStageC")
+    sweeper._get_executor = MagicMock(return_value=executor)
+
+    tx = await sweeper.withdraw_publisher(pub, 5_000_000)
+
+    assert tx == "0xtxStageC"
+    executor._submit_and_wait.assert_called_once_with(
+        splitter_addr, "withdraw(bytes32,uint256)", [pub.pool_id, "5000000"]
+    )
+    sweeper._get_executor.assert_called_once_with(pub.agent_wallet_id, pub.gateway_seller_address)
+
+
+@pytest.mark.asyncio
+async def test_withdraw_publisher_without_splitter_never_reaches_chain(settings, pub):
+    settings.payment_splitter_address = ""
+    sweeper = SettlementSweeper(settings)
+    executor = MagicMock()
+    executor._submit_and_wait = MagicMock(side_effect=AssertionError("no splitter configured — must not reach chain"))
+    sweeper._get_executor = MagicMock(return_value=executor)
+
+    assert await sweeper.withdraw_publisher(pub, 1_000_000) is None
+    executor._submit_and_wait.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_withdraw_publisher_chain_failure_returns_none_never_raises(sweeper, pub):
+    executor = MagicMock()
+    executor._submit_and_wait = MagicMock(side_effect=RuntimeError("chain down"))
+    sweeper._get_executor = MagicMock(return_value=executor)
+
+    assert await sweeper.withdraw_publisher(pub, 1_000_000) is None
+
+
+@pytest.mark.asyncio
+async def test_withdraw_subscriber_returns_exact_balance_to_the_siwe_wallet(sweeper, settings):
+    """The three claims the docstring makes and nothing checked (G1):
+    the transfer amount EQUALS the balance read (not a caller-supplied
+    number), the token is the configured USDC contract, and the destination
+    is the subscriber's own SIWE wallet — not the DCW. Executed FROM the
+    DCW: the executor is bound to (circle_wallet_id, dcw_address). A mutant
+    that swaps destination and DCW, or invents an amount, fails here."""
+    sweeper._usdc_balance_of = MagicMock(return_value=7_250_000)
+    executor = MagicMock()
+    executor._submit_and_wait = MagicMock(return_value="0xtxReturn")
+    sweeper._get_executor = MagicMock(return_value=executor)
+
+    tx = await sweeper.withdraw_subscriber(
+        circle_wallet_id="w-dcw-1",
+        dcw_address="0xDCW0000000000000000000000000000000000001",
+        to_wallet="0xS1WE0000000000000000000000000000000000001",
+        sub_id="sub-9",
+    )
+
+    assert tx == "0xtxReturn"
+    sweeper._usdc_balance_of.assert_called_once_with("0xDCW0000000000000000000000000000000000001")
+    executor._submit_and_wait.assert_called_once_with(
+        settings.usdc_address,
+        "transfer(address,uint256)",
+        ["0xS1WE0000000000000000000000000000000000001", "7250000"],
+    )
+    sweeper._get_executor.assert_called_once_with("w-dcw-1", "0xDCW0000000000000000000000000000000000001")
+
+
+@pytest.mark.asyncio
+async def test_withdraw_subscriber_empty_dcw_transfers_nothing(sweeper):
+    sweeper._usdc_balance_of = MagicMock(return_value=0)
+    sweeper._get_executor = MagicMock(side_effect=AssertionError("empty DCW — executor must not be built"))
+
+    tx = await sweeper.withdraw_subscriber(circle_wallet_id="w-1", dcw_address="0xdcw", to_wallet="0xto", sub_id="s")
+
+    assert tx is None
+    sweeper._get_executor.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["circle_wallet_id", "dcw_address", "to_wallet"])
+async def test_withdraw_subscriber_missing_identifier_short_circuits(sweeper, missing):
+    kwargs = {"circle_wallet_id": "w-1", "dcw_address": "0xdcw", "to_wallet": "0xto", "sub_id": "s"}
+    kwargs[missing] = ""
+    sweeper._usdc_balance_of = MagicMock(side_effect=AssertionError("must not read balance with missing ids"))
+
+    assert await sweeper.withdraw_subscriber(**kwargs) is None
+    sweeper._usdc_balance_of.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_withdraw_subscriber_failed_sweep_is_recoverable_by_retry(sweeper):
+    """The docstring's promise, previously unchecked: 'a failed sweep leaves
+    the balance recoverable by a later retry.' Nothing may mark the sweep
+    done on failure — the retry must re-read the balance and transfer the
+    full amount. A mutant that records the attempt as settled fails here."""
+    sweeper._usdc_balance_of = MagicMock(return_value=3_000_000)
+    executor = MagicMock()
+    executor._submit_and_wait = MagicMock(side_effect=[RuntimeError("circle 502"), "0xretryTx"])
+    sweeper._get_executor = MagicMock(return_value=executor)
+
+    first = await sweeper.withdraw_subscriber(circle_wallet_id="w-1", dcw_address="0xdcw", to_wallet="0xto", sub_id="s")
+    second = await sweeper.withdraw_subscriber(
+        circle_wallet_id="w-1", dcw_address="0xdcw", to_wallet="0xto", sub_id="s"
+    )
+
+    assert first is None  # failure surfaced softly, never raised
+    assert second == "0xretryTx"
+    assert sweeper._usdc_balance_of.call_count == 2  # retry re-reads, no sticky state
+    assert executor._submit_and_wait.call_args[0][2] == ["0xto", "3000000"]  # full balance again
