@@ -79,3 +79,74 @@ test('Google and GitHub are enabled only with complete credentials', () => {
   )
   assert.deepEqual(enabledProviders({ ...env, GOOGLE_CLIENT_ID: 'incomplete' }), [])
 })
+
+// ── Email verification (SES wiring; enforcement env-gated) ──────────────
+
+function capturingMailer() {
+  const sent = []
+  return { sent, kind: 'test', sender: 'no-reply@test', send: async message => { sent.push(message) } }
+}
+
+async function testAuthWithMailer(overrides = {}) {
+  const mailer = capturingMailer()
+  const auth = createAuth({ database: new DatabaseSync(':memory:'), env: { ...env, ...overrides }, mailer })
+  await (await getMigrations(auth.options)).runMigrations()
+  return { auth, mailer }
+}
+
+test('signup sends a verification email even while enforcement is off', async () => {
+  const { auth, mailer } = await testAuthWithMailer()
+  const credentials = { email: 'verifyme@example.com', password: 'correct horse battery staple' }
+
+  const registration = await auth.api.signUpEmail({ body: { ...credentials, name: 'V' }, asResponse: true })
+  assert.equal(registration.status, 200)
+
+  assert.equal(mailer.sent.length, 1)
+  assert.equal(mailer.sent[0].to, credentials.email)
+  assert.match(mailer.sent[0].text, /https?:\/\/\S+/)
+
+  // Enforcement off (default): unverified sign-in still succeeds.
+  const login = await auth.api.signInEmail({ body: credentials, asResponse: true })
+  assert.equal(login.status, 200)
+})
+
+test('EMAIL_VERIFICATION_ENFORCED=true refuses unverified sign-in until the emailed link verifies', async () => {
+  const { auth, mailer } = await testAuthWithMailer({ EMAIL_VERIFICATION_ENFORCED: 'true' })
+  const credentials = { email: 'enforced@example.com', password: 'correct horse battery staple' }
+
+  const registration = await auth.api.signUpEmail({ body: { ...credentials, name: 'E' }, asResponse: true })
+  assert.equal(registration.status, 200)
+
+  const refused = await auth.api.signInEmail({ body: credentials, asResponse: true })
+  assert.equal(refused.status, 403)
+
+  // Complete the loop with the token from the captured mail — the real
+  // verification path, not a DB poke.
+  const url = mailer.sent.map(m => m.text.match(/https?:\/\/\S+/)?.[0]).find(Boolean)
+  const token = new URL(url).searchParams.get('token')
+  assert.ok(token, `verification mail carried no token: ${url}`)
+  await auth.api.verifyEmail({ query: { token } })
+
+  const login = await auth.api.signInEmail({ body: credentials, asResponse: true })
+  assert.equal(login.status, 200)
+})
+
+test('a failing mailer never breaks signup (fail-soft while SES is sandboxed)', async () => {
+  const mailer = { kind: 'test', sender: 'x', send: async () => { throw new Error('SES sandbox: address not verified') } }
+  const auth = createAuth({ database: new DatabaseSync(':memory:'), env, mailer })
+  await (await getMigrations(auth.options)).runMigrations()
+
+  const registration = await auth.api.signUpEmail({
+    body: { email: 'sandboxed@example.com', password: 'correct horse battery staple', name: 'S' },
+    asResponse: true,
+  })
+  assert.equal(registration.status, 200)
+})
+
+test('enforcement flag parses strictly', async () => {
+  const { emailVerificationEnforced } = await import('../auth.js')
+  assert.equal(emailVerificationEnforced({}), false)
+  assert.equal(emailVerificationEnforced({ EMAIL_VERIFICATION_ENFORCED: 'false' }), false)
+  assert.equal(emailVerificationEnforced({ EMAIL_VERIFICATION_ENFORCED: '1' }), false)
+  assert.equal(emailVerificationEnforced({ EMAIL_VERIFICATION_ENFORCED: 'true' }), true)
+})

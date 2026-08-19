@@ -1,6 +1,8 @@
 import { betterAuth } from 'better-auth'
 import pg from 'pg'
 
+import { createMailer } from './mailer.js'
+
 const { Pool } = pg
 
 function csv(value) {
@@ -8,6 +10,15 @@ function csv(value) {
     .split(',')
     .map(item => item.trim())
     .filter(Boolean)
+}
+
+// Verification mail is SENT on every signup regardless of this flag (so
+// verified_at data accrues from day one); the flag controls whether an
+// unverified account is REFUSED sign-in. Explicit opt-in ("true") because
+// SES starts in sandbox — enforcement flips on via env once production
+// sending access is granted, with no code change.
+export function emailVerificationEnforced(env = process.env) {
+  return env.EMAIL_VERIFICATION_ENFORCED === 'true'
 }
 
 export function enabledProviders(env = process.env) {
@@ -24,7 +35,7 @@ function socialProviders(env) {
   }]))
 }
 
-export function createAuth({ database, env = process.env } = {}) {
+export function createAuth({ database, env = process.env, mailer = createMailer(env) } = {}) {
   const production = env.NODE_ENV === 'production'
   const baseURL = env.BETTER_AUTH_URL || 'http://localhost:5173'
   const secret = env.BETTER_AUTH_SECRET
@@ -47,6 +58,28 @@ export function createAuth({ database, env = process.env } = {}) {
       minPasswordLength: 12,
       maxPasswordLength: 128,
       revokeSessionsOnPasswordReset: true,
+      requireEmailVerification: emailVerificationEnforced(env),
+    },
+    emailVerification: {
+      sendOnSignUp: true,
+      autoSignInAfterVerification: true,
+      sendVerificationEmail: async ({ user, url }) => {
+        try {
+          await mailer.send({
+            to: user.email,
+            subject: 'Verify your Archimedes account',
+            text:
+              'Verify your email address to activate your Archimedes account:\n\n'
+              + `${url}\n\n`
+              + 'If you did not create this account, ignore this message.',
+          })
+        } catch (error) {
+          // Fail-soft ON PURPOSE while SES is in sandbox: an undeliverable
+          // verification mail must not 500 the signup. Loud single line;
+          // requireEmailVerification is what actually gates sign-in.
+          console.error('verification email send failed:', error instanceof Error ? error.name : 'UnknownError')
+        }
+      },
     },
     socialProviders: socialProviders(env),
     user: { modelName: 'auth_users' },
@@ -76,17 +109,16 @@ export function createAuth({ database, env = process.env } = {}) {
       modelName: 'auth_rate_limits',
       customRules: {
         '/sign-in/email': { window: 60, max: 10 },
-        // Signup friction (#1194 revision b). Email verification is the real
-        // answer but needs a sending capability this stack does not have yet
-        // (no SES/SMTP anywhere in infra/ — provisioning SES + leaving its
-        // sandbox is an external-turnaround dependency, tracked as the
-        // post-sprint follow-up in docs/account-authentication.md). Until
-        // then, account-minting is bounded by three layers: this rule
-        // (3 signups / 10 min per Better Auth's rate key), nginx's
-        // /api/auth/ limit_req zone, and — decisively — the per-IP DAILY
-        // generation cap (services/generation_quota.py): a fresh account
-        // does not raise its address's generation allowance, so disposable
-        // accounts gain nothing at the endpoint that actually spends money.
+        // Signup friction (#1194 revision b). Email verification is wired
+        // above (mail sent on every signup; sign-in refusal gated on
+        // EMAIL_VERIFICATION_ENFORCED, which flips on once SES production
+        // access clears — see docs/account-authentication.md). These rate
+        // rules stay as defense-in-depth regardless: this rule (3 signups /
+        // 10 min per Better Auth's rate key), nginx's /api/auth/ limit_req
+        // zone, and — decisively — the per-IP DAILY generation cap
+        // (services/generation_quota.py): a fresh account does not raise its
+        // address's generation allowance, so disposable accounts gain
+        // nothing at the endpoint that actually spends money.
         '/sign-up/email': { window: 600, max: 3 },
       },
     },

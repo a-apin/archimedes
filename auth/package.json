@@ -9,6 +9,7 @@
     "check": "node --check auth.js && node --check server.js"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1113.0",
     "better-auth": "1.6.25",
     "pg": "8.22.0"
   }

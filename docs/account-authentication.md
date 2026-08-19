@@ -59,13 +59,23 @@ so absent optional parameters cannot block email/password startup.
 
 ### Signup friction and abuse bounds
 
-There is deliberately **no email verification yet**: nothing in this stack can
-send email (no SES/SMTP anywhere in `infra/`), and provisioning SES — domain
-DKIM/SPF verification plus a sandbox-exit request with external turnaround —
-did not fit the launch window. `email_verified` is captured on every account
-and enforced nowhere; treat it as data, not a gate.
+Email verification is **wired but not yet enforced**. Every signup sends a
+verification email (`auth/auth.js` `emailVerification.sendOnSignUp` via
+`auth/mailer.js` — SES in deployed environments, a console mailer in local
+compose so dev needs no AWS). Sign-in refusal for unverified accounts is
+gated on `EMAIL_VERIFICATION_ENFORCED` (Better Auth
+`requireEmailVerification`), currently `"false"` in `infra/ecs.tf` because
+the AWS account is in the **SES sandbox** — sandbox can only deliver to
+individually-verified addresses, so enforcing now would lock out every real
+signup. SES state: the `archimedes-arc.com` domain identity is created, its
+DKIM CNAMEs are live in Route53, and the production-access request is filed.
+**When it clears, flip `EMAIL_VERIFICATION_ENFORCED` to `"true"` — an env
+change, not a deploy.** The task role's `ses:SendEmail` is scoped to the one
+domain identity (`ecs_task_ses_send` in `infra/ecs.tf`). A failed send is
+deliberately fail-soft (loud log, signup proceeds) so a sandboxed or degraded
+SES never 500s registration.
 
-Until verification ships, disposable accounts are bounded by three layers:
+Independently of enforcement, disposable accounts are bounded by three layers:
 
 1. Better Auth's production rate limiter: `/sign-up/email` at 3 per 10
    minutes (`auth/auth.js` `rateLimit.customRules`).
@@ -74,11 +84,6 @@ Until verification ships, disposable accounts are bounded by three layers:
    (`backend/archimedes/services/generation_quota.py`). Generation is the
    endpoint that spends money, and its IP bucket does not reset when a new
    account is minted — so a signup farm gains nothing where it matters.
-
-Follow-up (post-launch): provision SES, verify the sending domain, exit
-sandbox, wire `requireEmailVerification` + `sendVerificationEmail` in
-`auth/auth.js`, and gate `require_current_user` on `email_verified`. Each
-step is small; the SES sandbox exit is the external dependency to start early.
 
 ## Wallet linking
 

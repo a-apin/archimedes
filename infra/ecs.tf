@@ -289,6 +289,26 @@ resource "aws_iam_role_policy" "ecs_task_bedrock_invoke" {
   })
 }
 
+# Verification email (auth container). Scoped to the one verified domain
+# identity — the task can send AS this domain and nothing else. The identity
+# itself (domain + DKIM CNAMEs in Route53) is managed outside terraform for
+# now; the production-access (sandbox-exit) request is account-level.
+resource "aws_iam_role_policy" "ecs_task_ses_send" {
+  name = "archimedes-ecs-ses-send"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "SendVerificationEmailAsDomainIdentity"
+        Effect   = "Allow"
+        Action   = ["ses:SendEmail", "ses:SendRawEmail"]
+        Resource = "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/${var.domain_name}"
+      }
+    ]
+  })
+}
+
 # ECS Exec ("aws ecs execute-command" — the SSM-session equivalent for a
 # Fargate task; no inbound port, no SSH). Required permissions per AWS docs:
 # https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-exec.html
@@ -595,7 +615,16 @@ resource "aws_ecs_task_definition" "backend" {
       environment = [
         { name = "NODE_ENV", value = "production" },
         { name = "BETTER_AUTH_URL", value = "https://${var.domain_name}" },
-        { name = "BETTER_AUTH_TRUSTED_ORIGINS", value = "https://${var.domain_name}" }
+        { name = "BETTER_AUTH_TRUSTED_ORIGINS", value = "https://${var.domain_name}" },
+        # Email verification (SES). Mail is sent on every signup; sign-in
+        # refusal for unverified accounts is gated separately below.
+        { name = "EMAIL_MAILER", value = "ses" },
+        { name = "EMAIL_SENDER", value = "no-reply@${var.domain_name}" },
+        # Flip to "true" when the SES production-access request clears
+        # (account is in the SES sandbox until then — sandbox can only send
+        # to individually-verified addresses, so enforcing now would lock
+        # every new signup out). Enforcement is an env flip, not a deploy.
+        { name = "EMAIL_VERIFICATION_ENFORCED", value = "false" }
       ]
 
       # Optional providers remain absent unless explicitly enabled after both
