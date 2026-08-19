@@ -5,7 +5,7 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
-COPY auth.js server.js ./
+COPY auth.js server.js mailer.js ./
 
 USER node
 EXPOSE 3000
