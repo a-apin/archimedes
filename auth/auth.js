@@ -50,9 +50,18 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
   // in libpq means "encrypt, do not verify the CA", so rejectUnauthorized:false
   // is the faithful translation, not a shortcut. verify-ca/verify-full would
   // need the RDS CA bundle shipped in the image (follow-up: #1284's image work).
-  const wantsTls = /[?&]sslmode=(require|prefer|verify-ca|verify-full)/.test(env.DATABASE_URL || '')
+  // pg's connection-string parser gives an in-URL `sslmode` precedence over the
+  // constructor's `ssl` object — with sslmode=require left in the string, full
+  // certificate verification still ran and failed on Aurora with
+  // UNABLE_TO_GET_ISSUER_CERT_LOCALLY (no RDS CA in the image). So: STRIP the
+  // parameter from the string and pass the ssl config explicitly. Proven
+  // against live Aurora in-container before this commit: SELECT succeeds.
+  // verify-full + the RDS CA bundle remains the #1284 follow-up.
+  const rawUrl = env.DATABASE_URL || ''
+  const wantsTls = /[?&]sslmode=(require|prefer|verify-ca|verify-full)/.test(rawUrl)
+  const connectionString = rawUrl.replace(/[?&]sslmode=[^&]+/, '')
   const db = database ?? new Pool({
-    connectionString: env.DATABASE_URL,
+    connectionString,
     ...(wantsTls ? { ssl: { rejectUnauthorized: false } } : {}),
   })
 
