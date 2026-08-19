@@ -102,3 +102,78 @@ def test_dict_rows_support_canonical_ownership_too():
     row = {"is_example": False, "is_published": False, "owner_user_id": "user_abc", "owner_wallet": "0xowner"}
     assert is_strategy_visible(row, None, caller_user_id="user_abc") is True
     assert is_strategy_visible(row, "0xowner", caller_user_id=None) is False
+
+
+# ── _visible_passports delegates to THIS predicate (#1120) ──────────────
+
+
+class TestVisiblePassportsDelegation:
+    """The passports listing's per-row visibility DECISION must be this
+    module's predicate, not a re-implementation. The divergence test works by
+    poisoning: force the shared predicate to answer differently and require
+    the passport filter to follow it — a hand-rolled copy would ignore the
+    poison and keep its own answer, failing here.
+    """
+
+    @staticmethod
+    def _record(rid, generation_method="dsl-fusion", owner_user_id=None, owner_wallet=None):
+        return MagicMock(
+            id=rid,
+            generation_method=generation_method,
+            owner_user_id=owner_user_id,
+            owner_wallet=owner_wallet,
+        )
+
+    @staticmethod
+    def _session_with_flags(flags):
+        """A session whose strategy_store flag query returns *flags* rows
+        of (id, is_example, is_published)."""
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = flags
+        return session
+
+    def test_generated_rows_follow_the_shared_predicate_verbatim(self, monkeypatch):
+        from archimedes.api import strategies_routes as sr
+
+        published = self._record("pub-1")
+        private_other = self._record("priv-1", owner_user_id="user_other")
+        records = [published, private_other]
+        session = self._session_with_flags([("pub-1", False, True), ("priv-1", False, False)])
+
+        # Unpoisoned: the published row is visible, the foreign private row is not.
+        out = sr._visible_passports(session, records, caller=None, caller_user_id="user_me")
+        assert [r.id for r in out] == ["pub-1"]
+
+        # Poison the shared predicate to the OPPOSITE verdicts. A delegating
+        # implementation flips with it; a re-implementation would not.
+        def inverted(row, caller_wallet, *, caller_user_id=None):
+            return not is_strategy_visible(row, caller_wallet, caller_user_id=caller_user_id)
+
+        monkeypatch.setattr("archimedes.services.strategy_visibility.is_strategy_visible", inverted)
+        out = sr._visible_passports(session, records, caller=None, caller_user_id="user_me")
+        assert [r.id for r in out] == ["priv-1"]
+
+    def test_two_tier_rule_holds_through_the_passport_path(self):
+        """The #850 canonical-tier poison case, end-to-end through
+        _visible_passports: a generated passport whose row carries an
+        owner_user_id must NOT be visible to a caller who merely matches its
+        legacy owner_wallet — the wallet tier applies only when
+        owner_user_id is NULL."""
+        from archimedes.api import strategies_routes as sr
+
+        canonical = self._record("canon-1", owner_user_id="user_real_owner", owner_wallet="0xwallet")
+        legacy = self._record("legacy-1", owner_user_id=None, owner_wallet="0xwallet")
+        records = [canonical, legacy]
+        session = self._session_with_flags([("canon-1", False, False), ("legacy-1", False, False)])
+
+        out = sr._visible_passports(session, records, caller="0xWALLET", caller_user_id=None)
+        assert [r.id for r in out] == ["legacy-1"]
+
+    def test_curated_passports_stay_public_without_store_rows(self):
+        from archimedes.api import strategies_routes as sr
+
+        curated = self._record("cur-1", generation_method="curated")
+        session = self._session_with_flags([])
+
+        out = sr._visible_passports(session, [curated], caller=None, caller_user_id=None)
+        assert [r.id for r in out] == ["cur-1"]

@@ -1534,13 +1534,17 @@ def _visible_passports(session, records: list, caller: str | None = None, caller
 
     The passports table mirrors ``strategy_store`` ids, so leaving these
     endpoints ungated would defeat the 404-hides-existence design on
-    ``GET /api/strategies/{id}`` by simple id substitution. Visibility mirrors
-    ``list_generated_strategies``: curated passports are always public; a
-    generated passport is public when its store row is ``is_example`` or
-    ``is_published``; otherwise it is owner-only. Ownerless generated legacy
-    rows stay hidden (purge-pending — scripts/purge_orphan_generated.py).
+    ``GET /api/strategies/{id}`` by simple id substitution. Curated passports
+    are always public (the curated corpus has no store row and no owner). For
+    generated passports, the per-row DECISION delegates to the single shared
+    predicate (``services.strategy_visibility.is_strategy_visible``, #1120) —
+    this function only supplies its inputs: the ``is_example``/``is_published``
+    flags come from the strategy_store row (the passport record does not carry
+    them), ownership fields from the passport record. Ownerless generated
+    legacy rows stay hidden (purge-pending — scripts/purge_orphan_generated.py).
     """
     from archimedes.models.strategy_store import StrategyRecord
+    from archimedes.services.strategy_visibility import is_strategy_visible
 
     ids = [r.id for r in records]
     store_flags: dict[str, tuple[bool, bool]] = {}
@@ -1558,13 +1562,13 @@ def _visible_passports(session, records: list, caller: str | None = None, caller
             visible.append(r)
             continue
         is_example, is_published = store_flags.get(r.id, (False, False))
-        if is_example or is_published:
-            visible.append(r)
-            continue
-        if caller_user_id and r.owner_user_id == caller_user_id:
-            visible.append(r)
-            continue
-        if caller and r.owner_user_id is None and r.owner_wallet and r.owner_wallet.lower() == caller.lower():
+        row_view = {
+            "is_example": is_example,
+            "is_published": is_published,
+            "owner_user_id": r.owner_user_id,
+            "owner_wallet": r.owner_wallet,
+        }
+        if is_strategy_visible(row_view, caller, caller_user_id=caller_user_id):
             visible.append(r)
     return visible
 
