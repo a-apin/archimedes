@@ -143,57 +143,19 @@ resource "aws_security_group" "archimedes" {
 }
 
 # ---------------------------------------------------------------------------
-# EC2 instance
+# EC2 instance — DECOMMISSIONED 2026-08-19.
+#
+# aws_instance.archimedes (i-01803d3abc271d39b) and its aws_eip.archimedes
+# were the original single-EC2 Docker-Compose host. Superseded by the ECS
+# Fargate backend service (ecs.tf, issue #1039) at the Phase 4 cutover — the
+# ALB stopped forwarding to it (see alb.tf's Phase 4 note) and it sat RUNNING
+# but unreferenced as a one-deploy-cycle rollback window. Both the box's
+# rollback usefulness and the relocated runners (runner_ec2.tf, #1065/#1043)
+# have since been proven out; the instance was stopped and snapshotted
+# (snap-02edf9e4a9ac7f201) ahead of this removal. Dan-authorized teardown.
+#
+# `aws_security_group.archimedes` (above) is NOT removed here: aurora.tf and
+# elasticache.tf still carry live "transitional" ingress rules keyed off its
+# SG id, and this PR deliberately does not touch those other-lane files (see
+# the PR body) — so the SG stays as an orphaned-but-harmless ingress source.
 # ---------------------------------------------------------------------------
-
-resource "aws_instance" "archimedes" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = var.instance_type
-  key_name               = aws_key_pair.deploy.key_name
-  vpc_security_group_ids = [aws_security_group.archimedes.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2.name # SSM SendCommand target + /archimedes/prod/* secret reads
-
-  # 20 GB gp3 root volume (enough for Docker images + data)
-  root_block_device {
-    volume_size           = 20
-    volume_type           = "gp3"
-    delete_on_termination = true
-    # Encrypt at rest (audit 2026-06-14): the root volume holds /opt/archimedes/.env
-    # (Postgres password, DATABASE_URL), SSM-pulled secrets in process/tmp, and
-    # Docker layers. Aurora + ElastiCache were already encrypted; this closes the
-    # last unencrypted store on the funds-hosting box.
-    # NOTE: applying this forces EC2 instance REPLACEMENT — coordinate with a
-    # human-credentialed `terraform plan` (or set account-level EBS default
-    # encryption to avoid replacement). Merge alone changes nothing (no CI apply).
-    encrypted = true
-  }
-
-  user_data = templatefile("${path.module}/user-data.sh", {
-    repo_url = var.repo_url
-  })
-
-  tags = {
-    Name    = "${var.project_name}-server"
-    Project = var.project_name
-  }
-
-  lifecycle {
-    ignore_changes = [ami, user_data] # AMI updates + user_data (bootstrap-only, runs at first boot) must not reboot the live box
-  }
-}
-
-# ---------------------------------------------------------------------------
-# Elastic IP — ensures DNS stays valid through EC2 replacements
-# ---------------------------------------------------------------------------
-
-resource "aws_eip" "archimedes" {
-  instance = aws_instance.archimedes.id
-  domain   = "vpc"
-
-  tags = {
-    Name    = "${var.project_name}-eip"
-    Project = var.project_name
-  }
-
-  depends_on = [aws_instance.archimedes]
-}

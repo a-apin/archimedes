@@ -243,18 +243,10 @@ resource "aws_lb_target_group" "backend" {
   }
 }
 
-# ── Phase 4 cutover (issue #1039): EC2 detached from the target group ──
-# Fargate (the ECS service's own target registrations) is now the sole web tier.
-# The EC2 instance stays RUNNING (attached to nothing) as a one-deploy-cycle
-# rollback window per the runbook — to roll back, uncomment this block and
-# `terraform apply` to re-register the box alongside Fargate. This block is
-# deleted for good at Phase 8 (EC2 decommission), along with aws_instance.archimedes.
-# resource "aws_lb_target_group_attachment" "backend" {
-#   target_group_arn  = aws_lb_target_group.backend.arn
-#   target_id         = aws_instance.archimedes.private_ip # IP target, not instance ID
-#   port              = 80
-#   availability_zone = "all" # Cross-VPC IP target
-# }
+# ── Phase 4 cutover (issue #1039) rollback window: CLOSED at Phase 8 ──────
+# The commented-out aws_lb_target_group_attachment that re-registered the EC2
+# box (aws_instance.archimedes) alongside Fargate as a one-deploy-cycle
+# rollback path was removed 2026-08-19 with the EC2 decommission (main.tf).
 
 # ── Listeners ────────────────────────────────────────────────
 

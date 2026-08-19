@@ -217,7 +217,7 @@ resource "aws_instance" "runner" {
     volume_size           = 20
     volume_type           = "gp3"
     delete_on_termination = true
-    encrypted             = true # same posture as main.tf's aws_instance.archimedes
+    encrypted             = true # same posture the decommissioned app box's root volume carried (main.tf, removed 2026-08-19)
   }
 
   metadata_options {
@@ -251,10 +251,10 @@ resource "aws_instance" "runner" {
   }
 
   lifecycle {
-    # Same rationale as main.tf's aws_instance.archimedes: an unrelated
-    # `terraform apply` picking up a newer Ubuntu AMI, or a user-data.sh edit
-    # that's bootstrap-only (runs once at first boot), must not silently
-    # replace/reboot this live funds-adjacent singleton.
+    # Same rationale as aws_instance.nat's own ignore_changes = [ami]
+    # (vpc.tf): an unrelated `terraform apply` picking up a newer Ubuntu AMI,
+    # or a user-data.sh edit that's bootstrap-only (runs once at first boot),
+    # must not silently replace/reboot this live funds-adjacent singleton.
     ignore_changes = [ami, user_data, user_data_base64]
   }
 }
