@@ -1,10 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import GenerationStream from "./GenerationStream";
 import GenerationStatus from "./GenerationStatus";
 import ModelCostPanel from "./ModelCostPanel";
 import { EXAMPLE_BRIEFS } from "../data/exampleBriefs";
 import { ASSET_GROUPS, SUPPORTED_ASSETS } from "../data/assetUniverse";
-import { apiPost } from "../api";
+import { apiGet, apiPost } from "../api";
+import { getAddress } from "../config";
+import { GENERATION_QUOTE_ENABLED } from "../featureFlags";
+import {
+	PAYMENT_STATUS,
+	attachQuoteId,
+	deriveQuoteView,
+	derivePaymentState,
+	isPaywallError,
+	isQuoteExpired,
+} from "../generateQuote";
 
 // /generate spine page — redesigned per issue #872.
 //
@@ -17,6 +27,17 @@ import { apiPost } from "../api";
 // the page. Clicking a row opens that job's live SSE stream as a drill-down
 // view. The SSE endpoint honours Last-Event-ID for replay, so re-subscribing
 // on drill-in shows the full history for a completed job too.
+//
+// Upfront cost quote (feature-flagged, GENERATION_QUOTE_ENABLED in
+// featureFlags.js — off by default): when on, a quote is fetched from
+// GET /api/generate/quote and shown before the submit button, which reads
+// "Approve & Generate" and carries `quote_id` on /start. If /start 402s
+// (backend paywall active — docs/specs/generation-quote-contract.md,
+// PROPOSED), the submit row switches to a payment-step banner instead of
+// the generic error: wallet-required if none is connected, otherwise an
+// honest "payments aren't enabled yet" preview — this build does not sign
+// or execute an on-chain payment. State-transition logic lives in
+// ../generateQuote.js so it's unit-testable without a DOM.
 
 const RISK_PROFILES = [
 	{ id: "fixed_income", label: "Fixed income" },
@@ -55,6 +76,55 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// ── Track the most-recently submitted job so the table can highlight it ──
 	const [lastJobId, setLastJobId] = useState(null);
 
+	// ── Upfront cost quote (feature-flagged) ──
+	const [quote, setQuote] = useState(null);
+	const [quoteStatus, setQuoteStatus] = useState(
+		GENERATION_QUOTE_ENABLED ? "loading" : "idle",
+	);
+	const [quoteError, setQuoteError] = useState("");
+	// Set true only by a genuine 402 from /start (isPaywallError). Cleared on
+	// every fresh submit attempt so a stale banner never survives a retry.
+	const [paywallActive, setPaywallActive] = useState(false);
+	const [walletAddr, setWalletAddr] = useState(() => getAddress());
+
+	const fetchQuote = useCallback(() => {
+		if (!GENERATION_QUOTE_ENABLED) return;
+		setQuoteStatus("loading");
+		setQuoteError("");
+		const qs = selectedModel ? `?model=${encodeURIComponent(selectedModel)}` : "";
+		apiGet(`/api/generate/quote${qs}`)
+			.then((data) => {
+				setQuote(data);
+				setQuoteStatus("ready");
+			})
+			.catch((e) => {
+				setQuote(null);
+				setQuoteError(e.message || "Cost quote unavailable");
+				setQuoteStatus("error");
+			});
+	}, [selectedModel]);
+
+	useEffect(() => {
+		fetchQuote();
+	}, [fetchQuote]);
+
+	// Wallet connect/disconnect is a global event (config.js), not React
+	// state — re-derive our copy on change so the payment-step banner can
+	// flip from "connect a wallet" to the payment preview live.
+	useEffect(() => {
+		const onWalletChanged = () => setWalletAddr(getAddress());
+		window.addEventListener("wallet-changed", onWalletChanged);
+		return () => window.removeEventListener("wallet-changed", onWalletChanged);
+	}, []);
+
+	const quoteView = useMemo(() => deriveQuoteView(quote), [quote]);
+	const quoteReady =
+		!GENERATION_QUOTE_ENABLED ||
+		(quoteStatus === "ready" && Boolean(quoteView) && !isQuoteExpired(quote));
+	const paymentStatus = paywallActive
+		? derivePaymentState(walletAddr)
+		: PAYMENT_STATUS.NONE;
+
 	// ── Submit a generation job ──
 	const startJob = async () => {
 		setStartError("");
@@ -62,23 +132,43 @@ export default function Generate({ onNavigate, onStageChange }) {
 			setStartError("Describe what you want in a sentence or two.");
 			return;
 		}
+		if (GENERATION_QUOTE_ENABLED && isQuoteExpired(quote)) {
+			setStartError("Your quote expired — fetching a new one, try again in a moment.");
+			fetchQuote();
+			return;
+		}
+		if (GENERATION_QUOTE_ENABLED && !quoteReady) {
+			setStartError("Cost quote isn't ready yet.");
+			return;
+		}
 		setStarting(true);
-		const payload = {
-			brief: {
-				intent,
-				risk_appetite: riskAppetite,
-				asset_classes: selectedAssets.length > 0 ? selectedAssets : undefined,
-				max_papers: depth,
-				...(strategyName.trim() ? { name: strategyName.trim() } : {}),
+		setPaywallActive(false);
+		const payload = attachQuoteId(
+			{
+				brief: {
+					intent,
+					risk_appetite: riskAppetite,
+					asset_classes: selectedAssets.length > 0 ? selectedAssets : undefined,
+					max_papers: depth,
+					...(strategyName.trim() ? { name: strategyName.trim() } : {}),
+				},
+				...(selectedModel ? { model: selectedModel } : {}),
 			},
-			...(selectedModel ? { model: selectedModel } : {}),
-		};
+			{ quoteEnabled: GENERATION_QUOTE_ENABLED, approvedQuoteId: quote?.quote_id },
+		);
 		try {
 			const data = await apiPost("/api/generate/start", payload);
 			setLastJobId(data.job_id);
+			// Quote is consumed by a successful /start — fetch a fresh one for
+			// the next generation rather than letting a spent quote_id linger.
+			if (GENERATION_QUOTE_ENABLED) fetchQuote();
 			// Stay on the page — the job table will show the new row.
 		} catch (e) {
-			setStartError(e.message || "Failed to start generation");
+			if (isPaywallError(e)) {
+				setPaywallActive(true);
+			} else {
+				setStartError(e.message || "Failed to start generation");
+			}
 		} finally {
 			setStarting(false);
 		}
@@ -367,12 +457,103 @@ export default function Generate({ onNavigate, onStageChange }) {
 						)}
 					</div>
 
+					{/* ── Upfront cost quote (feature-flagged) ── */}
+					{GENERATION_QUOTE_ENABLED && (
+						<div className="generate-quote mb-3">
+							{quoteStatus === "loading" && (
+								<p className="caption" style={{ color: "var(--text-3)" }}>
+									Fetching cost quote…
+								</p>
+							)}
+							{quoteStatus === "error" && (
+								<div className="info-box warning">
+									Cost quote unavailable ({quoteError}).{" "}
+									<button
+										type="button"
+										onClick={fetchQuote}
+										className="caption"
+										style={{
+											background: "none",
+											border: "none",
+											cursor: "pointer",
+											color: "var(--accent)",
+											textDecoration: "underline",
+											padding: 0,
+										}}
+									>
+										Try again
+									</button>
+								</div>
+							)}
+							{quoteStatus === "ready" && quoteView && (
+								<div className="info-box">
+									<div className="flex items-center flex-wrap gap-2">
+										<span className="label">Cost to generate</span>
+										<span className="tag tag-accent">{quoteView.priceLabel}</span>
+										<span className="tag tag-info">testnet USDC</span>
+									</div>
+									{quoteView.breakdown.length > 0 && (
+										<ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+											{quoteView.breakdown.map((b) => (
+												<li
+													key={b.label}
+													className="caption"
+													style={{ color: "var(--text-3)" }}
+												>
+													{b.label}: {b.amount_usdc} USDC-testnet
+												</li>
+											))}
+										</ul>
+									)}
+									<p
+										className="caption mb-0"
+										style={{ marginTop: 8, color: "var(--text-3)" }}
+									>
+										<span className="tag tag-positive" style={{ marginRight: 6 }}>
+											free
+										</span>
+										Paper trading after generation costs nothing — this quote
+										covers generation only.
+									</p>
+								</div>
+							)}
+						</div>
+					)}
+
 					{/* Submit row */}
 					<div
 						className="flex items-center justify-between flex-wrap gap-2"
 						style={{ marginTop: 2 }}
 					>
-						{startError ? (
+						{paymentStatus === PAYMENT_STATUS.WALLET_REQUIRED ? (
+							<div className="info-box warning" style={{ flex: 1 }}>
+								<strong>Payment required.</strong> Connect a wallet to pay for
+								this generation in testnet USDC.{" "}
+								<button
+									type="button"
+									onClick={() =>
+										window.dispatchEvent(new Event("open-wallet-modal"))
+									}
+									className="caption"
+									style={{
+										background: "none",
+										border: "none",
+										cursor: "pointer",
+										color: "var(--accent)",
+										textDecoration: "underline",
+										padding: 0,
+									}}
+								>
+									Connect wallet →
+								</button>
+							</div>
+						) : paymentStatus === PAYMENT_STATUS.PAYMENT_PREVIEW ? (
+							<div className="info-box warning" style={{ flex: 1 }}>
+								<strong>Payments aren't enabled yet.</strong> This generation
+								would cost {quoteView?.priceLabel ?? "the quoted amount"} from
+								your connected wallet once live. Nothing was charged.
+							</div>
+						) : startError ? (
 							<div className="info-box warning" style={{ flex: 1 }}>
 								{startError}
 							</div>
@@ -382,9 +563,13 @@ export default function Generate({ onNavigate, onStageChange }) {
 						<button
 							className="btn btn-primary"
 							onClick={startJob}
-							disabled={starting || !intent.trim()}
+							disabled={starting || !intent.trim() || !quoteReady}
 						>
-							{starting ? "Starting…" : "Generate →"}
+							{starting
+								? "Starting…"
+								: GENERATION_QUOTE_ENABLED
+									? "Approve & Generate →"
+									: "Generate →"}
 						</button>
 					</div>
 				</section>
