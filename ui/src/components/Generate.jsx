@@ -1,10 +1,24 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import GenerationStream from "./GenerationStream";
 import GenerationStatus from "./GenerationStatus";
 import ModelCostPanel from "./ModelCostPanel";
 import { EXAMPLE_BRIEFS } from "../data/exampleBriefs";
 import { ASSET_GROUPS, SUPPORTED_ASSETS } from "../data/assetUniverse";
-import { apiPost } from "../api";
+import { apiGet, apiPostWithMeta } from "../api";
+import { getAddress } from "../config";
+import { listLinkedWallets } from "../linked-wallets";
+import { GENERATION_QUOTE_ENABLED } from "../featureFlags";
+import {
+	PAYMENT_STATUS,
+	buildDryRunPaymentHeader,
+	deriveQuoteView,
+	derivePaymentState,
+	describePayerMismatch,
+	extractReceipt,
+	paymentErrorMessage,
+} from "../generateQuote";
+
+const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "");
 
 // /generate spine page — redesigned per issue #872.
 //
@@ -17,6 +31,22 @@ import { apiPost } from "../api";
 // the page. Clicking a row opens that job's live SSE stream as a drill-down
 // view. The SSE endpoint honours Last-Event-ID for replay, so re-subscribing
 // on drill-in shows the full history for a completed job too.
+//
+// Upfront cost quote + x402 paywall (feature-flagged, GENERATION_QUOTE_ENABLED
+// in featureFlags.js — off by default): when on, a quote is fetched from the
+// PUBLIC GET /api/generate/quote and shown before the submit button.
+// /start's request body is unchanged — the ratified contract
+// (docs/specs/generation-quote-contract.md, #1296) carries no quote_id or
+// any other payment field on the body; the gate lives entirely in status
+// codes: a 409 means "link + fund a wallet first" (CTA reuses the existing
+// open-wallet-modal flow), a 402 means "sign and retry with
+// Payment-Signature" — while the backend runs PAYMENTS_DRY_RUN (its
+// default), any non-empty header is accepted UNVERIFIED, so this build
+// offers a real, honestly-labeled "continue in test mode" retry instead of
+// a non-functional pay button (real x402 signing isn't wired here). A
+// settlement receipt (PAYMENT-RESPONSE header) is surfaced when present.
+// State-transition logic lives in ../generateQuote.js so it's unit-testable
+// without a DOM.
 
 const RISK_PROFILES = [
 	{ id: "fixed_income", label: "Fixed income" },
@@ -55,6 +85,118 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// ── Track the most-recently submitted job so the table can highlight it ──
 	const [lastJobId, setLastJobId] = useState(null);
 
+	// ── Upfront cost quote + x402 paywall (feature-flagged) ──
+	const [quote, setQuote] = useState(null);
+	const [quoteStatus, setQuoteStatus] = useState(
+		GENERATION_QUOTE_ENABLED ? "loading" : "idle",
+	);
+	const [quoteError, setQuoteError] = useState("");
+	const [walletAddr, setWalletAddr] = useState(() => getAddress());
+	// The account's linked wallets (GET /api/wallets) — fetched only once the
+	// quote says payments are actually required, so this call costs nothing
+	// in the common (flag-off) case. Used purely for the payer-binding
+	// transparency note (describePayerMismatch); never used to *select* a
+	// signer, since real signing isn't wired in this build.
+	const [linkedWallets, setLinkedWallets] = useState([]);
+	// The payment-step banner. Set only from a genuine 409/402 on /start
+	// (derivePaymentState); cleared on every fresh submit attempt so a stale
+	// banner never survives a retry.
+	const [paymentStatus, setPaymentStatus] = useState(PAYMENT_STATUS.NONE);
+	const [paymentMessage, setPaymentMessage] = useState("");
+	// True only right after a successful "continue in test mode" submit —
+	// the honest label the ratified contract requires (PAYMENTS_DRY_RUN:
+	// the payment header was accepted WITHOUT verification or settlement).
+	const [testModeNotice, setTestModeNotice] = useState(false);
+	const [continuingTestMode, setContinuingTestMode] = useState(false);
+	// The PAYMENT-RESPONSE settlement receipt from a successful /start, if
+	// the response carried one (only true payments settled — live mode).
+	const [receipt, setReceipt] = useState(null);
+
+	const fetchQuote = useCallback(() => {
+		if (!GENERATION_QUOTE_ENABLED) return;
+		setQuoteStatus("loading");
+		setQuoteError("");
+		apiGet("/api/generate/quote")
+			.then((data) => {
+				setQuote(data);
+				setQuoteStatus("ready");
+			})
+			.catch((e) => {
+				setQuote(null);
+				setQuoteError(e.message || "Cost quote unavailable");
+				setQuoteStatus("error");
+			});
+	}, []);
+
+	useEffect(() => {
+		fetchQuote();
+	}, [fetchQuote]);
+
+	// Wallet connect/disconnect is a global event (config.js), not React
+	// state — re-derive our copy on change so the payer-mismatch note and
+	// payment-step banner stay live.
+	useEffect(() => {
+		const onWalletChanged = () => setWalletAddr(getAddress());
+		window.addEventListener("wallet-changed", onWalletChanged);
+		return () => window.removeEventListener("wallet-changed", onWalletChanged);
+	}, []);
+
+	// Linked wallets: only needed once the quote reports payments are
+	// actually required (flag on server-side) — the common case (flag off)
+	// never makes this call.
+	useEffect(() => {
+		if (!GENERATION_QUOTE_ENABLED || !quote?.payment_required) return;
+		let cancelled = false;
+		listLinkedWallets()
+			.then((wallets) => {
+				if (!cancelled) setLinkedWallets(Array.isArray(wallets) ? wallets : []);
+			})
+			.catch(() => {
+				if (!cancelled) setLinkedWallets([]);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [quote?.payment_required]);
+
+	const quoteView = useMemo(() => deriveQuoteView(quote), [quote]);
+	const quoteReady = !GENERATION_QUOTE_ENABLED || (quoteStatus === "ready" && Boolean(quoteView));
+	// The wallet actually active in the injected provider vs. the account's
+	// LINKED wallet — signing must use the linked one, not whatever's merely
+	// selected right now. Null when there's nothing to flag (see
+	// describePayerMismatch's own doc for the exact conditions).
+	const payerMismatch = useMemo(
+		() => describePayerMismatch(walletAddr, linkedWallets),
+		[walletAddr, linkedWallets],
+	);
+
+	// ── Build the /start request body. No payment field on it anywhere —
+	// the ratified contract (#1296) gates entirely via status codes/headers,
+	// not a request-body field (the PROPOSED contract's quote_id is dead). ──
+	const buildBrief = () => ({
+		brief: {
+			intent,
+			risk_appetite: riskAppetite,
+			asset_classes: selectedAssets.length > 0 ? selectedAssets : undefined,
+			max_papers: depth,
+			...(strategyName.trim() ? { name: strategyName.trim() } : {}),
+		},
+		...(selectedModel ? { model: selectedModel } : {}),
+	});
+
+	// POST /start, optionally with a Payment-Signature header, and surface
+	// whatever the response carries (job id + PAYMENT-RESPONSE if present).
+	const submitStart = async (extraHeaders) => {
+		const { data, headers } = await apiPostWithMeta(
+			"/api/generate/start",
+			buildBrief(),
+			extraHeaders,
+		);
+		setLastJobId(data.job_id);
+		setReceipt(extractReceipt(headers));
+		return data;
+	};
+
 	// ── Submit a generation job ──
 	const startJob = async () => {
 		setStartError("");
@@ -62,25 +204,53 @@ export default function Generate({ onNavigate, onStageChange }) {
 			setStartError("Describe what you want in a sentence or two.");
 			return;
 		}
+		if (GENERATION_QUOTE_ENABLED && !quoteReady) {
+			setStartError("Cost quote isn't ready yet.");
+			return;
+		}
 		setStarting(true);
-		const payload = {
-			brief: {
-				intent,
-				risk_appetite: riskAppetite,
-				asset_classes: selectedAssets.length > 0 ? selectedAssets : undefined,
-				max_papers: depth,
-				...(strategyName.trim() ? { name: strategyName.trim() } : {}),
-			},
-			...(selectedModel ? { model: selectedModel } : {}),
-		};
+		setPaymentStatus(PAYMENT_STATUS.NONE);
+		setPaymentMessage("");
+		setTestModeNotice(false);
+		setReceipt(null);
 		try {
-			const data = await apiPost("/api/generate/start", payload);
-			setLastJobId(data.job_id);
+			await submitStart();
+			// Re-quote for the next generation — flat pricing has nothing to
+			// consume, but the flag/dry_run/recipient could change underneath.
+			if (GENERATION_QUOTE_ENABLED) fetchQuote();
 			// Stay on the page — the job table will show the new row.
 		} catch (e) {
-			setStartError(e.message || "Failed to start generation");
+			const dryRun = e?.detail?.quote?.dry_run ?? quote?.dry_run;
+			const state = derivePaymentState(e, dryRun);
+			if (state !== PAYMENT_STATUS.NONE) {
+				setPaymentStatus(state);
+				setPaymentMessage(paymentErrorMessage(e));
+			} else {
+				setStartError(e.message || "Failed to start generation");
+			}
 		} finally {
 			setStarting(false);
+		}
+	};
+
+	// The PAYMENTS_DRY_RUN continuation: any non-empty Payment-Signature is
+	// accepted UNVERIFIED, so this actually completes the job — honestly
+	// labeled, never dressed up as a real settlement. The payer named is the
+	// caller's OWN active wallet, which — by having reached a 402 at all —
+	// is already proven to be a wallet linked to this account (the 409 gate
+	// runs first and would have fired otherwise).
+	const continueInTestMode = async () => {
+		setContinuingTestMode(true);
+		try {
+			await submitStart({ "Payment-Signature": buildDryRunPaymentHeader(walletAddr) });
+			setPaymentStatus(PAYMENT_STATUS.NONE);
+			setPaymentMessage("");
+			setTestModeNotice(true);
+			if (GENERATION_QUOTE_ENABLED) fetchQuote();
+		} catch (e) {
+			setPaymentMessage(paymentErrorMessage(e, "Test-mode continue failed — try again."));
+		} finally {
+			setContinuingTestMode(false);
 		}
 	};
 
@@ -367,14 +537,158 @@ export default function Generate({ onNavigate, onStageChange }) {
 						)}
 					</div>
 
+					{/* ── Upfront cost quote (feature-flagged, ratified #1296 shape) ── */}
+					{GENERATION_QUOTE_ENABLED && (
+						<div className="generate-quote mb-3">
+							{quoteStatus === "loading" && (
+								<p className="caption" style={{ color: "var(--text-3)" }}>
+									Fetching cost quote…
+								</p>
+							)}
+							{quoteStatus === "error" && (
+								<div className="info-box warning">
+									Cost quote unavailable ({quoteError}).{" "}
+									<button
+										type="button"
+										onClick={fetchQuote}
+										className="caption"
+										style={{
+											background: "none",
+											border: "none",
+											cursor: "pointer",
+											color: "var(--accent)",
+											textDecoration: "underline",
+											padding: 0,
+										}}
+									>
+										Try again
+									</button>
+								</div>
+							)}
+							{quoteStatus === "ready" && quoteView && (
+								<div className="info-box">
+									<div className="flex items-center flex-wrap gap-2">
+										<span className="label">Cost to generate</span>
+										<span className="tag tag-accent">
+											{quoteView.price} {quoteView.asset}
+										</span>
+										{quoteView.paymentRequired ? (
+											<span className="tag tag-info">testnet USDC</span>
+										) : (
+											<span className="tag tag-muted">payment not required yet</span>
+										)}
+										{quoteView.paymentRequired && quoteView.dryRun && (
+											<span className="tag tag-warning">
+												test mode — payment accepted unverified
+											</span>
+										)}
+									</div>
+									<p
+										className="caption mb-0"
+										style={{ marginTop: 8, color: "var(--text-3)" }}
+									>
+										<span className="tag tag-positive" style={{ marginRight: 6 }}>
+											free
+										</span>
+										Paper trading after generation costs nothing — this quote
+										covers generation only.
+									</p>
+									{quoteView.paymentRequired && payerMismatch && (
+										<p
+											className="caption mb-0"
+											style={{ marginTop: 6, color: "var(--text-3)" }}
+										>
+											Payments must be signed by your linked wallet (
+											{shortAddr(payerMismatch.linked)}) — your connected wallet
+											({shortAddr(payerMismatch.active)}) isn't linked yet.
+										</p>
+									)}
+								</div>
+							)}
+						</div>
+					)}
+
 					{/* Submit row */}
 					<div
 						className="flex items-center justify-between flex-wrap gap-2"
 						style={{ marginTop: 2 }}
 					>
-						{startError ? (
+						{paymentStatus === PAYMENT_STATUS.WALLET_LINK_REQUIRED ? (
+							<div className="info-box warning" style={{ flex: 1 }}>
+								<strong>Wallet link required.</strong> {paymentMessage}
+								{payerMismatch && (
+									<p
+										className="caption mb-0"
+										style={{ marginTop: 6, color: "var(--text-3)" }}
+									>
+										Your connected wallet ({shortAddr(payerMismatch.active)})
+										isn't linked to your account — your linked wallet is{" "}
+										{shortAddr(payerMismatch.linked)}. Switch your wallet's
+										active account to that one, or link the connected one below.
+									</p>
+								)}{" "}
+								<button
+									type="button"
+									onClick={() =>
+										window.dispatchEvent(new Event("open-wallet-modal"))
+									}
+									className="caption"
+									style={{
+										background: "none",
+										border: "none",
+										cursor: "pointer",
+										color: "var(--accent)",
+										textDecoration: "underline",
+										padding: 0,
+									}}
+								>
+									Connect / link wallet →
+								</button>
+							</div>
+						) : paymentStatus === PAYMENT_STATUS.DRY_RUN ? (
+							<div className="info-box warning" style={{ flex: 1 }}>
+								<strong>Test mode.</strong> {paymentMessage} This backend
+								accepts payments unverified right now — nothing real is
+								charged.{" "}
+								<button
+									type="button"
+									onClick={continueInTestMode}
+									disabled={continuingTestMode}
+									className="caption"
+									style={{
+										background: "none",
+										border: "none",
+										cursor: "pointer",
+										color: "var(--accent)",
+										textDecoration: "underline",
+										padding: 0,
+									}}
+								>
+									{continuingTestMode ? "Continuing…" : "Continue in test mode →"}
+								</button>
+							</div>
+						) : paymentStatus === PAYMENT_STATUS.LIVE_UNAVAILABLE ? (
+							<div className="info-box warning" style={{ flex: 1 }}>
+								<strong>Payments aren't enabled in this build yet.</strong>{" "}
+								{paymentMessage}
+							</div>
+						) : startError ? (
 							<div className="info-box warning" style={{ flex: 1 }}>
 								{startError}
+							</div>
+						) : testModeNotice ? (
+							<div className="info-box" style={{ flex: 1 }}>
+								<span className="tag tag-warning" style={{ marginRight: 6 }}>
+									test mode
+								</span>
+								Payment accepted unverified — no real charge.
+							</div>
+						) : receipt ? (
+							<div className="info-box" style={{ flex: 1 }}>
+								<span className="tag tag-positive" style={{ marginRight: 6 }}>
+									paid
+								</span>
+								Settlement receipt: <code>{receipt}</code>
 							</div>
 						) : (
 							<div />
@@ -382,9 +696,13 @@ export default function Generate({ onNavigate, onStageChange }) {
 						<button
 							className="btn btn-primary"
 							onClick={startJob}
-							disabled={starting || !intent.trim()}
+							disabled={starting || !intent.trim() || !quoteReady}
 						>
-							{starting ? "Starting…" : "Generate →"}
+							{starting
+								? "Starting…"
+								: GENERATION_QUOTE_ENABLED
+									? "Approve & Generate →"
+									: "Generate →"}
 						</button>
 					</div>
 				</section>
