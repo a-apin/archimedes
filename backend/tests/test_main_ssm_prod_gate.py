@@ -72,6 +72,15 @@ _HARNESS = dedent(
     sys.modules["botocore"] = fake_botocore
     sys.modules["botocore.exceptions"] = fake_botocore_exceptions
 
+    # Neutralize load_dotenv BEFORE archimedes.main runs its own
+    # load_dotenv("../.env", override=True) — otherwise a populated repo-root
+    # .env (e.g. PUBLIC_DOMAIN set for local prod-mimicry, as .env.example's
+    # comment suggests) overrides this test's carefully-constructed env and
+    # flips the local-mode assertion: local-red/CI-green, the class the
+    # testing conventions ban (pattern: test_security_hardening.py).
+    import dotenv as _dotenv
+    _dotenv.load_dotenv = lambda *_a, **_kw: False
+
     import archimedes.main  # noqa: F401  (import-time side effect under test)
 
     print(len(ssm_client_calls))
@@ -95,16 +104,21 @@ def _run(env: dict[str, str]) -> int:
 
 
 def _base_env() -> dict[str, str]:
+    """Whitelist-only env (testing conventions; pattern:
+    test_security_hardening._clean_subprocess_env). Inheriting os.environ
+    leaks the developer's .env — loaded into the parent pytest process by
+    earlier imports — into the subprocess: ambient AWS creds, a real
+    DATABASE_URL pointing at compose's postgres hostname, or a locally-set
+    PUBLIC_DOMAIN would all change what this test measures. The gate is on
+    PUBLIC_DOMAIN, not credential presence, so nothing ambient may vary."""
     import os
 
-    env = dict(os.environ)
-    # Ambient AWS creds must not matter either way — the gate is on
-    # PUBLIC_DOMAIN, not credential presence. Scrub them so a developer's
-    # real AWS env can't accidentally make this test pass for the wrong
-    # reason (or fail if it somehow did reach real SSM).
-    for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"):
-        env.pop(var, None)
-    return env
+    return {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "PYTHONPATH": str(_BACKEND_DIR),
+        "DATABASE_URL": "sqlite:////tmp/archimedes-ssm-gate-subprocess.db",
+    }
 
 
 def test_local_mode_never_calls_ssm_even_with_prod_shaped_prefix():
