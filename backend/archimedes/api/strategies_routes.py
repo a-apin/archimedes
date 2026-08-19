@@ -1845,6 +1845,48 @@ def _public_generated_strategy_responses(session) -> list[StrategyResponse]:
     return [_passport_to_strategy_response(r, session) for r in visible]
 
 
+def _owned_generated_strategy_responses(
+    session, caller_wallet: str | None, caller_user_id: str | None
+) -> list[StrategyResponse]:
+    """GENERATED strategies OWNED by *caller* — the single-user leaderboard's
+    "own" scope (leaderboard-goes-single-user MVP: with no publish mechanism
+    live, ranking against a global cohort was incoherent, so a signed-in
+    caller instead ranks THEIR OWN strategies against each other).
+
+    Deliberately narrower than ``_generated_strategy_responses`` (published-
+    by-anyone ∪ owned-by-caller): here the question is "is this MINE", not
+    "am I allowed to see this", so another user's published strategy must
+    NOT appear just because it is public. Reuses ``is_strategy_visible`` (the
+    single #850 predicate — never re-implement ownership matching at a call
+    site) for the two-tier owner_user_id/owner_wallet check, but pins
+    ``is_published`` False in the row_view fed to it so a stranger's
+    published row can never ride that predicate's publish-visibility clause
+    onto this caller's board. Curated (``is_example``) rows have no owner and
+    are never returned here — they are the separate "curated" scope.
+    """
+    from archimedes.services.passport_loader import list_passports
+    from archimedes.services.strategy_visibility import is_strategy_visible
+
+    if not caller_user_id and not caller_wallet:
+        return []
+
+    records = [r for r in list_passports(session) if (r.generation_method or "").lower() != "curated"]
+    if not records:
+        return []
+
+    owned = []
+    for r in records:
+        row_view = {
+            "is_example": False,
+            "is_published": False,  # ownership only — publish state is irrelevant to "own"
+            "owner_user_id": r.owner_user_id,
+            "owner_wallet": r.owner_wallet,
+        }
+        if is_strategy_visible(row_view, caller_wallet, caller_user_id=caller_user_id):
+            owned.append(r)
+    return [_passport_to_strategy_response(r, session) for r in owned]
+
+
 @strategies_router.get("/{strategy_id}/returns", response_model=StrategyReturnsResponse)
 async def get_strategy_returns(strategy_id: str, request: Request):
     """Return persisted real daily returns for a strategy.

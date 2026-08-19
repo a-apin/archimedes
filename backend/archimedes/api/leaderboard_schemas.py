@@ -136,4 +136,15 @@ class LeaderboardResponse(BaseModel):
     total: int
     sort_by: str
     order: str
+    scope: str = Field(
+        "curated",
+        description=(
+            "The cohort actually served: 'own' (the signed-in caller's own "
+            "strategies, ranked against each other) or 'curated' (the curated "
+            "seed library, shown as reference — never a competing cohort). May "
+            "differ from a requested ?scope= — an anonymous caller requesting "
+            "'own' is served 'curated' instead, and this field reports what was "
+            "actually served, not what was asked for."
+        ),
+    )
     scoring_engine: LeaderboardScoringEngine

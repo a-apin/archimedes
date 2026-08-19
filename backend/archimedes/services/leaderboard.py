@@ -179,8 +179,16 @@ def build_leaderboard(
     regime_tag: str | None = None,
     min_rigor: bool = False,
     limit: int = 50,
+    scope: str = "curated",
 ) -> LeaderboardResponse:
-    """Rank strategies into a leaderboard. Pure — no I/O."""
+    """Rank strategies into a leaderboard. Pure — no I/O.
+
+    ``scope`` is echoed back verbatim (never derived here) — it is the caller's
+    statement of what cohort ``responses`` actually is ('own': the signed-in
+    caller's own strategies; 'curated': the curated seed library), so the UI
+    can label the board honestly even when the caller's requested scope was
+    silently coerced (e.g. an anonymous request for 'own').
+    """
     if sort_by not in _SORTABLE:
         sort_by = "conviction_score"
     order = "asc" if order == "asc" else "desc"
@@ -225,5 +233,6 @@ def build_leaderboard(
         total=total,
         sort_by=sort_by,
         order=order,
+        scope=scope,
         scoring_engine=engine,
     )
