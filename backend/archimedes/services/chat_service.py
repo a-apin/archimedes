@@ -49,6 +49,40 @@ AI_WALLET_ADDRESS = os.getenv(
 CHAT_MODEL = os.getenv("CHAT_MODEL", "").strip() or None
 
 
+def _curated_rigor_statuses(strategies: list) -> dict[str, str]:
+    """LIVE tri-state rigor statuses ("pass"|"fail"|"pending") for chat context.
+
+    ``Strategy.passes_rigor_gate`` on the in-memory provider object is a
+    fail-closed sentinel (always ``False``, #821) — presenting it as a verdict
+    told the vault-chat LLM that every curated strategy had failed the gate.
+    This reuses the library list's memoized live-gate batch over the full
+    library cohort (same cohort context, same cache entry, so a warm library
+    page makes this free) and reduces each requested strategy to its tri-state
+    status. Any failure returns ``{}`` and the caller omits the rigor line
+    entirely — this context builder's law is "missing data is omitted, never
+    invented".
+    """
+    if not strategies:
+        return {}
+    try:
+        # Service→api import mirrors the existing precedent in
+        # live_rigor_gate._load_strategy_code_safe; local so module import stays light.
+        from archimedes.api.strategies_routes import (
+            _live_rigor_results_for_strategies,
+            _verdict_from_result,
+        )
+        from archimedes.services.strategy_provider import default_provider
+
+        cohort = list(default_provider().list_strategies())
+        cohort_ids = {c.id for c in cohort}
+        cohort.extend(s for s in strategies if s.id not in cohort_ids)
+        results = _live_rigor_results_for_strategies(cohort)
+        return {s.id: _verdict_from_result(results.get(s.id)).status for s in strategies}
+    except Exception:
+        logger.debug("live rigor statuses for chat context failed (line omitted)", exc_info=True)
+        return {}
+
+
 def _generated_context_lines(strategy_id: str) -> list[str]:
     """Curated-provider miss → look up a GENERATED strategy directly from the
     unified strategy_passports store, so a generated-strategy vault's chat gets
@@ -342,16 +376,29 @@ class ChatService:
                         from archimedes.services.strategy_provider import default_provider
 
                         provider = default_provider()
-                        for sid in strategy_ids[:3]:
-                            s = provider.get_strategy(sid)
+                        found = [(sid, provider.get_strategy(sid)) for sid in strategy_ids[:3]]
+                        # LIVE tri-state verdicts, batched once (M2 fix). The
+                        # in-memory passes_rigor_gate is a fail-closed sentinel,
+                        # not a verdict — the old line told the LLM every curated
+                        # strategy was "not passed".
+                        rigor_statuses = _curated_rigor_statuses([s for _, s in found if s])
+                        rigor_labels = {
+                            "pass": "passed (live gate)",
+                            "fail": "failed (live gate)",
+                            "pending": "pending — no live backtest verdict yet",
+                        }
+                        for sid, s in found:
                             if s:
                                 parts.append(f"Strategy: {s.paper_title}")
                                 if s.methodology_summary:
                                     parts.append(f"Methodology: {s.methodology_summary[:400]}")
                                 if s.asset_universe:
                                     parts.append(f"Assets: {', '.join(s.asset_universe)}")
-                                rigor = "passed" if s.passes_rigor_gate else "not passed"
-                                parts.append(f"Rigor gate: {rigor}")
+                                label = rigor_labels.get(rigor_statuses.get(s.id, ""))
+                                if label:
+                                    parts.append(f"Rigor gate: {label}")
+                                # No live status (batch failed) → the rigor line is
+                                # omitted, never invented from the sentinel.
                             else:
                                 # Curated provider miss — GENERATED strategy vault
                                 # (unify-source decouple): fall back to the unified
