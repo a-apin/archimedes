@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -72,8 +73,51 @@ def _analytics_strategy_dir(repo_root: Path) -> Path:
     return repo_root / "analytics-engine" / "strategies"
 
 
+def _dir_writable(d: Path) -> bool:
+    """Probe by actually creating a file — ``os.access`` lies in containers."""
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        probe = d / f".write-probe-{os.getpid()}"
+        probe.write_text("")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def _artifact_dir(repo_root: Path) -> Path:
-    return repo_root / "analytics-engine" / "artifacts"
+    """Where run artifacts get written. Must be writable, which the packaged
+    default is NOT on Fargate: the image ships read-only for the nonroot user,
+    so every backtest in the scheduled refresh died with
+    ``PermissionError: /app/analytics-engine/artifacts/<run>.json`` — at the
+    artifact write, BEFORE the DB insert — and the leaderboard silently froze
+    at its last pre-cutover rows (2026-08-18 diagnosis of the stale-refresh
+    incident; newest row was 2026-07-01).
+
+    Resolution order:
+      1. ``ARCHIMEDES_ARTIFACT_DIR`` env — the deployment's explicit choice
+         (ecs.tf sets it to task-local scratch; the artifact JSON is also
+         persisted into ``backtest_results.artifact_json``, which is the
+         durable record, so ephemeral task storage is honest here).
+      2. The repo-local ``analytics-engine/artifacts`` when writable — the
+         dev/EC2 behaviour, unchanged.
+      3. A stable path under the system temp dir, logged at WARNING — loud,
+         because a silent location change is how artifacts "disappear".
+    """
+    env = os.getenv("ARCHIMEDES_ARTIFACT_DIR")
+    if env:
+        return Path(env)
+    default = repo_root / "analytics-engine" / "artifacts"
+    if _dir_writable(default):
+        return default
+    fallback = Path(tempfile.gettempdir()) / "archimedes-artifacts"
+    logger.warning(
+        "artifact dir %s is not writable (read-only container image?); writing run artifacts to %s instead. "
+        "Set ARCHIMEDES_ARTIFACT_DIR to choose explicitly. The DB row's artifact_json remains the durable record.",
+        default,
+        fallback,
+    )
+    return fallback
 
 
 def _ensure_analytics_import(repo_root: Path) -> None:
