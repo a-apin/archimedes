@@ -7,16 +7,14 @@ strategy_daily_returns, whose own law (wholesale replace per re-measurement)
 is the opposite of what a user-facing track record may do.
 
 Revision ID: c9f2e8d4a1b7
-Revises: b41c7d9e2a05
+Revises: b7e3f1a2c9d4
 Create Date: 2026-08-18 12:00:00.000000
 
-SEQUENCING NOTE: authored against main's head b41c7d9e2a05 while PR #1194
-(Better Auth) carries 9ad1c4e2b7f0 -> b7e3f1a2c9d4 against the same parent.
-Whichever lands second must re-point onto the other's head — the two-heads
-fork has now bitten this repo twice (2026-08-03 deploy outage; #1194's CI on
-2026-08-18), so this note exists to make the third time a conscious step
-instead of a surprise. The tables are disjoint from #1194's (new paper_*
-tables only).
+SEQUENCING NOTE (resolved 2026-08-19): authored against b41c7d9e2a05 while
+PR #1194 carried 9ad1c4e2b7f0 -> b7e3f1a2c9d4 against the same parent. #1194
+merged first, so this revision re-pointed onto its head b7e3f1a2c9d4 — the
+planned step, keeping the chain serial (the two-heads fork has bitten this
+repo twice). The tables are disjoint from #1194's (new paper_* tables only).
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c9f2e8d4a1b7"
-down_revision: str | Sequence[str] | None = "b41c7d9e2a05"
+down_revision: str | Sequence[str] | None = "b7e3f1a2c9d4"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
