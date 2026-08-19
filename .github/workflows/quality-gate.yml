@@ -56,6 +56,34 @@ jobs:
   # a path-filtered job marked as a required check never reports on PRs that
   # miss its paths, so the check sits in "Expected" forever and the PR can
   # never merge.
+  # Guards the alembic chain against the recurring fork bug: two PRs each add
+  # a migration whose down_revision points at the SAME parent (the head each
+  # saw when it branched). Whichever merges first becomes the new head; the
+  # other's migration is now parented on a stale revision — `alembic upgrade
+  # head` can't resolve that on its own. Bit three times already (the Aug 3
+  # deploy, and twice on #1194).
+  #
+  # Deliberately NOT path-filtered at the trigger level, for the same reason
+  # as infra-guards above: a path-filtered required check never reports on a
+  # PR that misses its paths, so it sits in "Expected" forever and blocks
+  # merge permanently. The script itself early-exits the moment it finds no
+  # changed migration files vs the merge-base — checkout + one git diff, no
+  # pip install — so a non-migration PR pays only a few seconds for this job.
+  migration-chain-guard:
+    name: Migrations — chain fork guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # actions/checkout on a pull_request event does not otherwise leave a
+      # resolvable `origin/main` ref lying around — it fetches only the ref
+      # it checks out. The guard needs `origin/main` to name main's CURRENT
+      # tip, not a stale snapshot, so fetch it explicitly.
+      - run: git fetch origin main:refs/remotes/origin/main
+      - name: New migrations must extend main's current chain head, not fork it
+        run: python3 .github/scripts/migration_chain_guard.py
+
   engine-tests:
     name: Analytics engine — unit tests
     runs-on: ubuntu-latest
