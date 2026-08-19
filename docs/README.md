@@ -69,7 +69,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`specs/strategy-dsl-spec.md`](specs/strategy-dsl-spec.md) | spec | Dan Browne | — | Strategy DSL. |
 | [`specs/strategy-lifecycle-spec.md`](specs/strategy-lifecycle-spec.md) | spec | Dan Browne | — | Draft → generated → published lifecycle. |
 | [`specs/generation-streaming-spec.md`](specs/generation-streaming-spec.md) | spec | Dan Browne | — | SSE contract for the Generate page. |
-| [`specs/generation-quote-contract.md`](specs/generation-quote-contract.md) | proposed | Dan Browne | — | Upfront cost-quote endpoint + `quote_id` on `/api/generate/start`, drafted by the frontend session for the contracts session to ratify. Frontend ships behind `VITE_GENERATION_QUOTE_ENABLED`. |
+| [`specs/generation-quote-contract.md`](specs/generation-quote-contract.md) | spec | Dan Browne | — | Public cost quote + 409/402 x402 paywall on `/api/generate/start`, ratified in #1296. Frontend ships behind `VITE_GENERATION_QUOTE_ENABLED`. |
 | [`specs/kb-integration-spec.md`](specs/kb-integration-spec.md) | spec | Dan Browne | — | KnowledgeBase submodule integration. |
 | [`specs/page-roles-spec.md`](specs/page-roles-spec.md) | spec | Dan Browne | — | What each page is for. |
 | [`specs/component-interfaces-spec.md`](specs/component-interfaces-spec.md) | spec | Dan Browne | — | Component interfaces and the team work split. |

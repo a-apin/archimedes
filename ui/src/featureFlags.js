@@ -6,11 +6,14 @@
 // file's path/shape matches it deliberately so the two flags land in the
 // same file without conflict once it merges.
 
-// Gates the upfront cost-quote + approval step on the Generate page
-// (docs/specs/generation-quote-contract.md — PROPOSED). Off by default:
-// Generate submits directly with no quote step, same as before this flag
-// existed. Dan flips VITE_GENERATION_QUOTE_ENABLED=true once the backend
-// quote endpoint + x402 paywall (contracts session, flag-gated on that
-// side too) are live enough to try against.
+// Gates the upfront cost-quote + x402 paywall step on the Generate page
+// (docs/specs/generation-quote-contract.md — RATIFIED, #1296). Off by
+// default: Generate submits directly with no quote step, same as before
+// this flag existed. Dan flips VITE_GENERATION_QUOTE_ENABLED=true once
+// the backend's GENERATION_PAYMENT_REQUIRED flag (independently
+// flag-gated on that side, see #834's flip-list) is worth trying against
+// — this frontend flag works fine against a backend where that's still
+// off, since GET /api/generate/quote always reports payment_required
+// honestly either way.
 export const GENERATION_QUOTE_ENABLED =
 	import.meta.env.VITE_GENERATION_QUOTE_ENABLED === "true";
