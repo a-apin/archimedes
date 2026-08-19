@@ -135,9 +135,7 @@ class TestDailyCloseBatchCache:
 
     def test_stale_cache_past_ttl_refetches(self, session_factory):
         vendor = _FakeVendor({"sSPY": _series(30)})
-        provider = CachingMarketDataProvider(
-            vendor, source_name="yfinance", session_factory=session_factory
-        )
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
         provider._ttl = timedelta(hours=1)
         provider.get_daily_close_batch({"sSPY": "SPY"}, period="1mo")
 
@@ -262,3 +260,56 @@ class TestYFinanceProviderBoundary:
         provider = YFinanceProvider()
         with patch.dict(sys.modules, {"yfinance": None}):
             assert provider.get_intraday_quotes_batch({"sSPY": "SPY"}) == {}
+
+
+class TestConcurrentPrimeRace:
+    def test_losing_a_concurrent_write_race_still_returns_the_fetched_data(self, session_factory):
+        """Two writers prime a cold cache; the loser's commit hits
+        ``uq_asset_daily_bars_symbol_trade_date``. The fetch SUCCEEDED — the
+        caller must still get its data, nothing may raise, and the winner's
+        rows stand (equivalent vendor data; next read is warm).
+
+        Deterministic re-creation of the select→commit race window: the WRITE
+        session's ``commit`` is intercepted to first land the same
+        (symbol, trade_date) rows through a rival session — exactly what a
+        second Fargate task or the refresh loop does — before the real commit
+        flushes this session's now-conflicting INSERTs."""
+        from archimedes.models.asset_daily_bars import AssetDailyBar
+        from archimedes.services.market_data_provider import _write_cached_series
+
+        series = _series()
+        vendor = _FakeVendor({"X": series})
+
+        sessions_made: list = []
+        state = {"raced": False}
+
+        def racing_factory():
+            session = session_factory()
+            sessions_made.append(session)
+            if len(sessions_made) == 2 and not state["raced"]:
+                real_commit = session.commit
+
+                def commit_with_rival():
+                    if not state["raced"]:
+                        state["raced"] = True
+                        rival = session_factory()
+                        _write_cached_series(rival, "X", series, "rival")
+                        rival.commit()
+                        rival.close()
+                    real_commit()
+
+                session.commit = commit_with_rival
+            return session
+
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=racing_factory)
+        out = provider.get_daily_close_batch({"X": "X"}, period="1mo")
+
+        assert state["raced"] is True, "the rival writer never ran — the race was not exercised"
+        assert "X" in out and len(out["X"]) == len(series)  # fetched data survives the collision
+
+        check = session_factory()
+        try:
+            rows = check.query(AssetDailyBar).filter_by(symbol="X").all()
+        finally:
+            check.close()
+        assert len(rows) == len(series)  # winner's rows stand; no duplicates

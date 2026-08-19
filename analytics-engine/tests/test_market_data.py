@@ -42,9 +42,7 @@ class TestProviderSelection:
 
 def _multiindex_ohlcv(symbol: str, n: int = 3) -> pd.DataFrame:
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
-    columns = pd.MultiIndex.from_tuples(
-        [(field, symbol) for field in ("Open", "High", "Low", "Close", "Volume")]
-    )
+    columns = pd.MultiIndex.from_tuples([(field, symbol) for field in ("Open", "High", "Low", "Close", "Volume")])
     return pd.DataFrame(
         [[100 + i, 101 + i, 99 + i, 100 + i, 1000 + i] for i in range(n)],
         index=idx,

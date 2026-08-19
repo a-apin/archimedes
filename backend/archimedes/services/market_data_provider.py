@@ -47,6 +47,7 @@ from abc import ABC, abstractmethod
 from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 logger = logging.getLogger(__name__)
 
@@ -408,6 +409,9 @@ class CachingMarketDataProvider(MarketDataProvider):
             return result
 
         fetched = self._inner.get_daily_close_batch(missing, period)
+        # Merge BEFORE priming: the fetch succeeded, and the caller gets that
+        # data no matter what happens to the best-effort cache write below.
+        result.update(fetched)
         if fetched:
             session = self._session_factory()
             try:
@@ -417,10 +421,22 @@ class CachingMarketDataProvider(MarketDataProvider):
                         continue
                     _write_cached_series(session, ticker, series, self._source_name)
                 session.commit()
+            except IntegrityError:
+                # Concurrent writers priming the same cold window (two tasks,
+                # or the refresh loop overlapping a request sweep): the loser
+                # trips uq_asset_daily_bars_symbol_trade_date at commit. The
+                # winner's rows are equivalent vendor data, so this is benign —
+                # roll back and serve the fetch; the next read is warm.
+                session.rollback()
+                logger.info("asset_daily_bars prime lost a concurrent-writer race (benign); next read is warm")
+            except SQLAlchemyError:
+                # Any other cache-write failure is still only a cache failure —
+                # loud, but never allowed to discard a successful fetch.
+                session.rollback()
+                logger.warning("asset_daily_bars cache write failed (fetch still served)", exc_info=True)
             finally:
                 session.close()
 
-        result.update(fetched)
         return result
 
     def get_intraday_quote(self, ticker: str) -> tuple[float, datetime] | None:
