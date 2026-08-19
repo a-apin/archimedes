@@ -37,6 +37,7 @@ from archimedes.api.generate_schemas import (
 )
 from archimedes.api.limiter import limiter
 from archimedes.api.wallet_routes import get_linked_wallet_address
+from archimedes.services import generation_payment
 from archimedes.services.generation_quota import enforce_generation_quota
 from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import EVENT_LOG_TTL, get_job_store
@@ -47,6 +48,12 @@ from archimedes.services.model_gate import enforce_model_entitlement
 logger = logging.getLogger(__name__)
 
 generate_router = APIRouter(prefix="/api/generate", tags=["generate"])
+
+# Public sibling: main.py mounts generate_router behind require_current_user
+# wholesale, but the price quote must be readable BEFORE sign-in — a human
+# comparing cost, or an agent planning its approval flow (#1293), needs the
+# number first. Only /quote lives here; everything stateful stays gated.
+generate_public_router = APIRouter(prefix="/api/generate", tags=["generate"])
 
 _TERMINAL_EVENTS = {"done", "error"}
 _POLL_INTERVAL_SECONDS = 0.4
@@ -85,12 +92,23 @@ def _require_job_access(job: dict, user_id: str, job_id: str, linked_wallet: str
         raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
 
 
+@generate_public_router.get("/quote")
+async def get_generation_quote():
+    """The upfront generation cost estimate — public, so a human can see the
+    price before signing in and an agent can plan before paying (#1293's
+    discoverability point). The SAME quote rides inside every 402 from
+    /start, so the two surfaces can never disagree: both call
+    ``generation_payment.quote()``, whose flat price is the seam #1217's
+    measured budget later replaces."""
+    return generation_payment.quote()
+
+
 @generate_router.post("/start", response_model=GenerateStartResponse, status_code=202)
 @limiter.limit("5/minute")
 async def start_generation(
     req: GenerateStartRequest,
     request: Request,  # used for slowapi rate-limit keying AND funnel attribution (#787)
-    response: Response,  # noqa: ARG001
+    response: Response,  # slowapi header injection (#1182) + PAYMENT-RESPONSE receipt
     user: CurrentUser = Depends(require_current_user),
 ) -> GenerateStartResponse:
     """Create account-owned generation job and start pipeline in background."""
@@ -104,6 +122,36 @@ async def start_generation(
     # test_generation_quota.py.
     if not os.getenv("TESTING"):
         await enforce_generation_quota(request, user.id)
+
+    # Payment gate (flag: GENERATION_PAYMENT_REQUIRED — Dan flips deliberately,
+    # see the #834 flip-list). Order is deliberate: AFTER the quota (a
+    # quota-blocked caller is refused 429 before ever being asked to pay) and
+    # BEFORE entitlement/enqueue (no work is burned for an unpaid request).
+    # The 402 carries the full x402 requirements — that response IS the
+    # quote-approval flow for humans and agents alike. Paper trading stays free.
+    if generation_payment.payment_required():
+        if not linked_wallet:
+            # The wallet-connection precondition. 409 (not 402): the blocker is
+            # account state, not a missing payment. NOTE the faucet is the one
+            # human-only step (#1294) — an agent hitting this must have its
+            # wallet funded by a human before payment can succeed.
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "wallet_link_required",
+                    "message": (
+                        "Generation requires a linked, funded wallet. Link a wallet to your account "
+                        "(POST /api/wallets/challenge → /api/wallets/verify), fund it with testnet USDC "
+                        "(the faucet currently requires a human), then retry. "
+                        "See GET /api/generate/quote for the price."
+                    ),
+                },
+            )
+        payment = await generation_payment.enforce_generation_payment(request, linked_wallet)
+        if payment is not None:
+            # Surface the settlement receipt (PAYMENT-RESPONSE) to the payer.
+            for name, value in (payment.response_headers or {}).items():
+                response.headers[name] = value
 
     # Paid-tier gating (T1.8): a premium (Anthropic) model requires a
     # wallet-connected entitlement. Enforced BEFORE the job is enqueued so a

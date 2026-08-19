@@ -44,7 +44,7 @@ from archimedes.api.chat_routes import chat_router
 from archimedes.api.corpus_routes import corpus_router
 from archimedes.api.explore_routes import explore_router
 from archimedes.api.features_routes import features_router
-from archimedes.api.generate_routes import generate_router
+from archimedes.api.generate_routes import generate_public_router, generate_router
 from archimedes.api.leaderboard_routes import leaderboard_router
 from archimedes.api.limiter import limiter
 from archimedes.api.paper_routes import paper_router
@@ -502,6 +502,7 @@ app.include_router(corpus_router)
 app.include_router(paper_router)
 app.include_router(explore_router)
 app.include_router(generate_router, dependencies=[Depends(require_current_user)])
+app.include_router(generate_public_router)  # /quote only — public by design
 if marketplace_router is not None:
     app.include_router(marketplace_router)
 app.include_router(risk_router)
