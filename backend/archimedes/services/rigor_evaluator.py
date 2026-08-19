@@ -30,8 +30,6 @@ from archimedes.services._rigor_helpers import (
     _ANNUALIZATION,
     _RF_DAILY,
     assert_self_contained_cohort_correlation,  # noqa: F401 - re-exported for the 3 cohort call sites (V4 guard)
-    benjamini_hochberg_fdr,  # noqa: F401 - re-exported for test_rigor_evaluator
-    bonferroni_correction,  # noqa: F401 - re-exported for test_rigor_evaluator
     classify_regimes,  # used by run_rigor_gate (regime-robustness) + re-exported for test_rigor_regime
     compute_average_pairwise_correlation,  # noqa: F401 - re-exported for fusion_evaluator/selection_bias_routes
     compute_cpcv_oos_sharpe,
@@ -41,7 +39,6 @@ from archimedes.services._rigor_helpers import (
     compute_oos_sharpe,
     compute_pbo,  # used by compute_library_pbo below + re-exported (fusion/generation/test_pbo_parity)
     compute_sharpe_ci,  # noqa: F401 - re-exported for strategy_provider
-    monte_carlo_dsr_pvalue,  # noqa: F401 - re-exported for test_rigor_evaluator
     regime_conditional_dsr,  # noqa: F401 - re-exported for test_rigor_regime
     regime_conditional_sharpe,  # noqa: F401 - re-exported for test_rigor_regime
     regime_robustness_score,  # used by run_rigor_gate (regime-robustness) + re-exported for test_rigor_regime

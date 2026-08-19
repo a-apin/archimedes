@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 
 from archimedes.services._fusion_helpers import (
-    FusionQualityScorer,  # noqa: F401 - re-exported for test_fusion_quality_scorer
     _annualized_sharpe,
     _annualized_sortino,
     _compute_monthly_returns,
@@ -28,13 +27,6 @@ from archimedes.services._fusion_helpers import (
     _synthetic_data,
     _TradeStatsAnalyzer,
     equity_curve_to_daily_returns,
-    generate_fusion_report,  # noqa: F401 - re-exported for test_fusion_quality_scorer
-    score_correlation_stability,  # noqa: F401 - re-exported for test_fusion_quality_scorer
-    score_diversification_benefit,  # noqa: F401 - re-exported for test_fusion_quality_scorer
-    score_economic_sense,  # noqa: F401 - re-exported for test_fusion_quality_scorer
-    score_parameter_stability,  # noqa: F401 - re-exported for test_fusion_quality_scorer
-    score_tail_hedge,  # noqa: F401 - re-exported for test_fusion_quality_scorer
-    score_turnover_interaction,  # noqa: F401 - re-exported for test_fusion_quality_scorer
 )
 from archimedes.services.dsl_to_backtrader import interpret_spec, interpret_variant
 from archimedes.services.rigor_evaluator import (

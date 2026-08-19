@@ -80,6 +80,35 @@ class TestSimulate:
         # Long-only enforcement: -0.5 SPY is dropped, TLT renormalizes to 1.0
         np.testing.assert_allclose(rets_neg, rets_pure_tlt, atol=1e-12)
 
+    def test_simulate_is_idempotent_on_a_shared_panel(self) -> None:
+        """_simulate_portfolio must not mutate the panel it is handed.
+
+        Production calls it repeatedly on the SAME panel object (the
+        sensitivity sweep re-simulates per parameter combination). Until the
+        2026-08-18 audit this re-entrancy contract was held only ACCIDENTALLY,
+        by test_negative_weights_clamped_to_zero's atol=1e-12 double-call --
+        deleting the profiler tests (which also double-called) made the
+        contract explicit here instead. If this fails, every sweep cell after
+        the first is computed from a corrupted panel.
+        """
+        panel, vols = _flat_panel(["SPY", "TLT"], n_bars=120, daily_drift=0.001)
+        panel_before = panel.copy(deep=True)
+        vols_before = vols.copy(deep=True)
+        kwargs = {
+            "panel": panel,
+            "volume_panel": vols,
+            "target_weights": {"SPY": 0.5, "TLT": 0.5},
+            "rebalance_days": 21,
+            "initial_cash": 100_000.0,
+            "gamma": 0.1,
+        }
+        first_rets, first_eq = _simulate_portfolio(**kwargs)
+        pd.testing.assert_frame_equal(panel, panel_before)
+        pd.testing.assert_frame_equal(vols, vols_before)
+        second_rets, second_eq = _simulate_portfolio(**kwargs)
+        np.testing.assert_allclose(first_rets, second_rets, atol=0)
+        np.testing.assert_allclose(first_eq, second_eq, atol=0)
+
     def test_rebalance_charges_turnover_cost(self) -> None:
         panel, vols = _flat_panel(["SPY", "TLT"], n_bars=120, daily_drift=0.001)
         _, eq_with_cost = _simulate_portfolio(
