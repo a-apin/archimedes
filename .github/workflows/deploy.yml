@@ -330,7 +330,15 @@ jobs:
             exit 1
           fi
           curl -fsS http://localhost:18080/api/auth/providers | jq -e '.emailPassword == true' >/dev/null
-          test "$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:18080/app)" = "302"
+          # Public browse (rev d of #1194, Dan's ruling): anonymous /app serves the
+          # public shell (200) — Explore/Leaderboard/Corpus need no session. The
+          # original branch asserted 302-to-sign-in; that design was revised
+          # pre-merge. Assert loudly so a mismatch names itself (the silent
+          # `test $(curl ...)` form failed with zero output — 4s mystery, once).
+          app_code=$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:18080/app)
+          if [ "$app_code" != "200" ]; then
+            echo "::error::anonymous GET /app returned $app_code, expected 200 (public browse)"; exit 1
+          fi
           curl -fsS -c /tmp/auth-cookie -H 'Content-Type: application/json' -H 'Origin: http://localhost:18080' \
             -d '{"name":"CI User","email":"ci@example.com","password":"ci-password-12345"}' \
             http://localhost:18080/api/auth/sign-up/email >/dev/null
