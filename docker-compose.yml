@@ -198,6 +198,11 @@ services:
     # locally", not a substitute for the Redis lease.
     profiles: ["runners"]
     restart: unless-stopped
+    # Lets LLM_BASE_URL=http://host.docker.internal:11434 (local Ollama, #1044)
+    # reach the host from inside the container on Linux too — Docker Desktop
+    # (macOS/Windows) already resolves this name; harmless no-op in prod.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: ["python", "-m", "archimedes.chain.oracle_runner"]
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
@@ -233,6 +238,9 @@ services:
     # #1043 — gated behind the `runners` profile; see the file-header note.
     profiles: ["runners"]
     restart: unless-stopped
+    # See the oracle service's comment above (host.docker.internal, #1044).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: ["python", "-m", "archimedes.chain.agent_runner"]
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
@@ -275,6 +283,10 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
+    # See the oracle service's comment above (host.docker.internal, #1044) —
+    # this is the service Generate/chat/rigor actually call through.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # NO host port binding — backend is only reachable via nginx reverse proxy.
     # This ensures all rate limits, CORS, security headers, and the docs gate
     # cannot be bypassed by hitting port 8000 directly.
