@@ -44,7 +44,17 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
     throw new Error('BETTER_AUTH_SECRET must contain at least 32 characters')
   }
 
-  const db = database ?? new Pool({ connectionString: env.DATABASE_URL })
+  // node-postgres does NOT honor libpq's `sslmode` query parameter — it must
+  // be translated into an explicit `ssl` config or the connection goes out in
+  // plaintext and TLS-enforcing servers (Aurora) reject it. `sslmode=require`
+  // in libpq means "encrypt, do not verify the CA", so rejectUnauthorized:false
+  // is the faithful translation, not a shortcut. verify-ca/verify-full would
+  // need the RDS CA bundle shipped in the image (follow-up: #1284's image work).
+  const wantsTls = /[?&]sslmode=(require|prefer|verify-ca|verify-full)/.test(env.DATABASE_URL || '')
+  const db = database ?? new Pool({
+    connectionString: env.DATABASE_URL,
+    ...(wantsTls ? { ssl: { rejectUnauthorized: false } } : {}),
+  })
 
   return betterAuth({
     appName: 'Archimedes',
