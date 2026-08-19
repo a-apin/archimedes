@@ -198,6 +198,11 @@ class TestPollTransaction:
         assert result == "0xHASH"
         called_url = session.get.call_args.args[0]
         assert "walletIds=wallet-uuid" in called_url
+        # Audit G13: pageSize=50 *within one wallet* is the accepted, documented
+        # bound — a single agent wallet with >50 in-flight txs would still fall
+        # off the page. Pinned here so a silent pageSize change is a conscious
+        # decision, not an accident.
+        assert "pageSize=50" in called_url
 
 
 # ── sign_and_broadcast ────────────────────────────────────────

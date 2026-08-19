@@ -272,3 +272,183 @@ class TestGetTraceByTxHash:
             result = asyncio.run(publisher.get_trace_by_tx_hash(""))
             assert result is None
             mock_client.w3.eth.get_transaction_receipt.assert_not_awaited()
+
+
+# ── G6 (audit 2026-08-18): the verify button's negative case and the chain
+# reads behind it. Only "no hash → False" and "exact match → True" existed;
+# nothing proved a TAMPERED trace is rejected — the mechanism that shows an
+# AI rebalance decision's reasoning wasn't altered after the fact. The four
+# chain-read helpers behind /verify were 1/8, 1/7, 1/8 covered.
+
+
+def _mock_loader_with(trace_ids, stored_hash):
+    mock_registry = MagicMock()
+    mock_registry.functions.getTracesByVault.return_value.call = AsyncMock(return_value=trace_ids)
+    mock_registry.functions.getTraceById.return_value.call = AsyncMock(
+        return_value=("0xagent", "0xvault", stored_hash, 12345, b"")
+    )
+    loader = MagicMock()
+    loader.trace_registry = mock_registry
+    return loader
+
+
+class TestTraceVerifyRejectsTampering:
+    def test_verify_rejects_a_hash_off_by_one_byte(self):
+        """THE load-bearing negative: an on-chain hash differing in a single
+        byte must fail verification. A mutant that compares prefixes, lengths,
+        or nothing at all passes the existing exact-match test and dies here."""
+        trace = _make_trace()
+        trace.compute_hash()
+        good = bytearray(bytes.fromhex(trace.trace_hash.removeprefix("0x")))
+        good[-1] ^= 0x01  # flip one bit of the last byte
+        tampered = bytes(good)
+
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            publisher = TracePublisher(loader=_mock_loader_with([1], tampered))
+            import asyncio
+
+            assert asyncio.run(publisher.verify(trace)) is False
+
+    def test_verify_scans_past_nonmatching_traces_to_the_match(self):
+        """A vault holds newer traces than the one being verified — the scan
+        must reach the older matching id, not stop at the first mismatch."""
+        trace = _make_trace()
+        trace.compute_hash()
+        match = bytes.fromhex(trace.trace_hash.removeprefix("0x"))
+        other = bytes(32)
+
+        mock_registry = MagicMock()
+        mock_registry.functions.getTracesByVault.return_value.call = AsyncMock(return_value=[7, 8, 9])
+        per_id = {7: match, 8: other, 9: other}
+
+        def _by_id(trace_id):
+            m = MagicMock()
+            m.call = AsyncMock(return_value=("0xagent", "0xvault", per_id[trace_id], 0, b""))
+            return m
+
+        mock_registry.functions.getTraceById.side_effect = _by_id
+        loader = MagicMock()
+        loader.trace_registry = mock_registry
+
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            publisher = TracePublisher(loader=loader)
+            import asyncio
+
+            assert asyncio.run(publisher.verify(trace)) is True
+
+    def test_verify_empty_vault_returns_false(self):
+        trace = _make_trace()
+        trace.compute_hash()
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            publisher = TracePublisher(loader=_mock_loader_with([], bytes(32)))
+            import asyncio
+
+            assert asyncio.run(publisher.verify(trace)) is False
+
+    def test_verify_chain_failure_returns_false_never_raises(self):
+        trace = _make_trace()
+        trace.compute_hash()
+        mock_registry = MagicMock()
+        mock_registry.functions.getTracesByVault.return_value.call = AsyncMock(side_effect=RuntimeError("rpc down"))
+        loader = MagicMock()
+        loader.trace_registry = mock_registry
+
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            publisher = TracePublisher(loader=loader)
+            import asyncio
+
+            assert asyncio.run(publisher.verify(trace)) is False
+
+
+class TestTraceChainReads:
+    """The four read helpers behind the verify button (previously ~1 stmt each)."""
+
+    def _publisher(self, loader):
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            return TracePublisher(loader=loader), mock_client
+
+    def test_get_trace_by_id_returns_decoded_dict(self):
+        stored_hash = b"\x11" * 32
+        loader = _mock_loader_with([1], stored_hash)
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            publisher = TracePublisher(loader=loader)
+            import asyncio
+
+            out = asyncio.run(publisher.get_trace_by_id(1))
+        assert out == {
+            "agent": "0xagent",
+            "vault": "0xvault",
+            "trace_hash": stored_hash.hex(),
+            "timestamp": 12345,
+            "metadata": b"",
+        }
+
+    def test_get_trace_by_id_failure_returns_none(self):
+        mock_registry = MagicMock()
+        mock_registry.functions.getTraceById.return_value.call = AsyncMock(side_effect=RuntimeError("boom"))
+        loader = MagicMock()
+        loader.trace_registry = mock_registry
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            publisher = TracePublisher(loader=loader)
+            import asyncio
+
+            assert asyncio.run(publisher.get_trace_by_id(1)) is None
+
+    def test_get_traces_by_vault_returns_ids_and_fails_to_empty(self):
+        loader = _mock_loader_with([4, 5], bytes(32))
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            publisher = TracePublisher(loader=loader)
+            import asyncio
+
+            assert asyncio.run(publisher.get_traces_by_vault("0xvault")) == [4, 5]
+
+            loader.trace_registry.functions.getTracesByVault.return_value.call = AsyncMock(
+                side_effect=RuntimeError("rpc down")
+            )
+            assert asyncio.run(publisher.get_traces_by_vault("0xvault")) == []
+
+    def test_trace_counts_and_fail_to_zero(self):
+        loader = _mock_loader_with([1, 2, 3], bytes(32))
+        loader.trace_registry.functions.traceCount.return_value.call = AsyncMock(return_value=42)
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            publisher = TracePublisher(loader=loader)
+            import asyncio
+
+            assert asyncio.run(publisher.get_trace_count("0xvault")) == 3
+            assert asyncio.run(publisher.get_total_trace_count()) == 42
+
+            loader.trace_registry.functions.getTracesByVault.return_value.call = AsyncMock(
+                side_effect=RuntimeError("rpc down")
+            )
+            loader.trace_registry.functions.traceCount.return_value.call = AsyncMock(
+                side_effect=RuntimeError("rpc down")
+            )
+            assert asyncio.run(publisher.get_trace_count("0xvault")) == 0
+            assert asyncio.run(publisher.get_total_trace_count()) == 0
