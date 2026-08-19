@@ -1,12 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useAuth } from '../AuthContext'
 import { apiGet } from '../api'
 
-// The public, gamified strategy leaderboard (North Star §5 — the testnet
-// engagement engine). Ranks the library by the backend's transparent conviction
-// score (real rigor gate + backtest), and pairs an honest, pending StockBench /
-// live-P&L "forward axis". Nothing here is fabricated: validation metrics are
-// real passport fields; the forward axis renders as "pending" until that data
-// flows. Public — no wallet required.
+// Single-user leaderboard (MVP pivot — no publish mechanism exists yet, so
+// ranking a global cohort was incoherent; nobody had opted into competing).
+// Signed in: ranks YOUR OWN strategies against each other by the backend's
+// transparent conviction score (real rigor gate + backtest). Signed out (or
+// explicitly toggled): shows the curated seed library as an honestly-labeled
+// REFERENCE set, never framed as competition. Nothing here is fabricated:
+// validation metrics are real passport fields; the forward axis renders as
+// "pending" until that data flows. Never auth-gated — public browse stays;
+// see backend's `scope` field (own|curated), which reports what was actually
+// served, not just what was requested.
 
 const SORT_OPTIONS = [
   { id: 'conviction_score', label: 'Conviction' },
@@ -63,6 +68,7 @@ function ScoreBar({ components, weights }) {
 }
 
 export default function Leaderboard() {
+  const { user } = useAuth()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -70,32 +76,100 @@ export default function Leaderboard() {
   const [order, setOrder] = useState('desc')
   const [minRigor, setMinRigor] = useState(false)
   const [regime, setRegime] = useState('')
+  // null = let the backend pick the default (own if signed in, else curated).
+  // Explicit only when the caller toggles — see the scope switch below.
+  const [scopeParam, setScopeParam] = useState(null)
+
+  // If auth resolves (or the user signs in/out) while this page is open, drop
+  // back to the server default rather than keep stale explicit scope — e.g. a
+  // visitor who toggled to "Curated" pre-login should not stay stuck there
+  // post-login for no reason.
+  useEffect(() => { setScopeParam(null) }, [user?.id])
 
   const load = useCallback(() => {
     setLoading(true)
     const params = new URLSearchParams({ sort_by: sortBy, order, limit: '100' })
     if (minRigor) params.set('min_rigor', 'true')
     if (regime) params.set('regime_tag', regime)
+    if (scopeParam) params.set('scope', scopeParam)
     apiGet(`/api/leaderboard?${params.toString()}`)
       .then(d => { setData(d); setError(null) })
       .catch(e => setError(e.message || 'Failed to load leaderboard'))
       .finally(() => setLoading(false))
-  }, [sortBy, order, minRigor, regime])
+  }, [sortBy, order, minRigor, regime, scopeParam])
 
   useEffect(() => { load() }, [load])
 
   const engine = data?.scoring_engine
   const sb = engine?.stockbench_global
+  // The scope actually served (may differ from scopeParam — an anonymous
+  // request for "own" is transparently served "curated"). This, not the
+  // request param, is the source of truth for labeling the page.
+  const servedScope = data?.scope ?? (user ? 'own' : 'curated')
+  const isOwn = servedScope === 'own'
 
   return (
     <div className="leaderboard-page" style={{ maxWidth: 1100 }}>
       <div style={{ marginBottom: 18 }}>
-        <h2 className="serif" style={{ fontSize: '2rem', marginBottom: 8 }}>Strategy Leaderboard</h2>
+        <h2 className="serif" style={{ fontSize: '2rem', marginBottom: 8 }}>
+          {isOwn ? 'Your Strategy Leaderboard' : 'Strategy Leaderboard'}
+        </h2>
         <p className="body" style={{ maxWidth: 760 }}>
-          Every library strategy, ranked by a transparent <strong>conviction score</strong> built from
-          real rigor-gate and backtest results — the ugly numbers included. Build your track record now;
-          it carries to mainnet.
+          {isOwn
+            ? <>Your strategies, ranked against each other by a transparent <strong>conviction score</strong> built
+                from real rigor-gate and backtest results — the ugly numbers included. Build your track record now;
+                it carries to mainnet.</>
+            : <>The curated seed library, ranked by a transparent <strong>conviction score</strong> built from real
+                rigor-gate and backtest results — the ugly numbers included. A reference set, not a competition.</>}
         </p>
+
+        {!user && (
+          <div
+            role="status"
+            style={{
+              marginTop: 10,
+              padding: '10px 14px',
+              borderLeft: '3px solid var(--accent)',
+              background: 'var(--accent-muted)',
+              borderRadius: 4,
+              fontSize: 13,
+              color: 'var(--text-2)',
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+              alignItems: 'center',
+            }}
+          >
+            <span>
+              <strong style={{ color: 'var(--accent)' }}>Sign in to rank your strategies.</strong>{' '}
+              What you're seeing below is the curated library — reference rows, not strategies you're
+              competing against.
+            </span>
+            <a
+              className="btn-primary"
+              style={{ marginLeft: 'auto', flexShrink: 0 }}
+              href={`/sign-in?next=${encodeURIComponent(`${window.location.pathname}${window.location.search}`)}`}
+            >
+              Sign in
+            </a>
+          </div>
+        )}
+
+        {user && (
+          <div style={{ marginTop: 10, display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button type="button" onClick={() => setScopeParam('own')}
+              className={`tag-tab ${isOwn ? 'tag-accent' : 'tag-muted'}`}
+              style={{ cursor: 'pointer', border: 'none', borderRadius: 14, fontSize: 12 }}>
+              My strategies
+            </button>
+            <button type="button" onClick={() => setScopeParam('curated')}
+              className={`tag-tab ${!isOwn ? 'tag-accent' : 'tag-muted'}`}
+              style={{ cursor: 'pointer', border: 'none', borderRadius: 14, fontSize: 12 }}
+              title="The curated seed library — reference rows, not strategies you're competing against">
+              Curated library (reference)
+            </button>
+          </div>
+        )}
         {/* PROVISIONAL-DATA BANNER — remove this whole block once the backtest
             re-run completes and the figures below are trustworthy again.
             A routing defect (fixed in #1203) meant most library strategies were
@@ -181,7 +255,18 @@ export default function Leaderboard() {
       {loading && <div className="body" style={{ color: 'var(--text-3)' }}>Loading the board…</div>}
       {error && <div className="tag-warning" style={{ display: 'inline-block', padding: '6px 10px' }}>Couldn’t load the leaderboard: {error}</div>}
 
-      {!loading && !error && data && data.entries.length === 0 && (
+      {!loading && !error && data && data.entries.length === 0 && isOwn && (
+        <div className="body" style={{ color: 'var(--text-3)', padding: 20, textAlign: 'center', border: '1px dashed var(--glass-border)', borderRadius: 8 }}>
+          You haven't generated any strategies yet.{' '}
+          <a href="/app/generate" style={{ color: 'var(--accent)' }}>Generate one</a>, or{' '}
+          <button type="button" onClick={() => setScopeParam('curated')}
+            style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline', font: 'inherit' }}>
+            browse the curated library
+          </button> for reference.
+        </div>
+      )}
+
+      {!loading && !error && data && data.entries.length === 0 && !isOwn && (
         <div className="body" style={{ color: 'var(--text-3)', padding: 20, textAlign: 'center', border: '1px dashed var(--glass-border)', borderRadius: 8 }}>
           No strategies match these filters yet.
         </div>
@@ -211,7 +296,12 @@ export default function Leaderboard() {
                   <td style={{ padding: '10px', maxWidth: 280 }}>
                     <div style={{ color: 'var(--text-1)', fontWeight: 500 }}>{e.name}</div>
                     <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                      {e.creator === 'Archimedes' ? 'Archimedes (curated)' : `by ${e.creator.slice(0, 6)}…${e.creator.slice(-4)}`}
+                      {isOwn
+                        // Every row here is the caller's own by construction (server-scoped) —
+                        // `creator` is curator_wallet provenance, not ownership, and is often
+                        // unset for generated strategies, so it's redundant/misleading here.
+                        ? 'Your strategy'
+                        : (e.creator === 'Archimedes' ? 'Archimedes (curated)' : `by ${e.creator.slice(0, 6)}…${e.creator.slice(-4)}`)}
                       {e.regime_tag && e.regime_tag !== 'regime_neutral' ? ` · ${e.regime_tag}` : ''}
                     </div>
                   </td>

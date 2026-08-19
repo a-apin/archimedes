@@ -33,7 +33,12 @@ function useArchStats() {
 		apiGet("/health")
 			.then(setHealth)
 			.catch(() => setHealthError(true));
-		apiGet("/api/leaderboard")
+		// scope=curated pinned deliberately: this stat is labeled "the public
+		// leaderboard" / a library-wide count below, and the endpoint now
+		// defaults to scope=own for a signed-in caller (leaderboard-goes-
+		// single-user MVP) — an unpinned call would silently turn this into
+		// the viewer's own strategy count for anyone signed in.
+		apiGet("/api/leaderboard?scope=curated")
 			.then(setLeaderboard)
 			.catch(() => setLeaderboardError(true));
 	}, []);
