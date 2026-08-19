@@ -47,6 +47,7 @@ from archimedes.models.account import (  # noqa: E402
     LinkedWallet,
     WalletLinkChallenge,
 )
+from archimedes.models.asset_daily_bars import AssetDailyBar  # noqa: E402
 from archimedes.models.backtest_fixtures_store import StrategyBacktestFixture  # noqa: E402
 from archimedes.models.backtest_store import BacktestResultRecord  # noqa: E402
 from archimedes.models.chat import Base  # noqa: E402
@@ -82,6 +83,7 @@ __all__ = [
     "AuthSession",
     "AuthUser",
     "AuthVerification",
+    "AssetDailyBar",
     "BacktestResultRecord",
     "Base",
     "ControlledWallet",

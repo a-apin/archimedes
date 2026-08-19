@@ -152,12 +152,16 @@ def _realized_vol_annual(prices: list[float], window: int = 30) -> float | None:
 
 
 def _fetch_yfinance_series(symbol: str, period: str, interval: str) -> list[ExploreHistoryPoint]:
-    """Fetch a single-asset time series at the requested period+interval.
+    """Fetch a single-asset time series at the requested period+interval, via
+    the market-data provider seam (#1218 — default provider yfinance,
+    unchanged behavior; vendor-swappable via ``MARKET_DATA_PROVIDER``).
 
-    Returns an empty list when the symbol is unknown, yfinance is unavailable,
-    or the upstream feed returned no data. The caller (route handler) turns
-    an empty list into a 404 so the frontend can render an honest empty state
-    instead of a faked flat line.
+    Returns an empty list when the symbol is unknown, the provider is
+    unavailable, or the upstream feed returned no data. The caller (route
+    handler) turns an empty list into a 404 so the frontend can render an
+    honest empty state instead of a faked flat line. Uncached (a per-request,
+    single-symbol drill-down — not the #1218 volume driver; see
+    ``market_data_provider``'s module docstring for the caching scope).
     """
     try:
         from archimedes.services.strategy_signal_evaluator import GLOBAL_ASSETS
@@ -171,32 +175,14 @@ def _fetch_yfinance_series(symbol: str, period: str, interval: str) -> list[Expl
         return []
 
     try:
-        import yfinance as yf
+        from archimedes.services.market_data_provider import get_provider
 
-        data = yf.download(
-            yf_ticker,
-            period=period,
-            interval=interval,
-            progress=False,
-            auto_adjust=True,
-            threads=False,
-        )
+        close = get_provider().get_series(yf_ticker, period, interval)
     except Exception as exc:
-        logger.warning("explore: yfinance history fetch failed for %s (%s/%s): %s", symbol, period, interval, exc)
+        logger.warning("explore: market-data history fetch failed for %s (%s/%s): %s", symbol, period, interval, exc)
         return []
 
-    if data is None or len(data) == 0:
-        return []
-
-    try:
-        close = data["Close"]
-        # When yfinance is called with a single ticker it sometimes still returns
-        # a DataFrame (one column). Squeeze to a Series for uniform handling.
-        if hasattr(close, "columns"):
-            close = close.iloc[:, 0]
-        close = close.dropna()
-    except Exception as exc:
-        logger.warning("explore: yfinance close extract failed for %s: %s", symbol, exc)
+    if close is None or close.empty:
         return []
 
     points: list[ExploreHistoryPoint] = []

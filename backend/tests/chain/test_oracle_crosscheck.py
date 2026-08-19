@@ -70,6 +70,31 @@ async def test_yfinance_primary_is_noop():
     m.assert_not_called()
 
 
+async def test_vendor_swap_moves_the_same_source_noop_with_it():
+    """#1218/#775 seam tie-in: the "same source, skip" guard reads the ACTIVE
+    provider (``market_data_provider.provider_name()``), not a hardcoded
+    "yfinance" — so swapping ``MARKET_DATA_PROVIDER`` swaps which source the
+    cross-check treats as "not independent" without touching this guardrail's
+    own code.
+    """
+    from archimedes.services import market_data_provider as mdp
+
+    u = _updater()
+    with patch.object(mdp, "provider_name", return_value="acme_vendor"):
+        # A price whose source now MATCHES the (swapped) active provider is a
+        # no-op — same as "yfinance" was under the default provider.
+        with patch.object(u, "_fetch_yfinance_single", AsyncMock()) as m:
+            assert await u._cross_check_secondary(_price(source="acme_vendor")) is None
+        m.assert_not_called()
+
+        # A price sourced "yfinance" is NO LONGER the active provider once
+        # swapped — it must now actually go through the cross-check instead
+        # of being waved through as "same source".
+        with patch.object(u, "_fetch_yfinance_single", AsyncMock(return_value=(510.0, _fresh_ts()))) as m:
+            assert await u._cross_check_secondary(_price(source="yfinance", usd=500.0)) is None
+        m.assert_called_once()  # actually fetched + compared this time
+
+
 async def test_admin_source_is_noop():
     # An admin pin (ADMIN_PRICES_JSON last-resort operator override) must NOT be
     # second-guessed by the secondary guardrail — the whole point is to override

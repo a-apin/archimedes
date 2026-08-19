@@ -8,6 +8,17 @@ public-key fetch, and the no-credentials push early-return.
 
 Hermetic: yfinance is replaced with a fake module via sys.modules; the aiohttp
 CoinGecko/Circle boundary is mocked. No network, no Arc RPC, no Circle.
+
+``archimedes.services.market_data_provider`` is imported here at module level
+(not just where it's used below) so it's already in ``sys.modules`` before any
+test's ``patch.dict(sys.modules, {"yfinance": ...})`` runs. That context
+manager restores ``sys.modules`` to its pre-``with`` snapshot on exit — a
+module first imported (by the code under test, via a *lazy* import inside the
+patched block) is wiped along with it, since it isn't in that snapshot. The
+oracle-push / cross-check paths lazily import ``market_data_provider`` inside
+``patch.dict(sys.modules, {"yfinance": ...})`` blocks below (#1218 seam); this
+import guarantees a stable module identity for ``TestSp500MovingAverages``'s
+own ``patch.object(mdp, "get_provider", ...)`` regardless of run order.
 """
 
 from __future__ import annotations
@@ -19,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from archimedes.chain.oracle_updater import OracleUpdater
 from archimedes.models.asset import AssetPrice
+from archimedes.services import market_data_provider as mdp  # see module docstring above
 
 
 @pytest.fixture
@@ -186,17 +198,28 @@ class TestFetchYfinanceSingle:
 
 class TestSp500MovingAverages:
     def test_computes_rolling_means(self, updater):
+        # #1218 seam: the fetch now goes through get_provider().get_daily_close_batch
+        # rather than yf.Ticker(...).history() directly — mock at that boundary
+        # (market_data_provider is preloaded at this file's top, see the comment
+        # there — patch.object needs its target module identity stable across
+        # this file's patch.dict(sys.modules, {"yfinance": ...}) tests).
         import pandas as pd
 
-        hist = pd.DataFrame({"Close": list(range(1, 301))})
-        ticker = MagicMock()
-        ticker.history = MagicMock(return_value=hist)
-        fake_yf = MagicMock()
-        fake_yf.Ticker = MagicMock(return_value=ticker)
-        with patch.dict(sys.modules, {"yfinance": fake_yf}):
+        close = pd.Series(range(1, 301), index=pd.date_range("2024-01-01", periods=300), name="^GSPC")
+        fake_provider = MagicMock()
+        fake_provider.get_daily_close_batch = MagicMock(return_value={"^GSPC": close})
+        with patch.object(mdp, "get_provider", return_value=fake_provider):
             mas = updater._fetch_sp500_moving_averages()
         # rolling(50)/(200) means over 1..300 → finite numbers, ma200 < ma50.
         assert mas["ma50"] > mas["ma200"] > 0
+
+    def test_empty_series_returns_empty_dict(self, updater):
+        import pandas as pd
+
+        fake_provider = MagicMock()
+        fake_provider.get_daily_close_batch = MagicMock(return_value={"^GSPC": pd.Series(dtype=float)})
+        with patch.object(mdp, "get_provider", return_value=fake_provider):
+            assert updater._fetch_sp500_moving_averages() == {}
 
     def test_empty_history_returns_empty_dict(self, updater):
         import pandas as pd
