@@ -408,7 +408,28 @@ class OllamaBackend:
 
     @property
     def available(self) -> bool:
-        return True
+        """Probe the Ollama server for reachability AND that ``LLM_MODEL`` is
+        actually pulled there.
+
+        Unlike every other backend, Ollama has no credential to check
+        statically — so ``available`` used to be hardcoded ``True``, which made
+        ``make_llm_backend()`` treat a misconfigured/unreachable ollama as
+        live and ``/health`` report ``llm_available: true`` right up until the
+        first real request errored (issue #1044). A real (short-timeout) probe
+        against ``GET {base_url}/api/tags`` makes an unreachable server or an
+        unpulled model correctly fall back to ``CannedBackend``.
+        """
+        import httpx
+
+        try:
+            resp = httpx.get(f"{self._base_url}/api/tags", timeout=3.0)
+            resp.raise_for_status()
+            tags = {m.get("name", "") for m in resp.json().get("models", [])}
+        except Exception:
+            return False
+        # Ollama tags carry a ":variant" suffix (e.g. "llama3.1:latest"); match
+        # the bare name too so LLM_MODEL=llama3.1 matches a pulled default tag.
+        return any(tag == self._model or tag.partition(":")[0] == self._model for tag in tags)
 
     def complete(self, system: str, user: str) -> str:
         import httpx
