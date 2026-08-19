@@ -2198,3 +2198,78 @@ class TestLoadDailyReturnsStore:
         store, vintage = load_daily_returns_store()
         assert set(store.keys()) == {"solo"}
         assert vintage == "2026-07-03"
+
+
+# ─── G5 (audit 2026-08-18): the adversarial end-to-end rejection ─────
+
+
+class TestAdversarialOverfitRejection:
+    """A deliberately-overfit strategy must be rejected END-TO-END by the full
+    gate — no hand-built verdicts, no pre-chosen numbers.
+
+    The named repeat failure class: guards need an adversarial pass. Every
+    prior composite-gate test either constructed the RigorGateResult directly
+    with chosen numbers or fed i.i.d. noise never designed to fool the gate.
+    Mutation-verified against the trivial acceptor: hardcoding
+    ``_passes_profile`` to True fails the rejection test here while the
+    honest-twin test still passes.
+    """
+
+    @staticmethod
+    def _overfit_returns() -> list[float]:
+        """The classic overfit signature: stellar in-sample (the first 70% the
+        gate grades as IS when ``in_sample_sharpe=None``), collapse in the
+        out-of-sample tail."""
+        rng = np.random.default_rng(7)
+        n = 500
+        is_len = int(n * 0.7)
+        is_part = rng.normal(0.0030, 0.006, size=is_len)  # ann. Sharpe ≫ 2
+        oos_part = rng.normal(-0.0004, 0.010, size=n - is_len)  # collapse
+        return np.concatenate([is_part, oos_part]).tolist()
+
+    def test_overfit_series_is_rejected_on_statistics_not_technicalities(self) -> None:
+        result = run_rigor_gate(
+            strategy_id="overfit_probe",
+            daily_returns=self._overfit_returns(),
+            num_trials=40,  # its own selection pool: reported best-of-40
+            pbo_scores={"overfit_probe": 0.2},  # PBO satisfiable — not the rejector
+            look_ahead_audit_passed=True,  # look-ahead clean: statistics must do the work
+        )
+
+        assert result.passes_all is False
+        assert result.min_passing_level is None  # unrescuable by loosening the slider
+        # Attribution — the rejection must be STATISTICAL, not a technicality:
+        details = result.gate_details
+        assert details["look_ahead"] == "PASS"  # not rejected on the code audit
+        assert "MISSING" not in details["dsr"]  # not rejected on absent inputs
+        assert details["oos_sharpe"] != "MISSING"
+        # The overfit shape itself is what fails: the OOS collapse trips the
+        # always-on floor and/or the OOS/IS cliff, exactly as designed.
+        assert result.oos_sharpe is not None and result.in_sample_sharpe is not None
+        assert result.oos_sharpe < result.in_sample_sharpe
+        assert result.blocked_by_floor or details["oos_sharpe"].startswith("FAIL")
+
+    def test_honest_twin_is_not_rejected_by_the_same_legs(self) -> None:
+        """Anti-vacuity: a stationary series with the same overall character
+        must NOT trip the overfit rejectors — proving the test above detects
+        the overfit SHAPE, not that the gate rejects everything it is fed.
+
+        Seed 42, not 7: seed 7's raw noise happens to draw a genuinely weak
+        sample (its own OOS tail annualizes to −1.4 — honestly rejectable),
+        which would make this anti-vacuity check assert the wrong thing."""
+        rng = np.random.default_rng(42)
+        honest = rng.normal(0.001, 0.008, size=500).tolist()
+
+        result = run_rigor_gate(
+            strategy_id="honest_twin",
+            daily_returns=honest,
+            num_trials=1,  # single-configuration honesty
+            pbo_scores={"honest_twin": 0.2},
+            look_ahead_audit_passed=True,
+        )
+
+        # No claim that it PASSES the strictest badge bar (that depends on
+        # thresholds owned by the quant lane) — only that the overfit
+        # rejectors specifically do not fire on a stationary series.
+        assert result.blocked_by_floor is False
+        assert not result.gate_details["oos_sharpe"].startswith("FAIL")
