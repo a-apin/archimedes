@@ -8,14 +8,13 @@ creates the empty table; no backfill (there is nothing to backfill: the
 table did not exist before, and the cache primes itself from the first live
 read).
 
-Chained onto ``b41c7d9e2a05`` — the actual head of ``origin/main`` at the
-time this migration was written. Note: #1194 (unmerged as of this PR) also
-adds a migration, ``b7e3f1a2c9d4``, off the SAME parent; whichever of the
-two merges second will need a trivial re-serialize (rebase this revision's
-``down_revision`` onto the other's id, or vice versa) — expected, not a bug.
+Chained onto ``c9f2e8d4a1b7`` (paper trading) — re-serialized 2026-08-19
+after the merge train landed #1194 (``b7e3f1a2c9d4``) and #1268
+(``c9f2e8d4a1b7``); originally authored against ``b41c7d9e2a05``, with the
+re-point predicted in this docstring from day one. Chain stays serial.
 
 Revision ID: c9396e0d95d4
-Revises: b41c7d9e2a05
+Revises: c9f2e8d4a1b7
 Create Date: 2026-08-19 09:16:04.228106
 
 """
@@ -29,7 +28,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "c9396e0d95d4"
-down_revision: str | Sequence[str] | None = "b41c7d9e2a05"
+down_revision: str | Sequence[str] | None = "c9f2e8d4a1b7"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
