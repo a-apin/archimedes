@@ -536,6 +536,13 @@ resource "aws_ecs_task_definition" "backend" {
         # Not secrets. Both layers must pass; <= 0 disables a layer.
         { name = "GENERATION_DAILY_CAP_PER_USER", value = "10" },
         { name = "GENERATION_DAILY_CAP_PER_IP", value = "20" },
+        # Generation payment gate (flip-list #834): flag stays "false" until
+        # Dan flips it deliberately — and GENERATION_PAYMENT_RECIPIENT (the
+        # platform wallet that receives x402 settlements) MUST be set first;
+        # flag-on with no recipient is a deliberate 503, never a free pass.
+        { name = "GENERATION_PAYMENT_REQUIRED", value = "false" },
+        { name = "GENERATION_PRICE_USD", value = "0.15" },
+        { name = "GENERATION_PAYMENT_RECIPIENT", value = "" },
         # KNOWN GAP #2 (see file header): these three paths have no Fargate
         # equivalent of the docker-compose host bind mount yet.
         { name = "ARCHIMEDES_STRATEGIES_DIR", value = "/app/analytics-engine/strategies" },
