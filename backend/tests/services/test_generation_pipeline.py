@@ -950,6 +950,147 @@ async def test_debate_dispatch_end_to_end_persists_debate_strategy(tmp_path, mon
     assert isinstance(verdict["passing"], bool)
 
 
+# ── Test 3b — user's Generate-page model pick reaches the live LLM call sites
+# (issue #1049: selection must thread end-to-end, not just to the API boundary)
+
+
+@pytest.mark.asyncio
+async def test_run_generation_threads_user_model_to_debate_proposer_and_agent(tmp_path, monkeypatch):
+    """``run_generation(model=...)`` on the LIVE debate dispatch path must reach:
+
+      (a) the debate proposer (``_propose_pool`` → ``StrategyFusion(model=...)``
+          → ``make_llm_backend(model=...)``) — the seam that actually drafts the
+          candidate text, and
+      (b) the per-job ``PortfolioAgent``'s backend, built via
+          ``make_llm_backend(model=...)`` — the seam ``_served_model_for`` reads
+          for the ``done`` event's ``served_model`` provenance.
+
+    Route-level tests (test_generate_model_gating.py) stop at the enqueue
+    boundary (the pipeline task is mocked out entirely); the debate-engine unit
+    test (test_debate_engine.py::test_model_pick_threads_into_served_model)
+    covers only the ``StrategyFusion`` layer in isolation. Neither proves the
+    full chain from ``run_generation`` — what the job queue actually invokes —
+    down to the LLM-backend constructors. This closes that gap: a caller that
+    picked an allowlisted free-tier model must get THAT model, not a silent
+    fallback to the env default, anywhere along the live path.
+    """
+    import archimedes.agents.debate_engine as de
+    import archimedes.db as _db
+    import archimedes.services.fusion_evaluator as fe
+    import archimedes.services.llm_backend as llm_backend_mod
+    from archimedes.agents import generation_pipeline as gp
+    from archimedes.agents import strategy_fusion as sf
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    test_engine = create_engine(
+        f"sqlite:///{tmp_path / 'model_select_e2e.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    monkeypatch.setattr(_db, "engine", test_engine)
+    monkeypatch.setattr(_db, "SessionLocal", sessionmaker(bind=test_engine, autocommit=False, autoflush=False))
+    from archimedes.models import kg, strategy_passport_record  # noqa: F401
+
+    _db.Base.metadata.create_all(bind=test_engine)
+
+    monkeypatch.delenv("GENERATION_PIPELINE_FIXTURE", raising=False)
+
+    async def _pv(brief):
+        return await _permissive_validate(brief)
+
+    monkeypatch.setattr(gp, "_validate_brief", _pv)
+
+    picked_model = "zai.glm-4.7-flash"  # an allowlisted free-tier id, never the env default
+
+    # Spy on _propose_pool (the debate proposer's entry point) instead of the
+    # blanket fake used by _setup_debate_hermetic — capture the `model` it
+    # actually receives.
+    proposer_calls: list[str | None] = []
+    fake_proposals = [
+        _make_fake_proposal("Debate A", ["2401.00001", "2402.00001"]),
+        _make_fake_proposal("Debate B", ["2401.00002", "2402.00002"]),
+    ]
+
+    async def _spy_pool(brief, model, corpus):
+        proposer_calls.append(model)
+        return list(fake_proposals)
+
+    monkeypatch.setattr(gp, "_llm_available", lambda: True)
+    monkeypatch.setattr(de, "_debate_can_run", lambda brief: True)
+    monkeypatch.setattr(de, "_propose_pool", _spy_pool)
+    monkeypatch.setattr(sf, "load_corpus", lambda *a, **k: _debate_fake_corpus(4))
+
+    def _fake_eval(spec, *, num_trials=None, use_real_data=False, **kw):
+        return _fake_eval_result(num_trials=num_trials)
+
+    monkeypatch.setattr(fe, "evaluate_fusion_spec", _fake_eval)
+
+    async def _noop_debate_round(*a, **k):
+        return []
+
+    monkeypatch.setattr(de, "_debate_round", _noop_debate_round)
+
+    # Spy on make_llm_backend (the per-job PortfolioAgent construction reads
+    # this module attribute via a local import inside run_generation, so patch
+    # it where it's DEFINED — the same seam the live bedrock_converse path uses).
+    # Returns a tiny fake backend rather than delegating to the real factory —
+    # this test has no AWS credentials to exercise a live BedrockConverseBackend
+    # with, and a credential-less real call would correctly degrade to
+    # CannedBackend (served_model == "canned-fallback" always, by design — see
+    # CannedBackend's docstring), which would make assertion (c) below test
+    # nothing. The fake isolates what we actually want to verify here: that the
+    # WIRING passes the user's model through, independent of live credentials.
+    backend_calls: list[str | None] = []
+
+    class _FakeAgentBackend:
+        def __init__(self, model):
+            self.model_id = model
+            self.served_model = model
+            self.available = True
+
+        def complete(self, system, user):  # pragma: no cover — debate runner ignores `agent`
+            raise AssertionError("PortfolioAgent.complete should not be called by the debate runner")
+
+    def _spy_make_llm_backend(model=None, **kw):
+        backend_calls.append(model)
+        return _FakeAgentBackend(model)
+
+    monkeypatch.setattr(llm_backend_mod, "make_llm_backend", _spy_make_llm_backend)
+
+    store = _FakeStore()
+    brief = GenerateBrief(
+        intent="equity momentum with a volatility overlay",
+        risk_appetite="moderate",
+        asset_classes=["equities"],
+    )
+    await run_generation(
+        job_id="job_model_select_e2e",
+        brief=brief,
+        store=store,
+        dual_regime=False,
+        n_candidates=1,
+        model=picked_model,
+    )
+
+    # (a) the debate proposer received the user's exact pick, not the env default.
+    assert proposer_calls == [picked_model], (
+        f"expected _propose_pool called with {picked_model!r}, got {proposer_calls}"
+    )
+
+    # (b) the per-job PortfolioAgent's backend was built with the same pick.
+    assert picked_model in backend_calls, (
+        f"expected make_llm_backend(model={picked_model!r}) among the per-job agent's calls; got {backend_calls}"
+    )
+
+    # (c) provenance surfaced on the `done` event reflects the user's pick, not
+    # "fixture" and not silently the env default — the whole point of #1049.
+    done_events = [e for e in store.events if e["event"] == "done"]
+    assert done_events, "no done event emitted"
+    assert done_events[-1]["data"]["served_model"] == picked_model, (
+        f"done event served_model={done_events[-1]['data']['served_model']!r}, expected {picked_model!r}"
+    )
+
+
 # ── Test 4 — debate C-rigor threads _society_num_trials(library, pool) ────────
 
 
