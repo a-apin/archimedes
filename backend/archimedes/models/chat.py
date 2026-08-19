@@ -47,6 +47,9 @@ class VaultMetadata(Base):
     creator_address: Mapped[str] = mapped_column(
         String(42), ForeignKey("wallet_identities.wallet_address"), nullable=False
     )
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("auth_users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     strategy_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")  # JSON array
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -99,8 +102,8 @@ class ChatMessage(Base):
     )
     message: Mapped[str] = mapped_column(Text, nullable=False)
     is_ai: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    # True when the wallet identity was proven by a SIWE session at post time
-    # (issue #524). Default False keeps pre-existing rows honest: they were
+    # True when wallet was proof-linked to posting account. Default False keeps
+    # pre-existing rows honest: they were
     # body-supplied and never verified.
     verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

@@ -19,7 +19,7 @@
 ships, so local dev is unchanged — `cp .env.example .env && docker compose up`
 still brings up the full self-contained stack). Production's box-local `.env`
 omits `COMPOSE_PROFILES`, so those two services never start and the app tier
-(`backend`, `oracle`, `agent`, `kb-runner`, `nginx`) runs against managed
+(`backend`, `auth`, `oracle`, `agent`, `kb-runner`, `nginx`) runs against managed
 Aurora + ElastiCache via the URLs in `.env`. The app services declare
 `depends_on … { required: false }` so they boot even when the local DB/cache
 isn't present (prod). *(Needs docker compose ≥ 2.20 for `required:` on
@@ -59,13 +59,13 @@ backend, and there's no registry to roll back to. The pipeline is now
 build-in-CI → push to ECR → migrate → pull-on-box:
 
 1. Push to `main` → (gated on `DEPLOY_ENABLED=true`) → the `build-and-push`
-   job builds the backend image (`backend/Dockerfile`) and the nginx/frontend
-   image (`nginx/Dockerfile`) on the **CI runner**, boots each in a throwaway
+   job builds backend (`backend/Dockerfile`), Better Auth (`auth/Dockerfile`),
+   and nginx/frontend (`nginx/Dockerfile`) images on the **CI runner**, boots them in a throwaway
    container and curls `/health` (nginx through its full reverse-proxy path,
    including runtime DNS resolution to a `backend` container) — a broken
    image is caught **here**, before it ever reaches ECR or the serving host —
-   then tags both `<commit-sha>` and `latest` and pushes to ECR
-   (`archimedes-backend`, `archimedes-nginx`).
+   then tags each `<commit-sha>` and `latest` and pushes to ECR
+   (`archimedes-backend`, `archimedes-auth`, `archimedes-nginx`).
 2. The `migrate` job (needs: `build-and-push`) runs `alembic upgrade head` as
    a one-off ECS Fargate task, **before** `deploy` — the ordered pre-rollout
    migrate stage from #1039 P4 (shared with #1028 Phase A). As of this PR,
@@ -83,7 +83,7 @@ build-in-CI → push to ECR → migrate → pull-on-box:
    --force-recreate --remove-orphans` — **no `docker build` ever runs on the
    serving host** — then seed/hydrate/AMM bootstrap + a `/health` check.
 
-`docker-compose.yml`'s app-tier services (`nginx`, `backend`, `oracle`,
+`docker-compose.yml`'s app-tier services (`nginx`, `auth`, `backend`, `oracle`,
 `agent`, `kb-runner`) now carry an explicit `image:` (in addition to the
 existing `build:`, unchanged for local dev) pointing at the ECR-hosted tag —
 see the comment block at the top of that file.
@@ -123,6 +123,9 @@ SSM session, on the EC2 — do NOT run `docker compose stop` on your laptop.**
 
 (The `pgdata` volume persists — data isn't deleted — but once the cutover is
 trusted it's just dead weight. Keep it until then as the rollback path.)
+
+Better Auth migration, rollout, smoke checks, and non-destructive rollback are
+specified in [`account-authentication.md`](account-authentication.md).
 
 ## ⚠️ Merge note
 

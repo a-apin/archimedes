@@ -17,14 +17,28 @@ The limiter is Redis-backed when ``REDIS_URL`` is available (production / ASG),
 falling back to in-memory storage for local dev and CI.
 """
 
+import ipaddress
 import logging
 import os
 
 from slowapi import Limiter
-
-from archimedes.services.generation_quota import client_ip
+from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
+
+
+def client_ip(request: Request) -> str:
+    """Use nginx-overwritten X-Real-IP, then socket peer; never trust X-Forwarded-For."""
+    candidates = (request.headers.get("x-real-ip"), request.client.host if request.client else None)
+    for candidate in candidates:
+        value = (candidate or "").strip()
+        try:
+            ipaddress.ip_address(value)
+        except ValueError:
+            continue
+        return value
+    return "unknown"
+
 
 _redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/1")
 # Was REDIS_URL explicitly provided? If so, a fallback to memory:// is a
@@ -56,7 +70,7 @@ except Exception as exc:
 # get_remote_address collapsed every caller into one shared bucket — per-IP
 # limits were effectively global. client_ip reads the nginx-set X-Real-IP
 # header (it overwrites any client-supplied value and is bound to the trusted
-# ALB CIDR), matching how generation_quota already keys its per-IP cap. It
+# ALB CIDR). It
 # deliberately does NOT trust X-Forwarded-For, whose first hop is spoofable.
 limiter = Limiter(
     key_func=client_ip,

@@ -29,6 +29,8 @@ _W_UPDATE = "0x4444444444444444444444444444444444444444"
 _W_MINIMAL = "0x0000000000000000000000000000000000000002"
 _W_CASE = "0x5555555555555555555555555555555555555555"
 _W_ROTATED_KEY = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+_W_CANONICAL_PROFILE = "0x6666666666666666666666666666666666666666"
+_W_LEGACY_PROFILE = "0x7777777777777777777777777777777777777777"
 
 
 def _siwe_cookies(wallet: str) -> dict[str, str]:
@@ -67,7 +69,10 @@ class TestUserProfileRoutes:
 
     def test_get_profile_returns_404_for_unknown_wallet(self, client):
         """Unknown wallet should return 404."""
-        res = client.get("/api/user/profile/0x0000000000000000000000000000000000000001")
+        res = client.get(
+            "/api/user/profile/0x0000000000000000000000000000000000000001",
+            cookies=_siwe_cookies(_W_ALICE),
+        )
         assert res.status_code == 404
 
     def test_create_profile_with_display_name(self, client):
@@ -104,8 +109,8 @@ class TestUserProfileRoutes:
         assert res.status_code == 200
         assert res.json()["display_name"] == "Bob"
 
-    def test_get_profile_after_create_anonymous(self, client):
-        """GET without owner header strips PII (Issue #181)."""
+    def test_get_profile_without_account_is_rejected(self, client):
+        """Profile API is behind canonical account boundary."""
         client.post(
             "/api/user/profile",
             json={
@@ -114,10 +119,8 @@ class TestUserProfileRoutes:
             },
             cookies=_siwe_cookies(_W_BOB),
         )
-        # GET without owner header → PII stripped
         res = client.get(f"/api/user/profile/{_W_BOB}")
-        assert res.status_code == 200
-        assert res.json()["display_name"] is None, "Anonymous GET must strip display_name"
+        assert res.status_code == 401
 
     def test_create_profile_with_all_fields(self, client):
         """POST with every field populated. POST returns owner view (full data)."""
@@ -208,6 +211,7 @@ class TestUserProfileRoutes:
                 "wallet_address": "not-a-wallet",
                 "display_name": "Test",
             },
+            cookies=_siwe_cookies(_W_ALICE),
         )
         assert res.status_code == 422
 
@@ -237,7 +241,7 @@ class TestUserProfileRoutes:
         assert res2.json()["display_name"] == "CaseTest"
 
     def test_anonymous_get_does_not_reveal_email(self, client):
-        """Anonymous GET must not reveal email (Issue #181)."""
+        """Anonymous GET cannot reach private profile data."""
         client.post(
             "/api/user/profile",
             json={
@@ -247,8 +251,7 @@ class TestUserProfileRoutes:
             cookies=_siwe_cookies(_W_CHARLIE),
         )
         res = client.get(f"/api/user/profile/{_W_CHARLIE}")
-        assert res.status_code == 200
-        assert res.json()["email"] is None, "Anonymous GET must not reveal email"
+        assert res.status_code == 401
 
     def test_owner_get_decrypts_email(self, client):
         """Owner GET with SIWE session decrypts email (Issue #181 + SIWE auth)."""
@@ -330,9 +333,7 @@ class TestUserProfileRoutes:
         )
         # Spoof with header only (no SIWE cookie)
         res = client.get(f"/api/user/profile/{wallet}", headers={"X-Wallet-Address": wallet})
-        assert res.status_code == 200
-        assert res.json()["email"] is None, "Header spoof must not reveal email"
-        assert res.json()["display_name"] is None, "Header spoof must not reveal display_name"
+        assert res.status_code == 401
 
     def test_wrong_siwe_session_does_not_reveal_pii(self, client):
         """SIWE session for wallet A must not reveal wallet B's PII."""
@@ -349,23 +350,22 @@ class TestUserProfileRoutes:
         assert res.json()["email"] is None, "Wrong wallet session must not reveal PII"
 
     def test_write_without_any_auth_fails(self, client):
-        """POST without any auth returns 403 (no SIWE session)."""
+        """POST without account auth returns 401."""
         res = client.post(
             "/api/user/profile",
             json={"wallet_address": "0x9999999999999999999999999999999999999999"},
         )
-        assert res.status_code == 403
+        assert res.status_code == 401
 
     def test_write_with_header_only_fails(self, client):
-        """POST with X-Wallet-Address header but no SIWE session returns 403 (Issue #402)."""
+        """Body/header wallet values never create account authentication."""
         wallet = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         res = client.post(
             "/api/user/profile",
             json={"wallet_address": wallet, "display_name": "HeaderOnly"},
             headers={"X-Wallet-Address": wallet},
         )
-        assert res.status_code == 403, "Header-only auth must be rejected for writes (Issue #402)"
-        assert "SIWE session required" in res.json().get("detail", "")
+        assert res.status_code == 401, "Header-only auth must be rejected"
 
     def test_write_with_wrong_siwe_session_fails(self, client):
         """POST with SIWE session for wallet A claiming to write wallet B returns 403."""
@@ -389,3 +389,46 @@ class TestUserProfileRoutes:
         )
         assert res.status_code == 200
         assert res.json()["display_name"] == "SIWEUser"
+
+    def test_second_legacy_profile_returns_conflict_instead_of_500(self, client):
+        user_id = f"legacy-test:{_W_LEGACY_PROFILE.lower()}"
+        with get_session() as session:
+            session.query(UserProfile).filter(
+                (UserProfile.owner_user_id == user_id)
+                | (UserProfile.wallet_address.in_([_W_CANONICAL_PROFILE.lower(), _W_LEGACY_PROFILE.lower()]))
+            ).delete(synchronize_session=False)
+            session.add_all(
+                [
+                    UserProfile(
+                        wallet_address=_W_CANONICAL_PROFILE.lower(),
+                        owner_user_id=user_id,
+                        display_name="Canonical",
+                        interests="[]",
+                    ),
+                    UserProfile(
+                        wallet_address=_W_LEGACY_PROFILE.lower(),
+                        display_name="Legacy",
+                        interests="[]",
+                    ),
+                ]
+            )
+            session.commit()
+
+        res = client.post(
+            "/api/user/profile",
+            json={"wallet_address": _W_LEGACY_PROFILE, "display_name": "Updated"},
+            cookies=_siwe_cookies(_W_LEGACY_PROFILE),
+        )
+        assert res.status_code == 409
+        assert res.json()["detail"] == "Account already has a canonical profile"
+
+        with get_session() as session:
+            session.query(UserProfile).filter(UserProfile.wallet_address == _W_LEGACY_PROFILE.lower()).delete()
+            session.commit()
+        res = client.post(
+            "/api/user/profile",
+            json={"wallet_address": _W_LEGACY_PROFILE, "display_name": "New second profile"},
+            cookies=_siwe_cookies(_W_LEGACY_PROFILE),
+        )
+        assert res.status_code == 409
+        assert res.json()["detail"] == "Account already has a canonical profile"

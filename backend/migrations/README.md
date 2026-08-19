@@ -24,10 +24,11 @@ and `migrations/env.py` for the full two-path rationale.
 - `env.py` — wires Alembic to `archimedes.db.DATABASE_URL` (same env var +
   SQLite fallback the app itself uses) and `Base.metadata` (imports every
   ORM model so autogenerate/upgrade see the full schema).
-- `versions/` — the actual migrations. `versions/af9c6a9376e4_baseline_schema.py`
-  is the baseline: every table the 17 ORM models declare, as of Alembic
-  adoption. Verified column-for-column identical to a fresh `create_all()`
-  DB.
+- `versions/` — actual migrations. `versions/af9c6a9376e4_baseline_schema.py`
+  is baseline. Better Auth identity lands additively in `9ad1c4e2b7f0`; nullable
+  canonical ownership columns land in `b7e3f1a2c9d4`. See
+  [`docs/account-authentication.md`](../../docs/account-authentication.md) for
+  rollout and rollback order.
 - The `*.sql` files alongside this README (dated `20260518`–`20260703`) are
   the **historical hand-rolled migrations that predate Alembic** — kept for
   the record, superseded by the baseline revision. New schema changes are

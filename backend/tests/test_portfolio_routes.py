@@ -13,6 +13,8 @@ import pandas as pd
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from tests.auth_helpers import auth_cookies
+
 _N_BARS = 300
 
 
@@ -36,7 +38,7 @@ async def _post_optimize(body: dict):
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        return await client.post("/api/portfolio/optimize", json=body)
+        return await client.post("/api/portfolio/optimize", json=body, cookies=auth_cookies())
 
 
 @pytest.mark.parametrize("method,expected_optimizer", [("mvo", "mvo"), ("hrp", "hrp"), ("bl", "black_litterman")])

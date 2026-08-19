@@ -8,12 +8,8 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 // stays on the page. Clicking a row calls `onDrillIn(job_id)` to open that
 // job's SSE stream as a drill-down view.
 //
-// 401-GUARD (issue #872): the endpoint is owner-scoped and requires a SIWE
-// session. Polling while unauthenticated spammed nginx with ~2,319 401s in 6h.
-// Guard: only start the poll when `walletAddr` is truthy (wallet connected →
-// user is authenticated or will be on first generate). On any 401 response,
-// stop the interval immediately and mark the poll as blocked — no retry until
-// `walletAddr` changes. This is defense-in-depth; the server enforces auth too.
+// Protected app route already requires Better Auth account. On 401, stop polling
+// until manual retry; wallet presence is unrelated to account authentication.
 
 const STATE_TAGS = {
   queued:    { label: 'queued',    cls: 'tag-muted' },
@@ -36,12 +32,11 @@ function timeAgo(iso) {
   return `${Math.floor(secs / 86400)}d ago`
 }
 
-export default function GenerationStatus({ walletAddr, activeJobId, onDrillIn }) {
+export default function GenerationStatus({ activeJobId, onDrillIn }) {
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  // When the endpoint returns 401, block further polling until the user's
-  // wallet/session changes. Prevents unauthenticated spam.
+  // When endpoint returns 401, block further polling until manual retry.
   const [blocked, setBlocked] = useState(false)
   const intervalRef = useRef(null)
 
@@ -52,14 +47,8 @@ export default function GenerationStatus({ walletAddr, activeJobId, onDrillIn })
     }
   }
 
-  // Reset block state whenever walletAddr changes (e.g. user signs in).
   useEffect(() => {
-    if (walletAddr) setBlocked(false)
-  }, [walletAddr])
-
-  useEffect(() => {
-    // Do not poll when unauthenticated or after a 401.
-    if (!walletAddr || blocked) {
+    if (blocked) {
       setLoading(false)
       stopPoll()
       return
@@ -75,8 +64,7 @@ export default function GenerationStatus({ walletAddr, activeJobId, onDrillIn })
         if (res.status === 401) {
           // Stop polling immediately.  Clear stale rows so the user does not
           // see outdated data while unauthenticated, and surface a sign-in
-          // prompt with a manual retry path (in case SIWE happened without
-          // changing the connected wallet address).
+          // prompt with manual retry path.
           if (!cancelled) {
             stopPoll()
             setBlocked(true)
@@ -106,10 +94,9 @@ export default function GenerationStatus({ walletAddr, activeJobId, onDrillIn })
       cancelled = true
       stopPoll()
     }
-  }, [walletAddr, blocked])
+  }, [blocked])
 
   if (loading && !jobs.length) return null
-  if (!walletAddr) return null
 
   return (
     <div className="card" style={{ padding: 16 }}>

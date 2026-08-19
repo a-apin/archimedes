@@ -74,6 +74,7 @@ def ingest_passport(
     generation_method: str = "curated",
     force_update: bool = False,
     owner_wallet: str | None = None,
+    owner_user_id: str | None = None,
 ) -> StrategyPassportRecord:
     """Ingest a StrategyPassport dataclass into the unified Postgres table.
 
@@ -85,9 +86,9 @@ def ingest_passport(
         passport: The StrategyPassport dataclass to persist.
         generation_method: "curated", "fusion", or "architect".
         force_update: If True, overwrite existing record fields on hash match.
-        owner_wallet: SIWE-derived generating wallet (server-bound, lowercase).
-            Only set when provided — a later force_update refresh that omits it
-            (e.g. the post-backtest metrics refresh) never clears ownership.
+        owner_wallet: Optional verified-wallet provenance, lowercase.
+        owner_user_id: Canonical Better Auth user. Both owner fields only
+            backfill missing values and are never reassigned.
 
     Returns:
         The persisted StrategyPassportRecord.
@@ -104,6 +105,8 @@ def ingest_passport(
     if existing and force_update:
         # Update in place
         _update_record(existing, passport, generation_method, content_hash)
+        if owner_user_id and not existing.owner_user_id:
+            existing.owner_user_id = owner_user_id
         if owner_wallet and not existing.owner_wallet:
             # Backfill only — an existing owner is never overwritten.
             existing.owner_wallet = owner_wallet
@@ -143,6 +146,7 @@ def ingest_passport(
         curator_wallet=passport.curator_wallet.lower() if passport.curator_wallet else None,
         curator_note=passport.curator_note,
         owner_wallet=owner_wallet,
+        owner_user_id=owner_user_id,
         strategy_code_path=passport.strategy_code_path,
         strategy_code_hash=passport.strategy_code_hash,
         on_chain_registration_tx=passport.on_chain_registration_tx,

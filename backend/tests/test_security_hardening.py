@@ -23,6 +23,8 @@ import sys
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from tests.auth_helpers import TEST_WALLET, auth_cookies
+
 # ─── 1. Docs gate ─────────────────────────────────────────────────────
 
 
@@ -49,6 +51,7 @@ def _clean_subprocess_env() -> dict[str, str]:
         "PATH": os.environ.get("PATH", ""),
         "HOME": os.environ.get("HOME", ""),
         "PYTHONPATH": backend_dir,
+        "DATABASE_URL": "sqlite:////tmp/archimedes-security-subprocess.db",
     }
 
 
@@ -198,7 +201,8 @@ async def test_chat_post_rate_limited():
             for _ in range(25):
                 resp = await client.post(
                     "/api/vaults/0x0000000000000000000000000000000000000001/chat",
-                    json={"wallet_address": "0x" + "a" * 40, "message": "test"},
+                    json={"wallet_address": TEST_WALLET, "message": "test"},
+                    cookies=auth_cookies(),
                 )
                 if resp.status_code == 429:
                     hit_429 = True
@@ -328,12 +332,12 @@ async def test_normal_body_passes_size_check():
     assert resp.status_code != 413
 
 
-# ─── 7. Chat wallet_address regex validation ──────────────────────────
+# ─── 7. Chat account boundary precedes body wallet trust ──────────────
 
 
 @pytest.mark.asyncio
 async def test_chat_rejects_invalid_wallet():
-    """POST /api/vaults/{addr}/chat rejects non-hex wallet_address with 422."""
+    """Anonymous body wallet input cannot create chat identity."""
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -341,14 +345,12 @@ async def test_chat_rejects_invalid_wallet():
             "/api/vaults/0x0000000000000000000000000000000000000001/chat",
             json={"wallet_address": "garbage", "message": "test"},
         )
-    assert resp.status_code == 422, f"Expected 422 for invalid wallet, got {resp.status_code}"
-    data = resp.json()
-    assert "0x" in data.get("detail", "")
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
 async def test_chat_rejects_short_wallet():
-    """POST rejects a short hex wallet that doesn't match ^0x[a-fA-F0-9]{40}$."""
+    """Anonymous short wallet input cannot bypass account authentication."""
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -356,7 +358,7 @@ async def test_chat_rejects_short_wallet():
             "/api/vaults/0x0000000000000000000000000000000000000001/chat",
             json={"wallet_address": "0xabc", "message": "test"},
         )
-    assert resp.status_code == 422
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio

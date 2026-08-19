@@ -6,8 +6,7 @@ of the hackathon win-condition instrument: a real, live "agents vs humans"
 traction number backed by the live request path rather than a claim.
 
 Classifier (deterministic — identity model as of today):
-  - HUMAN  = a valid SIWE wallet session cookie (``archimedes_session``),
-             verified with the same ``_verify_session`` the auth layer uses.
+  - HUMAN  = Better Auth middleware resolved canonical account state.
   - AGENT (internal) = a valid ``X-Internal-Agent-Key`` header (HMAC-compared
              against ``INTERNAL_AGENT_API_KEY``), agent_type="internal".
   - AGENT (external) = no session AND a non-browser User-Agent (no "Mozilla";
@@ -16,7 +15,7 @@ Classifier (deterministic — identity model as of today):
   - Default (browser UA, no session) = HUMAN — the demo is open, so an
     un-signed-in browser visitor still counts as a human.
 
-This module only READS the existing auth primitives; it never changes auth.
+This module only reads request state resolved by auth middleware; it never changes auth.
 
 Graceful degradation is a hard requirement: any classification or Redis error
 is logged at ``debug`` and swallowed. The counter is observability, never a
@@ -35,7 +34,7 @@ from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
 
-# Non-browser User-Agent markers. A request with no SIWE session whose UA
+# Non-browser User-Agent markers. A request with no account session whose UA
 # matches one of these (or carries no "Mozilla" token at all) is treated as an
 # external agent. Browsers always send a "Mozilla/5.0 ..." UA, so its absence
 # is a strong external-client signal.
@@ -101,17 +100,8 @@ def _has_valid_internal_key(request: Request) -> bool:
 
 
 def _has_valid_session(request: Request) -> bool:
-    """True iff the request carries a valid SIWE session cookie.
-
-    Reuses the auth layer's ``_verify_session`` so the human classification
-    matches exactly what the app treats as an authenticated wallet.
-    """
-    from archimedes.api.auth_siwe import _COOKIE_NAME, _verify_session
-
-    token = request.cookies.get(_COOKIE_NAME)
-    if not token:
-        return False
-    return _verify_session(token) is not None
+    """True iff Better Auth middleware resolved canonical account state."""
+    return getattr(request.state, "current_user", None) is not None
 
 
 def classify_request(request: Request) -> tuple[bool, str]:
@@ -124,7 +114,7 @@ def classify_request(request: Request) -> tuple[bool, str]:
     if _has_valid_internal_key(request):
         return True, "internal"
 
-    # 2. Human — a valid SIWE session.
+    # 2. Human — canonical account session.
     if _has_valid_session(request):
         return False, "human"
 

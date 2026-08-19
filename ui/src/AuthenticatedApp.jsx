@@ -1,0 +1,300 @@
+import { useEffect, useState } from "react";
+
+import { disconnectWallet, reconnectWallet } from "./config";
+import { checkLegacyWallet, listLinkedWallets } from "./linked-wallets";
+import AccountSettings from "./components/AccountSettings";
+import CorpusExplorer from "./components/CorpusExplorer";
+import Explore from "./components/Explore";
+import Generate from "./components/Generate";
+import Insights from "./components/Insights";
+import Leaderboard from "./components/Leaderboard";
+import Layout from "./components/Layout";
+import Learnings from "./components/Learnings";
+import MarketplacePage from "./components/MarketplacePage";
+import OnboardingTour, {
+	hasCompletedOnboarding,
+} from "./components/OnboardingTour";
+import Portfolio from "./components/Portfolio";
+import PublishPage from "./components/PublishPage";
+import QuantLab from "./components/QuantLab";
+import Reasoning from "./components/Reasoning";
+import Strategies from "./components/Strategies";
+import StrategyDetailPage from "./components/StrategyDetailPage";
+import StrategyPassport from "./components/StrategyPassport";
+import SubscriptionsPage from "./components/SubscriptionsPage";
+import VaultDetail from "./components/VaultDetail";
+import WalletGate from "./components/WalletGate";
+
+const openConnectModal = () =>
+	window.dispatchEvent(new Event("open-wallet-modal"));
+
+export default function AuthenticatedApp({
+	route,
+	features,
+	navigateToPage,
+	user,
+}) {
+	const [walletAddr, setWalletAddr] = useState(null);
+	// No auto-tour for anonymous visitors (#1194 revision d): its cards
+	// spotlight Generate and Library, which would bounce a logged-out browser
+	// straight to /sign-in — a modal ad for a door that's locked. The manual
+	// help-icon path still works for everyone.
+	const [tourOpen, setTourOpen] = useState(() => (user ? !hasCompletedOnboarding() : false));
+	const [journeyStage, setJourneyStage] = useState(null);
+	// A detected-but-unlinked browser wallet that backs pre-account (SIWE-era)
+	// data — drives the relink banner below (#1194 revision e).
+	const [legacyWalletDetected, setLegacyWalletDetected] = useState(null);
+
+	useEffect(() => {
+		if (route.page !== "generate") setJourneyStage(null);
+	}, [route.page]);
+
+	const userId = user?.id ?? null;
+	useEffect(() => {
+		// Wallets link to ACCOUNTS — with no session there is nothing to link
+		// (and the linked-wallet/legacy-check calls would just 401).
+		if (!userId) return;
+		reconnectWallet().then(async (result) => {
+			if (!result) return;
+			try {
+				const wallets = await listLinkedWallets();
+				if (
+					wallets.some(
+						(wallet) =>
+							wallet.address === result.address.toLowerCase() &&
+							wallet.chain_id === 5042002,
+					)
+				) {
+					setWalletAddr(result.address);
+				} else {
+					// The browser wallet is present but NOT linked to this
+					// account. If it backs pre-account (SIWE-era) data, the
+					// user's strategies are sitting invisible until they
+					// relink — surface that instead of silently dropping the
+					// address (#1194 revision e).
+					const { has_legacy_data } = await checkLegacyWallet(
+						result.address,
+					);
+					if (has_legacy_data) setLegacyWalletDetected(result.address);
+				}
+			} catch {
+				// Account remains usable without wallet service.
+			}
+		});
+		// Keyed on the account id, not []: with the anonymous guard above, a
+		// visitor who signs in after an anonymous mount still gets their wallet
+		// reconnected when the session resolves.
+	}, [userId]);
+
+	useEffect(() => {
+		const handler = async (event) => {
+			const address = event.detail.address;
+			if (!address) {
+				setWalletAddr(null);
+				return;
+			}
+			try {
+				const wallets = await listLinkedWallets();
+				setWalletAddr(
+					wallets.some((wallet) => wallet.address === address.toLowerCase())
+						? address
+						: null,
+				);
+			} catch {
+				setWalletAddr(null);
+			}
+		};
+		window.addEventListener("wallet-changed", handler);
+		return () => window.removeEventListener("wallet-changed", handler);
+	}, []);
+
+	const handleDisconnect = () => {
+		disconnectWallet();
+		setWalletAddr(null);
+	};
+	const selectVault = (address) =>
+		navigateToPage("vault-detail", { vaultAddress: address });
+	const selectTrace = (traceId) => navigateToPage("reasoning", { traceId });
+
+	const renderPage = () => {
+		switch (route.page) {
+			case "explore":
+				return <Explore />;
+			case "leaderboard":
+				return <Leaderboard />;
+			case "generate":
+				return (
+					<Generate
+						onNavigate={navigateToPage}
+						onStageChange={setJourneyStage}
+					/>
+				);
+			case "library":
+				return (
+					<Strategies
+						highlightStrategyId={route.highlight}
+						defaultTab={route.tab}
+						onNavigate={navigateToPage}
+					/>
+				);
+			case "strategy":
+				return (
+					<StrategyPassport
+						strategyId={route.strategyId}
+						onNavigate={navigateToPage}
+						walletAddr={walletAddr}
+					/>
+				);
+			case "corpus":
+				return <CorpusExplorer />;
+			case "quant":
+				return <QuantLab />;
+			case "portfolio":
+				return (
+					<WalletGate
+						walletAddr={walletAddr}
+						pageName="Portfolio"
+						description="Portfolio needs a verified linked wallet because vault deposits and withdrawals are on-chain actions."
+						onConnect={openConnectModal}
+					>
+						<Portfolio
+							walletAddr={walletAddr}
+							onSelectVault={selectVault}
+							onSelectTrace={selectTrace}
+							onNavigate={navigateToPage}
+						/>
+					</WalletGate>
+				);
+			case "reasoning":
+				return <Reasoning onNavigate={navigateToPage} />;
+			case "learnings":
+				return (
+					<WalletGate
+						walletAddr={walletAddr}
+						pageName="Learnings"
+						description="Link wallet controlling your deployed vaults to review their outcomes."
+						onConnect={openConnectModal}
+					>
+						<Learnings onNavigate={navigateToPage} />
+					</WalletGate>
+				);
+			case "insights":
+				return <Insights />;
+			case "vault-detail":
+				return (
+					<VaultDetail
+						address={route.vaultAddress}
+						onBack={() => navigateToPage("portfolio")}
+					/>
+				);
+			case "marketplace":
+				return <MarketplacePage onNavigate={navigateToPage} />;
+			case "market-strategy":
+				return (
+					<StrategyDetailPage
+						strategyId={route.strategyId}
+						onNavigate={navigateToPage}
+					/>
+				);
+			case "publish":
+				return <PublishPage onNavigate={navigateToPage} />;
+			case "subscriptions":
+				return <SubscriptionsPage onNavigate={navigateToPage} />;
+			case "account":
+				return (
+					<AccountSettings
+						walletAddr={walletAddr}
+						onDisconnect={handleDisconnect}
+					/>
+				);
+			default:
+				return null;
+		}
+	};
+
+	return (
+		<>
+			<Layout
+				page={route.page}
+				setPage={navigateToPage}
+				walletAddr={walletAddr}
+				onConnect={setWalletAddr}
+				onDisconnect={handleDisconnect}
+				onOpenTour={() => setTourOpen(true)}
+				user={user}
+				features={features}
+				journeyStage={journeyStage}
+			>
+				{legacyWalletDetected && !walletAddr && (
+					<div
+						role="status"
+						style={{
+							margin: "12px 16px 0",
+							padding: "10px 14px",
+							borderLeft: "3px solid var(--accent)",
+							background: "var(--accent-muted)",
+							borderRadius: 4,
+							fontSize: 13,
+							color: "var(--text-2)",
+							display: "flex",
+							alignItems: "center",
+							gap: 12,
+							flexWrap: "wrap",
+						}}
+					>
+						<span style={{ flex: "1 1 320px" }}>
+							<strong style={{ color: "var(--accent)" }}>
+								Your earlier strategies are waiting.
+							</strong>{" "}
+							We found data tied to wallet{" "}
+							{`${legacyWalletDetected.slice(0, 6)}…${legacyWalletDetected.slice(-4)}`}{" "}
+							from before you had an account. Connect and sign with
+							that wallet to bring it into this account — nothing is
+							deleted, and only you can claim it.
+						</span>
+						<button
+							type="button"
+							className="btn-primary"
+							onClick={() =>
+								// The connect modal's listener lives in
+								// WalletConnect (mounted inside Layout). NOT
+								// Layout's onConnect prop — that is a state
+								// setter, not the modal opener.
+								window.dispatchEvent(new Event("open-wallet-modal"))
+							}
+						>
+							Connect wallet
+						</button>
+						<button
+							type="button"
+							onClick={() => setLegacyWalletDetected(null)}
+							aria-label="Dismiss"
+							style={{
+								background: "none",
+								border: "none",
+								cursor: "pointer",
+								color: "var(--text-2)",
+								fontSize: 16,
+							}}
+						>
+							×
+						</button>
+					</div>
+				)}
+				{renderPage()}
+			</Layout>
+			<OnboardingTour
+				open={tourOpen}
+				onClose={() => {
+					setTourOpen(false);
+					try {
+						localStorage.setItem("archimedes.onboarding.v1", "completed");
+					} catch {
+						/* non-fatal */
+					}
+				}}
+				setPage={navigateToPage}
+			/>
+		</>
+	);
+}

@@ -25,6 +25,11 @@ PARAMS=(
   LLM_AUTH_TOKEN           # LLM API auth token (BYOK / current provider)
   LLM_BASE_URL             # LLM endpoint base URL
   EMAIL_ENCRYPTION_KEY     # at-rest encryption key for stored user emails
+  BETTER_AUTH_SECRET       # >=32-char session-signing secret for Better Auth sidecar
+  GOOGLE_CLIENT_ID         # optional; seed with GOOGLE_CLIENT_SECRET before enabling Terraform flag
+  GOOGLE_CLIENT_SECRET     # optional Google OAuth credential
+  GITHUB_CLIENT_ID         # optional; seed with GITHUB_CLIENT_SECRET before enabling Terraform flag
+  GITHUB_CLIENT_SECRET     # optional GitHub OAuth credential
   AURORA_MASTER_PASSWORD   # DB master password (mirror TF_VAR_aurora_master_password)
   DATABASE_URL             # Aurora connection URL — consumed by the backend Fargate task (ecs.tf secrets) AND the relocated oracle/agent runners (fetch-secrets.sh); ecs.tf's header flags this as not-yet-seeded
   REDIS_URL                # ElastiCache connection URL — same two consumers; same not-yet-seeded gap
@@ -88,6 +93,11 @@ $APPLY && echo ">>> APPLY MODE — writing SecureString params under ${PREFIX}/"
 #     SSM (re-seeding one unrelated secret must not require re-passing it)
 #   - checked BEFORE any put, so a failure writes nothing at all
 if $APPLY; then
+  if [ -n "${BETTER_AUTH_SECRET:-}" ] && [ "${#BETTER_AUTH_SECRET}" -lt 32 ]; then
+    echo "ERROR: refusing to --apply. BETTER_AUTH_SECRET must contain at least 32 characters." >&2
+    exit 3
+  fi
+
   if [ -z "${AGENT_DRY_RUN:-}" ]; then
     if ! aws ssm get-parameter --name "${PREFIX}/AGENT_DRY_RUN" >/dev/null 2>&1; then
       cat >&2 <<EOM

@@ -14,8 +14,8 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.exc import IntegrityError
 
-from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.limiter import limiter
+from archimedes.api.wallet_routes import require_linked_wallet
 from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
 from archimedes.db import get_session
 from archimedes.marketplace import spend_cap
@@ -93,7 +93,7 @@ async def publish_strategy(
     request: Request,
     response: Response,  # required by slowapi header injection (headers_enabled=True) — looks unused, is not
     body: dict,
-    wallet: str = Depends(require_verified_wallet),
+    wallet: str = Depends(require_linked_wallet),
 ):
     """Publish a strategy to the marketplace.
 
@@ -282,8 +282,7 @@ async def publish_strategy(
 
     # Identity ledger (#1028, D1a/D2/D3): register the Circle DCW this publish
     # just provisioned in controlled_wallets (it is never itself an identity —
-    # D1a), then ledger the publish against the creator's own wallet. `wallet`
-    # is SIWE-verified (require_verified_wallet dependency) — always identified.
+    # D1a), then ledger publish against creator's verified linked wallet.
     # Fail-safe; neither call can affect the response above.
     register_controlled_wallet(
         address=gateway_seller_address,
@@ -313,7 +312,7 @@ async def subscribe_strategy(
     request: Request,
     response: Response,  # required by slowapi header injection (headers_enabled=True) — looks unused, is not
     body: dict,
-    wallet: str = Depends(require_verified_wallet),
+    wallet: str = Depends(require_linked_wallet),
 ):
     """Subscribe to a published strategy.
 
@@ -489,8 +488,7 @@ async def subscribe_strategy(
 
     # Identity ledger (#1028, D1a/D2/D3): register the Circle DCW this
     # subscribe just provisioned in controlled_wallets, then ledger the
-    # subscribe against the subscriber's own wallet. `wallet` is SIWE-verified
-    # (require_verified_wallet dependency) — always identified. Fail-safe;
+    # subscribe against subscriber's verified linked wallet. Fail-safe;
     # neither call can affect the response above.
     register_controlled_wallet(
         address=ephemeral_wallet,
@@ -519,7 +517,7 @@ async def unsubscribe_strategy(
     request: Request,
     response: Response,  # required by slowapi header injection (headers_enabled=True) — looks unused, is not
     strategy_id: str,
-    wallet: str = Depends(require_verified_wallet),
+    wallet: str = Depends(require_linked_wallet),
 ):
     """Unsubscribe current wallet from a strategy."""
     market = _get_market(request)
@@ -550,7 +548,7 @@ async def unsubscribe_strategy(
     # Circle DCW back to the subscriber's own wallet — their exit from the
     # interim custodial fee model (issue #975). Best-effort + no-op under
     # PAYMENTS_DRY_RUN; a failed sweep never blocks the unsubscribe (balance
-    # stays recoverable). The subscriber's SIWE-verified wallet is the caller.
+    # stays recoverable). Caller is subscriber's verified linked wallet.
     refund_tx = await market.refund_subscriber(
         circle_wallet_id=circle_wallet_id,
         dcw_address=dcw_address,
@@ -558,8 +556,7 @@ async def unsubscribe_strategy(
         sub_id=sub_id,
     )
 
-    # Identity ledger (#1028, D2): `wallet` is SIWE-verified (require_verified_wallet
-    # dependency) — always identified. Fail-safe; never affects the response above.
+    # Legacy wallet ledger records verified linked-wallet provenance. Fail-safe.
     emit_identity_event(
         wallet=wallet,
         event_type="marketplace_unsubscribed",
@@ -581,7 +578,7 @@ async def stop_publish(
     request: Request,
     response: Response,  # required by slowapi header injection (headers_enabled=True) — looks unused, is not
     strategy_id: str,
-    wallet: str = Depends(require_verified_wallet),
+    wallet: str = Depends(require_linked_wallet),
 ):
     """Stop a published strategy (creator only).
 
@@ -674,7 +671,7 @@ async def list_published(request: Request, response: Response):  # response: slo
 @marketplace_router.get("/my-published")
 async def list_my_published(
     request: Request,
-    wallet: str = Depends(require_verified_wallet),
+    wallet: str = Depends(require_linked_wallet),
 ):
     """Same as GET /published but scoped to the caller's own publisher rows.
 
@@ -705,7 +702,7 @@ async def list_my_published(
 async def withdraw_publisher_earnings(
     strategy_id: str,
     request: Request,
-    wallet: str = Depends(require_verified_wallet),
+    wallet: str = Depends(require_linked_wallet),
 ):
     """Manual creator-initiated disbursement (M1' fix). Runs Stage A+B+C for the
     caller's own publisher row, then calls PaymentSplitter.withdraw for the
@@ -808,7 +805,7 @@ async def get_strategy_detail(request: Request, response: Response, strategy_id:
 @marketplace_router.get("/my-subscriptions")
 async def my_subscriptions(
     _request: Request,
-    wallet: str = Depends(require_verified_wallet),
+    wallet: str = Depends(require_linked_wallet),
 ):
     """Current wallet's subscriptions."""
     with get_session() as session:

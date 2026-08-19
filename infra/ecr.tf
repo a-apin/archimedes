@@ -4,7 +4,7 @@
 # job, landed in build-chunk 1) already pushes to these exact repo names —
 # `archimedes-backend` (shared by backend/oracle/agent/kb-runner, which all run
 # the same image with different entrypoints — see docker-compose.yml) and
-# `archimedes-nginx`. Until this file is applied, that job's own
+# `archimedes-nginx`, and `archimedes-auth`. Until this file is applied, job's
 # `aws ecr describe-repositories` preflight check fails closed with an explicit
 # `::error::` pointing back here — this IS that dependency landing.
 #
@@ -12,7 +12,7 @@
 # `archimedes-github-deploy` OIDC role (infra/scripts/setup-github-oidc.sh,
 # NOT Terraform-managed by design — see that script's own comments) already
 # carries an `EcrPush` statement scoped to `repository/archimedes*`, which
-# matches both repo names below. Verify with:
+# matches all repo names below. Verify with:
 #   aws iam get-role-policy --role-name archimedes-github-deploy --policy-name archimedes-deploy
 
 resource "aws_ecr_repository" "backend" {
@@ -48,6 +48,24 @@ resource "aws_ecr_repository" "nginx" {
   tags = {
     Project = var.project_name
     Purpose = "nginx reverse proxy + built React/Vite bundle"
+  }
+}
+
+resource "aws_ecr_repository" "auth" {
+  name                 = "archimedes-auth"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+
+  tags = {
+    Project = var.project_name
+    Purpose = "Better Auth identity sidecar"
   }
 }
 
@@ -123,6 +141,36 @@ resource "aws_ecr_lifecycle_policy" "nginx" {
           # (SHA + "latest") so it can't count/expire untagged images — those are
           # handled solely by rule 1. "any" here would double-count untagged and
           # could shrink effective tagged retention.
+          tagStatus      = "tagged"
+          tagPatternList = ["*"]
+          countType      = "imageCountMoreThan"
+          countNumber    = local.ecr_keep_last_n_images
+        }
+        action = { type = "expire" }
+      }
+    ]
+  })
+}
+
+resource "aws_ecr_lifecycle_policy" "auth" {
+  repository = aws_ecr_repository.auth.name
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 1 day"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 1
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep only the last ${local.ecr_keep_last_n_images} tagged images"
+        selection = {
           tagStatus      = "tagged"
           tagPatternList = ["*"]
           countType      = "imageCountMoreThan"

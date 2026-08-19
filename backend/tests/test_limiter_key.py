@@ -21,8 +21,7 @@ def _req(x_real_ip: str | None = None, peer: str = "10.0.0.2") -> MagicMock:
 
 
 def test_limiter_keys_on_real_client_ip():
-    from archimedes.api.limiter import limiter
-    from archimedes.services.generation_quota import client_ip
+    from archimedes.api.limiter import client_ip, limiter
 
     # The limiter is wired to the shared client_ip resolver, not get_remote_address.
     assert limiter._key_func is client_ip

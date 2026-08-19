@@ -1,6 +1,6 @@
 # Setup
 
-This doc walks you from a fresh clone to a working local Archimedes stack. Works on **macOS, Linux, and Windows**. Once you can run [`docker compose up -d --build`](#step-2--spin-up-the-stack-recommended-path) and see services pass their health checks, you're done — everything else here is optional polish.
+This doc walks you from a fresh clone to a working local Archimedes stack. Works on **macOS, Linux, and Windows**. Once you can run [`docker compose up -d --build`](#step-2--spin-up-the-stack-recommended-path), see the migration exit successfully, and see services pass their health checks, you're done — everything else here is optional polish.
 
 > **Status:** Day-10 (2026-05-22); owner review 2026-07-28. Owner: Dan Browne (infra). Platform coverage is best-effort: macOS is the only routinely exercised path.
 
@@ -42,32 +42,37 @@ The `submodules/` directory carries Circle's [`context-arc`](submodules/context-
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in ANTHROPIC_AUTH_TOKEN (GLM via Canteen submission)
-# OR ANTHROPIC_API_KEY (your own free Anthropic key) — see docs/runbooks/operations.md § LLM backends
+# REQUIRED: generate a local auth secret, then paste it after BETTER_AUTH_SECRET=
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+# Optional: configure an LLM provider — see .env.example and docs/runbooks/operations.md
+# § LLM backends. Without one, generation uses the canned fallback.
 docker compose up -d --build
 ```
 
-On first run this downloads ~150 MB of base images and builds the backend image. Subsequent runs are seconds. The stack brings up **6 services**:
+Local `.env.example` selects `docker-compose.local.yml` and publishes nginx on unprivileged port 8080, so both rootful and rootless Docker work without host sysctl changes. Production omits the local override and `ARCHIMEDES_HTTP_PORT`, retaining its separate migration task and port 80.
 
-| Service     | Port | URL                              | What it is |
-| ----------- | ---- | -------------------------------- | ---------- |
-| `nginx`     | 80   | <http://localhost>               | React UI build + reverse-proxy to backend |
-| `backend`   | 8000 | <http://localhost:8000/docs>     | FastAPI app (Swagger UI auto-generated) |
-| `agent`     | —    | (no HTTP)                        | Autonomous strategy runner: evaluates signals, derives regime, rebalances vaults, publishes traces |
-| `oracle`    | —    | (no HTTP)                        | Price feeder — pushes to `PriceOracle.sol` via Circle Wallets API |
-| `postgres`  | 5432 | `postgres://archimedes@localhost:5432/archimedes` | Strategies, backtests, traces |
-| `redis`     | 6379 | `redis://localhost:6379/0`       | Regime state cache + agent scratch |
+Existing `.env` from an older checkout: merge `COMPOSE_PATH_SEPARATOR`, `COMPOSE_FILE`, `ARCHIMEDES_HTTP_PORT`, `BETTER_AUTH_URL`, and `BETTER_AUTH_TRUSTED_ORIGINS` from `.env.example`; do not replace the file or its secrets wholesale.
 
-Watch health checks succeed: `docker compose ps`. Backend / Postgres / Redis report `(healthy)`; agent / oracle / nginx report `running` (no HTTP probe — expected).
+The stack runs one migration job, then starts **5 long-running services**:
+
+| Service     | Host port | URL                              | What it is |
+| ----------- | --------- | -------------------------------- | ---------- |
+| `migrate`   | —         | (exits after success)            | Alembic schema preflight; backend and auth wait for exit 0 |
+| `nginx`     | 8080      | <http://localhost:8080>          | React UI and sole reverse-proxy ingress |
+| `backend`   | —         | via nginx                        | FastAPI app; intentionally not exposed directly |
+| `auth`      | —         | via nginx `/api/auth/*`          | Better Auth accounts and sessions |
+| `postgres`  | —         | internal Docker network          | Strategies, backtests, traces, and accounts |
+| `redis`     | —         | internal Docker network          | Regime state cache and runtime scratch |
+
+Watch health checks succeed with `docker compose ps`; inspect the completed migration with `docker compose ps -a migrate`. Funds-adjacent `agent`, `oracle`, and `kb-runner` processes stay off locally unless explicitly enabled with `COMPOSE_PROFILES=localdb,runners`.
 
 ## Step 3 — Verify it works
 
 | Open in your browser | Expect to see |
 | -------------------- | ------------- |
-| <http://localhost>           | Live React UI (Landing / Generate / Library / Corpus / Portfolio / Reasoning / Learnings) |
-| <http://localhost:8000>      | `{"name":"Archimedes","tagline":"Linus for quantitative finance",…}` |
-| <http://localhost:8000/health> | `{"status":"ok",…,"corpus_papers":10000,…}` |
-| <http://localhost:8000/docs> | Swagger UI auto-rendered from the API contract |
+| <http://localhost:8080>        | Live React UI (Landing / Generate / Library / Corpus / Portfolio / Reasoning / Learnings) |
+| <http://localhost:8080/health> | Backend health response through nginx |
+| <http://localhost:8080/docs>   | Swagger UI auto-rendered from the API contract |
 
 If `corpus_papers` < 10000 in `/health`, the corpus seed hasn't completed yet — wait a few seconds and retry. Full corpus walkthrough in [`docs/corpus-architecture.md`](docs/corpus-architecture.md).
 

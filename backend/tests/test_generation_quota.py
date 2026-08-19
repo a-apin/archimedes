@@ -1,7 +1,10 @@
-"""Tests for the wallet-less generation quota (anti-abuse per-IP daily cap).
+"""Tests for the rebuilt generation caps (#1194 revision a).
 
-Hermetic — mocks at the Redis boundary; tests the cap logic, the real-IP
-resolver, the 429 steering response, the authenticated bypass, and fail-closed.
+Two stacked daily buckets — per-account (``user``) and per-IP (``ip``) — both
+of which must pass. Hermetic: mocks at the Redis boundary. Covers the cap
+arithmetic, the layer ORDERING (a user over their own cap must not drain the
+shared IP bucket), the honest outage semantics (Redis down → 503, never a
+false "limit reached" 429), the real-IP resolver, and per-layer disable.
 """
 
 from __future__ import annotations
@@ -13,8 +16,9 @@ import pytest
 from archimedes.services.generation_quota import (
     GenerationQuota,
     client_ip,
-    daily_cap,
     enforce_generation_quota,
+    ip_daily_cap,
+    user_daily_cap,
 )
 from fastapi import HTTPException
 
@@ -31,209 +35,191 @@ def _req(headers: dict | None = None, client_host: str | None = None):
     return SimpleNamespace(headers=headers or {}, client=client)
 
 
+def _quota_with(redis_mock) -> GenerationQuota:
+    q = GenerationQuota()
+    q._get_redis = AsyncMock(return_value=redis_mock)
+    q.close = AsyncMock()  # nothing real to close
+    return q
+
+
 # ─── GenerationQuota.check_and_increment ─────────────────────────────────
 
 
 async def test_under_cap_allowed():
-    q = GenerationQuota()
-    q._get_redis = AsyncMock(return_value=_mock_redis(3))
-    allowed, used = await q.check_and_increment("1.2.3.4", 5)
+    q = _quota_with(_mock_redis(3))
+    allowed, used = await q.check_and_increment("user", "u1", 5)
     assert allowed is True
     assert used == 3
 
 
 async def test_at_cap_allowed():
-    q = GenerationQuota()
-    q._get_redis = AsyncMock(return_value=_mock_redis(5))
-    allowed, used = await q.check_and_increment("1.2.3.4", 5)
+    q = _quota_with(_mock_redis(5))
+    allowed, used = await q.check_and_increment("user", "u1", 5)
     assert allowed is True  # the 5th is still allowed
     assert used == 5
 
 
 async def test_over_cap_not_allowed():
-    q = GenerationQuota()
-    q._get_redis = AsyncMock(return_value=_mock_redis(6))
-    allowed, used = await q.check_and_increment("1.2.3.4", 5)
+    q = _quota_with(_mock_redis(6))
+    allowed, used = await q.check_and_increment("user", "u1", 5)
     assert allowed is False
     assert used == 6
 
 
+async def test_key_carries_scope_so_layers_cannot_collide():
+    """A user id that happens to look like an IP must land in a different
+    bucket than the same string in the ip layer — the scope is part of the key."""
+    r = _mock_redis(1)
+    q = _quota_with(r)
+    await q.check_and_increment("user", "1.2.3.4", 5)
+    user_key = r.incr.await_args.args[0]
+    await q.check_and_increment("ip", "1.2.3.4", 5)
+    ip_key = r.incr.await_args.args[0]
+    assert user_key != ip_key
+    assert ":user:" in user_key and ":ip:" in ip_key
+
+
 async def test_ttl_set_with_nx_every_hit():
-    # EXPIRE ... NX runs on every hit: it self-heals a missing TTL but (being NX)
-    # only applies when the key has none, so it never slides the window.
     r = _mock_redis(2)
-    q = GenerationQuota()
-    q._get_redis = AsyncMock(return_value=r)
-    await q.check_and_increment("1.2.3.4", 5)
+    q = _quota_with(r)
+    await q.check_and_increment("ip", "1.2.3.4", 5)
     r.expire.assert_awaited_once()
     assert r.expire.await_args.kwargs.get("nx") is True
 
 
 async def test_expire_failure_does_not_discard_count():
-    # A failed TTL set must NOT throw away the successful INCR — the cap decision
-    # is still made from the real count. (Copilot #792)
     r = _mock_redis(6)
     r.expire = AsyncMock(side_effect=ConnectionError("expire blip"))
-    q = GenerationQuota()
-    q._get_redis = AsyncMock(return_value=r)
-    allowed, used = await q.check_and_increment("1.2.3.4", 5)
+    q = _quota_with(r)
+    allowed, used = await q.check_and_increment("ip", "1.2.3.4", 5)
     assert used == 6  # the count survived the EXPIRE failure
-    assert allowed is False  # 6 > 5 still enforced
+    assert allowed is False
 
 
-async def test_check_fails_closed_on_redis_error():
-    # A Redis outage must NOT silently disable the wallet-less spend cap (#929).
-    q = GenerationQuota()
-    q._get_redis = AsyncMock(side_effect=ConnectionError("redis down"))
-    allowed, used = await q.check_and_increment("1.2.3.4", 5)
-    assert allowed is False  # fail CLOSED — cap held, not bypassed
-    assert used == 0
+async def test_redis_error_fails_closed_with_error_sentinel():
+    r = MagicMock()
+    r.incr = AsyncMock(side_effect=ConnectionError("redis down"))
+    q = _quota_with(r)
+    allowed, used = await q.check_and_increment("user", "u1", 5)
+    assert allowed is False  # fail-closed: spend cap held
+    assert used == 0  # the sentinel enforce_generation_quota maps to 503
 
 
-# ─── client_ip resolver ──────────────────────────────────────────────────
+# ─── enforce_generation_quota: stacking and ordering ─────────────────────
+
+
+def _patched_enforce(monkeypatch, redis_mock):
+    """Route the module-level GenerationQuota construction through our mock.
+
+    String-target setattr, deliberately: the module is already imported via
+    ``from ... import`` at the top, and importing it a second way just to
+    hand monkeypatch an object tripped the both-import-styles lint.
+    """
+    q = _quota_with(redis_mock)
+    monkeypatch.setattr("archimedes.services.generation_quota.GenerationQuota", lambda *a, **k: q)
+    return q
+
+
+async def test_both_layers_under_cap_passes_and_counts_both(monkeypatch):
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_USER", "10")
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_IP", "20")
+    r = _mock_redis(1)
+    _patched_enforce(monkeypatch, r)
+    await enforce_generation_quota(_req(headers={"x-real-ip": "9.9.9.9"}), "user-abc")
+    keys = [c.args[0] for c in r.incr.await_args_list]
+    assert len(keys) == 2
+    assert any(":user:" in k and k.endswith("user-abc") for k in keys)
+    assert any(":ip:" in k and k.endswith("9.9.9.9") for k in keys)
+
+
+async def test_user_cap_hit_raises_429_and_never_touches_ip_bucket(monkeypatch):
+    """THE ordering guard. A caller hammering past their own cap must not
+    drain the shared per-IP bucket for everyone behind the same NAT — so when
+    the user layer rejects, the ip layer's INCR must never run."""
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_USER", "5")
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_IP", "20")
+    r = _mock_redis(6)  # user bucket returns over-cap
+    _patched_enforce(monkeypatch, r)
+    with pytest.raises(HTTPException) as ei:
+        await enforce_generation_quota(_req(headers={"x-real-ip": "9.9.9.9"}), "user-abc")
+    assert ei.value.status_code == 429
+    assert ei.value.detail["scope"] == "user"
+    assert ei.value.detail["reason"] == "generation_daily_cap"
+    keys = [c.args[0] for c in r.incr.await_args_list]
+    assert len(keys) == 1 and ":user:" in keys[0]  # ip bucket untouched
+
+
+async def test_ip_cap_hit_raises_429_with_ip_scope(monkeypatch):
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_USER", "10")
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_IP", "5")
+    r = MagicMock()
+    r.incr = AsyncMock(side_effect=[1, 6])  # user fine, ip over
+    r.expire = AsyncMock(return_value=True)
+    _patched_enforce(monkeypatch, r)
+    with pytest.raises(HTTPException) as ei:
+        await enforce_generation_quota(_req(headers={"x-real-ip": "9.9.9.9"}), "user-abc")
+    assert ei.value.status_code == 429
+    assert ei.value.detail["scope"] == "ip"
+
+
+async def test_redis_outage_raises_honest_503_not_false_429(monkeypatch):
+    """Fail-closed must not masquerade as fail-limit: during an outage the
+    user has NOT reached any limit, and telling them they have is a confident
+    wrong diagnosis. The error sentinel (used == 0) maps to 503."""
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_USER", "10")
+    r = MagicMock()
+    r.incr = AsyncMock(side_effect=ConnectionError("redis down"))
+    _patched_enforce(monkeypatch, r)
+    with pytest.raises(HTTPException) as ei:
+        await enforce_generation_quota(_req(), "user-abc")
+    assert ei.value.status_code == 503
+    assert ei.value.detail["reason"] == "generation_quota_unavailable"
+
+
+async def test_user_layer_disabled_still_enforces_ip_layer(monkeypatch):
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_USER", "0")
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_IP", "5")
+    r = _mock_redis(6)
+    _patched_enforce(monkeypatch, r)
+    with pytest.raises(HTTPException) as ei:
+        await enforce_generation_quota(_req(headers={"x-real-ip": "9.9.9.9"}), "user-abc")
+    assert ei.value.detail["scope"] == "ip"
+    keys = [c.args[0] for c in r.incr.await_args_list]
+    assert len(keys) == 1 and ":ip:" in keys[0]  # user layer never ran
+
+
+async def test_both_layers_disabled_never_touches_redis(monkeypatch):
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_USER", "0")
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_IP", "-1")
+    r = _mock_redis(1)
+    q = _patched_enforce(monkeypatch, r)
+    await enforce_generation_quota(_req(), "user-abc")
+    r.incr.assert_not_awaited()
+    q._get_redis.assert_not_awaited()
+
+
+# ─── cap env parsing ─────────────────────────────────────────────────────
+
+
+def test_invalid_cap_env_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_USER", "banana")
+    monkeypatch.setenv("GENERATION_DAILY_CAP_PER_IP", "1e3")
+    assert user_daily_cap() == 10
+    assert ip_daily_cap() == 20
+
+
+# ─── client_ip resolution (anti-spoofing) ────────────────────────────────
 
 
 def test_client_ip_prefers_x_real_ip():
-    req = _req({"x-real-ip": "9.9.9.9", "x-forwarded-for": "1.1.1.1"})
-    assert client_ip(req) == "9.9.9.9"
+    assert client_ip(_req(headers={"x-real-ip": "203.0.113.7"}, client_host="10.0.0.1")) == "203.0.113.7"
 
 
-def test_client_ip_ignores_spoofable_xff():
-    # X-Forwarded-For is client-forgeable and must NOT be used; with no X-Real-IP,
-    # fall back to the socket peer, never the XFF value. (Copilot #792)
-    req = _req({"x-forwarded-for": "1.1.1.1, 2.2.2.2"}, client_host="3.3.3.3")
-    assert client_ip(req) == "3.3.3.3"
-    # And with no socket either, it's "unknown" — never the spoofable XFF.
-    assert client_ip(_req({"x-forwarded-for": "1.1.1.1"})) == "unknown"
+def test_client_ip_rejects_malformed_header_falls_back_to_peer():
+    """A malformed header must not become a Redis key — an attacker sending
+    garbage per request would otherwise mint a fresh bucket every time."""
+    assert client_ip(_req(headers={"x-real-ip": "evil; DROP"}, client_host="10.0.0.1")) == "10.0.0.1"
 
 
-def test_client_ip_rejects_malformed_x_real_ip():
-    # A non-IP header value must not become a Redis key — fall back. (Copilot #792)
-    req = _req({"x-real-ip": "not-an-ip; DROP"}, client_host="3.3.3.3")
-    assert client_ip(req) == "3.3.3.3"
-
-
-def test_client_ip_socket_fallback():
-    assert client_ip(_req({}, client_host="3.3.3.3")) == "3.3.3.3"
-
-
-def test_client_ip_unknown_when_nothing_available():
-    assert client_ip(_req({})) == "unknown"
-
-
-def test_client_ip_accepts_ipv6_real_ip():
-    assert client_ip(_req({"x-real-ip": "2001:db8::1"})) == "2001:db8::1"
-
-
-# ─── enforce_generation_quota ────────────────────────────────────────────
-
-
-async def test_enforce_skips_authenticated_wallet(monkeypatch):
-    called = {"n": 0}
-
-    class Boom:
-        async def check_and_increment(self, *a):
-            called["n"] += 1
-            return (False, 99)
-
-        async def close(self):
-            pass
-
-    monkeypatch.setattr("archimedes.services.generation_quota.GenerationQuota", Boom)
-    # A wallet-bearing caller must bypass the cap entirely — never touch Redis.
-    await enforce_generation_quota(_req({"x-real-ip": "1.1.1.1"}), wallet="0xabc")
-    assert called["n"] == 0
-
-
-async def test_enforce_disabled_when_cap_zero(monkeypatch):
-    monkeypatch.setenv("WALLET_LESS_GENERATION_DAILY_CAP", "0")
-    called = {"n": 0}
-
-    class Boom:
-        async def check_and_increment(self, *a):
-            called["n"] += 1
-            return (False, 99)
-
-        async def close(self):
-            pass
-
-    monkeypatch.setattr("archimedes.services.generation_quota.GenerationQuota", Boom)
-    await enforce_generation_quota(_req({"x-real-ip": "1.1.1.1"}), wallet=None)
-    assert called["n"] == 0
-
-
-async def test_enforce_allows_under_cap(monkeypatch):
-    monkeypatch.setenv("WALLET_LESS_GENERATION_DAILY_CAP", "5")
-
-    class Under:
-        async def check_and_increment(self, ip, cap):
-            return (True, 2)
-
-        async def close(self):
-            pass
-
-    monkeypatch.setattr("archimedes.services.generation_quota.GenerationQuota", Under)
-    # No raise.
-    await enforce_generation_quota(_req({"x-real-ip": "1.1.1.1"}), wallet=None)
-
-
-async def test_enforce_raises_429_over_cap(monkeypatch):
-    monkeypatch.setenv("WALLET_LESS_GENERATION_DAILY_CAP", "5")
-
-    class Over:
-        async def check_and_increment(self, ip, cap):
-            return (False, 6)
-
-        async def close(self):
-            pass
-
-    monkeypatch.setattr("archimedes.services.generation_quota.GenerationQuota", Over)
-    with pytest.raises(HTTPException) as ei:
-        await enforce_generation_quota(_req({"x-real-ip": "1.1.1.1"}), wallet=None)
-    assert ei.value.status_code == 429
-    assert ei.value.detail["reason"] == "wallet_less_generation_cap"
-    assert ei.value.detail["cap"] == 5
-    assert "Connect a wallet" in ei.value.detail["message"]
-
-
-async def test_enforce_rejects_wallet_less_when_redis_down(monkeypatch):
-    # End-to-end fail-closed: a real GenerationQuota whose Redis is unreachable
-    # rejects the wallet-less caller with a 429 (the cap is not bypassed, #929).
-    monkeypatch.setenv("WALLET_LESS_GENERATION_DAILY_CAP", "5")
-    monkeypatch.setattr(
-        "archimedes.services.generation_quota.GenerationQuota._get_redis",
-        AsyncMock(side_effect=ConnectionError("redis down")),
-    )
-    with pytest.raises(HTTPException) as ei:
-        await enforce_generation_quota(_req({"x-real-ip": "1.1.1.1"}), wallet=None)
-    assert ei.value.status_code == 429
-
-
-async def test_enforce_still_allows_authenticated_wallet_when_redis_down(monkeypatch):
-    # The fail-closed cap must NOT affect a SIWE-authenticated caller — they
-    # bypass the cap before any Redis call, so a cache outage can't block them.
-    monkeypatch.setenv("WALLET_LESS_GENERATION_DAILY_CAP", "5")
-    monkeypatch.setattr(
-        "archimedes.services.generation_quota.GenerationQuota._get_redis",
-        AsyncMock(side_effect=ConnectionError("redis down")),
-    )
-    # No exception — wallet-connected user sails through.
-    await enforce_generation_quota(_req({"x-real-ip": "1.1.1.1"}), wallet="0x" + "a" * 40)
-
-
-# ─── daily_cap config ────────────────────────────────────────────────────
-
-
-def test_daily_cap_default(monkeypatch):
-    monkeypatch.delenv("WALLET_LESS_GENERATION_DAILY_CAP", raising=False)
-    assert daily_cap() == 5
-
-
-def test_daily_cap_env_override(monkeypatch):
-    monkeypatch.setenv("WALLET_LESS_GENERATION_DAILY_CAP", "3")
-    assert daily_cap() == 3
-
-
-def test_daily_cap_invalid_falls_back(monkeypatch):
-    monkeypatch.setenv("WALLET_LESS_GENERATION_DAILY_CAP", "not-an-int")
-    assert daily_cap() == 5
+def test_client_ip_unknown_when_nothing_trustworthy():
+    assert client_ip(_req(headers={"x-real-ip": "not-an-ip"})) == "unknown"

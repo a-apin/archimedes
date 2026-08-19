@@ -17,10 +17,12 @@ from typing import Any
 from sqlalchemy import (
     Column,
     DateTime,
+    ForeignKey,
     Index,
     String,
     Text,
 )
+from sqlalchemy.orm import Mapped, mapped_column
 
 from archimedes.models.chat import Base
 
@@ -51,7 +53,7 @@ class StrategyProposal(Base):
     # Regime tag (nullable — only populated when regime is known)
     regime_tag = Column(String(16), nullable=True)
 
-    # SIWE-derived owner wallet, lowercased (never client-supplied — threaded
+    # Optional proof-linked wallet provenance, lowercased (never client-supplied — threaded
     # server-side from persist_proposal callers). NULL on rows written before
     # this column existed (legacy) — those rows are private to NO ONE; the
     # owner-scoped read path (proposals_routes.py) filters on an exact
@@ -59,7 +61,10 @@ class StrategyProposal(Base):
     # leak fix — every user's proposals, including rejected candidates with
     # their private intent/strategy_spec/rigor_verdict, were previously
     # readable by anyone via the unauthenticated GET /api/proposals/).
-    owner_wallet = Column(String(42), nullable=True, index=True)
+    owner_wallet: Mapped[str | None] = mapped_column(String(42), nullable=True, index=True)
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("auth_users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # Full proposal payload as JSONB
     payload = Column(Text, nullable=False, default="{}")

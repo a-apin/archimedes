@@ -1,12 +1,8 @@
 """Route-level tests for chat identity binding — issue #524 (audit #28).
 
 POST /api/vaults/{address}/chat used to trust the body-supplied
-wallet_address outright. The hybrid model under test:
-
-  - Valid SIWE session  → message attributed to the session wallet,
-    stored/returned with verified=True; a contradicting body wallet → 403.
-  - No session          → post still accepted (open chat), but explicitly
-    verified=False so attribution is never silently trusted.
+wallet_address outright. Canonical account plus verified linked wallet is required for writes. Legacy
+SIWE fixture cookies emulate that pair in route tests; anonymous writes reject.
 
 Hermetic: uses the shared SQLAlchemy engine (sqlite fallback, no Postgres /
 Redis / Anthropic). SIWE sessions are real signed cookies via the
@@ -89,34 +85,21 @@ class TestMismatchRejected:
             cookies=_siwe_cookies(_W_SESSION),
         )
         assert res.status_code == 403
-        assert "SIWE" in res.json()["detail"]
+        assert "linked" in res.json()["detail"]
         after = client.get(f"/api/vaults/{_VAULT_MISMATCH}/chat/count").json()["message_count"]
         assert after == before  # rejected post must not be persisted
 
 
-class TestAnonymousUnverified:
-    """(c) No session → accepted (open chat) but explicitly verified=False."""
+class TestAnonymousRejected:
+    """No account session means body-supplied wallet identity grants nothing."""
 
-    def test_no_session_accepted_as_unverified(self, client):
-        res = client.post(
-            f"/api/vaults/{_VAULT_ANON}/chat",
-            json={"wallet_address": _W_BODY, "message": "anonymous post"},
-        )
-        assert res.status_code == 200, res.text
-        msg = res.json()["message"]
-        assert msg["wallet_address"] == _W_BODY.lower()
-        assert msg["verified"] is False
-
-    def test_no_session_no_wallet_still_422(self, client):
-        """Without a session the body wallet remains required + regex-validated."""
-        res = client.post(f"/api/vaults/{_VAULT_ANON}/chat", json={"message": "who am I?"})
-        assert res.status_code == 422
-
-        res = client.post(
-            f"/api/vaults/{_VAULT_ANON}/chat",
-            json={"wallet_address": "garbage", "message": "still no"},
-        )
-        assert res.status_code == 422
+    def test_no_session_is_401(self, client):
+        for payload in (
+            {"wallet_address": _W_BODY, "message": "anonymous post"},
+            {"message": "who am I?"},
+            {"wallet_address": "garbage", "message": "still no"},
+        ):
+            assert client.post(f"/api/vaults/{_VAULT_ANON}/chat", json=payload).status_code == 401
 
 
 class TestReadEndpointsRegression:
@@ -134,9 +117,13 @@ class TestReadEndpointsRegression:
             json={"message": "verified one"},
             cookies=_siwe_cookies(_W_SESSION),
         )
-        client.post(
-            f"/api/vaults/{_VAULT_READ}/chat",
-            json={"wallet_address": _W_BODY, "message": "unverified one"},
+        from archimedes.services.chat_service import chat_service
+
+        chat_service.post_message(
+            vault_address=_VAULT_READ,
+            wallet_address=_W_BODY,
+            message="unverified one",
+            verified=False,
         )
 
         res = client.get(f"/api/vaults/{_VAULT_READ}/chat")
@@ -179,7 +166,7 @@ class TestArchimedesMentionBudgetGate:
             json={"wallet_address": _W_BODY, "message": "hey @archimedes rebalance me"},
         )
         assert res.status_code == 401, res.text
-        assert "sign in" in res.json()["detail"].lower()
+        assert "authentication" in res.json()["detail"].lower()
 
     def test_mention_allowed_with_session_when_flag_on(self, client, monkeypatch):
         monkeypatch.setenv("REQUIRE_SIWE_FOR_GENERATION", "true")
@@ -190,18 +177,18 @@ class TestArchimedesMentionBudgetGate:
         )
         assert res.status_code == 200, res.text
 
-    def test_mention_open_when_flag_off(self, client, monkeypatch):
+    def test_flag_off_does_not_restore_anonymous_wallet_identity(self, client, monkeypatch):
         monkeypatch.delenv("REQUIRE_SIWE_FOR_GENERATION", raising=False)
         res = client.post(
             f"/api/vaults/{_VAULT_AI}/chat",
-            json={"wallet_address": _W_BODY, "message": "@archimedes hello (open mode)"},
+            json={"wallet_address": _W_BODY, "message": "@archimedes hello"},
         )
-        assert res.status_code == 200, res.text
+        assert res.status_code == 401
 
-    def test_non_mention_never_gated_even_when_flag_on(self, client, monkeypatch):
+    def test_non_mention_still_requires_account(self, client, monkeypatch):
         monkeypatch.setenv("REQUIRE_SIWE_FOR_GENERATION", "true")
         res = client.post(
             f"/api/vaults/{_VAULT_AI}/chat",
             json={"wallet_address": _W_BODY, "message": "just chatting, no mention"},
         )
-        assert res.status_code == 200, res.text
+        assert res.status_code == 401

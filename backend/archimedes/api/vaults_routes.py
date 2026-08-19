@@ -8,8 +8,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from archimedes.api._route_helpers import strategy_provider, vault_svc
-from archimedes.api.auth_siwe import require_verified_wallet
+from archimedes.api.account_auth import require_current_user
 from archimedes.api.limiter import limiter
+from archimedes.api.wallet_routes import require_linked_wallet
 from archimedes.chain.strategy_publisher import strategy_publisher
 from archimedes.services.log_scrubber import sanitize_log_value
 
@@ -67,15 +68,18 @@ async def _anchor_strategies_async(strategy_ids: list[str]) -> None:
             logger.warning("anchor failed for strategy %s (non-fatal): %s", sanitize_log_value(sid), exc)
 
 
-def _strategy_rigor_status(strategy_id: str, cohort_cache: dict | None = None) -> tuple[bool, bool]:
+def _strategy_rigor_status(
+    strategy_id: str, cohort_cache: dict | None = None, request: Request | None = None
+) -> tuple[bool, bool]:
     """``(found, passes_rigor_gate)`` for a strategy id, resolved across the curated
-    provider AND the generated ``strategy_passports`` table — the same two sources
-    ``GET /api/strategies/{id}`` uses. Server-side source of truth for the deploy
-    gate (#818).
+    provider AND generated strategy store — the same two sources
+    ``GET /api/selection-bias/gate/{id}`` uses. Server-side source of truth for the
+    deploy gate (#818).
 
-    Fail-closed: if the DB lookup raises (cannot verify a generated strategy), the
-    strategy is reported as not-found so the caller refuses the deploy rather than
-    waving through an unverifiable one.
+    Request-scoped generated lookups delegate to ``_generated_strategy_rigor`` so
+    deploy uses the same canonical-ownership check and live strict verdict as the
+    passport. Missing and invisible both resolve as not-found. Legacy callers
+    without request context retain the stored-passport badge fallback.
 
     ``cohort_cache`` (optional) is a caller-owned dict used to compute the curated
     full-library verdict map at most ONCE per request. ``verdicts_for_strategies``
@@ -125,6 +129,23 @@ def _strategy_rigor_status(strategy_id: str, cohort_cache: dict | None = None) -
             return True, False
         return True, bool(verdict.passes)
 
+    if request is not None:
+        try:
+            from archimedes.api.selection_bias_routes import _generated_strategy_rigor
+
+            result = _generated_strategy_rigor(strategy_id, request, STRICTEST_LEVEL)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception(
+                "generated-strategy rigor lookup failed for %s — failing closed",
+                sanitize_log_value(strategy_id),
+            )
+            raise HTTPException(
+                status_code=503, detail="Strategy rigor check temporarily unavailable — try again."
+            ) from None
+        return result is not None, bool(result and result.passes_all)
+
     from archimedes.db import get_session
     from archimedes.services.passport_loader import get_passport
 
@@ -137,60 +158,6 @@ def _strategy_rigor_status(strategy_id: str, cohort_cache: dict | None = None) -
         logger.exception("rigor-status lookup failed for %s — failing closed", sanitize_log_value(strategy_id))
         return False, False
     return False, False
-
-
-def _strategy_record_visible(strategy_id: str, request: Request) -> bool | None:
-    """``None`` if no ``StrategyRecord`` exists for ``strategy_id``; otherwise
-    whether that record is visible to the caller identified by ``request``.
-
-    Reuses the ``#850`` ownership rule verbatim (copied from
-    ``selection_bias_routes._generated_strategy_rigor``, itself copied from
-    ``strategies_routes.get_strategy`` — consolidation tracked in #1120): a
-    non-example, unpublished ``strategy_store`` row is visible only to its
-    ``owner_wallet``. Curated strategies are typically seeded into
-    ``strategy_store`` with ``is_example=True`` at startup (``main.py``), so
-    they resolve ``True`` here (visible to everyone); ``None`` (no row at
-    all — an unseeded environment or an unknown id) falls through to the
-    passport badge, which handles both identically to pre-#1073 behavior.
-
-    Used to close the strictest-level deploy fast path (#1073): the badge
-    (``_strategy_rigor_status``) is not ownership-gated, so without this check
-    a caller who knows a private generated strategy's id could learn its
-    deployability and deploy a vault bound to it.
-    """
-    from archimedes.api.auth_siwe import get_verified_wallet
-    from archimedes.db import get_session
-    from archimedes.models.strategy_store import StrategyRecord
-
-    try:
-        # No init_db() here: the app calls it once at startup (main.py), and
-        # re-running its schema inspection/patch pass per deploy request (× per
-        # strategy id) is wasted DB work on a hot, funds-adjacent path. Direct
-        # test callers create their own schema (see test_vault_rigor_gate.py).
-        from archimedes.services.strategy_visibility import is_strategy_visible
-
-        with get_session() as session:
-            row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-            if row is None:
-                return None
-            caller = get_verified_wallet(request)
-            return is_strategy_visible(row, caller)
-    except HTTPException:
-        raise
-    except Exception:
-        # Fail CLOSED. Returning None here would make the gate silently
-        # disappear on a DB error (None means "no record — fall through to the
-        # ownership-blind badge"), i.e. private strategies would become
-        # deployable exactly when the DB is down. Surfacing a raw exception
-        # would 500 past the deploy endpoint's error handling. A 503 blocks
-        # the deploy loudly and recoverably instead.
-        logger.exception(
-            "ownership-visibility lookup failed for %s — failing closed",
-            sanitize_log_value(strategy_id),
-        )
-        raise HTTPException(
-            status_code=503, detail="Strategy ownership check temporarily unavailable — try again."
-        ) from None
 
 
 def _deployable_levels(
@@ -211,10 +178,8 @@ def _deployable_levels(
     generated strategy could show "deployable @ Balanced" on the passport yet
     still 422 here at the exact same strictness — the server-side enforcement
     disagreeing with what the user was shown. Falls back to the old badge-only
-    check when ``request`` isn't available (internal/legacy callers) or the id
-    doesn't resolve to a visible ``strategy_store`` row (unowned/unpublished —
-    #850 ownership gating; existence stays hidden either way, mirrored here as
-    "not found, not deployable").
+    check only when ``request`` isn't available (internal/legacy callers). With
+    request context, absent and invisible rows both stay hidden as not-found.
 
     Never raises: any resolution failure degrades an id to not-deployable.
     """
@@ -291,34 +256,19 @@ def _assert_strategies_pass_rigor(
     strategy. A strategy with no computed verdict (placeholder) is correctly
     refused.
 
-    ``request`` (optional) is threaded through to ``_deployable_levels`` so a
-    generated strategy's own per-strategy ladder — rather than the coarse
-    badge-only fallback — backs the looser-than-badge branch below. Omitted by
-    callers that only ever exercise the badge-level fast path (the default).
+    ``request`` (optional) is threaded through every generated-strategy branch
+    so canonical ownership and the same live rigor result back both badge-level
+    and looser deploys. Callers without request context retain the legacy stored-
+    badge fallback.
     """
     level = clamp_level(strictness_level)
 
-    # Fast, exact badge path at the strictest level: a badge-fail can never pass
-    # level 1, so no live per-level ladder computation is needed. This also keeps
-    # the default deploy path unchanged for callers that don't opt into strictness.
+    # Fast, exact badge path at strictest level. Curated verdict map is computed
+    # once; request-scoped generated ids delegate to the passport's own rigor path.
     if level <= STRICTEST_LEVEL:
-        # Request-scoped: the curated full-library verdict map is computed at most
-        # once for this deploy, not once per strategy_id (see _strategy_rigor_status).
         cohort_cache: dict = {}
         for sid in strategy_ids:
-            # Ownership gate (#1073): `_strategy_rigor_status` below resolves the
-            # passport badge without regard to ownership, so a private/unpublished
-            # generated strategy would otherwise be deployable by anyone who knows
-            # its id. Reject BEFORE consulting the badge when a request is present
-            # and the id resolves to a StrategyRecord not visible to this caller.
-            # `visible is None` means "no StrategyRecord at all" (curated strategy,
-            # or unknown id) — falls through to the badge unchanged either way.
-            if request is not None:
-                visible = _strategy_record_visible(sid, request)
-                if visible is False:
-                    raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
-
-            found, passes = _strategy_rigor_status(sid, cohort_cache=cohort_cache)
+            found, passes = _strategy_rigor_status(sid, cohort_cache=cohort_cache, request=request)
             if not found:
                 raise HTTPException(status_code=422, detail=f"Strategy '{sid}' not found — cannot deploy.")
             if not passes:
@@ -376,15 +326,14 @@ async def create_vault(
     req: VaultCreateRequest,
     request: Request,  # used for slowapi rate-limit keying AND funnel attribution (#787)
     response: Response,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
-    wallet: str = Depends(require_verified_wallet),
+    wallet: str = Depends(require_linked_wallet),
 ):
     """Deploy a new vault on Arc via VaultFactory.
 
-    SIWE-gated: vault creation spends the backend signer's gas on-chain, so it
-    must require an authenticated wallet (rate-limiting alone left it open to an
-    unauthenticated gas-drain).
+    Account + linked-wallet gated: creation spends backend signer gas and assigns
+    on-chain ownership to caller's cryptographically verified wallet.
 
-    Non-custodial (T0.2): the SIWE-verified ``wallet`` is passed as the vault's
+    Non-custodial (T0.2): verified linked ``wallet`` is passed as vault's
     owner. ``create_vault`` creates the vault with the backend signer, then
     transfers Ownable ownership to this user and pins the backend as the
     rebalance-only agent — so ``owner == user`` and ``agent == backend``. A
@@ -423,8 +372,7 @@ async def create_vault(
 
     await record_funnel(request, "vault_deployed")
 
-    # Identity ledger (#1028, D2): `wallet` here is SIWE-verified (required_verified_wallet
-    # dependency) — always identified, unlike the anonymous-tolerant Generate path.
+    # Legacy wallet ledger keeps verified linked-wallet provenance beside canonical user ownership.
     from archimedes.services.identity_events import emit_identity_event
 
     emit_identity_event(
@@ -473,17 +421,19 @@ async def store_vault_metadata(
     req: VaultMetadataRequest,
     request: Request,
     response: Response,  # noqa: ARG001 — slowapi @limiter.limit inspects param name
-    wallet: str = Depends(require_verified_wallet),
+    wallet: str = Depends(require_linked_wallet),
 ):
     """Store off-chain vault metadata (strategy associations, display name).
 
-    SIWE-gated and owner-scoped: this write triggers `_anchor_strategies_async`,
+    Linked-wallet gated and owner-scoped: this write triggers `_anchor_strategies_async`,
     a backend-signed on-chain transaction. The caller must be the vault's
     on-chain Ownable owner — the authoritative controller read from the
     contract, not "whoever wrote metadata first". This closes the IDOR (#916)
     where the first authenticated writer could claim `creator_address` on any
     vault that had no metadata row yet.
     """
+    user = require_current_user(request)
+
     # Casing fix (issue #1028): the on-chain vault address is EIP-55
     # checksummed (mixed case); chat_messages.vault_address is always stored
     # lowercase (chat_service.py), so the two could never join without this.
@@ -518,6 +468,9 @@ async def store_vault_metadata(
             meta = VaultMetadata(vault_address=vault_address)
             session.add(meta)
 
+        if meta.owner_user_id not in {None, user.id}:
+            raise HTTPException(status_code=409, detail="Vault metadata belongs to another account")
+        meta.owner_user_id = user.id
         meta.name = req.name
         meta.symbol = req.symbol
         # Record the writer, who the gate above proved is the on-chain owner.
@@ -575,11 +528,11 @@ async def derive_vault_allocations(
     req: SetAllocationsRequest,
     request: Request,
     response: Response,  # noqa: ARG001 — reserved for slowapi rate-limit headers
-    wallet: str = Depends(require_verified_wallet),  # noqa: ARG001 — SIWE gate (#917): auth required, wallet unused in body
+    wallet: str = Depends(require_linked_wallet),  # noqa: ARG001 — linked-wallet gate; wallet unused in body
 ):
     """Derive target allocations from selected strategies.
 
-    Gated behind a verified SIWE session (#917): the derivation runs a full
+    Gated behind account plus verified linked wallet: derivation runs a full
     strategy scan + on-chain reads, so it is not exposed to unauthenticated
     callers who could amplify it into a compute-DoS.
     """

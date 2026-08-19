@@ -8,24 +8,24 @@ Owner-scoped (privacy fix, `dbrowneup/proposals-owner-scope`): every
 ``StrategyProposal`` row carries a user's private ``intent`` (their
 strategic brief), full ``strategy_spec``, and ``rigor_verdict`` — including
 rejected candidates. Both endpoints below previously had no auth at all and
-returned EVERY user's rows. They now require a verified SIWE session
-(``require_verified_wallet``, the same dependency other owner-scoped routes
-use — see ``strategies_routes.py`` / ``vaults_routes.py``) and filter to the
-caller's own wallet in the DB query. A legacy row with ``owner_wallet IS
-NULL`` (written before this column existed) is returned to NO ONE.
+returned EVERY user's rows. They now require Better Auth account and filter by
+canonical user ID. Verified linked wallet is used only for legacy compatibility.
+Unowned legacy rows are returned to no one.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
-from archimedes.api.auth_siwe import require_verified_wallet
+from archimedes.api.account_auth import CurrentUser, require_current_user
+from archimedes.api.wallet_routes import get_linked_wallet_address
 
 proposals_router = APIRouter(prefix="/api/proposals", tags=["proposals"])
 
 
 @proposals_router.get("/")
 async def list_proposals(
+    request: Request,
     verdict: str | None = Query(
         None, description="Filter by verdict: rigor_pass | rigor_fail | user_rejected | pending"
     ),
@@ -33,15 +33,15 @@ async def list_proposals(
     since: str | None = Query(None, description="ISO datetime lower bound"),
     limit: int = Query(50, ge=1, le=200, description="Page size"),
     offset: int = Query(0, ge=0, description="Offset"),
-    wallet: str = Depends(require_verified_wallet),
+    user: CurrentUser = Depends(require_current_user),
 ):
     """List episodic strategy proposals with filtering and pagination.
 
     Every fusion / architect / agent generation writes a proposal row here.
     The endpoint is read-only; writes happen via ``strategy_memory.persist_proposal``.
 
-    Owner-scoped: 401 without a verified SIWE session; scoped to the caller's
-    own ``owner_wallet`` (case-insensitive) otherwise. The DB query does the
+    Owner-scoped: 401 without account session; canonical user ID is primary and
+    linked wallet is legacy fallback. DB query does
     filtering — see ``strategy_memory.query_proposals``.
     """
     from archimedes.services.strategy_memory import query_proposals
@@ -52,7 +52,8 @@ async def list_proposals(
         since=since,
         limit=limit,
         offset=offset,
-        owner_wallet=wallet,
+        owner_user_id=user.id,
+        owner_wallet=get_linked_wallet_address(request),
     )
     return {
         "proposals": proposals,
@@ -63,11 +64,15 @@ async def list_proposals(
 
 
 @proposals_router.get("/{generation_id}/siblings")
-async def get_proposal_siblings(generation_id: str, wallet: str = Depends(require_verified_wallet)):
+async def get_proposal_siblings(
+    generation_id: str,
+    request: Request,
+    user: CurrentUser = Depends(require_current_user),
+):
     """Get all proposals from the same generation — 'considered alternatives'.
 
-    Owner-scoped: 401 without a verified SIWE session; a generation owned by
-    another wallet (or a legacy NULL-owner generation) returns HTTP 200 with an
+    Owner-scoped: 401 without account session; generation owned by
+    another user returns HTTP 200 with an
     empty sibling list — never a 403 or 404. Returning an empty list rather than
     an error keeps the existence of another user's generation unconfirmed, the
     same non-disclosure goal as the 404-not-403 convention used elsewhere for
@@ -75,7 +80,11 @@ async def get_proposal_siblings(generation_id: str, wallet: str = Depends(requir
     """
     from archimedes.services.strategy_memory import get_siblings
 
-    siblings = get_siblings(generation_id, owner_wallet=wallet)
+    siblings = get_siblings(
+        generation_id,
+        owner_user_id=user.id,
+        owner_wallet=get_linked_wallet_address(request),
+    )
     return {
         "generation_id": generation_id,
         "siblings": siblings,

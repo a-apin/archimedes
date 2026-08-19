@@ -1,4 +1,6 @@
-# Archimedes — System Architecture Map (2026-07-14)
+# Archimedes — System Architecture Map
+
+> Identity and deploy topology amended for Better Auth account ownership (2026-08). (2026-07-14)
 
 > Commissioned for the Architecture-page redesign. Every claim below is grounded in a file
 > path in this repository. All paths are relative to the repository root unless noted. Facts from the 2026-07-14 merge train are marked **(PR #n, merged 2026-07-14)**; the only still-open PR is noted as such. Facts were
@@ -12,9 +14,9 @@
 ```
                      ┌──────────────────────────────────────────────────────────────┐
    USER / AGENT      │  React SPA (ui/) — Generate · Library · Portfolio · Reasoning │
-   (SIWE wallet,     │  Learnings · Explore · Leaderboard · Corpus · Marketplace     │
-    passkey, or      └──────────────────────────┬───────────────────────────────────┘
-    headless agent)                             │ HTTPS · SSE · session cookie
+   (Better Auth     │  Learnings · Explore · Leaderboard · Corpus · Marketplace     │
+    account; optional└──────────────────────────┬───────────────────────────────────┘
+    linked wallet)                              │ HTTPS · SSE · session cookie
                      ┌──────────────────────────▼───────────────────────────────────┐
    OFF-CHAIN         │  FastAPI (backend/archimedes/main.py)                        │
                      │   api/ routes ── agents/ debate society ── services/ rigor,  │
@@ -63,8 +65,9 @@ canvas `#09090B`).
 
 | Router | Path | Role |
 |---|---|---|
-| SIWE auth | [`api/auth_siwe.py`](../backend/archimedes/api/auth_siwe.py) | EIP-4361: `GET /api/auth/nonce` → `POST /api/auth/verify` → HMAC-signed session cookie. EOA sign; ERC-1271/6492 fallback ([`api/_erc6492.py`](../backend/archimedes/api/_erc6492.py)) for smart accounts. Works headless — the agent-native auth path |
-| Generate | [`api/generate_routes.py`](../backend/archimedes/api/generate_routes.py) | SSE streaming generation jobs (SIWE-gated) |
+| Account auth | [`api/account_auth.py`](../backend/archimedes/api/account_auth.py), `auth/` | Better Auth sidecar owns email/password (+ optional OAuth) sessions; FastAPI resolves immutable canonical user IDs from cookies. Works headless — the agent-native auth path |
+| Linked wallets | [`api/wallet_routes.py`](../backend/archimedes/api/wallet_routes.py) | Account-bound, single-use EIP-4361 proof (EOA; ERC-1271/6492 via [`api/_erc6492.py`](../backend/archimedes/api/_erc6492.py)); the wallet never creates a session |
+| Generate | [`api/generate_routes.py`](../backend/archimedes/api/generate_routes.py) | SSE streaming generation jobs (Better Auth account-scoped; per-account + per-IP daily caps; linked wallet optional) |
 | Vaults | [`api/vaults_routes.py`](../backend/archimedes/api/vaults_routes.py) (line ~275) | Agent-API deploy path: backend signer creates the vault, **transfers Ownable ownership to the user, pins the backend as rebalance-only agent**; vault metadata writes gated on the on-chain owner (line 376) |
 | Rigor gate | [`api/selection_bias_routes.py`](../backend/archimedes/api/selection_bias_routes.py) | The external gate endpoint (`/api/selection-bias/gate/...`); strictness ladder |
 | Marketplace | [`api/marketplace_routes.py`](../backend/archimedes/api/marketplace_routes.py) | `/api/marketplace/publish`, `/subscribe`, `/unsubscribe`, `/published`, `/my-published`, `/publish/{id}/withdraw`, `/my-subscriptions` |
@@ -192,7 +195,7 @@ Runbook: [`infra/runbooks/ecs-fargate-cutover.md`](../infra/runbooks/ecs-fargate
 
 ## 2. Flow — Generate (brief → rigor-gated strategy)
 
-1. **Auth**: wallet signs an EIP-4361 nonce → session cookie ([`api/auth_siwe.py`](../backend/archimedes/api/auth_siwe.py)); `REQUIRE_SIWE_FOR_GENERATION` is on. Passkey users get a Circle smart account ([`ui/src/circle-wallet.js`](../ui/src/circle-wallet.js)); headless agents use the same endpoints ([`docs/agent-api.md`](agent-api.md), [`scripts/agent_journey.py`](../scripts/agent_journey.py)).
+1. **Auth**: Better Auth account session (email/password or OAuth) → canonical user id; a wallet may be LINKED later via a single-use EIP-4361 proof ([`api/wallet_routes.py`](../backend/archimedes/api/wallet_routes.py)) but never logs in. Passkey users get a Circle smart account ([`ui/src/circle-wallet.js`](../ui/src/circle-wallet.js)); headless agents use the same endpoints ([`docs/agent-api.md`](agent-api.md), [`scripts/agent_journey.py`](../scripts/agent_journey.py)).
 2. **Brief** → `POST /api/generate` ([`api/generate_routes.py`](../backend/archimedes/api/generate_routes.py)) → SSE job ([`agents/generation_pipeline.py`](../backend/archimedes/agents/generation_pipeline.py)), events persisted per-job in Redis.
 3. **Retrieval**: keyword/asset-class pre-filter (`agents/strategy_fusion.py::select_candidates`) → MiniLM cosine rerank ([`services/paper_rag.py`](../backend/archimedes/services/paper_rag.py)) → top-N papers, embargo-filtered ([`services/embargo_filter.py`](../backend/archimedes/services/embargo_filter.py)) and age-decayed ([`services/time_aware_retrieval.py`](../backend/archimedes/services/time_aware_retrieval.py)). **Precheck: ≥2 corpus papers or `GENERATION_UNAVAILABLE`** — prod corpus hydration is the honest gap (issue #778).
 4. **Debate society** ([`agents/debate_engine.py`](../backend/archimedes/agents/debate_engine.py)): proposer pool fans LLM fusion calls (model = user's cost-picker choice via [`services/llm_backend.py`](../backend/archimedes/services/llm_backend.py)) across regime-biased evidence sets → dedup by canonical spec hash → adversarial bull/bear transcript (surface, non-gating) → **C-rigor** deterministic backtest of every survivor → **C-null** vs buy-and-hold → **K=1 winner + considered-rejects**, or first-class ABSTAIN.
@@ -230,9 +233,9 @@ Runbook: [`infra/runbooks/ecs-fargate-cutover.md`](../infra/runbooks/ecs-fargate
 4. **Retrieval at generate time**: keyword filter → MiniLM rerank (§2.3).
 5. **Honest state**: prod corpus is **sparsely hydrated** — the 10k number is manifest-scale, not fully-ingested-paper count (issue #778). Build decision: **HYBRID** — custom KB spine (Postgres + MiniLM, live now) + optional Bedrock-KB retrieval bridge; Neptune ruled out; a MiniLM-only no-AWS local option exists.
 
-## 6. Flow — Identity / SIWE
+## 6. Flow — Identity / accounts + linked wallets
 
-1. `GET /api/auth/nonce` → challenge; wallet signs the EIP-4361 message; `POST /api/auth/verify` → signature verified (EOA; ERC-1271/6492 for smart accounts) → HMAC-signed session cookie ([`api/auth_siwe.py`](../backend/archimedes/api/auth_siwe.py)).
+1. Sign-up/sign-in against the Better Auth sidecar → session cookie → FastAPI resolves the canonical user id ([`api/account_auth.py`](../backend/archimedes/api/account_auth.py)). Wallet LINKING (optional, needed only for on-chain actions): `wallet_routes.py` challenge → wallet signs the single-use EIP-4361 message → verified (EOA; ERC-1271/6492) → wallet bound to the account. The wallet never creates a session.
 2. Wallet-scoped authorization: proposals are owner-scoped ([`api/proposals_routes.py`](../backend/archimedes/api/proposals_routes.py), `owner_wallet` column); vault metadata writes verify the **on-chain Ownable owner** and fail closed on read failure (`api/vaults_routes.py:374-379`).
 3. Same path for humans (MetaMask/Coinbase/passkey via EIP-6963 + Circle passkey) and headless agents ([`docs/agent-api.md`](agent-api.md), [`scripts/agent_journey.py`](../scripts/agent_journey.py), [`api/agent_manifest_routes.py`](../backend/archimedes/api/agent_manifest_routes.py)) — the agent-native thesis: one identity model, one API surface, no human-only path.
 

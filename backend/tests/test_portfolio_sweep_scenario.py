@@ -10,9 +10,21 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from archimedes.api.account_auth import CurrentUser, require_current_user
 from httpx import ASGITransport, AsyncClient
 
 # ── Shared fixtures ───────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_account():
+    from archimedes.main import app
+
+    app.dependency_overrides[require_current_user] = lambda: CurrentUser(
+        "user-portfolio", "Portfolio Test", "portfolio@example.com", True
+    )
+    yield
+    app.dependency_overrides.pop(require_current_user, None)
 
 
 def _sweep_payload(

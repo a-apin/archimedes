@@ -8,6 +8,7 @@ import {
   CIRCLE_PROVIDER_ID,
 } from '../config'
 import { sanitizeWalletName } from '../circle-wallet'
+import { linkConnectedWallet } from '../linked-wallets'
 
 export default function WalletConnect({ address, displayName, onConnect, onDisconnect, onEditProfile }) {
   const [showModal, setShowModal] = useState(false)
@@ -98,17 +99,9 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
     try {
       const result = await connectWallet(providerId, opts)
 
-      // SIWE: prove wallet ownership via signature (EIP-4361). Provider-aware:
-      // EOA wallets personal_sign; Circle passkey wallets sign via their smart
-      // account (#869) — no getWalletClient() here, it throws for passkeys.
-      try {
-        const { authenticateWithSIWE } = await import('../siwe')
-        await authenticateWithSIWE(result.address)
-      } catch (siweErr) {
-        // SIWE failure is non-fatal during transition — wallet still connects,
-        // but PII endpoints won't return sensitive data without a session.
-        console.warn('SIWE auth failed (non-fatal):', siweErr.message)
-      }
+      // Connection alone grants nothing. Persist link only after account-bound,
+      // short-lived SIWE proof succeeds.
+      await linkConnectedWallet(result)
 
       setShowModal(false)
       onConnect(result.address)
@@ -294,8 +287,8 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
             <h3>Connect Wallet</h3>
             <p style={{ fontSize: '0.98rem', color: 'var(--text-2)', lineHeight: 1.55, marginBottom: 14 }}>
               {available.length > 1
-                ? 'Sign in with a passkey (Face ID / Touch ID), or connect a browser wallet to interact with Arc Testnet contracts.'
-                : 'Sign in with a passkey (Face ID / Touch ID) to interact with Arc Testnet contracts. No browser extension needed.'
+                ? 'Connect a Circle passkey wallet, or connect a browser wallet to interact with Arc Testnet contracts.'
+                : 'Connect a Circle passkey wallet to interact with Arc Testnet contracts. No browser extension needed.'
               }
             </p>
 
@@ -413,7 +406,7 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
                               onClick={() => handleConnect(p.id, { mode: 'login' })}
                               disabled={busy}
                             >
-                              Sign in to existing
+                              Open existing wallet
                             </button>
                             <button
                               className="btn btn-outline"
@@ -425,7 +418,7 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
                             </button>
                           </div>
                           <span style={{ fontSize: '0.72rem', color: 'var(--text-4)', lineHeight: 1.4 }}>
-                            <strong style={{ color: 'var(--text-3)' }}>Sign in to existing</strong> opens your passkey
+                            <strong style={{ color: 'var(--text-3)' }}>Open existing wallet</strong> opens your passkey
                             picker — choose the wallet you want. <strong style={{ color: 'var(--text-3)' }}>Create new</strong> mints a fresh wallet under the name above (or an auto-generated one).
                           </span>
                         </div>

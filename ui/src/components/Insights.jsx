@@ -5,14 +5,14 @@ import { apiGet } from '../api'
 //
 // Renders the live conversion instruments as a human-readable dashboard instead
 // of raw JSON. Public-only, PII-free by design — the cost/ops dashboard is a
-// SEPARATE, SIWE + platform-admin-gated surface
+// SEPARATE, account + admin-linked-wallet-gated surface
 // (backend/archimedes/api/metrics_private_routes.py, GET
 // /api/metrics/private/cost) and is intentionally NOT rendered anywhere in this
 // component:
 //   - Traction: human vs agent REQUEST counts (honestly labelled — these are
 //     cumulative request tallies, bot-inflated, NOT unique users) + the honest
-//     distinct real-users (wallet) count alongside them. "Real users (wallets)"
-//     is a distinct-DB-row, all-time count; it is a DIFFERENT population from
+//     canonical Better Auth account count alongside them. "Real users (accounts)"
+//     is an all-time count; it is a DIFFERENT population from
 //     the funnel's "Connected Wallet" below (distinct anonymous visitor
 //     SESSIONS that reached that step) — the two numbers are not expected to
 //     match, and the copy says so explicitly rather than leaving readers to
@@ -129,14 +129,13 @@ export default function Insights() {
         <h2 style={{ marginTop: 0, fontSize: 16 }}>Real people</h2>
         <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
           <Stat label="Distinct visitors" value={landed} accent="#5b9dff" />
-          <Stat label="Real users (wallets)" value={metrics?.real_users} accent="#3fb56b" />
+          <Stat label="Real users (accounts)" value={metrics?.real_users} accent="#3fb56b" />
         </div>
         <p style={{ color: 'var(--text-2)', fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
           The honest “how many people” numbers. <strong>Distinct visitors</strong> = unique people who loaded
           the app (JS-gated, so crawlers and bots drop out — this is the funnel’s <em>Landed</em> count below).
-          <strong> Real users</strong> = distinct wallet addresses that have signed in, all-time. (These differ
-          from the funnel’s “Connected Wallet”, which counts anonymous visitor <em>sessions</em> that reached
-          wallet-connect — one person can be several sessions across devices or repeat visits.)
+          <strong> Real users</strong> = canonical Better Auth accounts, all-time. This differs from
+          “Connected Wallet”, which counts visitor sessions reaching optional wallet-link step.
         </p>
         <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--glass-border)', fontSize: 12, color: 'var(--text-3)' }}>
           <strong style={{ color: 'var(--text-2)' }}>Raw request volume</strong> — server hits, <em>not</em> people

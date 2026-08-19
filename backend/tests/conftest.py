@@ -74,6 +74,51 @@ def regime_shift_returns():
 
 
 @pytest.fixture(autouse=True)
+def _legacy_siwe_test_adapter(monkeypatch):
+    """Map legacy SIWE test cookies onto canonical test users.
+
+    Production never enables this adapter. Existing route tests keep exercising
+    ownership with cryptographically signed fixture cookies while dedicated
+    account-auth tests cover Better Auth session resolution directly.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from archimedes.api import (
+        account_auth,
+        auth_siwe,
+        generate_routes,
+        proposals_routes,
+        strategies_routes,
+        wallet_routes,
+    )
+
+    def legacy_wallet(request):
+        token = request.cookies.get(auth_siwe._COOKIE_NAME)
+        return auth_siwe._verify_session(token) if token else None
+
+    async def legacy_session(request):
+        wallet = legacy_wallet(request)
+        if wallet is None:
+            return None
+        return {
+            "user": {
+                "id": f"legacy-test:{wallet}",
+                "name": "Legacy test user",
+                "email": f"{wallet[2:10]}@legacy.test",
+                "emailVerified": True,
+            },
+            "session": {"expiresAt": (datetime.now(UTC) + timedelta(hours=1)).isoformat()},
+        }
+
+    monkeypatch.setattr(account_auth, "_SESSION_COOKIE_FRAGMENT", "session")
+    monkeypatch.setattr(account_auth, "_fetch_session", legacy_session)
+    monkeypatch.setattr(wallet_routes, "get_linked_wallet_address", legacy_wallet)
+    monkeypatch.setattr(generate_routes, "get_linked_wallet_address", legacy_wallet)
+    monkeypatch.setattr(proposals_routes, "get_linked_wallet_address", legacy_wallet)
+    monkeypatch.setattr(strategies_routes, "get_linked_wallet_address", legacy_wallet)
+
+
+@pytest.fixture(autouse=True)
 def _clear_rigor_cache():
     """Reset the process-level live-rigor-gate cache (services/rigor_cache.py)
     around every test.

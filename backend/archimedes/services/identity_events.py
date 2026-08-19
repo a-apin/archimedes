@@ -5,7 +5,7 @@ Three small, fail-soft helpers are the entire write surface for the ledger:
   - ``emit_identity_event`` — the ONE path every lifecycle event goes through.
     Upserts the acting wallet into ``wallet_identities`` (D1) if it isn't
     already anchored, then appends one row to ``identity_events`` (D2). Every
-    write point (SIWE verify, generation start/complete, strategy publish,
+    write point (linked-wallet verify, generation start/complete, strategy publish,
     vault create, chat post, marketplace publish/subscribe/unsubscribe) calls
     this instead of hand-rolling its own INSERT.
   - ``register_controlled_wallet`` — upsert into ``controlled_wallets``
@@ -14,12 +14,9 @@ Three small, fail-soft helpers are the entire write surface for the ledger:
     DCW (publisher settlement / subscriber payment).
   - ``ensure_wallet_identity`` — anchor a wallet into ``wallet_identities``
     BEFORE a caller's own FK-constrained insert, for write paths that accept
-    an identity that may never have gone through SIWE (e.g. chat's
-    unverified-attribution path — see ``chat_service.post_message``). Every
-    OTHER call site in this codebase writes a wallet-FK'd row only from a
-    SIWE-derived wallet (``require_verified_wallet`` / ``gate_generation``),
-    which the ``auth_verified`` write already anchors ahead of time — this
-    helper exists for the one write path that doesn't have that guarantee.
+    an identity not yet present in the legacy ledger (see
+    ``chat_service.post_message``). Request routes resolve human wallets from
+    proof-linked accounts; system wallets use controlled-wallet registration.
 
 All three open their OWN session, isolated from any caller-held session or
 transaction, and NEVER raise — a telemetry write must be invisible to the

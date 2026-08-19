@@ -29,9 +29,21 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from archimedes.api.account_auth import CurrentUser, require_current_user
 from httpx import ASGITransport, AsyncClient
 
 _JOB_ID = "job-heartbeat-1"
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_account():
+    from archimedes.main import app
+
+    app.dependency_overrides[require_current_user] = lambda: CurrentUser(
+        "user-heartbeat", "Heartbeat Test", "heartbeat@example.com", True
+    )
+    yield
+    app.dependency_overrides.pop(require_current_user, None)
 
 
 def _job() -> dict:

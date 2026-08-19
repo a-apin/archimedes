@@ -13,6 +13,14 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from archimedes.models.account import (
+    AuthAccount,
+    AuthSession,
+    AuthUser,
+    AuthVerification,
+    LinkedWallet,
+    WalletLinkChallenge,
+)
 from archimedes.models.backtest_fixtures_store import StrategyBacktestFixture
 from archimedes.models.backtest_store import BacktestResultRecord
 from archimedes.models.chat import Base
@@ -38,11 +46,16 @@ from archimedes.models.user_profile import UserProfile
 # (``db.py`` is never ``import *``-ed, so ``__all__`` has no other effect.)
 __all__ = [
     "DATABASE_URL",
+    "AuthAccount",
+    "AuthSession",
+    "AuthUser",
+    "AuthVerification",
     "BacktestResultRecord",
     "Base",
     "ControlledWallet",
     "CorpusMetaRecord",
     "IdentityEvent",
+    "LinkedWallet",
     "MarketplaceAgent",
     "PaperRecord",
     "RequestCountSnapshot",
@@ -56,6 +69,7 @@ __all__ = [
     "SubscriberTickLog",
     "UserProfile",
     "WalletIdentity",
+    "WalletLinkChallenge",
     "engine",
     "get_session",
     "init_db",
@@ -151,7 +165,7 @@ def init_db() -> None:
             "ALTER TABLE strategy_store ADD COLUMN IF NOT EXISTS on_chain_registration_tx VARCHAR(66)",
             "ALTER TABLE strategy_store ADD COLUMN IF NOT EXISTS on_chain_registration_block VARCHAR(32)",
             "ALTER TABLE strategy_store ADD COLUMN IF NOT EXISTS parent_id VARCHAR(64)",
-            # chat_messages.verified — SIWE-bound chat identity (issue #524).
+            # chat_messages.verified — cryptographically linked-wallet attribution.
             # Pre-existing rows default to FALSE: they were body-supplied, never verified.
             "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE",
         ]

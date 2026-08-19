@@ -131,6 +131,7 @@ env:
   ECR_REGISTRY: 037613907429.dkr.ecr.us-east-1.amazonaws.com
   BACKEND_ECR_REPO: archimedes-backend
   NGINX_ECR_REPO: archimedes-nginx
+  AUTH_ECR_REPO: archimedes-auth
   EC2_INSTANCE_ID: i-01803d3abc271d39b
 
 jobs:
@@ -154,6 +155,9 @@ jobs:
         # --build-arg GIT_SHA stamps the commit into the image → /health "version"
         # (issue #1039 observability fast-follow).
         run: docker build -t archimedes-backend:ci -f backend/Dockerfile --build-arg GIT_SHA="${{ github.sha }}" .
+
+      - name: Build auth image
+        run: docker build -t archimedes-auth:ci auth
 
       - name: Build nginx image
         # Env-parity fix (PR #1041 correctness pass, 2026-07-07): this is NOT
@@ -237,7 +241,14 @@ jobs:
           # migrate pre-flight itself, which the real cutover depends on.
           docker run --rm --network archimedes-ci -e DATABASE_URL="$DB_URL" \
             archimedes-backend:ci python -m archimedes.scripts.alembic_migrate_preflight
+          docker run -d --name auth --network archimedes-ci \
+            -e NODE_ENV=development -e DATABASE_URL="$DB_URL" \
+            -e BETTER_AUTH_SECRET='ci-only-better-auth-secret-32-characters' \
+            -e BETTER_AUTH_URL='http://localhost:18080' \
+            -e BETTER_AUTH_TRUSTED_ORIGINS='http://localhost:18080' \
+            archimedes-auth:ci
           docker run -d --name backend --network archimedes-ci -e DATABASE_URL="$DB_URL" \
+            -e BETTER_AUTH_INTERNAL_URL='http://auth:3000' \
             -p 8000:8000 archimedes-backend:ci
           ok=""
           for _ in $(seq 1 40); do
@@ -301,6 +312,7 @@ jobs:
             -e NGINX_ENVSUBST_FILTER='^NGINX_' \
             -e NGINX_RESOLVER_LINE='resolver 127.0.0.11 valid=10s ipv6=off;' \
             -e NGINX_BACKEND_UPSTREAM='backend:8000' \
+            -e NGINX_AUTH_UPSTREAM='auth:3000' \
             -e NGINX_UPSTREAM_RESOLVE='resolve' \
             archimedes-nginx:ci
           ok=""
@@ -317,12 +329,21 @@ jobs:
             docker logs backend || true
             exit 1
           fi
-          echo "nginx / + /health OK"
+          curl -fsS http://localhost:18080/api/auth/providers | jq -e '.emailPassword == true' >/dev/null
+          test "$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:18080/app)" = "302"
+          curl -fsS -c /tmp/auth-cookie -H 'Content-Type: application/json' -H 'Origin: http://localhost:18080' \
+            -d '{"name":"CI User","email":"ci@example.com","password":"ci-password-12345"}' \
+            http://localhost:18080/api/auth/sign-up/email >/dev/null
+          curl -fsS -c /tmp/auth-cookie -H 'Content-Type: application/json' -H 'Origin: http://localhost:18080' \
+            -d '{"email":"ci@example.com","password":"ci-password-12345"}' \
+            http://localhost:18080/api/auth/sign-in/email >/dev/null
+          curl -fsS -b /tmp/auth-cookie http://localhost:18080/app >/dev/null
+          echo "nginx public + auth + protected app boundary OK"
 
       - name: Teardown validation containers
         if: always()
         run: |
-          docker rm -f backend nginx-validate pg 2>/dev/null || true
+          docker rm -f backend auth nginx-validate pg 2>/dev/null || true
           docker network rm archimedes-ci 2>/dev/null || true
 
       - name: Configure AWS credentials (OIDC)
@@ -342,7 +363,7 @@ jobs:
         # `terraform apply` in infra/ (see infra/README.md).
         run: |
           set -euo pipefail
-          for repo in "$BACKEND_ECR_REPO" "$NGINX_ECR_REPO"; do
+          for repo in "$BACKEND_ECR_REPO" "$NGINX_ECR_REPO" "$AUTH_ECR_REPO"; do
             if ! aws ecr describe-repositories --repository-names "$repo" --region "$AWS_REGION" >/dev/null 2>&1; then
               echo "::error::ECR repository '$repo' does not exist yet. Apply the ECR Terraform in infra/ (issue #1039 chunk 2) before enabling DEPLOY_ENABLED — see infra/README.md."
               exit 1
@@ -364,6 +385,14 @@ jobs:
           docker tag archimedes-nginx:ci "$ECR_REGISTRY/$NGINX_ECR_REPO:latest"
           docker push "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}"
           docker push "$ECR_REGISTRY/$NGINX_ECR_REPO:latest"
+
+      - name: Tag + push auth image
+        run: |
+          set -euo pipefail
+          docker tag archimedes-auth:ci "$ECR_REGISTRY/$AUTH_ECR_REPO:${{ github.sha }}"
+          docker tag archimedes-auth:ci "$ECR_REGISTRY/$AUTH_ECR_REPO:latest"
+          docker push "$ECR_REGISTRY/$AUTH_ECR_REPO:${{ github.sha }}"
+          docker push "$ECR_REGISTRY/$AUTH_ECR_REPO:latest"
 
   migrate:
     needs: build-and-push
@@ -563,7 +592,7 @@ jobs:
           # The SERVICE task-def family (infra/ecs.tf's aws_ecs_task_definition.backend,
           # `${var.project_name}-backend`) — distinct from ECS_MIGRATE_TASK_FAMILY
           # above, which boots a single container with no HTTP surface. This one
-          # boots the real nginx+backend pair the ALB target group routes to.
+          # boots nginx, FastAPI, and Better Auth sidecar routed by ALB.
           ECS_TASK_FAMILY: archimedes-backend
         run: |
           set -euo pipefail
@@ -571,7 +600,7 @@ jobs:
           # Fetch the CURRENTLY REGISTERED task definition for this family —
           # not `aws_ecs_task_definition.backend`'s Terraform-authored JSON —
           # so every other field (cpu/memory/roles/secrets/log config/env)
-          # carries forward unchanged; only the two container images below
+          # carries forward unchanged; only three application images below
           # are freshly pushed. Matches the same "reuse infra Terraform
           # already applied" spirit as the migrate job's static network
           # config (B2) — this job never re-derives infra config CI has no
@@ -579,11 +608,18 @@ jobs:
           aws ecs describe-task-definition --task-definition "$ECS_TASK_FAMILY" \
             --query 'taskDefinition' > current-task-def.json
 
+          jq -e '.containerDefinitions | any(.name == "auth")' current-task-def.json >/dev/null || {
+            echo "::error::Current ECS task definition has no auth sidecar. Apply infra/ecs.tf before deploying this release."
+            exit 1
+          }
+
           jq --arg backend_image "$ECR_REGISTRY/$BACKEND_ECR_REPO:${{ github.sha }}" \
-             --arg nginx_image "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}" '
+             --arg nginx_image "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}" \
+             --arg auth_image "$ECR_REGISTRY/$AUTH_ECR_REPO:${{ github.sha }}" '
             .containerDefinitions = (.containerDefinitions | map(
               if .name == "backend" then .image = $backend_image
               elif .name == "nginx" then .image = $nginx_image
+              elif .name == "auth" then .image = $auth_image
               else . end
             )) |
             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)

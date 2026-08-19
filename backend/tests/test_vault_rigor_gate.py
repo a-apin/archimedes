@@ -11,16 +11,14 @@ from __future__ import annotations
 
 import contextlib
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import archimedes.db as db
 import pytest
-from archimedes.api.vaults_routes import (
-    _assert_strategies_pass_rigor,
-    _strategy_record_visible,
-    _strategy_rigor_status,
-)
+from archimedes.api.vaults_routes import _assert_strategies_pass_rigor, _strategy_rigor_status
 from archimedes.services.live_rigor_gate import RigorGateVerdict
+from archimedes.services.rigor_profiles import STRICTEST_LEVEL
 from fastapi import HTTPException
 
 V = "archimedes.api.vaults_routes"
@@ -48,22 +46,18 @@ def _use_tmp_db(tmp_path, monkeypatch):
 
 @contextlib.contextmanager
 def _override_verified_wallet(app, wallet: str = "0x000000000000000000000000000000000000dEaD"):
-    """Override the SIWE wallet dependency, then RESTORE the prior override on exit.
+    """Override linked-wallet dependency, restoring prior override on exit."""
+    from archimedes.api.wallet_routes import require_linked_wallet
 
-    Restoring (rather than a global ``app.dependency_overrides.clear()``) keeps this
-    test from wiping overrides another test/fixture set on the shared ``app`` instance.
-    """
-    from archimedes.api.auth_siwe import require_verified_wallet
-
-    prev = app.dependency_overrides.get(require_verified_wallet)
-    app.dependency_overrides[require_verified_wallet] = lambda: wallet
+    prev = app.dependency_overrides.get(require_linked_wallet)
+    app.dependency_overrides[require_linked_wallet] = lambda: wallet
     try:
         yield
     finally:
         if prev is None:
-            app.dependency_overrides.pop(require_verified_wallet, None)
+            app.dependency_overrides.pop(require_linked_wallet, None)
         else:
-            app.dependency_overrides[require_verified_wallet] = prev
+            app.dependency_overrides[require_linked_wallet] = prev
 
 
 class _Strat:
@@ -170,6 +164,48 @@ def test_status_fails_closed_on_db_error():
         assert _strategy_rigor_status("missing") == (False, False)
 
 
+def test_status_generated_delegates_to_generated_rigor():
+    request = object()
+    result = SimpleNamespace(passes_all=True)
+    with (
+        patch(f"{V}.strategy_provider") as provider,
+        patch(
+            "archimedes.api.selection_bias_routes._generated_strategy_rigor",
+            return_value=result,
+        ) as generated_rigor,
+    ):
+        provider.return_value.get_strategy.return_value = None
+        assert _strategy_rigor_status("generated", request=request) == (True, True)
+
+    generated_rigor.assert_called_once_with("generated", request, STRICTEST_LEVEL)
+
+
+def test_status_generated_hides_missing_or_invisible():
+    request = object()
+    with (
+        patch(f"{V}.strategy_provider") as provider,
+        patch("archimedes.api.selection_bias_routes._generated_strategy_rigor", return_value=None),
+    ):
+        provider.return_value.get_strategy.return_value = None
+        assert _strategy_rigor_status("private-or-missing", request=request) == (False, False)
+
+
+def test_status_generated_rigor_error_returns_503():
+    request = object()
+    with (
+        patch(f"{V}.strategy_provider") as provider,
+        patch(
+            "archimedes.api.selection_bias_routes._generated_strategy_rigor",
+            side_effect=RuntimeError("db down"),
+        ),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        provider.return_value.get_strategy.return_value = None
+        _strategy_rigor_status("generated", request=request)
+
+    assert exc_info.value.status_code == 503
+
+
 # ── _assert_strategies_pass_rigor ─────────────────────────────────────────
 
 
@@ -198,7 +234,7 @@ def test_assert_empty_list_is_noop():
 
 def test_assert_blocks_if_any_one_fails():
     # All must pass; one failing id blocks the whole deploy.
-    def _status(sid, cohort_cache=None):
+    def _status(sid, cohort_cache=None, request=None):
         return (True, sid != "bad")
 
     with patch(f"{V}._strategy_rigor_status", side_effect=_status), pytest.raises(HTTPException) as exc:
@@ -258,7 +294,7 @@ async def test_create_vault_proceeds_when_rigor_passes():
 async def test_create_vault_writes_the_identity_ledger_vault_created_event():
     """Issue #1028 (D2): the SIWE-verified deployer's ``vault_created`` event
     lands in the ledger — the bottom-of-funnel identity write, unlike
-    Generate's flag-gated one, since ``require_verified_wallet`` always
+    Generate's account gate, since ``require_linked_wallet`` always
     identifies the caller here."""
     from archimedes.db import get_session
     from archimedes.main import app
@@ -298,112 +334,16 @@ async def test_create_vault_writes_the_identity_ledger_vault_created_event():
     assert meta["strategy_ids"] == ["passing"]
 
 
-# ── _strategy_record_visible (#1073) ──────────────────────────────────────
+# ── HTTP: strictest-level generated path stays ownership-gated (#1073) ────
 
 _OWNER = "0x000000000000000000000000000000000000dEaD"
 _OTHER = "0x0000000000000000000000000000000000000BAD"
 
 
-@contextlib.contextmanager
-def _private_strategy_record(sid: str, *, owner: str):
-    """Create a private StrategyRecord in the per-test DB, then delete it."""
-    from archimedes.db import get_session, init_db
-    from archimedes.models.strategy_store import StrategyRecord
-
-    init_db()
-    session = get_session()
-    try:
-        session.add(
-            StrategyRecord(
-                id=sid,
-                content_hash=("0x" + sid).ljust(66, "0"),
-                generation_method="fusion",
-                source_papers="[]",
-                strategy_name="Private Test Strategy",
-                thesis="test thesis",
-                asset_universe="[]",
-                risk_profile="moderate",
-                status="candidate",
-                is_example=False,
-                owner_wallet=owner.lower(),
-                is_published=False,
-            )
-        )
-        session.commit()
-    finally:
-        session.close()
-
-    try:
-        yield
-    finally:
-        session = get_session()
-        try:
-            session.query(StrategyRecord).filter_by(id=sid).delete(synchronize_session=False)
-            session.commit()
-        finally:
-            session.close()
-
-
-class _FakeRequest:
-    """Minimal stand-in for a FastAPI Request carrying a SIWE session cookie,
-    for calling `_strategy_record_visible` directly without a real HTTP call."""
-
-    def __init__(self, wallet: str | None):
-        self._wallet = wallet
-
-    @property
-    def cookies(self):
-        if self._wallet is None:
-            return {}
-        from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
-
-        return {_COOKIE_NAME: _sign_session(self._wallet, time.time())}
-
-
-def test_strategy_record_visible_none_when_no_record():
-    assert _strategy_record_visible("no-such-strategy-id", _FakeRequest(_OWNER)) is None
-
-
-def test_strategy_record_visible_true_for_owner():
-    sid = "priv-visible-owner"
-    with _private_strategy_record(sid, owner=_OWNER):
-        assert _strategy_record_visible(sid, _FakeRequest(_OWNER)) is True
-
-
-def test_strategy_record_visible_false_for_non_owner():
-    sid = "priv-visible-nonowner"
-    with _private_strategy_record(sid, owner=_OWNER):
-        assert _strategy_record_visible(sid, _FakeRequest(_OTHER)) is False
-
-
-def test_strategy_record_visible_false_for_anonymous():
-    sid = "priv-visible-anon"
-    with _private_strategy_record(sid, owner=_OWNER):
-        assert _strategy_record_visible(sid, _FakeRequest(None)) is False
-
-
-def test_strategy_record_visible_fails_closed_on_db_error():
-    """A DB error during the ownership lookup must NOT return None (None means
-    'no record — fall through to the ownership-blind badge', i.e. fail-open
-    for private strategies exactly when the DB is down). It must raise a 503
-    so the deploy is blocked loudly and recoverably."""
-    with (
-        patch("archimedes.db.get_session", side_effect=RuntimeError("db down")),
-        pytest.raises(HTTPException) as exc_info,
-    ):
-        _strategy_record_visible("any-id", _FakeRequest(_OWNER))
-    assert exc_info.value.status_code == 503
-
-
-# ── HTTP: strictest-level fast path is ownership-gated (#1073) ────────────
-
-
 def _siwe_cookies(wallet: str) -> dict[str, str]:
     """Real signed SIWE session cookie (same helper shape as
-    test_strategy_ownership.py / test_user_routes.py). Needed here (rather
-    than the `require_verified_wallet` dependency override above) because
-    `_strategy_record_visible` reads the wallet directly off the request
-    cookie via `get_verified_wallet(request)`, not via the FastAPI dependency."""
+    test_strategy_ownership.py / test_user_routes.py). Needed here because
+    generated-rigor ownership reads the SIWE cookie from the request."""
     from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
 
     return {_COOKIE_NAME: _sign_session(wallet, time.time())}
@@ -419,8 +359,7 @@ async def test_create_vault_hides_private_strategy_from_non_owner():
 
     sid = "priv-deploy-nonowner"
     with (
-        _private_strategy_record(sid, owner=_OWNER),
-        patch(f"{V}._strategy_rigor_status", return_value=(True, True)),
+        patch("archimedes.api.selection_bias_routes._generated_strategy_rigor", return_value=None),
         patch(f"{V}.chain_executor.create_vault") as mock_create,
     ):
         async with AsyncClient(
@@ -444,8 +383,10 @@ async def test_create_vault_allows_owner_to_deploy_private_strategy():
 
     sid = "priv-deploy-owner"
     with (
-        _private_strategy_record(sid, owner=_OWNER),
-        patch(f"{V}._strategy_rigor_status", return_value=(True, True)),
+        patch(
+            "archimedes.api.selection_bias_routes._generated_strategy_rigor",
+            return_value=SimpleNamespace(passes_all=True),
+        ),
         patch(f"{V}.chain_executor.create_vault", new=AsyncMock(return_value="0xOwnerDeployedAddress")) as mock_create,
         patch("archimedes.api.funnel_middleware.record_funnel", new=AsyncMock()),
     ):

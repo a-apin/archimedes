@@ -88,7 +88,7 @@ export default function RejectedCandidates({ jobId, onClose, onNavigate }) {
     if (onNavigate) {
       onNavigate('strategy', { strategyId })
     } else {
-      window.location.hash = `#/strategy/${encodeURIComponent(strategyId)}`
+      window.location.assign(`/app/strategy/${encodeURIComponent(strategyId)}`)
     }
     onClose?.()
   }

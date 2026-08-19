@@ -180,7 +180,7 @@ def test_endpoint_free_model_allowed():
     """A free (non-Anthropic) model starts a job — 202, even anonymously."""
     p_store, p_run = _patched_start()
     with p_store, p_run:
-        resp = _client().post("/api/generate/start", json=_start_payload(_FREE_MODEL))
+        resp = _client().post("/api/generate/start", json=_start_payload(_FREE_MODEL), cookies=_cookies(_WALLET))
     assert resp.status_code == 202, resp.text
     assert resp.json()["job_id"] == "job-xyz"
 
@@ -189,7 +189,7 @@ def test_endpoint_no_model_allowed():
     """No model field → server default; never gated → 202."""
     p_store, p_run = _patched_start()
     with p_store, p_run:
-        resp = _client().post("/api/generate/start", json=_start_payload(None))
+        resp = _client().post("/api/generate/start", json=_start_payload(None), cookies=_cookies(_WALLET))
     assert resp.status_code == 202, resp.text
 
 
@@ -214,7 +214,7 @@ def test_endpoint_premium_anonymous_rejected_402():
     """A premium model with no wallet session → 402."""
     p_store, p_run = _patched_start()
     with p_store, p_run:
-        resp = _client().post("/api/generate/start", json=_start_payload(_PREMIUM_HAIKU))
+        resp = _client().post("/api/generate/start", json=_start_payload(_PREMIUM_HAIKU), cookies=_cookies(_WALLET))
     assert resp.status_code == 402, resp.text
 
 

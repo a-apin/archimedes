@@ -7,9 +7,8 @@ instrument; the write side is ``api/telemetry_middleware.py`` +
 ``services/telemetry_store.py`` (live Redis counters) plus
 ``services/request_snapshot_store.py`` (the durable Postgres floor).
 
-Issue #1028 (Phase C, "metrics-views") adds the honest, identity-ledger-backed
-views alongside: ``real_users`` now reads ``wallet_identities`` (AC1), plus
-new endpoints to enumerate those wallets (AC1) and the connection log (AC2),
+``real_users`` now reads canonical Better Auth accounts. Legacy identity-ledger
+views remain available to enumerate verified wallets and connection events,
 and a ``source=identity`` mode on the funnel that recomputes distinct-wallet
 conversion from ``identity_events`` alone (AC3) — see
 ``services/identity_metrics.py`` for the queries themselves.
@@ -127,9 +126,8 @@ async def get_metrics() -> MetricsResponse:
     does not zero them; ``epoch_started_at`` / ``epoch_resets`` surface that
     durability honestly instead of implying one unbroken counter.
 
-    ``real_users`` is the distinct HUMAN WALLET count from ``wallet_identities``
-    (issue #1028 AC1, superseding the old ``user_profiles`` row count — see
-    ``services/user_stats.py``) — the honest distinct-identity number surfaced
+    ``real_users`` is canonical Better Auth account count (see
+    ``services/user_stats.py``), surfaced
     alongside so the request tallies can't be mis-cited as users (issue #830).
 
     Fail-safe: a Redis outage falls back to the last Postgres snapshot instead
@@ -166,12 +164,10 @@ async def get_metrics() -> MetricsResponse:
 
 @metrics_router.get("/metrics/wallets", response_model=WalletsResponse)
 async def get_wallets() -> WalletsResponse:
-    """Enumerate the human wallets behind ``real_users`` — issue #1028 AC1.
+    """Enumerate legacy verified human wallets, separate from account count.
 
-    "Enumerating those wallets is one query" — this endpoint is that query,
-    exposed. ``real_users`` here is the same ``count_human_wallets()`` value
-    ``GET /api/metrics`` reports; ``wallets`` is the list backing it,
-    oldest-first. Fail-safe: an empty list / zero count on any DB error.
+    ``real_users`` field is retained for response compatibility but means wallet
+    count on this endpoint only. Fail-safe: empty list / zero on DB error.
     """
     return WalletsResponse(
         real_users=count_human_wallets(),

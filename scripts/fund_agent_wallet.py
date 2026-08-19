@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Fund an agent wallet with native USDC on Arc testnet (#788 slice 2).
 
-Agent EOAs created for SIWE auth (see scripts/agent_journey.py) start empty; to
-DEPLOY they need gas — and on Arc, **USDC IS the gas token** (chain 5042002).
-Two funding modes:
+Proof-linked agent wallets may start empty. Client-signed on-chain operations need
+gas — and on Arc, **USDC IS gas token** (chain 5042002). Backend-signer vault
+creation does not require caller wallet funding. Two funding modes:
 
   treasury (default)
       A plain native-value transfer from the dev treasury wallet

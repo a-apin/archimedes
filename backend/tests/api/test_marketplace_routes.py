@@ -5,8 +5,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from archimedes.api.auth_siwe import require_verified_wallet
 from archimedes.api.marketplace_routes import marketplace_router
+from archimedes.api.wallet_routes import require_linked_wallet as require_verified_wallet
 from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
 from fastapi import FastAPI
 from fastapi.testclient import TestClient

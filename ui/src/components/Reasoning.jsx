@@ -169,7 +169,7 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
           <p className="body" style={{ marginBottom: 6 }}>No reasoning traces yet.</p>
           <p className="caption">
             Traces accumulate when the autonomous agent rebalances vaults, or when you
-            use the <a href="/generate" style={{ color: 'var(--accent)' }}>Generate</a> page to construct a portfolio (each
+            use the <a href="/app/generate" style={{ color: 'var(--accent)' }}>Generate</a> page to construct a portfolio (each
             construction emits a trace). If the page stays empty after generating, the
             agent runner may not be running locally — check <code>docker compose logs oracle</code>.
           </p>

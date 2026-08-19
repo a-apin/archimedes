@@ -4,9 +4,9 @@ With REQUIRE_SIWE_FOR_GENERATION ON (the secure default outside TESTING), the
 per-job read surfaces — ``GET /api/generate/stream/{job_id}``, ``GET
 /api/generate/jobs`` and ``GET /api/generate/jobs/{job_id}/candidates`` — plus
 ``POST /api/generate/start`` require a verified session, and per-job reads are
-scoped to the job's ``payload.owner_wallet``. A wallet mismatch returns **404**
-(indistinguishable from not-found — no existence oracle), not 403. With the gate
-explicitly OFF, the historical open behavior is preserved bit-for-bit.
+scoped to canonical user ID, with verified-wallet fallback for unclaimed legacy
+jobs. Mismatches return **404**. Account authentication remains mandatory even
+when old SIWE generation gating flag is disabled.
 
 Hermetic: the Redis-backed job store is boundary-mocked (test_generate_cancel_scoping
 precedent); SIWE sessions are real signed cookies (test_user_routes precedent);
@@ -138,10 +138,8 @@ def test_start_with_session_writes_the_identity_ledger_generation_started_event(
     assert after[-1][1] == "human"
 
 
-def test_start_anonymous_when_open_does_not_ledger_an_event(gate_off):
-    """D2a: an anonymous request (flag off, no session) has no wallet to
-    anchor a row to — it must stay on the anonymous funnel (Redis HLL), NOT
-    the identity ledger."""
+def test_start_anonymous_stays_blocked_when_legacy_gate_is_off(gate_off):
+    """Legacy opt-out cannot bypass canonical account authentication."""
     from archimedes.db import get_session
     from archimedes.models.identity import IdentityEvent
 
@@ -154,7 +152,7 @@ def test_start_anonymous_when_open_does_not_ledger_an_event(gate_off):
     p1, p2 = _patched(_mock_store(None))
     with p1, p2:
         resp = _client().post("/api/generate/start", json=_START_BODY)
-    assert resp.status_code == 202, resp.text
+    assert resp.status_code == 401, resp.text
 
     session = get_session()
     try:
@@ -242,34 +240,32 @@ def test_jobs_list_filtered_to_caller_when_gated(gate_on):
     assert len(jobs) == 2  # own + ownerless; the attacker-owned job is filtered out
 
 
-# ── Gating OFF (explicit opt-out): historical open behavior preserved ─
+# ── Legacy gate OFF: canonical account boundary still holds ──────────
 
 
-def test_start_anonymous_202_when_open(gate_off):
+def test_start_anonymous_401_when_legacy_gate_off(gate_off):
     p1, p2 = _patched(_mock_store(None))
     with p1, p2:
         resp = _client().post("/api/generate/start", json=_START_BODY)
-    assert resp.status_code == 202, resp.text
+    assert resp.status_code == 401, resp.text
 
 
-def test_stream_anonymous_open_when_off(gate_off):
+def test_stream_anonymous_blocked_when_off(gate_off):
     p1, p2 = _patched(_mock_store(_OWNER.lower()))
     with p1, p2:
         resp = _client().get(f"/api/generate/stream/{_JOB_ID}")
-    assert resp.status_code == 200, resp.text
-    assert "event: done" in resp.text
+    assert resp.status_code == 401, resp.text
 
 
-def test_candidates_anonymous_open_when_off(gate_off):
+def test_candidates_anonymous_blocked_when_off(gate_off):
     p1, p2 = _patched(_mock_store(_OWNER.lower()))
     with p1, p2:
         resp = _client().get(f"/api/generate/jobs/{_JOB_ID}/candidates")
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 401, resp.text
 
 
-def test_jobs_list_anonymous_unfiltered_when_off(gate_off):
+def test_jobs_list_anonymous_blocked_when_off(gate_off):
     p1, p2 = _patched(_mock_store(None))
     with p1, p2:
         resp = _client().get("/api/generate/jobs")
-    assert resp.status_code == 200, resp.text
-    assert len(resp.json()["jobs"]) == 3
+    assert resp.status_code == 401, resp.text

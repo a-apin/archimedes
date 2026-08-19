@@ -22,7 +22,7 @@ make the runtime data brittle, so they stay separate.
 | | **PostgreSQL** | **Redis** |
 | --- | --- | --- |
 | **Role** | Durable, relational, transactional **source of truth** | Fast in-memory **shared runtime state, cache, counters, and the off-chain trace store** |
-| **Holds** | Strategies, passports, backtests, proposals, papers, users, vault metadata, chat | Reasoning traces (off-chain), per-request telemetry counters, live agent/regime state, rate-limit buckets, the async job queue, SIWE nonces |
+| **Holds** | Better Auth users/sessions/accounts, linked wallets, strategies, passports, backtests, proposals, papers, vault metadata, chat | Reasoning traces (off-chain), per-request telemetry counters, live agent/regime state, rate-limit buckets, async job queue |
 | **Durability** | Persistent; backed up; the record that survives a restart | Ephemeral by design; much of it is TTL'd or capped; rebuildable |
 | **Access** | SQLAlchemy + `psycopg2` (synchronous ORM) | `redis.asyncio` (async, fire-and-forget where possible) |
 | **Reached via** | `DATABASE_URL` | `REDIS_URL` |
@@ -70,23 +70,18 @@ The connection layer is a single module, [`backend/archimedes/db.py`](../backend
 
 ### 2.2 Migrations approach
 
-There is **no Alembic**. `init_db()` calls `Base.metadata.create_all()` — idempotent
-table creation — plus a short list of **hand-rolled `ALTER TABLE … ADD COLUMN IF NOT
-EXISTS`** statements (Postgres-only) for columns added after a table was first
-created on the running volume. This is the deliberate hackathon-scale choice: fresh
-DBs (including SQLite locally) pick up new columns directly from the model via
-`create_all`; the additive patches exist so a long-lived Docker/Aurora volume that
-predates a model change doesn't 500 on the missing column. The patched columns to
-date are `papers.{cluster_id, topic_label, content_hash}`, four `strategy_store`
-columns (`is_example`, the two `on_chain_registration_*`, `parent_id`), and
-`chat_messages.verified`. The patch block is wrapped in a try/except and logs a
-non-fatal warning on failure — it must never block boot.
+Alembic owns PostgreSQL schema changes under `backend/migrations/`; production runs
+`alembic upgrade head` before application rollout. Fresh SQLite test/dev databases
+still use `Base.metadata.create_all()`. Historical hand-written additive patches remain
+only as transitional compatibility. Better Auth tables and wallet links land in
+revision `9ad1c4e2b7f0`; canonical ownership columns land in `b7e3f1a2c9d4`.
 
-### 2.3 The 12 public tables
+### 2.3 Public tables
 
-At cutover there are **12 tables** in the `public` schema. Row counts below are the
-counts measured at the 2026-06-28 cutover; treat them as a point-in-time snapshot,
-not a guarantee.
+Table list below is historical cutover inventory. Current schema additionally includes
+`auth_users`, `auth_sessions`, `auth_accounts`, `auth_verifications`, `auth_rate_limits`, `linked_wallets`,
+and `wallet_link_challenges`. Better Auth user ID is canonical; wallet columns remain
+provenance/compatibility. Row counts are point-in-time, not guarantees.
 
 | Table | Model | Rows @ cutover | Purpose |
 | --- | --- | ---: | --- |
@@ -99,9 +94,9 @@ not a guarantee.
 | `corpus_meta` | `corpus_store.py` `CorpusMetaRecord` | 0 | Singleton tracking corpus intake state: last intake time, corpus hash, artifact hash + build time, paper count, source. The `0` reflects that no intake run has written a meta row to the cutover DB yet. |
 | `kg_entities` | [`kg.py`](../backend/archimedes/models/kg.py) `KGEntity` | **0** | Knowledge-graph entities (canonical name + type + paper count). Schema-only until the KB pipeline runs — see the papers honesty note. |
 | `kg_relations` | `kg.py` `KGRelation` | **0** | Knowledge-graph relations (subject → relation → object, scoped to a paper, with confidence). Schema-only until the KB pipeline runs. |
-| `user_profiles` | [`user_profile.py`](../backend/archimedes/models/user_profile.py) `UserProfile` | **2** | Optional wallet-linked profile, PK = `wallet_address`. Created on first profile POST. **The `email` column stores a Fernet-encrypted token, never plaintext** (issue #181) — always go through `email_crypto`. The **distinct `wallet_address` count here is the real "users" number** (2 at cutover); see the telemetry honesty note in §3. |
+| `user_profiles` | [`user_profile.py`](../backend/archimedes/models/user_profile.py) `UserProfile` | **2** | Legacy wallet-keyed optional profile with additive unique `owner_user_id`. **The `email` column stores a Fernet-encrypted token, never plaintext**. Account count comes from `auth_users`, not this compatibility table. |
 | `vault_metadata` | [`chat.py`](../backend/archimedes/models/chat.py) `VaultMetadata` | — | Off-chain vault metadata: address (unique), display name, symbol, creator, and the JSON list of associated `strategy_ids`. The on-chain vault contract holds the financial state; this table holds what the frontend needs to render a vault. |
-| `chat_messages` | `chat.py` `ChatMessage` | — | Per-vault chat. Wallet address = identity; `is_ai` marks agent messages; `verified` marks a message whose wallet was proven by a SIWE session at post time (issue #524). Composite index on `(vault_address, created_at)` for time-ordered reads. |
+| `chat_messages` | `chat.py` `ChatMessage` | — | Per-vault chat. Writes require Better Auth account plus verified linked wallet; `is_ai` marks agent messages and `verified` records proven wallet attribution. Composite index on `(vault_address, created_at)`. |
 
 ### 2.4 The unified `strategy_passports` table (issue #160)
 
@@ -164,7 +159,7 @@ All keys are namespaced `archimedes:<domain>:<name>`. At cutover the keyspace ho
 | `archimedes:vault:snapshots:<vault>` | list (capped 288) | per vault | `save_vault_snapshot` → `get_vault_snapshots` | none (LTRIM) | Vault metrics snapshots, ~24h at 5-min cadence (288 entries). |
 | `archimedes:job:<id>` | hash | per job | `JobStore.enqueue/update_status` → `get`, status API | 3600s | **Async generation job queue.** State machine `queued → running → done/failed` for strategy generation. |
 | `archimedes:job:<id>:events` | list | per job | `push_event` → SSE stream (`list_events`) | 900s | Per-job event log for resumable SSE streaming of a generation job. |
-| `archimedes:auth:nonce:<nonce>` | string | per challenge | `save_nonce` (SETEX) → `pop_nonce` (GETDEL, single-use) | TTL-bounded | SIWE login challenge nonces; Redis evicts them on expiry, and GETDEL makes them single-use across workers. |
+| `archimedes:auth:nonce:<nonce>` | string | legacy/test-only | retired SIWE login router | TTL-bounded | Historical wallet-login nonce key. Live wallet-link challenges are hashed, user-bound rows in PostgreSQL; Better Auth sessions also live in PostgreSQL. |
 | rate-limiter buckets (slowapi keyspace) | slowapi-internal | varies | `api/limiter.py` (Redis-backed when `REDIS_URL` is set) | window-bounded | Shared rate-limit counters across Uvicorn workers. Falls back to `memory://` per-process if Redis is unreachable. |
 
 > The slowapi rate limiter defaults its `REDIS_URL` to db `1`
@@ -175,13 +170,13 @@ All keys are namespaced `archimedes:<domain>:<name>`. At cutover the keyspace ho
 ### 3.2 Telemetry-vs-users honesty note
 
 The `archimedes:telemetry:humans` and `:agents` keys are **cumulative per-request
-counters** incremented by the telemetry middleware on classification (HUMAN = valid
-SIWE session or a browser UA with no session; AGENT = internal agent key or a
+counters** incremented by telemetry middleware on classification (HUMAN = resolved
+Better Auth account or browser UA with no session; AGENT = internal agent key or a
 non-browser UA). They measure **traffic / reach — not unique users.** A single
 visitor refreshing the page increments the human counter many times.
 
-**The real "users" number is the count of distinct `wallet_address` rows in the
-`user_profiles` Postgres table** (2 at cutover). Do not cite the telemetry counters
+**The real account count is the count of rows in `auth_users`.** Linked-wallet and
+legacy `user_profiles` counts are separate product metrics. Do not cite telemetry counters
 as a user count in pitches, grants, or the rubric — they are an "agents vs humans
 traffic" instrument, deliberately surfaced as a live signal, but they are reach, not
 adoption.
@@ -212,11 +207,12 @@ The backtest engine writes one row per `(strategy_id, content_hash)` to
 record, including the rigor-gate outputs and replay provenance. The passport table
 keeps a denormalized copy of the headline metrics for fast list rendering.
 
-### 4.3 Users → `user_profiles`
+### 4.3 Accounts and wallets
 
-A first profile POST (from the welcome modal) writes a row keyed by `wallet_address`
-to **`user_profiles`** via `user_routes.py`, with the email Fernet-encrypted at rest.
-This is the table whose distinct-wallet count is the true user metric.
+Better Auth writes canonical accounts and sessions to `auth_*`. Wallet proof writes
+`linked_wallets`; successful proof may claim only matching legacy rows whose
+`owner_user_id` is null. `user_profiles` remains wallet-keyed compatibility data with
+Fernet-encrypted email, not account source of truth.
 
 ### 4.4 Corpus manifest → `papers`
 
@@ -305,7 +301,7 @@ flowchart TB
         R_TEL["archimedes:telemetry:humans/agents (traffic counters)"]
         R_STATE["agent heartbeat / regime / consensus / snapshots"]
         R_JOB["archimedes:job:* (async generation queue)"]
-        R_RL["rate-limit buckets + SIWE nonces"]
+        R_RL["rate-limit buckets + legacy nonce keys"]
     end
 
     subgraph chain["Arc chain"]
@@ -324,7 +320,7 @@ flowchart TB
     USR --> T_USER
     CORP --> T_PAPERS
     CORP -. "pending" .-> T_KG
-    UI -->|"rate limit / SIWE nonce"| R_RL
+    UI -->|"rate limits"| R_RL
 
     AGENT -->|"live state each tick"| R_STATE
     AGENT --> TRACE

@@ -62,15 +62,13 @@ def persist_proposal(
     parent_proposal_id: str | None = None,
     extra: dict | None = None,
     owner_wallet: str | None = None,
+    owner_user_id: str | None = None,
 ) -> str | None:
     """Persist a proposal row. Returns the proposal ID or None on failure.
 
-    ``owner_wallet`` is the SIWE-derived wallet (never client-supplied) —
-    threaded from the call site's own verified session / job payload. Stored
-    lowercased for case-insensitive matching against the caller wallet the
-    owner-scoped read path (``proposals_routes.py``) compares against. ``None``
-    means anonymous/unattributed generation — those rows are private to NO
-    ONE once persisted (the owner-scoped query never matches a NULL column).
+    ``owner_user_id`` is the canonical Better Auth owner. ``owner_wallet`` is
+    optional verified-wallet provenance retained for compatibility. Neither
+    value is client supplied or allowed to overwrite an existing owner.
 
     Non-blocking: catches all DB errors, logs them, returns None.
     """
@@ -120,6 +118,9 @@ def persist_proposal(
                 # Backfill ownership on a dedup hit (mirrors
                 # strategy_store.upsert_strategy): never overwrite an existing
                 # owner, only attach one to a previously-anonymous row.
+                if owner_user_id and not existing.owner_user_id:
+                    existing.owner_user_id = owner_user_id
+                    changed = True
                 if owner_wallet and not existing.owner_wallet:
                     existing.owner_wallet = owner_wallet
                     changed = True
@@ -139,6 +140,7 @@ def persist_proposal(
                 agent=agent,
                 regime_tag=regime_tag,
                 owner_wallet=owner_wallet,
+                owner_user_id=owner_user_id,
                 payload=json.dumps(payload, ensure_ascii=False),
             )
             session.add(row)
@@ -165,6 +167,7 @@ def query_proposals(
     limit: int = 50,
     offset: int = 0,
     owner_wallet: str | None = None,
+    owner_user_id: str | None = None,
 ) -> tuple[list[dict], int]:
     """Query proposals with filtering and pagination.
 
@@ -173,23 +176,31 @@ def query_proposals(
     SQL ``WHERE`` clause, not filtered in Python after a fetch-all. A NULL
     ``owner_wallet`` column (legacy, pre-ownership rows) never satisfies this
     equality filter, so those rows are returned to no caller. Callers that
-    omit ``owner_wallet`` get the unscoped query — internal/trusted use only;
-    every HTTP-facing caller (``proposals_routes.py``) must pass the SIWE
-    session wallet here.
+    omit both ownership keys get unscoped query — internal/trusted use only;
+    HTTP callers pass canonical user ID and optional linked-wallet fallback.
 
     Returns (proposals, total_count).
     """
     try:
+        from sqlalchemy import and_, or_
+
         from archimedes.db import get_session
         from archimedes.models.strategy_proposal import StrategyProposal
 
         with get_session() as session:
             q = session.query(StrategyProposal)
 
-            # `is not None` (not truthiness): only an OMITTED owner_wallet (None)
-            # gets the unscoped internal query. An empty string "" is an explicit
-            # (empty) scope that matches no rows — never a silent scope bypass.
-            if owner_wallet is not None:
+            if owner_user_id is not None:
+                owner_filters = [StrategyProposal.owner_user_id == owner_user_id]
+                if owner_wallet is not None:
+                    owner_filters.append(
+                        and_(
+                            StrategyProposal.owner_user_id.is_(None),
+                            StrategyProposal.owner_wallet == owner_wallet.lower(),
+                        )
+                    )
+                q = q.filter(or_(*owner_filters))
+            elif owner_wallet is not None:
                 q = q.filter(StrategyProposal.owner_wallet == owner_wallet.lower())
             if verdict:
                 q = q.filter(StrategyProposal.verdict == verdict)
@@ -211,25 +222,36 @@ def query_proposals(
         return [], 0
 
 
-def get_siblings(generation_id: str, *, owner_wallet: str | None = None) -> list[dict]:
+def get_siblings(
+    generation_id: str, *, owner_wallet: str | None = None, owner_user_id: str | None = None
+) -> list[dict]:
     """Get all proposals from the same generation (for 'considered alternatives').
 
     ``owner_wallet``, when given, scopes to rows owned by that wallet
     (case-insensitive, pushed into the SQL filter — see ``query_proposals``
     docstring for the same NULL-never-matches guarantee). Omitting it returns
-    the unscoped sibling set — internal/trusted use only; the HTTP-facing
-    caller (``proposals_routes.py``) must always pass the SIWE session wallet.
+    unscoped sibling set — internal/trusted use only; HTTP callers pass canonical
+    user ID and optional linked-wallet fallback.
     """
     try:
+        from sqlalchemy import and_, or_
+
         from archimedes.db import get_session
         from archimedes.models.strategy_proposal import StrategyProposal
 
         with get_session() as session:
             q = session.query(StrategyProposal).filter(StrategyProposal.generation_id == generation_id)
-            # `is not None` (not truthiness): an empty string "" is an explicit
-            # empty scope (matches no rows), never a silent unscoped bypass — only
-            # an omitted owner_wallet (None) gets the unscoped internal query.
-            if owner_wallet is not None:
+            if owner_user_id is not None:
+                owner_filters = [StrategyProposal.owner_user_id == owner_user_id]
+                if owner_wallet is not None:
+                    owner_filters.append(
+                        and_(
+                            StrategyProposal.owner_user_id.is_(None),
+                            StrategyProposal.owner_wallet == owner_wallet.lower(),
+                        )
+                    )
+                q = q.filter(or_(*owner_filters))
+            elif owner_wallet is not None:
                 q = q.filter(StrategyProposal.owner_wallet == owner_wallet.lower())
             rows = q.order_by(StrategyProposal.created_at.asc()).all()
             return [r.to_dict() for r in rows]

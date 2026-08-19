@@ -729,7 +729,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                     <div className="label mb-2">No generated strategies yet</div>
                     <p className="body" style={{ marginBottom: 10 }}>
                       Multi-paper fusion strategies you create from the{' '}
-                      <a href="/generate" style={{ color: 'var(--accent)' }}>Generate</a> page will
+                      <a href="/app/generate" style={{ color: 'var(--accent)' }}>Generate</a> page will
                       appear here once they've been backtested + cleared the rigor gate.
                     </p>
                     <p className="caption" style={{ color: 'var(--text-3)' }}>

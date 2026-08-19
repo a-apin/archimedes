@@ -12,10 +12,11 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from archimedes.api.limiter import limiter
+from archimedes.feature_flags import require_quant_feature
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ class ScenarioAnalysisRequest(BaseModel):
     scenarios: list[ScenarioRequest] | None = Field(None, max_length=10)
 
 
-@portfolio_router.post("/optimize")
+@portfolio_router.post("/optimize", dependencies=[Depends(require_quant_feature)])
 @limiter.limit("5/minute")
 async def optimize_portfolio(req: OptimizeRequest, request: Request, response: Response) -> dict:  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     """Compute optimal synth-asset weights with the requested optimizer.
@@ -208,7 +209,7 @@ async def optimize_portfolio(req: OptimizeRequest, request: Request, response: R
     }
 
 
-@portfolio_router.post("/parameter-sweep")
+@portfolio_router.post("/parameter-sweep", dependencies=[Depends(require_quant_feature)])
 @limiter.limit("5/minute")
 async def parameter_sweep(req: ParameterSweepRequest, request: Request, response: Response) -> dict:  # noqa: ARG001 — slowapi @limiter.limit inspects param name
     """Run a 2D sensitivity sweep over two backtest parameters.

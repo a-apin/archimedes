@@ -50,13 +50,14 @@ async def get_agent_manifest():
             "agent_card": "/.well-known/agent.json",
         },
         "auth": {
-            "scheme": "SIWE",
-            "spec": "EIP-4361",
+            "scheme": "Better Auth session",
+            "methods": ["emailPassword", "google", "github"],
             "description": (
-                "Sign-In with Ethereum via a programmatic EOA — no browser or passkey "
-                "required. GET /api/auth/nonce for a challenge, sign it, POST "
-                "/api/auth/verify to get a session cookie."
+                "Create or sign in to canonical account at /api/auth/* and retain session cookie. "
+                "Provider availability is returned by GET /api/auth/providers. Wallet proof is a "
+                "separate optional link under /api/wallets/* and never creates a session."
             ),
+            "wallet_link_spec": "EIP-4361",
             "chain_id": 5042002,
         },
         "endpoints": {
@@ -73,9 +74,13 @@ async def get_agent_manifest():
                 "status": "live",
                 "auth_required": False,
                 "routes": {
-                    "nonce": "GET /api/auth/nonce",
-                    "verify": "POST /api/auth/verify",
-                    "session": "GET /api/auth/session",
+                    "providers": "GET /api/auth/providers",
+                    "sign_up": "POST /api/auth/sign-up/email",
+                    "sign_in": "POST /api/auth/sign-in/email",
+                    "session": "GET /api/auth/get-session",
+                    "sign_out": "POST /api/auth/sign-out",
+                    "wallet_challenge": "POST /api/wallets/challenge",
+                    "wallet_verify": "POST /api/wallets/verify",
                 },
             },
             "generate": {

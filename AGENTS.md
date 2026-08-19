@@ -15,8 +15,8 @@ duplicating content here.
   investor, a trading bot, a research assistant): start at
   [`docs/agent-api.md`](docs/agent-api.md) for the full programmatic API contract, or
   [`/llms.txt`](https://archimedes-arc.com/llms.txt) on the live site for a curated,
-  low-token entry point. Both cover the same SIWE-authenticated, browser-free journey:
-  read → authenticate → generate → read the rigor verdict.
+  low-token entry point. Both cover same Better Auth browser-free journey:
+  read → authenticate account → generate → read rigor verdict; wallet proof stays optional.
 
 A machine-readable manifest is also live at
 [`/api/agent/manifest`](https://archimedes-arc.com/api/agent/manifest) and

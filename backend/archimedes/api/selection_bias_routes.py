@@ -562,8 +562,8 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
     path) — via the same ``run_rigor_gate`` primitive the curated path uses.
 
     Ownership (security-critical — copied verbatim from
-    ``strategies_routes.get_strategy``'s #850 pattern): a non-example,
-    unpublished ``strategy_store`` row is visible only to its ``owner_wallet``.
+    ``strategies_routes.get_strategy`` pattern): non-public generated row is
+    visible only to canonical owner, with linked-wallet fallback for legacy rows.
     Returns ``None`` for BOTH "no such strategy" and "exists but not visible to
     this caller" so the route 404s either way — existence must never leak to a
     non-owner via a different response shape.
@@ -572,18 +572,27 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
     branch above) when the strategy exists, is visible, but has fewer than 10
     persisted daily returns — the honest "Pending Backtest" case, not a 404.
     """
+    from archimedes.api.account_auth import get_current_user
     from archimedes.api.auth_siwe import get_verified_wallet
     from archimedes.db import get_session, init_db
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.backtest_repository import get_daily_returns, latest_backtests_by_strategy
-
     from archimedes.services.strategy_visibility import is_strategy_visible
 
     init_db()
     with get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
         caller = get_verified_wallet(request)
-        if not is_strategy_visible(row, caller):
+        user = get_current_user(request)
+        # Canonical-owner check lives in is_strategy_visible, not here. This
+        # branch previously re-implemented the owner_user_id rule inline right
+        # after already calling the shared predicate, which meant two copies of
+        # an authorization rule that could drift apart. The wallet passed for
+        # the legacy fallback is deliberately the SIWE-VERIFIED wallet, not the
+        # Better Auth linked wallet: legacy rows were created under the SIWE
+        # model, so accepting a merely-linked wallet would let someone claim a
+        # pre-migration row without ever proving control of it.
+        if not is_strategy_visible(row, caller, caller_user_id=user.id if user else None):
             return None
 
         strategy_name = row.strategy_name

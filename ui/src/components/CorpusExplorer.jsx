@@ -352,7 +352,7 @@ function PaperDetail({ paper, onBack }) {
           ) : (
             <p className="caption" style={{ color: 'var(--text-4)' }}>
               No strategies in the library currently cite this paper. Generate one from{' '}
-              <a href="/generate" style={{ color: 'var(--accent)' }}>Generate</a> — when the
+              <a href="/app/generate" style={{ color: 'var(--accent)' }}>Generate</a> — when the
               fusion engine selects this paper, the link will appear here.
             </p>
           )}

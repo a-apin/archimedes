@@ -107,6 +107,21 @@ jobs:
       - name: Test
         run: pytest -m "not integration" --tb=short -q
 
+  frontend-and-auth:
+    name: Frontend + Better Auth
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            auth/package-lock.json
+      - run: cd ui && npm ci --quiet && npm test && npm run lint && npm run build
+      - run: cd auth && npm ci --quiet && npm test
+
   ruff-gate:
     # Blocking gate for formatting + the critical lint rule families that
     # catch real bugs (syntax errors, undefined names/modules). Reads root

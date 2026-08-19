@@ -100,6 +100,24 @@ services:
       timeout: 5s
       retries: 5
 
+  # ---------- Schema migration (LOCAL ONLY) ----------
+  # Production runs this same preflight as an ordered one-off ECS task before
+  # rollout. Local Compose needs its own one-shot because init_db intentionally
+  # never creates PostgreSQL tables. Base-file dependencies stay optional so
+  # production can omit localdb; docker-compose.local.yml makes them strict.
+  migrate:
+    image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-backend:${IMAGE_TAG:-latest}
+    profiles: ["localdb"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "archimedes.scripts.alembic_migrate_preflight"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # ---------- Reverse proxy + Frontend ----------
   nginx:
     image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-nginx:${IMAGE_TAG:-latest}
@@ -121,16 +139,50 @@ services:
       NGINX_ENVSUBST_FILTER: "^NGINX_"
       NGINX_RESOLVER_LINE: "resolver 127.0.0.11 valid=10s ipv6=off;"
       NGINX_BACKEND_UPSTREAM: "backend:8000"
+      NGINX_AUTH_UPSTREAM: "auth:3000"
       NGINX_UPSTREAM_RESOLVE: "resolve"
     ports:
       # TLS terminates upstream at CloudFront + the ALB; nginx serves plain
       # HTTP on :8080. No :443/8443 mapping and no cert mounts — the
       # in-container self-signed-cert stopgap is retired (the ALB→nginx hop is
       # plain HTTP, so large responses no longer 502 through that TLS layer).
-      - "80:8080"
+      - "${ARCHIMEDES_HTTP_PORT:-80}:8080"
     depends_on:
       backend:
         condition: service_started
+      auth:
+        condition: service_healthy
+
+  # ---------- Better Auth ----------
+  auth:
+    image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-auth:${IMAGE_TAG:-latest}
+    build:
+      context: ./auth
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost}
+      BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-http://localhost,http://localhost:5173}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      migrate:
+        condition: service_completed_successfully
+        required: false
 
   # ---------- Oracle (price feeder) ----------
   oracle:
@@ -167,6 +219,9 @@ services:
         required: false
       redis:
         condition: service_healthy
+        required: false
+      migrate:
+        condition: service_completed_successfully
         required: false
 
   # ---------- Strategy Agent (autonomous portfolio runner) ----------
@@ -209,6 +264,9 @@ services:
       redis:
         condition: service_healthy
         required: false
+      migrate:
+        condition: service_completed_successfully
+        required: false
 
   # ---------- Backend API ----------
   backend:
@@ -235,6 +293,9 @@ services:
       ARCHIMEDES_FUSION_ENABLED: ${ARCHIMEDES_FUSION_ENABLED:-true}
       KB_ARTIFACT_DIR: /app/data/corpus-artifact
       PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-}
+      BETTER_AUTH_INTERNAL_URL: http://auth:3000
+      APP_ENV: ${APP_ENV:-development}
+      FEATURE_QUANT: ${FEATURE_QUANT:-}
       EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
       # Production secret loading: load_ssm_secrets() (main.py, at import time)
       # reads /archimedes/prod/* from SSM via the EC2 instance role at startup
@@ -268,6 +329,9 @@ services:
         required: false
       redis:
         condition: service_healthy
+        required: false
+      migrate:
+        condition: service_completed_successfully
         required: false
 
   # ---------- KB pipeline runner (Phase 3c skeleton) ----------
@@ -306,6 +370,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
+      migrate:
+        condition: service_completed_successfully
         required: false
 
 volumes:

@@ -1,6 +1,10 @@
 # Generation Streaming Spec
 
-> **Status:** Drafted 2026-05-22 as Phase 0 of the
+> **Status:** Historical design draft. Live endpoint/auth contract is
+> [`docs/agent-api.md`](../agent-api.md): all generation requires a Better Auth
+> account; wallet linking remains optional until wallet/on-chain actions.
+>
+> Drafted 2026-05-22 as Phase 0 of the
 > [Spine+ v2 plan](../plans/spine-plus-v2-plan.md). Authoritative for Phase 2
 > implementation — the Generate page's SSE protocol.
 >
@@ -37,8 +41,8 @@ in a background task.
   "wallet_address": "0x..." 
 }
 ```
-`wallet_address` is optional (anonymous Generate is allowed pre-deploy; wallet
-is required only at the vault-creation step).
+`wallet_address` was optional in this draft. Live generation requires account
+authentication; optional wallet provenance is resolved server-side from linked wallets.
 
 **Response (201):**
 ```json

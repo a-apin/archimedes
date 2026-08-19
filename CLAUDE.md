@@ -85,6 +85,11 @@ nominal lane.** Flag the cross-lane review need in the PR description instead.
 [`environment.yml`](environment.yml), Node frontend, Foundry, docker compose). What is not
 obvious from the tree:
 
+**Local stack (post-#1194):** `cp .env.example .env` (generate `BETTER_AUTH_SECRET`;
+LLM/RPC optional) then `docker compose up -d --build`. nginx publishes on rootless-safe
+port 8080 (<http://localhost:8080>, `/docs` for the API); compose runs Alembic before
+starting auth/backend. Full walkthrough: `SETUP.md`.
+
 **The whole toolchain lives in the `archimedes` conda env — including Node.**
 `python` / `pytest` / `ruff` **and** `node` / `npm` / the `ui/` ESLint all come
 from the `archimedes` env; **none are on the base shell PATH.** A bare

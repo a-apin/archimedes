@@ -2,7 +2,7 @@
 #
 # OPTIONAL / virality-prep. This is the stack baked into the backend AMI and
 # run by each auto-scaling-group instance (infra/asg.tf). It is INTENTIONALLY
-# minimal: backend API + nginx ONLY. Postgres and Redis are NOT here — they
+# minimal: backend API + Better Auth + nginx only. Postgres and Redis are external — they
 # live in managed Aurora + ElastiCache (infra/aurora.tf, infra/elasticache.tf)
 # and are reached over the network via DATABASE_URL / REDIS_URL.
 #
@@ -23,7 +23,7 @@
 #   DATABASE_URL=postgresql://archimedes:<pw>@<aurora-endpoint>:5432/archimedes
 #   REDIS_URL=rediss://<elasticache-endpoint>:6379/0
 #
-# Image refs (config consolidation, issue #1039 P5): both services below now
+# Image refs (config consolidation, issue #1039 P5): services below now
 # carry an explicit `image:` (ECR-hosted) alongside `build:`, mirroring the
 # same addition already made to docker-compose.yml (issue #1039 P1) — so
 # `docker compose pull` has something to pull instead of always needing
@@ -49,12 +49,44 @@ services:
         VITE_CIRCLE_CLIENT_URL: ${VITE_CIRCLE_CLIENT_URL:-https://modular-sdk.circle.com/v1/rpc/w3s/buidl}
         VITE_API_BASE: ${VITE_API_BASE:-}
     restart: unless-stopped
+    environment:
+      NGINX_ENVSUBST_FILTER: "^NGINX_"
+      NGINX_RESOLVER_LINE: "resolver 127.0.0.11 valid=10s ipv6=off;"
+      NGINX_BACKEND_UPSTREAM: "backend:8000"
+      NGINX_AUTH_UPSTREAM: "auth:3000"
+      NGINX_UPSTREAM_RESOLVE: "resolve"
     # Only port 80 → 8080. The ALB handles 443/TLS; no cert volume mounts here.
     ports:
       - "80:8080"
     depends_on:
       backend:
         condition: service_started
+      auth:
+        condition: service_healthy
+
+  # ---------- Better Auth ----------
+  auth:
+    image: ${ECR_REGISTRY:-037613907429.dkr.ecr.us-east-1.amazonaws.com}/archimedes-auth:${IMAGE_TAG:-latest}
+    build:
+      context: ./auth
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env (Aurora endpoint)}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-https://archimedes-arc.com}
+      BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-https://archimedes-arc.com}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   # ---------- Backend API ----------
   backend:
@@ -79,7 +111,10 @@ services:
       ARCHIMEDES_CORPUS_MANIFEST: /app/data/corpus/manifest.jsonl
       ARCHIMEDES_FUSION_ENABLED: ${ARCHIMEDES_FUSION_ENABLED:-true}
       KB_ARTIFACT_DIR: /app/data/corpus-artifact
-      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-archimedes-arc.com}
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-https://archimedes-arc.com}
+      BETTER_AUTH_INTERNAL_URL: http://auth:3000
+      APP_ENV: production
+      FEATURE_QUANT: ${FEATURE_QUANT:-}
       EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
     env_file:
       - .env
