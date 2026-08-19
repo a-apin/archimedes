@@ -2,7 +2,17 @@ import { useEffect, useState } from 'react'
 
 import { useAuth } from '../AuthContext'
 import { getProviders, signInEmail, signInSocial, signUpEmail } from '../auth-client'
+import {
+  PASSWORD_MAX,
+  PASSWORD_MIN,
+  passwordRules,
+  passwordRulesMet,
+  passwordsMatch,
+  passwordStrength,
+} from '../password-rules'
 import { postAuthPath } from '../routes'
+
+const STRENGTH_COLORS = ['var(--text-4)', 'var(--text-4)', 'var(--warning, #b08a3e)', 'var(--accent)', 'var(--accent)']
 
 export default function AuthPage({ mode }) {
   const creating = mode === 'sign-up'
@@ -10,9 +20,18 @@ export default function AuthPage({ mode }) {
   const callbackURL = `${window.location.origin}${next}`
   const { user, refresh } = useAuth()
   const [providers, setProviders] = useState({ emailPassword: true, google: false, github: false })
-  const [form, setForm] = useState({ name: '', email: '', password: '' })
+  const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+
+  // Sign-up validity mirrors the SERVER's rules exactly (length only — see
+  // password-rules.js). The strength meter is guidance and never gates.
+  const rules = passwordRules(form.password)
+  const rulesMet = passwordRulesMet(form.password)
+  const match = passwordsMatch(form.password, form.confirm)
+  const showMismatch = creating && form.confirm.length > 0 && !match
+  const strength = passwordStrength(form.password)
+  const canSubmit = !creating || (rulesMet && match)
 
   useEffect(() => {
     getProviders().then(setProviders).catch(() => {})
@@ -91,14 +110,64 @@ export default function AuthPage({ mode }) {
             <input
               required
               type="password"
-              minLength={12}
+              minLength={PASSWORD_MIN}
+              maxLength={PASSWORD_MAX}
               autoComplete={creating ? 'new-password' : 'current-password'}
               value={form.password}
               onChange={(event) => setForm({ ...form, password: event.target.value })}
             />
           </label>
+          {creating && (
+            <>
+              <label className="flex flex-col gap-1.5">
+                <span className="caption">Confirm password</span>
+                <input
+                  required
+                  type="password"
+                  maxLength={PASSWORD_MAX}
+                  autoComplete="new-password"
+                  aria-invalid={showMismatch}
+                  value={form.confirm}
+                  onChange={(event) => setForm({ ...form, confirm: event.target.value })}
+                />
+              </label>
+              <div aria-live="polite" className="flex flex-col gap-1.5">
+                <div className="flex gap-1" aria-hidden="true">
+                  {[1, 2, 3, 4].map((step) => (
+                    <span
+                      key={step}
+                      className="h-1 flex-1 rounded"
+                      style={{
+                        background: step <= strength.score ? STRENGTH_COLORS[strength.score] : 'var(--glass-border)',
+                      }}
+                    />
+                  ))}
+                </div>
+                {form.password.length > 0 && (
+                  <span className="caption text-[var(--text-4)]">
+                    Strength: {strength.label} — guidance only; the length rule below is the requirement.
+                  </span>
+                )}
+                <ul className="caption flex flex-col gap-0.5" aria-label="Password requirements">
+                  {rules.map((rule) => (
+                    <li key={rule.id} className={rule.met ? 'text-[var(--accent)]' : 'text-[var(--text-4)]'}>
+                      {rule.met ? '✓' : '○'} {rule.label}
+                    </li>
+                  ))}
+                  <li className={match ? 'text-[var(--accent)]' : 'text-[var(--text-4)]'}>
+                    {match ? '✓' : '○'} Passwords match
+                  </li>
+                </ul>
+              </div>
+              {showMismatch && (
+                <div className="status" role="alert">
+                  Passwords do not match.
+                </div>
+              )}
+            </>
+          )}
           {error && <div className="status" role="alert">{error}</div>}
-          <button className="btn-primary" type="submit" disabled={busy}>
+          <button className="btn-primary" type="submit" disabled={busy || !canSubmit}>
             {busy ? 'Working…' : creating ? 'Create account' : 'Sign in'}
           </button>
         </form>
