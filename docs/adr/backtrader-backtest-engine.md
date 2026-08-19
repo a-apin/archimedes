@@ -2,7 +2,7 @@
 
 > **Audience:** Archimedes team
 > **Status:** Accepted
-> **Date:** 2026-05-13 (recommended); ratified in the Day-3 sync — exact ratification date not recorded in git [unestablished — needs Dan]; closed as Accepted 2026-07-28
+> **Date:** 2026-05-13 (recommended); ratified in the Day-3 sync — exact ratification date not recorded in git [unestablished — needs Dan]; closed as Accepted 2026-07-28; amended 2026-08-19 (engine census + provenance columns)
 > **Owner:** Dan Browne
 > **Supersedes:** —
 > **Superseded-by:** —
@@ -268,3 +268,42 @@ rewrite.
 
 *(The three items above were the memo's "open questions". They are not open decisions —
 they are known properties of the chosen engine, recorded here as costs.)*
+
+## Amendment (2026-08-19): the engine census as it actually stands, and extended provenance
+
+This ADR chose backtrader as "the" engine. Two and a half months on, the honest census —
+per the `backtest_results.backtest_engine` discriminator this ADR mandated (the
+`_SEARCH_TRACKED_ENGINES` handling in
+[`selection_bias_routes.py`](../../backend/archimedes/api/selection_bias_routes.py)) —
+is **three engine tags, each with a distinct role**, and this amendment records them so
+the record matches reality:
+
+- **`backtrader`** — the per-strategy grading engine, exactly as decided above. The
+  rigor gate's substrate; unchanged.
+- **`dsl-fusion`** — the DSL generation path's evaluator
+  (`dsl_to_backtrader`; backtrader under the hood, tagged separately because its
+  `num_trials` carries the generation pool — see
+  [`num-trials-self-containment.md`](num-trials-self-containment.md)).
+- **`portfolio-simulator-v1`** — a numpy dollar-sleeve **portfolio** simulator in
+  [`portfolio_backtester.py`](../../backend/archimedes/services/portfolio_backtester.py),
+  serving portfolio-level questions (`backtest_portfolio`, `sensitivity_sweep`) that a
+  per-strategy Cerebro run does not answer (the "no native multi-strategy run" cost
+  above). It is a *companion* surface, not a rival grading engine.
+
+**Disposition after the 2026-08 chaff/test-suite audit:** much of
+`portfolio_backtester.py` was found structurally dead on the production pipeline —
+"bypassed, never decommissioned" (its Phase-2.2 rigor-overlay helpers and the
+`capacity_decay` loop had no live callers). [PR #1259](https://github.com/a-apin/archimedes/pull/1259)
+(in review at the time of this amendment) deletes the dead clusters with their tests;
+the surviving `portfolio-simulator-v1` surface is exactly `backtest_portfolio` +
+`sensitivity_sweep`. Historical `backtest_results` rows tagged
+`portfolio-simulator-v1` remain valid provenance — the tag did its job.
+
+**Provenance extended beyond the engine tag** ([PR #1242](https://github.com/a-apin/archimedes/pull/1242),
+merged, migration `b41c7d9e2a05`): `backtest_results` now also carries
+`cost_model_id` (which cost floor priced the run) and `look_ahead_audit_source`
+(AST audit vs. closed-DSL self-attestation — the distinction matters for generated
+strategies). The "engine provenance is recorded per result" consequence above now
+covers *how* a result was costed and audited, not just which engine produced it.
+Per-engine row counts are a live-DB question (`GROUP BY source_pipeline,
+backtest_engine`); no number is stated here by design.
