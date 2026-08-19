@@ -27,7 +27,7 @@ from archimedes.api.schemas import (
     StrategySignalResponse,
     StrategySignalsResponse,
 )
-from archimedes.api.wallet_routes import get_linked_wallet_address as get_verified_wallet
+from archimedes.api.wallet_routes import get_linked_wallet_address
 from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.services.live_rigor_gate import (
     RigorGateVerdict,
@@ -525,7 +525,7 @@ async def list_strategies(
     strats = strategy_provider().list_strategies(status=status_filter) if status_filter else library
     total = len(strats)
     window = strats[offset : offset + limit]
-    caller = get_verified_wallet(request)
+    caller = get_linked_wallet_address(request)
     responses: list[StrategyResponse] = []
     with get_session() as session:
         for s in window:
@@ -560,7 +560,7 @@ async def list_generated_strategies(
     from archimedes.models.strategy_generators import wallet_can_publish
     from archimedes.models.strategy_store import StrategyRecord
 
-    caller = get_verified_wallet(request)  # None when anonymous — never an error
+    caller = get_linked_wallet_address(request)  # None when anonymous — never an error
 
     rows: list[dict] = []
     try:
@@ -1584,7 +1584,7 @@ async def list_strategy_passports(
     from archimedes.db import get_session
     from archimedes.services.passport_loader import list_passports
 
-    caller = get_verified_wallet(request)  # optional linked-wallet compatibility
+    caller = get_linked_wallet_address(request)  # optional linked-wallet compatibility
     user = get_current_user(request)
     with get_session() as session:
         records = list_passports(session, status=status, regime_tag=regime_tag)
@@ -1606,7 +1606,7 @@ async def get_strategy_passport(request: Request, strategy_id: str):
     from archimedes.db import get_session
     from archimedes.services.passport_loader import get_passport
 
-    caller = get_verified_wallet(request)
+    caller = get_linked_wallet_address(request)
     user = get_current_user(request)
     with get_session() as session:
         record = get_passport(session, strategy_id)
@@ -1844,19 +1844,17 @@ async def get_strategy_returns(strategy_id: str, request: Request):
     is_curated = strat is not None
 
     if not is_curated:
-        from archimedes.api.auth_siwe import get_verified_wallet as get_siwe_wallet
+        from archimedes.api.auth_siwe import get_verified_wallet
         from archimedes.db import get_session
         from archimedes.models.strategy_store import StrategyRecord
         from archimedes.services.strategy_visibility import is_strategy_visible
 
         with get_session() as session:
             row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-            # NOTE: this module aliases get_linked_wallet_address AS
-            # get_verified_wallet at import (line ~21), so the module-level name
-            # does NOT mean SIWE-verified here. The legacy-owner fallback must
-            # compare a wallet the caller has PROVEN control of, so import the
-            # real SIWE function explicitly rather than inheriting the alias.
-            caller = get_siwe_wallet(request)
+            # The legacy-owner fallback compares a wallet the caller has
+            # PROVEN control of this session, so this site uses the SIWE
+            # get_verified_wallet, not get_linked_wallet_address.
+            caller = get_verified_wallet(request)
             user = get_current_user(request)
             if not is_strategy_visible(row, caller, caller_user_id=user.id if user else None):
                 raise HTTPException(status_code=404, detail="Strategy not found")
@@ -1913,7 +1911,7 @@ async def get_strategy(strategy_id: str, request: Request):
     if strat is not None:
         return _to_strategy_response(strat)
 
-    from archimedes.api.auth_siwe import get_verified_wallet as get_siwe_wallet
+    from archimedes.api.auth_siwe import get_verified_wallet
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.passport_loader import get_passport
@@ -1921,9 +1919,9 @@ async def get_strategy(strategy_id: str, request: Request):
 
     with get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-        # Explicit SIWE import, not this module's get_verified_wallet alias --
-        # see the note at the sibling call site above.
-        caller = get_siwe_wallet(request)
+        # SIWE-proven wallet, not the linked-wallet lookup — see the note at
+        # the sibling call site above.
+        caller = get_verified_wallet(request)
         user = get_current_user(request)
         if row is not None and not is_strategy_visible(row, caller, caller_user_id=user.id if user else None):
             raise HTTPException(status_code=404, detail="Strategy not found")
@@ -1969,7 +1967,7 @@ async def rename_strategy(
         if row is None or row.is_example:
             # Curated examples are not user-owned — same 404 as a missing row.
             raise HTTPException(status_code=404, detail="Strategy not found")
-        caller = get_verified_wallet(request)
+        caller = get_linked_wallet_address(request)
         is_owner = row.owner_user_id == user.id or (
             row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower()
         )
@@ -2054,7 +2052,7 @@ async def generate_strategy(
     except Exception:
         logger.debug("market regime context read failed", exc_info=True)
 
-    linked_wallet = get_verified_wallet(request)
+    linked_wallet = get_linked_wallet_address(request)
     store = JobStore()
     try:
         job_id = await store.enqueue(

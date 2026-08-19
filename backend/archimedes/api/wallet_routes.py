@@ -453,6 +453,17 @@ def unlink_wallet(session, user_id: str, wallet_id: str) -> None:
 
 
 def get_linked_wallet_address(request: Request) -> str | None:
+    """The caller's LINKED wallet address, resolved from their Better Auth session.
+
+    BOUNDARY: this is a database lookup, not a proof of control. The wallet
+    was signature-verified once at LINK time; nothing here proves the caller
+    still controls it on this request. That is sufficient for provenance and
+    read-scoping (which strategies are "yours" to see), and it is what makes
+    anonymous/None a normal outcome rather than an error. It must NEVER gate
+    a money-moving or otherwise irreversible action — those need a fresh
+    signature (``auth_siwe.get_verified_wallet``: session-proven control).
+    Call sites that accept the relaxed guarantee do so by using this name.
+    """
     user = get_current_user(request)
     if user is None:
         return None

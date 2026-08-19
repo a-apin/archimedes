@@ -115,7 +115,7 @@ def _legacy_siwe_test_adapter(monkeypatch):
     monkeypatch.setattr(wallet_routes, "get_linked_wallet_address", legacy_wallet)
     monkeypatch.setattr(generate_routes, "get_linked_wallet_address", legacy_wallet)
     monkeypatch.setattr(proposals_routes, "get_linked_wallet_address", legacy_wallet)
-    monkeypatch.setattr(strategies_routes, "get_verified_wallet", legacy_wallet)
+    monkeypatch.setattr(strategies_routes, "get_linked_wallet_address", legacy_wallet)
 
 
 @pytest.fixture(autouse=True)
