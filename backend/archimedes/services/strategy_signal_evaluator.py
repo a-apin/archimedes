@@ -585,11 +585,20 @@ def verify_universe_data_quality(
     return verify_universe(tickers, start, end, _downloader=_downloader)
 
 
-def _fetch_price_history(symbol: str, period: str = "2y", interval: str = "1d") -> pd.Series:
+def _fetch_price_history(symbol: str, period: str = "2y") -> pd.Series:
     """Fetch daily closing prices for a single synth symbol (with cache).
 
     Used as a fallback; the batched variant below is preferred for
-    multi-asset scans.
+    multi-asset scans. Always daily — the vendor seam's cache
+    (``asset_daily_bars``) is daily-grained; a prior ``interval`` parameter
+    was dropped since every caller left it at its "1d" default anyway.
+
+    Fetch goes through the market-data provider seam (#1218:
+    ``archimedes.services.market_data_provider``) rather than yfinance
+    directly — vendor-swappable via ``MARKET_DATA_PROVIDER``, and the
+    provider's own Postgres cache means a warm request never re-hits the
+    vendor live. This in-process ``_cache_get``/``_cache_put`` layer is
+    unchanged (hot 600s TTL in front of that).
     """
     cached = _cache_get(symbol)
     if cached is not None:
@@ -601,23 +610,14 @@ def _fetch_price_history(symbol: str, period: str = "2y", interval: str = "1d") 
     yf_ticker = entry[0]
 
     try:
-        import yfinance as yf
+        from archimedes.services.market_data_provider import get_provider
 
-        data = yf.download(
-            yf_ticker,
-            period=period,
-            interval=interval,
-            progress=False,
-            auto_adjust=True,
-            threads=False,
-        )
-        if data.empty:
+        fetched = get_provider().get_daily_close_batch({symbol: yf_ticker}, period=period)
+        close = fetched.get(symbol)
+        if close is None or close.empty:
             return pd.Series(dtype=float)
-        close = data["Close"]
-        if isinstance(close, pd.DataFrame):
-            close = close.iloc[:, 0]
+        close = close.copy()
         close.name = symbol
-        close = close.dropna()
         _cache_put(symbol, close)
         return close
     except Exception as e:
@@ -631,9 +631,12 @@ def _fetch_price_histories(
 ) -> dict[str, pd.Series]:
     """Batch-fetch price histories for many synth symbols.
 
-    Uses a single yfinance.download() call for everything that is not
-    already in cache.  Failed/empty tickers are simply omitted from
-    the result.
+    Uses a single batched call to the market-data provider (#1218 seam) for
+    everything that is not already in the in-process cache. Failed/empty
+    tickers are simply omitted from the result. The provider's own
+    ``asset_daily_bars`` Postgres cache sits underneath this — a cold
+    in-process cache does not necessarily mean a live vendor hit; it may be
+    served from Postgres instead.
     """
     result: dict[str, pd.Series] = {}
     # First pass: serve from cache
@@ -648,7 +651,7 @@ def _fetch_price_histories(
     if not to_fetch_synths:
         return result
 
-    # Build the yfinance ticker list (skip unknown synths)
+    # Build the ticker list (skip unknown synths)
     ticker_for_synth: dict[str, str] = {}
     for sym in to_fetch_synths:
         entry = GLOBAL_ASSETS.get(sym)
@@ -657,21 +660,12 @@ def _fetch_price_histories(
     if not ticker_for_synth:
         return result
 
-    yf_tickers = list(ticker_for_synth.values())
     try:
-        import yfinance as yf
+        from archimedes.services.market_data_provider import get_provider
 
-        data = yf.download(
-            tickers=" ".join(yf_tickers),
-            period=period,
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-            group_by="ticker",
-            threads=True,
-        )
+        fetched = get_provider().get_daily_close_batch(ticker_for_synth, period=period)
     except Exception as e:
-        logger.warning("Batched yfinance fetch failed: %s", e)
+        logger.warning("Batched market-data fetch failed: %s", e)
         # Fall back to per-symbol fetch for the ones we still need
         for sym in to_fetch_synths:
             series = _fetch_price_history(sym, period=period)
@@ -679,44 +673,13 @@ def _fetch_price_histories(
                 result[sym] = series
         return result
 
-    # Unpack the batched response (yfinance returns a MultiIndex
-    # frame when given >1 ticker; a flat frame when given 1).
-    if data is None or len(data) == 0:
-        return result
-
-    if len(yf_tickers) == 1:
-        sole_synth = next(iter(ticker_for_synth))
-        try:
-            close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            close = close.dropna()
-            close.name = sole_synth
-            if not close.empty:
-                _cache_put(sole_synth, close)
-                result[sole_synth] = close
-        except Exception as e:
-            logger.warning("Failed to extract Close for %s: %s", sole_synth, e)
-        return result
-
-    for synth, yf_ticker in ticker_for_synth.items():
-        try:
-            if isinstance(data.columns, pd.MultiIndex):
-                if yf_ticker not in data.columns.get_level_values(0):
-                    continue
-                close = data[yf_ticker]["Close"]
-            else:
-                close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            close = close.dropna()
-            if close.empty:
-                continue
-            close.name = synth
-            _cache_put(synth, close)
-            result[synth] = close
-        except Exception as e:
-            logger.warning("Failed to extract %s (%s): %s", synth, yf_ticker, e)
+    for synth, series in fetched.items():
+        if series is None or series.empty:
+            continue
+        series = series.copy()
+        series.name = synth
+        _cache_put(synth, series)
+        result[synth] = series
 
     return result
 

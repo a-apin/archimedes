@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import logging
-import time
 
 import pandas as pd
-import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
@@ -48,31 +46,15 @@ def normalize_ohlcv(data: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
 
 
 def fetch_ohlcv(symbol: str, start: str, end: str) -> pd.DataFrame:
-    last_exc: Exception | None = None
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            # auto_adjust=True applies yfinance's built-in split/dividend back-adjustment so
-            # corporate actions (e.g. KO's Aug-2012 2-for-1 split) don't show up as spurious
-            # overnight price discontinuities that corrupt pairs-trading signals and PBO.
-            data = yf.download(symbol, start=start, end=end, auto_adjust=True, progress=False)
-        except Exception as exc:  # transient network/yfinance error — retry with backoff
-            last_exc = exc
-            if attempt == _MAX_RETRIES:
-                break
-            logger.warning("fetch_ohlcv(%s) attempt %d failed: %s — retrying", symbol, attempt, exc)
-            time.sleep(_RETRY_DELAY_S * attempt)
-            continue
+    """Fetch + normalize OHLCV for ``symbol`` over [start, end).
 
-        if data.empty:
-            if attempt == _MAX_RETRIES:
-                raise ValueError(f"No data returned for symbol={symbol} in range {start}..{end}")
-            logger.warning("fetch_ohlcv(%s) returned empty — retrying (attempt %d)", symbol, attempt)
-            time.sleep(_RETRY_DELAY_S * attempt)
-            continue
+    A thin façade over the market-data provider seam (#1218:
+    ``archimedes_analytics_engine.market_data``) — default provider is
+    yfinance, and this function's retry/error contract (3 attempts, backoff,
+    raises on a genuinely empty/unfetchable result) is unchanged from before
+    the seam existed; that logic now lives in ``market_data.YFinanceProvider``.
+    Vendor-swappable via the ``MARKET_DATA_PROVIDER`` env var.
+    """
+    from archimedes_analytics_engine.market_data import get_provider
 
-        result = normalize_ohlcv(data, symbol=symbol)
-        if len(result) == 0:
-            raise ValueError(f"All rows dropped after normalization for {symbol} — check date range")
-        return result
-
-    raise RuntimeError(f"yfinance download failed for {symbol} after {_MAX_RETRIES} attempts") from last_exc
+    return get_provider().fetch_ohlcv(symbol, start, end)

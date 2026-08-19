@@ -1,9 +1,13 @@
 """Oracle updater — fetches real-world prices and pushes them on-chain.
 
 Implements IOracleUpdater from archimedes/interfaces/chain.py.
-Uses yfinance for equity/ETF prices and CoinGecko for crypto.
-Pushes prices via Circle Developer Controlled Wallets API (the oracle owner
-wallet is a Circle-managed wallet — no raw private key available).
+Equity/ETF prices (and the #775 cross-check's secondary reading) come from
+the market-data provider seam (``archimedes.services.market_data_provider``,
+#1218) — default provider yfinance, unchanged behavior; vendor-swappable via
+``MARKET_DATA_PROVIDER``. Crypto still comes straight from CoinGecko
+(unaffected by that seam). Pushes prices via Circle Developer Controlled
+Wallets API (the oracle owner wallet is a Circle-managed wallet — no raw
+private key available).
 """
 
 from __future__ import annotations
@@ -495,21 +499,34 @@ class OracleUpdater:
         return None
 
     async def _cross_check_secondary(self, price: AssetPrice) -> str | None:
-        """Secondary-source cross-check (#775): compare a NON-yfinance primary
-        (Pyth/Stork via the PRICE_SOURCE cascade) against an independent yfinance
-        reading and fail closed when they diverge beyond the band. Returns a
-        rejection reason, or None to proceed.
+        """Secondary-source cross-check (#775): compare a primary that is NOT
+        the active market-data provider (Pyth/Stork via the PRICE_SOURCE
+        cascade) against an independent reading FROM the active provider
+        (``MARKET_DATA_PROVIDER``, #1218 seam — default yfinance, today's
+        behavior) and fail closed when they diverge beyond the band. Returns
+        a rejection reason, or None to proceed.
 
-        **Asymmetric, by design.** A stale / missing / flaky yfinance NEVER blocks
-        a healthy primary — otherwise a yfinance outage (it's known-flaky, #772)
-        would become a trading halt and the guardrail itself the failure. yfinance
-        problems only proceed-and-log; only a *confident* divergence between two
-        healthy sources fails closed.
+        **The #775/#1218 seam tie-in.** The secondary reading is fetched via
+        ``_fetch_yfinance_single`` → ``market_data_provider.get_provider()``,
+        and the "same source, skip" guard below compares against
+        ``provider_name()`` rather than a hardcoded ``"yfinance"``. Swap
+        ``MARKET_DATA_PROVIDER`` to a new vendor and this guardrail's
+        secondary source swaps with it automatically — no separate change
+        needed here. (The variable/log names below keep saying "yfinance"
+        because that is still the only implemented provider; the mechanism is
+        vendor-generic.)
+
+        **Asymmetric, by design.** A stale / missing / flaky secondary NEVER
+        blocks a healthy primary — otherwise a secondary-provider outage
+        (yfinance is known-flaky, #772) would become a trading halt and the
+        guardrail itself the failure. Secondary problems only proceed-and-log;
+        only a *confident* divergence between two healthy sources fails closed.
 
         Honest claim this earns: *"primary cross-checked against an independent
-        yfinance market source, fail-closed on relative-magnitude divergence beyond
-        a band, with the secondary's own bar timestamp checked for staleness first."*
-        NOT "decentralized 2-of-3" (yfinance is centralized + off-chain).
+        market-data-provider reading, fail-closed on relative-magnitude divergence
+        beyond a band, with the secondary's own bar timestamp checked for staleness
+        first."* NOT "decentralized 2-of-3" (yfinance — the default/only provider
+        today — is centralized + off-chain).
 
         **Staleness gate (#775 Phase 2).** Before comparing magnitudes, the
         secondary's bar timestamp is checked against
@@ -517,23 +534,26 @@ class OracleUpdater:
         same as a missing one (fail-open, proceed on primary) — a stale reading was
         never validly comparable, so no divergence verdict is computed or reported,
         only a staleness verdict. This closes the previous magnitude-only gap where a
-        stale-but-numerically-close yfinance value could pass silently, or a
+        stale-but-numerically-close secondary value could pass silently, or a
         stale-and-wildly-different one could in principle trip a false divergence.
 
-        The check is a no-op when the primary is yfinance (same source), an
-        admin pin (operator last-resort override — must not be second-guessed), or
-        when the symbol has no yfinance ticker.
+        The check is a no-op when the primary already IS the active provider
+        (same source, not an independent second opinion), an admin pin (operator
+        last-resort override — must not be second-guessed), or when the symbol
+        has no ticker mapped for the secondary read.
         """
         if self._crosscheck_band_bps <= 0:
             return None  # disabled
-        if price.source in ("yfinance", "admin"):
-            # yfinance: same source, not an independent second opinion.
+        from archimedes.services.market_data_provider import provider_name
+
+        if price.source in (provider_name(), "admin"):
+            # active provider: same source, not an independent second opinion.
             # admin: a last-resort operator pin (ADMIN_PRICES_JSON) — the whole point
             # is to override upstream, so the secondary guardrail must not block it.
             return None
         yf_ticker = YFINANCE_MAP.get(price.symbol)
         if not yf_ticker:
-            return None  # no independent yfinance ticker for this symbol → can't cross-check → proceed
+            return None  # no ticker mapped for this symbol → can't cross-check → proceed
         try:
             result = await self._fetch_yfinance_single(yf_ticker)
         except Exception as exc:
@@ -645,48 +665,22 @@ class OracleUpdater:
         return None
 
     def _fetch_yfinance(self, symbols: dict[str, str], timestamp: datetime) -> list[AssetPrice]:
-        """Fetch prices from yfinance (sync — call via to_thread)."""
-        try:
-            import yfinance as yf
+        """Fetch equity prices via the market-data provider seam (#1218; sync —
+        call via to_thread). Default provider is yfinance — identical
+        behavior to before this seam existed (the fetch logic itself moved to
+        ``YFinanceProvider.get_intraday_quotes_batch``, unchanged). ``source``
+        on the returned prices is the ACTIVE provider name, not a hardcoded
+        ``"yfinance"``, so a vendor swap is visible on every downstream
+        consumer of these prices (including the #775 cross-check).
+        """
+        from archimedes.services.market_data_provider import get_provider, provider_name
 
-            tickers_str = " ".join(symbols.values())
-            data = yf.download(tickers_str, period="1d", interval="1m", progress=False)
-
-            results: list[AssetPrice] = []
-            for synth_symbol, yf_ticker in symbols.items():
-                try:
-                    if data.empty:
-                        continue
-                    if len(symbols) == 1:
-                        close = data["Close"]
-                        # yfinance >=1.0 returns a 1-column DataFrame (MultiIndex
-                        # columns) for single-ticker downloads; squeeze to a Series
-                        # before taking the last value.
-                        if hasattr(close, "columns"):
-                            close = close.iloc[:, 0]
-                        price = float(close.iloc[-1])
-                    else:
-                        close = data["Close"]
-                        if yf_ticker in close.columns:
-                            price = float(close[yf_ticker].dropna().iloc[-1])
-                        else:
-                            continue
-
-                    results.append(
-                        AssetPrice(
-                            symbol=synth_symbol,
-                            price_usd=price,
-                            timestamp=timestamp,
-                            source="yfinance",
-                        )
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to fetch {synth_symbol}: {e}")
-
-            return results
-        except ImportError:
-            logger.warning("yfinance not installed — returning empty prices")
-            return []
+        quotes = get_provider().get_intraday_quotes_batch(symbols)
+        source = provider_name()
+        return [
+            AssetPrice(symbol=synth_symbol, price_usd=price, timestamp=timestamp, source=source)
+            for synth_symbol, price in quotes.items()
+        ]
 
     async def _fetch_crypto(self, timestamp: datetime) -> list[AssetPrice]:
         """Fetch crypto prices from CoinGecko API."""
@@ -715,48 +709,35 @@ class OracleUpdater:
         return results
 
     async def _fetch_yfinance_single(self, symbol: str) -> tuple[float, datetime] | None:
-        """Fetch a single yfinance price + its bar timestamp (e.g. VIX, or the
-        secondary-source cross-check's independent reading, #775).
+        """Fetch a single provider price + its bar timestamp (e.g. VIX, or the
+        secondary-source cross-check's independent reading, #775) via the
+        market-data provider seam (#1218). Default provider is yfinance —
+        identical behavior to before this seam existed (the fetch logic
+        itself moved to ``YFinanceProvider.get_intraday_quote``, unchanged;
+        this method now just runs it in a thread).
 
         Returns ``(price, bar_ts)`` on success with ``bar_ts`` normalized to a
         tz-aware UTC ``datetime``, or ``None`` on any failure (empty data, missing
         column, exception).
         """
-        try:
-            import yfinance as yf
+        from archimedes.services.market_data_provider import get_provider
 
-            data = await asyncio.to_thread(yf.download, symbol, period="1d", interval="1m", progress=False)
-            if not data.empty:
-                close = data["Close"]
-                # yfinance >=1.0 returns a 1-column DataFrame for single-ticker
-                # downloads; squeeze to a Series before taking the last value.
-                if hasattr(close, "columns"):
-                    close = close.iloc[:, 0]
-                bar_ts = data.index[-1]
-                # Normalize to tz-aware UTC. yfinance intraday bars are tz-aware
-                # (exchange-local) in current versions; if a tz-naive Timestamp ever
-                # shows up, assume UTC to match this file's existing convention for
-                # AssetPrice.timestamp (see _validate_for_push / _is_fresh above,
-                # which treat a naive timestamp as already-UTC rather than local).
-                bar_ts = bar_ts.tz_convert("UTC") if bar_ts.tzinfo is not None else bar_ts.tz_localize("UTC")
-                return float(close.iloc[-1]), bar_ts.to_pydatetime()
-        except Exception as e:
-            logger.warning(f"Failed to fetch {symbol}: {e}")
-        return None
+        return await asyncio.to_thread(get_provider().get_intraday_quote, symbol)
 
     def _fetch_sp500_moving_averages(self) -> dict[str, float]:
-        """Fetch S&P 500 50-day and 200-day moving averages."""
+        """Fetch S&P 500 50-day and 200-day moving averages via the
+        market-data provider seam (#1218) — daily bars, so this also benefits
+        from the provider's ``asset_daily_bars`` Postgres cache."""
         try:
-            import yfinance as yf
+            from archimedes.services.market_data_provider import get_provider
 
-            spy = yf.Ticker("^GSPC")
-            hist = spy.history(period="1y")
-            if hist.empty:
+            close = get_provider().get_daily_close_batch({"^GSPC": "^GSPC"}, period="1y").get("^GSPC")
+            if close is None or close.empty:
                 return {}
 
             return {
-                "ma50": float(hist["Close"].rolling(50).mean().iloc[-1]),
-                "ma200": float(hist["Close"].rolling(200).mean().iloc[-1]),
+                "ma50": float(close.rolling(50).mean().iloc[-1]),
+                "ma200": float(close.rolling(200).mean().iloc[-1]),
             }
         except Exception as e:
             logger.warning(f"Failed to fetch S&P MA data: {e}")
