@@ -35,6 +35,9 @@ const NAV = [
 		items: [
 			{ id: "generate", label: "Generate", icon: "i-lucide-sparkles" },
 			{ id: "library", label: "Library", icon: "i-lucide-line-chart" },
+			// Paper Trading lives in STRATEGY: it is the act-on step of the MVP
+			// spine (generate → verdict → paper) — simulated, account-owned, free.
+			{ id: "paper", label: "Paper Trading", icon: "i-lucide-trending-up" },
 			// Leaderboard lives in STRATEGY (#1077): it ranks the strategy library —
 			// discovery-friendly but strategy-native. (Quant Lab moved to Position.)
 			{ id: "leaderboard", label: "Leaderboard", icon: "i-lucide-trophy" },
@@ -88,6 +91,7 @@ export const PAGE_LABELS = {
 	architecture: "Architecture",
 	library: "Library",
 	strategy: "Strategy Passport",
+	paper: "Paper Trading",
 	corpus: "Corpus",
 	quant: "Quant Lab",
 	portfolio: "Portfolio",

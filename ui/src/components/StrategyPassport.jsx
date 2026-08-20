@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import CreateVaultModal from "./CreateVaultModal";
 import { ROADMAP_SURFACES_ENABLED } from "../featureFlags.js";
 import RigorStrictnessControl, { levelLabel } from "./RigorStrictnessControl";
+import { apiGet, apiPostWithMeta } from "../api";
 import { useRigorStrictness, BADGE_LEVEL } from "../hooks/useRigorStrictness";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -101,6 +102,7 @@ export default function StrategyPassport({
 	strategyId,
 	onNavigate,
 	walletAddr,
+	user = null,
 }) {
 	const [strategy, setStrategy] = useState(null);
 	const [loading, setLoading] = useState(true);
@@ -363,6 +365,16 @@ export default function StrategyPassport({
 					<div className="passport-strictness fade-up fade-up-2">
 						<RigorStrictnessControl level={level} onChange={setLevel} />
 					</div>
+
+					{/* Paper trading — the MVP act-on step. Account-owned and simulated
+					    (POST /api/paper/deployments): no wallet, no rigor precondition,
+					    free by design. The server allows duplicate deployments, so the
+					    already-running state below is client-side dedupe UX. */}
+					<PaperDeployCard
+						strategyId={strategyId}
+						user={user}
+						onNavigate={onNavigate}
+					/>
 				</aside>
 
 				<div className="passport-evidence">
@@ -762,6 +774,102 @@ function Metric({ label, value, hint }) {
 			<div className="caption text-[var(--text-4)]">{label}</div>
 			<div className="text-[1.1rem] font-semibold tabular-nums">{value}</div>
 			{hint && <div className="caption text-[var(--text-4)]">{hint}</div>}
+		</div>
+	);
+}
+
+// Paper-trading CTA — the free, account-owned act-on step (MVP spine). Kept
+// separate from the vault Deploy card above: no wallet, no strictness gate,
+// nothing moves. The server permits duplicate deployments for one strategy,
+// so the "already running" state is client-side dedupe UX only.
+function PaperDeployCard({ strategyId, user, onNavigate }) {
+	const [existing, setExisting] = useState(null); // active deployment for THIS strategy
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState("");
+
+	useEffect(() => {
+		if (!user || !strategyId) return;
+		let cancelled = false;
+		apiGet("/api/paper/deployments")
+			.then((res) => {
+				if (cancelled) return;
+				const hit = (res.deployments || []).find(
+					(d) => d.strategy_id === strategyId && d.status === "active",
+				);
+				setExisting(hit || null);
+			})
+			.catch(() => {}); // decoration only — the CTA still works without it
+		return () => {
+			cancelled = true;
+		};
+	}, [user, strategyId]);
+
+	const start = async () => {
+		setBusy(true);
+		setError("");
+		try {
+			await apiPostWithMeta("/api/paper/deployments", {
+				strategy_id: strategyId,
+			});
+			onNavigate("paper");
+		} catch (e) {
+			if (e.status === 401) {
+				setError("Your session expired — sign in again to paper trade.");
+			} else if (e.detail?.reason === "no_strategy_spec") {
+				setError(
+					"This strategy has no machine-readable spec, so it cannot be paper-traded.",
+				);
+			} else if (e.detail?.reason === "invalid_strategy_spec") {
+				setError(
+					"This strategy's stored spec fails validation — it cannot be paper-traded.",
+				);
+			} else {
+				setError(e.detail?.message || e.message || "Paper deploy failed.");
+			}
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	return (
+		<div className="card fade-up fade-up-2" style={{ marginTop: 12 }}>
+			<div className="label mb-1">Paper trading</div>
+			<p className="caption leading-relaxed">
+				Simulated deployment — <strong>free, no funds move</strong>. Snapshots
+				this strategy's spec and appends one real-data return per trading day,
+				building the track record that carries to mainnet.
+			</p>
+			{error && (
+				<p className="caption" role="alert" style={{ color: "var(--danger, #b91c1c)", marginTop: 6 }}>
+					{error}
+				</p>
+			)}
+			<div style={{ marginTop: 10 }}>
+				{!user ? (
+					<a
+						className="btn btn-outline btn-sm"
+						href={`/sign-in?next=${encodeURIComponent(`/app/strategy/${strategyId}`)}`}
+					>
+						Sign in to paper trade →
+					</a>
+				) : existing ? (
+					<button
+						className="btn btn-outline btn-sm"
+						onClick={() => onNavigate("paper")}
+						title={`Active since ${existing.deployed_at}`}
+					>
+						Paper trading — day {existing.days} · view →
+					</button>
+				) : (
+					<button
+						className="btn btn-primary btn-sm"
+						disabled={busy}
+						onClick={start}
+					>
+						{busy ? "Deploying…" : "Start paper trading (free) →"}
+					</button>
+				)}
+			</div>
 		</div>
 	);
 }

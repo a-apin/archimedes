@@ -134,6 +134,7 @@ test("auth-required pages stay auth-required", () => {
 	for (const path of [
 		"/app/generate",
 		"/app/library",
+		"/app/paper",
 		"/app/account",
 	]) {
 		const route = resolveRoute(path);

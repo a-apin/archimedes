@@ -14,6 +14,7 @@ import MarketplacePage from "./components/MarketplacePage";
 import OnboardingTour, {
 	hasCompletedOnboarding,
 } from "./components/OnboardingTour";
+import PaperTrading from "./components/PaperTrading";
 import Portfolio from "./components/Portfolio";
 import PublishPage from "./components/PublishPage";
 import QuantLab from "./components/QuantLab";
@@ -137,12 +138,15 @@ export default function AuthenticatedApp({
 						onNavigate={navigateToPage}
 					/>
 				);
+			case "paper":
+				return <PaperTrading onNavigate={navigateToPage} />;
 			case "strategy":
 				return (
 					<StrategyPassport
 						strategyId={route.strategyId}
 						onNavigate={navigateToPage}
 						walletAddr={walletAddr}
+						user={user}
 					/>
 				);
 			case "corpus":

@@ -28,6 +28,7 @@ export const CRUMB_MAP = {
   // Strategy — wallet-gated, owns the primary generation path
   generate:     { group: null, groupPage: null },
   library:      { group: 'Strategy', groupPage: 'generate' },
+  paper:        { group: 'Strategy', groupPage: 'generate' },
   leaderboard:  { group: 'Strategy', groupPage: 'generate' },
   // Position — wallet-gated deployed-state surfaces
   portfolio:    { group: null, groupPage: null },

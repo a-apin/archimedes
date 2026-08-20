@@ -17,6 +17,7 @@ const APP_PATHS = {
   '/app/leaderboard': 'leaderboard',
   '/app/generate': 'generate',
   '/app/library': 'library',
+  '/app/paper': 'paper',
   '/app/corpus': 'corpus',
   '/app/quant': 'quant',
   '/app/portfolio': 'portfolio',
