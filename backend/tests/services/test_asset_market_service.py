@@ -89,12 +89,18 @@ class TestPctChangePlausibilityGuard:
         assert _pct_change([100.0, 200.0], 1) == pytest.approx(100.0)
 
     def test_pct_change_multiday_window_tolerates_a_wider_move(self):
-        """A 21-bar window's bound is wider than a 1-bar window's (the daily
-        bound compounds across the window) — the same cumulative move that
-        would be rejected over 1 bar is plausible over 21."""
-        prices = [10.0] * 21 + [30.0]  # +200% over 21 bars
-        assert _pct_change(prices, 21) == pytest.approx(200.0)
-        # But the 1-bar version of the same magnitude is still rejected.
+        """A large multi-day move survives when it's actually made of
+        individually-plausible daily steps (#1322 review finding 2 —
+        the guard scans bar-to-bar, not an endpoint-compounded bound, so
+        this must be a genuinely compounding series, not a flat run with
+        one terminal spike, which is the bad-tick shape the guard exists
+        to catch, not tolerate)."""
+        start = 10.0
+        end = start * 3.0  # +200% over 21 bars
+        daily_factor = (end / start) ** (1.0 / 21)
+        prices = [start * (daily_factor**i) for i in range(22)]
+        assert _pct_change(prices, 21) == pytest.approx(200.0, rel=1e-6)
+        # But the same +200% packed into a single bar is still rejected.
         assert _pct_change([10.0, 30.0], 1) is None
 
     def test_pct_change_multiday_bound_compounds_not_sqrt_scales(self):
@@ -140,15 +146,45 @@ class TestPctChangePlausibilityGuard:
         assert was_rejected is False
 
     def test_pct_change_bound_is_1_day_tight_but_30_day_generous(self):
-        """Sanity-pins the compounding formula's shape: the 1-day bound stays
-        at the strict 100% (where the sJUP defect class lives) while the
-        30-day endpoint bound is enormously wider — verifying the fix
-        doesn't accidentally leave the multi-day guard just as tight as the
-        sqrt(n) version it replaced (sqrt(30)*100% ≈ 548% would have
-        rejected the +600% endpoint move asserted below)."""
+        """Sanity-pins the guard's shape: the 1-day bound stays at the
+        strict 100% (where the sJUP defect class lives) while a genuinely
+        compounding 30-day move — every bar individually plausible — is
+        kept no matter how large the cumulative total is. (Not an endpoint-
+        compounded bound: see `test_pct_change_multiday_rejects_a_bad_bar_
+        anywhere_in_the_window` for why an endpoint-only check can't tell
+        this apart from a single bad tick.)"""
         assert _pct_change([100.0, 201.0], 1) is None  # just over the 1-day bound
-        prices = [10.0] * 30 + [70.0]  # +600% endpoint-to-endpoint over 30 bars
-        assert _pct_change(prices, 30) == pytest.approx(600.0)
+        start = 10.0
+        end = start * 7.0  # +600% over 30 bars, each bar a plausible ~6.6%/day
+        daily_factor = (end / start) ** (1.0 / 30)
+        prices = [start * (daily_factor**i) for i in range(31)]
+        assert _pct_change(prices, 30) == pytest.approx(600.0, rel=1e-6)
+
+    def test_pct_change_multiday_rejects_a_bad_bar_anywhere_in_the_window(self):
+        """Negative control (#1322 review finding 1/2): a single implausible
+        bar must still sink the whole window at n=7 and n=30, even once
+        it's aged past the 1-day lookback — an endpoint-only bound (whether
+        compounded or sqrt(n)-scaled) can't distinguish "one bad tick
+        inside an otherwise-flat run" from "many small legitimate daily
+        moves"; only a bar-to-bar scan can. Mirrors the issue's own
+        sJUP-shaped bad bar (a tiny prior close that snaps back to a normal
+        price one bar later) aged 8 bars deep into a 40-bar history, so it
+        sits inside the 7d window (n=7) and the 30d window (n=30) but has
+        already fallen out of the 1d window (n=1).
+
+        Mutation check: deleting the multi-day bar-scan — e.g. reverting to
+        `if n_eff > 1: bound = float('inf')`, or any endpoint-only bound —
+        makes both assertions below fail (value stops being None)."""
+        prices = [10.0] * 32 + [0.0003166165] + [0.005] * 7  # bad bar at index -8
+        assert len(prices) == 40
+        for n in (7, 30):
+            value, was_rejected = _pct_change_with_reason(prices, n)
+            assert value is None, f"n={n}: bad bar must not survive as a value"
+            assert was_rejected is True, f"n={n}: must be flagged as a rejection, not 'no data'"
+        # The 1-day window no longer contains the bad bar at all (it aged
+        # out 7 bars ago) — the trailing bars are all plausible 0.5%/0.005
+        # steps, so n=1 is unaffected.
+        assert _pct_change(prices, 1) == pytest.approx(0.0, abs=1e-9)
 
 
 # ── Asset-class-aware trading-day convention (#1322) ────────────────────────
@@ -258,6 +294,21 @@ class TestRealizedVolPlausibilityGuard:
         assert value is None
         assert was_rejected is False
 
+    def test_realized_vol_rejects_a_zero_bar_in_the_window(self):
+        """#1322 review finding 4: a zero close inside the window is a data
+        hole, not a real -100% return — it must not slip through and get
+        folded into the vol estimate. Before the fix, `if not prev:
+        continue` only skipped the step *out of* the zero; the step *into*
+        it computed an exact -100% return that passed the strict `>` bound
+        comparison (-100% is not > 100%) and was silently included as real
+        data. Mutation check: reverting the `prev <= 0 or curr <= 0` guard
+        back to `if not prev: continue` makes this assertion fail (value
+        stops being None)."""
+        prices = [0.005] * 20 + [0.0] + [0.005] * 10
+        value, was_rejected = _realized_vol_annual_with_reason(prices, 30, _CRYPTO_TRADING_DAYS_PER_YEAR)
+        assert value is None
+        assert was_rejected is True
+
 
 class TestExplanationsAssetClassAware:
     def test_period_labels_match_asset_class(self):
@@ -303,6 +354,25 @@ class TestExplanationsAssetClassAware:
         expl = _explanations_for({"realized_vol_30d": crypto_vol}, is_247=True)
         expected_daily_pct = (crypto_vol / math.sqrt(365)) * 100.0
         assert f"{expected_daily_pct:.1f}%" in expl["realized_vol_30d"]
+
+    def test_change_24h_copy_drops_vol_clause_when_vol_was_suppressed(self):
+        """#1322 review finding 3: when realized_vol_30d is None (suppressed
+        by the plausibility guard, or just not enough history), the
+        change_24h_pct copy must not assert a fabricated '0.0%' vol
+        threshold — a number the computation explicitly refused to
+        produce. It should read as a plain move description with no vol
+        clause at all. Mutation check: reverting `vol = item.get(...)` back
+        to `item.get(...) or 0.0` makes '0.0%' reappear in the copy."""
+        expl = _explanations_for({"change_24h_pct": 5.0, "realized_vol_30d": None}, is_247=True)
+        assert "0.0%" not in expl["change_24h_pct"]
+        assert expl["change_24h_pct"] == "Percentage move in the last trading day. Positive = up."
+
+    def test_change_24h_copy_keeps_vol_clause_when_vol_present(self):
+        """Sanity: the vol clause still renders normally when realized_vol_30d
+        is actually present, so the finding-3 fix doesn't drop it always."""
+        expl = _explanations_for({"change_24h_pct": 5.0, "realized_vol_30d": 0.5}, is_247=True)
+        assert "unusual for this asset" in expl["change_24h_pct"]
+        assert "0.0%" not in expl["change_24h_pct"]
 
 
 # ── Oracle read tests (mocked chain_client) ────────────────────────────────

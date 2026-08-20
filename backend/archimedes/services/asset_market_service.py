@@ -75,14 +75,18 @@ _HISTORY_FETCH_BUDGET_SECONDS = 45.0
 # explosive ratio that passes every other check — e.g. sJUP's prior close of
 # 0.0003166165 produced a reported "+1483.08% 24h" move. 100%/day is already
 # an extremely generous bound (no major asset has ever moved >100% in a
-# single day without a corporate-action-style event); multi-day windows
-# compound this per-day bound rather than scaling it by sqrt(n) — sqrt(n)
-# models how a *volatility* (a standard deviation) grows with time and does
-# not apply to a point-to-point *cumulative simple return*, which compounds
-# multiplicatively. A sqrt(n)-scaled bound is both mathematically wrong for
-# this quantity and too tight in practice: at n=30 it allows only ±548%,
-# which would reject a real (if extreme) 10x month in a volatile crypto
-# name. See `_pct_change` for the compounding formula.
+# single day without a corporate-action-style event). Multi-day windows
+# (n > 1) do NOT compound this into a single endpoint-ratio bound — sqrt(n)
+# scaling is mathematically wrong for a point-to-point cumulative simple
+# return (it's a volatility-scaling argument), but compounding the bound
+# itself (`(1+bound)**n - 1`) is vacuous, not just generous: ±12,700% at
+# n=7, ±107,374,182,300% at n=30 — wide enough to let the sJUP-shaped bad
+# tick straight through once it ages into the 7d/30d lookback (#1322
+# review, PR #1343 finding 5). Instead, multi-day windows are scanned
+# bar-to-bar against this same per-day bound, admitting a real 10x month
+# (many individually-plausible ~8%/day steps) while still rejecting a
+# single implausible bar anywhere in the window. See `_pct_change_with_reason`
+# for the bar-scan.
 _MAX_PLAUSIBLE_DAILY_PCT = 100.0
 
 # Trading-day conventions differ by asset class (#1322). Equities/ETFs/FX
@@ -126,6 +130,13 @@ _EXPLANATIONS_TEMPLATES = {
     ),
 }
 
+# change_24h_pct copy for when realized_vol_30d was suppressed (#1322
+# review finding 3) — the vol-guard makes this systematically more common
+# (one bad bar suppresses vol for the whole 30-session window it sits in),
+# and the vol-based "unusual" clause can't be honestly asserted from a
+# number the computation explicitly refused to produce.
+_CHANGE_24H_PCT_NO_VOL_TEMPLATE = "Percentage move in the last trading day. Positive = up."
+
 
 def _explanations_for(item: dict[str, Any], is_247: bool = False) -> dict[str, str]:
     """Plain-English copy for each metric. ``is_247`` (#1322) selects the
@@ -133,7 +144,7 @@ def _explanations_for(item: dict[str, Any], is_247: bool = False) -> dict[str, s
     convention the computation didn't actually use — crypto is 7/30 calendar
     days annualized with sqrt(365); everything else is 5/21 trading days
     annualized with sqrt(252)."""
-    vol = item.get("realized_vol_30d") or 0.0
+    vol = item.get("realized_vol_30d")
     trading_days_per_year = _CRYPTO_TRADING_DAYS_PER_YEAR if is_247 else _EQUITY_TRADING_DAYS_PER_YEAR
     vol_daily_pct = (vol / math.sqrt(trading_days_per_year)) * 100.0 if vol else 0.0
     week_label = "7 calendar days" if is_247 else "5 trading days"
@@ -141,6 +152,12 @@ def _explanations_for(item: dict[str, Any], is_247: bool = False) -> dict[str, s
     fields = {}
     for key, template in _EXPLANATIONS_TEMPLATES.items():
         if item.get(key) is None:
+            continue
+        if key == "change_24h_pct" and vol is None:
+            # realized_vol_30d was suppressed as implausible/insufficient —
+            # don't default it to a fabricated 0.0% just to fill the
+            # template; drop the vol clause instead.
+            fields[key] = _CHANGE_24H_PCT_NO_VOL_TEMPLATE
             continue
         try:
             fields[key] = template.format(
@@ -171,15 +188,23 @@ def _pct_change_with_reason(prices: list[float], n: int) -> tuple[float | None, 
     distinguish "not enough history yet" from "a value was actively
     suppressed as implausible" — see ``AssetExploreItem.rejected_fields``.
 
-    The bound compounds the single-day bound across the window rather than
-    scaling it by sqrt(n): the n-bar quantity being checked is a cumulative
-    *simple* return, which compounds multiplicatively — sqrt(n) is a
-    volatility-scaling argument that doesn't apply here, and using it made
-    the bound too tight for legitimate large multi-day moves (e.g. a real
-    10x over a month in a volatile crypto name) while still being generous
-    enough to admit the sJUP-style single-bar decimal-placement defect at
-    n=1. Compounding means only the 1-day window stays tightly bounded
-    (100%) — exactly where that defect class lives.
+    For n > 1, compounding the single-day bound onto the *endpoint* ratio
+    (e.g. `(1 + bound)**n - 1`) turns out to be vacuous rather than merely
+    generous: at n=7 it allows ±12,700%, at n=30 it allows
+    ±107,374,182,300% — wide enough to let the issue's own bad tick
+    (sJUP's +1479.20%, aged into the 7d/30d lookback) straight through
+    (#1322 review, PR #1343 finding 5). An endpoint-only check can never
+    tell "one bad tick" apart from "many small legitimate daily moves" —
+    both can produce the same huge endpoint ratio — so for n > 1 this scans
+    the window bar-to-bar instead, the same shape
+    `_realized_vol_annual_with_reason` uses: reject only if *some single
+    bar* in the window implies a move past the per-day bound. A real
+    multi-day move made of individually-plausible daily steps (e.g. a
+    genuine 10x over a month, ~8.1%/day compounded) is kept no matter how
+    large the compounded total is; a single implausible bar anywhere in the
+    window — including one that's since aged out of the 1-day window but
+    still sits inside the 7d/30d one — is not. n=1 keeps the simple
+    endpoint bound (identical to a 1-bar scan).
     """
     if not prices or len(prices) < n + 1:
         return None, False
@@ -187,17 +212,49 @@ def _pct_change_with_reason(prices: list[float], n: int) -> tuple[float | None, 
     if not start:
         return None, False
     pct = (end - start) / start * 100.0
-    n_eff = max(n, 1)
-    bound = ((1.0 + _MAX_PLAUSIBLE_DAILY_PCT / 100.0) ** n_eff - 1.0) * 100.0
-    if abs(pct) > bound:
-        logger.warning(
-            "explore: rejecting implausible %.1f%% change over %d bar(s) (bound ±%.1f%%) — "
-            "treating as a bad tick, not a real move",
-            pct,
-            n,
-            bound,
-        )
-        return None, True
+    if n <= 1:
+        if abs(pct) > _MAX_PLAUSIBLE_DAILY_PCT:
+            logger.warning(
+                "explore: rejecting implausible %.1f%% change over %d bar(s) (bound ±%.1f%%) — "
+                "treating as a bad tick, not a real move",
+                pct,
+                n,
+                _MAX_PLAUSIBLE_DAILY_PCT,
+            )
+            return None, True
+        return pct, False
+    window = prices[-(n + 1) :]
+    for i in range(1, len(window)):
+        prev, curr = window[i - 1], window[i]
+        if prev <= 0 or curr <= 0:
+            # A non-positive price inside the window is itself a data hole
+            # (#1322 review finding 4's fix, applied consistently here too)
+            # — not a computable return, and not something a legitimate
+            # multi-day move can produce.
+            logger.warning(
+                "explore: rejecting implausible %.1f%% change over %d bar(s) — bar %d/%d has a "
+                "non-positive price (prev=%.6g, curr=%.6g) — treating as a bad tick, not a real move",
+                pct,
+                n,
+                i,
+                len(window) - 1,
+                prev,
+                curr,
+            )
+            return None, True
+        bar_pct = (curr - prev) / prev * 100.0
+        if abs(bar_pct) > _MAX_PLAUSIBLE_DAILY_PCT:
+            logger.warning(
+                "explore: rejecting implausible %.1f%% change over %d bar(s) — bar %d/%d implied a "
+                "%.1f%% single-bar move (bound ±%.1f%%) — treating as a bad tick, not a real move",
+                pct,
+                n,
+                i,
+                len(window) - 1,
+                bar_pct,
+                _MAX_PLAUSIBLE_DAILY_PCT,
+            )
+            return None, True
     return pct, False
 
 
@@ -234,16 +291,33 @@ def _realized_vol_annual_with_reason(
     exactly that shape of "fix"); the honest response is None for the
     whole window when any single bar exceeds the same per-day plausibility
     bound `_pct_change` uses (bar-to-bar, so no compounding — n=1 always).
+
+    A non-positive bar inside the window (#1322 review finding 4) is
+    rejected the same way, not silently skipped: skipping only the step
+    *out of* a zero close (the old ``if not prev: continue``) still let the
+    step *into* it compute an exact -100% return that slipped past a
+    strict ``>`` bound comparison (-100% is not > 100%) and got folded into
+    the vol estimate as real data. A zero/negative close is a data hole,
+    not a return — same treatment `_pct_change_with_reason` gives a zero
+    start.
     """
     if not prices or len(prices) < window + 1:
         return None, False
     tail = prices[-(window + 1) :]
     rets = []
     for i in range(1, len(tail)):
-        prev = tail[i - 1]
-        if not prev:
-            continue
-        ret = (tail[i] - prev) / prev
+        prev, curr = tail[i - 1], tail[i]
+        if prev <= 0 or curr <= 0:
+            logger.warning(
+                "explore: rejecting realized-vol window — bar %d/%d has a non-positive "
+                "price (prev=%.6g, curr=%.6g) — treating as a bad tick, not real data",
+                i,
+                len(tail) - 1,
+                prev,
+                curr,
+            )
+            return None, True
+        ret = (curr - prev) / prev
         if abs(ret) * 100.0 > _MAX_PLAUSIBLE_DAILY_PCT:
             logger.warning(
                 "explore: rejecting realized-vol window — bar %d/%d implied a %.1f%% "
