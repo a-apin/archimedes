@@ -10,6 +10,7 @@
 // a small colocated RiskAnalysis.css for the metric-card grid + tooltips.
 
 import { useEffect, useMemo, useState } from 'react'
+import { apiGet } from '../api'
 import {
   computeHistoricalVaR,
   computeCVaR,
@@ -21,8 +22,6 @@ import {
 } from '../utils/riskMath'
 import SampleDataBadge from './SampleDataBadge'
 import './RiskAnalysis.css'
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
 function fmtPct(v, d = 2) {
   return v != null && Number.isFinite(v) ? `${(v * 100).toFixed(d)}%` : '—'
@@ -495,13 +494,15 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
     async function fetchRiskData() {
       setLoading(true)
       try {
-        const [cvarRes, greeksRes] = await Promise.all([
-          fetch(`${API_BASE}/api/risk/cvar`, { credentials: 'include' }),
-          fetch(`${API_BASE}/api/risk/greeks`, { credentials: 'include' }),
-        ])
+        // apiGet throws on any non-2xx (404 when FEATURE_QUANT is off, 401,
+        // 5xx, ...) — unlike a raw fetch(), whose `.ok` check the old version
+        // of this effect skipped, silently treating every one of those as
+        // success and leaving `backendError` false. The catch below is what
+        // now actually reaches the not-live-data notice.
+        const [cvar, greeks] = await Promise.all([apiGet('/api/risk/cvar'), apiGet('/api/risk/greeks')])
         if (!cancelled) {
-          if (cvarRes.ok) setCvarData(await cvarRes.json())
-          if (greeksRes.ok) setGreeksData(await greeksRes.json())
+          setCvarData(cvar)
+          setGreeksData(greeks)
         }
       } catch (_) {
         if (!cancelled) setBackendError(true)
@@ -523,8 +524,8 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
         </h2>
         <p className="body">
           Tail-risk, drawdown, and correlation diagnostics. These are the
-          loss-side counterparts to the return-side metrics on the Advisor — rigor means making the
-          downside as legible as the upside.
+          loss-side counterparts to the return-side metrics in Optimizer &amp; Sizing below — rigor means
+          making the downside as legible as the upside.
         </p>
       </div>
 
@@ -539,7 +540,8 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
           className="info-box"
           style={{ marginBottom: 16, fontSize: '0.85rem' }}
         >
-          Risk metrics computed from mock data — connect backend for live data.
+          Live risk metrics aren't available for this deployment right now — the figures below are a
+          synthetic sample, marked on each section's badge.
         </div>
       )}
 
