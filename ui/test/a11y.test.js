@@ -54,8 +54,9 @@ test("base and public palettes keep muted text above the 4.5:1 floor", () => {
 		css,
 		/:root\[data-theme="light"\]\s*\{[\s\S]*?--accent-rgb:\s*138,\s*95,\s*10;/,
 	);
-	// Public --text-4 was #657a73 = 3.46:1 on the slate card.
-	assert.match(css, /\.public-site\s*\{[\s\S]*?--text-4:\s*#7d9189;/);
+	// Public --text-4 was #657a73 = 3.46:1 on the slate card, then #7d9189
+	// (3.94:1 on the lighter --surface-3, a #1318 residual).
+	assert.match(css, /\.public-site\s*\{[\s\S]*?--text-4:\s*#8b9f97;/);
 	// --text-4 is a border/decoration token on the base palette (it is #3f3f46
 	// there = 1.73:1) and must never be used as text on the auth screen.
 	assert.doesNotMatch(authPage, /text-\[var\(--text-4\)\]/);

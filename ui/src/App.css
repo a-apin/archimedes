@@ -430,55 +430,6 @@ h4,
 	margin: 0 auto;
 }
 
-/* --- Section subnav (Explore) --- */
-.explore-subnav {
-	position: sticky;
-	top: 56px;
-	z-index: 40;
-	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
-	padding: 10px 0;
-	margin-bottom: var(--space-5);
-	background: var(--topbar-bg);
-	backdrop-filter: blur(16px) saturate(1.2);
-	-webkit-backdrop-filter: blur(16px) saturate(1.2);
-	border-bottom: 1px solid var(--glass-border);
-}
-.explore-subnav-btn {
-	display: inline-flex;
-	align-items: center;
-	padding: 6px 12px;
-	font-size: 0.78rem;
-	font-weight: 500;
-	color: var(--text-3);
-	background: var(--glass);
-	border: 1px solid var(--glass-border);
-	border-radius: var(--radius-sm);
-	text-decoration: none;
-	transition:
-		color 0.15s,
-		background 0.15s,
-		border-color 0.15s;
-}
-.explore-subnav-btn:hover {
-	color: var(--text-1);
-	background: var(--glass-hover);
-	border-color: var(--accent-muted);
-}
-.scroll-anchor {
-	scroll-margin-top: 120px;
-}
-
-@media (max-width: 900px) {
-	.explore-subnav {
-		top: 0;
-	}
-	.scroll-anchor {
-		scroll-margin-top: 16px;
-	}
-}
-
 /* --- Sidebar --- */
 .sidebar-brand {
 	display: flex;
@@ -3723,9 +3674,16 @@ button:where(.tag) {
 	--text-3: #8da098;
 	/* Architecture's loading / error / "live number unavailable" copy is drawn
      in --text-4 (Architecture.jsx :86, :382, :514, :872, :901, :1054, :1084),
-     so it has to clear 4.5:1: #7d9189 is 4.74:1 on --surface-2 (#10252d) and
-     5.28:1 on the glass card, where #657a73 was 3.46 / 3.86:1. */
-	--text-4: #7d9189;
+     so it has to clear 4.5:1 on every surface it could paint against, not
+     just the ones call sites happen to use today — same standard already
+     applied to --chart-label above. #7d9189 (the #1319 fix) was 4.74:1 on
+     --surface-2 (#10252d) but only 3.94:1 on the lighter --surface-3
+     (#17343d) — flagged as a residual in #1318. #8b9f97 clears both:
+     5.67:1 on --surface-2, 4.71:1 on --surface-3, 6.31:1 on the glass card
+     (--surface-3 is the binding constraint). No current call site actually
+     paints --text-4 on --surface-3 inside .public-site — grepped clean —
+     so this raises the floor defensively rather than fixing a live defect. */
+	--text-4: #8b9f97;
 	--accent-rgb: 217, 168, 92;
 	--accent: var(--public-bronze);
 	--accent-hover: #e4ba78;
