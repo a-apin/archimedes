@@ -4,6 +4,18 @@ import { ROADMAP_SURFACES_ENABLED } from "../featureFlags.js";
 import RigorStrictnessControl, { levelLabel } from "./RigorStrictnessControl";
 import { apiGet, apiPostWithMeta } from "../api";
 import { useRigorStrictness, BADGE_LEVEL } from "../hooks/useRigorStrictness";
+import {
+	NOT_MEASURED,
+	NOT_MEASURED_HINT,
+	deriveGenerationCostView,
+	formatDuration,
+	formatTokenCount,
+	quoteLabel,
+	quoteNote,
+	stageLabel,
+	tokensLabel,
+	usageNote,
+} from "../generationCost.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -375,6 +387,11 @@ export default function StrategyPassport({
 						user={user}
 						onNavigate={onNavigate}
 					/>
+
+					{/* What the generation run that produced this strategy actually
+					    consumed (#1326). Durable — read from the DB, not from the
+					    job record, which expires an hour after the run ends. */}
+					<GenerationCostCard record={s.generation_cost} />
 				</aside>
 
 				<div className="passport-evidence">
@@ -774,6 +791,80 @@ function Metric({ label, value, hint }) {
 			<div className="caption text-[var(--text-4)]">{label}</div>
 			<div className="text-[1.1rem] font-semibold tabular-nums">{value}</div>
 			{hint && <div className="caption text-[var(--text-4)]">{hint}</div>}
+		</div>
+	);
+}
+
+// Generation cost (#1326) — the measurement of the run that produced this
+// strategy, beside the price that was quoted for it.
+//
+// Two facts, two sources, never a conversion: the tokens/seconds come from the
+// cost meter, the price comes from the recorded `generation_payment.quote()`
+// payload. Nothing here turns one into the other — converting measured tokens
+// into dollars is #1217's remaining pricing work and it happens off-server.
+//
+// Absence is the honest default. No record at all (every curated strategy, and
+// every generated one from before the meter) renders as "not measured", never
+// as zero; a run whose token usage was only partly readable renders its totals
+// with a `≥` so a floor is never read as a total.
+function GenerationCostCard({ record }) {
+	const view = deriveGenerationCostView(record);
+	return (
+		<div className="card fade-up fade-up-2" style={{ marginTop: 12 }}>
+			<div className="label mb-1">Generation cost</div>
+			{!view ? (
+				<p className="caption leading-relaxed">{NOT_MEASURED_HINT}</p>
+			) : (
+				<>
+					<p className="caption leading-relaxed">
+						What this generation run consumed — a raw measurement, recorded when
+						the run finished. Token counts are <strong>not</strong> converted to
+						dollars.
+					</p>
+					<div className="mt-3 grid grid-cols-2 gap-3">
+						<Metric
+							label="Tokens"
+							value={tokensLabel(view)}
+							hint={`in ${formatTokenCount(view.tokens.input)} / out ${formatTokenCount(view.tokens.output)}`}
+						/>
+						<Metric
+							label="Wall time"
+							value={formatDuration(view.wallSeconds)}
+							hint={
+								view.tokens.calls != null
+									? `${view.tokens.calls} LLM calls`
+									: "LLM calls not measured"
+							}
+						/>
+					</div>
+					<div className="mt-3">
+						<div className="caption text-[var(--text-4)]">Dominant stage</div>
+						<div className="body">
+							{view.dominantStage
+								? `${stageLabel(view.dominantStage.name)} · ${formatDuration(view.dominantStage.wallSeconds)}`
+								: NOT_MEASURED}
+						</div>
+					</div>
+					<p
+						className="caption mt-2 leading-relaxed"
+						style={{
+							color: view.usageComplete ? "var(--text-3)" : "var(--warning)",
+						}}
+					>
+						{usageNote(view)}
+					</p>
+					<div
+						className="mt-3 pt-3"
+						style={{ borderTop: "1px solid var(--glass-border)" }}
+					>
+						<div className="caption text-[var(--text-4)]">Quoted price</div>
+						<div className="body">{quoteLabel(view) || NOT_MEASURED}</div>
+						<p className="caption leading-relaxed text-[var(--text-3)]">
+							{quoteNote(view)}
+						</p>
+					</div>
+				</>
+			)}
 		</div>
 	);
 }

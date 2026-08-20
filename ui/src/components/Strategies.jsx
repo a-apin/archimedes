@@ -7,6 +7,7 @@ import { useRigorStrictness, BADGE_LEVEL } from '../hooks/useRigorStrictness'
 import useDialogFocus from '../hooks/useDialogFocus'
 
 import { apiGet, apiPost, apiDelete } from '../api'
+import { compactCostCell } from '../generationCost.js'
 
 // A compact "deployable at your level" chip for a library row, driven by the
 // strategy's min_passing_level (from the live gate) and the user's strictness.
@@ -157,6 +158,9 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
   const sharpeCI = s.sharpe_ci_95 != null ? s.sharpe_ci_95 : null
   const driftFlag = s.drift_detected === true
   const detailId = `lib-detail-${s.id}`
+  // Absence is the point: a strategy nothing measured gets an em-dash and a
+  // tooltip that says so, never a zero (#1326).
+  const genCost = compactCostCell(s.generation_cost)
 
   useEffect(() => {
     if (isHighlighted && rowRef.current) {
@@ -259,10 +263,15 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
         </td>
         <td className="mono" style={{ textAlign: 'right', color: 'var(--positive)' }}>{fmtUsd(endValue)}</td>
         <td className="caption" style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{years != null ? `${years.toFixed(1)} yrs` : '—'}</td>
+        <td
+          className={genCost.measured ? 'mono' : 'caption'}
+          style={{ textAlign: 'right', whiteSpace: 'nowrap', color: genCost.measured ? undefined : 'var(--text-4)' }}
+          title={genCost.title}
+        >{genCost.label}</td>
       </tr>
       {open && (
         <tr className="lib-row-detail" id={detailId}>
-          <td colSpan={8} style={{ padding: '12px 18px', background: 'var(--glass)' }}>
+          <td colSpan={9} style={{ padding: '12px 18px', background: 'var(--glass)' }}>
             <StrategyDetailContent
               s={s}
               onOpenRigorExplainer={onOpenRigorExplainer}
@@ -440,6 +449,7 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
   const startStr = (s.backtest_start || '').slice(0, 10)
   const endStr = (s.backtest_end || '').slice(0, 10)
   const driftFlag = s.drift_detected === true
+  const genCost = compactCostCell(s.generation_cost)
 
   useEffect(() => {
     if (isHighlighted && cardRef.current) {
@@ -488,6 +498,7 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
         <div><div className="caption">Sharpe</div><div className="mono">{fmt(s.sharpe_ratio)}</div></div>
         <div><div className="caption">CAGR</div><div className="mono positive">{fmtPct(s.cagr)}</div></div>
         <div><div className="caption">Max DD</div><div className="mono negative">{s.max_drawdown != null ? `−${fmtPct(s.max_drawdown)}` : '—'}</div></div>
+        <div title={genCost.title}><div className="caption">Gen tokens</div><div className={genCost.measured ? 'mono' : 'caption'}>{genCost.label}</div></div>
       </div>
       {open && (
         <div className="lib-card-detail" onClick={(e) => e.stopPropagation()}>
@@ -528,6 +539,15 @@ function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigo
               <th style={{ padding: '10px 14px', textAlign: 'right' }}>Max DD</th>
               <th style={{ padding: '10px 14px', textAlign: 'right' }}>$1k →</th>
               <th style={{ padding: '10px 14px', textAlign: 'right' }}>Period</th>
+              {/* Generation cost (#1326) — total tokens is the design call: it's
+                  the term that scales with the model and the one #1217 exists to
+                  pin down, while wall time is dominated by backtests and moves
+                  with whatever else the worker is doing. Wall time + dominant
+                  stage ride in the cell's tooltip. */}
+              <th
+                style={{ padding: '10px 14px', textAlign: 'right' }}
+                title="Tokens consumed by the generation run that produced this strategy. A raw measurement — never converted to dollars."
+              >Gen tokens</th>
             </tr>
           </thead>
           <tbody>
@@ -617,6 +637,10 @@ function coerceGenerated(row) {
     dsr_p_value: verdict?.dsr_p_value ?? null,
     sharpe_ci_95: null,
     drift_detected: null,
+    // Durable generation-cost record (#1326) served by /api/strategies/generated.
+    // Absent for anything generated before the meter — passed through as null so
+    // the cost column renders "not measured" rather than a fabricated zero.
+    generation_cost: row.generation_cost ?? null,
   }
 }
 
