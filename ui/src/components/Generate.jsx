@@ -16,6 +16,7 @@ import {
 	describePayerMismatch,
 	extractReceipt,
 	paymentErrorMessage,
+	resolveDryRunPayer,
 } from "../generateQuote";
 
 const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "");
@@ -236,13 +237,23 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// The PAYMENTS_DRY_RUN continuation: any non-empty Payment-Signature is
 	// accepted UNVERIFIED, so this actually completes the job — honestly
 	// labeled, never dressed up as a real settlement. The payer named is the
-	// caller's OWN active wallet, which — by having reached a 402 at all —
-	// is already proven to be a wallet linked to this account (the 409 gate
-	// runs first and would have fired otherwise).
+	// LINKED wallet (server truth — what #1296's payer binding will require
+	// when signing becomes real, #1298), falling back to the active browser
+	// wallet. Reaching a 402 proves the SERVER-side link exists (the 409 gate
+	// ran first), but NOT that the browser wallet is connected or that the
+	// linked-wallets fetch succeeded — so the none-available case is handled
+	// here as UX, never shipped as an empty payer.
 	const continueInTestMode = async () => {
+		const payer = resolveDryRunPayer(linkedWallets, walletAddr);
+		if (!payer) {
+			setPaymentMessage(
+				"Could not resolve your linked wallet (reconnect your wallet or reload). No payment was attempted.",
+			);
+			return;
+		}
 		setContinuingTestMode(true);
 		try {
-			await submitStart({ "Payment-Signature": buildDryRunPaymentHeader(walletAddr) });
+			await submitStart({ "Payment-Signature": buildDryRunPaymentHeader(payer) });
 			setPaymentStatus(PAYMENT_STATUS.NONE);
 			setPaymentMessage("");
 			setTestModeNotice(true);

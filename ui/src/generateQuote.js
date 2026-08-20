@@ -169,8 +169,30 @@ function toBase64(str) {
  * wallet-link precondition to reach this state), never fabricated.
  */
 export function buildDryRunPaymentHeader(payerAddress) {
-	const from = payerAddress || "";
-	return toBase64(JSON.stringify({ payload: { authorization: { from } } }));
+	// Loud contract for #1298's implementer: a payment header with no payer is
+	// never meaningful — dry-run happens not to read it today, but real x402
+	// signing will, and the server's payer binding (#1296) requires the LINKED
+	// wallet. Callers must resolve a payer first (linked wallet preferred,
+	// active browser wallet as fallback) and handle the none-available case in
+	// the UI rather than shipping an empty `from` here.
+	if (!payerAddress) {
+		throw new Error("buildDryRunPaymentHeader requires a payer address (the caller's linked wallet)");
+	}
+	return toBase64(JSON.stringify({ payload: { authorization: { from: payerAddress } } }));
+}
+
+/**
+ * Resolve the dry-run payer ADDRESS: the account's primary linked wallet's
+ * address first (the server-side truth that already cleared the 409 wallet
+ * precondition), the browser-connected wallet second, null when neither
+ * exists. Always a string or null — NEVER the LinkedWalletResponse object
+ * (#1299 review: the call site passed `primaryLinkedWallet(...)` — the whole
+ * object — into buildDryRunPaymentHeader, so the header's `from` carried an
+ * object whenever a linked wallet existed; the object is truthy, so neither
+ * the caller's no-payer bail nor the header's falsy-payer throw caught it).
+ */
+export function resolveDryRunPayer(linkedWallets, walletAddr) {
+	return primaryLinkedWallet(linkedWallets)?.address || walletAddr || null;
 }
 
 /**
