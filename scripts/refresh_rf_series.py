@@ -12,10 +12,12 @@ Historical FRED values never change once published; only new dates append
 over time. FRED's ``fredgraph.csv`` endpoint returns the full history on
 every call (there is no incremental "since" query on this path), so this
 script re-fetches the whole series and overwrites the vendored file's data
-rows — it is not a diff/merge. It preserves the header comment block (updating
-only the "Vendored" line) and sanity-checks that the new download is a
-superset of the previously-vendored date range before writing, so a
-truncated or corrupted download can never silently regress the series.
+rows — it is not a diff/merge. It REGENERATES the header comment block from
+``HEADER_TEMPLATE`` below (not a preserve-and-patch of the existing file's
+header — a prior claim here that it "preserves the header comment block" was
+inaccurate, corrected 2026-08-20 review) and sanity-checks that the new
+download is a superset of the previously-vendored date range before writing,
+so a truncated or corrupted download can never silently regress the series.
 
 Usage::
 
@@ -37,7 +39,10 @@ FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS3MO"
 CSV_PATH = Path(__file__).resolve().parent.parent / "backend" / "archimedes" / "data" / "rf" / "DGS3MO.csv"
 
 HEADER_TEMPLATE = """\
-# FRED DGS3MO -- 3-Month Treasury Bill Secondary Market Rate, Discount Basis.
+# FRED DGS3MO -- Market Yield on U.S. Treasury Securities at 3-Month Constant
+# Maturity, Quoted on an Investment Basis. (Not DTB3 "3-Month Treasury Bill
+# Secondary Market Rate, Discount Basis" -- a different FRED series/quotation
+# convention; corrected 2026-08-20 review, see issue #1409.)
 # Source: {url}
 # Vendored (issue #1409): {vendored_date}.
 # Values are ANNUALIZED PERCENT (e.g. 3.86 means 3.86%/yr); convert to a

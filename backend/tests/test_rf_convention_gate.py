@@ -307,3 +307,124 @@ def test_mismatched_length_dates_falls_back_instead_of_crashing(caplog: pytest.L
     assert dsr == pytest.approx(dsr_flat)
     assert p == pytest.approx(p_flat)
     assert any("length" in rec.message.lower() for rec in caplog.records)
+
+
+# ─── 7. run_rigor_gate: the disclosed marker matches every metric's ─────
+#        arithmetic, by construction (2026-08-20 review fix).
+#
+# Prior to this fix, `rf_convention` was derived from a SECOND, independent
+# call over the raw `dates` (never validated against the return series'
+# length, and computed over the FULL window while DSR/OOS/IS resolve their
+# OWN slices). Two concrete ways that silently disagreed with the arithmetic:
+#   - a `dates` list whose length didn't match `daily_returns` made the
+#     marker compute from the mismatched `dates` while every metric silently
+#     fell back to flat via `_resolve_rf_daily_array`'s own length guard;
+#   - a window whose tail ran past the vendored series' 14-day grace window
+#     made the FULL-list marker resolution fail (-> disclosed FALLBACK) while
+#     the IS head slice, not containing the stale tail, resolved fine on its
+#     own -> in_sample_sharpe silently used the T-bill series anyway.
+# Both are exactly the "silent partial substitution" issue #1409 design item
+# 4 forbids. `_resolve_gate_rf` (rigor_evaluator.py) closes this by resolving
+# ONE convention up front and forcing every downstream call to `dates=None`
+# whenever that resolution is FALLBACK — so the whole grade can never
+# disagree with what it discloses.
+
+
+def test_length_mismatch_forces_fallback_and_flat_arithmetic() -> None:
+    """A `dates` list whose length disagrees with `daily_returns` must report
+    rf_convention=FALLBACK AND every metric must equal the dates=None (flat)
+    run byte-for-byte — not merely "close", and not silently grade on the
+    series while claiming flat."""
+    returns = _seeded_returns(60)
+    mismatched_dates = _2015_dates(5)  # 5 dates for 60 returns — deliberate mismatch
+
+    with_bad_dates = run_rigor_gate("s-length-mismatch", returns, num_trials=1, dates=mismatched_dates)
+    flat = run_rigor_gate("s-flat-equivalent", returns, num_trials=1)
+
+    assert with_bad_dates.rf_convention == rf_series.RF_CONVENTION_FALLBACK
+    assert with_bad_dates.gate_details["rf_convention"] == rf_series.RF_CONVENTION_FALLBACK
+    assert with_bad_dates.deflated_sharpe == flat.deflated_sharpe
+    assert with_bad_dates.dsr_p_value == flat.dsr_p_value
+    assert with_bad_dates.oos_sharpe == flat.oos_sharpe
+    assert with_bad_dates.in_sample_sharpe == flat.in_sample_sharpe
+
+
+def test_grace_window_straddle_forces_fallback_for_every_metric() -> None:
+    """A window whose tail runs past the vendored series' 14-day forward-fill
+    grace window makes the FULL-list resolution fail — but the IS head slice,
+    resolved on its own, would have succeeded (asserted explicitly below, so
+    this is a genuine straddle, not a case where everything fails and the
+    test would pass vacuously). Before the fix this made
+    rf_convention=FALLBACK while in_sample_sharpe silently used the T-bill
+    series anyway. Self-triggers as the vendored CSV ages — no mutation
+    needed to hit the underlying condition, only a stale-enough tail date."""
+    n_head, n_tail = 70, 30
+    head_dates = _2015_dates(n_head)
+    tail_dates = [f"2026-11-{1 + (i % 28):02d}" for i in range(n_tail)]  # well past 2026-08-18 + 14d
+    dates = head_dates + tail_dates
+    returns = _seeded_returns(len(dates))
+
+    result = run_rigor_gate("s-stale-tail", returns, num_trials=1, dates=dates)
+    flat = run_rigor_gate("s-stale-tail-flat-equivalent", returns, num_trials=1)
+
+    assert result.rf_convention == rf_series.RF_CONVENTION_FALLBACK
+    assert result.gate_details["rf_convention"] == rf_series.RF_CONVENTION_FALLBACK
+    assert result.deflated_sharpe == flat.deflated_sharpe
+    assert result.dsr_p_value == flat.dsr_p_value
+    assert result.oos_sharpe == flat.oos_sharpe
+    assert result.in_sample_sharpe == flat.in_sample_sharpe
+
+    # Prove the straddle is real: the IS head slice ALONE (which is what the
+    # pre-fix code independently re-resolved for in_sample_sharpe) resolves
+    # fine against the vendored series.
+    split = int(len(returns) * 0.70)
+    is_dates_only = dates[:split]
+    _rates, is_only_convention = rf_series.resolve_annual_rf_for_dates(is_dates_only)
+    assert is_only_convention == rf_series.RF_CONVENTION_SERIES
+
+
+# ─── 8. PBO's dates threading has a real, mutation-provable value effect ──
+
+
+def _business_days(start: str, end: str) -> list[str]:
+    import datetime as _dt
+
+    start_d = _dt.date.fromisoformat(start)
+    end_d = _dt.date.fromisoformat(end)
+    out: list[str] = []
+    d = start_d
+    while d <= end_d:
+        if d.weekday() < 5:  # Mon-Fri
+            out.append(d.isoformat())
+        d += _dt.timedelta(days=1)
+    return out
+
+
+def test_compute_pbo_dates_materially_changes_the_value() -> None:
+    """`test_compute_pbo_accepts_dates_without_changing_shape` (above) checks
+    shape only — it passes even if `dates` threading were entirely dead code
+    (verified: neutering `_sharpe_per_col`'s `rf_daily is not None` branch and
+    both `dates is not None` ternaries in `compute_pbo` leaves the whole
+    module's test suite green, see the PR body's round-2 mutation
+    transcript). This pins an actual VALUE effect on a real, low-rate window
+    (2008-2010 business days, where the true rf sits well below the flat 5%
+    fallback) with a seed pinned to a value known not to tie — PBO is a rank
+    statistic quantized to 1/S-sized steps, and some seeds land on the same
+    bucket either way; this one measurably doesn't."""
+    dates = _business_days("2008-01-02", "2010-12-31")
+    rng = np.random.default_rng(0)
+    matrix = {
+        "a": rng.normal(0.0004, 0.01, len(dates)).tolist(),
+        "b": rng.normal(0.0002, 0.012, len(dates)).tolist(),
+        "c": rng.normal(0.0006, 0.009, len(dates)).tolist(),
+        "d": rng.normal(-0.0001, 0.011, len(dates)).tolist(),
+    }
+
+    flat = compute_pbo(matrix, s_partitions=8)
+    dated = compute_pbo(matrix, s_partitions=8, dates=dates)
+
+    flat_v = next(iter(flat.values()))
+    dated_v = next(iter(dated.values()))
+    assert flat_v == pytest.approx(0.828571, abs=1e-6)
+    assert dated_v == pytest.approx(0.814286, abs=1e-6)
+    assert flat_v != dated_v

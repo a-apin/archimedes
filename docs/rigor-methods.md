@@ -87,19 +87,30 @@ exists (Bailey & López de Prado 2014).
 
 **What changed.** Every "excess Sharpe" above (DSR, walk-forward OOS, in-sample) is
 computed against a risk-free rate. Through 2026-08-20 that rate was a flat 5%/year
-constant for every strategy, every backtest window, forever. As of #1409 the gate's
-default convention is the **actual historical 3-month U.S. Treasury bill rate** (FRED
+constant for every strategy, every backtest window, forever. As of #1409 the mechanism
+supports grading against the **actual historical 3-month U.S. Treasury bill rate** (FRED
 series `DGS3MO`), aligned to each backtest's own per-bar dates — the universal
 convention for a USD Sharpe ratio (Sharpe 1994) and the rate Bailey & López de Prado
 (2014) implicitly assume when they define the Deflated Sharpe Ratio on excess returns.
+**It is not yet the *live* default**: `run_rigor_gate`'s `dates` parameter is optional,
+and as of this PR no production call site (`selection_bias_routes.py`,
+`strategies_routes.py`, `live_rigor_gate.py`) threads per-bar dates through yet — see
+"Why production callers still show `excess_flat_fallback` today" in the PR that shipped
+this section. Every live grade today still takes the flat-rate path and honestly
+discloses it via `rf_convention` below; wiring real per-bar dates into those callers is
+tracked follow-up work, not implied by "the mechanism exists."
 
 **Why a flat constant was wrong.** The 3-month T-bill has ranged from roughly 0.00%
-(the 2008–2015 near-zero-rate era) to double digits in the early 1980s. A single 5%
-constant over-subtracts by ~100–120bps against the ~3.8% environment this series was
-last vendored in, and mis-grades any older backtest window by an even larger margin —
-a strategy backtested through 2015 was having ~5% subtracted from its returns when the
-true opportunity cost of cash that year was closer to 0.05%. The gate got *stricter
-than the true excess return*, in both directions depending on the window.
+(the 2008–2015 near-zero-rate era, mean 0.25% over the vendored series) to double
+digits in the early 1980s (mean 8.27% for 1981–1990, publishing above 5% on every
+single day that decade). Across the vendored series' full history, 38.6% of all
+published days sit *above* 5%. So a flat 5% constant does not mis-grade in one
+direction: it **over-subtracts** (makes the gate too strict) in low-rate windows like
+2008–2015 — a strategy backtested through that era was having ~5% subtracted when the
+true opportunity cost of cash was closer to 0.25% — and it **under-subtracts** (makes
+the gate too lenient) in high-rate windows like the 1980s, where the true rate ran
+several points above the flat constant it replaced. The gate was **mis-graded in both
+directions**, not uniformly stricter.
 
 **Display Sharpe is unaffected.** This change touches the **gate's excess-return
 metrics only** (DSR, OOS Sharpe, in-sample Sharpe) — the passport's **display** Sharpe

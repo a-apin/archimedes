@@ -413,6 +413,34 @@ def compute_library_pbo(
     return float(pbo)
 
 
+def compute_library_pbo_rf_convention(returns_store: dict[str, dict[str, list]]) -> str:
+    """The rf_convention ``compute_library_pbo`` actually used for
+    ``returns_store``'s joint-date-aligned window (#1409 review fix).
+
+    ``compute_library_pbo`` threads ``dates=joint_dates`` into ``compute_pbo``
+    unconditionally (no caller opt-in) — unlike every ``run_rigor_gate`` call
+    site, which all still omit ``dates`` today. That makes the library-wide
+    PBO the ONE live production number this PR's rf-series change actually
+    moves, yet ``LibraryPbo`` (``selection_bias_routes.py``) carried no
+    convention marker — a changed number with no disclosure, riding next to
+    per-strategy ``rf_convention`` fields that (correctly) still say
+    ``excess_flat_fallback``. This resolves the SAME joint-date axis
+    ``compute_library_pbo`` resolves, the same way, so ``_library_pbo_payload``
+    can disclose it honestly instead of leaving ``LibraryPbo.rf_convention``
+    silent about which rate produced ``value``.
+
+    Returns ``RF_CONVENTION_FALLBACK`` when fewer than two series survive
+    date-alignment (no joint date axis to resolve against at all) — matching
+    ``compute_library_pbo``'s own < 2-series -> ``None`` fail-closed shape;
+    there is no PBO value to have a convention for.
+    """
+    joint_dates, matrix = align_returns_store_with_dates(returns_store)
+    if len(matrix) < 2 or not joint_dates:
+        return rf_series.RF_CONVENTION_FALLBACK
+    _, convention = rf_series.resolve_annual_rf_for_dates(joint_dates, flat_annual_pct=_RF_ANNUAL * 100.0)
+    return convention
+
+
 # Default board-level FDR α (#1185 code review, 2026-08-20). A module constant
 # instead of two independent `= 0.05` defaults (one here, one on
 # selection_bias_routes.BoardLevelFdr.fdr_level): the route reports
@@ -1063,6 +1091,77 @@ class RigorGateResult:
         return details
 
 
+def _resolve_gate_rf(dates: list | None, n: int) -> tuple[list | None, str]:
+    """Resolve the ONE rf convention ``run_rigor_gate`` discloses, matching
+    EXACTLY what DSR/OOS/IS below will use — by construction, not by a second,
+    independent call after the fact.
+
+    **2026-08-20 review fix.** The disclosed marker was previously derived
+    from ``dates`` alone (never validated against ``n``, the return series'
+    own length) via a call that ran in parallel with — not shared with — the
+    DSR/OOS/IS resolutions below, each of which resolves its OWN slice
+    (``dates`` in full for DSR, ``dates[split:]`` for OOS, ``dates[:split]``
+    for IS). Two ways that could disagree, both reproduced:
+      - A ``dates`` list whose length didn't match ``daily_returns`` made the
+        marker compute (from the raw, mismatched ``dates``) while every metric
+        silently fell back to flat via ``_resolve_rf_daily_array``'s own
+        length guard — marker said series, math ran flat.
+      - A window whose tail ran past the vendored series' 14-day forward-fill
+        grace window made the FULL-list marker resolution fail (-> disclosed
+        FALLBACK) while the IS (or OOS) slice, not containing the stale tail,
+        resolved fine on its own -> that metric silently used the T-bill
+        series while the marker claimed flat. Self-triggers as the vendored
+        CSV ages, no code change needed to hit it.
+    Both are exactly the "silent partial substitution" issue #1409 design
+    item 4 forbids.
+
+    Returns ``(resolved_dates, rf_convention)``:
+      - ``dates is None`` or ``len(dates) != n`` (the same caller-bug guard
+        ``_resolve_rf_daily_array`` applies per-call) -> ``(None,
+        RF_CONVENTION_FALLBACK)``.
+      - Every date in ``dates`` resolves against the vendored series -> the
+        WHOLE list, unchanged, plus ``RF_CONVENTION_SERIES``.
+      - ANY date is unresolvable (before the series' first published date, or
+        beyond the 14-day grace window past its last one, or the vendored
+        file itself is unavailable) -> ``(None, RF_CONVENTION_FALLBACK)``.
+
+    The caller MUST thread ``resolved_dates`` — never the original ``dates``
+    — into every downstream DSR/OOS/IS call. That is safe, not merely
+    convenient, for two reasons:
+      1. When this returns FALLBACK, ``resolved_dates`` is ``None``, so every
+         downstream call takes the exact flat ``dates=None`` code path — the
+         SAME byte-identical arithmetic the marker discloses, regardless of
+         which sub-slice a caller further down happens to take.
+      2. When this returns SERIES, every date in the FULL window resolved.
+         Resolvability is per-date (exact match or forward-fill against the
+         vendored series' own coverage/grace bounds), never list-order- or
+         list-membership-dependent — so any bar-aligned SUB-SLICE of a fully
+         resolvable list (the OOS tail, the IS head) is guaranteed to resolve
+         too. A downstream call slicing ``resolved_dates`` can therefore never
+         land on FALLBACK when this function reported SERIES.
+    Either way, the whole grade agrees with the disclosed marker BY
+    CONSTRUCTION — one resolution decision governs every metric, not four
+    independent ones that happen to agree.
+    """
+    if dates is None:
+        return None, rf_series.RF_CONVENTION_FALLBACK
+    dates_list = list(dates)
+    if len(dates_list) != n:
+        logger.warning(
+            "run_rigor_gate: dates length (%d) != return-series length (%d) — "
+            "whole grade falls back to the flat risk-free rate (disclosed "
+            "fallback, rf_convention=%s)",
+            len(dates_list),
+            n,
+            rf_series.RF_CONVENTION_FALLBACK,
+        )
+        return None, rf_series.RF_CONVENTION_FALLBACK
+    _, convention = rf_series.resolve_annual_rf_for_dates(dates_list, flat_annual_pct=_RF_ANNUAL * 100.0)
+    if convention == rf_series.RF_CONVENTION_FALLBACK:
+        return None, rf_series.RF_CONVENTION_FALLBACK
+    return dates_list, rf_series.RF_CONVENTION_SERIES
+
+
 def run_rigor_gate(
     strategy_id: str,
     daily_returns: list[float],
@@ -1166,17 +1265,17 @@ def run_rigor_gate(
     #    two compute_dsr calls on a path that may evaluate many candidates. The
     #    IID-SE p-value is surfaced as a delta (never gates) so the passport
     #    shows how much the serial-dependence correction moved the verdict.
-    deflated_sharpe, dsr_p_value, _, dsr_p_value_iid = compute_dsr_hac_and_iid(
-        daily_returns, num_trials, average_correlation, hac_lags="auto", dates=dates
-    )
+    # #1409 (2026-08-20 review fix): resolve the ONE rf convention this WHOLE
+    # GRADE uses, once, before DSR runs — not a second, independent call after
+    # the fact. `resolved_dates` (never the caller's raw `dates`) is threaded
+    # into DSR/OOS/IS below, so the disclosed marker and the arithmetic every
+    # metric actually performed can never disagree. See `_resolve_gate_rf`'s
+    # docstring for why re-slicing `resolved_dates` downstream is safe.
+    resolved_dates, rf_convention = _resolve_gate_rf(dates, len(daily_returns))
 
-    # #1409: resolve the SAME rf convention DSR/OOS/IS below all just used, for
-    # disclosure on the result (rf_convention / gate_details["rf_convention"]).
-    # `dates=None` short-circuits to the fallback marker without touching the
-    # vendored CSV at all — `resolve_annual_rf_for_dates([])` already returns
-    # the fallback for an empty/None date list, so this is one small,
-    # consistent call rather than re-deriving the marker logic here.
-    _, rf_convention = rf_series.resolve_annual_rf_for_dates(dates, flat_annual_pct=_RF_ANNUAL * 100.0)
+    deflated_sharpe, dsr_p_value, _, dsr_p_value_iid = compute_dsr_hac_and_iid(
+        daily_returns, num_trials, average_correlation, hac_lags="auto", dates=resolved_dates
+    )
 
     # #1184: is the None DSR (and, symmetrically, the None OOS Sharpe computed
     # below) an UNDEFINED-MATH artifact of a zero-variance series, or one of the
@@ -1218,7 +1317,7 @@ def run_rigor_gate(
 
     # 3. Walk-forward OOS Sharpe (single holdout) + Combinatorial Purged CV.
     #    CPCV runs only when a real 2-D combinatorial OOS matrix is supplied.
-    oos_sharpe = compute_oos_sharpe(daily_returns, dates=dates)
+    oos_sharpe = compute_oos_sharpe(daily_returns, dates=resolved_dates)
     cpcv = compute_cpcv_oos_sharpe(cv_returns_matrix)
 
     # IID / random-walk diagnostics (#621) — computed AND surfaced (previously
@@ -1263,10 +1362,13 @@ def run_rigor_gate(
         if len(is_arr) >= 2:
             sigma_is = float(is_arr.std(ddof=1))
             if sigma_is > 0:
-                if dates is not None:
+                if resolved_dates is not None:
                     # #1409: same excess-series treatment _rigor_helpers uses — mean
                     # AND sigma both drawn from the excess series, not just the mean.
-                    is_dates = list(dates)[:split]
+                    # `resolved_dates` (not the caller's raw `dates`) — see
+                    # `_resolve_gate_rf` for why this slice can never disagree
+                    # with the disclosed `rf_convention` above.
+                    is_dates = list(resolved_dates)[:split]
                     rf_daily_is = _resolve_rf_daily_array(is_dates, len(is_arr))
                     excess_is = is_arr - rf_daily_is
                     sigma_excess_is = float(excess_is.std(ddof=1))

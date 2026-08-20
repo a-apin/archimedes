@@ -654,11 +654,18 @@ class TestCachedLibraryPbo:
         # Clear any cached value from a prior test's signature.
         monkeypatch.setattr(routes, "_LIBRARY_PBO_CACHE", {})
 
-        value, vintage, size = routes._cached_library_pbo()
+        value, vintage, size, rf_convention = routes._cached_library_pbo()
         assert value is not None
         assert 0.0 <= value <= 1.0
         assert vintage == "2026-06-11"
         assert size == 4
+        # #1409 review fix: the store's dates (2020-01-01 onward, sequential
+        # calendar days) are all inside the vendored DGS3MO series' coverage,
+        # so the disclosed convention must actually be the series, not a
+        # silent "MISSING"/fallback default.
+        from archimedes.services import rf_series
+
+        assert rf_convention == rf_series.RF_CONVENTION_SERIES
 
     def test_absent_store_fails_closed(self, tmp_path, monkeypatch):
         from archimedes.api import selection_bias_routes as routes
@@ -667,18 +674,20 @@ class TestCachedLibraryPbo:
         self._patch_get_session(monkeypatch, session)
         monkeypatch.setattr(routes, "_LIBRARY_PBO_CACHE", {})
 
-        value, vintage, size = routes._cached_library_pbo()
+        value, vintage, size, rf_convention = routes._cached_library_pbo()
         assert value is None
         assert vintage is None
         assert size == 0
+        assert rf_convention == "MISSING"
 
     def test_payload_unavailable_when_value_none(self, monkeypatch):
         from archimedes.api import selection_bias_routes as routes
 
-        monkeypatch.setattr(routes, "_cached_library_pbo", lambda: (None, None, 0))
+        monkeypatch.setattr(routes, "_cached_library_pbo", lambda: (None, None, 0, "MISSING"))
         payload = routes._library_pbo_payload()
         assert payload.value is None
         assert payload.source == "unavailable"
+        assert payload.rf_convention == "MISSING"
 
     def test_cache_avoids_recompute_on_unchanged_store(self, tmp_path, monkeypatch):
         """Second call with an unchanged store does NOT re-run compute_library_pbo."""

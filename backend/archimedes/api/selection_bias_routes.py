@@ -18,6 +18,7 @@ from archimedes.services.rigor_evaluator import (
     compute_average_pairwise_correlation,
     compute_board_level_fdr,
     compute_library_pbo,
+    compute_library_pbo_rf_convention,
     compute_pbo,
     load_daily_returns_store,
     run_rigor_gate,
@@ -90,6 +91,17 @@ class LibraryPbo(BaseModel):
     data_vintage: str | None = None  # store vintage, e.g. "2026-06-11"
     selection_set_size: int = 0  # number of strategies in the selection set
     source: str = "library_cscv"  # provenance label; "unavailable" when value is None
+    # #1409 review fix (2026-08-20): `compute_library_pbo` threads the joint
+    # date axis into CSCV's per-split Sharpe ranking UNCONDITIONALLY (no
+    # caller opt-in, unlike `dates` on `run_rigor_gate`) -- so `value` can
+    # already be computed on the historical T-bill series today, even while
+    # every `run_rigor_gate` call site still reports
+    # `rf_convention=excess_flat_fallback` (no live caller threads `dates`
+    # there yet). Without this field, a changed `value` shipped with no
+    # disclosure of which rate produced it. "MISSING" when the value itself
+    # is unavailable (fewer than two series align) -- there is no convention
+    # to disclose for a PBO that wasn't computed.
+    rf_convention: str = "MISSING"
 
 
 class BoardLevelFdr(BaseModel):
@@ -904,22 +916,28 @@ def _store_signature() -> tuple[int, int] | None:
     return (count, max_id or 0)
 
 
-def _cached_library_pbo() -> tuple[float | None, str | None, int]:
+def _cached_library_pbo() -> tuple[float | None, str | None, int, str]:
     """Load the daily-returns store and compute the single library CSCV PBO.
 
-    Returns ``(value, data_vintage, selection_set_size)`` where ``value`` is the
-    library PBO (``None`` fail-closed / store empty), ``data_vintage`` is the
-    store's max vintage, and ``selection_set_size`` is the number of aligned
-    series actually used by the CSCV. Cached on the store's DB signature so the
-    expensive CSCV does not re-run on every request.
+    Returns ``(value, data_vintage, selection_set_size, rf_convention)`` where
+    ``value`` is the library PBO (``None`` fail-closed / store empty),
+    ``data_vintage`` is the store's max vintage, ``selection_set_size`` is the
+    number of aligned series actually used by the CSCV, and ``rf_convention``
+    (#1409 review fix) discloses which rf rate ``value`` was actually computed
+    against — ``compute_library_pbo`` threads the joint date axis
+    unconditionally, so this can genuinely be ``excess_tbill_series`` even
+    while every ``run_rigor_gate`` verdict still reports the flat fallback.
+    Cached on the store's DB signature so the expensive CSCV does not re-run
+    on every request.
 
-    Never raises: an empty store or a DB read failure yields ``(None, None, 0)``.
+    Never raises: an empty store or a DB read failure yields
+    ``(None, None, 0, "MISSING")``.
     """
     from archimedes.services.rigor_evaluator import align_returns_store
 
     signature = _store_signature()
     if signature is None:
-        return None, None, 0
+        return None, None, 0, "MISSING"
     if signature in _LIBRARY_PBO_CACHE:
         return _LIBRARY_PBO_CACHE[signature]
 
@@ -928,7 +946,12 @@ def _cached_library_pbo() -> tuple[float | None, str | None, int]:
     # (the count CSCV runs over), not the raw row count.
     selection_set_size = len(align_returns_store(store))
     value = compute_library_pbo(store)
-    result = (value, data_vintage, selection_set_size)
+    # "MISSING" (not whatever compute_library_pbo_rf_convention resolved) when
+    # there's no value to attribute a convention to — e.g. the joint window is
+    # too short for compute_library_pbo's own s_partitions guard, a case that
+    # guard doesn't need to know about since it only resolves dates, not PBO.
+    rf_convention = compute_library_pbo_rf_convention(store) if value is not None else "MISSING"
+    result = (value, data_vintage, selection_set_size, rf_convention)
     _LIBRARY_PBO_CACHE[signature] = result
     return result
 
@@ -940,16 +963,21 @@ def _library_pbo_payload() -> LibraryPbo:
     unavailable or the PBO fails closed, returns ``LibraryPbo(value=None,
     source="unavailable")`` and never crashes.
     """
-    value, data_vintage, selection_set_size = _cached_library_pbo()
+    value, data_vintage, selection_set_size, rf_convention = _cached_library_pbo()
     if value is None:
         return LibraryPbo(
-            value=None, data_vintage=data_vintage, selection_set_size=selection_set_size, source="unavailable"
+            value=None,
+            data_vintage=data_vintage,
+            selection_set_size=selection_set_size,
+            source="unavailable",
+            rf_convention=rf_convention,
         )
     return LibraryPbo(
         value=value,
         data_vintage=data_vintage,
         selection_set_size=selection_set_size,
         source="library_cscv",
+        rf_convention=rf_convention,
     )
 
 

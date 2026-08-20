@@ -1,4 +1,7 @@
-# FRED DGS3MO -- 3-Month Treasury Bill Secondary Market Rate, Discount Basis.
+# FRED DGS3MO -- Market Yield on U.S. Treasury Securities at 3-Month Constant
+# Maturity, Quoted on an Investment Basis. (Not DTB3 "3-Month Treasury Bill
+# Secondary Market Rate, Discount Basis" -- a different FRED series/quotation
+# convention; corrected 2026-08-20 review, see issue #1409.)
 # Source: https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS3MO
 # Vendored (one-time download, issue #1409): 2026-08-20.
 # Values are ANNUALIZED PERCENT (e.g. 3.86 means 3.86%/yr); convert to a

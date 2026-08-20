@@ -160,3 +160,33 @@ def test_custom_flat_annual_pct_used_in_fallback() -> None:
     rates, convention = rf_series.resolve_annual_rf_for_dates(["1900-01-01"], flat_annual_pct=7.5)
     assert rates == [7.5]
     assert convention == rf_series.RF_CONVENTION_FALLBACK
+
+
+# ─── Malformed / unsupported date input fails SOFT, not crashes ─────────
+# (2026-08-20 review fix.) Every other unresolvable-date case above degrades
+# to the flat rate, loudly logged, never a crash — a non-ISO string or an
+# unsupported type used to be the one exception, raising uncaught out of
+# `resolve_annual_rf_for_dates` and crashing the whole rigor gate. That
+# contradicts this module's own fail-soft posture and the PR's own claim that
+# "the mechanism is fully built, tested, and ready to wire the moment a
+# caller has real per-bar dates" — a caller's date format is exactly the kind
+# of input this function must not trust blindly.
+
+
+def test_non_iso_date_string_falls_back_instead_of_crashing(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING"):
+        rates, convention = rf_series.resolve_annual_rf_for_dates(["2015-01-02", "01/01/2015"], flat_annual_pct=6.0)
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+    assert rates == [6.0, 6.0]  # WHOLE grade falls back, including the valid first bar
+    assert any("malformed" in rec.message.lower() for rec in caplog.records)
+
+
+def test_unsupported_date_type_falls_back_instead_of_crashing(caplog: pytest.LogCaptureFixture) -> None:
+    """A numpy.datetime64 -- the type a pandas/numpy backtest series is most
+    likely to actually emit -- must degrade the same way, not raise."""
+    np = pytest.importorskip("numpy")
+    with caplog.at_level("WARNING"):
+        rates, convention = rf_series.resolve_annual_rf_for_dates([np.datetime64("2015-01-02")], flat_annual_pct=6.0)
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+    assert rates == [6.0]
+    assert any("unsupported date type" in rec.message.lower() for rec in caplog.records)

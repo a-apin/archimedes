@@ -178,10 +178,11 @@ def resolve_annual_rf_for_dates(
     resolves against the vendored series (exact match or in-window
     forward-fill), or ``(flat_rates, RF_CONVENTION_FALLBACK)`` -- one flat
     value per date -- the moment ANY date in the window is unresolvable (more
-    than ``MAX_FORWARD_FILL_DAYS`` past the series' last published date, or
-    before the series' first date, or the vendored series itself is empty).
-    Fail-soft rule: the whole grade falls back together rather than mixing
-    real and flat rates bar-by-bar, and the fallback is always logged loudly.
+    than ``MAX_FORWARD_FILL_DAYS`` past the series' last published date,
+    before the series' first date, malformed / non-ISO / an unsupported type,
+    or the vendored series itself is empty). Fail-soft rule: the whole grade
+    falls back together rather than mixing real and flat rates bar-by-bar,
+    and the fallback is always logged loudly.
     """
     if not dates:
         logger.info(
@@ -209,13 +210,49 @@ def resolve_annual_rf_for_dates(
 
     resolved: list[float] = []
     for raw in dates:
-        iso = _to_iso(raw)
+        # #1409 review fix (2026-08-20): a malformed date (non-ISO string, or
+        # an unsupported type such as numpy.datetime64 -- see `_to_iso`) used
+        # to raise uncaught out of this function, crashing the whole rigor
+        # gate. That contradicts this module's own fail-soft posture (every
+        # OTHER unresolvable-date case below degrades to the flat rate,
+        # loudly) and the mechanism is explicitly "ready to wire the moment a
+        # caller has real per-bar dates" -- a caller's date format is exactly
+        # the kind of input this function must not trust blindly. Same
+        # response as every other failure mode here: the WHOLE grade falls
+        # back to flat, loudly, never a crash.
+        try:
+            iso = _to_iso(raw)
+        except TypeError as exc:
+            logger.warning(
+                "rf_series: unsupported date type %r for entry %r (%s) -- WHOLE grade (%d bars) "
+                "falls back to the flat %.2f%% risk-free rate (rf_convention=%s)",
+                type(raw),
+                raw,
+                exc,
+                len(dates),
+                flat_annual_pct,
+                RF_CONVENTION_FALLBACK,
+            )
+            return [flat_annual_pct] * len(dates), RF_CONVENTION_FALLBACK
+
         exact = series.get(iso)
         if exact is not None:
             resolved.append(exact)
             continue
 
-        d_obj = date.fromisoformat(iso)
+        try:
+            d_obj = date.fromisoformat(iso)
+        except ValueError as exc:
+            logger.warning(
+                "rf_series: malformed date %r (%s) -- WHOLE grade (%d bars) falls back to the "
+                "flat %.2f%% risk-free rate (rf_convention=%s)",
+                raw,
+                exc,
+                len(dates),
+                flat_annual_pct,
+                RF_CONVENTION_FALLBACK,
+            )
+            return [flat_annual_pct] * len(dates), RF_CONVENTION_FALLBACK
         if d_obj > last_date_obj:
             gap_days = (d_obj - last_date_obj).days
             if gap_days > MAX_FORWARD_FILL_DAYS:

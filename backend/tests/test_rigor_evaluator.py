@@ -45,6 +45,7 @@ from archimedes.services.rigor_evaluator import (
     align_returns_store,
     compute_board_level_fdr,
     compute_library_pbo,
+    compute_library_pbo_rf_convention,
     is_oos_zero_variance_series,
     is_zero_variance_series,
     load_daily_returns_store,
@@ -1846,6 +1847,57 @@ class TestComputeLibraryPbo:
             lambda *a, **k: dict.fromkeys(store, float("nan")),
         )
         assert compute_library_pbo(store) is None
+
+
+class TestComputeLibraryPboRfConvention:
+    """2026-08-20 review fix: `compute_library_pbo` threads the joint date
+    axis into CSCV UNCONDITIONALLY (unlike `run_rigor_gate`'s opt-in `dates`),
+    so its value can already be computed on the historical T-bill series in
+    production today. This companion function resolves the SAME convention so
+    `LibraryPbo.rf_convention` (selection_bias_routes.py) can disclose it
+    honestly instead of leaving a changed number unlabeled."""
+
+    @staticmethod
+    def _series(seed: int, n: int = 256) -> dict[str, list]:
+        rng = np.random.default_rng(seed)
+        dates = [f"2020-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(n)]
+        return {"dates": dates, "daily_returns": rng.normal(0.0005, 0.01, n).tolist()}
+
+    def test_matches_the_convention_compute_library_pbo_actually_used(self) -> None:
+        from archimedes.services import rf_series
+
+        store = {f"s{i}": self._series(i) for i in range(4)}
+        # These dates (2020 onward) are all inside the vendored series'
+        # coverage, so both the PBO value and its convention resolve to the
+        # series — assert BOTH so a future edit that decouples them again is
+        # caught here, not just at the payload layer.
+        assert compute_library_pbo(store, s_partitions=8) is not None
+        assert compute_library_pbo_rf_convention(store) == rf_series.RF_CONVENTION_SERIES
+
+    def test_fewer_than_two_series_reports_fallback(self) -> None:
+        from archimedes.services import rf_series
+
+        store = {"a": self._series(1)}
+        assert compute_library_pbo(store) is None
+        assert compute_library_pbo_rf_convention(store) == rf_series.RF_CONVENTION_FALLBACK
+
+    def test_empty_store_reports_fallback(self) -> None:
+        from archimedes.services import rf_series
+
+        assert compute_library_pbo({}) is None
+        assert compute_library_pbo_rf_convention({}) == rf_series.RF_CONVENTION_FALLBACK
+
+    def test_out_of_coverage_dates_report_fallback(self) -> None:
+        """A store whose joint dates are all outside the vendored series'
+        coverage must disclose FALLBACK, not silently claim the series."""
+        from archimedes.services import rf_series
+
+        far_future = [f"2999-01-{1 + i:02d}" for i in range(20)]
+        store = {
+            "a": {"dates": far_future, "daily_returns": np.random.default_rng(1).normal(0.0005, 0.01, 20).tolist()},
+            "b": {"dates": far_future, "daily_returns": np.random.default_rng(2).normal(0.0005, 0.01, 20).tolist()},
+        }
+        assert compute_library_pbo_rf_convention(store) == rf_series.RF_CONVENTION_FALLBACK
 
 
 class TestRigorGateLibraryPbo:
