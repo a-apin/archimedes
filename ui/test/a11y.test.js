@@ -14,6 +14,55 @@ import test from "node:test";
 
 const src = (p) => readFileSync(new URL(`../src/${p}`, import.meta.url), "utf8");
 
+// ── WCAG contrast helpers ───────────────────────────────────────────────
+//
+// A regex pinning a literal foreground hex only guards that one side of the
+// pair — the background it is measured against can drift (a token edit
+// elsewhere in the same block) with the guard still green, because nothing
+// ever computes the ratio. These resolve `--token: var(--other-token)`
+// indirection inside one CSS block and compute the real WCAG 2.x relative
+// luminance / contrast ratio, so the 4.5:1 floor is enforced against
+// whatever the current tokens actually are, not a snapshot of them.
+
+function cssBlock(cssText, selector) {
+	const re = new RegExp(`${selector}\\s*\\{([\\s\\S]*?)\\n\\}`);
+	const m = cssText.match(re);
+	assert.ok(m, `CSS block not found: ${selector}`);
+	return m[1];
+}
+
+function tokenValue(block, name) {
+	const re = new RegExp(`--${name}:\\s*([^;]+);`);
+	const m = block.match(re);
+	assert.ok(m, `token not found in block: --${name}`);
+	return m[1].trim();
+}
+
+function resolveHex(block, rawValue) {
+	const varRef = rawValue.match(/^var\(--([\w-]+)\)$/);
+	if (varRef) return resolveHex(block, tokenValue(block, varRef[1]));
+	assert.match(rawValue, /^#[0-9a-fA-F]{3,6}$/, `not a hex literal: ${rawValue}`);
+	return rawValue;
+}
+
+function relativeLuminance(hex) {
+	const h = hex.replace("#", "");
+	const full = h.length === 3 ? [...h].map((c) => c + c).join("") : h;
+	const n = Number.parseInt(full, 16);
+	const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => {
+		const s = v / 255;
+		return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+	});
+	return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrastRatio(hexA, hexB) {
+	const [lo, hi] = [relativeLuminance(hexA), relativeLuminance(hexB)].sort(
+		(a, b) => a - b,
+	);
+	return (hi + 0.05) / (lo + 0.05);
+}
+
 const css = src("App.css");
 const app = src("App.jsx");
 const authPage = src("components/AuthPage.jsx");
@@ -55,8 +104,22 @@ test("base and public palettes keep muted text above the 4.5:1 floor", () => {
 		/:root\[data-theme="light"\]\s*\{[\s\S]*?--accent-rgb:\s*138,\s*95,\s*10;/,
 	);
 	// Public --text-4 was #657a73 = 3.46:1 on the slate card, then #7d9189
-	// (3.94:1 on the lighter --surface-3, a #1318 residual).
-	assert.match(css, /\.public-site\s*\{[\s\S]*?--text-4:\s*#8b9f97;/);
+	// (3.94:1 on the lighter --surface-3, a #1318 residual). Pinning the
+	// foreground literal alone only guards that one side of the pair — the
+	// background (--surface-2 / --surface-3) can drift with the guard still
+	// green unless the ratio is actually computed, so this resolves both
+	// tokens out of the live .public-site block and checks the real WCAG
+	// contrast rather than trusting a snapshot value.
+	const publicBlock = cssBlock(css, "\\.public-site");
+	const publicText4 = resolveHex(publicBlock, tokenValue(publicBlock, "text-4"));
+	for (const surfaceName of ["surface-2", "surface-3"]) {
+		const surfaceHex = resolveHex(publicBlock, tokenValue(publicBlock, surfaceName));
+		const ratio = contrastRatio(publicText4, surfaceHex);
+		assert.ok(
+			ratio >= 4.5,
+			`--text-4 (${publicText4}) on --${surfaceName} (${surfaceHex}) is ${ratio.toFixed(2)}:1, below the 4.5:1 floor`,
+		);
+	}
 	// --text-4 is a border/decoration token on the base palette (it is #3f3f46
 	// there = 1.73:1) and must never be used as text on the auth screen.
 	assert.doesNotMatch(authPage, /text-\[var\(--text-4\)\]/);
@@ -141,6 +204,15 @@ test("no rule strips the focus indicator from a control", () => {
 test("sticky topbar cannot cover a focused control", () => {
 	// 56px bar + 3px outline + 3px offset.
 	assert.match(css, /^html \{[^}]*scroll-padding-top: 64px;/m);
+	// .public-header is taller (72px, 66px ≤560px) with a wider focus-ring
+	// offset (4px) than .topbar, so the 64px clearance above is short by up
+	// to 15px there. .public-site is not the scroll container — html is —
+	// so the override has to reach html via :has(), not sit on .public-site
+	// itself. 72 + 3 + 4 = 79, rounded up to 80 (#1318 residual).
+	assert.match(
+		css,
+		/html:has\(\.public-site\)\s*\{\s*scroll-padding-top: 80px;/,
+	);
 });
 
 test("corpus category labels wrap instead of clipping under zoom", () => {
