@@ -144,8 +144,9 @@ def _format_market_scan(market_ranking: list[dict]) -> str:
 def _format_strategies(strategies: list[Any], rigor_statuses: dict[str, str] | None = None) -> str:
     """Render paper strategies with their backtest stats + signal rules.
 
-    ``rigor_statuses`` maps strategy id → LIVE tri-state gate status
-    ("pass" | "fail" | "pending"), computed by the caller (the advisor route
+    ``rigor_statuses`` maps strategy id → LIVE four-state gate status
+    ("pass" | "fail" | "pending" | "degenerate", #1184), computed by the caller
+    (the advisor route
     runs the same memoized live-gate batch that serves the library badge).
     ``Strategy.passes_rigor_gate`` on the in-memory object is a fail-closed
     sentinel (always ``False``, #821) and must never be presented to the LLM
@@ -171,7 +172,16 @@ def _format_strategies(strategies: list[Any], rigor_statuses: dict[str, str] | N
                 return rule
         return "see paper"
 
-    _RIGOR_LABELS = {"pass": "PASS (live gate)", "fail": "FAIL (live gate)", "pending": "pending (no live verdict)"}
+    _RIGOR_LABELS = {
+        "pass": "PASS (live gate)",
+        "fail": "FAIL (live gate)",
+        "pending": "pending (no live verdict)",
+        # #1184: without this entry a degenerate (zero-variance) strategy would
+        # fall through the .get() default below and be told to the LLM as
+        # "pending (no live verdict)" — the exact conflation this issue exists
+        # to fix, just one layer up (advisor context instead of the API badge).
+        "degenerate": "DEGENERATE (zero-variance data, not a real evaluation)",
+    }
 
     lines: list[str] = []
     for s in strategies:

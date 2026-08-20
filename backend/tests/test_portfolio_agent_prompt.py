@@ -54,6 +54,18 @@ def test_format_strategies_renders_live_statuses_not_the_attribute():
     assert "candidate" not in out
 
 
+def test_format_strategies_renders_degenerate_not_pending():
+    """#1184: a zero-variance persisted series ("degenerate") must render its
+    own label — falling through to "pending (no live verdict)" would tell the
+    LLM the strategy is merely unmeasured when it was actually evaluated and
+    found broken."""
+    strategies = [_Strategy("eeee5555", poisoned_gate=True)]
+    out = _format_strategies(strategies, {"eeee5555": "degenerate"})
+
+    assert "rigor=DEGENERATE (zero-variance data, not a real evaluation)" in out
+    assert "rigor=pending (no live verdict)" not in out
+
+
 def test_format_strategies_without_statuses_says_pending_never_candidate():
     # Poisoned True: the pre-fix code renders "rigor=PASS" from the attribute —
     # an unearned pass — and "candidate" for a False one. Both are forbidden.

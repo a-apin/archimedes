@@ -387,6 +387,15 @@ class TestVaultContextLiveRigor:
         ctx = self._context_with({"sid1": "pending"})
         assert "Rigor gate: pending — no live backtest verdict yet" in ctx
 
+    def test_degenerate_is_stated_honestly_not_omitted(self) -> None:
+        """#1184: a zero-variance persisted series must render its own label —
+        without a "degenerate" entry in rigor_labels this status wouldn't match
+        any key and the line would be silently omitted, hiding that the
+        strategy's data is broken rather than merely unmeasured."""
+        ctx = self._context_with({"sid1": "degenerate"})
+        assert "Rigor gate: DEGENERATE" in ctx
+        assert "Rigor gate: pending" not in ctx
+
     def test_no_live_status_omits_the_line_never_invents_it(self) -> None:
         # Batch failure → {}: pre-fix code invented "Rigor gate: not passed"
         # from the poisoned sentinel; the fixed builder omits the line.

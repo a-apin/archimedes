@@ -50,7 +50,8 @@ CHAT_MODEL = os.getenv("CHAT_MODEL", "").strip() or None
 
 
 def _curated_rigor_statuses(strategies: list) -> dict[str, str]:
-    """LIVE tri-state rigor statuses ("pass"|"fail"|"pending") for chat context.
+    """LIVE four-state rigor statuses ("pass"|"fail"|"pending"|"degenerate", #1184)
+    for chat context.
 
     ``Strategy.passes_rigor_gate`` on the in-memory provider object is a
     fail-closed sentinel (always ``False``, #821) — presenting it as a verdict
@@ -386,6 +387,12 @@ class ChatService:
                             "pass": "passed (live gate)",
                             "fail": "failed (live gate)",
                             "pending": "pending — no live backtest verdict yet",
+                            # #1184: without this entry a degenerate (zero-variance)
+                            # strategy's status wouldn't match any key, so the whole
+                            # "Rigor gate:" line would be silently omitted — not a lie,
+                            # but a missed chance to tell the LLM the data is broken
+                            # rather than merely unmeasured.
+                            "degenerate": "DEGENERATE — persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation",
                         }
                         for sid, s in found:
                             if s:
