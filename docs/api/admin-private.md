@@ -5,13 +5,20 @@
 > **updated:** 2026-08-20
 
 `/api/metrics/private/*` — the internal cost/ops dashboard: Bedrock/infra spend (currently
-draft placeholders) and the per-wallet identity roster that the public, PII-free `GET
-/api/metrics` deliberately does not expose. Landed in #1373 (closing #1366) after a
-full-tree audit found `GET /api/metrics/wallets` and `GET /api/metrics/wallets/connections`
-serving the complete per-wallet address list to **anonymous** callers in production — a
-per-identity roster is not aggregate traction data. Those two routes were removed from the
-public router entirely (the old paths now `404`, they do not redirect) and re-mounted here
-behind an admin gate.
+draft placeholders), the current-schema engagement/adoption dashboard-v2 tiles, the
+admin-gate probe the frontend uses, and the per-wallet identity roster that the public,
+PII-free `GET /api/metrics` deliberately does not expose. Landed in #1373 (closing #1366)
+after a full-tree audit found `GET /api/metrics/wallets` and `GET
+/api/metrics/wallets/connections` serving the complete per-wallet address list to
+**anonymous** callers in production — a per-identity roster is not aggregate traction data.
+Those two routes were removed from the public router entirely (the old paths now `404`,
+they do not redirect) and re-mounted here behind an admin gate.
+
+**Owner directive (2026-08-20, supersedes issue #1028 D8 "public Insights page"):**
+`/app/insights` moved from the public app surface to ADMIN-ONLY
+(`PLATFORM_ADMIN_WALLETS` holders). `GET /whoami` below is the server-truth gate the
+frontend probes on entry; `GET /engagement` is the new dashboard-v2 content. See
+`ui/src/adminProbe.js`, `ui/src/App.jsx`, and `ui/src/components/Insights.jsx`.
 
 **Auth model — the platform-admin gate.** Every route in this router shares one dependency
 chain, applied at the router level
@@ -45,6 +52,63 @@ appropriate bar for it," which is why the gate is `PLATFORM_ADMIN_WALLETS` membe
 not merely "has a linked wallet."
 
 ---
+
+### GET /api/metrics/private/whoami
+Admin-gate probe. | **Auth**: platform-admin | **Flags**: `PLATFORM_ADMIN_WALLETS` env
+allowlist
+
+Request: none.
+Response: `{admin: true, wallet: str}` — always `admin: true` on `200`; there is no
+`admin: false` 200 response, non-admin is always a `401`/`403` (see below).
+Errors: `401` — no session. `403` — session without a linked wallet, or a linked wallet not
+on the admin allowlist (same two-flavor 403 as `/cost`, above).
+
+The frontend calls this on entry to `/app/insights`, before rendering anything
+Insights-shaped, and to decide whether the Ops nav item renders at all
+(`ui/src/adminProbe.js`, cached ~30s and shared across both call sites). A denied probe
+renders the identical "page not found" treatment an unknown route gets
+(`ui/src/components/NotFound.jsx`) — the page does not exist for a non-admin/anonymous
+visitor, not merely "access denied", so it is never advertised.
+
+```bash
+curl -sS -b /tmp/session.jar http://localhost:8080/api/metrics/private/whoami
+```
+
+### GET /api/metrics/private/engagement
+Dashboard-v2 engagement/adoption tiles. | **Auth**: platform-admin | **Flags**:
+`PLATFORM_ADMIN_WALLETS` env allowlist
+
+Request: none.
+Response:
+```
+{
+  accounts: {total: int, new_7d: int, new_30d: int},
+  linked_wallets: {total: int},
+  strategies: {total: int, new_7d: int, daily_new: [{date: "YYYY-MM-DD", count: int}, ...7]},
+  generation_costs: {measured_count: int, total_input_tokens: int, total_output_tokens: int,
+                      total_tokens: int},
+  paper_deployments: {active: int, stopped: int},
+  repeat_generation_users: {generating_users: int, repeat_users: int, note: str},
+  payments: {dry_run: bool, settled_volume_usd: null, note: str},
+  authenticated_wallet: str,
+  timestamp: str,
+}
+```
+Errors: `401` / `403` — same admin-gate semantics as `/cost`, above.
+
+Every field is a real query against an existing table (`services/engagement_metrics.py`) —
+no sampling, no estimation. `repeat_generation_users` is scoped to `strategy_store` rows
+with a non-NULL `owner_user_id` (the real FK to `auth_users.id`); pre-account, wallet-only
+generations are excluded from both `generating_users` and `repeat_users` rather than
+silently rounded into either bucket. `payments.settled_volume_usd` is always `null` today —
+`PAYMENTS_DRY_RUN` gates every settlement path, so there is no durable settled-volume
+record for this endpoint to read; it is the real field name settlement wiring will
+eventually populate, not a placeholder `0`. Fail-safe per sub-metric: a DB error on any one
+tile degrades that tile to its own zero shape without blanking the rest of the response.
+
+```bash
+curl -sS -b /tmp/session.jar http://localhost:8080/api/metrics/private/engagement
+```
 
 ### GET /api/metrics/private/cost
 Account + admin cost/ops dashboard. | **Auth**: platform-admin | **Flags**:
@@ -104,13 +168,14 @@ curl -sS -b /tmp/session.jar http://localhost:8080/api/metrics/private/wallets/c
 
 ---
 
-**No admin UI today.** `ui/src/components/Insights.jsx` explicitly does *not* render this
-dashboard — its own header comment names `GET /api/metrics/private/cost` as "a SEPARATE,
-account + admin-linked-wallet-gated surface ... intentionally NOT rendered anywhere in this
-component." A repo-wide search finds no other frontend consumer of `/api/metrics/private/*`
-either. That is a UI gap, not an access gap: the API is fully live and enforced today, a
-caller just has to reach it directly (curl / an API client with a session cookie) rather
-than through app navigation.
+**Admin UI (2026-08-20).** `ui/src/components/Insights.jsx` is now the admin-only
+`/app/insights` page: it probes `GET /whoami` on entry and renders `GET /engagement`'s
+tiles. `GET /api/metrics/private/cost` is still deliberately NOT rendered anywhere in that
+component — its own header comment explains why: every field is a draft placeholder
+pending the live AWS Cost Explorer + Bedrock token-metering wiring (roadmap), not something
+this page should present as a real number. `/wallets` and `/wallets/connections` also have
+no frontend consumer yet — reach them directly (curl / an API client with a session
+cookie).
 
 See also: `.env.example` (`PLATFORM_ADMIN_WALLETS` documentation block) and
 `docs/security/auth-model.md`.
