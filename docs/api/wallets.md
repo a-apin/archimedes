@@ -141,7 +141,8 @@ Errors:
 - `409` "Wallet is already linked to another account" — the normalized `<chain_id>:<address>`
   identity already belongs to a different user; ownership is never transferred
   automatically. (A same-user re-verify of an already-linked wallet is idempotent, not an
-  error.)
+  error.) A rarer race path (concurrent link attempts hitting the `IntegrityError`
+  fallback) returns the same `409` with the shorter message "Wallet is already linked".
 - `422` — body validation (message/signature length bounds).
 
 ```bash

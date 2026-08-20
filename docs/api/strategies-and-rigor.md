@@ -157,7 +157,7 @@ Rename an owned, generated strategy — owner-gated; curated examples
 
 Request: `{name: str (1..80 chars after trim)}`.
 Response: `{strategy: StrategyRecord.to_dict()}`.
-Errors: 422 `'name' (string) is required` / `name must be 1–80 characters after trimming`; 404 `Strategy not found` (missing row, curated example, or unpublished + not owner); 403 `Not authorized to rename this strategy` (published row, caller not owner).
+Errors: 422 `'name' (string) is required` / `name must be 1–80 characters after trimming`; 404 `Strategy not found` (missing row, curated example, or unpublished + not owner); 403 `Not authorized to rename this strategy.` (published row, caller not owner).
 
 ```bash
 curl -s -X PATCH https://archimedes-arc.com/api/strategies/<strategy_id> \
