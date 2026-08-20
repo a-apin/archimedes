@@ -55,9 +55,15 @@ SKIP_DIRS = {
 # Inline links [text](target) and images ![alt](target). The target group
 # stops at whitespace so `[x](path "title")` yields `path`.
 INLINE_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'][^\"']*[\"'])?\s*\)")
+# Badge-style nested links: [![alt](img-url)](target). INLINE_LINK's
+# non-nesting `[^\]]*` alt group stops at the first `]`, so it consumes the
+# inner image link and never sees the OUTER (target) — a badge pointing at a
+# deleted file sailed through as "0 broken" (#1262 review). This second pass
+# captures that outer target.
+BADGE_LINK = re.compile(r"\[!\[[^\]]*\]\([^)]*\)\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'][^\"']*[\"'])?\s*\)")
 # Reference definitions: [label]: target. `[^n]:` is a *footnote* definition
 # whose body is prose, not a target — excluding `^` keeps citation-heavy docs
-# (docs/archive/agora_project_analysis.md has 40+) from reporting the first
+# (citation-heavy archived analyses carry 40+ footnotes) from reporting the first
 # word of each footnote as a broken link.
 REF_DEF = re.compile(r"^\s{0,3}\[(?!\^)[^\]]+\]:\s*<?([^\s>]+)>?", re.MULTILINE)
 
@@ -134,6 +140,8 @@ def check_file(path: Path, root: Path) -> list[tuple[int, str]]:
     targets: list[tuple[int, str]] = []
     for m in INLINE_LINK.finditer(text):
         targets.append((m.start(1), m.group(1)))
+    for m in BADGE_LINK.finditer(text):
+        targets.append((m.start(1), m.group(1)))
     for m in REF_DEF.finditer(text):
         targets.append((m.start(1), m.group(1)))
 
@@ -183,7 +191,7 @@ def main() -> int:
 
     for f in files:
         raw = strip_code(f.read_text(encoding="utf-8", errors="replace"))
-        total_links += len(INLINE_LINK.findall(raw)) + len(REF_DEF.findall(raw))
+        total_links += len(INLINE_LINK.findall(raw)) + len(BADGE_LINK.findall(raw)) + len(REF_DEF.findall(raw))
         for line, target in check_file(f, root):
             all_broken.append((f, line, target))
 

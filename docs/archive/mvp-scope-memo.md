@@ -54,7 +54,7 @@ unless the team explicitly agrees to change one (and updates this memo).
 
 ### Detail
 
-See [`rfb-alignment.md`](rfb-alignment.md) for the full per-RFB analysis with judging-
+See ``rfb-alignment.md`` (routed to the private docs repo, 2026-08-19) for the full per-RFB analysis with judging-
 criteria mapping.
 
 ## Decision 2 — Both on-chain stories are in scope
@@ -159,7 +159,7 @@ and the per-paper rationale. Headline criteria for a paper to make the v1 librar
 
 Two new commitments were locked on Day 3, prompted by Chuan's ecosystem-design pivot
 ([`specs/ecosystem-design-spec.md`](../specs/ecosystem-design-spec.md)) and Dan's red-team
-synthesis ([`agora_project_analysis.md`](agora_project_analysis.md)). Both are now
+synthesis (``agora_project_analysis.md`` (routed to the private docs repo, 2026-08-19)). Both are now
 treated as locked alongside the original three decisions.
 
 ### Decision 4 — Rigor is the wedge
@@ -254,5 +254,5 @@ These aren't covered by this memo and should be decided by Day 4 or Day 5:
 - Implementation details — see Chuan's [`design.md`](agora-2026-05/design.md) and the specs in
   [`specs/`](../specs/).
 - The full pitch deck — see
-  [`demo-script-pitch-deck-outline.md`](agora-2026-05/demo-script-pitch-deck-outline.md).
+  ``demo-script-pitch-deck-outline.md`` (routed to the private docs repo, 2026-08-19).
 - Day-by-day milestones — see Chuan's [`design.md` § 8](agora-2026-05/design.md).

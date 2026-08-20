@@ -188,9 +188,9 @@ arc-canteen update-product "Live testnet deploy — contracts on Arc + LLM-drive
 arc-canteen update-traction "Shared live demo URL with two crypto-native users — first external traffic on the EC2 deploy"
 ```
 
-Run `arc-canteen status` to view your current dashboard — what the judges will see. The judging-rubric assessment in [`docs/judging-rubric-assessment.md`](../archive/agora-2026-05/judging-rubric-assessment.md) breaks down where we currently stand on each weighted criterion.
+Run `arc-canteen status` to view your current dashboard — what the judges will see. The judging-rubric assessment in ``docs/judging-rubric-assessment.md`` (routed to the private docs repo, 2026-08-19) breaks down where we currently stand on each weighted criterion.
 
-> **Arc OSS Showcase submissions** use the same CLI with an `"ArcOSS:"` prefix on the product update (per the showcase landing page at <https://arc-oss.thecanteenapp.com/>). See [`docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`](../archive/agora-2026-05/ARC-OSS-SHOWCASE.md).
+> **Arc OSS Showcase submissions** use the same CLI with an `"ArcOSS:"` prefix on the product update (per the showcase landing page at <https://arc-oss.thecanteenapp.com/>). See ``docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`` (routed to the private docs repo, 2026-08-19).
 
 ## Security notes
 

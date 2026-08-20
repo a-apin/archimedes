@@ -167,5 +167,5 @@ cannot be backed on the day, the fallback column governs what is said instead.
 
 ---
 
-*Supersedes `docs/demo-script-pitch-deck-outline.md` for the July 6 Lepton video
-recording. That file remains as the Agora hackathon pitch reference — do not delete it.*
+*Supersedes `docs/demo-script-pitch-deck-outline.md` (routed to the private docs repo,
+2026-08-19) for the July 6 Lepton video recording.*

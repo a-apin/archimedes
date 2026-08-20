@@ -7,7 +7,7 @@
 > **Supersedes:** the single-vault architecture in [`design.md` § 5.2](../archive/agora-2026-05/design.md)
 > **Superseded-by:** —
 > **Question being decided:** Is Archimedes one agent managing one vault, or a marketplace — and if a marketplace, who is allowed to create a vault?
-> **Related:** [`docs/specs/ecosystem-design-spec.md` § 1, § 5](../specs/ecosystem-design-spec.md), [`non-custodial-vault-owner-agent.md`](non-custodial-vault-owner-agent.md), [`docs/archive/agora-2026-05/arc-alignment.md`](../archive/agora-2026-05/arc-alignment.md). (Competitive landscape material moved to the private docs repo — see `CLAUDE.md`.)
+> **Related:** [`docs/specs/ecosystem-design-spec.md` § 1, § 5](../specs/ecosystem-design-spec.md), [`non-custodial-vault-owner-agent.md`](non-custodial-vault-owner-agent.md), ``docs/archive/agora-2026-05/arc-alignment.md`` (routed to the private docs repo, 2026-08-19). (Competitive landscape material moved to the private docs repo — see `CLAUDE.md`.)
 
 ## TL;DR
 

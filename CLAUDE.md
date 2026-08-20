@@ -51,8 +51,8 @@ Two corollaries an agent gets wrong by default:
 ## Team
 
 Roster, bios, timezones, sync window, and the 2026-06-24 ownership change (Chuan Bai out;
-Dan owns contracts + on-chain + infra + architecture; Bogdan is preferred contract
-reviewer): [`docs/team.md`](docs/team.md). Two things stay here because they change how you
+Dan owns contracts + on-chain + infra + architecture and is the sole required
+contract approver): [`docs/team.md`](docs/team.md). Two things stay here because they change how you
 behave:
 
 > **Lanes are descriptive of strengths, not prescriptive of boundaries.** The table below
@@ -155,9 +155,10 @@ Live picture: [`docs/architecture.md`](docs/architecture.md). Deployed contract 
 - **The few hard rules — universal, and they do not impede speed:** never force-push
   `main`; never commit secrets or `.env`; one logical change per PR. Force-pushing your
   *own* unmerged feature branch is fine and expected (rebase-before-merge).
-- **One approving review** is enough for non-contract changes. Contract changes get two, and
-  warrant **Dan's eyes (contract/infra owner) with Bogdan (`mnemonik-dev`) as preferred
-  second reviewer**, given live-funds risk.
+- **One approving review** is enough for non-contract changes. Contract changes warrant
+  **Dan's approval (contract/infra owner — the sole required approver)**, with a second
+  review from **Bogdan (`mnemonik-dev`) when he is active** (as of 2026-08 he is not),
+  given live-funds risk.
 - Commits: imperative mood, atomic, one logical change. Optional scope tags `[strategy]`,
   `[backtest]`, `[contracts]`, `[frontend]`, `[infra]`, `[docs]`.
 
@@ -326,8 +327,9 @@ feature work even when the diff looks small.
 - Pushing to shared infrastructure
 - Adding a top-level dependency (state which package, why, and the license)
 - Touching `docker-compose*.yml`, deployment configs, or CI/CD wiring without team alignment
-- Any smart contract change (needs **Dan's review as contract owner; Bogdan is the
-  preferred second reviewer**) — contracts hold live funds and Dan deploys them himself
+- Any smart contract change (needs **Dan's approval as contract owner — the sole required
+  approver; Bogdan is the preferred second reviewer when active**) — contracts hold live
+  funds and Dan deploys them himself
 - Editing `.env.example` or [`environment.yml`](environment.yml) — both are env contracts
   everyone else rebuilds against
 - Anything touching the strategy-passport / reasoning-trace data flow, or the on-chain vault
@@ -518,7 +520,9 @@ exceptions:
   load-bearing. An agent can review and recommend, but **Dan (the contract owner,
   who deploys them himself) must approve the merge** — and where possible **Bogdan
   (`mnemonik-dev`) provides the two-eyes contract review**. (Updated 2026-06-24:
-  contract approval routes to Dan, not Chuan, after the ownership change.)
+  contract approval routes to Dan, not Chuan, after the ownership change. Updated
+  2026-08: Bogdan is not currently active — Dan is the sole required approver;
+  two-eyes review resumes when a second contract reviewer is available.)
 - **Architecture decisions and infrastructure cost commitments** (new AWS
   services, recurring spend, multi-day migrations) still warrant **Dan's** ack
   (he owns the AWS account). Operational fixes within an already-approved

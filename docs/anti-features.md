@@ -10,7 +10,7 @@
 > "Pitch rigor" is also surfaced live in the product per the "Honest framing" rules
 > in [`user-stories.md`](user-stories.md). Reconciled with the ecosystem pivot in
 > [`specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md) and the red-team
-> critique in [`archive/agora_project_analysis.md`](archive/agora_project_analysis.md).
+> critique in ``archive/agora_project_analysis.md`` (routed to the private docs repo, 2026-08-19).
 >
 > **CORRECTION (2026-07-27) — the Marketplace anti-feature no longer holds.** The
 > marketplace **shipped** and is live behind the `PAYMENTS_DRY_RUN` flag. It lives in
@@ -41,7 +41,7 @@ against. Take-rate on USDC settlement + USYC yield-share is the revenue model.
 
 ### NOT building: perpetual futures or any leveraged trading
 
-**Why not:** Per [`rfb-alignment.md`](archive/rfb-alignment.md), we skip RFB 01 deliberately. The
+**Why not:** Per ``rfb-alignment.md`` (routed to the private docs repo, 2026-08-19), we skip RFB 01 deliberately. The
 v1 portfolio is spot + RWA + USYC. Leverage adds liquidation failure modes, regulatory
 exposure, and demo fragility we can't manage in 12 days.
 
@@ -205,7 +205,7 @@ home-grown alternative.
 
 These are not features we won't build — they are *claims we won't make* in the deck or
 the public-facing copy. Each one survived the red team in
-[`agora_project_analysis.md`](archive/agora_project_analysis.md) as a defensible framing line.
+``agora_project_analysis.md`` (routed to the private docs repo, 2026-08-19) as a defensible framing line.
 
 ### NOT pitching: "blockchain as memory" as the load-bearing rhetorical claim
 
@@ -239,7 +239,7 @@ moment of the trade" — not "proof that the trade followed from the reasoning."
 ### NOT claiming: regulatory clarity or production-readiness
 
 **Why not:** Per the regulatory survey in
-[`agora_project_analysis.md`](archive/agora_project_analysis.md) § 6, a managed-portfolio vault
+``agora_project_analysis.md`` (routed to the private docs repo, 2026-08-19) § 6, a managed-portfolio vault
 with curator discretion likely satisfies all four prongs of Howey under current SEC
 interpretation. This is fine for a hackathon prototype with test users; it is **not** a
 production stance. Any pitch should explicitly frame this as a research prototype, not a
@@ -289,7 +289,7 @@ to reflect the two-tier marketplace pivot in
 - Next.js frontend: marketplace landing, vault detail, swap UI, vault creator, reasoning
   trace viewer with "verify trace hash" UI element
 - Pitch deck + live demo + Q&A prep grounded in
-  [`agora_project_analysis.md`](archive/agora_project_analysis.md)
+  ``agora_project_analysis.md`` (routed to the private docs repo, 2026-08-19)
 
 That's the updated v1. Everything else is v2.
 

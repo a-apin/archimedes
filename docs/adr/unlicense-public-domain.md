@@ -7,7 +7,7 @@
 > **Supersedes:** —
 > **Superseded-by:** —
 > **Question being decided:** Under what licence is the Archimedes source released?
-> **Related:** [`LICENSE`](../../LICENSE), [`docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`](../archive/agora-2026-05/ARC-OSS-SHOWCASE.md).
+> **Related:** [`LICENSE`](../../LICENSE), ``docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`` (routed to the private docs repo, 2026-08-19).
 
 ## TL;DR
 

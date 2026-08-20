@@ -7,7 +7,7 @@
 > **Supersedes:** —
 > **Superseded-by:** —
 > **Question being decided:** Which chain settles vault deposits, trades and provenance anchors, and in what asset?
-> **Related:** [`docs/arc-integration.md`](../arc-integration.md), [`backend/archimedes/chain/client.py:117`](../../backend/archimedes/chain/client.py), [`ui/public/.well-known/agent.json`](../../ui/public/.well-known/agent.json), `backend/archimedes/chain/circle_signer.py`, [`docs/archive/agora-2026-05/arc-alignment.md`](../archive/agora-2026-05/arc-alignment.md).
+> **Related:** [`docs/arc-integration.md`](../arc-integration.md), [`backend/archimedes/chain/client.py:117`](../../backend/archimedes/chain/client.py), [`ui/public/.well-known/agent.json`](../../ui/public/.well-known/agent.json), `backend/archimedes/chain/circle_signer.py`, ``docs/archive/agora-2026-05/arc-alignment.md`` (routed to the private docs repo, 2026-08-19).
 
 ## TL;DR
 

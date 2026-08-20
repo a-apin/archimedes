@@ -135,3 +135,30 @@ checking them in CI would keep the gate permanently red for a reason unrelated t
 adding an always-running fallback job. A path-filtered workflow marked required never
 reports on a PR outside its paths, and GitHub reads "never reported" as "pending forever" —
 it would block every non-docs PR in the repo. The reasoning is repeated in the workflow header.
+
+## Content routing — which repo a document belongs in
+
+**The repo's visibility is a property of the content, not of the file path it happens to
+sit at. Existing precedent is not authorization** — a business doc already sitting in this
+public repo is a misfiling to correct, not a license to extend it. This rule exists because
+the same misclassification happened twice, by two independent passes, before it was written
+down.
+
+The test, applied line by line: *would we be comfortable if a competitor read this?*
+
+- **Public (this repo):** architecture, specs, ADRs, API docs, runbooks, setup, testing
+  conventions, methodology (the rigor gate, its math, its published caveats), fixed
+  security findings — anything an outside contributor needs to build on the codebase.
+- **Private (the docs repo — ask Dan):** competitive analysis, pricing and business model,
+  fundraising and grant material, go-to-market, pitch and judging strategy, market sizing,
+  internal commentary on named people.
+- **Split, don't compromise:** a guardrail whose *mechanism* is technical and whose
+  *rationale* is commercial goes in both places, split at that seam — the public issue
+  states the enforceable constraint; the economics stay private.
+
+Hygiene checks ("is this stale, mis-filed, or wrong?") do not answer the routing question
+("does this belong in a public repo at all?") — a document can pass every hygiene check and
+still be in the wrong repo. Both checks run, separately. Moving a document: port to the
+private repo first, delete here second, and say where it went in the deletion commit —
+otherwise the next session re-creates it from precedent. Applies to issues and PR bodies,
+not just files. Canonical policy: the private docs repo, `decisions/content-routing-policy.md`.
