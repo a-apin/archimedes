@@ -1034,17 +1034,33 @@ async def get_portfolio_advisor(
         }
 
     def _build_rigor_summary(active_rows: list[dict]) -> dict:
+        # dsr_p_value reads "higher = more confident" throughout this codebase
+        # (RigorExplainer.jsx "confidence ≥ 0.90 (badge)", RigorStrictnessControl.jsx
+        # "DSR confidence ≥ dsr_p_min", RejectedCandidates.jsx's dsrBad = dsr_p_value
+        # < 0.95) — the SAME badge floor rigor_profiles.py uses at STRICTEST_LEVEL
+        # (level 1, the Archimedes Verified bar). This tile must use the identical
+        # floor+direction: a `< 0.05` comparator here previously counted the LOWEST-
+        # confidence strategies (round-2 review, #1358) — the opposite of what the
+        # PortfolioAdvisor.jsx "DSR conf<threshold" label (this same PR) claims.
+        from archimedes.services.rigor_profiles import STRICTEST_LEVEL, get_profile
+
+        dsr_badge_floor = get_profile(STRICTEST_LEVEL).dsr_p_min
+
         n = len(active_rows)
         if n == 0:
             return {
                 "total_picks": 0,
                 "passes_rigor_gate": 0,
                 "dsr_significant": 0,
+                "dsr_significant_threshold": dsr_badge_floor,
                 "pbo_acceptable": 0,
+                "pbo_acceptable_threshold": 0.50,
                 "oos_positive": 0,
             }
         passes = sum(1 for r in active_rows if r.get("passes_rigor_gate"))
-        dsr_sig = sum(1 for r in active_rows if r.get("dsr_p_value") is not None and r["dsr_p_value"] < 0.05)
+        dsr_sig = sum(
+            1 for r in active_rows if r.get("dsr_p_value") is not None and r["dsr_p_value"] >= dsr_badge_floor
+        )
         pbo_ok = sum(1 for r in active_rows if r.get("pbo_score") is not None and r["pbo_score"] < 0.5)
         oos_pos = sum(
             1 for r in active_rows if r.get("out_of_sample_sharpe") is not None and r["out_of_sample_sharpe"] > 0
@@ -1055,7 +1071,7 @@ async def get_portfolio_advisor(
             "total_picks": n,
             "passes_rigor_gate": passes,
             "dsr_significant": dsr_sig,
-            "dsr_significant_threshold": 0.05,
+            "dsr_significant_threshold": dsr_badge_floor,
             "pbo_acceptable": pbo_ok,
             "pbo_acceptable_threshold": 0.50,
             "oos_positive": oos_pos,
