@@ -135,15 +135,33 @@ class TestPctChangePlausibilityGuard:
         value, was_rejected = _pct_change_with_reason([100.0], 1)
         assert value is None
         assert was_rejected is False
-        # Zero prior close: was_rejected False (a different honest-absence
-        # cause, not a plausibility rejection).
+        # Zero prior close: was_rejected True (round-3 fix, PR #1343 review).
+        # A non-positive endpoint is a data hole, not a computable return —
+        # the SAME classification the n>1 bar-scan and the vol path already
+        # give a non-positive bar, so this must not be a separate "no data"
+        # bucket. Pinning this as False (the pre-fix behavior) is exactly
+        # the bug: it let a zero prior close silently compute a "kept"
+        # value on the boundary case (see the negative control below for
+        # the case that actually leaked, a zero *last* close at n=1).
         value, was_rejected = _pct_change_with_reason([0.0, 105.0], 1)
         assert value is None
-        assert was_rejected is False
+        assert was_rejected is True
         # A kept value: was_rejected False.
         value, was_rejected = _pct_change_with_reason([100.0, 105.0], 1)
         assert value == pytest.approx(5.0)
         assert was_rejected is False
+        # Negative control (round-3 fix, PR #1343 review): a zero *last*
+        # close at n=1 — the exact shape that leaked. Before the fix, only
+        # `start` (the prior close) was checked; `end` (the last close)
+        # fell through to `pct = (end - start) / start * 100.0 == -100.0`,
+        # which then passed the `abs(pct) > 100.0` bound check (-100.0 is
+        # not > 100.0) and was served as a real, non-rejected change_24h_pct
+        # — self-contradictory next to the 7d/30d/vol paths, which already
+        # reject any non-positive bar they scan. Mutation check: reverting
+        # the `end <= 0` half of the endpoint guard back to checking only
+        # `start` makes this assertion fail with (-100.0, False) instead of
+        # (None, True) — see the PR body for the transcript.
+        assert _pct_change_with_reason([10.0] * 39 + [0.0], 1) == (None, True)
 
     def test_pct_change_bound_is_1_day_tight_but_30_day_generous(self):
         """Sanity-pins the guard's shape: the 1-day bound stays at the

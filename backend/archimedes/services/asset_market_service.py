@@ -178,13 +178,17 @@ def _pct_change_with_reason(prices: list[float], n: int) -> tuple[float | None, 
     """Pct change between prices[-1] and prices[-1-n].
 
     Returns ``(value, was_rejected)``. ``value`` is None if not enough data,
-    the prior close is zero, or the result exceeds a plausible bound for a
-    window this size (#1322): a bad tick / decimal-placement error in the
-    upstream feed can turn a tiny prior close into an explosive ratio that
-    passes every other check. An honest absence beats shipping an
-    arithmetically-impossible number — see docs/architectural-principles.md
-    § fail-soft. ``was_rejected`` is True only for the plausibility-bound
-    case (not for insufficient data / zero start), so callers can
+    either window endpoint (the prior close or the last close) is
+    non-positive, or the result exceeds a plausible bound for a window this
+    size (#1322): a bad tick / decimal-placement error in the upstream feed
+    can turn a tiny prior close into an explosive ratio that passes every
+    other check. An honest absence beats shipping an arithmetically-
+    impossible number — see docs/architectural-principles.md § fail-soft.
+    ``was_rejected`` is True for the plausibility-bound case AND for a
+    non-positive endpoint (a zero/negative close is a data hole, not a
+    computable return — round-3 fix, PR #1343: a zero *last* close at n=1
+    used to compute an undetected exact -100.0% "return" instead of being
+    caught here); it is False only for insufficient data, so callers can
     distinguish "not enough history yet" from "a value was actively
     suppressed as implausible" — see ``AssetExploreItem.rejected_fields``.
 
@@ -209,8 +213,21 @@ def _pct_change_with_reason(prices: list[float], n: int) -> tuple[float | None, 
     if not prices or len(prices) < n + 1:
         return None, False
     end, start = prices[-1], prices[-1 - n]
-    if not start:
-        return None, False
+    if start <= 0 or end <= 0:
+        # A non-positive price at EITHER window endpoint is a data hole, not
+        # a computable return (#1322 review, PR #1343 round-3 finding): the
+        # old `if not start` only checked the *prior* close, so a zero/
+        # negative *last* close at n=1 fell through to `pct = (end - start)
+        # / start * 100.0` and computed an exact -100.0% "return" that slid
+        # past the strict `abs(pct) > bound` check below (-100.0 is not >
+        # 100.0) and got served as a real change_24h_pct — self-contradictory
+        # next to the n>1 bar-scan and the vol path below, which already
+        # reject any non-positive bar they touch. was_rejected=True (not
+        # False) here so this is classified the same as those rejections —
+        # not lumped in with "not enough history yet" — matching the bar-
+        # scan's treatment of the identical zero one bar deeper in the
+        # window.
+        return None, True
     pct = (end - start) / start * 100.0
     if n <= 1:
         if abs(pct) > _MAX_PLAUSIBLE_DAILY_PCT:
@@ -298,8 +315,13 @@ def _realized_vol_annual_with_reason(
     step *into* it compute an exact -100% return that slipped past a
     strict ``>`` bound comparison (-100% is not > 100%) and got folded into
     the vol estimate as real data. A zero/negative close is a data hole,
-    not a return — same treatment `_pct_change_with_reason` gives a zero
-    start.
+    not a return — the same classification `_pct_change_with_reason` now
+    gives a non-positive price at either window endpoint (round-3 fix, PR
+    #1343: before it, `_pct_change_with_reason` only checked its *prior*
+    close and returned ``was_rejected=False`` for a zero — this docstring's
+    "same treatment" claim was not yet true; the n=1 endpoint check was
+    fixed to match this function's bar-scan instead of the other way
+    around).
     """
     if not prices or len(prices) < window + 1:
         return None, False
