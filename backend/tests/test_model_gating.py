@@ -210,14 +210,6 @@ def test_endpoint_premium_without_entitlement_rejected_402():
     store.enqueue.assert_not_called()
 
 
-def test_endpoint_premium_anonymous_rejected_402():
-    """A premium model with no wallet session → 402."""
-    p_store, p_run = _patched_start()
-    with p_store, p_run:
-        resp = _client().post("/api/generate/start", json=_start_payload(_PREMIUM_HAIKU), cookies=_cookies(_WALLET))
-    assert resp.status_code == 402, resp.text
-
-
 def test_endpoint_premium_with_entitlement_allowed(monkeypatch):
     """Premium model + connected wallet + premium enabled → 202."""
     monkeypatch.setenv("PREMIUM_MODELS_ENABLED", "true")

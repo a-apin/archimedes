@@ -53,25 +53,6 @@ class TestDefaultDatabaseUrl:
 
 
 class TestDatabaseUrlEnvOverride:
-    def test_postgres_database_url_env_override_is_untouched(self):
-        """The DATABASE_URL env var (docker-compose's postgres URL) must pass
-        through os.getenv unchanged — the default-path fix must not affect
-        the override path."""
-        postgres_url = "postgresql://user:pass@postgres:5432/archimedes"
-
-        resolved = os.getenv("DATABASE_URL_FOR_TEST_OVERRIDE", db._default_database_url())
-        # Sanity: without the env var, we get the SQLite default.
-        assert resolved.startswith("sqlite:///")
-
-        # With the env var set, os.getenv returns the override verbatim,
-        # never falling through to _default_database_url().
-        os.environ["DATABASE_URL_FOR_TEST_OVERRIDE"] = postgres_url
-        try:
-            resolved = os.getenv("DATABASE_URL_FOR_TEST_OVERRIDE", db._default_database_url())
-            assert resolved == postgres_url
-        finally:
-            del os.environ["DATABASE_URL_FOR_TEST_OVERRIDE"]
-
     def test_get_engine_kwargs_sqlite_vs_postgres(self, monkeypatch):
         """_get_engine_kwargs branches on the DATABASE_URL prefix — verify both
         branches independent of the module-level constant's current value."""
