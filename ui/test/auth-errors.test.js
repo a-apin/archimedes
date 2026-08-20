@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 
 import { oauthErrorMessage } from "../src/auth-errors.js";
 
-// ── #1289: OAuth account-not-linked error goes silent ───────────────────
+// ── #1420: OAuth account-not-linked error goes silent ───────────────────
 // auth/auth.js sets accountLinking.disableImplicitLinking: true (a deliberate
 // security posture — do not weaken it to "fix" this). Its consequence: an
 // existing email/password user who clicks "Continue with Google/GitHub" gets

@@ -25,7 +25,7 @@ test("landing and architecture remain public", () => {
 // redirects a rejected OAuth sign-in to `/?error=account_not_linked` — the
 // bare landing route, which has no sign-in form. Landing must not swallow it:
 // resolveRoute bounces it to /sign-in, the actual sign-in surface, instead.
-test("landing OAuth error bounces to the sign-in surface instead of being swallowed (#1289)", () => {
+test("landing OAuth error bounces to the sign-in surface instead of being swallowed (#1420)", () => {
 	const route = resolveRoute("/", "?error=account_not_linked");
 	assert.equal(route.kind, "redirect");
 	assert.equal(route.redirect, "/sign-in?error=account_not_linked");
