@@ -247,11 +247,12 @@ async def test_cant_pay_deferral(market: MarketService):
     market.record_subscriber_tick = _capture_record
 
     async def _charge_side_effect(pub, sub, strategy_id, tick_id, step, action_count):
-        # _charge_one returns (paid, halt_reason_override) since #713 — None
-        # here means "no override", i.e. the caller's generic message applies.
+        # _charge_one returns (paid, halt_reason_override, charge_suppressed)
+        # since #1240 — None/False here means "no override, not suppressed",
+        # i.e. the caller's generic message applies and this is a real charge.
         if sub.sub_id == "0x" + "bad" * 32 and step == TickStep.REGIME_CLASSIFY:
-            return False, None
-        return True, None
+            return False, None, False
+        return True, None, False
 
     with ExitStack() as stack:
         _patch_evaluator(stack)
@@ -296,6 +297,50 @@ async def test_cant_pay_deferral(market: MarketService):
 
 
 @pytest.mark.asyncio
+async def test_payments_halt_never_persists_charged_true(market: MarketService, monkeypatch):
+    """#1240 regression: PAYMENTS_HALT=true must never let the persisted /
+    Redis-mirrored SubscriberTickLog claim charged=True — that is
+    indistinguishable from a real settled charge on the live rail. Runs the
+    REAL (unmocked) _charge_one against the real tick() pipeline so this
+    proves the actual wiring, not just the isolated helper (see
+    test_payments_halt.py for that unit-level coverage)."""
+    market.payments_dry_run = False
+    monkeypatch.setenv("PAYMENTS_HALT", "true")
+    records = []
+
+    async def _capture_record(rec):
+        records.append(rec)
+
+    market.record_subscriber_tick = _capture_record
+
+    with ExitStack() as stack:
+        _patch_evaluator(stack)
+        stack.enter_context(patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
+
+        pub = _add_publisher(market)
+        _add_sub(pub, sub_id="s1")
+        await market.tick("strat_a")
+
+    assert len(records) > 0, "expected the halted tick to still produce ledger records"
+    # The tick-ledger lie this guards against: no record may say charged=True
+    # while PAYMENTS_HALT is active — no USDC moved for any of them.
+    charged_true = [r for r in records if r.charged is True]
+    assert charged_true == [], (
+        f"PAYMENTS_HALT active but {len(charged_true)} record(s) claim charged=True: "
+        f"{[(r.sub_id, r.step_reached) for r in charged_true]}"
+    )
+    # Every record must be truthfully attributable to the kill switch.
+    for r in records:
+        assert r.halt_source == HaltSource.PAYMENTS_HALT, (r.sub_id, r.step_reached, r.halt_source)
+
+    # The switch must not itself defer the subscriber — it only stops money
+    # moving, per _charge_one's contract.
+    sub = market.publishers["strat_a"].subscribers.get("s1")
+    assert sub is not None
+    assert sub.active is True
+
+
+@pytest.mark.asyncio
 async def test_mirror_failure(market: MarketService):
     """_apply_to_subscriber → (False, exc) → EXECUTION record + liability."""
     market.paper_trading = False
@@ -309,7 +354,7 @@ async def test_mirror_failure(market: MarketService):
     with ExitStack() as stack:
         _patch_evaluator(stack)
         stack.enter_context(patch("archimedes.marketplace.service.compute_trades", return_value=_dummy_trades()))
-        stack.enter_context(patch.object(market, "_charge_one", AsyncMock(return_value=(True, None))))
+        stack.enter_context(patch.object(market, "_charge_one", AsyncMock(return_value=(True, None, False))))
         mock_liability = stack.enter_context(patch.object(market, "_record_liability", AsyncMock()))
         stack.enter_context(
             patch.object(

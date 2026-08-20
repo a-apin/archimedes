@@ -58,10 +58,16 @@ async def test_payments_halt_stops_real_charge(monkeypatch):
         patch("archimedes.marketplace.service.spend_cap.try_reserve_usdc", new=AsyncMock()) as mock_reserve,
         patch.object(svc, "_claim_settlement_intent") as mock_claim,
     ):
-        paid, override = await svc._charge_one(pub, sub, "strat_a", "tick_1", TickStep.LOAD_STRATEGY, action_count=1)
+        paid, override, charge_suppressed = await svc._charge_one(
+            pub, sub, "strat_a", "tick_1", TickStep.LOAD_STRATEGY, action_count=1
+        )
 
     assert paid is True
     assert override is None
+    assert charge_suppressed is True, (
+        "halted charge must be distinguishable from a real/dry-run charge "
+        "so callers persist charged=False instead of the #1240 tick-ledger lie"
+    )
     mock_claim.assert_not_called()
     mock_reserve.assert_not_awaited()
     mock_charge.assert_not_awaited()
@@ -74,8 +80,11 @@ async def test_payments_halt_true_case_insensitive_and_numeric(monkeypatch):
     for value in ("true", "TRUE", "1", "yes", "Yes"):
         monkeypatch.setenv("PAYMENTS_HALT", value)
         with patch("archimedes.marketplace.service.payments.charge", new=AsyncMock()) as mock_charge:
-            paid, _ = await svc._charge_one(pub, sub, "strat_a", "tick_1", TickStep.LOAD_STRATEGY, action_count=1)
+            paid, _, charge_suppressed = await svc._charge_one(
+                pub, sub, "strat_a", "tick_1", TickStep.LOAD_STRATEGY, action_count=1
+            )
         assert paid is True, f"PAYMENTS_HALT={value!r} should halt"
+        assert charge_suppressed is True, f"PAYMENTS_HALT={value!r} must mark the charge suppressed"
         mock_charge.assert_not_awaited()
 
 
@@ -96,8 +105,11 @@ async def test_payments_halt_false_reaches_the_real_charge_path(monkeypatch):
             new=AsyncMock(return_value=False),
         ) as mock_reserve,
     ):
-        paid, override = await svc._charge_one(pub, sub, "strat_a", "tick_1", TickStep.LOAD_STRATEGY, action_count=1)
+        paid, override, charge_suppressed = await svc._charge_one(
+            pub, sub, "strat_a", "tick_1", TickStep.LOAD_STRATEGY, action_count=1
+        )
 
     mock_reserve.assert_awaited_once()
     assert paid is False
     assert override == "24h spend cap reached"
+    assert charge_suppressed is False
