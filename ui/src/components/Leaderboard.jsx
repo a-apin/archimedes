@@ -180,10 +180,13 @@ export default function Leaderboard() {
             the backtest's position FSM) and F3 (rebalance cadence never read
             live) are prepared and HELD for the live-money go-ahead — and
             exit + rebalance_frequency are REQUIRED DSL fields, so every
-            generated strategy carries them. Hence the narrower banner below,
-            scoped to the own view (generated strategies someone may actually
-            run live); curated rows are reference-only backtests, where the
-            remaining divergence makes no claim. */}
+            generated strategy carries them. The own view ALSO still holds
+            July-era rows for older generated strategies (21 ids at the time
+            of verification) that predate the corrections and refresh on
+            their next cycle. Hence the narrower banner below, scoped to the
+            own view and carrying BOTH residuals; curated rows are
+            reference-only backtests, all verified fresh, where neither
+            residual makes a claim. */}
         {isOwn && (
           <div
             role="status"
@@ -197,11 +200,12 @@ export default function Leaderboard() {
               color: 'var(--text-2)',
             }}
           >
-            <strong style={{ color: 'var(--warning, #b45309)' }}>Backtest figures — live behaviour can differ.</strong>{' '}
-            These numbers are computed correctly by the backtest engine, but live execution currently
-            interprets entry/exit state and rebalance cadence differently than the backtest does — so a
-            strategy run live may not behave exactly as these figures describe. A fix is prepared and
-            awaiting live-trading sign-off.
+            <strong style={{ color: 'var(--warning, #b45309)' }}>Two caveats on your figures.</strong>{' '}
+            Older strategies may still show numbers computed before the August engine corrections —
+            they refresh on their next backtest cycle. And live execution currently interprets
+            entry/exit state and rebalance cadence differently than the backtest does, so a strategy
+            run live may not behave exactly as its figures describe; a fix is prepared and awaiting
+            live-trading sign-off.
           </div>
         )}
         {engine?.disclaimer && (
