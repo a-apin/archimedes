@@ -52,8 +52,20 @@ def payment_required() -> bool:
 
 
 def _payments_dry_run() -> bool:
-    """EXACT mirror of main.py's parse — the two must never disagree."""
-    return os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")
+    """Generation-scoped dry-run switch, split from the global (2026-08-20).
+
+    GENERATION_PAYMENTS_DRY_RUN, when set, governs ONLY this paywall; unset,
+    it inherits PAYMENTS_DRY_RUN (main.py's parse, EXACT mirror — the two
+    must never disagree on the fallback). Why the split: the recorded scope
+    decision (infra/ecs.tf money-switch block) allows real settlement on the
+    caller-signed metered-API path while the marketplace DCW flow stays
+    blocked on #975 — but one global switch gated both. The split lets the
+    generation rail go live without un-drying marketplace sweeps/withdraws.
+    """
+    raw = os.getenv("GENERATION_PAYMENTS_DRY_RUN")
+    if raw is None:
+        raw = os.getenv("PAYMENTS_DRY_RUN", "true")
+    return raw.lower() in ("1", "true", "yes")
 
 
 def _recipient() -> str:

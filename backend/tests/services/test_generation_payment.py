@@ -207,3 +207,38 @@ class TestLivePayment:
             await gp.enforce_generation_payment(_request_with("not-base64!!"), WALLET)
         assert excinfo.value.status_code == 402
         assert excinfo.value.detail["reason"] == "payment_malformed"
+
+
+class TestGenerationDryRunSplit:
+    """GENERATION_PAYMENTS_DRY_RUN scopes dry-run to this paywall (2026-08-20).
+
+    The split exists so the generation rail can settle for real while the
+    global PAYMENTS_DRY_RUN keeps marketplace sweeps/withdraws dry (#975
+    scope decision). Fallback semantics must EXACTLY match the old behavior.
+    """
+
+    def test_unset_inherits_global(self, monkeypatch):
+        monkeypatch.delenv("GENERATION_PAYMENTS_DRY_RUN", raising=False)
+        monkeypatch.setenv("PAYMENTS_DRY_RUN", "true")
+        assert gp._payments_dry_run() is True
+        monkeypatch.setenv("PAYMENTS_DRY_RUN", "false")
+        assert gp._payments_dry_run() is False
+        monkeypatch.delenv("PAYMENTS_DRY_RUN", raising=False)
+        assert gp._payments_dry_run() is True  # fail-safe default unchanged
+
+    def test_split_overrides_global_both_ways(self, monkeypatch):
+        # The launch configuration: generation live, global dry.
+        monkeypatch.setenv("PAYMENTS_DRY_RUN", "true")
+        monkeypatch.setenv("GENERATION_PAYMENTS_DRY_RUN", "false")
+        assert gp._payments_dry_run() is False
+        # And the reverse (generation dry while global live) also honors the split.
+        monkeypatch.setenv("PAYMENTS_DRY_RUN", "false")
+        monkeypatch.setenv("GENERATION_PAYMENTS_DRY_RUN", "true")
+        assert gp._payments_dry_run() is True
+
+    def test_empty_string_is_not_unset(self, monkeypatch):
+        # Explicit empty = explicit value ("" is not truthy-dry) — parses falsy,
+        # NOT inherited. Pin it so nobody "clears" the var expecting inheritance.
+        monkeypatch.setenv("PAYMENTS_DRY_RUN", "true")
+        monkeypatch.setenv("GENERATION_PAYMENTS_DRY_RUN", "")
+        assert gp._payments_dry_run() is False
