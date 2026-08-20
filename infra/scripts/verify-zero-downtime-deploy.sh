@@ -57,6 +57,8 @@ Usage: $0 [--alb-dns HOST] [--host HOST_HEADER] [--cluster NAME] [--service NAME
 
 Any flag omitted is read from 'terraform output' in $INFRA_DIR (requires the
 S3 backend to already be initialized — infra/README.md).
+
+--interval must be a positive whole number of seconds (default: 1).
 EOF
 }
 
@@ -71,6 +73,24 @@ while [ $# -gt 0 ]; do
     *) echo "::error::unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
+
+# Validate --interval eagerly, at parse time — not implicitly via `sleep`
+# failing inside the background probe loop. A bad value there used to kill
+# the loop silently under `set -e` (e.g. `sleep: invalid time interval`),
+# after which the verdict below would report "PASS — 0 non-200s" over
+# whatever partial log happened to exist. Restricted to a positive whole
+# number of seconds (not fractional) because the sample-count sanity check
+# below does integer arithmetic against it.
+case "$PROBE_INTERVAL" in
+  ''|*[!0-9]*)
+    echo "::error::--interval must be a positive whole number of seconds (got: '$PROBE_INTERVAL')" >&2
+    exit 1
+    ;;
+esac
+if [ "$PROBE_INTERVAL" -lt 1 ]; then
+  echo "::error::--interval must be >= 1" >&2
+  exit 1
+fi
 
 command -v curl >/dev/null 2>&1 || { echo "::error::curl is required" >&2; exit 1; }
 command -v aws >/dev/null 2>&1 || { echo "::error::awscli is required (this repo ships no AWS credentials — see CLAUDE.md 'AWS' section for how to get a scoped IAM user from Dan)" >&2; exit 1; }
@@ -92,14 +112,21 @@ echo
 
 # ── Background probe loop ───────────────────────────────────────────────
 probe_pid=""
+# Set by cleanup() iff the loop was still alive (kill -0 succeeded) at the
+# moment we stop it. If the loop died earlier (a failure inside it under
+# `set -e` — a bad sleep arg, a failed log write, ...) this stays 0 and the
+# verdict below hard-fails instead of grading whatever partial log exists.
+probe_survived=0
 cleanup() {
   if [ -n "$probe_pid" ] && kill -0 "$probe_pid" 2>/dev/null; then
+    probe_survived=1
     kill "$probe_pid" 2>/dev/null || true
     wait "$probe_pid" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
 
+loop_start_epoch="$(date -u +%s)"
 (
   while true; do
     code_and_time=$(curl -o /dev/null -s -w "%{http_code} %{time_total}s" \
@@ -132,19 +159,80 @@ echo "Steady state reached at $deploy_end (UTC)."
 
 # Give the probe a few more seconds past steady-state before stopping, to
 # catch any post-"stable" wobble (e.g. a CloudFront/DNS propagation tail).
+# This tail IS part of the scored window below (it exists specifically to
+# catch a real regression) — only the pre-trigger baseline, before
+# deploy_start, is excluded from the verdict.
 sleep 5
+probe_end="$(date -u +%H:%M:%S)"
+probe_end_epoch="$(date -u +%s)"
 cleanup
 trap - EXIT
 
 # ── Verdict ──────────────────────────────────────────────────────────────
-total=$(wc -l < "$LOG_FILE" | tr -d ' ')
-bad_lines="$(grep -vE ' 200 ' "$LOG_FILE" || true)"
+# The probe loop must actually have been alive for cleanup() to stop it —
+# otherwise whatever is in $LOG_FILE is a truncated fragment from wherever
+# the loop died, not a measurement spanning the rollout. An empty or
+# partial log must never read as "PASS — 0 non-200s".
+if [ "$probe_survived" -ne 1 ]; then
+  echo
+  echo "FAIL — the probe loop was not running at cleanup time (it died, or never started)."
+  echo "This is not a measurement of issue #1309's acceptance criterion — it's a missing one."
+  echo "Partial log (if any) kept at $LOG_FILE"
+  exit 1
+fi
+
+total_all=$(wc -l < "$LOG_FILE" | tr -d ' ')
+if [ "$total_all" -eq 0 ]; then
+  echo
+  echo "FAIL — 0 probes were recorded end to end; no measurement was taken."
+  echo "Log kept at $LOG_FILE"
+  exit 1
+fi
+
+# Sanity-check the sample count against how long the loop actually ran
+# (loop start .. tail end). The loop can stay "alive" per kill -0 while
+# stalling partway (a wedged write, a hung curl) and produce far fewer
+# samples than the window warrants — that's not caught by probe_survived
+# alone, so catch it here: fail if fewer than half the expected samples
+# were recorded.
+elapsed_seconds=$(( probe_end_epoch - loop_start_epoch ))
+[ "$elapsed_seconds" -gt 0 ] || elapsed_seconds=1
+expected=$(( elapsed_seconds / PROBE_INTERVAL ))
+[ "$expected" -ge 1 ] || expected=1
+if [ $(( total_all * 2 )) -lt "$expected" ]; then
+  echo
+  echo "FAIL — only $total_all probes recorded over a ${elapsed_seconds}s run at ${PROBE_INTERVAL}s/probe (~$expected expected). The loop likely stalled partway through. Result is not a reliable measurement."
+  echo "Log kept at $LOG_FILE"
+  exit 1
+fi
+
+# Score only samples from deploy_start through probe_end (the rollout +
+# post-steady-state tail). Pre-trigger baseline samples are a known
+# false-positive source (a cold-start 000/5xx before the loop is warmed up
+# — see the baseline-sleep comment above) and are reported separately as a
+# warning, never as an acceptance-criterion violation. HH:MM:SS string
+# comparison is safe here: zero-padded, same UTC day.
+window_total=$(awk -v s="$deploy_start" -v e="$probe_end" '$1 >= s && $1 <= e { c++ } END { print c+0 }' "$LOG_FILE")
+bad_lines=$(awk -v s="$deploy_start" -v e="$probe_end" '$1 >= s && $1 <= e && $2 != "200" { print }' "$LOG_FILE")
+pre_window_bad=$(awk -v s="$deploy_start" '$1 < s && $2 != "200" { print }' "$LOG_FILE")
 
 echo
-echo "=== $(basename "$LOG_FILE") — $total probes, window ${deploy_start}Z .. ${deploy_end}Z ==="
+echo "=== $(basename "$LOG_FILE") — $window_total probes, window ${deploy_start}Z .. ${probe_end}Z ==="
+
+if [ -n "$pre_window_bad" ]; then
+  echo "WARNING — non-200 response(s) before the rollout window (pre-trigger baseline, not scored):"
+  echo "$pre_window_bad"
+  echo
+fi
+
+if [ "$window_total" -eq 0 ]; then
+  echo "FAIL — 0 probes fell inside the rollout window (${deploy_start}Z .. ${probe_end}Z); nothing was measured."
+  echo "Full log kept at $LOG_FILE"
+  exit 1
+fi
 
 if [ -z "$bad_lines" ]; then
-  echo "PASS — 0 non-200 responses across $total probes during the rollout window."
+  echo "PASS — 0 non-200 responses across $window_total probes during the rollout window."
   echo "Full log kept at $LOG_FILE"
   exit 0
 else
