@@ -2074,12 +2074,38 @@ async def rename_strategy(
     NOT recomputed — they are provenance of the original generation, not of the
     display name. The strategy_passports table carries no display-name column,
     so only strategy_store is updated.
+
+    Legacy-wallet fallback (#1283): a pre-account row (``owner_user_id`` NULL)
+    matched via the caller's linked wallet is reclaimed onto canonical account
+    ownership in the same transaction as the rename, using the same bulk claim
+    (``claim_legacy_wallet_data``) a verified wallet link performs — but
+    scoped to the strategy-side tables only (``StrategyRecord`` /
+    ``StrategyPassportRecord`` / ``StrategyProposal``), with
+    ``include_profile=False``. The write is irreversible (no un-claim path)
+    and reaches every unclaimed strategy row for this wallet, not just the
+    one being renamed — that is judged acceptable here because it can only
+    ever touch rows already tied to a wallet ``get_linked_wallet_address``
+    resolves for *this* account (a wallet linked elsewhere 409s at link time;
+    see ``_link_verified_wallet``), the same reach a real wallet re-link would
+    have. ``vault_metadata`` and ``user_profiles`` are deliberately excluded:
+    a rename has no business moving vault ownership — that 409-gates on
+    ``owner_user_id`` being ``None`` specifically so a legitimately
+    transferred on-chain owner can still write it, and a stale reclaim here
+    would slam that door shut with no way back — or adopting a PII-bearing
+    profile on a lookup that never asked for a fresh signature. Full
+    reclaim of those two legs stays behind the signature-verified wallet-link
+    flow. This migrates pre-account strategy rows toward zero over time;
+    deleting the fallback branch entirely is a follow-up gated on verifying
+    no unclaimed rows remain.
     """
     from datetime import datetime
 
     from fastapi import HTTPException
 
+    from archimedes.api.wallet_routes import claim_legacy_wallet_data
     from archimedes.db import get_session
+    from archimedes.models.strategy_passport_record import StrategyPassportRecord
+    from archimedes.models.strategy_proposal import StrategyProposal
     from archimedes.models.strategy_store import StrategyRecord
 
     name = payload.get("name")
@@ -2095,9 +2121,26 @@ async def rename_strategy(
             # Curated examples are not user-owned — same 404 as a missing row.
             raise HTTPException(status_code=404, detail="Strategy not found")
         caller = get_linked_wallet_address(request)
-        is_owner = row.owner_user_id == user.id or (
-            row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower()
-        )
+        is_owner = row.owner_user_id == user.id
+        if not is_owner and row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower():
+            # Proven via linked-wallet match on a still-unclaimed row: reclaim
+            # every pre-account STRATEGY row tied to this wallet (not just
+            # this one), matching what re-verifying the wallet link would do
+            # for those tables. vault_metadata/user_profiles are excluded —
+            # see the docstring above.
+            claim_legacy_wallet_data(
+                session,
+                user.id,
+                caller,
+                models=(
+                    (StrategyRecord, StrategyRecord.owner_wallet),
+                    (StrategyPassportRecord, StrategyPassportRecord.owner_wallet),
+                    (StrategyProposal, StrategyProposal.owner_wallet),
+                ),
+                include_profile=False,
+            )
+            row.owner_user_id = user.id
+            is_owner = True
         if not is_owner:
             # Hide unpublished rows from non-owners (404); published rows are
             # visible, so an honest 403 is returned instead.
