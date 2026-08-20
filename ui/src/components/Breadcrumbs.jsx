@@ -46,11 +46,19 @@ export const CRUMB_MAP = {
   marketplace:  { group: null, groupPage: null },
   publish:      { group: 'Market', groupPage: 'marketplace' },
   subscriptions:{ group: 'Market', groupPage: 'marketplace' },
-  // Ops — only two members (Insights, Account); routing Account through an
-  // "Ops" mid-crumb that lands on Insights repeats item 1's pattern (a group
-  // crumb wearing a section name while linking to a sibling page, not a real
-  // section landing page) with no third member to justify a group crumb at
-  // all. Flat like the other two-page-or-fewer anchors above.
+  // Ops — only two members (Insights, Account). An "Ops" mid-crumb pointing
+  // at Insights would be a group crumb wearing a section name while actually
+  // linking to a sibling page, not a real section landing page — and with
+  // only two members there's no third page to justify a group crumb at all.
+  // Flat like the other two-page-or-fewer anchors above.
+  //
+  // NOTE: Strategy/generate, Position/portfolio and Market/marketplace above
+  // share this identical shape (a section-named mid-crumb that links to a
+  // sibling page) — the pattern #1370 item 1 names outright, not just the
+  // corpus/Discover repeat-page bug this PR's Discover fix addressed. Left
+  // alone here: no #1370 acceptance check requires it (those pages are
+  // genuinely distinct, so test_no_page_appears_twice_in_one_trail doesn't
+  // fire), so it's a deliberate deferral, not an oversight — tracked in #1405.
   insights:     { group: null, groupPage: null },
   account:      { group: null, groupPage: null },
 }

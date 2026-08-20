@@ -836,7 +836,8 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                     </p>
                     <p className="caption" style={{ color: 'var(--text-3)' }}>
                       Generations in flight show in the agent activity feed on Portfolio and
-                      Reasoning. They land in this table once the rigor gate clears.
+                      Reasoning. They land in this table once backtesting finishes, verdict
+                      or not.
                     </p>
                   </div>
                 )
