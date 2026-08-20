@@ -949,18 +949,20 @@ async def get_portfolio_advisor(
         # (#868 contract, mirrored from _to_strategy_response): the fixture fields
         # on the in-memory object are frozen values the live gate never wrote, so
         # serving them next to a live badge let the advisor's numbers disagree
-        # with GET /api/selection-bias/gate. Fall back to the stored fixture value
-        # only when the live gate could not run for this strategy — the fallback
-        # is the documented #868 behavior, only the preferred source changes.
+        # with GET /api/selection-bias/gate. SOLELY the live result (honesty fix
+        # #1187, same scope as _to_strategy_response): these four fields render
+        # None — never st.<field> — when the live gate could not run for this
+        # strategy. Do not reintroduce the st.<field> fallback here; that is
+        # precisely the defect #1187 tracks, now closed for both response paths.
         _live = advisor_results.get(st.id)
         return {
             "passes_rigor_gate": _verdict.passes if _verdict else False,
             "rigor_gate_status": _verdict.status if _verdict else "pending",
-            "deflated_sharpe_ratio": _live.deflated_sharpe if _live else st.deflated_sharpe_ratio,
-            "dsr_p_value": _live.dsr_p_value if _live else st.dsr_p_value,
+            "deflated_sharpe_ratio": _live.deflated_sharpe if _live else None,
+            "dsr_p_value": _live.dsr_p_value if _live else None,
             "num_trials_in_selection": _live.num_trials if _live else st.num_trials_in_selection,
-            "pbo_score": _live.pbo_score if _live else st.pbo_score,
-            "out_of_sample_sharpe": _live.oos_sharpe if _live else st.out_of_sample_sharpe,
+            "pbo_score": _live.pbo_score if _live else None,
+            "out_of_sample_sharpe": _live.oos_sharpe if _live else None,
             "paper_claimed_sharpe": st.paper_claimed_sharpe,
             "paper_claimed_cagr": st.paper_claimed_cagr,
             "paper_claimed_max_dd": st.paper_claimed_max_dd,
