@@ -14,6 +14,14 @@ import { compactCostCell } from '../generationCost.js'
 // strategy's min_passing_level (from the live gate) and the user's strictness.
 function DeployabilityChip({ deploy, level }) {
   if (!deploy) return null
+  // #1358: a strategy the gate never scored (no persisted backtest data) is
+  // NOT the same claim as "fails the rigor gate even at the loosest level" —
+  // both used to collapse to min_passing_level == null below. Checked before
+  // blocked_by_floor too: a never-scored row can't have failed a floor it was
+  // never evaluated against. Neutral tag-muted, no "not deployable" wording.
+  if (deploy.pending) {
+    return <span className="tag tag-muted" style={{ fontSize: '0.66rem' }} title="Not yet evaluated — no backtest data for the rigor gate to score">pending</span>
+  }
   if (deploy.blocked_by_floor) {
     return <span className="tag tag-negative" style={{ fontSize: '0.66rem' }} title="Fails an always-on correctness floor — cannot deploy at any level">blocked</span>
   }
@@ -158,6 +166,16 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
 
   const sharpeCI = s.sharpe_ci_95 != null ? s.sharpe_ci_95 : null
   const driftFlag = s.drift_detected === true
+  // #1358: a strategy with ZERO statistics computed must render as honestly
+  // unknown, never as a failed rigor gate. rigor_gate_status is the
+  // four-state badge curated/generated StrategyResponse rows carry
+  // ("pass"|"fail"|"pending"|"degenerate"); coerceGenerated's own rows don't
+  // set it at all but already encode the same "no verdict yet" case as
+  // passes_rigor_gate === null (see Strategies.jsx's coerceGenerated) — both
+  // checked so the same pending treatment applies on the Examples and
+  // Generated tabs alike. Checked BEFORE the true/false badge below so a
+  // pending row can never fall through to the "does not pass" X.
+  const isPending = s.rigor_gate_status === 'pending' || s.passes_rigor_gate == null
   const detailId = `lib-detail-${s.id}`
   // Absence is the point: a strategy nothing measured gets an em-dash and a
   // tooltip that says so, never a zero (#1326).
@@ -228,10 +246,11 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
                 (1.1.1). --warning replaces the hardcoded base-dark amber so the drift
                 triangle follows the light palette (2.15:1 on a white card
                 before; --warning is 5.12:1 there and 8.12:1 in dark). */}
-            {s.passes_rigor_gate === true && (
+            {isPending ? (
+              <span role="img" aria-label="Rigor gate pending" className="i-lucide-clock w-3.5 h-3.5 text-[var(--text-4)]" title="Not yet evaluated — no backtest data for the rigor gate to score" />
+            ) : s.passes_rigor_gate === true ? (
               <span role="img" aria-label="Passes rigor gate" className="i-lucide-check w-3.5 h-3.5 text-[var(--positive)]" title="Passes rigor gate" />
-            )}
-            {s.passes_rigor_gate === false && (
+            ) : s.passes_rigor_gate === false && (
               <span role="img" aria-label="Does not pass rigor gate" className="i-lucide-x w-3.5 h-3.5 text-[var(--text-4)]" title="Does not pass rigor gate" />
             )}
             {driftFlag && (
@@ -249,7 +268,7 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
           )}
           {s.dsr_p_value != null && (
             <div style={{ fontSize: '0.68rem', color: 'var(--text-4)' }}>
-              (DSR p={s.dsr_p_value.toFixed(2)})
+              (DSR conf={s.dsr_p_value.toFixed(2)})
             </div>
           )}
         </td>
@@ -658,10 +677,10 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
   const [loadError, setLoadError] = useState('')
   // Per-user rigor strictness (shared with the Passport slider via localStorage).
   const [level, setLevel] = useRigorStrictness()
-  // {strategy_id: {min_passing_level, blocked_by_floor}} from the live gate —
-  // strictness-independent, so we fetch once and re-annotate rows client-side as
-  // the slider moves. Curated strategies resolve here; generated ones fall back
-  // to their badge boolean (no chip).
+  // {strategy_id: {min_passing_level, blocked_by_floor, pending}} from the live
+  // gate — strictness-independent, so we fetch once and re-annotate rows
+  // client-side as the slider moves. Curated strategies resolve here; generated
+  // ones fall back to their badge boolean (no chip).
   const [deployMap, setDeployMap] = useState({})
   // 'generated' is the first-class tab per product feedback — pushes user
   // toward Generate when empty. Published is a hidden roadmap surface
@@ -719,7 +738,17 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
       if (gateRes.status === 'fulfilled') {
         const map = {}
         for (const r of gateRes.value.strategies || []) {
-          map[r.strategy_id] = { min_passing_level: r.min_passing_level, blocked_by_floor: r.blocked_by_floor }
+          map[r.strategy_id] = {
+            min_passing_level: r.min_passing_level,
+            blocked_by_floor: r.blocked_by_floor,
+            // #1358: the gate's own honest signal that this row had zero
+            // statistics computed (< 10 persisted returns) — distinct from a
+            // real "fails every strictness level" verdict, which also has
+            // min_passing_level === null. Without this, DeployabilityChip
+            // could not tell the two apart and rendered "not deployable" for
+            // both.
+            pending: r.pending,
+          }
         }
         setDeployMap(map)
       }

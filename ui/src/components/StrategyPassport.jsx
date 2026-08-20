@@ -199,6 +199,15 @@ export default function StrategyPassport({
 
 	const s = strategy;
 	const passingRigor = s.passes_rigor_gate === true;
+	// #1358: rigor_gate_status carries the honest four-state badge
+	// ("pass"|"fail"|"pending"|"degenerate") the API has served since #1184 —
+	// nothing under ui/src/ read it before this fix, so every strategy with
+	// zero statistics computed (rigor_gate_status === "pending") rendered as
+	// though it had FAILED the gate (passes_rigor_gate is false for pending
+	// too, by fail-closed design). Checked before any passes_rigor_gate
+	// branch below so "never evaluated" can't be mistaken for "evaluated and
+	// lost".
+	const rigorPending = s.rigor_gate_status === "pending";
 	// ── Deploy gating at the user's chosen strictness ──
 	const badgePass = s.passes_rigor_gate === true;
 	// Lowest level (1..5) at which this strategy is deployable — from the live
@@ -262,13 +271,16 @@ export default function StrategyPassport({
 					<span className={`tag ${statusTag(s.status, s.passes_rigor_gate)}`}>
 						{statusLabel(s.status, s.passes_rigor_gate)}
 					</span>
-					{s.passes_rigor_gate === true && (
+					{rigorPending ? (
+						<span className="tag tag-muted">rigor gate pending</span>
+					) : s.passes_rigor_gate === true ? (
 						<span className="tag tag-positive inline-flex items-center gap-1">
 							<span className="i-lucide-check w-3.5 h-3.5" /> rigor gate passed
 						</span>
-					)}
-					{s.passes_rigor_gate === false && (
-						<span className="tag tag-muted">rigor gate not passed</span>
+					) : (
+						s.passes_rigor_gate === false && (
+							<span className="tag tag-muted">rigor gate not passed</span>
+						)
 					)}
 					{(s.papers || []).length > 1 ? (
 						<span className="tag tag-accent inline-flex items-center gap-1">
@@ -622,12 +634,17 @@ export default function StrategyPassport({
 											<span className="i-lucide-check w-3.5 h-3.5" /> Verified
 											(Conservative)
 										</>
+									) : rigorPending ? (
+										"pending — not yet evaluated"
 									) : (
 										"not Verified"
 									)}
 								</span>
 								{blockedByFloor ? (
-									<span className="tag tag-negative">
+									<span
+										className="tag tag-negative"
+										title="Fails an always-on correctness floor — look-ahead audit, positive OOS Sharpe, and DSR ≥ 0.50 — independent of strictness level; cannot be deployed at any level"
+									>
 										blocked — correctness floor
 									</span>
 								) : minLevel != null && minLevel > BADGE_LEVEL ? (
@@ -642,7 +659,14 @@ export default function StrategyPassport({
 								label="DSR"
 								value={fmt(s.deflated_sharpe_ratio)}
 								hint={
-									s.dsr_p_value != null ? `p = ${fmt(s.dsr_p_value, 3)}` : null
+									// Despite the wire field's legacy name (dsr_p_value), higher
+									// is better here — a confidence, not a classical significance
+									// statistic where lower is better (leaderboard_schemas.py).
+									// "p = 0.93" reads as catastrophic to a reader expecting the
+									// classical convention; it is in fact the passing case (#1358).
+									s.dsr_p_value != null
+										? `confidence = ${fmt(s.dsr_p_value, 3)}`
+										: null
 								}
 							/>
 							{/* PBO of exactly 0 paired with missing DSR/OOS is almost always a
@@ -668,8 +692,19 @@ export default function StrategyPassport({
 							/>
 						</div>
 						<p className="caption mt-3 leading-relaxed text-[var(--text-3)]">
-							{s.num_trials_in_selection != null &&
-							s.num_trials_in_selection > 1 ? (
+							{/* #1358: a strategy the live gate hasn't graded yet (no
+							    num_trials_in_selection / an "unspecified" provenance — see
+							    schemas.py) must not claim EITHER a self-contained N=1 grading
+							    OR a real multi-candidate correction; both would assert a
+							    statistic nothing computed. Neither sentence below renders for
+							    that case — a THIRD branch, not a fallback into the N=1 one. */}
+							{s.num_trials_in_selection == null ||
+							s.num_trials_scope === "unspecified" ? (
+								<>
+									This strategy has not been graded by the rigor gate yet — no
+									persisted backtest returns to measure Sharpe stability from.
+								</>
+							) : s.num_trials_in_selection > 1 ? (
 								<>
 									The Deflated Sharpe Ratio corrects the realized Sharpe for
 									multiple-testing inflation across the{" "}
@@ -687,8 +722,8 @@ export default function StrategyPassport({
 							)}{" "}
 							PBO estimates how much of the in-sample Sharpe is overfit (Bailey
 							et al. 2014). OOS Sharpe is the chronological out-of-sample
-							number. A strategy passes the rigor gate only when all three
-							signals align.
+							number. A strategy passes the rigor gate only when all four
+							signals — DSR, PBO, OOS Sharpe, and the look-ahead audit — align.
 						</p>
 
 						{/* Return source (T2.5) — the rigor gate says whether the edge survives;
