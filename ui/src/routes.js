@@ -45,6 +45,17 @@ export function isAnonymousAppPage(page) {
   return ANON_APP_PAGES.has(page)
 }
 
+// True when `user` may navigate to `page` — signed in, always; anonymous,
+// only for the browsable ANON_APP_PAGES set above. Delegates to
+// isAnonymousAppPage so the two never drift (#1364): the onboarding tour's
+// navigation effect gates on this, not on a hard-coded card id, so any page
+// the product later adds to ANON_APP_PAGES becomes anon-navigable for the
+// tour automatically, and any page NOT added stays a centered card instead
+// of ejecting the visitor to /sign-in.
+export function canNavigateTo(page, user) {
+  return user != null || isAnonymousAppPage(page)
+}
+
 const PAGE_PATHS = Object.fromEntries(Object.entries(APP_PATHS).map(([path, page]) => [page, path]))
 const LEGACY_PATHS = Object.fromEntries(
   Object.entries(APP_PATHS)
