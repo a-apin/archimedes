@@ -135,7 +135,7 @@ export default function Insights() {
         </button>
       </div>
       <p style={{ color: 'var(--text-2)', marginTop: 0, fontSize: 14 }}>
-        Public, read-only conversion and traffic metrics. PII-free by design.
+        Read-only conversion and traffic metrics. PII-free by design.
       </p>
 
       {error && (
