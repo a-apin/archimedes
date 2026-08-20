@@ -85,10 +85,16 @@ def _curated_cohort_responses() -> tuple[list, bool, str]:
             for s in strategies
         ]
     except Exception as exc:  # pragma: no cover - defensive
+        # Full exception detail is logged server-side only — never echoed to
+        # an anonymous, public caller (DB/RPC internals, hostnames, ports —
+        # same convention as vaults_routes.py's deploy failure and every
+        # docs/api/*.md "raw exception ... logged server-side only, never
+        # echoed to the client" note). `degraded_reason` stays a fixed,
+        # named category string.
         logger.warning("leaderboard: strategy provider unavailable: %s", exc)
         responses = []
         degraded = True
-        degraded_reason = f"strategy provider unavailable: {exc}"
+        degraded_reason = "strategy provider unavailable"
 
     # Unify: add GENERATED strategies alongside curated (low-pri decouple).
     # Public/no-wallet criterion — is_published ONLY (never status: rigor
@@ -102,9 +108,10 @@ def _curated_cohort_responses() -> tuple[list, bool, str]:
         with get_session() as session:
             responses.extend(_public_generated_strategy_responses(session))
     except Exception as exc:  # pragma: no cover - defensive
+        # Same rule as above: log the detail, never put it on the wire.
         logger.warning("leaderboard: generated strategies unavailable: %s", exc)
         degraded = True
-        degraded_reason = degraded_reason or f"generated strategies unavailable: {exc}"
+        degraded_reason = degraded_reason or "generated strategies unavailable"
 
     # An empty result with no exception is still degraded if it's not what an
     # empty cohort legitimately looks like — the most common real-world cause
@@ -148,8 +155,11 @@ def _own_cohort_responses(caller_wallet: str | None, caller_user_id: str | None)
         with get_session() as session:
             return _owned_generated_strategy_responses(session, caller_wallet, caller_user_id), False, ""
     except Exception as exc:  # pragma: no cover - defensive
+        # Same rule as _curated_cohort_responses: log the detail, never put
+        # it on the wire — this endpoint is public/anonymous-reachable too
+        # (an unlinked caller can still fall into this path).
         logger.warning("leaderboard: owned strategies unavailable: %s", exc)
-        return [], True, f"owned strategies unavailable: {exc}"
+        return [], True, "owned strategies unavailable"
 
 
 @leaderboard_router.get("", response_model=LeaderboardResponse)

@@ -301,6 +301,13 @@ async def test_leaderboard_reports_degraded_when_provider_raises():
     body = resp.json()
     assert body["degraded"] is True
     assert body["degraded_reason"]
+    # The raw exception string must never reach an anonymous, public caller
+    # (it can carry DB/RPC internals — CLAUDE.md / docs/api/*.md convention).
+    # `degraded_reason` is a fixed category string, not an interpolation of
+    # `exc`; assert against the literal so a reintroduced f-string fails
+    # this test even if the mock message happens not to.
+    assert "provider down" not in body["degraded_reason"]
+    assert body["degraded_reason"] == "strategy provider unavailable"
 
 
 async def test_leaderboard_reports_degraded_when_corpus_missing_from_build():

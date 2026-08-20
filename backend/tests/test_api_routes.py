@@ -397,6 +397,37 @@ class TestStrategyRoutes:
         assert data["total"] == 0
         assert data["degraded"] is True
         assert data["degraded_reason"]
+        # The raw exception string must never reach the client (it can carry
+        # DB/RPC internals — CLAUDE.md / docs/api/*.md convention).
+        # `degraded_reason` is a fixed category string, not an interpolation
+        # of `exc`; assert against the literal so a reintroduced f-string
+        # fails this test even if the mock message happens not to.
+        assert "provider down" not in data["degraded_reason"]
+        assert data["degraded_reason"] == "strategy provider unavailable"
+
+    def test_list_strategies_reports_degraded_when_library_empty_but_corpus_present(self, client):
+        """#1356 review-fix: count_strategy_files() > 0 but discovery still
+        returned nothing (e.g. every file failed to parse, or a shared-
+        helper import error skipped them all) is a real degradation distinct
+        from the corpus-missing-from-build case, and must be distinguished
+        from it — mirrors test_leaderboard_reports_degraded_when_curated_
+        cohort_empty_but_corpus_present, so the two routes over the same
+        corpus agree."""
+        empty_provider = MagicMock()
+        empty_provider.list_strategies.return_value = []
+
+        with (
+            patch("archimedes.api.strategies_routes.strategy_provider", return_value=empty_provider),
+            patch("archimedes.services.strategy_provider.count_strategy_files", return_value=5),
+        ):
+            resp = client.get("/api/strategies/")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["strategies"] == []
+        assert data["total"] == 0
+        assert data["degraded"] is True
+        assert data["degraded_reason"] == "library is empty"
 
     def test_list_strategies_reports_degraded_when_corpus_missing_from_build(self, client):
         """#1356: an empty (non-raising) library must still say WHY —
