@@ -65,7 +65,7 @@ export function driftTooltip(driftAtIso, status) {
     'The ledger is append-only and was not rewritten — the discrepancy is surfaced, not hidden.'
   return status === 'active'
     ? `${base} The track record keeps advancing.`
-    : `${base} No further rows have been added since, and the recorded disagreement stands.`
+    : `${base} No rows have been added since the deployment was stopped, and the recorded disagreement stands.`
 }
 
 /**
@@ -96,7 +96,7 @@ export function formatTotalReturn(totalReturn, days) {
 export function paperErrorMessage(err, fallback = 'Something went wrong.') {
   if (!err) return fallback
   if (err.status === 401) return 'Your session expired — sign in again to see your paper deployments.'
-  if (err.status === 404) return 'This deployment could not be found — it may already have been stopped or removed.'
+  if (err.status === 404) return 'This deployment is no longer available on your account — reload the list.'
   if (err.status != null) return 'Paper trading is temporarily unavailable — try again in a moment.'
   return err.message || fallback
 }

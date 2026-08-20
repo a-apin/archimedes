@@ -53,6 +53,22 @@ test("driftTooltip: a stopped deployment never claims the record keeps advancing
 	assert.match(tooltip, /append-only/);
 });
 
+// The stopped-branch "no further rows" clause must be anchored to the stop
+// itself, not left ambiguous against the drift date named earlier in the
+// same sentence — rows genuinely can be appended between a drift stamp and
+// a later Stop (advance_all keeps appending until STATUS_STOPPED; the drift
+// stamp only refreshes when the disagreement recurs). "Since the deployment
+// was stopped" is true under both readings; "since <the drift date>" is not.
+test("driftTooltip: the stopped-branch 'no further rows' clause is anchored to the stop, not the drift date", () => {
+	const tooltip = driftTooltip("2026-08-20T04:12:33.481207+00:00", "stopped");
+	assert.match(tooltip, /no rows have been added since the deployment was stopped/i);
+});
+
+test("paperErrorMessage: a 404 does not claim causes the API cannot produce (stop is idempotent; there is no delete route)", () => {
+	const err = { status: 404, message: "Backend returned 404" };
+	assert.doesNotMatch(paperErrorMessage(err), /stopped or removed/i);
+});
+
 // ── formatTotalReturn: gate on `days`, never on the value. A day-0 ledger
 // (zero rows — the normal state right after deploy) must render as
 // unmeasured; a genuinely measured zero at day N must still print. ────────
