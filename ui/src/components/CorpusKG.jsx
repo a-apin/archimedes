@@ -334,7 +334,17 @@ export default function CorpusKG({ onOpenPaper }) {
       {loading ? (
         <div style={{ padding: 40, textAlign: 'center' }} className="caption">Loading topic clusters…</div>
       ) : entities.length === 0 ? (
-        <div style={{ padding: 40, textAlign: 'center' }} className="caption">No entities found.</div>
+        // The old zero-state copy read as an empty-search-result, but on the
+        // live path this endpoint returns 200 with empty sets whether the KB
+        // pipeline has produced an artifact or not — indistinguishable from a
+        // query simply matching nothing (#1368). Name the pipeline, not the
+        // query, and point at /health's corpus_kg_built field as the live
+        // authority rather than asserting a state here.
+        <div style={{ padding: 40, textAlign: 'center' }} className="caption">
+          The KB pipeline hasn't produced its first artifact yet (#1090) — there's nothing to search
+          until it does. See /health's corpus_kg_built field for the live state; paper retrieval on the
+          Catalog tab doesn't depend on it.
+        </div>
       ) : (
         <div style={{ overflow: 'hidden', padding: '0 12px 12px', position: 'relative' }}>
           {/* Informative chart, so it gets the same role="img" + aria-label

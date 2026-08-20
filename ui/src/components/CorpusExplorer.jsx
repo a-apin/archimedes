@@ -11,7 +11,11 @@ const TAB_LABELS = {
   catalog: 'Catalog',
   overview: 'Overview',
   graph: 'Graph',
-  'knowledge-graph': 'Knowledge Graph',
+  // Renamed from the old bare capability-name label: the backing table is 0
+  // rows (kg_entities/kg_relations), and CorpusKG.jsx's own docstring/loading
+  // copy already describe this view as topic clusters — the tab label was the
+  // one place on this surface still overclaiming (#1368).
+  'knowledge-graph': 'Topic Clusters',
 }
 
 export default function CorpusExplorer() {
@@ -69,7 +73,10 @@ export default function CorpusExplorer() {
         <h2>Research Corpus Explorer</h2>
         {overview && (
           <div className="corpus-stats">
-            <span className="stat-chip">{overview.total_papers?.toLocaleString()} papers</span>
+            {/* Qualified, not bare: the count is real (paper_count in prod), but
+                unqualified "papers" reads as fully-processed corpus when the KB
+                pipeline has processed 0 of them (#778 item A / #1368). */}
+            <span className="stat-chip">{overview.total_papers?.toLocaleString()} paper metadata records</span>
             <span className="stat-chip">{overview.categories?.length} categories</span>
             <span className="stat-chip">{overview.source} source</span>
           </div>
