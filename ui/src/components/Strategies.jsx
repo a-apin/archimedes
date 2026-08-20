@@ -732,7 +732,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
   return (
     <div>
       <div className="mb-[18px]">
-        <h2 className="serif text-[2rem] mb-2.5">Your Strategies</h2>
+        <h2 className="serif text-[2rem] mb-2.5">Library</h2>
         <p className="body mb-1.5">
           Your strategies, plus a clearly-separated set of example strategies
           drawn from published research so you can learn the metric format.
@@ -816,8 +816,10 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                       backtest window is needed for DSR / PBO to score them).
                     </p>
                     <p className="caption" style={{ color: 'var(--text-3)' }}>
-                      The Library is a quality filter — only strategies that pass DSR + PBO + chronological OOS
-                      + look-ahead audit are surfaced here. That's the wedge.
+                      This table holds strategies that passed the rigor gate (DSR + PBO +
+                      chronological OOS + look-ahead audit) plus candidates still awaiting a
+                      verdict — rejected strategies are the only ones filtered out, into the
+                      section below.
                     </p>
                   </div>
                 ) : (
@@ -896,6 +898,12 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               emptyState={<p className="caption">No example strategies loaded.</p>}
             />
           )}
+          {examples.some(s => s.is_backtest_placeholder) && (
+            <div className="caption mt-4 text-[var(--text-4)]">
+              Pre-backtest hypothesis — empirical metrics pending evaluation. Real
+              numbers replace the placeholder once the analytics engine runs.
+            </div>
+          )}
         </>
       )}
 
@@ -959,13 +967,6 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
             />
           )}
         </>
-      )}
-
-      {examples.some(s => s.is_backtest_placeholder) && (
-        <div className="caption mt-4 text-[var(--text-4)]">
-          * Pre-backtest hypothesis — empirical metrics pending evaluation. Real
-          numbers replace the placeholder once the analytics engine runs.
-        </div>
       )}
 
       {/* EfficientFrontier + CorrelationMatrix removed (Issue #383) — synthetic RNG data */}
