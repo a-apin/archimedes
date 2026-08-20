@@ -52,12 +52,12 @@ def _ctx_session(session):
     return _CtxSession(session)
 
 
-def _add_paper(session, arxiv_id, *, authors, cluster_id=None):
+def _add_paper(session, arxiv_id, *, authors, cluster_id=None, title=None, abstract="Abstract"):
     session.add(
         PaperRecord(
             arxiv_id=arxiv_id,
-            title=f"Paper {arxiv_id}",
-            abstract="Abstract",
+            title=title if title is not None else f"Paper {arxiv_id}",
+            abstract=abstract,
             authors=json.dumps(authors),
             primary_category="q-fin.PM",
             categories='["q-fin.PM"]',
@@ -125,3 +125,98 @@ class TestListPapersAuthorsFallback:
 
         assert result["total"] == 0
         assert result["papers"] == []
+
+
+class TestCatalogSearchOnUnprocessedCorpus:
+    """Corpus search returned zero results for every term, always.
+
+    `processed_only` defaults to True and filters `cluster_id IS NOT NULL`. The
+    KB pipeline has never run in production, so that predicate matches zero
+    rows. The two `total == 0` fallbacks that rescue the catalog are both
+    guarded by `and not category and not search` — deliberately, so a search
+    could not be silently widened. The combination meant: empty search box →
+    full 10,000-paper catalog; type anything → nothing, for every term.
+
+    Verified against production before the fix:
+        /api/papers/?search=momentum                        → total=0
+        /api/papers/?search=momentum&processed_only=false   → total=119
+    """
+
+    def test_search_returns_matches_when_nothing_is_kb_processed(self, session, monkeypatch):
+        """THE REGRESSION: every cluster_id is null and a search must still hit."""
+        from archimedes.api import papers_routes
+
+        _add_paper(session, "2601.10001", authors=["A"], title="Cross-sectional momentum in equities")
+        _add_paper(session, "2601.10002", authors=["B"], title="Volatility targeting and drawdown")
+        _add_paper(session, "2601.10003", authors=["C"], title="Unrelated microstructure paper")
+        session.commit()
+
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="momentum", processed_only=True)
+        )
+
+        assert result["total"] == 1, "search over an unprocessed corpus returned nothing"
+        assert result["papers"][0]["arxiv_id"] == "2601.10001"
+
+    def test_search_matches_the_abstract_too(self, session, monkeypatch):
+        from archimedes.api import papers_routes
+
+        _add_paper(
+            session,
+            "2601.10004",
+            authors=["A"],
+            title="A title with no keyword",
+            abstract="This abstract mentions momentum explicitly.",
+        )
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="momentum", processed_only=True)
+        )
+        assert result["total"] == 1
+
+    def test_search_still_discriminates(self, session, monkeypatch):
+        """The fix must not turn search into 'return everything'."""
+        from archimedes.api import papers_routes
+
+        _add_paper(session, "2601.10005", authors=["A"], title="Cross-sectional momentum")
+        _add_paper(session, "2601.10006", authors=["B"], title="Volatility targeting")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="zzzznonsense", processed_only=True)
+        )
+        assert result["total"] == 0
+        assert result["papers"] == []
+
+    def test_processed_only_still_filters_once_the_pipeline_has_run(self, session, monkeypatch):
+        """Intent preserved: where processed rows DO exist, the filter applies."""
+        from archimedes.api import papers_routes
+
+        _add_paper(session, "2601.10007", authors=["A"], title="Momentum, processed", cluster_id=3)
+        _add_paper(session, "2601.10008", authors=["B"], title="Momentum, unprocessed")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="momentum", processed_only=True)
+        )
+        assert result["total"] == 1
+        assert result["papers"][0]["arxiv_id"] == "2601.10007"
+
+    def test_category_filter_also_works_on_an_unprocessed_corpus(self, session, monkeypatch):
+        """`category` was guarded by the same `and not category` clause."""
+        from archimedes.api import papers_routes
+
+        _add_paper(session, "2601.10009", authors=["A"], title="Anything")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category="q-fin.PM", search=None, processed_only=True)
+        )
+        assert result["total"] == 1
