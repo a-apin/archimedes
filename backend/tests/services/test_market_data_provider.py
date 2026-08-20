@@ -14,7 +14,7 @@ fake, not real yfinance.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -93,10 +93,55 @@ class _FakeVendor(MarketDataProvider):
     def get_series(self, ticker: str, period: str, interval: str) -> pd.Series:
         raise AssertionError("get_series must never be called by the caching wrapper's own logic")
 
+    def get_daily_ohlcv(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        raise AssertionError("get_daily_ohlcv must never be called by TestDailyCloseBatchCache")
+
 
 def _series(n_days: int = 30, start_price: float = 100.0) -> pd.Series:
     idx = pd.date_range(end=pd.Timestamp.now("UTC").normalize(), periods=n_days, freq="D")
     return pd.Series([start_price + i for i in range(n_days)], index=idx, name="X")
+
+
+def _ohlcv_frame(n_days: int = 30, start_price: float = 100.0) -> pd.DataFrame:
+    idx = pd.date_range(end=pd.Timestamp.now("UTC").normalize(), periods=n_days, freq="D")
+    close = pd.Series([start_price + i for i in range(n_days)], index=idx)
+    return pd.DataFrame(
+        {
+            "Open": close.to_numpy() - 0.5,
+            "High": close.to_numpy() + 1.0,
+            "Low": close.to_numpy() - 1.0,
+            "Close": close.to_numpy(),
+            "Volume": [1_000_000.0] * n_days,
+        },
+        index=idx,
+    )
+
+
+class _FakeOhlcvVendor(MarketDataProvider):
+    """A hand-rolled fake vendor for ``get_daily_ohlcv`` — records every call
+    it receives so tests can assert whether the cache actually skipped it."""
+
+    def __init__(self, frames_by_ticker: dict[str, pd.DataFrame]) -> None:
+        self.frames_by_ticker = frames_by_ticker
+        self.ohlcv_calls: list[tuple[str, str, str]] = []
+
+    def get_daily_close_batch(self, tickers: dict[str, str], period: str) -> dict[str, pd.Series]:
+        raise AssertionError("not exercised in TestDailyOhlcvCache")
+
+    def get_intraday_quote(self, ticker: str) -> tuple[float, datetime] | None:
+        raise AssertionError("not exercised in TestDailyOhlcvCache")
+
+    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, float]:
+        raise AssertionError("not exercised in TestDailyOhlcvCache")
+
+    def get_series(self, ticker: str, period: str, interval: str) -> pd.Series:
+        raise AssertionError("not exercised in TestDailyOhlcvCache")
+
+    def get_daily_ohlcv(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        self.ohlcv_calls.append((ticker, start, end))
+        if ticker not in self.frames_by_ticker:
+            raise ValueError(f"no data for {ticker}")
+        return self.frames_by_ticker[ticker]
 
 
 class TestDailyCloseBatchCache:
@@ -241,6 +286,172 @@ class _FakeVendorPassthroughSpy(MarketDataProvider):
     def get_series(self, ticker: str, period: str, interval: str) -> pd.Series:
         self.series_calls.append((ticker, period, interval))
         return pd.Series([1.0, 2.0])
+
+    def get_daily_ohlcv(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        raise AssertionError("not exercised in TestUncachedPassthrough")
+
+
+# ─── Daily OHLCV cache (generation-path seam: fusion_market_data /
+#     portfolio_backtester, #1218 follow-up) ────────────────────────────
+
+
+class TestDailyOhlcvCache:
+    def test_cold_cache_is_a_miss_and_primes(self, session_factory):
+        frame = _ohlcv_frame(30)
+        vendor = _FakeOhlcvVendor({"SPY": frame})
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
+        start = frame.index[0].date().isoformat()
+        end = frame.index[-1].date().isoformat()
+
+        result = provider.get_daily_ohlcv("SPY", start, end)
+
+        assert vendor.ohlcv_calls == [("SPY", start, end)]  # vendor WAS hit (cold cache)
+        # Anti-goal: cache-cold output must be byte-identical to the vendor's
+        # raw frame — the cache layer must never reshape/reindex/coerce it.
+        pd.testing.assert_frame_equal(result, frame)
+
+        from archimedes.models.asset_daily_bars import AssetDailyBar
+
+        session = session_factory()
+        try:
+            rows = session.query(AssetDailyBar).filter(AssetDailyBar.symbol == "SPY").all()
+            assert len(rows) == 30
+            assert all(r.source == "yfinance" for r in rows)
+            assert all(r.open is not None and r.high is not None and r.low is not None for r in rows)
+            assert all(r.volume is not None for r in rows)
+        finally:
+            session.close()
+
+    def test_warm_cache_within_ttl_skips_vendor(self, session_factory):
+        frame = _ohlcv_frame(30)
+        vendor = _FakeOhlcvVendor({"SPY": frame})
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
+        start = frame.index[0].date().isoformat()
+        end = frame.index[-1].date().isoformat()
+
+        provider.get_daily_ohlcv("SPY", start, end)  # primes the cache
+        vendor.ohlcv_calls.clear()
+
+        result = provider.get_daily_ohlcv("SPY", start, end)
+
+        assert vendor.ohlcv_calls == []  # cache hit — vendor NOT called
+        assert len(result) == 30
+        assert list(result.columns) == ["Open", "High", "Low", "Close", "Volume"]
+
+    def test_stale_cache_past_ttl_refetches(self, session_factory):
+        frame = _ohlcv_frame(30)
+        vendor = _FakeOhlcvVendor({"SPY": frame})
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
+        provider._ttl = timedelta(hours=1)
+        start = frame.index[0].date().isoformat()
+        end = frame.index[-1].date().isoformat()
+        provider.get_daily_ohlcv("SPY", start, end)
+
+        from archimedes.models.asset_daily_bars import AssetDailyBar
+
+        session = session_factory()
+        try:
+            for row in session.query(AssetDailyBar).all():
+                row.fetched_at = datetime.now(UTC) - timedelta(hours=2)
+            session.commit()
+        finally:
+            session.close()
+
+        vendor.ohlcv_calls.clear()
+        provider.get_daily_ohlcv("SPY", start, end)
+        assert vendor.ohlcv_calls == [("SPY", start, end)]  # stale → refetched
+
+    def test_insufficient_back_coverage_refetches(self, session_factory):
+        """A cache primed for a SHORT window does not satisfy a later request
+        reaching further back — the earliest cached row doesn't cover it."""
+        short_frame = _ohlcv_frame(30)
+        vendor = _FakeOhlcvVendor({"SPY": short_frame})
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
+        short_start = short_frame.index[0].date().isoformat()
+        end = short_frame.index[-1].date().isoformat()
+        provider.get_daily_ohlcv("SPY", short_start, end)  # only 30 days cached
+
+        long_frame = _ohlcv_frame(365)
+        vendor.frames_by_ticker["SPY"] = long_frame
+        long_start = long_frame.index[0].date().isoformat()
+        vendor.ohlcv_calls.clear()
+
+        result = provider.get_daily_ohlcv("SPY", long_start, end)
+
+        assert vendor.ohlcv_calls == [("SPY", long_start, end)]  # coverage gap → refetched
+        assert len(result) == 365
+
+    def test_close_only_cached_row_is_not_a_valid_ohlcv_hit(self, session_factory):
+        """A row primed by ``get_daily_close_batch``'s writer only carries
+        ``close`` — open/high/low/volume are NULL. ``get_daily_ohlcv`` must
+        treat that as a miss (not hand back a frame with NaN OHLC columns)
+        and re-fetch + heal the row with the full bar."""
+        from archimedes.services.market_data_provider import _write_cached_series
+
+        close_series = _series(30)
+        session = session_factory()
+        try:
+            _write_cached_series(session, "SPY", close_series, "yfinance")
+            session.commit()
+        finally:
+            session.close()
+
+        frame = _ohlcv_frame(30)
+        vendor = _FakeOhlcvVendor({"SPY": frame})
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
+        start = frame.index[0].date().isoformat()
+        end = frame.index[-1].date().isoformat()
+
+        result = provider.get_daily_ohlcv("SPY", start, end)
+
+        assert vendor.ohlcv_calls == [("SPY", start, end)]  # close-only row treated as a miss
+        assert list(result.columns) == ["Open", "High", "Low", "Close", "Volume"]
+
+        from archimedes.models.asset_daily_bars import AssetDailyBar
+
+        session = session_factory()
+        try:
+            rows = session.query(AssetDailyBar).filter(AssetDailyBar.symbol == "SPY").all()
+            assert all(r.open is not None for r in rows)  # row healed with the full bar
+        finally:
+            session.close()
+
+    def test_vendor_error_propagates_uncaught(self, session_factory):
+        """get_daily_ohlcv's contract is to RAISE on a genuinely unfetchable
+        symbol (matching fetch_ohlcv's contract) — the caching wrapper must
+        not swallow that into an empty/None result, since callers
+        (fusion_market_data, portfolio_backtester) rely on the exception for
+        their own fail-closed / per-symbol-skip handling."""
+        vendor = _FakeOhlcvVendor({})  # every ticker raises ValueError
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
+        with pytest.raises(ValueError, match="no data for NOPE"):
+            provider.get_daily_ohlcv("NOPE", "2024-01-01", "2024-02-01")
+
+
+class TestYFinanceProviderOhlcvBoundary:
+    def test_get_daily_ohlcv_delegates_to_analytics_engine_fetch_ohlcv(self):
+        """YFinanceProvider.get_daily_ohlcv must be a pure passthrough to
+        ``archimedes_analytics_engine.data.fetch_ohlcv`` — the exact
+        function ``fusion_market_data``/``portfolio_backtester`` imported
+        and called directly before this seam existed (#1282). Delegating
+        (rather than re-implementing the yfinance fetch a second time) is
+        what guarantees cold-cache output is unchanged from the pre-seam
+        direct-fetch path."""
+        import sys
+
+        frame = pd.DataFrame({"Open": [1.0], "High": [1.1], "Low": [0.9], "Close": [1.0], "Volume": [100.0]})
+        fake_data_module = MagicMock()
+        fake_data_module.fetch_ohlcv.return_value = frame
+
+        with patch.dict(
+            sys.modules,
+            {"archimedes_analytics_engine": MagicMock(), "archimedes_analytics_engine.data": fake_data_module},
+        ):
+            provider = YFinanceProvider()
+            result = provider.get_daily_ohlcv("SPY", "2020-01-01", "2020-02-01")
+
+        fake_data_module.fetch_ohlcv.assert_called_once_with("SPY", "2020-01-01", "2020-02-01")
+        assert result is frame  # identity, not a copy — nothing reshapes it in between
 
 
 # ─── YFinanceProvider — the default vendor's own boundary ──────────────
