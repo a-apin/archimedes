@@ -21,7 +21,7 @@ parentheses; the human handles are what shows up in the channel.
 | **Dan Browne** | 37 | dbrowneup | Chicago | UTC-5 | **Owner of smart contracts + on-chain integration + infra (incl. AWS account `037613907429` and contract deploys), full-stack control.** Strategy engine (q-fin paper corpus, strategy-library curation), pitch architecture. Senior Scientist @ LanzaTech, PhD biochemistry. Day job — evenings/weekends. |
 | **Marten Windler** | ~31 | Marten | Bremen | UTC+2 | Off-chain → on-chain integration via Arc CLI. Systems Engineering @ U. Bremen, ML-uncertainty B.Sc. thesis. ROS + Python/C++/Rust. Coordinator lean. |
 | **Daniel Reis dos Santos** | early 20s | The go guy / Daniel [vibe] | Brazil | UTC-3 | Frontend ownership (React 19 + Vite 8 + UnoCSS). Backend engineer day-side. Go / Java / TypeScript, distributed systems, AWS, Terraform. Healthcare-ERP day role. |
-| **Bogdan Sivochkin** | — | (GitHub `mnemonik-dev`) | — | — | Joined for Lepton. Blockchain and cryptography architect; 15+ yrs distributed systems; Solidity, Rust, ZK, account abstraction, secure smart-contract engineering (founder, Mnemonic protocol). Ran the full-tree technical audit ([PR #710](https://github.com/a-apin/archimedes/pull/710)); on-chain provenance / commit-reveal + IPFS ([issue #714](https://github.com/a-apin/archimedes/issues/714)). **Preferred two-eyes reviewer on contract changes.** |
+| **Bogdan Sivochkin** | — | (GitHub `mnemonik-dev`) | — | — | Joined for Lepton. Blockchain and cryptography architect; 15+ yrs distributed systems; Solidity, Rust, ZK, account abstraction, secure smart-contract engineering (founder, Mnemonic protocol). Ran the full-tree technical audit ([PR #710](https://github.com/a-apin/archimedes/pull/710)); on-chain provenance / commit-reveal + IPFS ([issue #714](https://github.com/a-apin/archimedes/issues/714)). **Preferred two-eyes reviewer on contract changes when active (as of 2026-08 he is not — Dan is the sole required approver).** |
 | **Önder Akkaya** | ~21 | Önder | Ankara | UTC+3 | Portfolio math (Kelly criterion / +EV, backtest evaluation, risk pricing). Statistics @ Hacettepe; [ASA Statistical Insight World Champion](https://www.linkedin.com/in/onder-akkaya/); President of [TİD-Genç](https://www.tid.org.tr/); trainee actuary. |
 | **Ricardo Obregon Huaman** | — | (GitHub `rcrdoh`) | — | — | Nanopayment marketplace — x402-gated strategy access, Circle Gateway settlement, on-chain revenue split, per-user spend caps ([issue #713](https://github.com/a-apin/archimedes/issues/713)). |
 
@@ -31,9 +31,10 @@ parentheses; the human handles are what shows up in the channel.
 smart-contract + on-chain-integration + infra ownership** (he owns the AWS account and
 deploys the contracts himself). Where older docs route contract / infra review and approval
 to Chuan, **it now routes to Dan (the human owner)**, with **Bogdan (`mnemonik-dev`) as the
-preferred contract reviewer** and other teammates who know the contract stack able to step
-in. The funds-safety care is unchanged: contracts are high-stakes; two-eyes review is still
-wise.
+preferred contract reviewer when active** and other teammates who know the contract stack
+able to step in (as of 2026-08 Bogdan is not active — Dan is the sole required approver).
+The funds-safety care is unchanged: contracts are high-stakes; two-eyes review is still
+wise, and resumes when a second contract reviewer is available.
 
 **The `t2o2` agent account is dormant (2026-08-03).** Chuan's autonomous agentic system
 executed a large share of the mid-May–June issue backlog; it is not an active resource now

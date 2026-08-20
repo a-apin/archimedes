@@ -53,7 +53,11 @@ current architecture — [`docs/architecture.md`](../architecture.md) is.
 
 | Archived doc | What it was |
 |---|---|
+| ``agora-2026-05/AGORA-SUBMISSION-PACKET.md`` (routed to the private docs repo, 2026-08-19) | The submission packet itself. |
+| ``agora-2026-05/ARC-OSS-SHOWCASE.md`` (routed to the private docs repo, 2026-08-19) | Arc OSS showcase entry. |
 | ``agora-2026-05/arc-alignment.md`` (routed to the private docs repo, 2026-08-19) | Arc/Circle alignment argument as submitted. |
+| ``agora-2026-05/judging-rubric-assessment.md`` (routed to the private docs repo, 2026-08-19) | Day-13 self-assessment against the judging rubric. |
+| ``agora-2026-05/pitch-talking-points-rigor-track.md`` (routed to the private docs repo, 2026-08-19) | Talking points for the rigor / provenance / agent track. |
 | [`agora-2026-05/aws-architecture.md`](agora-2026-05/aws-architecture.md) | EC2-era AWS architecture. Superseded by [`docs/architecture.md`](../architecture.md) and [`adr/ec2-to-ecs-fargate-cutover.md`](../adr/ec2-to-ecs-fargate-cutover.md). |
 | [`agora-2026-05/design.md`](agora-2026-05/design.md) | The original design document. |
 | [`agora-2026-05/infra-setup.md`](agora-2026-05/infra-setup.md) | Infrastructure and CI/CD setup as it stood at submission. |
