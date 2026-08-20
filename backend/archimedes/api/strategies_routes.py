@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import math
+import os
 from datetime import UTC
 
 import numpy as np
@@ -344,6 +345,8 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
         # context — same fix as selection_bias_routes.py's valid_returns filter
         # (#868), so avg_correlation/pbo_scores here match that route's cohort gate
         # exactly rather than drifting apart on this input.
+        # TODO(A7): cohort filter here diverges from live_rigor_gate's cohort — see
+        # docs/sprint/cluster-4-strategies-route.md
         valid_returns = {
             k: v
             for k, v in returns_by_strategy.items()
@@ -2221,12 +2224,28 @@ async def generate_strategy(
     Direct-fusion path only — the ``mode=fast`` (interactive Strategy
     Architect) branch was removed in #1064; the debate society
     (``POST /api/generate/start``) is the sole interactive generation path.
+
+    This is a second live, SIWE-gated, LLM-spending generation endpoint
+    (docs/sprint/cluster-4-strategies-route.md § "the unmetered budget hole") —
+    it shares the SAME per-account/per-IP daily caps ``/api/generate/start``
+    enforces (``services/generation_quota.py``), via the identical call this
+    module's sibling route makes: same function, same Redis key format
+    (``archimedes:genquota:{scope}:{day}:{identity}``, keyed on ``user.id`` /
+    client IP — never on which endpoint was hit), so a caller cannot double
+    their daily allowance by alternating between the two routes. Runs FIRST,
+    before the fusion-enabled/corpus checks below, matching the primary
+    path's "cheapest anti-abuse check before any other work" ordering.
+    Disabled under TESTING (conftest sets it), matching ``/api/generate/start``.
     """
     from fastapi import HTTPException
 
     from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
     from archimedes.models.portfolio import RiskProfile
+    from archimedes.services.generation_quota import enforce_generation_quota
     from archimedes.services.job_queue import JobStore
+
+    if not os.getenv("TESTING"):
+        await enforce_generation_quota(request, user.id)
 
     if not fusion_enabled():
         raise HTTPException(
