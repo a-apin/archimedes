@@ -292,32 +292,3 @@ class TestJobStore:
     async def test_close_idempotent(self, job_store):
         await job_store.close()
         await job_store.close()
-
-
-# ── Corpus overview computation ───────────────────────────────────
-
-
-class TestCorpusOverview:
-    def test_overview_from_corpus(self):
-        from archimedes.agents.strategy_fusion import CorpusPaper
-
-        papers = [
-            CorpusPaper("2401.001", "Paper A", "Abstract", "q-fin.PM", ("q-fin.PM",), "2024-01-15"),
-            CorpusPaper("2402.002", "Paper B", "Abstract", "q-fin.TR", ("q-fin.TR", "q-fin.PM"), "2024-02-20"),
-            CorpusPaper("2303.003", "Paper C", "Abstract", "q-fin.CP", ("q-fin.CP",), "2023-03-10"),
-        ]
-        from collections import Counter
-
-        cat_counts: Counter = Counter()
-        year_counts: Counter = Counter()
-        for p in papers:
-            cat_counts[p.primary_category] += 1
-            for c in p.categories:
-                cat_counts[c] += 1
-            year = p.published[:4]
-            year_counts[year] += 1
-
-        assert cat_counts["q-fin.PM"] == 3  # Paper A primary + Paper B primary + Paper B categories
-        assert year_counts["2024"] == 2
-        assert year_counts["2023"] == 1
-        assert sum(year_counts.values()) == 3

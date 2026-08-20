@@ -16,9 +16,11 @@ subprocess to avoid poisoning the test process's module cache.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -212,12 +214,37 @@ async def test_chat_post_rate_limited():
         app.state.limiter.enabled = not os.getenv("TESTING")
 
 
+@contextlib.contextmanager
+def _limiter_enabled():
+    """Rate limiting is off under TESTING (limiter.py) — switch it on for one test.
+
+    Yields the app with a freshly reset limiter bucket so a prior test's request
+    count can't leak in, and restores the suite-wide disabled state afterwards.
+    """
+    from archimedes.main import app
+
+    app.state.limiter.enabled = True
+    with contextlib.suppress(Exception):
+        app.state.limiter.reset()
+    try:
+        yield app
+    finally:
+        app.state.limiter.enabled = not os.getenv("TESTING")
+
+
 @pytest.mark.asyncio
 async def test_strategies_stress_run_has_rate_limit():
-    """POST /api/strategies/stress/run has rate limiting decorator."""
-    from archimedes.api.strategies_routes import run_stress_test
-
-    assert run_stress_test is not None
+    """POST /api/strategies/stress/run is rate-limited (returns 429 eventually)."""
+    payload = {"allocations": [{"symbol": "sTSLA", "weight": 1.0}]}
+    with _limiter_enabled() as app:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            hit_429 = False
+            for _ in range(25):  # limit is 20/minute
+                resp = await client.post("/api/strategies/stress/run", json=payload)
+                if resp.status_code == 429:
+                    hit_429 = True
+                    break
+            assert hit_429, "Expected 429 rate limit but never hit it in 25 requests"
 
 
 @pytest.mark.asyncio
@@ -257,18 +284,41 @@ async def test_stress_run_non_dict_allocation_is_422():
 
 @pytest.mark.asyncio
 async def test_swap_quote_has_rate_limit():
-    """GET /api/swap/quote has rate limiting decorator."""
-    from archimedes.api.swap_routes import get_swap_quote
-
-    assert get_swap_quote is not None
+    """GET /api/swap/quote is rate-limited (returns 429 eventually)."""
+    # The contract loader is mocked so each request fails fast at the AMM call
+    # (a generic 400) instead of reaching for an RPC endpoint — the rate limiter
+    # runs before the handler body, so a 400 still counts against the bucket.
+    params = {
+        "token_in": "0x3600000000000000000000000000000000000000",
+        "token_out": "0xd514cd27baf762c650536765cde9b61c876abacd",
+        "amount_in": 1.0,
+    }
+    with _limiter_enabled() as app, patch("archimedes.chain.contracts.get_contract_loader", return_value=MagicMock()):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            hit_429 = False
+            for _ in range(35):  # limit is 30/minute
+                resp = await client.get("/api/swap/quote", params=params)
+                if resp.status_code == 429:
+                    hit_429 = True
+                    break
+            assert hit_429, "Expected 429 rate limit but never hit it in 35 requests"
 
 
 @pytest.mark.asyncio
 async def test_selection_bias_pbo_has_rate_limit():
-    """POST /api/selection-bias/pbo has rate limiting decorator."""
-    from archimedes.api.selection_bias_routes import compute_pbo_endpoint
-
-    assert compute_pbo_endpoint is not None
+    """POST /api/selection-bias/pbo is rate-limited (returns 429 eventually)."""
+    # s_partitions=4 keeps each accepted request ~30ms; the default 16 makes the
+    # combinatorial PBO scan ~0.5s a call, i.e. ~10s to exhaust the bucket.
+    payload = {"returns_matrix": {"s1": [0.001] * 50, "s2": [-0.0005] * 50}, "s_partitions": 4}
+    with _limiter_enabled() as app:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            hit_429 = False
+            for _ in range(25):  # limit is 20/minute
+                resp = await client.post("/api/selection-bias/pbo", json=payload)
+                if resp.status_code == 429:
+                    hit_429 = True
+                    break
+            assert hit_429, "Expected 429 rate limit but never hit it in 25 requests"
 
 
 # ─── 5. CORS explicit allowlists ──────────────────────────────────────
