@@ -662,7 +662,12 @@ async def health():
     # as "embedded / knowledge-graphed". Each is driven from actual state, never a
     # constant:
     #   corpus_embedded         — live sentence-transformer embeddings active
-    #                             (paper_rag == "live"; "degraded" => TF-IDF, NOT embedded)
+    #                             (paper_rag == "live"; "degraded" => TF-IDF, NOT embedded).
+    #                             NOTE: "ready" (weights on disk, model not yet
+    #                             loaded because nothing has retrieved yet) is
+    #                             deliberately NOT embedded — presence on disk is
+    #                             not proof, and this field must not overstate.
+    #                             It flips to true on the first real retrieval.
     #   corpus_kg_built         — at least one KG entity exists (REBEL/SciSpacy output)
     #   corpus_artifact_present — a real KB-pipeline artifact (S3/local manifest) exists
     corpus_embedded = paper_rag_status == "live"
@@ -746,7 +751,10 @@ async def health_paper_rag():
     """Dedicated paper-rag health endpoint."""
     from archimedes.services.paper_rag import paper_rag_health
 
-    diag = paper_rag_health()
+    # probe=True: this endpoint exists to PROVE the model loads, so it is the
+    # one place allowed to pay the ~521 MB load cost. The ALB-polled /health
+    # deliberately does not (see paper_rag_health's docstring).
+    diag = paper_rag_health(probe=True)
     return {
         "paper_rag": diag.status,
         "reason": diag.reason,

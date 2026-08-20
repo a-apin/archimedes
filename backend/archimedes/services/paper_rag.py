@@ -40,6 +40,7 @@ import re
 import threading
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -66,25 +67,84 @@ def _model_name() -> str:
 class PaperRAGHealth:
     """Health diagnostic for the paper RAG subsystem."""
 
-    status: str  # live | degraded | disabled
+    status: str  # live | ready | degraded | disabled
     reason: str = ""
 
 
-def paper_rag_health() -> PaperRAGHealth:
+def paper_rag_health(probe: bool = False) -> PaperRAGHealth:
     """Report the current health of the paper RAG subsystem.
 
-    - ``live``: semantic retrieval enabled, model loaded successfully.
-    - ``degraded``: enabled but sentence-transformers import failed or model
-      could not be loaded (falls back to TF-IDF).
+    - ``live``: semantic retrieval enabled and the model is loaded in THIS
+      process right now.
+    - ``ready``: enabled and the weights are present on disk, but nothing has
+      needed the model yet so it has not been loaded. Distinct from ``live``
+      on purpose — this reports what is true, not what is likely.
+    - ``degraded``: enabled but a load was attempted and failed (TF-IDF fallback).
     - ``disabled``: ``FUSION_SEMANTIC_RETRIEVAL`` is off.
+
+    ``probe`` controls whether this is allowed to LOAD the model to answer.
+    Default ``False``, because this function is on the ``/health`` path that the
+    ALB polls every 30s: loading ``all-MiniLM-L6-v2`` costs a measured **521 MB
+    of RSS** (torch 207 MB + sentence_transformers 109 MB + the model itself
+    ~205 MB), which more than doubled the API container and was a direct
+    contributor to the 2026-08-19 OOM crash loop. A liveness probe must not
+    allocate half a gigabyte to answer a question about itself.
+
+    Pass ``probe=True`` (the dedicated ``/health/paper-rag`` endpoint does) to
+    force the load and get a proven ``live``/``degraded`` verdict.
     """
     if not _semantic_enabled():
         return PaperRAGHealth(status="disabled", reason="FUSION_SEMANTIC_RETRIEVAL not set")
+
+    # Already loaded (something used retrieval) — free to report, no allocation.
+    if _embedding_model is not None:
+        return PaperRAGHealth(status="live", reason=f"model={_model_name()}")
+
+    # A load was tried and failed — that verdict is cached and also free.
+    if _embedding_load_attempted:
+        return PaperRAGHealth(status="degraded", reason="embedding model unavailable, TF-IDF fallback")
+
+    if not probe:
+        if _weights_present():
+            return PaperRAGHealth(
+                status="ready",
+                reason=f"model={_model_name()} present, not loaded (no retrieval yet)",
+            )
+        return PaperRAGHealth(
+            status="degraded",
+            reason=f"model={_model_name()} weights not found in {os.getenv('HF_HOME', '<unset HF_HOME>')}",
+        )
 
     model = _get_embedding_model()
     if model is not None:
         return PaperRAGHealth(status="live", reason=f"model={_model_name()}")
     return PaperRAGHealth(status="degraded", reason="embedding model unavailable, TF-IDF fallback")
+
+
+def _weights_present() -> bool:
+    """Cheap on-disk check that the baked model cache holds our model.
+
+    The Docker image bakes the weights into ``HF_HOME`` at build time
+    (backend/Dockerfile:70) and runs with ``HF_HUB_OFFLINE=1``, so "the
+    directory for this model exists and is non-empty" is the strongest claim
+    available without importing torch. It is deliberately NOT reported as
+    ``live`` — presence on disk is not proof the model loads.
+    """
+    hf_home = os.getenv("HF_HOME")
+    if not hf_home:
+        return False
+    slug = _model_name().replace("/", "--")
+    root = Path(hf_home)
+    try:
+        for candidate in root.iterdir():
+            if not candidate.is_dir():
+                continue
+            name = candidate.name
+            if slug in name or name in (slug, f"models--sentence-transformers--{slug}"):
+                return any(candidate.rglob("*.safetensors")) or any(candidate.rglob("*.bin"))
+    except OSError:
+        return False
+    return False
 
 
 def _semantic_enabled() -> bool:
