@@ -810,3 +810,45 @@ async def test_list_route_grades_full_library_regardless_of_pagination(monkeypat
     assert len(seen_cohorts) == 3
     for cohort in seen_cohorts:
         assert cohort == full_library
+
+
+# ── GET /api/strategies/{id} must not 500 for a strategy with no linked
+# paper (#1342) ──────────────────────────────────────────────────────────
+#
+# Curated strategies always have papers[0], so the legacy scalar fields
+# (paper_arxiv_id / paper_title) never went through the None branch for
+# them. GENERATED strategies (fusion/architect, ingested straight into
+# strategy_passports with no paper_refs) do: _passport_to_strategy_response
+# passes ``first.arxiv_id if first else None`` into a field declared
+# ``str = ""``, which pydantic 2.x rejects — turning a genuine "no paper"
+# into an HTTP 500 instead of a null field.
+
+
+@pytest.mark.asyncio
+async def test_single_strategy_endpoint_200s_with_no_linked_paper():
+    """A generated (passport) strategy with zero linked papers must serve
+    200 with paper_arxiv_id/paper_title == None, not 500."""
+    from archimedes.db import get_session
+    from archimedes.main import app
+    from archimedes.models.strategy import StrategyPassport
+    from archimedes.services.passport_loader import ingest_passport
+
+    strategy_id = "test-1342-no-linked-paper"
+    passport = StrategyPassport(
+        id=strategy_id,
+        papers=[],
+        methodology_summary="A strategy with no linked paper (e.g. a fresh generation).",
+        asset_universe=["SPY"],
+    )
+    with get_session() as session:
+        ingest_passport(session, passport, generation_method="fusion")
+        session.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(f"/api/strategies/{strategy_id}")
+
+    assert resp.status_code == 200, resp.text
+    served = resp.json()
+    assert served["paper_arxiv_id"] is None
+    assert served["paper_title"] is None
+    assert served["papers"] == []
