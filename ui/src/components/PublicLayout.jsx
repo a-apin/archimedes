@@ -1,3 +1,5 @@
+import CompanyLinksFooter from "./CompanyLinksFooter";
+
 export default function PublicLayout({ user, children }) {
 	return (
 		<div className="public-site">
@@ -32,6 +34,22 @@ export default function PublicLayout({ user, children }) {
 			<div id="public-content" tabIndex="-1">
 				{children}
 			</div>
+			{/* Shell-level footer: shared by every public page (Landing,
+			    Architecture, not-found) rather than duplicated per page. Moved
+			    here from Landing.jsx so Architecture also carries the brand line
+			    and the company/social links pick up automatically as
+			    companyLinks.js fills in — see CompanyLinksFooter.jsx. */}
+			<footer className="public-footer">
+				<div className="public-shell">
+					<div className="public-footer__brand">
+						<span>Archimedes</span>
+						<span>
+							Research-grounded strategy generation · Arc public testnet
+						</span>
+					</div>
+					<CompanyLinksFooter />
+				</div>
+			</footer>
 		</div>
 	);
 }

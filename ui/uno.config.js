@@ -127,6 +127,13 @@ export default defineConfig({
     'i-simple-icons-tesla',
     'i-simple-icons-nvidia',
     'i-simple-icons-coinbase',
+    // Footer company/social links (socialLinks.js SOCIAL_LINK_META) — the
+    // icon class comes from a JS object, not a static string UnoCSS's
+    // scanner can see, so it must be safelisted explicitly like the brand
+    // logos above.
+    'i-simple-icons-github',
+    'i-simple-icons-discord',
+    'i-simple-icons-x',
     'i-logos-metamask',
     'i-token-branded-metamask',
   ],

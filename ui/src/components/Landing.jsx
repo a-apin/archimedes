@@ -205,15 +205,8 @@ export default function Landing({ onNavigate }) {
 					</div>
 				</div>
 			</section>
-
-			<footer className="public-footer">
-				<div className="public-shell">
-					<span>Archimedes</span>
-					<span>
-						Research-grounded strategy generation · Arc public testnet
-					</span>
-				</div>
-			</footer>
+			{/* Footer moved to PublicLayout.jsx (shared shell chrome, also covers
+			    Architecture + not-found) — see the .public-footer block there. */}
 		</main>
 	);
 }

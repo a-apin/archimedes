@@ -4520,7 +4520,48 @@ button:where(.tag) {
 .public-footer .public-shell {
 	display: flex;
 	justify-content: space-between;
+	align-items: center;
 	gap: 20px;
+}
+
+.public-footer__brand {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 16px;
+}
+
+/* Shared footer icon-link row — public shell (public-footer, above) and app
+   shell (app-footer, below) both mount CompanyLinksFooter.jsx into one of
+   these, undecorated so it inherits whichever shell's --text-3/--accent/
+   --glass-border/--accent-muted tokens are in scope. Mirrors the existing
+   .topbar-icon-btn idiom (Layout.jsx) rather than inventing a new one. */
+.footer-links {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.footer-icon-link {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	border-radius: 6px;
+	border: 1px solid var(--glass-border);
+	color: var(--text-3);
+	transition:
+		color 0.15s ease,
+		border-color 0.15s ease,
+		background 0.15s ease;
+}
+
+.footer-icon-link:hover,
+.footer-icon-link:focus-visible {
+	color: var(--accent);
+	border-color: var(--accent);
+	background: var(--accent-muted);
 }
 
 .public-site .page-content {
@@ -4853,6 +4894,17 @@ button:where(.tag) {
 .app-site .main-area {
 	min-height: 100vh;
 	background: var(--app-canvas);
+}
+
+/* Layout-bottom footer (Layout.jsx) — mirrors .public-footer's role in the
+   public shell: the one place CompanyLinksFooter.jsx mounts for every /app
+   page. Right-aligned, unlike the public footer's brand+links split, since
+   the sidebar already carries the Archimedes wordmark on every app page. */
+.app-site .app-footer {
+	padding: var(--space-4) var(--space-6);
+	border-top: 1px solid var(--glass-border);
+	display: flex;
+	justify-content: flex-end;
 }
 
 .app-site .sidebar {

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import WalletConnect from "./WalletConnect";
 import Breadcrumbs from "./Breadcrumbs";
+import CompanyLinksFooter from "./CompanyLinksFooter";
 import { getStoredWalletName } from "../config";
 import { deriveChainStatus } from "../chainStatus";
 import { fetchHealth } from "../health";
@@ -471,6 +472,13 @@ export default function Layout({
 					)}
 					{children}
 				</main>
+				{/* Layout-bottom footer, shared across every /app page (Layout wraps
+				    all of them — App.jsx). Company/social links pick up
+				    automatically as companyLinks.js fills in; see
+				    CompanyLinksFooter.jsx. */}
+				<footer className="app-footer">
+					<CompanyLinksFooter />
+				</footer>
 			</div>
 		</div>
 	);
