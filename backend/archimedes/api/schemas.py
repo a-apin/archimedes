@@ -183,8 +183,8 @@ class StrategyResponse(BaseModel):
     status: str  # "candidate" | "validated" | "live" | "retired" | "rejected"
 
     # Legacy scalar fields (populated from papers[0] for backwards compat)
-    paper_arxiv_id: str = ""
-    paper_title: str = ""
+    paper_arxiv_id: str | None = None
+    paper_title: str | None = None
     paper_authors: list[str] = []
     paper_venue: str | None = None
     paper_year: int | None = None
