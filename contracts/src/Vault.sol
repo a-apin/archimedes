@@ -68,6 +68,24 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
     ///         before a correction is required, defeating the churn guard (issue #915).
     uint256 public constant MAX_REBALANCE_BAND_BPS = 2000;
 
+    /// @notice Hard cap on the creator-configurable annual management fee (5%).
+    ///         `createVault()` is fully permissionless (Tier 2) and these fee bps were
+    ///         previously unbounded uint16 fields (0-65535 = up to 655.35%) baked in
+    ///         immutably at construction with no setter (2026-07-14 internal audit,
+    ///         finding C1). Capped here (not just in the factory) so the guard holds
+    ///         regardless of which caller constructs a Vault.
+    uint16 public constant MAX_MANAGEMENT_FEE_BPS = 500;
+
+    /// @notice Hard cap on the performance fee charged above the high-water mark (50%).
+    ///         Same finding as MAX_MANAGEMENT_FEE_BPS: at performanceFeeBps > 10000 (100%)
+    ///         `_accrueFees()` can mint fee-shares worth MORE than a NAV-raising donation,
+    ///         letting a vault's own creator extract other depositors' principal via a
+    ///         bare `USDC.transfer()` to the vault followed by any state-changing call.
+    ///         50% is already a generous ceiling versus the ~10-20% norm; it eliminates
+    ///         the theft vector (which specifically requires the fee to exceed 100%)
+    ///         with a wide safety margin. Team should tune down if a lower cap is wanted.
+    uint16 public constant MAX_PERFORMANCE_FEE_BPS = 5000;
+
     // ─── Immutables ──────────────────────────────────────────────────
 
     address public immutable override asset;
@@ -162,6 +180,10 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @notice A rebalance swap would overshoot `token` past its target weight (issue #915).
     error RebalanceOvershootsTarget(address token);
     error InvalidRebalanceBand();
+    /// @notice `_managementFeeBps` exceeds MAX_MANAGEMENT_FEE_BPS.
+    error ManagementFeeTooHigh();
+    /// @notice `_performanceFeeBps` exceeds MAX_PERFORMANCE_FEE_BPS.
+    error PerformanceFeeTooHigh();
 
     // ─── Events (Vault-local) ────────────────────────────────────────
 
@@ -198,6 +220,8 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
         // Strict commit-before-trade: the trace registry is required and immutable, so
         // a vault can never exist in a state where rebalance() skips the commit check (#589).
         if (_traceRegistry == address(0)) revert TraceRegistryNotSet();
+        if (_managementFeeBps > MAX_MANAGEMENT_FEE_BPS) revert ManagementFeeTooHigh();
+        if (_performanceFeeBps > MAX_PERFORMANCE_FEE_BPS) revert PerformanceFeeTooHigh();
         asset = _usdc;
         ammRouter = IAMMRouter(_ammRouter);
         traceRegistry = IReasoningTraceRegistry(_traceRegistry);
