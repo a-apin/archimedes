@@ -102,6 +102,72 @@ def _register_task(job_id: str, task: asyncio.Task) -> None:
     task.add_done_callback(lambda _t, jid=job_id: _RUNNING_TASKS.pop(jid, None))
 
 
+# ── Generation admission control ──────────────────────────────────────────
+# The whole web tier shares one Fargate task; a single generation averages
+# ~65% of its vCPU for ~48s (measured 2026-08-20), so unbounded parallel
+# pipelines starve auth, SSE, and the ALB health check — the task gets
+# killed and EVERY in-flight job dies with it. At most
+# GENERATION_MAX_CONCURRENT pipelines run at once; up to
+# GENERATION_MAX_QUEUE more wait their turn (the job stays `queued` and its
+# SSE stream gets a `job_queued` event + heartbeats); beyond that /start
+# refuses 429 BEFORE the payment gate, so nobody is ever charged for a slot
+# that doesn't exist.
+
+_GENERATION_GATE: asyncio.Semaphore | None = None
+_GENERATION_GATE_LOOP: asyncio.AbstractEventLoop | None = None
+_WAITING_GENERATIONS = 0
+
+
+def _max_concurrent_generations() -> int:
+    try:
+        return max(1, int(os.getenv("GENERATION_MAX_CONCURRENT", "1")))
+    except ValueError:
+        return 1
+
+
+def _max_queued_generations() -> int:
+    try:
+        return max(0, int(os.getenv("GENERATION_MAX_QUEUE", "10")))
+    except ValueError:
+        return 10
+
+
+def _generation_gate() -> asyncio.Semaphore:
+    """Per-event-loop singleton.
+
+    asyncio primitives bind to the loop that first awaits them; a module-level
+    singleton would leak a closed test loop into the next test. Recreating on
+    loop change costs nothing in prod (one loop for the process lifetime).
+    """
+    global _GENERATION_GATE, _GENERATION_GATE_LOOP
+    loop = asyncio.get_running_loop()
+    if _GENERATION_GATE is None or _GENERATION_GATE_LOOP is not loop:
+        _GENERATION_GATE = asyncio.Semaphore(_max_concurrent_generations())
+        _GENERATION_GATE_LOOP = loop
+    return _GENERATION_GATE
+
+
+async def _emit_queued(job_id: str, position: int) -> None:
+    """Tell the job's SSE stream it is waiting — informational, never fatal."""
+    from datetime import UTC, datetime
+
+    try:
+        await get_job_store().push_event(
+            job_id,
+            {
+                "event": "job_queued",
+                "data": {
+                    "ts": datetime.now(UTC).isoformat(),
+                    "job_id": job_id,
+                    "position": position,
+                    "max_concurrent": _max_concurrent_generations(),
+                },
+            },
+        )
+    except Exception:
+        logger.warning("could not emit job_queued for %s", job_id, exc_info=True)
+
+
 def _require_job_access(job: dict, user_id: str, job_id: str, linked_wallet: str | None = None) -> None:
     """Hide account-owned and unclaimed legacy jobs from other users."""
     payload = job.get("payload") or {}
@@ -143,6 +209,21 @@ async def start_generation(
     # test_generation_quota.py.
     if not os.getenv("TESTING"):
         await enforce_generation_quota(request, user.id)
+
+    # Admission control: refuse when the wait queue is full. Deliberately
+    # BEFORE the payment gate — a caller must never pay for a slot that
+    # doesn't exist. (Counts only waiting jobs; running ones aren't queued.)
+    if _max_queued_generations() <= _WAITING_GENERATIONS:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "generation_queue_full",
+                "message": (
+                    f"The generation queue is full ({_WAITING_GENERATIONS} jobs waiting). "
+                    "No payment was taken. Retry in a few minutes."
+                ),
+            },
+        )
 
     # Payment gate (flag: GENERATION_PAYMENT_REQUIRED — Dan flips deliberately,
     # see the #834 flip-list). Order is deliberate: AFTER the quota (a
@@ -292,18 +373,34 @@ async def _run_with_cleanup(
     owner_user_id: str | None = None,
     owner_wallet: str | None = None,
 ) -> None:
+    global _WAITING_GENERATIONS
     store = get_job_store()
+    # Heartbeat runs from entry — a QUEUED job (waiting on the admission
+    # gate) is alive, and must not read as stalled while it waits its turn.
     heartbeat_task = asyncio.create_task(_heartbeat_loop(job_id, store), name=f"job-heartbeat-{job_id}")
     try:
-        await run_generation(
-            job_id=job_id,
-            brief=brief,
-            n_candidates=n_candidates,
-            mode=mode,
-            model=model,
-            owner_user_id=owner_user_id,
-            owner_wallet=owner_wallet,
-        )
+        gate = _generation_gate()
+        if gate.locked():
+            _WAITING_GENERATIONS += 1
+            try:
+                await _emit_queued(job_id, _WAITING_GENERATIONS)
+                await gate.acquire()
+            finally:
+                _WAITING_GENERATIONS -= 1
+        else:
+            await gate.acquire()
+        try:
+            await run_generation(
+                job_id=job_id,
+                brief=brief,
+                n_candidates=n_candidates,
+                mode=mode,
+                model=model,
+                owner_user_id=owner_user_id,
+                owner_wallet=owner_wallet,
+            )
+        finally:
+            gate.release()
     except asyncio.CancelledError:
         raise
     except Exception:  # safety net — run_generation already emits error events
