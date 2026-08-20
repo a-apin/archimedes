@@ -26,14 +26,15 @@ const TYPE_ICONS = {
 const MIN_QUERY_LENGTH = 2
 
 /**
- * Topic Clusters viewer. (Currently renders BERTopic-derived topic clusters
- * across the KB-processed paper subset. Promoted to a real Knowledge Graph
- * once #1090 produces the KB pipeline's first artifact AND #1092 backfills
- * kg_entities/kg_relations from it — /health's corpus_kg_built reflects the
- * latter (entities actually present), not artifact presence alone; see
- * corpus_artifact_present for that separate fact. The prior pointer here,
- * #293, closed 2026-05-25 with kg_entities/kg_relations still at 0/0 in
- * prod — see #1368.)
+ * Topic Clusters viewer. (Renders whatever ``/api/corpus/kg/entities``
+ * returns from ``kg_entities``/``kg_relations`` — 0/0 in prod today, so the
+ * zero-state below is what actually renders. Promoted to a real Knowledge
+ * Graph once #1090 produces the KB pipeline's first artifact AND #1092
+ * backfills kg_entities/kg_relations from it — /health's corpus_kg_built
+ * reflects the latter (entities actually present), not artifact presence
+ * alone; see corpus_artifact_present for that separate fact. The prior
+ * pointer here, #293, closed 2026-05-25 with kg_entities/kg_relations still
+ * at 0/0 in prod — see #1368.)
  *
  * Fetches from ``/api/corpus/kg/entities?q=<q>`` and renders entities
  * + relations as an SVG graph. Entity search filters the KG. Falls back
