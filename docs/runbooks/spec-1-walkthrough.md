@@ -4,8 +4,8 @@
 > the live site, from wallet connection through to an on-chain reasoning
 > trace. The resulting tx hashes + screenshots are committed to
 > [`arc-testnet-e2e-evidence.md`](./arc-testnet-e2e-evidence.md) and linked
-> from the README + ARC-OSS-SHOWCASE as the canonical "judge can replay this"
-> artifact.
+> from the README + ARC-OSS-SHOWCASE (routed to the private docs repo,
+> 2026-08-19) as the canonical "judge can replay this" artifact.
 
 > **Time estimate:** 25–35 minutes wall-clock, mostly waiting for tx confirmations.
 
@@ -248,7 +248,8 @@ Screenshot showing 4-tile header + new vault card.
 ```
 
 Commit this file to a fresh branch off `main`, open PR, link from README
-and ARC-OSS-SHOWCASE primitive #3. After sign-off, merge.
+and ARC-OSS-SHOWCASE (routed to the private docs repo, 2026-08-19)
+primitive #3. After sign-off, merge.
 
 ---
 
