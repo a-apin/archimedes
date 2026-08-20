@@ -128,6 +128,39 @@ class TestLocalSetupContract(unittest.TestCase):
         self.assertIn("location = /openapi.json", nginx)
         self.assertIn("proxy_pass http://backend_api/openapi.json;", nginx)
 
+    def test_nginx_webmanifest_mime_override_is_additive_not_nested_in_server(self) -> None:
+        """#1380: stock nginx `mime.types` has no `.webmanifest` entry, so a
+        served `site.webmanifest` fell back to `default_type`
+        (application/octet-stream) instead of `application/manifest+json`.
+
+        The override MUST live at this file's top level (http context, via
+        the conf.d splice documented in the file header) rather than nested
+        inside `server {}`. A `types {}` block does not merge into an
+        ancestor context's type map when declared in a child context — it
+        replaces it outright for that context, so declaring this inside
+        `server {}` would silently blank the content type of every other
+        static asset (.css/.js/.html) served by that block back to
+        `default_type` too. Verified live with nginx 1.31.2 (the pinned
+        image): moving this exact line inside `server {}` turned
+        `/style.css` and `/` from their correct types into
+        `application/octet-stream`. Placed here, at the same http-context
+        level where the base image's own `include mime.types;` already ran
+        (before this conf.d fragment is spliced in), it appends to that
+        existing map instead — the anti-goal's "additive override only"."""
+        nginx = (ROOT / "nginx/nginx.conf").read_text()
+        override = "types { application/manifest+json webmanifest; }"
+        self.assertIn(override, nginx)
+        override_index = nginx.index(override)
+        server_block_index = nginx.index("server {\n    listen 8080;")
+        self.assertLess(
+            override_index,
+            server_block_index,
+            "the .webmanifest MIME override must precede `server {}` (http "
+            "context) — nested inside it, `types {}` replaces rather than "
+            "extends the inherited MIME map, breaking every other static "
+            "asset's content type",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
