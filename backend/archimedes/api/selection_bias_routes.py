@@ -156,9 +156,21 @@ class StrategyRigorResult(BaseModel):
     # trustworthy value.
     num_trials_scope: str = "unspecified"
     # Board-level BH-FDR correction (#1185) — see BoardLevelFdr / compute_board_level_fdr
-    # for the scope decision. ADVISORY: never affects passes_all. None when this
-    # strategy had no finite dsr_p_value to correct (mirrors dsr_p_value's own
-    # None/MISSING convention above).
+    # for the scope decision. ADVISORY: never affects passes_all. `None` is
+    # overloaded (code review, 2026-08-20): for a CURATED strategy — whether
+    # returned from GET /gate (the batch/board route) or GET /gate/{id} (which
+    # delegates to the same evaluate_rigor_gate() for curated ids, see
+    # evaluate_strategy_rigor below) — None means "this strategy had no finite
+    # dsr_p_value to correct" (mirrors dsr_p_value's own None/MISSING
+    # convention above), because it went through the real board-level cohort
+    # correction. For a GENERATED strategy served by GET /gate/{id}'s
+    # `_generated_strategy_rigor` fallback, this is ALWAYS None, even when
+    # dsr_p_value IS finite — board-level FDR is inherently cohort-scoped, and
+    # a single generated strategy has no cohort to correct across, so that
+    # path never calls compute_board_level_fdr at all. A consumer cannot
+    # distinguish "not significant / real cohort" from "excluded, no
+    # dsr_p_value" from "generated, no cohort at all" from this field alone —
+    # check which code path produced the payload.
     board_fdr_significant: bool | None = None
     board_fdr_adjusted_p: float | None = None
     # board_fdr_confidence (1 - board_fdr_adjusted_p, same read-direction as

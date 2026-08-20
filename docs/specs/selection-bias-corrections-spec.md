@@ -490,7 +490,7 @@ annotation only** — it computes a real BH-FDR-adjusted significance figure
 across the current leaderboard cohort's DSR p-values and surfaces it
 (`GET /api/selection-bias/gate` → `RigorGateResponse.board_level_fdr` +
 per-strategy `StrategyRigorResult.board_fdr_significant` /
-`board_fdr_adjusted_p`), but it is **not** wired into `passes_all` /
+`board_fdr_adjusted_p` / `board_fdr_confidence`), but it is **not** wired into `passes_all` /
 `blocked_by_floor` at any strictness level. Three reasons, in order of
 weight:
 
@@ -518,13 +518,21 @@ weight:
 convention (HIGH = confident) — the OPPOSITE of the classical p-value
 `benjamini_hochberg_fdr` expects (LOW = significant). `compute_board_level_fdr`
 converts via `classical_p = 1 - dsr_p_value` before calling BH-FDR, then
-reports back in the `dsr_p_value` convention. Strategies with no finite
+reports back in the `dsr_p_value` convention (`board_fdr_confidence = 1 -
+board_fdr_adjusted_p`). The converted classical p-value is floored at
+`rigor_evaluator._CLASSICAL_P_FLOOR` (`1e-6`) before BH-FDR runs: a
+confidently-positive series can round `dsr_p_value` to exactly `1.0`, which
+without the floor would convert to an impossible `classical_p == 0.0` (and
+`board_fdr_confidence == 1.0`) — not a hypothetical, the strong-series case in
+`TestBoardLevelFdrWiring` hits it directly. Strategies with no finite
 `dsr_p_value` (no backtest data, degenerate series) are excluded from the
 correction and omitted from the result — never assigned a fabricated verdict,
 matching every other MISSING convention in this gate. Default `fdr_level =
-0.05`. Computed fresh on every `/gate` request over the exact cohort being
-served (same reconciliation pattern as `library_pbo`), so a rigor-cache hit
-can never serve a stale board composition's correction.
+rigor_evaluator.DEFAULT_BOARD_FDR_LEVEL` (`0.05`), independently chosen (BH
+convention) — NOT derived from the DSR badge's `dsr_p_min`. Computed fresh on
+every `/gate` request over the exact cohort being served (same reconciliation
+pattern as `library_pbo`), so a rigor-cache hit can never serve a stale board
+composition's correction.
 
 ## API surface
 

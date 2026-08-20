@@ -1289,28 +1289,49 @@ class TestBoardLevelFdrWiring:
 
     @pytest.mark.asyncio
     async def test_board_fdr_is_advisory_never_gates_passes_all(self, monkeypatch):
-        """Forcing compute_board_level_fdr to report every strategy as
-        board-FDR-NON-significant must not flip a single passes_all verdict —
-        the scope decision (compute_board_level_fdr's docstring) is annotation
-        only. This is the adversarial check: an implementation bug that
-        accidentally threaded board_fdr_significant into passes_all — whether
-        inside `_compute()` (the natural place #1185 names, where a board-level
-        correction would sit alongside the per-strategy gate) or in the
-        post-cache reconciliation block where the wiring actually lives today —
-        would be caught here by the verdicts changing when the forced value
-        flips.
+        """Forcing compute_board_level_fdr's output must not flip a single
+        passes_all verdict, in EITHER direction — the scope decision
+        (compute_board_level_fdr's docstring) is annotation only. This is the
+        adversarial check: an implementation bug that accidentally threaded
+        board_fdr_significant into passes_all — whether inside `_compute()`
+        (the natural place #1185 names, where a board-level correction would
+        sit alongside the per-strategy gate) or in the post-cache
+        reconciliation block where the wiring actually lives today — would be
+        caught here by the verdicts changing when the forced value flips.
 
-        Both requests must exercise a REAL (non-cached) `_compute()` run for
-        the `_compute()`-site case to be caught at all: `evaluate_rigor_gate`
-        memoizes `_compute()`'s result in `rigor_cache` keyed on
-        cohort+strictness+code, and the second request below uses the exact
-        same returns/strategies/strictness as the first — so without an
-        explicit `rigor_cache.clear()`, it is guaranteed to be a cache HIT,
-        `_compute()` never re-runs, and a bug living inside it would be
-        invisible to this test regardless of the forced monkeypatch (verified
-        by reverting the `clear()` call below and confirming this test still
-        passes against a `_compute()`-internal mutation that gates passes_all
-        on the forced board_fdr_significant — #1185 code review, 2026-08-20)."""
+        The cohort is deliberately MIXED: two strong-series strategies that
+        pass at baseline, one weak-series strategy that fails at baseline —
+        NOT the uniformly-passing cohort a prior version of this test used.
+        A uniform (all-True) cohort only exercises one threading direction:
+        forcing board_fdr_significant=False catches an AND-shaped bug
+        (`passes_all and board_fdr_significant`), because `True and <forced
+        False>` changes the verdict — but `True or <forced False>` does NOT,
+        so that exact setup is blind to an OR-shaped bug (`passes_all or
+        board_fdr_significant`), which is the LOOSENING direction and the one
+        that matters most on a rigor gate (a false PASS survives it, not a
+        false FAIL). Forcing all-True on the same uniform cohort would have
+        been equally blind, for the mirror-image reason. This version runs
+        BOTH forced values against a cohort containing both a baseline-True
+        and a baseline-False strategy, so:
+          - forcing ALL to board_fdr_significant=False catches the AND-shaped
+            bug (the baseline-True strategies would flip to False);
+          - forcing ALL to board_fdr_significant=True catches the OR-shaped
+            bug (the baseline-False strategy would flip to True).
+        (#1185 code review, 2026-08-20 — second round; the prior uniform-
+        cohort version of this test was itself a finding of that round.)
+
+        Every forced request must exercise a REAL (non-cached) `_compute()`
+        run for the `_compute()`-site case to be caught at all:
+        `evaluate_rigor_gate` memoizes `_compute()`'s result in `rigor_cache`
+        keyed on cohort+strictness+code, and each forced request below uses
+        the exact same returns/strategies/strictness as the baseline — so
+        without an explicit `rigor_cache.clear()` before each one, it is
+        guaranteed to be a cache HIT, `_compute()` never re-runs, and a bug
+        living inside it would be invisible to this test regardless of the
+        forced monkeypatch (verified by reverting the `clear()` calls below
+        and confirming this test still passes against a `_compute()`-internal
+        mutation that gates passes_all on the forced board_fdr_significant —
+        #1185 code review, 2026-08-20)."""
         from archimedes.api import selection_bias_routes as routes
         from archimedes.main import app
         from archimedes.services import rigor_cache
@@ -1318,52 +1339,67 @@ class TestBoardLevelFdrWiring:
         strategies = routes._provider().list_strategies()
         assert len(strategies) >= 3
         ids = [s.id for s in strategies[:3]]
+        # Two strong (baseline-passing) + one weak (baseline-failing): a
+        # uniform cohort cannot exercise both threading directions (see
+        # docstring above).
         returns = {
             ids[0]: self._strong_series(10),
             ids[1]: self._strong_series(11),
-            ids[2]: self._strong_series(12),
+            ids[2]: self._weak_series(12),
         }
         self._patch_returns(monkeypatch, returns)
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp_baseline = await client.get("/api/selection-bias/gate")
         assert resp_baseline.status_code == 200
-        baseline_passes = {r["strategy_id"]: r["passes_all"] for r in resp_baseline.json()["strategies"]}
-        baseline_min_level = {r["strategy_id"]: r["min_passing_level"] for r in resp_baseline.json()["strategies"]}
+        baseline_by_id = {r["strategy_id"]: r for r in resp_baseline.json()["strategies"]}
+        baseline_passes = {sid: baseline_by_id[sid]["passes_all"] for sid in ids}
+        baseline_min_level = {sid: baseline_by_id[sid]["min_passing_level"] for sid in ids}
 
-        # Force every strategy to be board-FDR non-significant (the maximally
-        # adversarial forced value — real corrections would rarely reject 100%).
-        monkeypatch.setattr(
-            routes,
-            "compute_board_level_fdr",
-            lambda dsr_p_values, fdr_level=0.05: {
-                sid: {"board_fdr_significant": False, "board_fdr_adjusted_p": 1.0}
-                for sid, p in dsr_p_values.items()
-                if p is not None
-            },
+        # Sanity: the cohort really is mixed under the REAL (unforced)
+        # correction — otherwise this test would silently degrade back into
+        # the uniform, one-directional case it was written to fix.
+        assert baseline_passes[ids[2]] is False, "weak-series strategy must fail at baseline for this guard to bite"
+        assert any(baseline_passes[sid] for sid in ids[:2]), (
+            "at least one strong-series strategy must pass at baseline for this guard to bite"
         )
 
-        # Force a real recompute for the second request. Without this, the
-        # second call has the IDENTICAL cache_key (same strategy_ids, same
-        # patched returns, same code_versions, same strictness) as the first
-        # and is guaranteed to be a rigor_cache HIT — `_compute()` would never
-        # re-run, and this test would be blind to any bug living inside it
-        # (see docstring above).
-        rigor_cache.clear()
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp_forced = await client.get("/api/selection-bias/gate")
-        assert resp_forced.status_code == 200
-        forced_by_id = {r["strategy_id"]: r for r in resp_forced.json()["strategies"]}
-
-        # The forced patch DID take effect (sanity check the patch is live)...
-        for sid in ids:
-            assert forced_by_id[sid]["board_fdr_significant"] is False
-            assert forced_by_id[sid]["board_fdr_adjusted_p"] == pytest.approx(1.0)
-        # ...yet every passes_all / min_passing_level verdict is byte-identical
-        # to the baseline where the real correction ran.
-        for sid in ids:
-            assert forced_by_id[sid]["passes_all"] == baseline_passes[sid], (
-                f"board_fdr_significant must never gate passes_all (strategy {sid})"
+        for forced_value, bug_direction in [(False, "AND-shaped"), (True, "OR-shaped")]:
+            # Force every strategy to the same board-FDR verdict. `_v=forced_value`
+            # binds the loop variable per-lambda (default-arg trick), avoiding the
+            # classic late-binding-closure bug across the two iterations.
+            monkeypatch.setattr(
+                routes,
+                "compute_board_level_fdr",
+                lambda dsr_p_values, fdr_level=0.05, _v=forced_value: {
+                    sid: {"board_fdr_significant": _v, "board_fdr_adjusted_p": 0.0 if _v else 1.0}
+                    for sid, p in dsr_p_values.items()
+                    if p is not None
+                },
             )
-            assert forced_by_id[sid]["min_passing_level"] == baseline_min_level[sid]
+
+            # Force a real recompute for this forced request. Without this,
+            # the call has the IDENTICAL cache_key (same strategy_ids, same
+            # patched returns, same code_versions, same strictness) as the
+            # baseline and is guaranteed to be a rigor_cache HIT — `_compute()`
+            # would never re-run, and this test would be blind to any bug
+            # living inside it (see docstring above).
+            rigor_cache.clear()
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp_forced = await client.get("/api/selection-bias/gate")
+            assert resp_forced.status_code == 200
+            forced_by_id = {r["strategy_id"]: r for r in resp_forced.json()["strategies"]}
+
+            # The forced patch DID take effect (sanity check the patch is live)...
+            for sid in ids:
+                assert forced_by_id[sid]["board_fdr_significant"] is forced_value
+                assert forced_by_id[sid]["board_fdr_adjusted_p"] == pytest.approx(0.0 if forced_value else 1.0)
+            # ...yet every passes_all / min_passing_level verdict is byte-identical
+            # to the baseline where the real correction ran, in EITHER direction.
+            for sid in ids:
+                assert forced_by_id[sid]["passes_all"] == baseline_passes[sid], (
+                    f"board_fdr_significant must never gate passes_all "
+                    f"({bug_direction} bug, strategy {sid}, forced={forced_value})"
+                )
+                assert forced_by_id[sid]["min_passing_level"] == baseline_min_level[sid]
