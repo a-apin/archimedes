@@ -46,7 +46,12 @@ contract PythAdapter is AggregatorV3Interface {
     int32 internal constant MIN_EXPO = -77;
     int32 internal constant MAX_EXPO = 49;
 
+    error ZeroPyth();
+    error ZeroFeedId();
+
     constructor(address _pyth, bytes32 _feedId) {
+        if (_pyth == address(0)) revert ZeroPyth();
+        if (_feedId == bytes32(0)) revert ZeroFeedId();
         pyth = IPyth(_pyth);
         feedId = _feedId;
     }

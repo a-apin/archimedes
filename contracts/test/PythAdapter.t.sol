@@ -45,6 +45,19 @@ contract PythAdapterTest is Test {
         assertEq(adapter.decimals(), 8);
     }
 
+    // Constructor zero-guards — parity with the sibling StorkAggregatorV3Adapter
+    // (#1153 review): a zero pyth address or feed id can only ever be a
+    // deploy-script bug; revert at construction, not at first read.
+    function test_revert_zero_pyth_address() public {
+        vm.expectRevert(PythAdapter.ZeroPyth.selector);
+        new PythAdapter(address(0), FEED_ID);
+    }
+
+    function test_revert_zero_feed_id() public {
+        vm.expectRevert(PythAdapter.ZeroFeedId.selector);
+        new PythAdapter(address(pyth), bytes32(0));
+    }
+
     function test_latestRoundData_exponent_minus_8() public view {
         (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound) = adapter.latestRoundData();
         assertEq(roundId, 1);
