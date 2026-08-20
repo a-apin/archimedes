@@ -151,6 +151,45 @@ class TestTokenVaultLookupFailureNoLegacyFallback:
         assert any("tokenVault lookup failed" in r.message for r in caplog.records)
 
 
+class TestLookupFailureWithExistingBalance:
+    """Reviewer-specified regression (PR #1377 round 2): a failed/zero
+    tokenVault() lookup must not stomp a real existing balance to 0.0 on a
+    rerun. The existing-balance check needs only token_addr + wallet (never
+    vault_addr), so it must run BEFORE the hard-skip-on-unresolved-vault_addr
+    decision — otherwise a rerun where the wallet already holds tokens from
+    a prior successful run, hitting one transient tokenVault() RPC failure,
+    records minted[symbol]=0.0 despite a real on-chain balance, and
+    fund_and_allocate_vaults() then silently zero-funds that symbol into
+    every new vault."""
+
+    def test_lookup_exception_with_existing_balance_uses_real_balance(self):
+        """tokenVault() raises AND balanceOf shows a real existing balance
+        (from a prior successful run) → minted[symbol] equals the existing
+        balance, not 0.0, and no mint is broadcast."""
+        mock_cc = _base_mocks()
+        factory = MagicMock()
+        factory.functions.tokenVault.return_value.call = AsyncMock(side_effect=RuntimeError("RPC down"))
+        loader = MagicMock()
+        loader.synthetic_factory = factory
+        # Wallet already holds 12.5 sTSLA from a prior successful run.
+        loader.token.return_value.functions.balanceOf.return_value.call = AsyncMock(return_value=int(12.5 * 1e18))
+
+        with (
+            patch("archimedes.scripts.bootstrap_vaults.MINT_BUDGET", {"sTSLA": 30}),
+            patch("archimedes.scripts.bootstrap_vaults.get_contract_loader", return_value=loader),
+            patch("archimedes.scripts.bootstrap_vaults.chain_client", mock_cc),
+            patch("archimedes.scripts.bootstrap_vaults.circle_signer") as mock_signer,
+            patch.dict(os.environ, {"WALLET_ADDRESS": "0xWallet"}, clear=False),
+        ):
+            os.environ.pop("BOOTSTRAP_ALLOW_LEGACY_VAULTS", None)
+            mock_signer.execute_contract = AsyncMock(return_value="0xtxhash")
+
+            minted = asyncio.run(mint_synthetic_tokens())
+
+        mock_signer.execute_contract.assert_not_awaited()
+        assert minted["sTSLA"] == 12.5
+
+
 class TestLegacyFallbackRequiresExplicitOptIn:
     """The legacy address dict must never engage without BOOTSTRAP_ALLOW_LEGACY_VAULTS=1."""
 

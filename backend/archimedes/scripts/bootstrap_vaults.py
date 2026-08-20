@@ -181,6 +181,28 @@ async def mint_synthetic_tokens() -> dict[str, float]:
             continue
 
         token_addr = synth_addresses[symbol]
+
+        # Check existing balance FIRST — this only needs token_addr + wallet,
+        # never vault_addr, so it must run before any vault_addr resolution
+        # or hard-skip decision below. Rerun semantics (#1377 round 2): if
+        # the wallet already holds tokens from a prior successful run, a
+        # transient tokenVault() lookup failure (or a briefly-unset
+        # ARC_SYNTHETIC_FACTORY_ADDRESS) must NOT record minted[symbol]=0.0
+        # over a real balance — that would silently zero-fund this symbol
+        # into every vault created below with no diagnostic. Only fall
+        # through to the "no live vault, skipping" path when there is no
+        # usable existing balance either.
+        try:
+            token = get_contract_loader().token(token_addr)
+            existing = await token.functions.balanceOf(chain_client.to_checksum(wallet)).call()
+            existing_float = existing / 1e18
+            if existing_float > 0.001:
+                print(f"  ⏭️  {symbol}: already have {existing_float:.4f} — skipping mint")
+                minted[symbol] = existing_float
+                continue
+        except Exception:
+            logger.debug("existing synth balance check failed", exc_info=True)
+
         # Query SyntheticFactory on-chain for the vault address (#1102 SSOT)
         vault_addr = None
         try:
@@ -201,6 +223,9 @@ async def mint_synthetic_tokens() -> dict[str, float]:
             # offline/test fixtures that deliberately want it; it must never
             # engage on a real box (which would only reach here if
             # ARC_SYNTHETIC_FACTORY_ADDRESS is unset or the lookup reverted).
+            # Note: we only reach here when the existing-balance check above
+            # found nothing usable — never mint/approve/broadcast against a
+            # guessed or unresolved vault address either way.
             vault_addr = None
             if os.getenv("BOOTSTRAP_ALLOW_LEGACY_VAULTS") == "1":
                 legacy_fallback = {
@@ -219,24 +244,14 @@ async def mint_synthetic_tokens() -> dict[str, float]:
                     f"  ❌ {symbol}: no live SyntheticVault address (tokenVault() lookup "
                     f"failed or returned zero) — skipping rather than guessing an address. "
                     f"Set BOOTSTRAP_ALLOW_LEGACY_VAULTS=1 to opt into the legacy fallback "
-                    f"addresses for offline/test use only."
+                    f"addresses for offline/test use only. No usable existing balance was "
+                    f"found for {symbol} either, so minted[{symbol!r}]=0.0 — downstream "
+                    f"vault funding for this symbol will be silently skipped unless corrected."
                 )
                 minted[symbol] = 0.0
                 continue
 
         usdc_int = int(usdc_amount * 1e6)  # USDC has 6 decimals
-
-        # Check existing balance first
-        try:
-            token = get_contract_loader().token(token_addr)
-            existing = await token.functions.balanceOf(chain_client.to_checksum(wallet)).call()
-            existing_float = existing / 1e18
-            if existing_float > 0.001:
-                print(f"  ⏭️  {symbol}: already have {existing_float:.4f} — skipping mint")
-                minted[symbol] = existing_float
-                continue
-        except Exception:
-            logger.debug("existing synth balance check failed", exc_info=True)
 
         try:
             # Approve USDC for the synth vault
@@ -375,6 +390,13 @@ async def fund_and_allocate_vaults(vaults: list[dict], minted: dict[str, float])
 
             token_addr = synth_addresses.get(symbol)
             if not token_addr or minted.get(symbol, 0) <= 0:
+                # Loud, not silent: this symbol will end up unfunded in this
+                # vault with no trace of why (missing SSOT address vs. a
+                # zero/failed mint upstream) unless we say so here.
+                print(
+                    f"  ⚠️  {vault_info['symbol']}: no {symbol} to fund (token_addr="
+                    f"{token_addr!r}, minted={minted.get(symbol, 0)}) — leaving allocation unfunded"
+                )
                 continue
 
             # Transfer 1/n of minted tokens to this vault
