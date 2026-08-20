@@ -303,6 +303,78 @@ async def test_leaderboard_reports_degraded_when_provider_raises():
     assert body["degraded_reason"]
 
 
+async def test_leaderboard_reports_degraded_when_corpus_missing_from_build():
+    """#1356: an empty (non-raising) curated cohort must still say WHY —
+    count_strategy_files()==0 is the #1039 corpus-missing-from-build signal
+    /health already reports; the board must say the same thing rather than
+    render a confident "0 strategies" indistinguishable from a genuinely
+    empty corpus."""
+    from unittest.mock import MagicMock, patch
+
+    from archimedes.main import app
+    from httpx import ASGITransport, AsyncClient
+
+    empty_provider = MagicMock()
+    empty_provider.list_strategies.return_value = []
+
+    with (
+        patch("archimedes.api.leaderboard_routes.strategy_provider", return_value=empty_provider),
+        patch("archimedes.api.strategies_routes._public_generated_strategy_responses", return_value=[]),
+        patch("archimedes.services.strategy_provider.count_strategy_files", return_value=0),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/leaderboard?scope=curated")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded"] is True
+    assert body["degraded_reason"] == "strategy corpus not found in build"
+
+
+async def test_leaderboard_reports_degraded_when_curated_cohort_empty_but_corpus_present():
+    """Same empty-cohort path, but count_strategy_files() > 0 — the corpus IS
+    present in the build, yet the cohort still came back empty (e.g. every
+    file failed to parse, or filtered to nothing). Must be distinguished from
+    the #1039 corpus-missing reason so an operator isn't sent chasing the
+    wrong root cause."""
+    from unittest.mock import MagicMock, patch
+
+    from archimedes.main import app
+    from httpx import ASGITransport, AsyncClient
+
+    empty_provider = MagicMock()
+    empty_provider.list_strategies.return_value = []
+
+    with (
+        patch("archimedes.api.leaderboard_routes.strategy_provider", return_value=empty_provider),
+        patch("archimedes.api.strategies_routes._public_generated_strategy_responses", return_value=[]),
+        patch("archimedes.services.strategy_provider.count_strategy_files", return_value=5),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/leaderboard?scope=curated")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded"] is True
+    assert body["degraded_reason"] == "curated strategy cohort is empty"
+
+
+async def test_leaderboard_not_degraded_when_curated_cohort_has_real_strategies():
+    """Negative case: a populated, non-raising curated cohort must NOT be
+    marked degraded — the empty-cohort branches above must not fire when
+    there is real data."""
+    from archimedes.main import app
+    from httpx import ASGITransport, AsyncClient
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/leaderboard?scope=curated")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["entries"]) > 0, "test corpus must have real curated strategies for this assertion to be meaningful"
+    assert body["degraded"] is False
+
+
 async def test_leaderboard_batches_rigor_gate_once(monkeypatch):
     """Regression for #912: the public leaderboard must run the rigor gate ONCE
     over the whole cohort (batch), not recompute it per strategy. The per-

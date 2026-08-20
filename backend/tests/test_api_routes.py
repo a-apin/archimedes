@@ -398,6 +398,38 @@ class TestStrategyRoutes:
         assert data["degraded"] is True
         assert data["degraded_reason"]
 
+    def test_list_strategies_reports_degraded_when_corpus_missing_from_build(self, client):
+        """#1356: an empty (non-raising) library must still say WHY —
+        count_strategy_files()==0 is the #1039 corpus-missing-from-build
+        signal /health already reports; this route must say the same thing
+        rather than render a confident "0 strategies" indistinguishable from
+        a genuinely empty library."""
+        empty_provider = MagicMock()
+        empty_provider.list_strategies.return_value = []
+
+        with (
+            patch("archimedes.api.strategies_routes.strategy_provider", return_value=empty_provider),
+            patch("archimedes.services.strategy_provider.count_strategy_files", return_value=0),
+        ):
+            resp = client.get("/api/strategies/")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["strategies"] == []
+        assert data["total"] == 0
+        assert data["degraded"] is True
+        assert data["degraded_reason"] == "strategy corpus not found in build"
+
+    def test_list_strategies_not_degraded_when_library_populated(self, client, seeded_db):
+        """Negative case: a populated, non-raising library must NOT be marked
+        degraded — the empty-cohort branch above must not fire when there is
+        real data."""
+        resp = client.get("/api/strategies/")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] > 0, "seeded_db must provide real strategies for this assertion to be meaningful"
+        assert data["degraded"] is False
+
 
 class TestRiskRoutes:
     def test_risk_profiles(self, client):
