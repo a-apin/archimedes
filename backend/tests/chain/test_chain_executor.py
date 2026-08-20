@@ -838,8 +838,11 @@ class TestPriceBaselineWrite:
 
         fake_redis.set.assert_awaited_once()
         args, kwargs = fake_redis.set.call_args
-        assert args[0] == "vault:prices:0xVault"
-        assert json.loads(args[1]) == {tsla: pytest.approx(123.45)}
+        # Key AND token keys are normalized lowercase (services/price_baseline —
+        # the same helpers the reader uses), so mixed-case addresses can never
+        # split the writer/reader pair (#1201 review).
+        assert args[0] == "vault:prices:0xvault"
+        assert json.loads(args[1]) == {tsla.lower(): pytest.approx(123.45)}
         # NX: only the FIRST call for a vault may take effect — set_target_allocations
         # fires every agent tick, and overwriting the baseline on a later tick
         # would drift creation_price to match current_price and permanently
@@ -858,7 +861,7 @@ class TestPriceBaselineWrite:
 
         mock_loader.oracle_for.assert_not_called()
         args, _kwargs = fake_redis.set.call_args
-        assert json.loads(args[1]) == {usdc: 1.0}
+        assert json.loads(args[1]) == {usdc.lower(): 1.0}
 
     @pytest.mark.asyncio
     async def test_redis_failure_does_not_raise_or_block_allocation_set(self, executor, mock_loader):

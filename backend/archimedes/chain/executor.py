@@ -937,24 +937,30 @@ class ChainExecutor:
 
             import redis.asyncio as _aioredis
 
+            from archimedes.services.price_baseline import baseline_key, normalize_token
+
             usdc = chain_client.settings.usdc_address.lower()
             addr_to_symbol = {addr.lower(): sym for sym, addr in chain_client.settings.synth_addresses.items()}
 
+            # Snapshot keys are ALWAYS the normalized (lowercase) token address —
+            # the reader looks tokens up the same way (price_baseline module), so
+            # a checksummed caller-side address can never make a priced token
+            # read back as "no baseline" (#1201 review).
             prices: dict[str, float] = {}
             for token, weight in zip(tokens, weights_bps, strict=False):
                 if weight <= 0:
                     continue
-                token_lower = token.lower()
+                token_lower = normalize_token(token)
                 try:
                     if token_lower == usdc:
-                        prices[token] = 1.0
+                        prices[token_lower] = 1.0
                         continue
                     symbol = addr_to_symbol.get(token_lower)
                     if symbol is None:
                         continue  # unknown token — no oracle to price it against
                     oracle = self.loader.oracle_for(symbol)
                     raw = await oracle.functions.price().call()
-                    prices[token] = raw / 1e6
+                    prices[token_lower] = raw / 1e6
                 except Exception:
                     logger.debug(
                         "baseline price read failed for token %s on vault %s",
@@ -973,7 +979,7 @@ class ChainExecutor:
             )
             r = _aioredis.from_url(redis_url, decode_responses=True)
             try:
-                wrote = await r.set(f"vault:prices:{vault_address}", _json.dumps(prices), nx=True)
+                wrote = await r.set(baseline_key(vault_address), _json.dumps(prices), nx=True)
                 if wrote:
                     logger.info("Wrote price baseline for vault %s (%d tokens)", vault_address, len(prices))
             finally:

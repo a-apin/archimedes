@@ -346,12 +346,16 @@ class VaultService:
             )
             await r.ping()
 
-            snapshot_key = f"vault:prices:{vault_address}"
-            snapshot = await r.get(snapshot_key)
+            from archimedes.services.price_baseline import baseline_key, normalize_token
+
+            snapshot = await r.get(baseline_key(vault_address))
             if not snapshot:
                 return unavailable
 
-            prices_at_baseline = json.loads(snapshot)
+            # Normalize the loaded token keys too — same helper the writer uses,
+            # so mixed-case addresses can never make a priced token look
+            # baseline-less (#1201 review).
+            prices_at_baseline = {normalize_token(k): v for k, v in json.loads(snapshot).items()}
 
             from archimedes.chain.contracts import get_contract_loader
 
@@ -364,11 +368,14 @@ class VaultService:
                 if weight == 0:
                     continue
 
-                baseline_price = prices_at_baseline.get(alloc.token_address)
+                baseline_price = prices_at_baseline.get(normalize_token(alloc.token_address))
                 if baseline_price is None or baseline_price <= 0:
-                    # No baseline for this specific token — don't guess its
-                    # contribution, just leave it out of the weighted sum.
-                    continue
+                    # No baseline for an allocated token: the whole computation
+                    # is unanswerable, not "answerable minus this token" — a
+                    # partial weighted sum silently pretends the missing token
+                    # returned 0% while still labeling the result
+                    # "oracle_baseline" (#1201 review). Unavailable, honestly.
+                    return unavailable
 
                 symbol = alloc.symbol
                 try:
@@ -379,7 +386,10 @@ class VaultService:
                         current_raw = await oracle.functions.price().call()
                         current_price = current_raw / 1e6
                 except Exception:
-                    continue
+                    # Same reasoning as the missing-baseline branch: a failed
+                    # CURRENT-price read for an allocated token makes the whole
+                    # number unknowable — never a partial sum.
+                    return unavailable
 
                 total_weight += weight
                 asset_return = (current_price - baseline_price) / baseline_price
@@ -388,11 +398,16 @@ class VaultService:
             if total_weight == 0:
                 return unavailable
 
-            # Scale to different periods (assume uniform for now).
+            # One baseline yields exactly ONE honest number: return since the
+            # baseline was written (inception). The previous "assume uniform"
+            # scaling (24h = 3.3% of inception, 7d = 23.3%) synthesized period
+            # returns no data supports — the same fabrication class #1103
+            # exists to kill. Periods we cannot measure are None, and the UI
+            # renders them as unavailable.
             return {
-                "return_24h": round(weighted_return * 0.033, 4),
-                "return_7d": round(weighted_return * 0.233, 4),
-                "return_30d": round(weighted_return, 4),
+                "return_24h": None,
+                "return_7d": None,
+                "return_30d": None,
                 "return_inception": round(weighted_return, 4),
                 "returns_source": "oracle_baseline",
             }
