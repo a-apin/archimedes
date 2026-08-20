@@ -81,6 +81,14 @@ async def list_traces(
         from archimedes.chain.trace_publisher import trace_publisher
 
         traces: list[TraceResponse] = []
+        # Real registry size (#1356): read once up front so it survives even
+        # if a later per-trace fetch in the loop fails partway through. The
+        # old code returned `total=len(traces)` here, which is the CURRENT
+        # PAGE size (capped at `limit`), not the registry size — pagination
+        # reported a smaller universe than actually exists. `total_count` is
+        # the value this route promises callers via `start`/`end` below; it
+        # must be the same value in the response.
+        total_count = 0
         try:
             total_count = await trace_publisher.get_total_trace_count()
             start = max(1, total_count - offset - limit + 1)
@@ -100,7 +108,13 @@ async def list_traces(
                     TraceResponse(
                         id=str(trace_id),
                         vault_address=detail["vault"],
-                        decision_type="rebalance",
+                        # "unknown", not "rebalance" (#1356): the on-chain
+                        # anchor does not record which decision type
+                        # produced it, so asserting "rebalance" for every
+                        # trace on this path is an invented fact. "unknown"
+                        # is the same default the off-chain path already
+                        # uses when its own data lacks the field.
+                        decision_type="unknown",
                         trigger="on-chain",
                         timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
                         reasoning="On-chain trace (off-chain metadata not available)",
@@ -112,7 +126,7 @@ async def list_traces(
         except Exception:
             logger.debug("on-chain trace listing failed", exc_info=True)
 
-        return TraceListResponse(traces=traces, total=len(traces))
+        return TraceListResponse(traces=traces, total=total_count)
     finally:
         await state.close()
 
@@ -171,7 +185,10 @@ async def get_trace(trace_id: str):
         return TraceResponse(
             id=trace_id,
             vault_address=detail["vault"],
-            decision_type="rebalance",
+            # "unknown", not "rebalance" — see the identical note on the list
+            # route above (#1356). The on-chain anchor doesn't record which
+            # decision type produced it.
+            decision_type="unknown",
             trigger="on-chain",
             timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
             reasoning="On-chain trace (off-chain metadata not available)",
@@ -297,11 +314,19 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
         try:
             off_chain = await state.get_trace(trace_id)
         except Exception:
-            logger.warning(
-                "verify_trace: Redis unavailable — falling back to on-chain-only verification", exc_info=True
-            )
-            off_chain = None
+            # A Redis outage is a loud absence, not a verification result
+            # (CLAUDE.md § fail-soft) — mirrors get_trace_canonical's 503
+            # below. Previously this exception was swallowed and fell
+            # through to the "no off-chain data" branch, which returns
+            # is_verified=True with zero hashes compared — an outage was
+            # silently upgrading every trace to a green check (#1359).
+            logger.warning("verify_trace: Redis unavailable — cannot verify without the store", exc_info=True)
+            raise HTTPException(
+                status_code=503, detail="Trace store temporarily unavailable — retry verification."
+            ) from None
         if not off_chain:
+            # The store IS reachable and simply has no record for this id —
+            # the only case allowed to report anchored_only.
             try:
                 int_id = int(trace_id)
             except ValueError:
@@ -315,14 +340,16 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
                 trace_id=int_id,
                 trace_hash=detail["trace_hash"],
                 is_verified=True,
+                verification_mode="anchored_only",
                 agent=detail["agent"],
                 vault=detail["vault"],
                 on_chain_timestamp=detail["timestamp"],
-                details="Hash is anchored on-chain (no off-chain data to recompute against)",
+                details="Hash is anchored on-chain — no off-chain trace body was stored, so no hashes were compared",
             )
 
         trace_hash = off_chain.get("trace_hash", "")
         is_verified = False
+        verification_mode = "failed"
         agent = ""
         vault = off_chain.get("vault_address", "")
         on_chain_ts = 0
@@ -345,6 +372,7 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
                     on_chain = detail["trace_hash"].removeprefix("0x").lower()
                     if expected and expected == on_chain:
                         is_verified = True
+                        verification_mode = "hash_matched"
                         agent = detail["agent"]
                         on_chain_ts = detail["timestamp"]
                         # Keep vault as recorded off-chain; surface the on-chain
@@ -361,6 +389,7 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
             trace_id=int(trace_id) if trace_id.isdigit() else 0,
             trace_hash=trace_hash,
             is_verified=is_verified,
+            verification_mode=verification_mode,
             agent=agent,
             vault=vault,
             on_chain_timestamp=on_chain_ts,

@@ -10,6 +10,7 @@ import { ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
 import { apiGet, apiPost, apiDelete } from '../api'
 import { compactCostCell } from '../generationCost.js'
 import { signClass } from '../signClass.js'
+import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
 
 // A compact "deployable at your level" chip for a library row, driven by the
 // strategy's min_passing_level (from the live gate) and the user's strictness.
@@ -644,6 +645,15 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
   const [published, setPublished] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
+  // Per-feed failure messages (#1356): genRes/gateRes/publishedRes failing
+  // used to be silently swallowed — the generated panel painted "No
+  // generated strategies yet" (a different, false claim from "the fetch
+  // failed"), every deployability chip vanished with no signal, and
+  // Published painted "Nothing published yet". Each gets its own visible,
+  // near-the-panel error instead.
+  const [genError, setGenError] = useState('')
+  const [gateError, setGateError] = useState('')
+  const [publishedError, setPublishedError] = useState('')
   // Per-user rigor strictness (shared with the Passport slider via localStorage).
   const [level, setLevel] = useRigorStrictness()
   // {strategy_id: {min_passing_level, blocked_by_floor}} from the live gate —
@@ -684,6 +694,9 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
   const load = useCallback(async () => {
     setLoading(true)
     setLoadError('')
+    setGenError('')
+    setGateError('')
+    setPublishedError('')
     try {
       // Published is a hidden roadmap surface (#1266/#1324) — its fetch must
       // not fire with the flag off, not just its tab stay unclickable.
@@ -698,11 +711,28 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
           (a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status)
         )
         setExamples(sorted)
+        // A 2xx response can still mean the fetch failed: the backend swallows a
+        // provider exception into `degraded: true` with an empty list rather than
+        // a 500 (#1356's own fix, applied to this same route) so a fulfilled
+        // promise is not proof of a real empty library — check the flag before
+        // trusting the empty state.
+        if (seedRes.value.degraded) {
+          setLoadError(seedRes.value.degraded_reason || 'Failed to load examples')
+        }
       } else {
         setLoadError(seedRes.reason?.message || 'Failed to load examples')
       }
       if (genRes.status === 'fulfilled') {
         setGenerated((genRes.value.strategies || []).map(coerceGenerated))
+        // Same fulfilled-but-degraded shape as seedRes above (#1356 review
+        // round 2): the backend swallows a store exception into a 200 with
+        // `degraded: true` rather than a 500, so a fulfilled promise alone
+        // is not proof the fetch actually succeeded.
+        if (genRes.value.degraded) {
+          setGenError(genRes.value.degraded_reason || 'Failed to load generated strategies')
+        }
+      } else {
+        setGenError(genRes.reason?.message || 'Failed to load generated strategies')
       }
       if (gateRes.status === 'fulfilled') {
         const map = {}
@@ -710,11 +740,14 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
           map[r.strategy_id] = { min_passing_level: r.min_passing_level, blocked_by_floor: r.blocked_by_floor }
         }
         setDeployMap(map)
+      } else {
+        setGateError(gateRes.reason?.message || 'Failed to load deployability status')
       }
       if (publishedRes.status === 'fulfilled') {
         setPublished(Array.isArray(publishedRes.value) ? publishedRes.value : [])
+      } else {
+        setPublishedError(publishedRes.reason?.message || 'Failed to load published strategies')
       }
-      // Generated tab + gate + published failing are non-fatal — empty state is the honest fallback.
     } finally {
       setLoading(false)
     }
@@ -748,7 +781,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
           aria-pressed={activeTab === 'generated'}
           onClick={() => setActiveTab('generated')}
         >
-          Generated ({generated.length})
+          Generated ({genError ? '—' : generated.length})
         </button>
         <button
           type="button"
@@ -756,7 +789,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
           aria-pressed={activeTab === 'examples'}
           onClick={() => setActiveTab('examples')}
         >
-          Examples ({examples.length})
+          Examples ({loadError ? '—' : examples.length})
         </button>
         {/* Published leads into the marketplace surface #1266 hid — hides
             with it (#1324). Anti-goal: gating render alone without gating
@@ -775,23 +808,51 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
 
       {loadError && (
         <div className="info-box warning mb-4">
-          Couldn't load library: {loadError}
+          Couldn't load library: {loadError}{' '}
+          <button type="button" className="btn btn-sm btn-outline" onClick={load} style={{ marginLeft: 4 }}>
+            Retry
+          </button>
         </div>
       )}
 
-      {activeTab === 'generated' && (() => {
-        // Split generated strategies by rigor verdict so the main table only
-        // shows what passed (the wedge: "the Library is a quality filter, not
-        // a junk drawer"). Rejected candidates stay accessible in a collapsed
-        // section below so the user can inspect *why* they failed — honest
-        // rather than hidden, but visually de-prioritised.
-        const passing = generated.filter(s => s.passes_rigor_gate === true)
-        const rejected = generated.filter(s => s.passes_rigor_gate === false)
-        const pending = generated.filter(s => s.passes_rigor_gate == null)
-        const mainTableStrategies = [...passing, ...pending]
-        return (
-          <>
-            <StrategyTable
+      {activeTab === 'generated' && (
+        <>
+          {/* The gate feed is independent of the generated-strategies feed: a
+              gate failure alone used to leave deployMap at {} with no
+              signal — DeployabilityChip short-circuits to `null` for every
+              row (:14), so every chip silently vanished (#1356). This banner
+              is the visible signal that replaces that silence, near the
+              chips it describes. */}
+          {gateError && (
+            <div className="info-box warning mb-3">
+              Deployability status unavailable: {gateError}. Chips below may not reflect the live gate.{' '}
+              <button type="button" className="btn btn-sm btn-outline" onClick={load} style={{ marginLeft: 4 }}>
+                Retry
+              </button>
+            </div>
+          )}
+          {loading ? (
+            <div className="caption mb-4">Loading…</div>
+          ) : genError ? (
+            <div className="info-box warning mb-4">
+              Couldn't load generated strategies: {genError}{' '}
+              <button type="button" className="btn btn-sm btn-outline" onClick={load} style={{ marginLeft: 4 }}>
+                Retry
+              </button>
+            </div>
+          ) : (() => {
+            // Split generated strategies by rigor verdict so the main table only
+            // shows what passed (the wedge: "the Library is a quality filter, not
+            // a junk drawer"). Rejected candidates stay accessible in a collapsed
+            // section below so the user can inspect *why* they failed — honest
+            // rather than hidden, but visually de-prioritised.
+            const passing = generated.filter(s => s.passes_rigor_gate === true)
+            const rejected = generated.filter(s => s.passes_rigor_gate === false)
+            const pending = generated.filter(s => s.passes_rigor_gate == null)
+            const mainTableStrategies = [...passing, ...pending]
+            return (
+              <>
+                <StrategyTable
               strategies={mainTableStrategies}
               highlightStrategyId={highlightStrategyId}
               onOpenRigorExplainer={openRigorExplainer}
@@ -822,8 +883,9 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                       appear here once they've been backtested + cleared the rigor gate.
                     </p>
                     <p className="caption" style={{ color: 'var(--text-3)' }}>
-                      Generations in flight show in the agent activity feed on Portfolio and
-                      Reasoning. They land in this table once the rigor gate clears.
+                      {ROADMAP_SURFACES_ENABLED
+                        ? ROADMAP_COPY.emptyLibraryNoteRoadmap
+                        : 'Generations in flight show in the agent activity feed on Reasoning. They land in this table once the rigor gate clears.'}
                     </p>
                   </div>
                 )
@@ -864,9 +926,11 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                 </div>
               </details>
             )}
-          </>
-        )
-      })()}
+              </>
+            )
+          })()}
+        </>
+      )}
 
       {activeTab === 'examples' && (
         <>
@@ -878,7 +942,13 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
             path of Generate picks and weights from.
           </div>
           {loading && <div className="caption mb-4">Loading…</div>}
-          {!loading && (
+          {/* Gated on !loadError, matching the Published branch below (#1356
+              review round 2): loadError is set from the seed route's own
+              `degraded` flag on a *fulfilled* response (see load() above), so
+              without this gate a degraded fetch painted the loadError banner
+              at :815 AND the false "No example strategies loaded." empty
+              state simultaneously — the exact claim #1356 was filed against. */}
+          {!loading && !loadError && (
             <StrategyTable
               strategies={examples}
               highlightStrategyId={highlightStrategyId}
@@ -899,7 +969,15 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
             you approve can mirror trades from your vault.
           </div>
           {loading && <div className="caption mb-4">Loading…</div>}
-          {!loading && (
+          {!loading && publishedError && (
+            <div className="info-box warning mb-4">
+              Couldn't load published strategies: {publishedError}{' '}
+              <button type="button" className="btn btn-sm btn-outline" onClick={load} style={{ marginLeft: 4 }}>
+                Retry
+              </button>
+            </div>
+          )}
+          {!loading && !publishedError && (
             <StrategyTable
               strategies={published}
               highlightStrategyId={highlightStrategyId}

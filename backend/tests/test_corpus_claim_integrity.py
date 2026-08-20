@@ -1,4 +1,4 @@
-"""Claim-integrity guards for the corpus surface (issue #778).
+"""Claim-integrity guards for the corpus surface (issue #778, extended by #1368).
 
 Adjudicated against production on 2026-08-19: the ``papers`` table holds 10,000 rows
 with title + abstract, **no embedding column exists anywhere in the schema**,
@@ -8,7 +8,7 @@ knowledge graph exists. ``paper_rag.py`` itself is honest — it reports a runti
 (``live | degraded | disabled``) — but the prose around it had drifted into asserting
 embedded-at-ingest storage and live semantic retrieval as standing facts.
 
-Two guards, both hermetic (no network, no DB, no Redis, no ``.env``):
+Three guards, all hermetic (no network, no DB, no Redis, no ``.env``):
 
 1. **Prose guard** — the public surfaces listed in ``PUBLIC_SURFACES`` must not contain the
    claim-shapes in ``OVERCLAIM_PATTERNS``: that the corpus is embedded, that retrieval is
@@ -16,16 +16,24 @@ Two guards, both hermetic (no network, no DB, no Redis, no ``.env``):
    (see ``find_overclaims``), so the way to describe the gap is to name what runs — the UI
    now quotes ``/health``'s ``paper_rag`` field and lets it say which scorer is active.
 
-2. **Honest-endpoint guard** — with no KB artifact, ``GET /api/corpus/graph`` must fail with
+2. **UI claim-literal guard** (added #1368) — ``FORBIDDEN_UI_LITERALS`` bans specific bare
+   strings ("Knowledge Graph" as a tab label, "10,000 papers" with no qualifier, "No entities
+   found." as a KG zero-state) that the prose guard structurally cannot see because they
+   carry no claim-verb. A visitor reading a permanent "Knowledge Graph" tab over a 0-row
+   table, or "0 entities / 0 relations" indistinguishable from "your query matched nothing,"
+   forms the same false impression a prose over-claim would — the guard just needs a
+   different shape to catch it.
+
+3. **Honest-endpoint guard** — with no KB artifact, ``GET /api/corpus/graph`` must fail with
    a 503 naming ``kb_artifact_not_found`` rather than synthesising a graph, and
    ``GET /api/corpus/kg/entities`` must return empty entity/relation sets (it does *not*
    503 — overstating that would be the same defect pointing the other way). The README and
    ``docs/architecture.md`` now assert both behaviours in prose, so both are pinned here
    instead of trusted.
 
-Each guard carries its own anti-vacuity coverage: every prose pattern must reject a
-canonical example, every declared surface file must exist, and the 503 assertion is shown
-to be conditional (artifacts present ⇒ 200) and to reject a synthesising route.
+Each guard carries its own anti-vacuity coverage: every prose/literal pattern must reject its
+canonical example, every declared surface/target file must exist, and the 503 assertion is
+shown to be conditional (artifacts present ⇒ 200) and to reject a synthesising route.
 
 **Scope limit, stated plainly.** ``OVERCLAIM_PATTERNS`` catches claim *shapes*, not every
 possible over-claim. Prose that describes the mechanism without asserting its state — "a
@@ -77,6 +85,13 @@ PUBLIC_SURFACES: tuple[str, ...] = (
     "ui/src/components/Architecture.jsx",
     "ui/src/components/CorpusGraph.jsx",
     "ui/src/components/CorpusKG.jsx",
+    # Added by #1368: the two public surfaces PR #1315 didn't touch. Listing
+    # them here is necessary but NOT sufficient — none of OVERCLAIM_PATTERNS
+    # match a bare tab label or a bare "10,000 papers" literal (no claim verb
+    # for a prose-shape regex to grab), so the FORBIDDEN_UI_LITERALS table
+    # below is what actually catches the #1368 defect.
+    "ui/src/components/CorpusExplorer.jsx",
+    "ui/src/components/OnboardingTour.jsx",
 )
 
 # ---------------------------------------------------------------------------
@@ -198,6 +213,139 @@ def test_public_surface_carries_no_corpus_overclaim(rel_path: str):
         "Prod retrieval is lexical, the papers schema carries text only, and the KB pipeline "
         "has produced no artifact — name what /health.paper_rag reports instead of asserting "
         "a capability. Note the guard is negation-blind: denying the claim still trips it."
+    )
+
+
+# ---------------------------------------------------------------------------
+# UI claim-literal guard (issue #1368)
+# ---------------------------------------------------------------------------
+#
+# OVERCLAIM_PATTERNS above catches claim *shapes* — a verb ("is", "has been",
+# "was") pinning a capability to the corpus. It structurally cannot catch a
+# bare tab label ("Knowledge Graph") or a bare number with no verb ("10,000
+# papers"): there is no claim-shape for a prose regex to grab, only a true
+# word placed where it creates a false impression. This table names those
+# literal strings directly, file by file, instead of trying to generalize a
+# regex for something that isn't a sentence.
+
+#: ``(label, rel_path, regex, canonical_example)`` — same anti-vacuity shape as
+#: ``OVERCLAIM_PATTERNS``: ``canonical_example`` is the exact banned literal, and
+#: ``test_every_ui_literal_pattern_rejects_its_canonical_example`` proves each
+#: pattern still matches it, so a typo'd regex fails loudly instead of quietly
+#: guarding nothing.
+FORBIDDEN_UI_LITERALS: tuple[tuple[str, str, re.Pattern[str], str], ...] = (
+    (
+        "kg_tab_labeled_knowledge_graph",
+        "ui/src/components/CorpusExplorer.jsx",
+        re.compile(r"""['"]Knowledge Graph['"]"""),
+        "'knowledge-graph': 'Knowledge Graph',",
+    ),
+    (
+        "corpus_explorer_unqualified_papers_chip",
+        "ui/src/components/CorpusExplorer.jsx",
+        re.compile(r"total_papers\?\.toLocaleString\(\)\}\s*papers\b"),
+        "{overview.total_papers?.toLocaleString()} papers",
+    ),
+    (
+        "onboarding_tour_bare_10000_papers",
+        "ui/src/components/OnboardingTour.jsx",
+        re.compile(r"10,000 papers\b"),
+        "10,000 papers",
+    ),
+    (
+        "kg_zero_state_no_entities_found",
+        "ui/src/components/CorpusKG.jsx",
+        re.compile(r"No entities found\."),
+        "No entities found.",
+    ),
+)
+
+
+def find_ui_literal_violations() -> list[tuple[str, str, str]]:
+    """Return ``(label, rel_path, matched_text)`` for every banned literal still on disk."""
+    hits: list[tuple[str, str, str]] = []
+    for label, rel_path, pattern, _example in FORBIDDEN_UI_LITERALS:
+        text = (_repo_root() / rel_path).read_text(encoding="utf-8")
+        for match in pattern.finditer(text):
+            hits.append((label, rel_path, match.group(0)))
+    return hits
+
+
+def test_every_ui_literal_declared_file_exists():
+    """Same discipline as ``test_every_declared_surface_exists``: a bad rel_path must fail
+    loudly rather than silently scanning nothing."""
+    missing = [rel for _, rel, _pattern, _example in FORBIDDEN_UI_LITERALS if not (_repo_root() / rel).is_file()]
+    assert not missing, f"FORBIDDEN_UI_LITERALS lists files that do not exist: {missing}"
+
+
+def test_every_ui_literal_pattern_rejects_its_canonical_example():
+    """No dead patterns: each one must still match the literal it was written to ban."""
+    for label, _rel_path, pattern, example in FORBIDDEN_UI_LITERALS:
+        assert pattern.search(example), (
+            f"UI literal pattern {label!r} no longer rejects its canonical example {example!r} — it is guarding nothing"
+        )
+
+
+def test_no_forbidden_ui_literals_on_disk():
+    """The guard PR #1315 shipped without: bare claim-literals with no verb, on the two
+    surfaces PUBLIC_SURFACES didn't cover (#1368). Verified vacuous against OVERCLAIM_PATTERNS
+    before this table existed — see the module docstring's Evidence 1."""
+    hits = find_ui_literal_violations()
+    assert not hits, (
+        f"Public corpus UI surfaces still carry a claim-literal the prose-shape guard cannot "
+        f"see (#1368): {hits}. These are bare labels/numbers, not sentences — remove the "
+        f"literal at its source rather than extending OVERCLAIM_PATTERNS for it."
+    )
+
+
+def test_kg_zero_state_names_the_pipeline_not_the_query():
+    """The ``entities.length === 0`` branch of CorpusKG.jsx must branch on the live
+    ``/health`` ``corpus_kg_built`` value, not assert "pipeline hasn't run" unconditionally.
+
+    A plain substring check (does "corpus_kg_built" / "#1090" appear anywhere in the file)
+    would also pass for an *unconditional* render of that copy — which is itself an
+    over-claim once #1090 lands and a legitimate empty search reaches this same branch
+    (adversarial reviewer finding on the first version of this fix). So this test locates
+    the actual zero-state ternary and requires: (1) it reads ``health.corpus_kg_built``
+    rather than asserting a value, (2) the ``corpus_kg_built === false`` side names the
+    pipeline + #1090, and (3) the ``corpus_kg_built === true`` side (a real empty search)
+    names the search term instead of repeating the pipeline claim.
+    """
+    text = (_repo_root() / "ui/src/components/CorpusKG.jsx").read_text(encoding="utf-8")
+
+    zero_state_match = re.search(
+        r"entities\.length === 0 \? \((?P<body>.*?)\n\s*\) : \(\s*\n\s*<div style=\{\{ overflow",
+        text,
+        re.DOTALL,
+    )
+    assert zero_state_match, (
+        "ui/src/components/CorpusKG.jsx: could not locate the `entities.length === 0` "
+        "zero-state branch — has the render structure changed? Update this test's anchor "
+        "regex to match."
+    )
+    zero_state = zero_state_match.group("body")
+
+    assert "health.corpus_kg_built ?" in zero_state, (
+        "ui/src/components/CorpusKG.jsx: the zero-state must branch on the live "
+        "health.corpus_kg_built value from /health, not assert a pipeline state "
+        "unconditionally (#1368)"
+    )
+
+    _cond, _sep, rest = zero_state.partition("health.corpus_kg_built ?")
+    built_branch, _sep, not_built_branch = rest.partition(") : (")
+
+    assert re.search(r"#1090\b", not_built_branch), (
+        "ui/src/components/CorpusKG.jsx: the corpus_kg_built===false branch must reference "
+        "#1090 (the KB pipeline artifact issue) so it names the pipeline, not the query"
+    )
+    assert "corpus_kg_built" in not_built_branch, (
+        "ui/src/components/CorpusKG.jsx: the corpus_kg_built===false branch must point at "
+        "/health's corpus_kg_built field as the live authority"
+    )
+    assert "searchedTerm" in built_branch or "query" in built_branch, (
+        "ui/src/components/CorpusKG.jsx: the corpus_kg_built===true branch (a legitimate "
+        "empty search once the pipeline HAS run) must name the search term, not repeat the "
+        "pipeline-not-built claim"
     )
 
 
