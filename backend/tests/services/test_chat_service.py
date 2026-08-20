@@ -427,8 +427,8 @@ class TestCuratedRigorStatuses:
         result.passes_all = True
         # #1184: is_degenerate must be explicit on the double — MagicMock auto-vivifies
         # unset attributes as truthy Mocks, which would otherwise make _verdict_from_result
-        # (which now checks is_degenerate first) misread this real-real RigorGateResult
-        # stand-in as a broken/zero-variance series.
+        # (which now checks is_degenerate first) misread this RigorGateResult stand-in as
+        # a broken/zero-variance series.
         result.is_degenerate = False
         assert self._statuses({"sid1": result}) == {"sid1": "pass"}
 
