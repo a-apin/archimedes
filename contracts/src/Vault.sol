@@ -891,6 +891,12 @@ contract Vault is IVault, ERC20, Ownable, ReentrancyGuard, Pausable {
                 // $-amount-many shares hands the fee recipient more value than the fee.
                 // Standard dilution-mint conversion instead: shares = feeAssets *
                 // totalSupply / totalAssets (mirrors Yearn's report() fee-share calc).
+                // The minted shares are themselves diluted by the mint, so the
+                // recipient's realized value lands slightly BELOW feeAssets —
+                // deliberate: the error is in the depositors' favor, never the fee
+                // recipient's (the exact-value form divides by totalAssets minus
+                // feeAssets; we keep the Yearn form). HWM math is unaffected — the
+                // dead-shares 1:1 scale note at the top of this contract still holds.
                 uint256 totalPerfFeeAssets = (perfFeePerShare * _totalSupply) / 1e18;
                 uint256 perfShares = (totalPerfFeeAssets * _totalSupply) / _totalAssets;
 

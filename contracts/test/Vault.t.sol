@@ -1265,11 +1265,14 @@ contract VaultTest is Test {
     ///      dilution formula mints; the old formula would have minted double
     ///      (5,000e6 total / platform 500e6 / creator 4,500e6).
     function test_performanceFee_shareMint_uses_dilution_formula_not_raw_assets() public {
-        // 50% performance fee. (Note: main doesn't carry the #1129 fee-bps cap yet —
-        // that PR is still open — so this uses a literal rather than
-        // Vault.MAX_PERFORMANCE_FEE_BPS(), which doesn't exist on this branch.)
+        // Performance fee at MAX_PERFORMANCE_FEE_BPS (50%, the #1129 cap — merged):
+        // the worst fee the constructor allows, so the donation-gain numbers below
+        // are the largest any vault can mint. Read the constant BEFORE the prank —
+        // the getter is an external call, and evaluating it as a createVault
+        // argument would consume vm.prank(alice) and mis-assign the creator.
+        uint16 perfCap = uint16(vault.MAX_PERFORMANCE_FEE_BPS());
         vm.prank(alice);
-        address v = factory.createVault("Perf Fee Vault", "vPERF", 0, 5000, false);
+        address v = factory.createVault("Perf Fee Vault", "vPERF", 0, perfCap, false);
         Vault perfVault = Vault(payable(v));
 
         uint256 deposit = 10_000 * 10**6;
