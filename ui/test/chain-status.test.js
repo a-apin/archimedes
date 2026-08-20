@@ -3,6 +3,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { CHAIN_STATUS, deriveChainStatus } from "../src/chainStatus.js";
+import {
+	_resetHealthCache,
+	getCachedHealth,
+	HEALTH_TTL_MS,
+} from "../src/healthCache.js";
 
 // ── deriveChainStatus: the tri-state pill logic (#1321) ────────────────────
 // The bug: the footer pill's label was `Object.keys(NEW_CONTRACTS).length ?
@@ -61,6 +66,63 @@ test("chain status: a malformed /health body (missing or non-boolean chain_conne
 	assert.equal(deriveChainStatus(undefined, false).tone, CHAIN_STATUS.UNKNOWN);
 });
 
+// ── getCachedHealth: shared TTL cache backing fetchHealth (#1333 review) ───
+// The bug: Layout.jsx, Architecture.jsx, and ModelCostPanel.jsx each called
+// apiGet("/health") independently. Once Layout's effect re-fetches on every
+// in-app navigation (above), landing on /architecture fired /health twice
+// in the same render pass, against an endpoint that does an Arc RPC
+// round-trip plus several DB reads. fetchHealth() (../src/health.js) wraps
+// this cache with the real apiGet; the cache logic itself lives in
+// ../src/healthCache.js (zero imports, so it's real-imported and exercised
+// directly here rather than only wiring-checked via readFileSync).
+
+test("getCachedHealth: a second call within the TTL window reuses the first call's promise instead of fetching again", async () => {
+	_resetHealthCache();
+	let calls = 0;
+	const fetcher = async () => {
+		calls += 1;
+		return { chain_connected: true };
+	};
+	const p1 = getCachedHealth(fetcher, 1_000);
+	const p2 = getCachedHealth(fetcher, 1_000 + HEALTH_TTL_MS - 1);
+	assert.equal(p1, p2, "the second call should return the exact same promise, not a new fetch");
+	await p1;
+	assert.equal(calls, 1, "fetcher should have been invoked exactly once");
+});
+
+test("getCachedHealth: a call at/after the TTL window fetches again", async () => {
+	_resetHealthCache();
+	let calls = 0;
+	const fetcher = async () => {
+		calls += 1;
+		return { chain_connected: true };
+	};
+	await getCachedHealth(fetcher, 1_000);
+	await getCachedHealth(fetcher, 1_000 + HEALTH_TTL_MS);
+	assert.equal(calls, 2, "the TTL boundary must not extend the cache indefinitely");
+});
+
+test("getCachedHealth: a failed fetch is not cached — the very next call retries rather than reusing the rejection", async () => {
+	// Mutation-check target: if the .catch() didn't clear cachedPromise/
+	// cachedAt, this second call would return the same rejected promise and
+	// `calls` would stay at 1 — an outage would pin every caller (including
+	// Layout's next navigation) on the same failure for the rest of the TTL
+	// window instead of getting a fresh attempt.
+	_resetHealthCache();
+	let calls = 0;
+	const failingFetcher = async () => {
+		calls += 1;
+		throw new Error("network down");
+	};
+	await assert.rejects(getCachedHealth(failingFetcher, 1_000));
+	const okFetcher = async () => {
+		calls += 1;
+		return { chain_connected: true };
+	};
+	await getCachedHealth(okFetcher, 1_001);
+	assert.equal(calls, 2, "the call after a failure must re-invoke the fetcher, not reuse the rejection");
+});
+
 // ── Wiring: Layout.jsx reads the real /health signal, not NEW_CONTRACTS ────
 
 const layout = readFileSync(
@@ -77,7 +139,7 @@ test("Layout.jsx: the footer pill no longer derives from NEW_CONTRACTS (acceptan
 test("Layout.jsx: the pill is driven by deriveChainStatus off a bounded /health re-fetch, not a new polling loop", () => {
 	assert.match(layout, /from ["']\.\.\/chainStatus["']/);
 	assert.match(layout, /deriveChainStatus\(health, healthError\)/);
-	assert.match(layout, /apiGet\(["']\/health["']\)/);
+	assert.match(layout, /fetchHealth\(\)/);
 	// Anti-goal: no new polling loop — the effect only re-runs on an actual
 	// in-app navigation (dep: `page`), never on a timer.
 	assert.doesNotMatch(layout, /setInterval/);
@@ -95,9 +157,9 @@ test("Layout.jsx: a successful re-fetch clears a prior healthError, so recovery 
 	// session — deriveChainStatus treats healthError as sticky-unknown
 	// regardless of what a later successful fetch reports.
 	const successBlock = layout.match(
-		/apiGet\(["']\/health["']\)\s*\.then\(\(d\) => \{([\s\S]*?)\}\)\s*\.catch/,
+		/fetchHealth\(\)\s*\.then\(\(d\) => \{([\s\S]*?)\}\)\s*\.catch/,
 	);
-	assert.ok(successBlock, "apiGet('/health').then(...) block not found");
+	assert.ok(successBlock, "fetchHealth().then(...) block not found");
 	assert.match(successBlock[1], /setHealth\(d\)/);
 	assert.match(successBlock[1], /setHealthError\(false\)/);
 });
@@ -120,4 +182,87 @@ test("config.js: NEW_CONTRACTS still has its 7 hard-coded addresses — this iss
 	assert.ok(match, "NEW_CONTRACTS block not found");
 	const keyCount = (match[1].match(/^\s*\w+:/gm) || []).length;
 	assert.equal(keyCount, 7);
+});
+
+// ── Wiring: every /health caller shares fetchHealth's cache (#1333 review) ─
+// Layout.jsx's per-navigation re-fetch (above) turned /health into a
+// per-navigation call from the always-mounted shell. Architecture.jsx and
+// ModelCostPanel.jsx also read /health, each on their own mount effect — if
+// either called apiGet("/health") directly instead of the shared
+// fetchHealth(), landing on their page would fire a second/third
+// independent Arc RPC round-trip + DB read in the same render pass that
+// Layout's effect just triggered.
+
+const architecture = readFileSync(
+	new URL("../src/components/Architecture.jsx", import.meta.url),
+	"utf8",
+);
+const modelCostPanel = readFileSync(
+	new URL("../src/components/ModelCostPanel.jsx", import.meta.url),
+	"utf8",
+);
+
+const health = readFileSync(
+	new URL("../src/health.js", import.meta.url),
+	"utf8",
+);
+
+test("health.js: fetchHealth() delegates to the shared getCachedHealth cache with the real apiGet, not its own logic", () => {
+	assert.match(health, /from ["']\.\/api["']/);
+	assert.match(health, /from ["']\.\/healthCache\.js["']/);
+	assert.match(health, /getCachedHealth\(apiGet\)/);
+});
+
+test("Layout.jsx / Architecture.jsx / ModelCostPanel.jsx: /health is read through the shared fetchHealth cache, not independent apiGet('/health') calls", () => {
+	for (const [name, src] of [
+		["Layout.jsx", layout],
+		["Architecture.jsx", architecture],
+		["ModelCostPanel.jsx", modelCostPanel],
+	]) {
+		assert.doesNotMatch(
+			src,
+			/apiGet\(["']\/health["']\)/,
+			`${name} calls apiGet("/health") directly instead of the shared fetchHealth() — this reintroduces a duplicate /health fetch`,
+		);
+		assert.match(
+			src,
+			/from ["']\.\.\/health["']/,
+			`${name} does not import from ../health`,
+		);
+		assert.match(
+			src,
+			/fetchHealth\(\)/,
+			`${name} does not call the shared fetchHealth()`,
+		);
+	}
+});
+
+// ── App.css: the tone rules must stay reachable (#1333 review) ─────────────
+// The CSS half of the original fix had no guard: the review that landed
+// alongside this test caught three tone rules shipping as unreachable
+// bare `.live-dot-*` selectors (0,1,0) — lower specificity than the
+// existing `.app-site .live-dot { ... }` base rule, so they sat dead in the
+// sheet regardless of source order (see the "Tri-state chain-status pill"
+// comment in App.css). A future edit to that block could silently
+// reintroduce the same defect with nothing here to catch it.
+
+const css = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
+
+test("App.css: all three chain-status tone rules are scoped under .app-site, not bare base-scope rules", () => {
+	for (const tone of ["connected", "disconnected", "unknown"]) {
+		assert.match(
+			css,
+			new RegExp(`\\.app-site \\.live-dot-${tone}\\s*\\{`),
+			`.app-site .live-dot-${tone} rule not found`,
+		);
+	}
+	// Mutation-check target: a bare rule at the start of a line is the exact
+	// unreachable shape the #1333 review caught — (0,1,0) specificity, always
+	// beaten by the `.app-site .live-dot { ... }` base rule above, so it
+	// would sit dead in the sheet however it's added back.
+	assert.doesNotMatch(
+		css,
+		/^\.live-dot-(connected|disconnected|unknown)\s*\{/m,
+		"a bare, unscoped .live-dot-* rule is unreachable — lower specificity than the .app-site base rule",
+	);
 });

@@ -4961,21 +4961,22 @@ button:where(.tag) {
    base `.live-dot` / `.live-dot-*` rules above — decides which wins; a tone
    class always co-occurs with `.live-dot` (Layout.jsx: `live-dot
    live-dot-${tone}`), so scoping under `.app-site` is what makes these
-   reachable at all. `--positive` is aliased to `--app-verify` inside
-   `.app-site` (both themes, above), so "connected" keeps the exact glow this
-   pill has always had. `--negative`/`--warning` are aliased the same way, so
-   using them (rather than the raw `--app-risk`/`--app-action` tokens) keeps
-   this block theme-aware without hard-coding either palette. */
+   reachable at all. `--positive`/`--negative`/`--warning` are aliased to
+   `--app-verify`/`--app-risk`/`--app-action` inside `.app-site` (both
+   themes, above), so using them (rather than the raw `--app-*` tokens
+   directly) keeps this block theme-aware without hard-coding either
+   palette. `connected` and `disconnected` both glow via `color-mix` against
+   the aliased token rather than a literal rgba — a hard-coded color drawn
+   from one theme's hex would stay that exact color for the other theme too,
+   mismatching the token there (`--positive`/`--negative` resolve to a
+   different hex per theme). `unknown` alone drops the glow entirely, so an
+   outage or a not-yet-resolved state doesn't still *look* alive. */
 .app-site .live-dot-connected {
 	background: var(--positive);
-	box-shadow: 0 0 8px rgba(121, 201, 183, 0.5);
+	box-shadow: 0 0 8px color-mix(in srgb, var(--positive) 50%, transparent);
 }
 .app-site .live-dot-disconnected {
 	background: var(--negative);
-	/* color-mix instead of a literal rgba: a hard-coded red glow drawn from
-	   the base (non-.app-site) dark-theme --negative would stay that exact
-	   red for the app-site light theme too, mismatching --negative there
-	   (which resolves to --app-risk, a different hex per theme). */
 	box-shadow: 0 0 8px color-mix(in srgb, var(--negative) 45%, transparent);
 }
 .app-site .live-dot-unknown {

@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import WalletConnect from "./WalletConnect";
 import Breadcrumbs from "./Breadcrumbs";
-import { apiGet } from "../api";
 import { getStoredWalletName } from "../config";
 import { deriveChainStatus } from "../chainStatus";
+import { fetchHealth } from "../health";
 import { getStoredTheme, applyTheme } from "../theme";
 import { visibleNavigation } from "../routes";
 import { lockBodyScroll, unlockBodyScroll } from "../utils/scrollLock";
@@ -145,7 +145,7 @@ export default function Layout({
 	const proofStage =
 		(page === "generate" ? journeyStage : null) ?? CORE_PAGE_STAGE[page];
 
-	// Chain-status pill (#1321): re-fetches /health on mount and on every
+	// Chain-status pill (#1321): re-derives from /health on mount and on every
 	// in-app navigation (dep: `page`) — not a polling loop, a bounded
 	// re-derivation. Layout sits at a stable position in the tree
 	// (AuthenticatedApp.jsx renders it with no `key`, so React reconciles
@@ -160,9 +160,17 @@ export default function Layout({
 	// the user navigates — that gap is accepted, not solved, by design: it
 	// stays bounded by the next click rather than growing unbounded, without
 	// adding the polling loop this issue explicitly ruled out.
+	//
+	// The actual network call goes through fetchHealth() (../health.js), a
+	// short-TTL-cached wrapper, not a direct call to the raw fetch helper
+	// here: Layout isn't the only /health caller (Architecture.jsx,
+	// ModelCostPanel.jsx), so re-fetching straight from this effect on every
+	// navigation would fire a fresh Arc RPC round-trip + DB reads even on a
+	// nav that lands on a page with its own /health read. fetchHealth() lets
+	// those callers share one response instead (#1333 review).
 	useEffect(() => {
 		let cancelled = false;
-		apiGet("/health")
+		fetchHealth()
 			.then((d) => {
 				if (!cancelled) {
 					setHealth(d);
