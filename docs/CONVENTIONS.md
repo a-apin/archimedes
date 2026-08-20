@@ -81,7 +81,7 @@ silently substitutes reads exactly like a doc that is right.
 
 Corollary: **anything that decays fast does not belong in a doc at all.** Counts, contract
 addresses, service inventories, test totals, and status live in the live source (`GET
-/api/config/contracts`, `pytest --collect-only -q | tail -1`, `README.md` § Status) or in a
+/api/config/contracts`, `pytest --collect-only -q | tail -1`) or in a
 generated reference. A stale number in a doc is worse than no number, because readers act on
 it without checking.
 
