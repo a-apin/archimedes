@@ -16,6 +16,24 @@
 > [`../specs/architecture-page-design.md`](../specs/architecture-page-design.md) (the
 > design, now implemented) and [`../architecture.md`](../architecture.md) (the system map).
 
+> **Claim-integrity note (added 2026-08-20, issue #778).** Two corpus-retrieval claims in
+> the *"What's stale on the current page"* list below — the corpus-panel bullet and the
+> memory-pillar-layer-E bullet — were **adjudicated false on #778** and are corrected here
+> rather than in place. Verified against production 2026-08-19: **no embedding column
+> exists anywhere in the schema**, `corpus_meta` holds 0 rows, and
+> `kg_entities`/`kg_relations` are 0/0. Corpus retrieval ranks candidates at request time
+> over title + abstract via the lexical TF-IDF path. The two bullets asserted the opposite —
+> that the page's "keyword/TF-IDF today" copy was the stale claim and that a stored
+> sentence-embedding layer was the live one — which inverted the truth and became one
+> upstream of the over-claims #778 was filed about.
+>
+> **The body below is left as written, on purpose.** This is a dated point-in-time record of
+> what was believed on 2026-07-14; rewriting its findings would destroy the evidence of how
+> the misreading propagated. Read those two bullets as superseded, not as current state.
+> `/health`'s `paper_rag` field is the authority on which scorer is running in any given
+> process, and [`../corpus-architecture.md`](../corpus-architecture.md) carries the same
+> note over the target-design description of the substrate.
+
 ## What was produced (this directory)
 
 | File | What it is |

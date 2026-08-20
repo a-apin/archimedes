@@ -225,8 +225,11 @@ unaffected — they are non-custodial today.
 
 **Body:** Generation starts from a corpus of quantitative-finance research — a 10,000-paper
 manifest spanning statistical finance, portfolio math, market microstructure, and agentic AI.
-At generate time, retrieval runs in two stages: a keyword/asset-class filter, then a semantic
-rerank with MiniLM sentence embeddings against your brief. Retrieved papers are
+At generate time, retrieval runs in two stages: a keyword/asset-class filter, then a relevance
+rerank against your brief, computed at request time over each candidate's title and abstract,
+with no vector index behind it. `/health`'s `paper_rag` field says which scorer is running:
+`live` means MiniLM sentence embeddings, `degraded` means the lexical TF-IDF fallback (the
+production state today). Retrieved papers are
 embargo-filtered — nothing published after a decision point can inform it — and every citation
 carries its arXiv ID and content hash.
 
@@ -265,8 +268,9 @@ current state, kept current from the system's own health surface:
 | Commit → trade → reveal provenance | **Live** — contract-enforced ordering |
 | Autonomous rebalance loop | **Live path** — runs on a schedule; infrastructure relocation in progress *(driven by health flag)* |
 | Marketplace publish / subscribe | **Live, settlement in dry-run** — real x402 pipeline, simulated final settlement |
-| Corpus retrieval | **Live** — keyword + MiniLM; hydration in progress *(live count)* |
-| Knowledge graph | **Not yet** — pipeline built, first artifact pending |
+| Corpus retrieval | **Live** — keyword + query-time rerank; scorer named from `/health.paper_rag` (`live` = MiniLM, `degraded` = lexical TF-IDF) *(live value)* |
+| Stored embeddings | **Not yet** — no embedding column; ranking is computed per request |
+| Knowledge graph | **Not yet** — pipeline built, first artifact pending; graph/KG endpoints 503 |
 | Mainnet, real funds | **Roadmap** — Arc mainnet is upcoming; settlement architecture is an explicit deferred decision |
 
 **Close:** If a row here ever disagrees with what you see in the product, that's a bug —

@@ -70,7 +70,7 @@ Foundry, Circle wallet, and oracle targets (`compile`, `test`, `wallet`, `feed`,
 - **Honest rigor gate** — every generated strategy runs four admission controls before it is deployable: Deflated Sharpe (dsr_p ≥ 0.90 at the badge level, HAC standard errors, library-size multiple-testing deflation), PBO (CSCV), positive OOS Sharpe with no in-sample/OOS cliff, and a static look-ahead AST audit. Most briefs honestly FAIL the gate — that is the product working. **What actually gates at the current library size:** the "Archimedes Verified" badge is enforced by DSR + OOS + the look-ahead audit (plus the always-on correctness floors). PBO is computed and disclosed on every passport but does **not** block the badge while the library has fewer than 10 graded strategies — below that N, CSCV lacks the statistical power to gate honestly (it reports `NOT_RUN` with the reason instead). It starts gating automatically once the library reaches N = 10. The 0.90 DSR bar is a deliberate calibration (PR #901): a one-sided ~10% test — evidence, not proof.
 - **Real multi-asset market data** — fusion backtests pull real daily OHLCV via yfinance, resolved through the Chainlink-only universe SSOT, strictly inner-joined across assets (missing data = fail-closed, never synthetic unless the real fetch fails).
 - **Automated backtest refresh** — `backtest_scheduler.py` checks staleness on startup and on a 24h cadence, refreshing any curated strategy that has no persisted backtest or whose latest run is older than 7 days. No operator ritual required.
-- **Paper corpus + MiniLM semantic retrieval** — a ~10,000-paper quant-finance corpus (file-sourced, embedded at ingest) backs `paper_rag.py`, which runs `all-MiniLM-L6-v2` semantic reranking as a second pass over the keyword-pre-filtered candidate set. Scoring is embedding cosine similarity (TF-IDF fallback when the model is unavailable). `FUSION_SEMANTIC_RETRIEVAL=true` default; `/health` reports `paper_rag: live | degraded | disabled`.
+- **Paper corpus + query-time rerank** — a 10,000-paper quant-finance corpus (arXiv metadata + abstracts, seeded from a JSONL manifest into Postgres) backs `paper_rag.py`, which reranks the keyword-pre-filtered candidate set against the brief. **Seeding writes metadata and abstracts, and stops there** — the `papers` schema carries no vector column and no KB artifact exists, so ranking is computed at request time over title + abstract: `all-MiniLM-L6-v2` sentence embeddings when that model loads in-process, lexical TF-IDF cosine otherwise. **Production serves the lexical path today** (verified against prod 2026-08-19: no embedding column, `corpus_meta` = 0 rows, `kg_entities`/`kg_relations` = 0/0). `FUSION_SEMANTIC_RETRIEVAL=true` default; `/health` reports the live state as `paper_rag: live | degraded | disabled` — read that field rather than this line, which is a snapshot. Tracked in [#778](https://github.com/a-apin/archimedes/issues/778).
 - **Canonical Better Auth accounts** — email/password login is always available; Google/GitHub appear only when configured. `/app/*` and generation require account session. Wallets are optional EIP-4361 proof-linked accounts used only for wallet/on-chain actions.
 - **Multi-wallet UX** with EIP-6963 wallet discovery — MetaMask, Coinbase, and Circle Modular Wallets passkey paths all working.
 - **Unified `strategy_passports` store on Postgres** — both curated and generated strategies live in one typed table; the Considered-Alternatives panel reads from `strategy_proposals` so visitors see what was rejected and why.
@@ -89,7 +89,8 @@ Debate society — the sole generation pipeline (T1.1 Phase-3)
   │
   ├─ Proposer pool: fans over regime × mechanism steer grid (up to 10 steers
   │   from 18 possible: 3 regimes × 6 mechanisms). Each proposer call:
-  │     • selects corpus candidates via keyword filter → MiniLM semantic rerank
+  │     • selects corpus candidates via keyword filter → query-time rerank
+  │       (MiniLM when the model is loaded; lexical TF-IDF in prod today)
   │     • StrategyFusion(model=…) proposes a DSL strategy spec
   │     • non-actionable or non-conformant specs are dropped immediately
   │
@@ -229,7 +230,7 @@ archimedes/
 | LLM               | Provider-agnostic (`LLM_*` env): GLM via z.ai, Anthropic, OpenAI, Ollama                  |
 | Backtesting       | [backtrader](https://github.com/mementum/backtrader) ([ADR](docs/adr/backtrader-backtest-engine.md)) |
 | Generation        | Multi-agent debate society (regime × mechanism steer grid, deterministic critics, K=1)    |
-| Semantic retrieval | `all-MiniLM-L6-v2` (sentence-transformers) — paper RAG reranker for corpus selection    |
+| Corpus retrieval  | Keyword filter → query-time rerank over title + abstract (`paper_rag.py`), scored per request with no vector index behind it: `all-MiniLM-L6-v2` when the model loads, lexical TF-IDF otherwise (prod today) |
 | Smart contracts   | Solidity targeting Arc (EVM-compatible) + [Foundry](https://book.getfoundry.sh/)          |
 | On-chain          | Circle SDK (Wallets, Gateway, CCTP) + viem on the UI side                                 |
 | Auth              | Better Auth accounts/sessions; EIP-4361 only for optional wallet linking                  |
@@ -278,8 +279,8 @@ audit our claims.
 ## Known Limitations (testnet)
 
 - **AMM liquidity:** Only the sTSLA/USDC pool has reserves ($3.97 USDC). The 4 remaining pools (sNVDA, sSPY, sBTC, sGOLD) are deployed but empty — the synthetic token mint authority (`0x0546…`) is a separate Foundry deployer wallet not accessible to the bootstrap script's Circle signer. The autonomous agent's liquidity guard honestly skips swaps into empty pools and logs the reason on-chain. This is the rigor system working as designed: capital is never exposed to doomed trades.
-- **Knowledge graph not yet built:** The corpus graph (`corpus_kg_built=false` in `/health`) is planned — citation-link extraction over the 10k-paper corpus is roadmap, not current. The semantic retrieval layer (MiniLM rerank) is live and does not depend on the KG.
-- **Corpus population in progress:** The ~10,000-paper seed target is the production goal; ingestion is incremental. Generation requires ≥ 2 papers for any given steer to pass the corpus viability precheck.
+- **Metadata only — no vector index, no knowledge graph:** The production corpus is title + abstract rows and nothing else. The `papers` schema carries no vector column, `corpus_meta` holds 0 rows, and `kg_entities`/`kg_relations` are 0/0 — the KB pipeline (SPECTER2 embeddings, HDBSCAN clusters, REBEL/SciSpacy triples) has never produced a production artifact. `/api/corpus/graph` therefore returns **503 with `kb_artifact_not_found`** rather than a synthesized graph, `/api/corpus/kg/*` returns **empty entity and relation sets**, and `/health` reports `corpus_kg_built=false`. Corpus retrieval in production is consequently **lexical** (TF-IDF cosine over title + abstract), not semantic. Tracked in [#778](https://github.com/a-apin/archimedes/issues/778).
+- **Corpus is seeded; full text is not:** All 10,000 manifest rows are in Postgres with title + abstract — which is the whole of what retrieval reads. Full-text (PDF body) hydration is incomplete, and is a prerequisite for the KB pipeline producing a real artifact ([#1091](https://github.com/a-apin/archimedes/issues/1091)). Generation requires ≥ 2 papers for any given steer to pass the corpus viability precheck.
 
 ## License
 

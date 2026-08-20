@@ -187,7 +187,7 @@ export default function CorpusGraph() {
       <div className="corpus-graph-error" style={{ padding: 24 }}>
         <div className="info-box warning">
           {error.includes('503') || error.includes('KB pipeline')
-            ? "Knowledge-graph pipeline hasn't run yet (SPECTER2 clustering + entity extraction) — paper retrieval already uses live semantic embeddings (MiniLM); this similarity graph will populate once the KB pipeline produces its first artifact."
+            ? "Knowledge-graph pipeline hasn't run yet (SPECTER2 clustering + entity extraction), so there are no stored embeddings to project — this similarity graph will populate once the KB pipeline produces its first artifact. Paper retrieval does not depend on it: candidates are ranked at request time over title + abstract (see /health's paper_rag field for the scorer in use)."
             : `Graph unavailable: ${error}`}
         </div>
       </div>
