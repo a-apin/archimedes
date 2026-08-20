@@ -792,7 +792,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
           aria-pressed={activeTab === 'generated'}
           onClick={() => setActiveTab('generated')}
         >
-          Generated ({generated.length})
+          Generated ({genError ? '—' : generated.length})
         </button>
         <button
           type="button"
@@ -800,7 +800,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
           aria-pressed={activeTab === 'examples'}
           onClick={() => setActiveTab('examples')}
         >
-          Examples ({examples.length})
+          Examples ({loadError ? '—' : examples.length})
         </button>
         {/* Published leads into the marketplace surface #1266 hid — hides
             with it (#1324). Anti-goal: gating render alone without gating
@@ -819,7 +819,10 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
 
       {loadError && (
         <div className="info-box warning mb-4">
-          Couldn't load library: {loadError}
+          Couldn't load library: {loadError}{' '}
+          <button type="button" className="btn btn-sm btn-outline" onClick={load} style={{ marginLeft: 4 }}>
+            Retry
+          </button>
         </div>
       )}
 

@@ -273,7 +273,10 @@ export default function Leaderboard() {
       {!loading && !error && data?.degraded && (
         <div role="status" className="tag-warning" style={{ display: 'block', padding: '10px 14px', marginBottom: 14, borderRadius: 4 }}>
           <strong>Board data is degraded.</strong>{' '}
-          {data.degraded_reason || 'Some strategies could not be loaded.'}
+          {data.degraded_reason || 'Some strategies could not be loaded.'}{' '}
+          <button type="button" className="btn btn-sm btn-outline" onClick={load} style={{ marginLeft: 4 }}>
+            Retry
+          </button>
         </div>
       )}
 

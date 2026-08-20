@@ -121,6 +121,27 @@ test("Strategies.jsx surfaces per-feed errors near the panels they describe, wit
 	assert.ok(retryCount >= 3, `expected at least 3 retry buttons wired to load(), found ${retryCount}`);
 });
 
+test("Strategies.jsx's tab chips never print a measured zero on a degraded/failed feed (#1356 round 4)", () => {
+	// Round 3 made the Examples chip the ONLY number left on the tab once the
+	// StrategyTable itself is gated on !loadError — a degraded `/api/strategies/`
+	// must not paint "Examples (0)" next to the loadError banner. Same shape
+	// Leaderboard.jsx's header total already fixed (`data.degraded ? '—' : ...`);
+	// mirrored here for both tab chips.
+	assert.match(strategies, /Generated \(\{genError \? '—' : generated\.length\}\)/);
+	assert.match(strategies, /Examples \(\{loadError \? '—' : examples\.length\}\)/);
+});
+
+test("Strategies.jsx's Library loadError banner offers the same Retry control as the other per-feed banners", () => {
+	// Round 4 minor: the PR body claims every degraded surface is "retry-able",
+	// but the seed-feed (Library) loadError banner had no button — the only
+	// recovery was a full page reload. Make the claim true instead of
+	// narrowing it, matching the pattern already used 3x in this file
+	// (gateError, genError, publishedError).
+	assert.match(strategies, /Couldn't load library: \{loadError\}/);
+	const retryCount = (strategies.match(/onClick=\{load\}/g) || []).length;
+	assert.ok(retryCount >= 4, `expected at least 4 retry buttons wired to load() (adds the loadError block), found ${retryCount}`);
+});
+
 // ── Item 4: Corpus gets error state + retry ───────────────────────────────
 
 test("CorpusExplorer.jsx never swallows an overview failure into null with no error flag", () => {
@@ -185,4 +206,9 @@ test("Leaderboard.jsx never prints a measured total while the board is degraded"
 		leaderboard,
 		/\{data\.degraded \? '—' : `\$\{data\.total\} strateg\$\{data\.total === 1 \? 'y' : 'ies'\}`\}/,
 	);
+});
+
+test("Leaderboard.jsx's degraded banner offers a Retry, matching the PR body's retry-able claim (#1356 round 4)", () => {
+	const degradedBannerRetry = /Board data is degraded\.<\/strong>\{' '\}\s*\{data\.degraded_reason[^}]*\}\{' '\}\s*<button type="button"[^>]*onClick=\{load\}/;
+	assert.match(leaderboard, degradedBannerRetry);
 });
