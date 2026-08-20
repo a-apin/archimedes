@@ -54,8 +54,15 @@ function VaRPanel({ returns, cvarData, sample }) {
     [returns],
   )
 
-  // When backend data is available, prefer it
-  const useBackend = cvarData != null && Array.isArray(cvarData.levels) && cvarData.levels.length > 0
+  // When backend data is available, prefer it — but the "no strategy has a
+  // persisted equity curve yet" branch (backend/archimedes/api/risk_routes.py
+  // get_portfolio_cvar) is a real 200 with lookback_days=0 and every level
+  // zeroed, not an error. Treating that as live data would render "-0.00%"
+  // as a measurement and suppress the sample badge below — the exact
+  // plausible-substitute failure #1369 named. Require an actual lookback
+  // window before trusting it as real.
+  const useBackend =
+    cvarData != null && Array.isArray(cvarData.levels) && cvarData.levels.length > 0 && cvarData.lookback_days > 0
 
   const lvl95 = useBackend ? cvarData.levels.find((l) => l.confidence === 0.95) : null
   const lvl99 = useBackend ? cvarData.levels.find((l) => l.confidence === 0.99) : null
@@ -540,8 +547,18 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
           className="info-box"
           style={{ marginBottom: 16, fontSize: '0.85rem' }}
         >
-          Live risk metrics aren't available for this deployment right now — the figures below are a
-          synthetic sample, marked on each section's badge.
+          {returnsProp == null ? (
+            <>
+              Live risk metrics aren't available for this deployment right now — the figures below are a
+              synthetic sample, marked on each section's badge.
+            </>
+          ) : (
+            <>
+              Live risk metrics aren't available for this deployment right now — the figures below are
+              computed in-browser from this strategy's persisted returns, not a sample; the server-side
+              fat-tail/EVT VaR and portfolio Greeks could not be fetched.
+            </>
+          )}
         </div>
       )}
 

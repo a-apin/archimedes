@@ -357,7 +357,22 @@ const METRIC_OPTIONS = [
   { value: 'calmar_ratio', label: 'Calmar Ratio' },
 ]
 
-export default function BacktestVisualizer({ result, strategyId, weights, realTrades } = {}) {
+export default function BacktestVisualizer({
+  result,
+  strategyId,
+  weights,
+  realTrades,
+  // #1369 review residual: the caller (QuantLab) resolves `strategyId`
+  // asynchronously — it starts at '' and only picks a real id after its own
+  // /api/strategies/ round trip settles. Without these two signals, a falsy
+  // strategyId during that window was indistinguishable from "the library is
+  // genuinely empty", so the empty-state card asserted the latter on every
+  // normal page load. Both default to false so a standalone caller that
+  // never resolves anything asynchronously (and so never has a "loading"
+  // window to signal) keeps the old immediate honest-empty behavior.
+  libraryLoading = false,
+  libraryError = false,
+} = {}) {
   const [sweepData, setSweepData] = useState(null)
   const [sweepLoading, setSweepLoading] = useState(false)
   const [sweepError, setSweepError] = useState('')
@@ -391,9 +406,22 @@ export default function BacktestVisualizer({ result, strategyId, weights, realTr
       return
     }
     if (!strategyId) {
-      // No strategy selected (e.g. an empty library) is the same honest
-      // "nothing to chart" state as a persisted-but-empty series below —
-      // never a silently-absent card.
+      if (libraryLoading) {
+        // The parent hasn't resolved a selection yet (its own strategy-list
+        // fetch is still in flight) — that is not evidence the library is
+        // empty. Stay in the loading state rather than asserting "nothing
+        // to chart" mid-fetch (#1369 review finding: this was rendering on
+        // every normal page load, not just a truly empty library).
+        setRealReturns(null)
+        setReturnsNoData(false)
+        setReturnsLoading(true)
+        return
+      }
+      // No strategy selected once the parent has resolved is the same
+      // honest "nothing to chart" state as a persisted-but-empty series
+      // below — never a silently-absent card. `libraryError` (rendered
+      // below) distinguishes "library is empty" from "library fetch
+      // failed" so an outage never reads as an empty library.
       setRealReturns(null)
       setReturnsNoData(true)
       setReturnsLoading(false)
@@ -444,7 +472,7 @@ export default function BacktestVisualizer({ result, strategyId, weights, realTr
       cancelled = true
       controller.abort()
     }
-  }, [strategyId, propReturns])
+  }, [strategyId, propReturns, libraryLoading])
 
   // Real walk-forward folds, computed from the fetched daily returns. Empty
   // when no real returns exist (or the series is too short for honest folds).
@@ -547,7 +575,9 @@ export default function BacktestVisualizer({ result, strategyId, weights, realTr
           <p className="body" style={{ color: 'var(--text-3)', fontStyle: 'italic' }}>
             {strategyId
               ? 'No real backtest returns persisted yet — this strategy has not completed a real-data backtest.'
-              : 'No strategy selected — the library has nothing to chart yet.'}
+              : libraryError
+                ? 'Strategy library unavailable — could not load strategies to chart.'
+                : 'No strategies in the library yet — nothing to chart.'}
           </p>
         </div>
       )}

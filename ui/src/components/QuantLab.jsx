@@ -55,6 +55,10 @@ export default function QuantLab() {
   const [driftVaultName, setDriftVaultName] = useState('')
   const [trades, setTrades] = useState(null)
   const [loading, setLoading] = useState(true)
+  // Distinguishes "the library really is empty" from "the library fetch
+  // failed" (#1369 review finding) — both leave `strategies` at `[]`, but
+  // conflating them makes a backend outage read as an honest empty library.
+  const [libraryError, setLibraryError] = useState(false)
 
   // ── Library list + per-strategy persisted returns ─────────────────────────
   useEffect(() => {
@@ -91,6 +95,7 @@ export default function QuantLab() {
         setSelectedId((cur) => cur || firstWithData?.id || strats[0]?.id || '')
       } catch (_) {
         // Backend down: panels keep their synthetic render + badges.
+        if (!cancelled) setLibraryError(true)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -228,8 +233,8 @@ export default function QuantLab() {
         <p className="body">
           Risk, optimization, and backtest diagnostics computed from the live library: persisted
           backtest returns are live today. Vault-allocation drift and the recorded-trade log activate
-          once a vault is deployed — vault deployment isn't available in this build, so those two
-          panels render a synthetic sample and say so on their badge.
+          once a vault is deployed; until then, those two panels render a synthetic sample and say so
+          on their badge.
         </p>
       </div>
 
@@ -244,7 +249,9 @@ export default function QuantLab() {
             style={{ fontSize: '0.82rem', padding: '4px 8px', background: 'var(--glass)', border: '1px solid var(--glass-border)', borderRadius: 4, color: 'var(--text-1)' }}
           >
             {strategies.length === 0 ? (
-              <option value="">No strategies in library</option>
+              <option value="">
+                {loading ? 'Loading strategies…' : libraryError ? 'Strategy library unavailable' : 'No strategies in library'}
+              </option>
             ) : (
               strategies.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -279,6 +286,8 @@ export default function QuantLab() {
           strategyId={selectedId || undefined}
           weights={SWEEP_WEIGHTS}
           realTrades={trades ?? undefined}
+          libraryLoading={loading}
+          libraryError={libraryError}
         />
       </div>
     </div>
