@@ -120,7 +120,18 @@ on:
 
 concurrency:
   group: deploy-production
-  cancel-in-progress: true
+  # QUEUE, never cancel (#1346). With cancel-in-progress: true, every merge to
+  # main killed the in-flight run: under a merge cadence faster than the ~13-min
+  # build no deploy ever completed (prod ran a stale image while main carried
+  # fixes), and a cancel landing in the verify tail AFTER the image deployed
+  # left "red run + healthy prod" — a failed-deploy false alarm. With false,
+  # the running deploy completes untouched and GitHub keeps at most ONE pending
+  # run per group (a newer push replaces the older pending run), so bursts
+  # coalesce to latest with strict old-before-new ordering. Deliberately NOT
+  # split into a cancellable build phase + queued deploy phase: separate
+  # concurrency groups would let run B's migrate interleave into run A's
+  # migrate→deploy window, deploying older code against a newer schema.
+  cancel-in-progress: false
 
 permissions:
   id-token: write   # Required for OIDC token request
