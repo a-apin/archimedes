@@ -549,14 +549,16 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
         >
           {returnsProp == null ? (
             <>
-              Live risk metrics aren't available for this deployment right now — the figures below are a
-              synthetic sample, marked on each section's badge.
+              Live risk metrics aren't available for this deployment right now — the VaR, drawdown, and
+              rolling-Sharpe figures below are a synthetic sample, marked on each section's badge. (The
+              correlation matrix draws on a different, independent set of strategies — see its own badge.)
             </>
           ) : (
             <>
-              Live risk metrics aren't available for this deployment right now — the figures below are
-              computed in-browser from this strategy's persisted returns, not a sample; the server-side
-              fat-tail/EVT VaR and portfolio Greeks could not be fetched.
+              Live risk metrics aren't available for this deployment right now — the VaR, drawdown, and rolling-Sharpe
+              figures below are computed in-browser from this strategy's persisted returns, not a sample; the
+              server-side fat-tail/EVT VaR and portfolio Greeks could not be fetched. (The correlation matrix draws
+              on a different, independent set of strategies — see its own badge.)
             </>
           )}
         </div>

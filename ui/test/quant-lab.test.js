@@ -125,3 +125,33 @@ test('RiskAnalysis backend-unavailable notice does not claim a synthetic sample 
 test('RiskAnalysis VaRPanel does not treat the zero-lookback CVaR response as live backend data', () => {
   assert.match(riskAnalysis, /cvarData\.levels\.length > 0 && cvarData\.lookback_days > 0/)
 })
+
+// CorrelationHeatmap's sample-ness is decided by seriesProp, not returnsProp
+// — QuantLab.jsx sets them independently (selectedReturns = the one selected
+// strategy's returns; correlation = every strategy with persisted returns,
+// requiring at least two). A blanket "the figures below are a synthetic
+// sample" / "... not a sample" claim, gated on returnsProp alone, is
+// falsifiable by the correlation matrix in both directions: one strategy
+// selected with real returns but <2 strategies overall (correlation stays
+// mock, badged) vs. a selected strategy with no persisted returns while >=2
+// others have them (correlation is real, unbadged). The notice must scope
+// its sample claim to the three panels returnsProp actually governs and
+// leave the correlation matrix to its own badge.
+test('RiskAnalysis backend-unavailable notice scopes its sample claim to VaR/drawdown/Sharpe, not an unqualified "the figures below"', () => {
+  assert.equal(
+    (riskAnalysis.match(/the figures below are (a synthetic sample|computed in-browser)/g) || []).length,
+    0,
+    'the notice must not make a blanket "the figures below" claim — CorrelationHeatmap\'s sample-ness ' +
+      'is independent (seriesProp, not returnsProp) and can contradict it',
+  )
+  // JSX source wraps these lines, so match across whitespace/newlines rather
+  // than pinning literal single spaces.
+  assert.match(
+    riskAnalysis,
+    /VaR,\s+drawdown,\s+and\s+rolling-Sharpe\s+figures\s+below\s+are\s+a\s+synthetic\s+sample/,
+  )
+  assert.match(
+    riskAnalysis,
+    /VaR,\s+drawdown,\s+and\s+rolling-Sharpe\s+figures\s+below\s+are\s+computed\s+in-browser\s+from\s+this\s+strategy's\s+persisted\s+returns,\s+not\s+a\s+sample/,
+  )
+})
