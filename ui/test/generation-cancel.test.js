@@ -59,6 +59,23 @@ test("GenerationStatus.jsx: a stalled row reads 'view →', never 'resume →'",
 	// resume-eligible set (queued/running) — offering "resume" on a job the
 	// server has already determined is dead repeats the exact false-liveness
 	// claim #1355 exists to correct.
-	const match = status.match(/\{j\.state === ['"]running['"] \|\| j\.state === ['"]queued['"] \? ['"]resume →['"] : ['"]view →['"]\}/);
-	assert.ok(match, "expected the resume/view ternary to gate ONLY on running/queued");
+	//
+	// The ternary itself predates this PR and was already correct (this test
+	// is a forward guard, not a regression test for a bug fixed here — the
+	// prior version of this assertion matched the condition's literal text
+	// and could never fail, pre-fix or post-fix, so it guarded nothing). This
+	// version instead isolates the resume-eligible condition and asserts
+	// 'stalled' is absent from it, so a future edit adding
+	// `|| j.state === 'stalled'` to the condition — reintroducing "resume →"
+	// on a dead job — fails this test. Verified by mutation: temporarily
+	// adding that clause to GenerationStatus.jsx makes this assertion fail.
+	const ternary = status.match(
+		/\{(j\.state === ['"]running['"][\s\S]*?)\?\s*['"]resume →['"]\s*:\s*['"]view →['"]\}/,
+	);
+	assert.ok(ternary, "expected to find the resume/view ternary");
+	assert.doesNotMatch(
+		ternary[1],
+		/stalled/,
+		"'stalled' must never join the resume-eligible condition — a stalled job is dead, not resumable",
+	);
 });

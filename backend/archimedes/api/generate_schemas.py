@@ -169,7 +169,12 @@ class JobCostResponse(BaseModel):
     """
 
     job_id: str
-    state: Literal["queued", "running", "done", "error", "cancelled"]
+    # Widened to include "stalled" alongside JobSummary.state (#1355 review
+    # follow-up) — this endpoint routes `heartbeat_at` through the same
+    # `_normalize_state` as `/jobs` and `/jobs/{id}`, so all three surfaces
+    # must accept the same derived state or a stale job would 500 here
+    # instead of reporting `stalled` like its siblings.
+    state: Literal["queued", "running", "stalled", "done", "error", "cancelled"]
     cost: JobCost | None = None
 
 

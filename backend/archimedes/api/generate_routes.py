@@ -362,21 +362,29 @@ async def stream_events(
 
             # Dead-job detection (#1355): the event log alone can't tell a
             # slow job from a dead one, so also read the job record itself
-            # every cycle. Two cases, both closed by a single synthetic
-            # `error`/`STALLED` frame the client already handles as any other
-            # terminal error (GenerationStream.jsx's `error` listener):
+            # every cycle. Two cases:
             #   1. `running` with a heartbeat older than _STALLED_AFTER_SECONDS
             #      — the backend process that owned this job died mid-run
             #      (routine trigger: build-on-deploy rolling the Fargate task).
+            #      Closed by a synthetic `error`/`STALLED` frame.
             #   2. Redis already shows a terminal status (done/error/cancelled)
-            #      but no terminal event ever reached the log — e.g. this
-            #      client reconnected after the 15-minute event-log TTL
-            #      expired, or the writer died between the status write and
-            #      the event push. A second `list_events` read is given a
-            #      beat to catch the ordinary case first — the pipeline writes
-            #      status THEN pushes the terminal event as two separate
-            #      awaits, so a genuinely-current job racing the very end of
-            #      that window is not misreported.
+            #      but no terminal event ever reached the log. This is the
+            #      ROUTINE case, not a corner case: `EVENT_LOG_TTL` (15 min) is
+            #      shorter than `JOB_TTL` (1 hour, refreshed on every write),
+            #      so any client that reconnects to a completed job more than
+            #      15 minutes after it finished hits this branch. It also
+            #      covers the writer dying between the status write and the
+            #      event push. A second `list_events` read is given a beat to
+            #      catch the ordinary case first — the pipeline writes status
+            #      THEN pushes the terminal event as two separate awaits, so a
+            #      genuinely-current job racing the very end of that window is
+            #      not misreported.
+            #
+            #      The synthetic frame branches on the REAL terminal status —
+            #      collapsing all three onto `error`/STALLED would report a
+            #      SUCCESSFUL job as failed to the client, which is exactly
+            #      the false claim CLAUDE.md's `Claims must be true` rule
+            #      forbids. `STALLED` is reserved for case 1 above.
             job = await store.get(job_id)
             if job is not None:
                 status = job.get("status")
@@ -391,18 +399,50 @@ async def stream_events(
                             break
                     if saw_terminal:
                         return
-                    yield _format_sse(
-                        {
-                            "id": cursor + 1,
-                            "event": "error",
-                            "data": {
-                                "job_id": job_id,
-                                "message": "this generation ended without a final event — check its status directly",
-                                "recoverable": False,
-                                "code": "STALLED",
-                            },
-                        }
-                    )
+                    result = job.get("result") or {}
+                    if status == "done":
+                        candidates = result.get("candidates") or []
+                        yield _format_sse(
+                            {
+                                "id": cursor + 1,
+                                "event": "done",
+                                "data": {
+                                    "job_id": job_id,
+                                    "strategy_id": result.get("best_strategy_id"),
+                                    "all_strategy_ids": {
+                                        c.get("candidate_id"): c.get("strategy_id")
+                                        for c in candidates
+                                        if c.get("candidate_id")
+                                    },
+                                },
+                            }
+                        )
+                    elif status == "cancelled":
+                        yield _format_sse(
+                            {
+                                "id": cursor + 1,
+                                "event": "error",
+                                "data": {
+                                    "job_id": job_id,
+                                    "message": "this generation was cancelled",
+                                    "recoverable": False,
+                                    "code": "CANCELLED",
+                                },
+                            }
+                        )
+                    else:  # status == "error"
+                        yield _format_sse(
+                            {
+                                "id": cursor + 1,
+                                "event": "error",
+                                "data": {
+                                    "job_id": job_id,
+                                    "message": "this generation failed — check its status directly",
+                                    "recoverable": False,
+                                    "code": "JOB_FAILED",
+                                },
+                            }
+                        )
                     return
                 if status == "running":
                     stale_for = _heartbeat_age_seconds(job.get("heartbeat_at"))
@@ -654,7 +694,10 @@ async def get_job_cost(
     cost = result.get("cost") if isinstance(result, dict) else None
     return JobCostResponse(
         job_id=job_id,
-        state=_normalize_state(job.get("status") or "queued"),
+        # heartbeat_at passed exactly like `_job_summary` (#1355) so this
+        # third read surface can't disagree with `/jobs` and `/jobs/{id}` —
+        # all three route through the same `_normalize_state`.
+        state=_normalize_state(job.get("status") or "queued", job.get("heartbeat_at")),
         cost=cost if isinstance(cost, dict) else None,
     )
 

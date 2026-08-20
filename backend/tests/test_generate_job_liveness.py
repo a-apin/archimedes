@@ -225,10 +225,41 @@ async def test_running_job_with_no_heartbeat_field_reports_running_not_stalled()
     assert resp.json()["state"] == "running"
 
 
+# ── G3b: a third read surface (/cost) must agree with /jobs and /jobs/{id} ─
+# (review follow-up on #1355 — `_job_summary`'s docstring and the PR body
+# both claimed "GET /jobs and GET /jobs/{id} can never disagree" without
+# ever widening `GET /jobs/{id}/cost` to pass `heartbeat_at` through the same
+# `_normalize_state`, so a stale job silently read `stalled` on two endpoints
+# and `running` on the third.)
+
+
+async def test_cost_endpoint_reports_the_same_state_as_jobs_endpoint_for_a_stale_job():
+    """The input that SHOULD fail against pre-fix code: a `running` job with
+    a 10-minute-stale heartbeat, read from both `/jobs/{id}` and
+    `/jobs/{id}/cost` in the same test. Pre-fix, `/cost` called
+    `_normalize_state(status)` with no `heartbeat_at` argument and always
+    reported `running` for this job while `/jobs/{id}` correctly reported
+    `stalled`."""
+    stale = (datetime.now(UTC) - timedelta(seconds=600)).isoformat()
+    store = _mock_store(_job(status="running", heartbeat_at=stale))
+    with patch("archimedes.api.generate_routes.get_job_store", return_value=store):
+        from archimedes.main import app
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            jobs_resp = await client.get(f"/api/generate/jobs/{_JOB_ID}")
+            cost_resp = await client.get(f"/api/generate/jobs/{_JOB_ID}/cost")
+    assert jobs_resp.status_code == 200, jobs_resp.text
+    assert cost_resp.status_code == 200, cost_resp.text
+    assert jobs_resp.json()["state"] == "stalled"
+    assert cost_resp.json()["state"] == jobs_resp.json()["state"], (
+        f"/jobs/{{id}} and /jobs/{{id}}/cost disagree: {jobs_resp.json()['state']!r} vs {cost_resp.json()['state']!r}"
+    )
+
+
 # ── G5: the SSE loop closes a dead stream with a synthetic STALLED error ──
 
 
-def _stream_job(*, status: str = "running", heartbeat_at: str | None) -> dict:
+def _stream_job(*, status: str = "running", heartbeat_at: str | None, result: dict | None = None) -> dict:
     return {
         "id": _JOB_ID,
         "type": "generate",
@@ -237,7 +268,7 @@ def _stream_job(*, status: str = "running", heartbeat_at: str | None) -> dict:
         "updated_at": "2026-08-20T00:00:00+00:00",
         "heartbeat_at": heartbeat_at,
         "payload": {"owner_wallet": None, "brief": {"intent": "x"}, "n_candidates": 1},
-        "result": {},
+        "result": result if result is not None else {},
     }
 
 
@@ -320,6 +351,121 @@ async def test_stream_does_not_falsely_flag_a_fresh_running_job(monkeypatch):
 
     assert not any(c.strip() == "event: error" for c in chunks), f"chunks={chunks}"
     assert any(c.strip() == "event: done" for c in chunks), f"chunks={chunks}"
+
+
+# ── G7-G9: a stored-terminal job with an expired event log reports its
+# ── REAL status, not a blanket STALLED (review follow-up on #1355) ────────
+#
+# The SSE loop's "already-terminal-in-Redis but the event log has nothing
+# left to replay" branch used to synthesize one `error`/STALLED frame no
+# matter which terminal status the job actually reached. `EVENT_LOG_TTL`
+# (15 min) is shorter than `JOB_TTL` (1 hour, refreshed on every write), so
+# this is the ROUTINE reconnect case for any completed job, not a rare race
+# — a successful generation would report itself as `error` to a client that
+# simply reconnected more than 15 minutes after it finished. These three
+# guards pin the fix: the synthetic frame must branch on the job's real
+# stored status.
+
+
+@pytest.mark.asyncio
+async def test_stream_reports_done_not_stalled_for_a_completed_job_with_expired_log(monkeypatch):
+    """The input that SHOULD fail against pre-fix code: a `done` job whose
+    event log has nothing left (expired, or already fully drained by an
+    earlier connection). Pre-fix, this synthesized `error`/STALLED regardless
+    — a SUCCESSFUL run reported as a failure to the client."""
+    import archimedes.api.generate_routes as routes
+
+    monkeypatch.setattr(routes, "_POLL_INTERVAL_SECONDS", 0.001)
+    monkeypatch.setenv("TESTING", "1")
+
+    result = {
+        "best_candidate_id": "cand-1",
+        "best_strategy_id": "strat-42",
+        "candidates": [{"candidate_id": "cand-1", "strategy_id": "strat-42"}],
+    }
+    store = MagicMock()
+    store.get = AsyncMock(return_value=_stream_job(status="done", heartbeat_at=None, result=result))
+    store.list_events = AsyncMock(return_value=[])  # log already expired
+
+    with patch("archimedes.api.generate_routes.get_job_store", return_value=store):
+        from archimedes.main import app
+
+        chunks: list[str] = []
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+            client.stream("GET", f"/api/generate/stream/{_JOB_ID}") as resp,
+        ):
+            assert resp.status_code == 200
+            async for line in resp.aiter_lines():
+                chunks.append(line)
+
+    assert not any(c.strip() == "event: error" for c in chunks), (
+        f"a done job must never synthesize an error event, got chunks={chunks}"
+    )
+    assert any(c.strip() == "event: done" for c in chunks), f"chunks={chunks}"
+    data_lines = [c for c in chunks if c.startswith("data:")]
+    assert any("strat-42" in c for c in data_lines), f"expected the real strategy_id, got chunks={chunks}"
+
+
+@pytest.mark.asyncio
+async def test_stream_reports_cancelled_not_stalled_for_a_cancelled_job_with_expired_log(monkeypatch):
+    """Sanity check on the other terminal branch: a `cancelled` job with an
+    expired log must synthesize `code: CANCELLED`, not `STALLED`."""
+    import archimedes.api.generate_routes as routes
+
+    monkeypatch.setattr(routes, "_POLL_INTERVAL_SECONDS", 0.001)
+    monkeypatch.setenv("TESTING", "1")
+
+    store = MagicMock()
+    store.get = AsyncMock(return_value=_stream_job(status="cancelled", heartbeat_at=None))
+    store.list_events = AsyncMock(return_value=[])
+
+    with patch("archimedes.api.generate_routes.get_job_store", return_value=store):
+        from archimedes.main import app
+
+        chunks: list[str] = []
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+            client.stream("GET", f"/api/generate/stream/{_JOB_ID}") as resp,
+        ):
+            assert resp.status_code == 200
+            async for line in resp.aiter_lines():
+                chunks.append(line)
+
+    data_lines = [c for c in chunks if c.startswith("data:")]
+    assert any("CANCELLED" in c for c in data_lines), f"chunks={chunks}"
+    assert not any("STALLED" in c for c in data_lines), f"chunks={chunks}"
+
+
+@pytest.mark.asyncio
+async def test_stream_reports_job_failed_not_stalled_for_an_errored_job_with_expired_log(monkeypatch):
+    """Sanity check on the third terminal branch: an `error` job with an
+    expired log must synthesize `code: JOB_FAILED`, not `STALLED` — STALLED
+    is reserved for the running-with-stale-heartbeat branch only."""
+    import archimedes.api.generate_routes as routes
+
+    monkeypatch.setattr(routes, "_POLL_INTERVAL_SECONDS", 0.001)
+    monkeypatch.setenv("TESTING", "1")
+
+    store = MagicMock()
+    store.get = AsyncMock(return_value=_stream_job(status="error", heartbeat_at=None))
+    store.list_events = AsyncMock(return_value=[])
+
+    with patch("archimedes.api.generate_routes.get_job_store", return_value=store):
+        from archimedes.main import app
+
+        chunks: list[str] = []
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+            client.stream("GET", f"/api/generate/stream/{_JOB_ID}") as resp,
+        ):
+            assert resp.status_code == 200
+            async for line in resp.aiter_lines():
+                chunks.append(line)
+
+    data_lines = [c for c in chunks if c.startswith("data:")]
+    assert any("JOB_FAILED" in c for c in data_lines), f"chunks={chunks}"
+    assert not any("STALLED" in c for c in data_lines), f"chunks={chunks}"
 
 
 # ── G6: the terminal write never clobbers an already-cancelled job ────────
