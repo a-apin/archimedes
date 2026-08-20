@@ -116,10 +116,69 @@ class AnalyticsArtifactModel(BaseModel):
     results: list[OperationResultModel]
 
 
+# Top-level artifact keys that vary between two runs over IDENTICAL backtest
+# CONTENT and must therefore be excluded before hashing (issue #1347) — every
+# artifact producer mints these fresh per invocation, so hashing them made
+# every run's content_hash unique by construction and permanently defeated
+# `insert_backtest_if_missing`'s content-hash dedupe (0 rows ever skipped;
+# ~30 rows/strategy re-inserted per container restart once #1263 unmasked the
+# insert path). Each exclusion is justified individually, not just "trim
+# volatile stuff":
+#
+# - "run_id": a fresh identifier minted per invocation, never derived from the
+#   run's measured content. `analytics-engine/.../cli.py` mints it once per
+#   `run_command()` call; `portfolio_backtester.py` mints
+#   f"gen-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{strategy_id[:8]}" — itself a
+#   wall-clock timestamp wrapped in a string. Two runs over identical inputs
+#   producing identical metrics still get two different run_ids.
+# - "timestamp_utc": `datetime.now(UTC).isoformat()` stamped at artifact-build
+#   time (same two producers, cli.py and portfolio_backtester.py). By
+#   definition wall-clock, never content.
+#
+# Deliberately NOT excluded — both are content, not run metadata:
+# - "data_hashes": a hash of the INPUT DATA the run actually read. Two runs
+#   against different underlying data legitimately deserve different
+#   artifact hashes even if every other field lines up.
+# - everything under "results" (the measured metrics themselves) and every
+#   other top-level key (`strategy`, `assumptions`, `integrity_flags`,
+#   `operations`) — these describe what was measured and how, which is
+#   exactly the content two "identical" runs must agree on to collapse.
+#
+# Writer-call-site coverage — every place that mints a `content_hash` for
+# `backtest_results`, checked individually rather than assumed from "the two
+# producers that build run_id/timestamp_utc-bearing artifacts":
+# - `scripts/run_backtests.py` — calls `canonical_artifact_hash` on the
+#   analytics-engine `cli.py` artifact directly. Covered from day one.
+# - `scripts/seed_backtests_from_artifacts.py` — calls
+#   `canonical_artifact_hash` on the same `cli.py`-shaped artifact, replayed
+#   from disk. Covered from day one.
+# - `agents/generation_pipeline.py`'s `SOURCE_PIPELINE_PORTFOLIO_BACKTESTER`
+#   writer — builds its `artifact` via `portfolio_backtester.backtest_portfolio`
+#   (same run_id/timestamp_utc shape as `cli.py`) but used to hash it with an
+#   ad hoc `hashlib.sha256(artifact_json)` that never excluded those keys, so
+#   this ONE writer stayed unfixed even after this function was. Now routed
+#   through `canonical_artifact_hash` too (issue #1347 follow-up review).
+# - `agents/generation_pipeline.py`'s `SOURCE_PIPELINE_DSL_FUSION` writer —
+#   still its own ad hoc `hashlib.sha256(artifact_json)`, left AS IS. Its
+#   artifact (`{"results": ..., "source": ..., "data_source": ...}`) never
+#   included `run_id`/`timestamp_utc` in the first place, so it never had
+#   this bug and doesn't need this function — noted here so "every writer
+#   enumerated" doesn't silently mean "the two that were convenient to check."
+_VOLATILE_HASH_KEYS: frozenset[str] = frozenset({"run_id", "timestamp_utc"})
+
+
 def canonical_artifact_hash(payload: dict[str, Any]) -> str:
-    """Deterministic SHA-256 for artifact payload."""
+    """Deterministic SHA-256 for artifact CONTENT.
+
+    Excludes `_VOLATILE_HASH_KEYS` (see module-level docstring above) before
+    hashing, so two artifacts describing the same backtest — same strategy
+    code, same measured metrics, same assumptions — hash identically even
+    though each carries its own unique `run_id`/`timestamp_utc`. This is what
+    makes `insert_backtest_if_missing`'s content-hash dedupe actually fire.
+    """
+    content = {k: v for k, v in payload.items() if k not in _VOLATILE_HASH_KEYS}
     canonical = json.dumps(
-        payload,
+        content,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,

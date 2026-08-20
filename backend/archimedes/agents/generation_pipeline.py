@@ -1742,6 +1742,7 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         from archimedes.models.paper_ref import PaperRef
         from archimedes.models.strategy import StrategyPassport, StrategyStatus
         from archimedes.models.strategy_store import StrategyRecord
+        from archimedes.services.backtest_mapper import canonical_artifact_hash
         from archimedes.services.backtest_repository import (
             SOURCE_PIPELINE_PORTFOLIO_BACKTESTER,
             insert_backtest_if_missing,
@@ -1762,7 +1763,21 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
             num_trials_for_dsr=max(1, num_trials),
         )
         artifact_json = _json.dumps(artifact, default=str)
-        content_hash = hashlib.sha256(artifact_json.encode("utf-8")).hexdigest()
+        # Issue #1347 follow-up: this used to be an ad hoc
+        # hashlib.sha256(artifact_json) — a hash `artifact` (built by
+        # portfolio_backtester.backtest_portfolio, which stamps its own
+        # "run_id"/"timestamp_utc" volatile keys, same shape as cli.py's
+        # artifact) can never reproduce, because canonical_artifact_hash
+        # excludes those keys and this ad hoc call didn't. That gap meant the
+        # dedupe migration could normalize this writer's HISTORICAL rows to
+        # the canonical hash while every NEW row from this exact call site
+        # kept minting a fresh, non-matching hash — restarting duplicate
+        # accumulation for this one pipeline the moment it ran again. Route
+        # through the same canonical_artifact_hash run_backtests.py and
+        # seed_backtests_from_artifacts.py already use, so all three writer
+        # call sites that mint run_id/timestamp_utc-bearing artifacts compute
+        # hashes the same, reproducible way.
+        content_hash = canonical_artifact_hash(artifact)
 
         # Re-grade the REAL returns through the live gate, exactly as the DSL
         # sibling above does and as strategies_routes._to_strategy_response does

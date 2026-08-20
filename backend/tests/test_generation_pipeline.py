@@ -288,3 +288,201 @@ class TestPoolCorrelationDSR:
         _patch_dsr_with_pool_correlation(candidates)
 
         assert fusion_candidate.rigor_verdict == fusion_verdict, "fusion candidate's real DSR must be untouched"
+
+
+# ── PORTFOLIO_BACKTESTER writer hash unification (issue #1347 follow-up) ────
+#
+# NOT hermetic-in-the-"no DB" sense the module docstring above describes —
+# these seed a per-test in-memory sqlite DB (monkeypatching
+# `archimedes.db.engine`/`SessionLocal` directly, NOT the
+# `monkeypatch.setenv DATABASE_URL` + `init_db()` pattern used elsewhere in
+# this suite — see `_isolated_db`'s own docstring for why that pattern
+# doesn't actually isolate here) — but still fully offline: no live Redis,
+# no live Postgres, no network, no LLM.
+#
+# `_backtest_and_persist`'s `content_hash` computation used to be an ad hoc
+# `hashlib.sha256(artifact_json)` over an artifact that
+# `portfolio_backtester.backtest_portfolio` stamps with its own fresh
+# `run_id`/`timestamp_utc` on every call — the same volatile-field shape
+# `canonical_artifact_hash` was fixed to exclude, but this ONE writer never
+# routed through that fixed function. Two "real" backtests of identical
+# content through this exact writer therefore never deduped, even after the
+# `canonical_artifact_hash` fix landed. This test exercises the REAL
+# `_backtest_and_persist` closure end to end — not a reimplementation of its
+# hashing logic — with `backtest_portfolio` mocked at the module boundary
+# (CLAUDE.md: mock at boundaries, not internals) so it is genuinely tied to
+# the writer's own code, not to a copy of it.
+
+
+class TestPortfolioBacktesterWriterDedupe:
+    @pytest.fixture(autouse=True)
+    def _isolated_db(self, monkeypatch):
+        """A genuinely per-test-isolated DB, NOT the ``monkeypatch.setenv
+        DATABASE_URL`` + ``init_db()`` pattern used elsewhere in this suite.
+
+        ``archimedes.db``'s ``engine``/``SessionLocal`` are module-level
+        singletons bound to ``DATABASE_URL`` at FIRST IMPORT — and
+        ``conftest.py``'s own top-level import of
+        ``archimedes.services.strategy_provider`` transitively imports
+        ``archimedes.db`` during collection, before any test fixture runs.
+        Setting the env var afterward is a no-op against the already-created
+        engine, so that pattern silently falls back to sharing
+        ``backend/archimedes_chat.db`` on disk — which then ACCUMULATES rows
+        across separate test runs (verified: two runs of this test's own
+        precursor left 3 rows for one strategy_id, not the expected 1/2 —
+        pre-existing rows from a prior process leaking in). Monkeypatching
+        the module's ``engine``/``SessionLocal`` attributes directly — what
+        ``get_session()`` actually reads at call time — sidesteps the
+        singleton-binding problem instead of fighting it.
+
+        ``poolclass=StaticPool`` is required, not cosmetic: SQLAlchemy's
+        default pool for a ``sqlite:///:memory:`` URL is
+        ``SingletonThreadPool`` — one connection PER THREAD, i.e. a fresh,
+        empty in-memory DB on any thread other than the one that ran
+        ``create_all``. ``_backtest_and_persist`` does its DB work inside
+        ``asyncio.to_thread(...)`` specifically to keep it off the event
+        loop, so without ``StaticPool`` (one shared connection across every
+        thread) the worker thread sees "no such table: backtest_results" —
+        caught by ``_backtest_and_persist``'s own broad ``except Exception``
+        and merely logged, so the failure mode is a silently-empty table, not
+        a raised error. Reproduced directly before adding this.
+        """
+        import sqlalchemy as sa
+        from archimedes.models import kg, strategy_passport_record  # noqa: F401 — register their tables
+        from archimedes.models.chat import Base
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+
+        engine = sa.create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=engine)
+        session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+        import archimedes.db as db_module
+
+        monkeypatch.setattr(db_module, "engine", engine)
+        monkeypatch.setattr(db_module, "SessionLocal", session_factory)
+
+    @staticmethod
+    def _candidate() -> _CandidateResult:
+        return _CandidateResult(
+            candidate_id="cand-1",
+            strategy_name="Test Portfolio Strategy",
+            thesis="thesis",
+            asset_universe=["sSPY", "sGLD"],
+            source_papers=[],
+            weights={"sSPY": 0.6, "sGLD": 0.4},
+            reasoning="r",
+            rigor_verdict={},
+            passes_rigor=True,
+            generation_method="portfolio_agent_streaming",
+        )
+
+    @staticmethod
+    def _fake_artifact(run_id: str, timestamp_utc: str) -> dict:
+        """Shaped like the real ``backtest_portfolio`` artifact
+        (``portfolio_backtester.py``'s own construction): ``run_id`` and
+        ``timestamp_utc`` as top-level siblings, everything else content."""
+        return {
+            "run_id": run_id,
+            "timestamp_utc": timestamp_utc,
+            "operations": ["sSPY", "sGLD"],
+            "strategy": {"path": "generated/strat-1", "class_name": "GeneratedStaticRebalance"},
+            "assumptions": {"transaction_cost_bps": 10, "backtest_engine": "portfolio-simulator-v1"},
+            "results": [
+                {
+                    "operation": "PORTFOLIO",
+                    "symbol": "PORTFOLIO",
+                    "metrics": {
+                        "daily_returns": [0.001, 0.002, -0.001, 0.0015] * 5,
+                        "sharpe_ratio": 0.8,
+                    },
+                }
+            ],
+        }
+
+    @staticmethod
+    def _fake_result() -> "BacktestResult":  # noqa: F821,UP037 — deferred import, only inside this function
+        from archimedes.models.backtest import BacktestResult
+
+        return BacktestResult(
+            strategy_id="strat-1",
+            sharpe_ratio=0.8,
+            sortino_ratio=0.9,
+            max_drawdown=0.1,
+            cagr=0.15,
+            calmar_ratio=1.5,
+            win_rate=0.55,
+            profit_factor=1.2,
+            total_trades=4,
+            avg_holding_period_days=30.0,
+            correlation_to_spy=0.5,
+            correlation_to_btc=0.1,
+            equity_curve=[1.0, 1.01, 1.02],
+            monthly_returns=[0.01],
+            backtest_start=None,
+            backtest_end=None,
+            look_ahead_audit_passed=True,
+            backtest_engine="portfolio-simulator-v1",
+        )
+
+    async def test_second_persist_of_identical_content_is_skipped(self, monkeypatch):
+        """Two persists through ``_backtest_and_persist`` whose
+        ``backtest_portfolio`` artifacts differ ONLY in
+        ``run_id``/``timestamp_utc`` must collapse to ONE ``backtest_results``
+        row — the exact production symptom (identical strategy, identical
+        content, re-run through the society/portfolio-backtester path).
+
+        Mutation-proven: fails against the pre-fix ad hoc
+        ``hashlib.sha256(artifact_json)`` — see the PR body for the
+        revert/re-apply transcript.
+        """
+        from archimedes.agents.generation_pipeline import _backtest_and_persist
+        from archimedes.db import get_session
+        from archimedes.models.backtest_store import BacktestResultRecord
+        from archimedes.services.backtest_repository import SOURCE_PIPELINE_PORTFOLIO_BACKTESTER
+
+        artifacts = iter(
+            [
+                self._fake_artifact("gen-20260501T000000Z-strat1", "2026-05-01T00:00:00+00:00"),
+                self._fake_artifact("gen-20260502T000000Z-strat1", "2026-05-02T00:00:00+00:00"),
+            ]
+        )
+
+        def _fake_backtest_portfolio(*, strategy_id, weights, paper_title=None, num_trials_for_dsr=1, **kwargs):
+            return self._fake_result(), next(artifacts)
+
+        monkeypatch.setattr(
+            "archimedes.services.portfolio_backtester.backtest_portfolio",
+            _fake_backtest_portfolio,
+        )
+
+        class _NullEmitter:
+            async def emit(self, event, **payload):
+                return 0
+
+        strategy_id = "strat-1"
+        c = self._candidate()
+        emit = _NullEmitter()
+
+        await _backtest_and_persist(c, strategy_id, emit, num_trials=1)
+        await _backtest_and_persist(c, strategy_id, emit, num_trials=1)
+
+        with get_session() as session:
+            rows = (
+                session.query(BacktestResultRecord)
+                .filter(
+                    BacktestResultRecord.strategy_id == strategy_id,
+                    BacktestResultRecord.source_pipeline == SOURCE_PIPELINE_PORTFOLIO_BACKTESTER,
+                )
+                .all()
+            )
+            row_info = [(r.id, r.content_hash, r.run_id) for r in rows]
+
+        assert len(rows) == 1, (
+            "expected the second persist to be SKIPPED (identical content, "
+            f"differing only in run_id/timestamp_utc); got {len(rows)} rows: {row_info}"
+        )

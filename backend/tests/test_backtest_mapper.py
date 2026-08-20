@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 import pytest
 from archimedes.services.backtest_mapper import (
     AnalyticsArtifactModel,
+    canonical_artifact_hash,
     map_artifact_to_backtest_result,
     select_operation_result,
 )
@@ -162,3 +164,99 @@ def test_map_artifact_to_backtest_result_returns_multi_feed_operation_label() ->
 
     assert operation == "SPY/NIKKEI/GOLD/TREASURY/OIL"
     assert mapped.sharpe_ratio == pytest.approx(0.42)
+
+
+# ── canonical_artifact_hash volatile-field exclusion (issue #1347) ──────────
+#
+# Root cause: canonical_artifact_hash used to hash the WHOLE payload including
+# "run_id" and "timestamp_utc", both minted fresh on every run regardless of
+# content, so every run's hash was unique by construction and
+# insert_backtest_if_missing's content-hash dedupe could never match — the
+# table grew ~30 rows/strategy per container restart. These tests are
+# mutation-proven: reverting canonical_artifact_hash to `json.dumps(payload,
+# sort_keys=True, ...)` (no exclusion) makes
+# test_canonical_artifact_hash_ignores_run_id_and_timestamp FAIL, because two
+# payloads differing only in the excluded keys would then hash differently.
+# See the PR body for the revert/re-apply transcript.
+
+
+def _full_artifact_payload() -> dict:
+    """A raw artifact payload with BOTH volatile fields present, shaped like
+    what cli.py / portfolio_backtester.py actually emit (run_id and
+    timestamp_utc as siblings at the top level, alongside content)."""
+    return {
+        "run_id": "20260518T223743Z",
+        "timestamp_utc": "2026-05-18T22:37:43.964677+00:00",
+        "operations": ["SPY"],
+        "strategy": {
+            "path": "strategies/pipeline_buy_hold.py",
+            "class_name": "BuyAndHold",
+            "backtest_code_hash": "sha256:deadbeef",
+            "paper_claimed_sharpe": 0.5,
+        },
+        "assumptions": {
+            "start": "2018-01-01",
+            "end": "2026-01-01",
+            "transaction_cost_bps": 10,
+            "backtest_engine": "backtrader",
+        },
+        "results": [
+            {
+                "operation": "SPY",
+                "symbol": "SPY",
+                "metrics": {"sharpe_ratio": 0.71, "total_trades": 12},
+            }
+        ],
+        "data_hashes": ["f4096541e95c439b4cc82cd8660309f63855130e66c4e60f65942ffb96088384"],
+        "integrity_flags": {"lookahead_audit_passed": True},
+    }
+
+
+def test_canonical_artifact_hash_ignores_run_id_and_timestamp() -> None:
+    """Two payloads differing ONLY in run_id/timestamp_utc must hash equal.
+
+    Mutation check: this assertion fails against the unfixed
+    canonical_artifact_hash (plain sort_keys dump of the whole payload,
+    no exclusion) because run_id/timestamp_utc differ between the two
+    payloads below and would then perturb the hash.
+    """
+    run_a = _full_artifact_payload()
+    run_b = copy.deepcopy(run_a)
+    run_b["run_id"] = "20260519T010101Z"
+    run_b["timestamp_utc"] = "2026-05-19T01:01:01.000000+00:00"
+
+    assert run_a != run_b  # sanity: the two payloads are not byte-identical
+    assert canonical_artifact_hash(run_a) == canonical_artifact_hash(run_b)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("results", 0, "metrics", "sharpe_ratio"), 0.99),
+        (("strategy", "backtest_code_hash"), "sha256:different"),
+        (("assumptions", "transaction_cost_bps"), 25),
+        (("data_hashes",), ["a-completely-different-input-data-hash"]),
+    ],
+)
+def test_canonical_artifact_hash_changes_on_content_mutation(path: tuple, value: object) -> None:
+    """Any CONTENT field — including data_hashes, which is a hash of the
+    INPUT DATA and therefore not volatile — must still change the hash.
+    Guards against an over-broad exclusion swallowing real content."""
+    base = _full_artifact_payload()
+    mutated = copy.deepcopy(base)
+
+    node = mutated
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = value
+
+    assert canonical_artifact_hash(base) != canonical_artifact_hash(mutated)
+
+
+def test_canonical_artifact_hash_stable_without_volatile_keys() -> None:
+    """A payload that never had run_id/timestamp_utc (e.g. the DSL-fusion
+    artifact shape, which never included them) hashes the same before and
+    after the exclusion — the fix must be a no-op when the keys are absent."""
+    payload = {"results": [{"metrics": {"daily_returns": [0.01, -0.02]}}], "source": "dsl_fusion"}
+
+    assert canonical_artifact_hash(payload) == canonical_artifact_hash(copy.deepcopy(payload))
