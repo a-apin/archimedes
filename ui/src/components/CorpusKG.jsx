@@ -56,11 +56,10 @@ export default function CorpusKG({ onOpenPaper }) {
   // render an honest "can't tell right now", never a guessed corpus_kg_built
   // value. Fetched via the shared fetchHealth() TTL cache (../health.js),
   // deliberately NOT a raw direct call to the /health endpoint — Layout.jsx
-  // already fetches /health on every in-app navigation (main's #1333 line;
-  // not yet on this branch), so an uncached second read here would fire a
-  // second Arc RPC round-trip + DB reads in the same render pass the moment
-  // this branch reconciles with main. See ui/test/health-cache.test.js for
-  // the guard against reintroducing the direct call.
+  // already fetches /health on every in-app navigation (#1333), so an
+  // uncached second read here would fire a second Arc RPC round-trip + DB
+  // reads in the same render pass. See ui/test/chain-status.test.js for the
+  // guard against reintroducing the direct call.
   const [health, setHealth] = useState(null)
   const [healthError, setHealthError] = useState(false)
   useEffect(() => {

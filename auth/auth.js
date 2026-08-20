@@ -95,6 +95,39 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
       maxPasswordLength: 128,
       revokeSessionsOnPasswordReset: true,
       requireEmailVerification: emailVerificationEnforced(env),
+      sendResetPassword: async ({ user, url }) => {
+        // Fire-and-forget ON PURPOSE — do not `await` the send. Better Auth
+        // already returns an identical response body/status for a known vs.
+        // unknown email (requestPasswordReset in
+        // better-auth/dist/api/routes/password.mjs: an unknown address
+        // never reaches this callback at all, it takes a dummy-lookup
+        // early-return instead), which is the anti-enumeration design. But
+        // without `advanced.backgroundTasks.handler` configured, Better
+        // Auth's own dispatcher (`runInBackgroundOrAwait` in
+        // better-auth/dist/context/create-context.mjs) does `await promise`
+        // on whatever this callback returns — so an awaited mailer.send()
+        // here would make a known-address request measurably slower than an
+        // unknown-address one (the real SES round trip vs. an immediate
+        // early return), reopening the same enumeration channel through
+        // response TIMING instead of status code. Not awaiting the send
+        // makes this callback's own duration independent of mailer latency
+        // regardless. The `.catch` below is what keeps a mailer failure
+        // fail-soft (same reasoning as sendVerificationEmail below, and
+        // load-bearing here for the same anti-enumeration reason: a 500
+        // that only known accounts could trigger would leak account
+        // existence via status code) — loud single line, logged
+        // asynchronously after the response has already gone out.
+        mailer.send({
+          to: user.email,
+          subject: 'Reset your Archimedes password',
+          text:
+            'A password reset was requested for your Archimedes account:\n\n'
+            + `${url}\n\n`
+            + 'If you did not request this, ignore this message — your password will not change.',
+        }).catch(error => {
+          console.error('reset password email send failed:', error instanceof Error ? error.name : 'UnknownError')
+        })
+      },
     },
     emailVerification: {
       sendOnSignUp: true,

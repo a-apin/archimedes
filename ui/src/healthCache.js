@@ -1,19 +1,21 @@
-// Pure TTL-cache primitive backing fetchHealth() (./health.js). Deliberately
-// zero imports so it can be unit-tested directly with node:test. health.js's
-// own import graph (api.js → config.js → circle-wallet.js → wallet/passkey
-// browser SDKs) is browser-oriented and not safe to load under a bare
-// `node --test` run, so the cache logic lives here, decoupled from that
-// chain, and health.js is a thin wrapper around it.
+// Pure TTL-cache primitive backing fetchHealth() (./health.js, #1333 review
+// follow-up). Deliberately zero imports — like ./chainStatus.js — so it can
+// be unit-tested directly with node:test. health.js's own import graph
+// (api.js → config.js → circle-wallet.js → wallet/passkey browser SDKs) is
+// browser-oriented and not safe to load under a bare `node --test` run, so
+// the cache logic lives here, decoupled from that chain, and health.js is a
+// thin wrapper around it.
 //
-// The bug this exists to fix (#1368 adversarial review, on this component):
-// CorpusKG.jsx fetching /health directly on its own effect, uncached, on top
-// of whatever else on the page already reads it in the same render pass.
-// /health is rate-limit-exempt but not free — it does an Arc RPC round-trip
-// (`chain_client.is_connected()`) plus several DB reads
-// (`backend/archimedes/main.py`). Main's own #1333 line hit the identical
-// problem independently for Layout.jsx/Architecture.jsx/ModelCostPanel.jsx
-// and landed this same fix shape there; this file matches that design so the
-// two lines merge cleanly rather than reinventing an incompatible cache.
+// The bug this exists to fix: Layout.jsx (footer chain-status pill, #1321),
+// Architecture.jsx, and ModelCostPanel.jsx each called `apiGet("/health")`
+// independently, on their own effect. #1321's anti-goal said "/health is
+// already fetched by the shell; reuse that response" — but no shell-level
+// fetch existed for them to reuse, so once Layout started re-fetching on
+// every in-app navigation, landing on /architecture fired /health twice in
+// the same render pass: Layout's per-navigation re-fetch plus Architecture's
+// own mount fetch. /health is rate-limit-exempt but not free — it does an
+// Arc RPC round-trip (`chain_client.is_connected()`) plus several DB reads
+// (`backend/archimedes/main.py`).
 //
 // getCachedHealth() makes the "reuse that response" anti-goal real: a call
 // within HEALTH_TTL_MS of the last *resolved* fetch returns that same
