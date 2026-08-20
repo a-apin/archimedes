@@ -122,3 +122,18 @@ test("app motion and core workspaces respect narrow or reduced-motion contexts",
 		/@media \(max-width: 900px\)[^{]*\{[\s\S]*?\.generate-workbench,[\s\S]*?\.passport-workspace,[\s\S]*?\.portfolio-workspace\s*\{[^}]*grid-template-columns:\s*1fr;/s,
 	);
 });
+
+const generationStream = readFileSync(
+	new URL("../src/components/GenerationStream.jsx", import.meta.url),
+	"utf8",
+);
+
+test("generation stream claims papers only from real per-candidate citations (task #54)", () => {
+	// The old candidates_selected line rendered a papers COUNT sliced from the
+	// curated library (a constant from the wrong population) — it must not return.
+	assert.doesNotMatch(generationStream, /candidates;.*papers/);
+	// The honest claim: candidate_drafted's own provenance-checked citations,
+	// omitted when absent.
+	assert.match(generationStream, /case 'candidate_drafted'[\s\S]{0,400}source_arxiv_ids/);
+	assert.match(generationStream, /grounded in \$\{nPapers\}/);
+});

@@ -883,21 +883,16 @@ async def run_generation(
             except Exception as exc:
                 logger.warning("could not build per-job agent for model %r (%s); using default", model, exc)
                 job_agent = None
-        # Library = the candidate pool the agent reasons over; surface it so the UI
-        # can show "agent is considering N papers". The DSR multiple-testing count is
-        # the strategy's OWN candidate pool (computed per-candidate below), NOT the
-        # library size — a strategy's rigor depends only on itself (decouple #2).
-        try:
-            from archimedes.services.strategy_provider import default_provider
-
-            lib = default_provider().list_strategies()
-            arxiv_ids = [s.paper_arxiv_id for s in lib if getattr(s, "paper_arxiv_id", None)]
-        except Exception:
-            arxiv_ids = []
+        # No papers claim here — deliberately. This event fires BEFORE any
+        # corpus retrieval happens (paper selection runs inside each
+        # candidate's debate), so no honest papers count exists yet. The old
+        # payload sliced the CURATED LIBRARY's arxiv ids to max_papers, which
+        # made the stream claim a constant "N papers" from the wrong
+        # population at the wrong time. The real, provenance-checked citations
+        # ride each candidate_drafted event below instead.
         await emit.emit(
             "candidates_selected",
             candidate_count=len(regimes),
-            source_arxiv_ids=arxiv_ids[: brief.max_papers],
             regimes=regimes,
         )
 
@@ -950,6 +945,11 @@ async def run_generation(
                     strategy_name=entry.strategy_name,
                     weights_preview=entry.weights,
                     regime=regime,
+                    # The papers this accepted proposal actually cites —
+                    # provenance-checked against the corpus surface by the
+                    # debate critics (_critic_prov), never the depth knob.
+                    source_arxiv_ids=[aid for p in entry.source_papers if (aid := p.get("arxiv_id", ""))]
+                    or list(entry.source_arxiv_ids),
                 )
                 await emit.emit(
                     "candidate_evaluated",

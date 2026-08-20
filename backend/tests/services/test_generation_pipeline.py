@@ -1349,3 +1349,38 @@ async def test_no_llm_prod_shape_emits_generation_unavailable(monkeypatch):
     )
     statuses = [s[0] for s in store.status]
     assert "error" in statuses
+
+
+@pytest.mark.asyncio
+async def test_papers_claim_lives_on_candidate_drafted_not_candidates_selected():
+    """The stream's papers claim must come from each candidate's ACTUAL
+    citations, never the depth knob (task #54, claims-must-be-true):
+
+    - ``candidates_selected`` fires BEFORE any retrieval, so it must carry NO
+      papers field at all — the removed field sliced the curated library to
+      ``max_papers``, a constant count from the wrong population;
+    - every ``candidate_drafted`` carries ``source_arxiv_ids`` — the accepted
+      proposal's own citations (provenance-checked by the debate critics on
+      the live path; the fixture path threads its fixture citations through
+      the same emit).
+    """
+    store = _FakeStore()
+    brief = GenerateBrief(intent="13-week treasury alternative", risk_appetite="conservative")
+
+    with patch(
+        "archimedes.agents.generation_pipeline._persist_candidate",
+        new=AsyncMock(return_value=("strat_fixture_002", "0xdeadbeef")),
+    ):
+        await run_generation(job_id="job_papers_001", brief=brief, n_candidates=1, store=store)
+
+    selected = [e for e in store.events if e["event"] == "candidates_selected"]
+    assert len(selected) == 1
+    assert "source_arxiv_ids" not in selected[0]["data"], (
+        "candidates_selected must not claim papers — no retrieval has happened yet"
+    )
+
+    drafted = [e for e in store.events if e["event"] == "candidate_drafted"]
+    assert drafted
+    for e in drafted:
+        assert "source_arxiv_ids" in e["data"], "each drafted candidate must carry its own citations"
+        assert isinstance(e["data"]["source_arxiv_ids"], list)

@@ -49,19 +49,28 @@ function summarizeEvent(name, data) {
     case 'pipeline_selected':
       return `${data?.pipeline || '?'} — ${data?.reason || ''}`
     case 'candidates_selected':
-      return `Considering ${data?.candidate_count || '?'} candidates; ${(data?.source_arxiv_ids?.length || 0)} papers`
+      // No papers count here — paper retrieval happens inside each candidate's
+      // debate run, so no honest count exists yet. The real citations arrive
+      // per candidate on candidate_drafted below.
+      return `Considering ${data?.candidate_count || '?'} candidates`
     case 'agent_iteration':
       return `Iteration ${data?.iteration_n}/${data?.max_iterations} (${data?.candidate_id || ''})`
     case 'tool_called':
       return `${data?.tool_name}(${data?.args_summary || ''})`
     case 'tool_result':
       return `${data?.tool_name} → ${data?.result_summary || 'ok'}`
-    case 'candidate_drafted':
+    case 'candidate_drafted': {
+      // Papers count comes from the candidate's ACTUAL, provenance-checked
+      // citations (source_arxiv_ids on the event) — omitted when absent,
+      // never invented.
+      const nPapers = data?.source_arxiv_ids?.length || 0
       return (
         <>
           <RegimeIcon regime={data?.regime} /> {data?.strategy_name || '?'} ({data?.candidate_id})
+          {nPapers > 0 ? ` — grounded in ${nPapers} paper${nPapers === 1 ? '' : 's'}` : ''}
         </>
       )
+    }
     case 'candidate_evaluated': {
       const v = data?.rigor_verdict || {}
       const bits = []
