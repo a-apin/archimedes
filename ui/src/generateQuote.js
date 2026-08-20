@@ -112,6 +112,46 @@ export function paymentErrorMessage(err, fallback) {
 }
 
 /**
+ * The human-readable message the backend attached to a /start failure that
+ * is NOT a payment-gate response (402/409 — those route through
+ * paymentErrorMessage instead: quota 429s, the burst-limit 429, and auth
+ * 401s land here). `err.detail` (api.js's apiPostWithMeta attaches the
+ * parsed body's `detail` field, see #1296) arrives in one of two shapes on
+ * this endpoint:
+ *   - a dict `{message, reason, ...}` — generation_quota.py's daily-cap and
+ *     quota-unavailable 429/503s.
+ *   - a plain string — the slowapi burst-limit 429 and the 401's
+ *     "Authentication required", both FastAPI/slowapi convention.
+ * Either shape renders VERBATIM — same rule paymentErrorMessage's docstring
+ * states for the faucet caveat, never re-worded. When detail is absent or
+ * malformed, falls back to `fallback` (default "Failed to start
+ * generation") — appending the HTTP status when `err.status` is known, so
+ * the fallback is itself a short, honest sentence naming the status, never
+ * the bare `Backend returned <status>` echo api.js's Error.message carries.
+ * This never crashes and never regresses to the status-echo issue #1363
+ * fixed.
+ */
+export function startErrorMessage(err, fallback) {
+	const detail = err?.detail;
+	if (typeof detail === "string" && detail.trim()) return detail;
+	if (detail && typeof detail === "object" && typeof detail.message === "string" && detail.message.trim()) {
+		return detail.message;
+	}
+	const base = fallback || "Failed to start generation";
+	return err?.status ? `${base} (HTTP ${err.status})` : base;
+}
+
+/**
+ * The Depth control's offered values. MUST equal the pipeline's actually
+ * enforced range — MIN_PAPERS..FUSION_MAX_PAPERS in
+ * backend/archimedes/agents/strategy_fusion.py (2..6 today) — never a
+ * superset. Issue #1363: the UI used to offer 8 and 10, both silently
+ * clamped to 6 by the pipeline; the drift guard for the backend half of
+ * this contract lives in backend/tests/test_generate_schemas_depth_drift.py.
+ */
+export const DEPTH_OPTIONS = [2, 3, 4, 5, 6];
+
+/**
  * The account's PRIMARY linked wallet from a GET /api/wallets response
  * (list of LinkedWalletResponse) — or the first entry if none is flagged
  * primary. Null for an empty/missing list.
