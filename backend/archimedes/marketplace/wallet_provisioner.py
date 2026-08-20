@@ -56,7 +56,7 @@ def _encrypt_entity_secret(entity_secret_hex: str, public_key_pem: str) -> str:
 async def _resolve_wallet_set_id(session: aiohttp.ClientSession, api_key: str) -> str:
     """Resolve the Circle ``walletSetId`` new wallets are provisioned under.
 
-    ``WALLET_SET_ID`` env override takes precedence — when set, this returns
+    ``MARKETPLACE_WALLET_SET_ID`` env override takes precedence — when set, this returns
     immediately and makes no network call at all. Otherwise it lists the
     account's wallet sets via ``GET /v1/w3s/walletSets`` and uses the first
     one. Never invents an ID: an account with zero wallet sets fails loudly
@@ -66,7 +66,7 @@ async def _resolve_wallet_set_id(session: aiohttp.ClientSession, api_key: str) -
         RuntimeError: If the listing call fails or the account has no
             wallet sets.
     """
-    env_override = os.getenv("WALLET_SET_ID", "")
+    env_override = os.getenv("MARKETPLACE_WALLET_SET_ID", "")
     if env_override:
         return env_override
 
@@ -81,7 +81,7 @@ async def _resolve_wallet_set_id(session: aiohttp.ClientSession, api_key: str) -
         if not wallet_sets:
             raise RuntimeError(
                 "No Circle wallet sets exist on this account — create one in "
-                "the Circle console or set WALLET_SET_ID to pin a specific one"
+                "the Circle console or set MARKETPLACE_WALLET_SET_ID to pin a specific one"
             )
         return wallet_sets[0]["id"]
 

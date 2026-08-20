@@ -92,7 +92,7 @@ def _pubkey_route(pem: str):
 
 
 def _walletset_route(wallet_set_id="ws-default-1"):
-    """The GET /v1/w3s/walletSets route used when WALLET_SET_ID is unset."""
+    """The GET /v1/w3s/walletSets route used when MARKETPLACE_WALLET_SET_ID is unset."""
     return ("GET", "walletSets"), _FakeResp(200, {"data": {"walletSets": [{"id": wallet_set_id}]}})
 
 
@@ -277,14 +277,14 @@ class TestCreateCircleWallet:
 class TestWalletSetIdResolution:
     @pytest.mark.asyncio
     async def test_wallet_set_id_env_override_skips_the_walletsets_get(self, monkeypatch, rsa_keypair):
-        """WALLET_SET_ID takes precedence and must short-circuit before any
+        """MARKETPLACE_WALLET_SET_ID takes precedence and must short-circuit before any
         GET /v1/w3s/walletSets call — deliberately no walletSets route is
         registered, so if the code fell through to the GET anyway the fake
         session's unrouted-request assertion would fail this test."""
         _, pem = rsa_keypair
         session = _FakeSession(dict([_pubkey_route(pem), _created_route()]))
         _install(monkeypatch, session)
-        monkeypatch.setenv("WALLET_SET_ID", "ws-from-env")
+        monkeypatch.setenv("MARKETPLACE_WALLET_SET_ID", "ws-from-env")
 
         wallet_id, address = await wp.provision_subscriber_wallet("0xenvoverride")
 
