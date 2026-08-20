@@ -32,8 +32,14 @@ def _solidity_constant(name: str) -> int:
 
 
 def test_management_fee_cap_matches_vault_sol() -> None:
-    assert _solidity_constant("MAX_MANAGEMENT_FEE_BPS") == MAX_MANAGEMENT_FEE_BPS
+    sol = _solidity_constant("MAX_MANAGEMENT_FEE_BPS")
+    assert sol == MAX_MANAGEMENT_FEE_BPS, (
+        f"Vault.sol MAX_MANAGEMENT_FEE_BPS={sol} != chain.constants {MAX_MANAGEMENT_FEE_BPS} — update both together (#1138)"
+    )
 
 
 def test_performance_fee_cap_matches_vault_sol() -> None:
-    assert _solidity_constant("MAX_PERFORMANCE_FEE_BPS") == MAX_PERFORMANCE_FEE_BPS
+    sol = _solidity_constant("MAX_PERFORMANCE_FEE_BPS")
+    assert sol == MAX_PERFORMANCE_FEE_BPS, (
+        f"Vault.sol MAX_PERFORMANCE_FEE_BPS={sol} != chain.constants {MAX_PERFORMANCE_FEE_BPS} — update both together (#1138)"
+    )
