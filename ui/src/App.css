@@ -635,6 +635,18 @@ h4,
 	flex-shrink: 0;
 }
 
+/* Tri-state chain-status pill (#1321) — "unknown" must read as visibly
+   distinct from "connected", never fall back to the same green as live.
+   The three `.live-dot-connected`/`-disconnected`/`-unknown` tone rules are
+   declared under `.app-site .live-dot-*` below, not as bare classes here:
+   the only `.live-dot` element in the app is the sidebar footer pill
+   (Layout.jsx), and it always renders inside `.app-site`. A bare rule at
+   this scope is (0,1,0) — lower specificity than any `.app-site`-scoped
+   rule targeting the same element — so it would sit dead in the sheet.
+   (#1333 review caught an earlier version of exactly that: three unreachable
+   base-scope tone rules shipped alongside a PR whose point was deleting
+   dead code.) */
+
 /* --- Breadcrumbs --- */
 .breadcrumbs {
 	display: flex;
@@ -4944,9 +4956,32 @@ button:where(.tag) {
 	font-size: 0.58rem;
 }
 
-.app-site .live-dot {
-	background: var(--app-verify);
-	box-shadow: 0 0 8px rgba(121, 201, 183, 0.5);
+/* Tri-state chain-status pill (#1321), all three tones stated here at equal
+   (0,2,0) specificity so source order — not a specificity fight with the
+   base `.live-dot` / `.live-dot-*` rules above — decides which wins; a tone
+   class always co-occurs with `.live-dot` (Layout.jsx: `live-dot
+   live-dot-${tone}`), so scoping under `.app-site` is what makes these
+   reachable at all. `--positive`/`--negative`/`--warning` are aliased to
+   `--app-verify`/`--app-risk`/`--app-action` inside `.app-site` (both
+   themes, above), so using them (rather than the raw `--app-*` tokens
+   directly) keeps this block theme-aware without hard-coding either
+   palette. `connected` and `disconnected` both glow via `color-mix` against
+   the aliased token rather than a literal rgba — a hard-coded color drawn
+   from one theme's hex would stay that exact color for the other theme too,
+   mismatching the token there (`--positive`/`--negative` resolve to a
+   different hex per theme). `unknown` alone drops the glow entirely, so an
+   outage or a not-yet-resolved state doesn't still *look* alive. */
+.app-site .live-dot-connected {
+	background: var(--positive);
+	box-shadow: 0 0 8px color-mix(in srgb, var(--positive) 50%, transparent);
+}
+.app-site .live-dot-disconnected {
+	background: var(--negative);
+	box-shadow: 0 0 8px color-mix(in srgb, var(--negative) 45%, transparent);
+}
+.app-site .live-dot-unknown {
+	background: var(--warning);
+	box-shadow: none;
 }
 
 .app-site .topbar {
