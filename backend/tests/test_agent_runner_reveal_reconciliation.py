@@ -19,7 +19,7 @@ test author's idea of it.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -52,7 +52,7 @@ def runner_env():
     """A StrategyRunner with every chain boundary mocked and the live path armed."""
     with (
         patch("archimedes.chain.agent_runner.chain_client"),
-        patch("archimedes.chain.agent_runner.chain_executor"),
+        patch("archimedes.chain.agent_runner.chain_executor") as mock_executor,
         patch("archimedes.chain.agent_runner.trace_publisher") as mock_tp,
         patch("archimedes.chain.agent_runner.default_provider"),
         patch("archimedes.chain.agent_runner.AgentStateStore"),
@@ -65,10 +65,19 @@ def runner_env():
         runner.state = MagicMock()
         runner.state.save_trace = AsyncMock()
         runner.state.list_recent_traces = AsyncMock(return_value=[])
+        # Durable-index reads (#1353) — default to "nothing indexed yet" /
+        # "no first-seen marker" so pre-existing scan-only tests are
+        # unaffected; individual tests override to exercise the new paths.
+        runner.state.list_dangling_reveal_traces = AsyncMock(return_value=[])
+        runner.state.get_reveal_reconcile_first_seen = AsyncMock(return_value=None)
         mock_tp.supports_commit_reveal = MagicMock(return_value=True)
         mock_tp.get_commitment = AsyncMock(return_value=None)
         mock_tp.find_reveal_tx = AsyncMock(return_value=None)
         mock_tp.publish = AsyncMock(return_value=None)
+        # Signer pre-check (#1353) default: "can't be determined" — the check
+        # is skipped rather than guessed, matching every existing test's
+        # commitment fixtures (none carry a "committer" key).
+        mock_executor.backend_signer_address = MagicMock(return_value=None)
         yield runner, mock_tp
 
 
@@ -567,3 +576,254 @@ class TestTickIntegration:
         assert "Reveal reconciliation pass FAILED" in caplog.text
         reached.assert_called_once()  # the tick carried on past it
         assert "Strategy tick failed" not in caplog.text
+
+
+# ── signer pre-check (#1353) ─────────────────────────────────
+
+
+class TestSignerPreCheck:
+    """Cheap terminal short-circuit on a rotated committer (#1353).
+
+    ``reveal()`` requires ``msg.sender == committer``; after a key rotation
+    the OLD retry loop burned all REVEAL_RECONCILE_MAX_ATTEMPTS on 'Not
+    committer' reverts before going terminal. This checks it BEFORE
+    transacting so a confirmed mismatch costs zero attempts and zero gas.
+    """
+
+    def test_signer_mismatch_goes_terminal_without_consuming_an_attempt(self, runner_env):
+        runner, mock_tp = runner_env
+        record = _dangling_record(runner, mock_tp)
+        mock_tp.get_commitment = AsyncMock(
+            return_value={
+                "revealed": False,
+                "reveal_block": None,
+                "claimed_execution_time": 0,
+                "storage_pointer": "",
+                "committer": "0xOLDKEY000000000000000000000000000000000",
+            }
+        )
+        mock_tp.reveal = AsyncMock(return_value=("0xSHOULDNOTHAPPEN", 999))
+
+        with patch("archimedes.chain.agent_runner.chain_executor") as mock_executor:
+            mock_executor.backend_signer_address = MagicMock(return_value="0xNEWKEY000000000000000000000000000000000")
+            _run_pass(runner, [record])
+
+        mock_tp.reveal.assert_not_awaited()  # zero gas burned on a doomed revert
+        saved = _saved(runner)
+        assert saved["reveal_reconcile_state"] == "terminal"
+        assert "signer mismatch" in saved["reveal_reconcile_terminal_reason"]
+        assert "Not committer" in saved["reveal_reconcile_terminal_reason"]
+        assert saved.get("reveal_reconcile_attempts", 0) == 0  # NOT counted as a failed attempt
+        assert _needs_reveal_reconciliation(saved) is False
+
+    def test_matching_signer_proceeds_normally_case_insensitively(self, runner_env):
+        """GUARD-DOESN'T-OVERFIRE demo: a checksum-cased committer that
+        matches the configured (differently-cased) address must NOT be
+        flagged — the comparison is case-insensitive."""
+        runner, mock_tp = runner_env
+        record = _dangling_record(runner, mock_tp)
+        mock_tp.get_commitment = AsyncMock(
+            return_value={
+                "revealed": False,
+                "reveal_block": None,
+                "claimed_execution_time": 0,
+                "storage_pointer": "",
+                "committer": "0xAAAABBBBCCCCDDDDEEEEFFFF000000000000AAAA",
+            }
+        )
+        mock_tp.reveal = AsyncMock(return_value=("0xRETRYREVEAL", 150))
+
+        with patch("archimedes.chain.agent_runner.chain_executor") as mock_executor:
+            mock_executor.backend_signer_address = MagicMock(return_value="0xaaaabbbbccccddddeeeeffff000000000000aaaa")
+            _run_pass(runner, [record])
+
+        mock_tp.reveal.assert_awaited_once()
+        saved = _saved(runner)
+        assert saved["reveal_reconcile_state"] == "reconciled"
+
+    def test_undeterminable_signer_skips_the_check_rather_than_guessing(self, runner_env):
+        """backend_signer_address() returning None (Circle configured,
+        WALLET_ADDRESS unset) must fall through to the normal path — never
+        terminal on a guess."""
+        runner, mock_tp = runner_env
+        record = _dangling_record(runner, mock_tp)
+        mock_tp.get_commitment = AsyncMock(
+            return_value={
+                "revealed": False,
+                "reveal_block": None,
+                "claimed_execution_time": 0,
+                "storage_pointer": "",
+                "committer": "0xSOMECOMMITTER00000000000000000000000000",
+            }
+        )
+        mock_tp.reveal = AsyncMock(return_value=("0xRETRYREVEAL", 150))
+
+        with patch("archimedes.chain.agent_runner.chain_executor") as mock_executor:
+            mock_executor.backend_signer_address = MagicMock(return_value=None)
+            _run_pass(runner, [record])
+
+        mock_tp.reveal.assert_awaited_once()
+        saved = _saved(runner)
+        assert saved["reveal_reconcile_state"] == "reconciled"
+
+    def test_missing_committer_field_skips_the_check(self, runner_env):
+        """A commitment payload without a 'committer' key (e.g. an older
+        TracePublisher shape) must not crash or false-positive."""
+        runner, mock_tp = runner_env
+        record = _dangling_record(runner, mock_tp)
+        mock_tp.get_commitment = AsyncMock(
+            return_value={"revealed": False, "reveal_block": None, "claimed_execution_time": 0, "storage_pointer": ""}
+        )
+        mock_tp.reveal = AsyncMock(return_value=("0xRETRYREVEAL", 150))
+
+        with patch("archimedes.chain.agent_runner.chain_executor") as mock_executor:
+            mock_executor.backend_signer_address = MagicMock(return_value="0xANYADDRESS0000000000000000000000000000")
+            _run_pass(runner, [record])
+
+        mock_tp.reveal.assert_awaited_once()
+
+
+# ── durable index (#1353) ─────────────────────────────────────
+
+
+class TestDurableIndexUnion:
+    """The durable index makes the dangling scan exact regardless of trace
+    volume — a record the bounded 200-newest scan would miss is still found
+    via ``list_dangling_reveal_traces`` (closes #1276 known-limit #2)."""
+
+    def test_record_absent_from_the_bounded_scan_is_still_found_via_the_index(self, runner_env):
+        """GUARD DEMO: the bounded scan returns NOTHING (as if the record had
+        aged out of the newest-200 window) but the durable index still has
+        it — proving the index, not a wider window, is what closes the gap."""
+        runner, mock_tp = runner_env
+        record = _dangling_record(runner, mock_tp)
+        runner.state.list_recent_traces = AsyncMock(return_value=[])  # aged out of the window
+        runner.state.list_dangling_reveal_traces = AsyncMock(return_value=[record])  # still indexed
+        mock_tp.get_commitment = AsyncMock(
+            return_value={"revealed": False, "reveal_block": None, "claimed_execution_time": 0, "storage_pointer": ""}
+        )
+        mock_tp.reveal = AsyncMock(return_value=("0xRETRYREVEAL", 150))
+
+        asyncio.run(runner._reconcile_dangling_reveals("t-recon"))
+
+        mock_tp.reveal.assert_awaited_once()
+        saved = _saved(runner)
+        assert saved["reveal_reconcile_state"] == "reconciled"
+
+    def test_duplicate_between_index_and_scan_is_processed_exactly_once(self, runner_env):
+        runner, mock_tp = runner_env
+        record = _dangling_record(runner, mock_tp)
+        runner.state.list_recent_traces = AsyncMock(return_value=[record])
+        runner.state.list_dangling_reveal_traces = AsyncMock(return_value=[record])
+        mock_tp.get_commitment = AsyncMock(
+            return_value={"revealed": False, "reveal_block": None, "claimed_execution_time": 0, "storage_pointer": ""}
+        )
+        mock_tp.reveal = AsyncMock(return_value=("0xRETRYREVEAL", 150))
+
+        asyncio.run(runner._reconcile_dangling_reveals("t-recon"))
+
+        mock_tp.reveal.assert_awaited_once()  # not twice
+
+    def test_index_read_failure_degrades_to_scan_only_without_aborting(self, runner_env, caplog):
+        runner, mock_tp = runner_env
+        record = _dangling_record(runner, mock_tp)
+        runner.state.list_recent_traces = AsyncMock(return_value=[record])
+        runner.state.list_dangling_reveal_traces = AsyncMock(side_effect=RuntimeError("redis down"))
+        mock_tp.get_commitment = AsyncMock(
+            return_value={"revealed": False, "reveal_block": None, "claimed_execution_time": 0, "storage_pointer": ""}
+        )
+        mock_tp.reveal = AsyncMock(return_value=("0xRETRYREVEAL", 150))
+
+        with caplog.at_level("ERROR"):
+            asyncio.run(runner._reconcile_dangling_reveals("t-recon"))
+
+        assert "Reveal reconciliation index read FAILED" in caplog.text
+        mock_tp.reveal.assert_awaited_once()  # the scan-sourced record still got processed
+
+
+# ── compound-failure max-age guard (#1353) ────────────────────
+
+
+class TestMaxAgeCompoundFailureGuard:
+    """The attempt cap trusts ``reveal_reconcile_attempts``, a field inside
+    the SAME save_trace call a broken Redis write path might keep failing.
+    ``first_seen_at`` is written independently (HSETNX, set once) and bounds
+    age regardless of whether that counter's own persistence ever works."""
+
+    def test_stale_first_seen_terminals_even_with_the_attempt_cap_effectively_disabled(self, runner_env, monkeypatch):
+        runner, mock_tp = runner_env
+        monkeypatch.setattr("archimedes.chain.agent_runner.REVEAL_RECONCILE_MAX_ATTEMPTS", 1000)
+        monkeypatch.setattr("archimedes.chain.agent_runner.REVEAL_RECONCILE_MAX_AGE_SECONDS", 3600)
+        record = _dangling_record(runner, mock_tp)
+        stale = datetime.now(UTC) - timedelta(hours=2)
+        runner.state.get_reveal_reconcile_first_seen = AsyncMock(return_value=stale)
+        mock_tp.get_commitment = AsyncMock(
+            return_value={"revealed": False, "reveal_block": None, "claimed_execution_time": 0, "storage_pointer": ""}
+        )
+        mock_tp.reveal = AsyncMock(side_effect=RuntimeError("still broken"))
+
+        _run_pass(runner, [record])
+
+        saved = _saved(runner)
+        assert saved["reveal_reconcile_state"] == "terminal"
+        assert "max age exceeded" in saved["reveal_reconcile_terminal_reason"]
+        assert "compound-failure guard" in saved["reveal_reconcile_terminal_reason"]
+        # The counter never got anywhere near its (effectively disabled) cap —
+        # proof this bound is independent of the attempt counter, not a
+        # restatement of it.
+        assert saved["reveal_reconcile_attempts"] == 1
+
+    def test_fresh_first_seen_does_not_terminal_within_max_age(self, runner_env, monkeypatch):
+        """GUARD-DOESN'T-OVERFIRE demo: a record dangling for only seconds
+        must stay pending, not jump straight to terminal."""
+        runner, mock_tp = runner_env
+        monkeypatch.setattr("archimedes.chain.agent_runner.REVEAL_RECONCILE_MAX_ATTEMPTS", 1000)
+        monkeypatch.setattr("archimedes.chain.agent_runner.REVEAL_RECONCILE_MAX_AGE_SECONDS", 3600)
+        record = _dangling_record(runner, mock_tp)
+        runner.state.get_reveal_reconcile_first_seen = AsyncMock(return_value=datetime.now(UTC))
+        mock_tp.get_commitment = AsyncMock(
+            return_value={"revealed": False, "reveal_block": None, "claimed_execution_time": 0, "storage_pointer": ""}
+        )
+        mock_tp.reveal = AsyncMock(side_effect=RuntimeError("still broken"))
+
+        _run_pass(runner, [record])
+
+        saved = _saved(runner)
+        assert saved["reveal_reconcile_state"] == "pending"
+
+    def test_missing_first_seen_skips_the_age_guard_entirely(self, runner_env, monkeypatch):
+        """No first-seen marker (e.g. a record written before this index
+        existed) → the age guard is silently skipped, falling back to the
+        attempt-cap alone. MAX_AGE set to 1s here — it would fire instantly
+        if the guard didn't correctly no-op on a missing marker."""
+        runner, mock_tp = runner_env
+        monkeypatch.setattr("archimedes.chain.agent_runner.REVEAL_RECONCILE_MAX_ATTEMPTS", 1000)
+        monkeypatch.setattr("archimedes.chain.agent_runner.REVEAL_RECONCILE_MAX_AGE_SECONDS", 1)
+        record = _dangling_record(runner, mock_tp)
+        runner.state.get_reveal_reconcile_first_seen = AsyncMock(return_value=None)
+        mock_tp.get_commitment = AsyncMock(
+            return_value={"revealed": False, "reveal_block": None, "claimed_execution_time": 0, "storage_pointer": ""}
+        )
+        mock_tp.reveal = AsyncMock(side_effect=RuntimeError("still broken"))
+
+        _run_pass(runner, [record])
+
+        saved = _saved(runner)
+        assert saved["reveal_reconcile_state"] == "pending"
+
+    def test_first_seen_read_failure_is_loud_and_does_not_block_the_normal_attempt_cap(self, runner_env, caplog):
+        runner, mock_tp = runner_env
+        record = _dangling_record(runner, mock_tp)
+        runner.state.get_reveal_reconcile_first_seen = AsyncMock(side_effect=RuntimeError("redis down"))
+        mock_tp.get_commitment = AsyncMock(
+            return_value={"revealed": False, "reveal_block": None, "claimed_execution_time": 0, "storage_pointer": ""}
+        )
+        mock_tp.reveal = AsyncMock(side_effect=RuntimeError("still broken"))
+
+        with caplog.at_level("WARNING"):
+            _run_pass(runner, [record])
+
+        assert "first-seen read FAILED" in caplog.text
+        saved = _saved(runner)
+        assert saved["reveal_reconcile_state"] == "pending"  # normal attempt-cap path still worked
+        assert saved["reveal_reconcile_attempts"] == 1

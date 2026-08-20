@@ -515,13 +515,19 @@ class ChainExecutor:
         await self._apply_non_custodial_ownership(vault_address, owner_wallet)
         return vault_address
 
-    def _backend_signer_address(self) -> str | None:
-        """The EVM address the backend uses to sign vault txs (the agent/creator).
+    def backend_signer_address(self) -> str | None:
+        """The EVM address the backend uses to sign vault/registry txs (the agent).
 
         Circle path: the managed wallet's EVM address, surfaced via WALLET_ADDRESS
         (same env var the bootstrap script already reads for setAgent). Raw-key
         path: the address derived from ARC_AGENT_PRIVATE_KEY. Returns None if it
         can't be determined (Circle configured but WALLET_ADDRESS unset).
+
+        Public (promoted from ``_backend_signer_address`` for #1353): the reveal
+        reconciliation signer pre-check in ``agent_runner.py`` needs the same
+        "what address does this backend sign with" answer this vault-creation
+        path already computed — one source of truth rather than a second,
+        possibly-drifting derivation.
         """
         if circle_signer.is_configured:
             addr = os.getenv("WALLET_ADDRESS", "").strip()
@@ -575,7 +581,7 @@ class ChainExecutor:
         reason to 500 the create call (and never a reason to leave funds at risk —
         no user funds are in the vault yet at creation time).
         """
-        agent_addr = self._backend_signer_address()
+        agent_addr = self.backend_signer_address()
         resolved_owner = self._resolve_vault_owner(owner_wallet)
 
         if not resolved_owner:
