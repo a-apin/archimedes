@@ -130,7 +130,7 @@ ARCHIMEDES_EMAIL=agent@example.test ARCHIMEDES_PASSWORD='<secret>' \
   python scripts/agent_journey.py --base https://archimedes-arc.com
 ```
 
-Script retains Better Auth cookie, streams generation, and prints rigor verdict. `--deploy` additionally links wallet from `AGENT_WALLET_KEY` (or disposable wallet with `--ephemeral`) through EIP-4361. Explicit agent `User-Agent` keeps telemetry classification. Exit code is nonzero on hard failure.
+Script retains Better Auth cookie, streams generation, and prints rigor verdict. After generation the winner is deployed to **free paper trading** by default (`--no-paper` to skip) — note this creates a **persistent paper deployment** on whatever `--base` points at. On `--ephemeral` runs the script stops the deployment at the end (the disposable account is unreachable afterwards); on real-account runs it is left ACTIVE deliberately — that running ledger is the point — stop it later via `POST /api/paper/deployments/{id}/stop`. `--deploy` additionally links wallet from `AGENT_WALLET_KEY` (or disposable wallet with `--ephemeral`) through EIP-4361. Explicit agent `User-Agent` keeps telemetry classification. Exit code is nonzero on hard failure.
 
 See [`scripts/agent_journey.py`](scripts/agent_journey.py) for the full implementation.
 

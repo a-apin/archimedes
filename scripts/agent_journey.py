@@ -3,6 +3,8 @@
 
 Better Auth account session owns generation and application data. Optional EIP-4361
 wallet link is created only for ``--deploy``; wallet connection never authenticates.
+After generation the winner is deployed to FREE paper trading by default
+(``--no-paper`` to skip) — account session only, no wallet, no rigor precondition.
 Credentials and private keys come from environment only and are never printed.
 
 Usage:
@@ -338,6 +340,72 @@ def step_readback(client: httpx.Client, job_id: str) -> dict:
     return {"read_ok": True, "winner": winner}
 
 
+# ── PAPER — the free spine leg (#1268) ─────────────────────────────────────
+
+# The summary fields this harness prints; pinned against the REAL
+# deployment_summary() output by backend/tests/scripts/test_agent_journey_paper.py
+# so a rename on the service side fails that test, not a live readback.
+PAPER_SUMMARY_FIELDS = ("deployment_id", "status", "days", "total_return")
+
+
+def build_paper_deploy_payload(strategy_id: str) -> dict:
+    """The exact JSON body ``POST /api/paper/deployments`` reads. Factored out
+    of ``step_paper`` so the hermetic test can pin this shape (and
+    ``PAPER_SUMMARY_FIELDS``) against the real route/service —
+    ``backend/tests/scripts/test_agent_journey_paper.py``."""
+    return {"strategy_id": strategy_id}
+
+
+def step_paper(client: httpx.Client, winner: dict | None) -> str | None:
+    """Deploy the winning strategy to PAPER trading and read it back.
+
+    ``POST /api/paper/deployments`` needs only the account session — no
+    wallet, no gas, free by design (#1268), and deliberately NO rigor
+    precondition on the server: paper trading is where a pending strategy can
+    prove itself honestly. So unlike ``step_deploy`` this step does not
+    refuse a non-deployable winner; it prints the live-gate status and lets
+    the server decide (404 for invisible strategies, 422 for spec-less ones).
+
+    Returns the deployment_id; None when skipped (no persisted winner) or
+    failed — ``main`` turns a failure into a nonzero exit the same way
+    ``--deploy`` does. The post-create readback is part of the leg: a
+    deployment the owner cannot immediately GET back is a failure, not a
+    footnote.
+    """
+    _hr("PAPER — free paper-trading deployment (account session only)")
+    if not winner or not winner.get("strategy_id"):
+        print("  · no winning candidate with a persisted strategy — skipping paper deploy")
+        return None
+    sid = winner["strategy_id"]
+    print(
+        f"  · {winner.get('strategy_name')!r}  live_gate={winner.get('rigor_gate_status')!r} "
+        "(paper has no gate precondition)"
+    )
+    try:
+        r = client.post("/api/paper/deployments", json=build_paper_deploy_payload(sid))
+    except httpx.HTTPError as exc:
+        print(f"  ✗ POST /api/paper/deployments — transport error: {exc}")
+        return None
+    if r.status_code != 201:
+        print(f"  ✗ POST /api/paper/deployments — HTTP {r.status_code}: {r.text[:300]}")
+        return None
+    try:
+        dep = r.json()
+        deployment_id = dep["deployment_id"]
+    except (ValueError, KeyError, TypeError) as exc:
+        print(f"  ✗ POST /api/paper/deployments — unexpected response shape ({exc}): {r.text[:200]}")
+        return None
+    print(f"  ✓ paper deployment created: {deployment_id}")
+
+    summary = _get(client, f"/api/paper/deployments/{deployment_id}")
+    if not isinstance(summary, dict):
+        print("  ✗ created but could not read the deployment back — failing the leg")
+        return None
+    fields = "  ".join(f"{k}={summary.get(k)!r}" for k in PAPER_SUMMARY_FIELDS)
+    print(f"  ✓ readback: {fields}")
+    return deployment_id
+
+
 # ── DEPLOY + MONITOR (slice 2 continued) ───────────────────────────────────
 
 
@@ -531,6 +599,14 @@ def main() -> int:
         "the always-on correctness floors)",
     )
     ap.add_argument(
+        "--paper",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="after generation, deploy the winner to FREE paper trading (POST /api/paper/deployments; "
+        "account session only — no wallet, no gas, no rigor precondition). --no-paper skips. "
+        "Stop later via POST /api/paper/deployments/{id}/stop.",
+    )
+    ap.add_argument(
         "--monitor-address",
         default=None,
         help="GET /api/vaults/{address}/health for an existing vault, independent of deploying one this run "
@@ -573,6 +649,20 @@ def main() -> int:
         ok = readback["read_ok"]
         print(f"\nRESULT: journey {'completed' if ok else 'partial (no verdict read)'} — job_id={job_id}")
 
+        paper_id = step_paper(client, readback.get("winner")) if args.paper else None
+        if paper_id and args.ephemeral:
+            # A disposable account is unreachable after this run, so its paper
+            # deployment would accumulate as an orphan on --base forever. Stop
+            # it (freezes the ledger honestly); real-account runs deliberately
+            # leave the deployment ACTIVE — the running ledger is the point.
+            try:
+                stop = client.post(f"/api/paper/deployments/{paper_id}/stop")
+                print(
+                    f"  · ephemeral run: paper deployment {'stopped' if stop.is_success else f'stop failed (HTTP {stop.status_code})'}"
+                )
+            except httpx.HTTPError as exc:
+                print(f"  · ephemeral run: paper deployment stop failed ({exc})")
+
         vault_address = step_deploy(
             client,
             readback.get("winner"),
@@ -585,6 +675,21 @@ def main() -> int:
         )
         # Requested hard steps must move the exit code (review): a --deploy
         # run that deployed nothing, or a failed monitor read, is not success.
+        # Same for the paper leg, but only when it was actually ATTEMPTED:
+        # no persisted winner means there was nothing to deploy — the journey
+        # RESULT line above already reports how the generation went (note
+        # `ok` covers verdict readability, not winner existence, so a
+        # winnerless-but-readable run legitimately exits 0 with paper
+        # skipped). A failed POST/readback on a real attempt is a failure.
+        paper_ok = True
+        if args.paper and (readback.get("winner") or {}).get("strategy_id"):
+            if paper_id:
+                print(
+                    f"RESULT: paper deployment {paper_id} created (free; stop via POST /api/paper/deployments/{paper_id}/stop)"
+                )
+            else:
+                paper_ok = False
+                print("RESULT: paper deployment failed — see above.")
         deploy_ok = True
         if args.deploy and not vault_address:
             deploy_ok = False
@@ -596,7 +701,7 @@ def main() -> int:
         if vault_address:
             print(f"RESULT: vault deployed — {vault_address}")
 
-        return 0 if (ok and deploy_ok and monitor_ok) else 1
+        return 0 if (ok and paper_ok and deploy_ok and monitor_ok) else 1
     finally:
         client.close()
 
