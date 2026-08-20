@@ -147,7 +147,7 @@ const leaderboard = readFileSync(
 	"utf8",
 );
 
-test("leaderboard caveat banner is own-scope-gated with only the refresh residual (#1306, F2/F3 landed)", () => {
+test("leaderboard caveat banner is own-scope-gated (#1306; the refresh-residual claim is retired by #1365)", () => {
 	// The broad unconditional banner ("known to be incorrect") is retired for
 	// the curated view, whose freshness was verified against prod.
 	assert.doesNotMatch(leaderboard, /known to be incorrect/);
@@ -171,9 +171,16 @@ test("leaderboard renders every field it sorts by, and no constant forward colum
 	assert.match(leaderboard, /fixed at generation time/);
 	const block = leaderboard.match(/const SORT_OPTIONS = \[([\s\S]*?)\]/)[1];
 	for (const [, id] of block.matchAll(/id: '([a-z_]+)'/g)) {
-		assert.match(leaderboard, new RegExp(`e\\.${id}\\b`), `sort option ${id} has no rendered value`);
+		// A RENDER site is fmt(...)/fmtPct(...)-wrapped output — a bare e.<id>
+		// also matches null-CHECKS inside a render gate, which is exactly the
+		// defect this test exists to reject (a field sorted but never shown).
+		assert.match(
+			leaderboard,
+			new RegExp(`fmt(?:Pct)?\\(\\s*e\\.${id}\\b`),
+			`sort option ${id} has no fmt-rendered value`,
+		);
 	}
-	assert.match(leaderboard, /e\.out_of_sample_sharpe/);
+	assert.match(leaderboard, /fmt\(\s*e\.out_of_sample_sharpe\b/);
 	assert.doesNotMatch(leaderboard, /SB pending/);
 	assert.doesNotMatch(leaderboard, /P&L pending/);
 });
