@@ -297,6 +297,22 @@ test("compactCostCell: a measured record shows tokens, with wall time and the do
 	assert.doesNotMatch(cell.title, /candidate generation/i);
 });
 
+test("compactCostCell: a record whose token count is unreadable says so in words, in the cell and the tooltip", () => {
+	const cell = compactCostCell({
+		...RECORD,
+		measurement: {
+			...RECORD.measurement,
+			llm: { calls: 4, calls_missing_usage: 4, usage_complete: false },
+		},
+	});
+	assert.equal(cell.label, NOT_MEASURED);
+	assert.match(cell.title, /Token count not measured for this run/);
+	// Never the formatting-bug rendering of the same fact.
+	assert.doesNotMatch(cell.title, /— tokens \(in — \/ out —\)/);
+	// The rest of the record is still readable and still shown.
+	assert.match(cell.title, /wall 47\.9 s/);
+});
+
 test("compactCostCell: an incomplete measurement carries the ≥ into the library cell too", () => {
 	const cell = compactCostCell({
 		...RECORD,

@@ -224,8 +224,15 @@ export function quoteNote(view) {
 export function compactCostCell(record) {
 	const view = deriveGenerationCostView(record);
 	if (!view) return { label: NOT_MEASURED, title: NOT_MEASURED_HINT, measured: false };
+	// A record can exist while its token count is unreadable. Say that in words
+	// rather than rendering "— tokens (in — / out —)", which reads like a
+	// formatting bug instead of the honest statement it is.
+	const tokensPhrase =
+		view.tokens.total == null
+			? "Token count not measured for this run"
+			: `${tokensLabel(view)} tokens (in ${formatTokenCount(view.tokens.input)} / out ${formatTokenCount(view.tokens.output)})`;
 	const title = [
-		`${tokensLabel(view)} tokens (in ${formatTokenCount(view.tokens.input)} / out ${formatTokenCount(view.tokens.output)})`,
+		tokensPhrase,
 		`wall ${formatDuration(view.wallSeconds)}`,
 		view.dominantStage
 			? `dominant stage ${stageLabel(view.dominantStage.name)} (${formatDuration(view.dominantStage.wallSeconds)})`
