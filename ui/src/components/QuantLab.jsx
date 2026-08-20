@@ -55,6 +55,10 @@ export default function QuantLab() {
   const [driftVaultName, setDriftVaultName] = useState('')
   const [trades, setTrades] = useState(null)
   const [loading, setLoading] = useState(true)
+  // Distinguishes "the library really is empty" from "the library fetch
+  // failed" (#1369 review finding) — both leave `strategies` at `[]`, but
+  // conflating them makes a backend outage read as an honest empty library.
+  const [libraryError, setLibraryError] = useState(false)
 
   // ── Library list + per-strategy persisted returns ─────────────────────────
   useEffect(() => {
@@ -91,6 +95,7 @@ export default function QuantLab() {
         setSelectedId((cur) => cur || firstWithData?.id || strats[0]?.id || '')
       } catch (_) {
         // Backend down: panels keep their synthetic render + badges.
+        if (!cancelled) setLibraryError(true)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -227,8 +232,9 @@ export default function QuantLab() {
         <h2 className="serif text-[2rem] mb-2.5">Quant Lab</h2>
         <p className="body">
           Risk, optimization, and backtest diagnostics computed from the live library: persisted
-          backtest returns, vault allocations, and recorded rebalance traces. A section that has no
-          live source yet renders a synthetic sample and says so on its badge.
+          backtest returns are live today. Vault-allocation drift and the recorded-trade log activate
+          once a vault is deployed; until then, those two panels render a synthetic sample and say so
+          on their badge.
         </p>
       </div>
 
@@ -239,13 +245,20 @@ export default function QuantLab() {
           <select
             value={selectedId}
             onChange={(e) => setSelectedId(e.target.value)}
+            disabled={strategies.length === 0}
             style={{ fontSize: '0.82rem', padding: '4px 8px', background: 'var(--glass)', border: '1px solid var(--glass-border)', borderRadius: 4, color: 'var(--text-1)' }}
           >
-            {strategies.map((s) => (
-              <option key={s.id} value={s.id}>
-                {(s.paper_title || s.name || s.id) + (missingIds.has(s.id) ? ' (no persisted returns)' : '')}
+            {strategies.length === 0 ? (
+              <option value="">
+                {loading ? 'Loading strategies…' : libraryError ? 'Strategy library unavailable' : 'No strategies in library'}
               </option>
-            ))}
+            ) : (
+              strategies.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {(s.paper_title || s.name || s.id) + (missingIds.has(s.id) ? ' (no persisted returns)' : '')}
+                </option>
+              ))
+            )}
           </select>
         </label>
         <span className="caption" style={{ color: 'var(--text-4)' }}>
@@ -273,6 +286,8 @@ export default function QuantLab() {
           strategyId={selectedId || undefined}
           weights={SWEEP_WEIGHTS}
           realTrades={trades ?? undefined}
+          libraryLoading={loading}
+          libraryError={libraryError}
         />
       </div>
     </div>
