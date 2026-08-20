@@ -299,7 +299,9 @@ informational. `pip install pre-commit && pre-commit install` mirrors the CI gat
 so pre-commit can't pass while CI fails. `--unsafe-fixes` needs line-by-line human review
 and is never auto-applied.
 
-Dependency hygiene — `pip-audit` / `cd ui && npm audit --omit=dev` before any dep bump;
+Dependency hygiene — `pip-audit` / `cd ui && npm audit --omit=dev` (prod-only view; drop
+the flag to also see dev-tooling CVEs) / `cd wallet-setup && npm audit` (a second, separate
+npm project — runtime deps only, no `--omit=dev` needed) before any dep bump;
 triage Dependabot promptly. Three rules:
 
 - **Pin transitively-vulnerable deps directly when CVEs warrant it** — e.g. `starlette>=1.0.1` is pinned in both `environment.yml` and `backend/requirements.txt` to close PYSEC-2026-161 even though it would otherwise arrive transitively via FastAPI. Pin to the closest `Fix Versions` so a fresh resolution can't regress.
