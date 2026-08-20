@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { fetchHealth } from '../health'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -25,9 +26,15 @@ const TYPE_ICONS = {
 const MIN_QUERY_LENGTH = 2
 
 /**
- * Topic Clusters viewer. (Currently renders BERTopic-derived topic clusters
- * across the KB-processed paper subset. Promoted to a real Knowledge Graph
- * once REBEL + SciSpacy land — Issue #293.)
+ * Topic Clusters viewer. (Renders whatever ``/api/corpus/kg/entities``
+ * returns from ``kg_entities``/``kg_relations`` — 0/0 in prod today, so the
+ * zero-state below is what actually renders. Promoted to a real Knowledge
+ * Graph once #1090 produces the KB pipeline's first artifact AND #1092
+ * backfills kg_entities/kg_relations from it — /health's corpus_kg_built
+ * reflects the latter (entities actually present), not artifact presence
+ * alone; see corpus_artifact_present for that separate fact. The prior
+ * pointer here, #293, closed 2026-05-25 with kg_entities/kg_relations still
+ * at 0/0 in prod — see #1368.)
  *
  * Fetches from ``/api/corpus/kg/entities?q=<q>`` and renders entities
  * + relations as an SVG graph. Entity search filters the KG. Falls back
@@ -41,6 +48,33 @@ export default function CorpusKG({ onOpenPaper }) {
   const [validationError, setValidationError] = useState('')
   const [hoverEntity, setHoverEntity] = useState(null)
   const svgRef = useRef(null)
+
+  // The zero-state copy for `entities.length === 0` must not assert "pipeline
+  // hasn't run" for a search that simply matched nothing once the pipeline
+  // HAS run (#1368) — /health's corpus_kg_built is the live authority for
+  // which of those two states we're in, so it's fetched here rather than
+  // asserted. Tri-state (loading / error / value) — a failed fetch must
+  // render an honest "can't tell right now", never a guessed corpus_kg_built
+  // value. Fetched via the shared fetchHealth() TTL cache (../health.js),
+  // deliberately NOT a raw direct call to the /health endpoint — Layout.jsx
+  // already fetches /health on every in-app navigation (#1333), so an
+  // uncached second read here would fire a second Arc RPC round-trip + DB
+  // reads in the same render pass. See ui/test/chain-status.test.js for the
+  // guard against reintroducing the direct call.
+  const [health, setHealth] = useState(null)
+  const [healthError, setHealthError] = useState(false)
+  useEffect(() => {
+    fetchHealth()
+      .then(setHealth)
+      .catch(() => setHealthError(true))
+  }, [])
+  const healthLoading = !health && !healthError
+
+  // The exact term actually sent to the backend (defaults to 'topic' — see
+  // fetchKG below) — distinct from `query`, the live input-box value, so the
+  // zero-state can name what was searched even for the default on-mount load
+  // where the user never typed anything.
+  const [searchedTerm, setSearchedTerm] = useState('')
 
   // Zoom/pan state — scale + translation applied to a wrapping <g> so
   // node/edge/label rendering below is untouched. Wheel zooms around the
@@ -57,6 +91,7 @@ export default function CorpusKG({ onOpenPaper }) {
       // fall back to 'topic' (not become the literal query and 422), and
       // stray leading/trailing spaces shouldn't reach the backend (review).
       const searchTerm = (q || '').trim() || 'topic'
+      setSearchedTerm(searchTerm)
       const res = await fetch(`${API_BASE}/api/corpus/kg/entities?q=${encodeURIComponent(searchTerm)}`)
       if (res.status === 503) throw new Error('KB pipeline still running — first artifact pending')
       if (res.status === 422) throw new Error(`422: search term must be at least ${MIN_QUERY_LENGTH} characters`)
@@ -334,7 +369,41 @@ export default function CorpusKG({ onOpenPaper }) {
       {loading ? (
         <div style={{ padding: 40, textAlign: 'center' }} className="caption">Loading topic clusters…</div>
       ) : entities.length === 0 ? (
-        <div style={{ padding: 40, textAlign: 'center' }} className="caption">No entities found.</div>
+        // The old zero-state copy read as an empty-search-result, but on the
+        // live path this endpoint returns 200 with empty sets whether the KB
+        // pipeline has produced an artifact or not — indistinguishable from a
+        // query simply matching nothing (#1368). /health's corpus_kg_built is
+        // the live authority for which of those two states we're in: naming
+        // the pipeline unconditionally would itself go stale into a new
+        // over-claim the moment #1090 lands and a legitimate empty search
+        // hits this same branch, so the copy below branches on the fetched
+        // value instead of asserting either state.
+        //
+        // The `corpus_kg_built === false` copy itself must not assert "the
+        // pipeline hasn't run" as a world fact either (second-round adversarial
+        // review, #1392): main.py's kg-count read defaults to 0 — and so
+        // `corpus_kg_built` to false — both when genuinely zero entities exist
+        // AND when the /health DB read itself failed (`except Exception:
+        // logger.debug(...)`, no distinguishing signal returned today). Since
+        // this component cannot tell those two cases apart from the field
+        // alone, the copy below reports what `/health` said rather than
+        // asserting why it said it.
+        <div style={{ padding: 40, textAlign: 'center' }} className="caption">
+          {healthLoading ? (
+            'Checking knowledge-graph pipeline status…'
+          ) : healthError ? (
+            'Live pipeline status unavailable right now — try again shortly.'
+          ) : health.corpus_kg_built ? (
+            `No entities matched "${searchedTerm}".`
+          ) : (
+            <>
+              /health reports corpus_kg_built = false — no knowledge-graph entities are
+              visible right now (#1090 produces the KB pipeline artifact; #1092 backfills
+              kg_entities/kg_relations from it). Paper retrieval on the Catalog tab doesn't
+              depend on it.
+            </>
+          )}
+        </div>
       ) : (
         <div style={{ overflow: 'hidden', padding: '0 12px 12px', position: 'relative' }}>
           {/* Informative chart, so it gets the same role="img" + aria-label

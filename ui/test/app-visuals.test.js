@@ -15,6 +15,11 @@ const layout = readFileSync(
 	new URL("../src/components/Layout.jsx", import.meta.url),
 	"utf8",
 );
+// PROOF_STAGES itself moved out of Layout.jsx into proofStages.js (#1354) so
+// the roadmap-copy guard can call getProofStages() under plain node — see
+// that file and ui/test/roadmap-copy.test.js for the 3-vs-5-stage guard
+// (getProofStages(false)/(true)/() pins the flag-derived stage count; this
+// file only pins that Layout.jsx wires to it, see below).
 const passport = readFileSync(
 	new URL("../src/components/StrategyPassport.jsx", import.meta.url),
 	"utf8",
@@ -30,13 +35,17 @@ const insights = readFileSync(
 
 test("authenticated shell has isolated operational tokens and journey rail", () => {
 	assert.match(layout, /shell app-site/);
-	assert.match(layout, /PROOF_STAGES/);
+	// Pin the wiring, not just the identifier: Layout.jsx must actually call
+	// the flag-derived getProofStages() (proofStages.js), not a hardcoded
+	// array — CORE_PROOF_STAGES/ROADMAP_PROOF_STAGES both declare their
+	// labels unconditionally as source literals, so a plain
+	// `assert.match(proofStages, /Vault/)` (etc.) against that file's text
+	// would pass regardless of whether the flag-derived split is wired
+	// correctly; the 3-vs-5-stage behaviour itself is exercised by
+	// getProofStages(false)/(true)/() in roadmap-copy.test.js.
+	assert.match(layout, /import \{ getProofStages \} from ["']\.\.\/proofStages\.js["'];/);
+	assert.match(layout, /const PROOF_STAGES = getProofStages\(\);/);
 	assert.match(layout, /className="app-proof-rail"/);
-	assert.match(layout, /Brief/);
-	assert.match(layout, /Debate/);
-	assert.match(layout, /Gate/);
-	assert.match(layout, /Vault/);
-	assert.match(layout, /Monitor/);
 	assert.match(layout, /aria-current=\{isCurrent \? "step" : undefined\}/);
 	assert.match(
 		layout,
@@ -147,14 +156,15 @@ const leaderboard = readFileSync(
 	"utf8",
 );
 
-test("leaderboard caveat banner is own-scope-gated with only the refresh residual (#1306, F2/F3 landed)", () => {
+test("leaderboard caveat banner is own-scope-gated (#1306; the refresh-residual claim is retired by #1365)", () => {
 	// The broad unconditional banner ("known to be incorrect") is retired for
 	// the curated view, whose freshness was verified against prod.
 	assert.doesNotMatch(leaderboard, /known to be incorrect/);
 	// The remaining banner renders ONLY under isOwn — the gate expression must
 	// immediately precede the banner's status div.
 	assert.match(leaderboard, /\{isOwn && \(\s*<div\s*\n?\s*role="status"/);
-	// The one remaining residual: pre-correction rows that refresh later.
+	// The one remaining residual: pre-correction rows are fixed at generation
+	// time (never refreshed) — see the dedicated test below (#1365).
 	assert.match(leaderboard, /before the August engine corrections/);
 	// The interpreter-divergence clause is RETIRED (F2/F3 landed via #1320,
 	// parity-pinned, verified on the redeployed runner) — its claim would now
@@ -163,6 +173,25 @@ test("leaderboard caveat banner is own-scope-gated with only the refresh residua
 	// fixes, so pin the banner's own load-bearing phrases, not the comment.)
 	assert.doesNotMatch(leaderboard, /live execution currently interprets/);
 	assert.doesNotMatch(leaderboard, /awaiting\s*\n?\s*live-trading sign-off/);
+});
+
+test("leaderboard renders every field it sorts by, and no constant forward column (#1365)", () => {
+	assert.doesNotMatch(leaderboard, /refresh on their next/);
+	assert.match(leaderboard, /fixed at generation time/);
+	const block = leaderboard.match(/const SORT_OPTIONS = \[([\s\S]*?)\]/)[1];
+	for (const [, id] of block.matchAll(/id: '([a-z_]+)'/g)) {
+		// A RENDER site is fmt(...)/fmtPct(...)-wrapped output — a bare e.<id>
+		// also matches null-CHECKS inside a render gate, which is exactly the
+		// defect this test exists to reject (a field sorted but never shown).
+		assert.match(
+			leaderboard,
+			new RegExp(`fmt(?:Pct)?\\(\\s*e\\.${id}\\b`),
+			`sort option ${id} has no fmt-rendered value`,
+		);
+	}
+	assert.match(leaderboard, /fmt\(\s*e\.out_of_sample_sharpe\b/);
+	assert.doesNotMatch(leaderboard, /SB pending/);
+	assert.doesNotMatch(leaderboard, /P&L pending/);
 });
 
 test("Insights headline claim matches the write path — no bot-exclusion claim, per-stage split shown instead (#1366 AC3)", () => {
