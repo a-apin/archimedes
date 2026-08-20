@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+	DEPTH_OPTIONS,
 	PAYMENT_STATUS,
 	buildDryRunPaymentHeader,
 	deriveQuoteView,
@@ -14,6 +15,7 @@ import {
 	paymentErrorMessage,
 	primaryLinkedWallet,
 	resolveDryRunPayer,
+	startErrorMessage,
 } from "../src/generateQuote.js";
 
 // ── deriveQuoteView: shapes the ratified GET /api/generate/quote response
@@ -137,6 +139,72 @@ test("paymentErrorMessage: renders detail.message verbatim, falls back only when
 	);
 	assert.equal(paymentErrorMessage({}, "fallback"), "fallback");
 	assert.equal(paymentErrorMessage(null), "Payment step failed.");
+});
+
+// ── startErrorMessage: the four written backend error messages issue #1363
+// found discarded — both detail SHAPES (dict and plain string) must render
+// verbatim, never the bare "Backend returned <status>" echo. ─────────────
+
+test("startErrorMessage: dict-shape detail (daily-cap 429, generation_quota.py) renders detail.message verbatim", () => {
+	const err = {
+		status: 429,
+		detail: {
+			message:
+				"You've reached today's generation limit (10/day for this account). The allowance resets daily — or reach out if you need more.",
+			reason: "generation_daily_cap",
+			scope: "user",
+			cap: 10,
+		},
+	};
+	assert.equal(
+		startErrorMessage(err),
+		"You've reached today's generation limit (10/day for this account). The allowance resets daily — or reach out if you need more.",
+	);
+	assert.doesNotMatch(startErrorMessage(err), /^Backend returned /);
+});
+
+test("startErrorMessage: dict-shape detail (quota-unavailable 503, generation_quota.py) renders detail.message verbatim", () => {
+	const err = {
+		status: 503,
+		detail: {
+			message:
+				"Generation is temporarily unavailable — the usage-limit service could not be reached. Nothing was counted against your allowance.",
+			reason: "generation_quota_unavailable",
+		},
+	};
+	assert.equal(
+		startErrorMessage(err),
+		"Generation is temporarily unavailable — the usage-limit service could not be reached. Nothing was counted against your allowance.",
+	);
+	assert.doesNotMatch(startErrorMessage(err), /^Backend returned /);
+});
+
+test("startErrorMessage: plain-string detail (burst-limit 429, slowapi convention) renders verbatim", () => {
+	const err = { status: 429, detail: "Rate limit exceeded. Please slow down and try again later." };
+	assert.equal(startErrorMessage(err), "Rate limit exceeded. Please slow down and try again later.");
+	assert.doesNotMatch(startErrorMessage(err), /^Backend returned /);
+});
+
+test("startErrorMessage: plain-string detail (401, account_auth.py) renders verbatim", () => {
+	const err = { status: 401, detail: "Authentication required" };
+	assert.equal(startErrorMessage(err), "Authentication required");
+	assert.doesNotMatch(startErrorMessage(err), /^Backend returned /);
+});
+
+test("startErrorMessage: falls back honestly, never crashes, on a missing/malformed detail", () => {
+	assert.equal(startErrorMessage({ status: 500 }, "fallback text"), "fallback text");
+	assert.equal(startErrorMessage(null, "fallback text"), "fallback text");
+	assert.equal(startErrorMessage({}), "Failed to start generation");
+	// A detail object with no usable `message` string must not crash or leak
+	// [object Object] — falls back same as an absent detail.
+	assert.equal(startErrorMessage({ detail: { reason: "something" } }, "fallback"), "fallback");
+});
+
+// ── DEPTH_OPTIONS: must equal the pipeline's actually enforced range,
+// never a superset the pipeline silently clamps. ──────────────────────────
+
+test("DEPTH_OPTIONS: exactly the enforced [MIN_PAPERS, FUSION_MAX_PAPERS] range, no 8 or 10", () => {
+	assert.deepEqual(DEPTH_OPTIONS, [2, 3, 4, 5, 6]);
 });
 
 // ── primaryLinkedWallet / describePayerMismatch: payer binding ────────────
@@ -283,4 +351,15 @@ test("Generate.jsx offers a functional test-mode continuation and surfaces the r
 	assert.match(generate, /buildDryRunPaymentHeader\(/);
 	assert.match(generate, /continueInTestMode/);
 	assert.match(generate, /extractReceipt\(/);
+});
+
+// ── Issue #1363 wiring pins ─────────────────────────────────────────────
+
+test("Generate.jsx renders the non-payment /start error through startErrorMessage, not the bare status echo", () => {
+	assert.match(generate, /startErrorMessage\(/);
+	assert.doesNotMatch(generate, /e\.message \|\| "Failed to start generation"/);
+});
+
+test("Generate.jsx offers DEPTH_OPTIONS, not a hardcoded superset the pipeline silently clamps", () => {
+	assert.match(generate, /DEPTH_OPTIONS\.map/);
 });
