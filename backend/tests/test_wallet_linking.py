@@ -342,7 +342,7 @@ def test_unclaimed_legacy_data_detected_and_claimed_data_is_not():
     after a claim. Collapsing the two functions inverts the unlink guard.
     """
     from archimedes.api.wallet_routes import (
-        _claim_legacy_wallet_data,
+        claim_legacy_wallet_data,
         _wallet_has_owned_data,
         _wallet_has_unclaimed_legacy_data,
     )
@@ -363,7 +363,7 @@ def test_unclaimed_legacy_data_detected_and_claimed_data_is_not():
         assert _wallet_has_unclaimed_legacy_data(session, "user-1", ADDRESS) is True
         assert _wallet_has_unclaimed_legacy_data(session, "user-1", OTHER_ADDRESS) is False
 
-        _claim_legacy_wallet_data(session, "user-1", ADDRESS)
+        claim_legacy_wallet_data(session, "user-1", ADDRESS)
         session.commit()
 
         # Claimed: the prompt goes quiet -- but the unlink guard must still
@@ -373,7 +373,7 @@ def test_unclaimed_legacy_data_detected_and_claimed_data_is_not():
 
 
 def test_legacy_profile_only_counts_when_account_has_no_profile():
-    """Mirrors _claim_legacy_wallet_data's profile condition exactly: a legacy
+    """Mirrors claim_legacy_wallet_data's profile condition exactly: a legacy
     profile is only claimable when the account has none, so the prompt must
     not promise a claim the link would skip."""
     from archimedes.api.wallet_routes import _wallet_has_unclaimed_legacy_data

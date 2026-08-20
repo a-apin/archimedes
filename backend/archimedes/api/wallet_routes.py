@@ -233,7 +233,14 @@ async def _verify_wallet_proof(address: str, message: str, signature: str, chain
     return await verify_smart_wallet_signature(address, message, signature, rpc_url)
 
 
-def _claim_legacy_wallet_data(session, user_id: str, address: str) -> None:
+def claim_legacy_wallet_data(session, user_id: str, address: str) -> None:
+    """Stamp ``owner_user_id`` onto every unclaimed pre-account row for
+    ``address`` — the effect linking (or re-verifying) a wallet has, and the
+    reclaim `rename_strategy`'s legacy-wallet fallback also triggers on write
+    so pre-account rows migrate onto canonical ownership as they're touched
+    (#1283). Public (not `_`-prefixed) because both callers cross the
+    `wallet_routes` module boundary.
+    """
     from archimedes.models.chat import VaultMetadata
     from archimedes.models.strategy_passport_record import StrategyPassportRecord
     from archimedes.models.strategy_proposal import StrategyProposal
@@ -267,7 +274,7 @@ def _link_verified_wallet(session, user: CurrentUser, challenge: WalletLinkChall
     if existing:
         if existing.user_id != user.id:
             raise HTTPException(status_code=409, detail="Wallet is already linked to another account")
-        _claim_legacy_wallet_data(session, user.id, challenge.address)
+        claim_legacy_wallet_data(session, user.id, challenge.address)
         session.commit()
         session.refresh(existing)
         return existing
@@ -301,7 +308,7 @@ def _link_verified_wallet(session, user: CurrentUser, challenge: WalletLinkChall
     )
     session.add(linked)
     session.flush()
-    _claim_legacy_wallet_data(session, user.id, challenge.address)
+    claim_legacy_wallet_data(session, user.id, challenge.address)
     session.commit()
     session.refresh(linked)
     return linked
@@ -405,7 +412,7 @@ def _wallet_has_owned_data(session, address: str) -> bool:
 
 
 def _wallet_has_unclaimed_legacy_data(session, user_id: str, address: str) -> bool:
-    """Would ``_claim_legacy_wallet_data(user_id, address)`` claim anything?
+    """Would ``claim_legacy_wallet_data(user_id, address)`` claim anything?
 
     DELIBERATELY a separate function from ``_wallet_has_owned_data`` above,
     which asks the OPPOSITE question ("does this wallet back any data at all",
