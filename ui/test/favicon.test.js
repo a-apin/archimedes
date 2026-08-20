@@ -12,6 +12,10 @@ import test from "node:test";
 // diff and broken on an actual device.
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+// Sliced to <head> only: these tags are meaningless (or simply inert) outside
+// it, so a variant that moved/duplicated them into <body> should fail this
+// test, not pass it by matching anywhere in the document.
+const head = html.match(/<head[^>]*>([\s\S]*?)<\/head>/)[1];
 
 function pngDimensions(path) {
 	const buf = readFileSync(new URL(path, import.meta.url));
@@ -26,21 +30,21 @@ function pngDimensions(path) {
 }
 
 test("index.html head references an apple-touch-icon, PNG fallbacks, and a manifest", () => {
-	assert.match(html, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg" \/>/);
+	assert.match(head, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg" \/>/);
 	assert.match(
-		html,
+		head,
 		/<link rel="icon" type="image\/png" sizes="32x32" href="\/favicon-32x32\.png" \/>/,
 	);
 	assert.match(
-		html,
+		head,
 		/<link rel="icon" type="image\/png" sizes="16x16" href="\/favicon-16x16\.png" \/>/,
 	);
 	assert.match(
-		html,
+		head,
 		/<link rel="apple-touch-icon" sizes="180x180" href="\/apple-touch-icon\.png" \/>/,
 	);
-	assert.match(html, /<link rel="manifest" href="\/site\.webmanifest" \/>/);
-	assert.match(html, /<meta name="theme-color" content="#0a0a0b" \/>/);
+	assert.match(head, /<link rel="manifest" href="\/site\.webmanifest" \/>/);
+	assert.match(head, /<meta name="theme-color" content="#0a0a0b" \/>/);
 });
 
 test("apple-touch-icon.png is a real 180x180 PNG", () => {

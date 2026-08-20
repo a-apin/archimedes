@@ -23,6 +23,14 @@
         try {
           var stored = localStorage.getItem('archimedes.theme');
           document.documentElement.setAttribute('data-theme', stored === 'light' ? 'light' : 'dark');
+          // Keep the browser chrome (address bar / task switcher) in sync with
+          // the resolved theme -- the static #0a0a0b in <head> above is the
+          // dark-theme default; on a stored light preference, repaint it to
+          // App.css's light --canvas (#fafaf7) before first paint.
+          if (stored === 'light') {
+            var meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) meta.setAttribute('content', '#fafaf7');
+          }
         } catch (e) {}
       })();
     </script>
