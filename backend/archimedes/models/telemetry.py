@@ -113,7 +113,10 @@ class WalletIdentityOut(BaseModel):
     """One anchored human wallet (issue #1028 AC1)."""
 
     wallet_address: str = Field(..., description="Lowercased cryptographically verified wallet address.")
-    actor_class: str = Field(..., description="Always 'human' on this endpoint (see /api/metrics/wallets filter).")
+    actor_class: str = Field(
+        ...,
+        description="Always 'human' on this endpoint (see the /api/metrics/private/wallets filter — admin-gated since #1366).",
+    )
     first_seen_at: str = Field(..., description="ISO-8601 UTC — first time this wallet was anchored.")
     last_auth_at: str | None = Field(default=None, description="ISO-8601 UTC — most recent wallet proof.")
 
