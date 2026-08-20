@@ -324,7 +324,23 @@ test("the authenticated shell ships a skip link with a focusable target", () => 
 
 test("a failed deep link does not share the landing page's title", () => {
 	assert.match(app, /'not-found': 'Page not found · Archimedes'/);
-	assert.match(app, /route\.kind === 'not-found' \? 'not-found' : route\.page/);
+	// A denied /app/insights admin-gate probe (owner directive 2026-08-20)
+	// titles the tab as 'not-found' too — see the next test — so this key
+	// computation ORs in that case rather than checking route.kind alone.
+	assert.match(
+		app,
+		/const key = route\.kind === 'not-found' \|\| deniedInsights \? 'not-found' : route\.page/,
+	);
+});
+
+test("a denied insights admin-gate probe titles the tab as not-found, not 'Insights'", () => {
+	// "do not advertise existence" (owner directive 2026-08-20) applies to the
+	// tab title too — a many-tabs user must not be able to tell "unknown
+	// route" apart from "gated route I'm not allowed on".
+	assert.match(
+		app,
+		/const deniedInsights = route\.page === 'insights' && insightsAdmin === false/,
+	);
 });
 
 // ── 2.1.1 Keyboard / 4.1.2 Name, Role, Value ──────────────────────────────

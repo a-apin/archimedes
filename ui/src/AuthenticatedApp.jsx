@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { _resetAdminProbeCache } from "./adminProbe.js";
 import { disconnectWallet, reconnectWallet } from "./config";
 import { checkLegacyWallet, listLinkedWallets } from "./linked-wallets";
 import AccountSettings from "./components/AccountSettings";
@@ -95,6 +96,12 @@ export default function AuthenticatedApp({
 	useEffect(() => {
 		const handler = async (event) => {
 			const address = event.detail.address;
+			// The admin-gate probe (owner directive 2026-08-20) can key off
+			// the connected wallet (X-Wallet-Address), so a wallet swap must
+			// not leave a stale admin/non-admin determination cached for the
+			// rest of its TTL window — connecting a DIFFERENT wallet is
+			// exactly the case the gate exists to re-check.
+			_resetAdminProbeCache();
 			if (!address) {
 				setWalletAddr(null);
 				return;

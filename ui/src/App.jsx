@@ -1,11 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 
+import { fetchAdminProbe } from './adminProbe.js'
 import { useAuth } from './AuthContext'
 import { defaultFeatures, fetchFeatures } from './features'
 import { pageToPath, resolveRoute } from './routes'
 import Architecture from './components/Architecture'
 import AuthPage from './components/AuthPage'
 import Landing from './components/Landing'
+import NotFound from './components/NotFound'
 import PublicLayout from './components/PublicLayout'
 import './App.css'
 
@@ -20,6 +22,11 @@ export default function App() {
   const { user, loading: authLoading } = useAuth()
   const [features, setFeatures] = useState(defaultFeatures)
   const [route, setRoute] = useState(() => currentRoute(defaultFeatures))
+  // Admin-gate probe result for /app/insights (owner directive 2026-08-20,
+  // supersedes #1028 D8): null while checking, true/false once the server
+  // has answered. Server truth only — never derived from `user`/wallet
+  // local state, which cannot know PLATFORM_ADMIN_WALLETS membership.
+  const [insightsAdmin, setInsightsAdmin] = useState(null)
 
   useEffect(() => {
     fetchFeatures()
@@ -62,10 +69,36 @@ export default function App() {
     // #1194 revision d) never bounce to sign-in; auth is required only to
     // generate, pay, or paper-deploy. Keep in lockstep with the nginx
     // carve-outs, which enforce the same split server-side.
-    if (route.kind !== 'app' || route.anonymousOk || authLoading || user) return
+    //
+    // `insights` is EXCLUDED here too (owner directive 2026-08-20): bouncing
+    // an anonymous visitor to /sign-in?next=/app/insights would itself
+    // advertise that the page exists and is worth signing in for. The
+    // insights-admin-probe effect below handles it uniformly instead — an
+    // anonymous or non-admin visitor lands on the identical not-found
+    // treatment a truly unknown path gets, never a sign-in prompt.
+    if (route.kind !== 'app' || route.anonymousOk || route.page === 'insights' || authLoading || user) return
     const next = `${window.location.pathname}${window.location.search}`
     window.location.replace(`/sign-in?next=${encodeURIComponent(next)}`)
-  }, [route.kind, route.anonymousOk, authLoading, user])
+  }, [route.kind, route.anonymousOk, route.page, authLoading, user])
+
+  useEffect(() => {
+    // Re-probe every time navigation LANDS on insights (not on every
+    // render while already there) — reset to "checking" first so a stale
+    // true/false from a previous visit this session can't flash before the
+    // fresh answer arrives.
+    if (route.page !== 'insights') {
+      setInsightsAdmin(null)
+      return
+    }
+    let cancelled = false
+    setInsightsAdmin(null)
+    fetchAdminProbe().then(({ admin }) => {
+      if (!cancelled) setInsightsAdmin(admin)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [route.page])
 
   useEffect(() => {
     const titles = {
@@ -94,9 +127,14 @@ export default function App() {
       // a failed deep link from home (2.4.2 Page Titled).
       'not-found': 'Page not found · Archimedes',
     }
-    const key = route.kind === 'not-found' ? 'not-found' : route.page
+    // A denied insights probe titles the tab identically to a real 404 —
+    // "do not advertise existence" applies to the tab title too, not just
+    // the rendered page (a many-tabs user should not be able to tell
+    // "unknown route" from "gated route I'm not allowed on" apart).
+    const deniedInsights = route.page === 'insights' && insightsAdmin === false
+    const key = route.kind === 'not-found' || deniedInsights ? 'not-found' : route.page
     document.title = titles[key] ?? 'Archimedes'
-  }, [route.kind, route.page])
+  }, [route.kind, route.page, insightsAdmin])
 
   const navigateToPage = useCallback((page, options = {}) => {
     const path = pageToPath(page, options)
@@ -120,14 +158,22 @@ export default function App() {
   }
 
   if (route.kind === 'not-found') {
-    return (
-      <PublicLayout user={user}>
-        <main className="min-h-[70vh] flex flex-col items-center justify-center gap-4 px-4 text-center">
-          <h1 className="serif text-[2rem]">Page not found</h1>
-          <a className="btn-primary" href={user ? '/app' : '/'}>{user ? 'Open app' : 'Go home'}</a>
-        </main>
-      </PublicLayout>
-    )
+    return <NotFound user={user} />
+  }
+
+  if (route.kind === 'app' && route.page === 'insights') {
+    // Server-truth admin gate (owner directive 2026-08-20, supersedes
+    // #1028 D8): a denied probe renders EXACTLY the not-found page — same
+    // component the true 404 above uses — never a "you need admin access"
+    // message, which would itself confirm the page exists. While the probe
+    // is in flight, render a neutral chrome-free loader: no "Insights"
+    // heading, no sidebar, nothing that would flash gated UI before a
+    // non-admin's swap to not-found lands.
+    if (insightsAdmin === false) return <NotFound user={user} />
+    if (insightsAdmin !== true) {
+      return <main className="min-h-screen grid place-items-center">Loading…</main>
+    }
+    // admin === true falls through to the normal authenticated render below.
   }
 
   // Anonymous-OK pages render immediately with user === null rather than

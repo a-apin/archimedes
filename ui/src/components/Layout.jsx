@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { fetchAdminProbe } from "../adminProbe.js";
 import WalletConnect from "./WalletConnect";
 import Breadcrumbs from "./Breadcrumbs";
 import { getStoredWalletName } from "../config";
@@ -138,6 +139,15 @@ export default function Layout({
 	const [theme, setTheme] = useState(getStoredTheme);
 	const [health, setHealth] = useState(null);
 	const [healthError, setHealthError] = useState(false);
+	// Ops nav item (Insights) renders only after a successful admin-gate
+	// probe — owner directive 2026-08-20, supersedes #1028 D8. Starts
+	// `false` (not `null`): the nav renders on first paint and an
+	// unresolved probe must not show the item even briefly, so "unknown"
+	// and "denied" read identically here (unlike the page gate in App.jsx,
+	// which distinguishes them to show a neutral loader instead of flashing
+	// content). Anonymous visitors never even attempt the probe — there is
+	// no account for PLATFORM_ADMIN_WALLETS to match against.
+	const [isInsightsAdmin, setIsInsightsAdmin] = useState(false);
 	const hamburgerRef = useRef(null);
 	const chainStatus = deriveChainStatus(health, healthError);
 	const proofStage =
@@ -187,6 +197,28 @@ export default function Layout({
 			cancelled = true;
 		};
 	}, [page]);
+
+	// Ops nav item admin-gate probe. Keyed on the account id (not `[]`, not
+	// `page`): re-probes on a real sign-in/sign-out transition, shares the
+	// cached result with App.jsx's own page-level probe within the TTL
+	// window (adminProbeCache.js) — so landing on /app/insights does not
+	// double-fire the request — and does NOT re-probe on every in-app
+	// navigation the way the /health effect above does, since admin
+	// membership does not change mid-session under normal use.
+	const userId = user?.id ?? null;
+	useEffect(() => {
+		if (!userId) {
+			setIsInsightsAdmin(false);
+			return;
+		}
+		let cancelled = false;
+		fetchAdminProbe().then(({ admin }) => {
+			if (!cancelled) setIsInsightsAdmin(admin);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [userId]);
 
 	// Lock body scroll while the mobile nav drawer is open — otherwise the
 	// page content underneath can still scroll behind the fixed overlay/drawer,
@@ -280,7 +312,15 @@ export default function Layout({
 						// the id list. Groups left empty by the filter are
 						// skipped entirely below so a logged-out sidebar never
 						// shows a bare "Position"/"Market" header over nothing.
-						items: visibleNavigation(group.items, features, user),
+						// Insights ("Ops" group) additionally requires a
+						// successful admin-gate probe (owner directive
+						// 2026-08-20, supersedes #1028 D8) — visibleNavigation
+						// has no notion of that server-truth check, so it is
+						// applied here as a second, narrower filter rather than
+						// widening that helper's contract for one item.
+						items: visibleNavigation(group.items, features, user).filter(
+							(item) => item.id !== "insights" || isInsightsAdmin,
+						),
 					}))
 						.filter((group) => group.items.length > 0)
 						.map((group, gi) => (
