@@ -170,37 +170,11 @@ export default function Leaderboard() {
             </button>
           </div>
         )}
-        {/* PROVISIONAL-DATA BANNER — remove this whole block once the backtest
-            re-run completes and the figures below are trustworthy again.
-            A routing defect (fixed in #1203) meant most library strategies were
-            backtested against a hardcoded SPY default instead of their own
-            declared ASSET_UNIVERSE. Cross-sectional strategies fared worst:
-            given a single feed they had nothing to rank, so they emitted zero
-            trades and a flat 0% return, which the rigor gate then graded as
-            though it were a result.
-            Saying so out loud is the only option consistent with the product's
-            own thesis: taking the page down would hide the demonstration, and
-            leaving it silently wrong is the exact failure this product exists
-            to oppose. */}
-        <div
-          role="status"
-          style={{
-            marginTop: 10,
-            padding: '10px 14px',
-            borderLeft: '3px solid var(--warning, #b45309)',
-            background: 'var(--warning-bg, rgba(180,83,9,0.10))',
-            borderRadius: 4,
-            fontSize: 13,
-            color: 'var(--text-2)',
-          }}
-        >
-          <strong style={{ color: 'var(--warning, #b45309)' }}>Provisional — figures are being re-computed.</strong>{' '}
-          Two defects are being corrected. A routing defect meant most strategies were backtested against the
-          wrong asset universe. Separately, the backtest and live-trading engines were found to interpret the
-          same strategy differently — so for some strategies these figures describe behaviour that differs
-          from what the strategy would actually do. Figures shown are known to be incorrect and will change.
-        </div>
-
+        {/* The provisional-data banner that lived here (routing defect #1203 +
+            backtest/live interpreter divergences) was removed 2026-08-19 after
+            its stated condition was verified against prod: the post-fix re-run
+            landed fresh rows for every curated strategy (backtest_results max
+            created_at 2026-08-20 03:28 UTC; zero curated strategies stale). */}
         {engine?.disclaimer && (
           <div style={{ marginTop: 10, padding: '8px 12px', borderLeft: '3px solid var(--accent)', background: 'var(--accent-muted)', borderRadius: 4, fontSize: 13, color: 'var(--text-2)' }}>
             <strong style={{ color: 'var(--accent)' }}>Testnet — paper/simulated.</strong> {engine.disclaimer}
