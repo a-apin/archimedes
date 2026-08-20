@@ -85,7 +85,7 @@ Content-Type: application/json
   "brief": {
     "intent": "diversified low-volatility strategy for idle USDC",
     "risk_appetite": "moderate",          // fixed_income | conservative | moderate | aggressive | hyper_risky
-    "max_papers": 5                        // 1..20
+    "max_papers": 5                        // 2..6
   },
   "n_candidates": 1,                       // 1..5 considered internally (K=1 winner is emitted)
   "model": null                            // optional; allowlisted free model id, else env default. Premium → HTTP 402 without entitlement.
