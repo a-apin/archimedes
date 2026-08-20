@@ -306,14 +306,17 @@ class TestCommitReveal:
             signer.execute_contract = AsyncMock(return_value="0xCOMMIT")
             client.to_checksum = lambda x: x
             client.settings = MagicMock(reasoning_trace_registry_address="0xreg")
-            client.w3.eth.get_transaction_receipt = AsyncMock(return_value=fake_receipt)
+            client.w3.eth.wait_for_transaction_receipt = AsyncMock(return_value=fake_receipt)
 
             trade_id = b"\xab" * 32
-            trace_id, tx, block = await publisher.commit(trace, claimed_execution_time=9999999999, trade_id=trade_id)
+            trace_id, tx, block, reverted = await publisher.commit(
+                trace, claimed_execution_time=9999999999, trade_id=trade_id
+            )
 
         assert tx == "0xCOMMIT"
         assert trace_id == 42
         assert block == 100
+        assert reverted is False
         assert trace.commit_tx_hash == "0xCOMMIT"
         # commit() called with the real (5-arg) signature + claimedExecutionTime + tradeId
         call = signer.execute_contract.await_args
@@ -339,7 +342,7 @@ class TestCommitReveal:
             signer.execute_contract = AsyncMock(return_value="0xREVEAL")
             client.to_checksum = lambda x: x
             client.settings = MagicMock(reasoning_trace_registry_address="0xreg")
-            client.w3.eth.get_transaction_receipt = AsyncMock(return_value=fake_receipt)
+            client.w3.eth.wait_for_transaction_receipt = AsyncMock(return_value=fake_receipt)
 
             tx, block = await publisher.reveal(42, trace, storage_pointer="QmCID")
 
@@ -370,5 +373,7 @@ class TestCommitReveal:
 
         trace = _make_trace()
         trace.compute_hash()
-        trace_id, tx, block = await publisher.commit(trace, claimed_execution_time=9999999999, trade_id=b"\xcd" * 32)
-        assert (trace_id, tx, block) == (None, None, None)
+        trace_id, tx, block, reverted = await publisher.commit(
+            trace, claimed_execution_time=9999999999, trade_id=b"\xcd" * 32
+        )
+        assert (trace_id, tx, block, reverted) == (None, None, None, False)
