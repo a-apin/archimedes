@@ -67,6 +67,42 @@ async def test_list_traces_degrades_to_empty_when_redis_down():
     assert body["traces"] == []
 
 
+async def test_list_traces_onchain_fallback_reports_real_total_and_unknown_type():
+    """Redis down, on-chain fallback with real traces (#1356).
+
+    Pins two invented-fact fixes on the same fallback path:
+      - `total` must be the registry size read from `get_total_trace_count()`
+        (5 here), not `len(traces)` (the current page, capped at `limit`) —
+        the old code discarded the real count it had just read. `limit=2` is
+        deliberately smaller than the registry so the two values provably
+        differ: the pre-fix code returns `total=2` here, not `total=5`.
+      - `decision_type` must be "unknown" for every on-chain-only trace, never
+        the invented literal "rebalance" — the anchor doesn't record which
+        decision type produced it.
+    """
+    from archimedes.main import app
+    from archimedes.services.redis_state import AgentStateStore
+
+    def _detail(trace_id: int) -> dict:
+        return {"vault": "0xVault", "timestamp": 1_700_000_000, "trace_hash": f"0xhash{trace_id}"}
+
+    with (
+        patch.object(AgentStateStore, "list_traces", AsyncMock(side_effect=ConnectionError("redis down"))),
+        patch.object(AgentStateStore, "close", AsyncMock()),
+        patch("archimedes.chain.trace_publisher.trace_publisher") as mock_pub,
+    ):
+        mock_pub.get_total_trace_count = AsyncMock(return_value=5)
+        mock_pub.get_trace_by_id = AsyncMock(side_effect=lambda tid: _detail(tid))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/traces/", params={"limit": 2, "offset": 0})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["traces"]) == 2  # the page is still capped at `limit`
+    assert body["total"] == 5  # but `total` reports the real registry size, not the page size
+    assert all(t["decision_type"] == "unknown" for t in body["traces"])
+
+
 async def test_publish_trace_returns_503_when_offchain_persist_fails():
     """WRITE path: never a silent 200 for a trace whose body was not stored."""
     from archimedes.api.auth_guard import require_internal_agent_key

@@ -8,8 +8,9 @@ import { apiGet } from '../api'
 // transparent conviction score (real rigor gate + backtest). Signed out (or
 // explicitly toggled): shows the curated seed library as an honestly-labeled
 // REFERENCE set, never framed as competition. Nothing here is fabricated:
-// validation metrics are real passport fields; the forward axis renders as
-// "pending" until that data flows. Never auth-gated — public browse stays;
+// validation metrics are real passport fields; the forward axis (per-strategy
+// StockBench + live paper-P&L) is not scored yet and is called out as
+// "pending" in its own section, not rendered per row. Never auth-gated — public browse stays;
 // see backend's `scope` field (own|curated), which reports what was actually
 // served, not just what was requested.
 
@@ -182,10 +183,12 @@ export default function Leaderboard() {
             on the redeployed agent runner, so the old divergence clause here
             was removed (its claim became false). The ONE remaining residual:
             the own view still holds July-era rows for older generated
-            strategies that predate the corrections and refresh on their next
-            cycle — hence the single-caveat banner below, scoped to the own
-            view; curated rows are reference-only backtests, all verified
-            fresh. */}
+            strategies that predate the corrections. Those numbers are FIXED
+            at generation time — no re-backtest loop exists for generated
+            strategies (#1365; the prior claim of a backtest-cycle refresh was
+            false and is retired) — hence the single-caveat banner below,
+            scoped to the own view; curated rows are reference-only backtests,
+            all verified fresh. */}
         {isOwn && (
           <div
             role="status"
@@ -200,8 +203,10 @@ export default function Leaderboard() {
             }}
           >
             <strong style={{ color: 'var(--warning, #b45309)' }}>One caveat on your figures.</strong>{' '}
-            Older strategies may still show numbers computed before the August engine corrections —
-            they refresh on their next backtest cycle.
+            These numbers are <strong>fixed at generation time</strong> — a strategy generated
+            before the August engine corrections keeps the numbers it was scored with. Generated
+            strategies are not re-backtested; generate again to get a strategy scored by the
+            current engine.
           </div>
         )}
         {engine?.disclaimer && (
@@ -252,13 +257,35 @@ export default function Leaderboard() {
           style={{ background: 'var(--surface-3)', color: 'var(--text-2)', border: '1px solid var(--glass-border)', borderRadius: 6, padding: '4px 8px', fontSize: 12 }}>
           {REGIMES.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
         </select>
-        {data && <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 'auto' }}>{data.total} strateg{data.total === 1 ? 'y' : 'ies'}</span>}
+        {data && (
+          <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 'auto' }}>
+            {data.degraded ? '—' : `${data.total} strateg${data.total === 1 ? 'y' : 'ies'}`}
+          </span>
+        )}
       </div>
 
       {loading && <div className="body" style={{ color: 'var(--text-3)' }}>Loading the board…</div>}
       {error && <div className="tag-warning" style={{ display: 'inline-block', padding: '6px 10px' }}>Couldn’t load the leaderboard: {error}</div>}
 
-      {!loading && !error && data && data.entries.length === 0 && isOwn && (
+      {/* A degraded board (#1356: the strategy provider raised, or the
+          curated cohort came back empty for a reason other than a
+          legitimate filter — e.g. the corpus missing from the build) is a
+          200 with intact scoring-engine metadata, not an `error` — so it
+          must be surfaced here, and it must pre-empt BOTH honest-empty
+          messages below, which claim something specific ("you haven't
+          generated any" / "no strategies match these filters") that is not
+          what actually happened. */}
+      {!loading && !error && data?.degraded && (
+        <div role="status" className="tag-warning" style={{ display: 'block', padding: '10px 14px', marginBottom: 14, borderRadius: 4 }}>
+          <strong>Board data is degraded.</strong>{' '}
+          {data.degraded_reason || 'Some strategies could not be loaded.'}{' '}
+          <button type="button" className="btn btn-sm btn-outline" onClick={load} style={{ marginLeft: 4 }}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {!loading && !error && data && !data.degraded && data.entries.length === 0 && isOwn && (
         <div className="body" style={{ color: 'var(--text-3)', padding: 20, textAlign: 'center', border: '1px dashed var(--glass-border)', borderRadius: 8 }}>
           You haven't generated any strategies yet.{' '}
           <a href="/app/generate" style={{ color: 'var(--accent)' }}>Generate one</a>, or{' '}
@@ -269,7 +296,7 @@ export default function Leaderboard() {
         </div>
       )}
 
-      {!loading && !error && data && data.entries.length === 0 && !isOwn && (
+      {!loading && !error && data && !data.degraded && data.entries.length === 0 && !isOwn && (
         <div className="body" style={{ color: 'var(--text-3)', padding: 20, textAlign: 'center', border: '1px dashed var(--glass-border)', borderRadius: 8 }}>
           No strategies match these filters yet.
         </div>
@@ -287,7 +314,7 @@ export default function Leaderboard() {
                 <th style={{ padding: '8px 10px' }}>CAGR</th>
                 <th style={{ padding: '8px 10px' }}>Max DD</th>
                 <th style={{ padding: '8px 10px' }}>Rigor</th>
-                <th style={{ padding: '8px 10px' }}>Forward</th>
+                <th style={{ padding: '8px 10px' }} title="Deflated Sharpe Ratio — Sharpe adjusted for selection bias / multiple testing">DSR</th>
               </tr>
             </thead>
             <tbody>
@@ -319,12 +346,19 @@ export default function Leaderboard() {
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
                     {rigorBadge(e)}
-                    {e.dsr_p_value != null && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }} title="DSR confidence (0–1, higher is better): probability the Sharpe survives deflation/multiple-testing. Not a classical p-value.">DSR conf={fmt(e.dsr_p_value)}{e.pbo_score != null ? ` · PBO ${fmt(e.pbo_score)}` : ''}</div>}
+                    {(e.dsr_p_value != null || e.pbo_score != null || e.out_of_sample_sharpe != null) && (
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }} title="DSR confidence (0–1, higher is better): probability the Sharpe survives deflation/multiple-testing. Not a classical p-value. OOS = out-of-sample Sharpe.">
+                        {[
+                          e.dsr_p_value != null && `DSR conf=${fmt(e.dsr_p_value)}`,
+                          e.pbo_score != null && `PBO ${fmt(e.pbo_score)}`,
+                          e.out_of_sample_sharpe != null && `OOS ${fmt(e.out_of_sample_sharpe)}`,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                    )}
                   </td>
-                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
-                    <span className="tag-muted" title="Per-strategy StockBench eval is pending">SB pending</span>{' '}
-                    <span className="tag-muted" title="Live paper-P&L tracking is pending (testnet — paper)">P&L pending</span>
-                  </td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmt(e.deflated_sharpe_ratio)}</td>
                 </tr>
               ))}
             </tbody>

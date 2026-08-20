@@ -7,6 +7,7 @@ import { fetchHealth } from "../health";
 import { getStoredTheme, applyTheme } from "../theme";
 import { visibleNavigation } from "../routes";
 import { lockBodyScroll, unlockBodyScroll } from "../utils/scrollLock";
+import { getProofStages } from "../proofStages.js";
 
 // Sidebar groups separate Home (anchor / landing) from the three product-state
 // bands. Empty group label is intentional for the Home entry — it renders as a
@@ -108,13 +109,10 @@ export const PAGE_LABELS = {
 	account: "Account",
 };
 
-const PROOF_STAGES = [
-	{ id: "brief", label: "Brief" },
-	{ id: "debate", label: "Debate" },
-	{ id: "gate", label: "Gate" },
-	{ id: "vault", label: "Vault" },
-	{ id: "monitor", label: "Monitor" },
-];
+// PROOF_STAGES logic lives in ../proofStages.js (#1354) — plain .js so the
+// hermetic node test can import and call getProofStages() directly; see
+// that file for the rail's 3-vs-5-stage rationale.
+const PROOF_STAGES = getProofStages();
 
 const CORE_PAGE_STAGE = {
 	generate: "brief",

@@ -15,6 +15,10 @@ const publicLayout = readFileSync(
 	new URL("../src/components/PublicLayout.jsx", import.meta.url),
 	"utf8",
 );
+const roadmapCopy = readFileSync(
+	new URL("../src/roadmapCopy.js", import.meta.url),
+	"utf8",
+);
 
 test("public shell owns an isolated visual system and accessible navigation", () => {
 	assert.match(publicLayout, /className="public-site"/);
@@ -46,7 +50,17 @@ test("landing hero makes proof flow the signature element", () => {
 	assert.match(landing, /Brief/);
 	assert.match(landing, /Debate/);
 	assert.match(landing, /Rigor/);
-	assert.match(landing, /Vault/);
+	// Flag-off shape (#1354): the spiral's 4th stop names no bare "Vault"
+	// literal in Landing.jsx — it's gated, sourced from roadmapCopy.js.
+	// (backend/tests/... precedent: rewrite the assertion pinning the
+	// pre-fix defect, don't just delete it — see ui/test/roadmap-copy.test.js
+	// for the guard that pins this precisely.)
+	assert.match(landing, /ROADMAP_SURFACES_ENABLED && \(/);
+	assert.match(landing, /ROADMAP_COPY\.spiralVaultLabel/);
+	// Flag-on counterpart: the full spiral still names a dedicated Vault
+	// stop when the flag is on — the string lives in roadmapCopy.js, which
+	// this file's own guard (roadmap-copy.test.js) keeps deletable-but-real.
+	assert.match(roadmapCopy, /spiralVaultLabel:\s*"Vault"/);
 	assert.match(css, /@keyframes proof-pulse/);
 	assert.match(
 		css,
@@ -54,10 +68,35 @@ test("landing hero makes proof flow the signature element", () => {
 	);
 });
 
+test("proof-spiral legend grid tracks item count, not a fixed stage count", () => {
+	// PR #1396 review (major finding): a fixed repeat(4, …) left an empty
+	// bordered column when ROADMAP_SURFACES_ENABLED is off and the legend
+	// renders only 3 <li>. Mirrors the .app-proof-rail auto-fit fix.
+	assert.match(
+		css,
+		/\.proof-spiral__legend\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,/s,
+	);
+	assert.doesNotMatch(
+		css,
+		/\.proof-spiral__legend\s*\{[^}]*grid-template-columns:\s*repeat\(\d+,/s,
+	);
+});
+
 test("landing presents evidence as criteria, not decorative steps", () => {
 	assert.match(landing, /EvidenceLedger/);
 	assert.match(landing, /RigorMatrix/);
-	assert.match(landing, /AuthorityBoundary/);
+	// Flag-off shape (#1354): AuthorityBoundary (the custody-boundary panel,
+	// which names a deposit/withdraw vault flow with no reachable mount
+	// while vault surfaces are off) is gated at its mount site, not
+	// rendered unconditionally.
+	assert.match(
+		landing,
+		/\{ROADMAP_SURFACES_ENABLED && <AuthorityBoundary \/>\}/,
+	);
+	// Flag-on counterpart: the component itself is untouched — full custody
+	// story still renders, byte-identical, when the flag is on.
+	assert.match(landing, /function AuthorityBoundary\(\)/);
+	assert.match(landing, /Autonomy stops at ownership\./);
 	assert.match(landing, /Deflated Sharpe Ratio/);
 	assert.match(landing, /Probability of Backtest Overfitting/);
 	assert.match(landing, /Walk-forward out-of-sample/);
