@@ -314,11 +314,19 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
         try:
             off_chain = await state.get_trace(trace_id)
         except Exception:
-            logger.warning(
-                "verify_trace: Redis unavailable — falling back to on-chain-only verification", exc_info=True
-            )
-            off_chain = None
+            # A Redis outage is a loud absence, not a verification result
+            # (CLAUDE.md § fail-soft) — mirrors get_trace_canonical's 503
+            # below. Previously this exception was swallowed and fell
+            # through to the "no off-chain data" branch, which returns
+            # is_verified=True with zero hashes compared — an outage was
+            # silently upgrading every trace to a green check (#1359).
+            logger.warning("verify_trace: Redis unavailable — cannot verify without the store", exc_info=True)
+            raise HTTPException(
+                status_code=503, detail="Trace store temporarily unavailable — retry verification."
+            ) from None
         if not off_chain:
+            # The store IS reachable and simply has no record for this id —
+            # the only case allowed to report anchored_only.
             try:
                 int_id = int(trace_id)
             except ValueError:
@@ -332,14 +340,16 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
                 trace_id=int_id,
                 trace_hash=detail["trace_hash"],
                 is_verified=True,
+                verification_mode="anchored_only",
                 agent=detail["agent"],
                 vault=detail["vault"],
                 on_chain_timestamp=detail["timestamp"],
-                details="Hash is anchored on-chain (no off-chain data to recompute against)",
+                details="Hash is anchored on-chain — no off-chain trace body was stored, so no hashes were compared",
             )
 
         trace_hash = off_chain.get("trace_hash", "")
         is_verified = False
+        verification_mode = "failed"
         agent = ""
         vault = off_chain.get("vault_address", "")
         on_chain_ts = 0
@@ -362,6 +372,7 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
                     on_chain = detail["trace_hash"].removeprefix("0x").lower()
                     if expected and expected == on_chain:
                         is_verified = True
+                        verification_mode = "hash_matched"
                         agent = detail["agent"]
                         on_chain_ts = detail["timestamp"]
                         # Keep vault as recorded off-chain; surface the on-chain
@@ -378,6 +389,7 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
             trace_id=int(trace_id) if trace_id.isdigit() else 0,
             trace_hash=trace_hash,
             is_verified=is_verified,
+            verification_mode=verification_mode,
             agent=agent,
             vault=vault,
             on_chain_timestamp=on_chain_ts,

@@ -185,8 +185,8 @@ Verify a reasoning trace against its on-chain anchor. | **Auth**: anonymous
 | **Flags**: rate-limit exempt
 
 Request: path `trace_id`.
-Response (`TraceVerifyResponse`): `{trace_id: int, trace_hash, is_verified: bool, agent, vault, on_chain_timestamp: int, details: str, temporal_binding_valid: bool|null, commit_block_number, trade_block_number, reveal_block_number}`.
-Errors: `404` `Trace not found` — unknown ID.
+Response (`TraceVerifyResponse`): `{trace_id: int, trace_hash, is_verified: bool, verification_mode: "hash_matched"|"anchored_only"|"failed", agent, vault, on_chain_timestamp: int, details: str, temporal_binding_valid: bool|null, commit_block_number, trade_block_number, reveal_block_number}`. `verification_mode` names which of the three actually happened: `hash_matched` — the off-chain `trace_hash` was re-fetched from the on-chain receipt and compared byte-for-byte; `anchored_only` — the store was reachable but had no off-chain record for this id, so only the on-chain anchor itself was confirmed (zero hashes compared); `failed` — mismatch, missing receipt, or never anchored. No default — every response names one of the three, so a caller can't mistake "nothing was compared" for a real hash match.
+Errors: `404` `Trace not found` — unknown ID. `503` "Trace store temporarily unavailable — retry verification." — Redis unreachable; deliberately distinguished from `404` so a caller retries instead of concluding the trace doesn't exist, and from `anchored_only` so a store outage can never be reported as a verification result (mirrors `/canonical`'s `503` below).
 
 On-chain verification is **O(1)**: the handler fetches the receipt for the
 trace's cached `arc_tx_hash` and decodes the `TracePublished` event directly,
