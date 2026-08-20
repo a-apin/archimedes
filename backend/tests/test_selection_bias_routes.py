@@ -278,6 +278,51 @@ async def test_gate_endpoint_pending_rows_excluded_from_failing():
 
 
 @pytest.mark.asyncio
+async def test_gate_endpoint_scored_row_is_not_pending(monkeypatch):
+    """#1358 round-2 review: the guard above is one-directional — every existing
+    pending assertion is satisfied by "everything is pending" (this file's fresh,
+    unpopulated tmp-sqlite DB), so a mutation that hoists ``pending=True`` out of
+    the ``len(daily_returns) < 10`` branch onto EVERY row (converting a real
+    rigor-gate FAILURE into a neutral "pending" chip) would still pass the whole
+    suite. This is the missing inverse: a strategy the gate actually SCORES
+    (>=10 persisted daily returns, injected at the ``get_all_daily_returns`` DB
+    boundary per ``TestDegenerateSeriesExcludedFromCohort``'s pattern) must
+    report ``pending is False`` — and since the injected series is the same
+    deterministic strong-IS/weak-OOS shape ``TestOosCliffDenominator`` uses to
+    force a genuine oos_sharpe FAIL, it must also be counted in ``failing``."""
+    from archimedes.api import selection_bias_routes as routes
+    from archimedes.main import app
+
+    strategies = routes._provider().list_strategies()
+    if not strategies:
+        pytest.skip("no strategies in provider")
+    target_id = strategies[0].id
+
+    # Same deterministic strong-IS / weak-OOS shape as TestOosCliffDenominator
+    # (no RNG -> version-independent): guaranteed to FAIL the oos_sharpe cliff
+    # criterion, so this row's passes_all is deterministically False.
+    amp = 0.01
+    is_part = [0.003 + (amp if i % 2 == 0 else -amp) for i in range(700)]
+    oos_part = [0.0015 + (amp if i % 2 == 0 else -amp) for i in range(300)]
+    series = is_part + oos_part
+
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: {target_id: series},
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/selection-bias/gate")
+    data = resp.json()
+    row = next(s for s in data["strategies"] if s["strategy_id"] == target_id)
+    assert row["pending"] is False, "a strategy the gate actually scored must not report pending"
+    assert row["passes_all"] is False, "the deterministic series must fail the oos cliff"
+    assert data["failing"] >= 1, (
+        "a real rigor-gate failure must be counted in `failing`, not silently reclassified as pending"
+    )
+
+
+@pytest.mark.asyncio
 async def test_gate_endpoint_counts_non_negative():
     """total, passing, failing, pending are all non-negative integers."""
     from archimedes.main import app
