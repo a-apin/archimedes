@@ -1,0 +1,123 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+import { driftTooltip, formatTotalReturn, paperErrorMessage } from "../src/paperCopy.js";
+
+// #1362 — two false statements on /app/paper, both the exact shape CLAUDE.md
+// § fail-soft names: a state the system does not have (a drift "freeze"),
+// and an absence rendered as a plausible measured number (day-0 "+0.00%").
+// Every assertion below was confirmed to FAIL against the pre-fix tree —
+// see the mutation-check transcripts in the PR body.
+
+// ── driftTooltip: the DRIFT chip's tooltip must state what actually
+// happens (append-only, never rewritten, keeps advancing) and must never
+// promise a halt/investigation that no code path enforces, nor leak the
+// raw machine timestamp into English prose. ────────────────────────────────
+
+test("driftTooltip: never claims a freeze or a pending investigation", () => {
+	const tooltip = driftTooltip("2026-08-20T04:12:33.481207+00:00");
+	assert.doesNotMatch(tooltip, /frozen|pending investigation/);
+});
+
+test("driftTooltip: states the true, honest consequence — append-only, not rewritten", () => {
+	const tooltip = driftTooltip("2026-08-20T04:12:33.481207+00:00");
+	assert.match(tooltip, /append-only/);
+	assert.match(tooltip, /not rewritten/);
+});
+
+test("driftTooltip: never interpolates the raw ISO machine timestamp", () => {
+	const tooltip = driftTooltip("2026-08-20T04:12:33.481207+00:00");
+	assert.doesNotMatch(tooltip, /T04:12:33/);
+	assert.doesNotMatch(tooltip, /\d{4}-\d{2}-\d{2}T/); // no raw ISO date at all
+});
+
+test("driftTooltip: a malformed timestamp degrades cleanly, never 'Invalid Date' or a crash", () => {
+	assert.doesNotThrow(() => driftTooltip("not-a-real-timestamp"));
+	assert.doesNotMatch(driftTooltip("not-a-real-timestamp"), /Invalid Date/);
+});
+
+// ── formatTotalReturn: gate on `days`, never on the value. A day-0 ledger
+// (zero rows — the normal state right after deploy) must render as
+// unmeasured; a genuinely measured zero at day N must still print. ────────
+
+test("formatTotalReturn: day 0 renders unmeasured, even though the API's total_return is a real 0.0", () => {
+	assert.equal(formatTotalReturn(0.0, 0), "—");
+});
+
+test("formatTotalReturn: a measured zero at day N still prints — the gate is days, not the value", () => {
+	assert.equal(formatTotalReturn(0.0, 3), "+0.00%");
+});
+
+test("formatTotalReturn: signed percentages for a genuinely measured return", () => {
+	assert.equal(formatTotalReturn(-0.0123, 5), "-1.23%");
+	assert.equal(formatTotalReturn(0.0456, 10), "+4.56%");
+});
+
+test("formatTotalReturn: null/NaN also degrade to unmeasured regardless of days", () => {
+	assert.equal(formatTotalReturn(null, 5), "—");
+	assert.equal(formatTotalReturn(NaN, 5), "—");
+});
+
+// ── paperErrorMessage: api.js's raw "Backend returned NNN" must never
+// reach the role="alert" card. Mirrors StrategyPassport.jsx's
+// PaperDeployCard status mapping (:816-828). ───────────────────────────────
+
+test("paperErrorMessage: a 401 never surfaces the raw 'Backend returned' string, and reads as a sign-in prompt", () => {
+	const err = { status: 401, message: "Backend returned 401" };
+	assert.doesNotMatch(paperErrorMessage(err), /Backend returned/);
+	assert.match(paperErrorMessage(err), /sign in/i);
+});
+
+test("paperErrorMessage: a 404 (stop on an already-gone deployment) never surfaces 'Backend returned' either", () => {
+	const err = { status: 404, message: "Backend returned 404" };
+	assert.doesNotMatch(paperErrorMessage(err), /Backend returned/);
+});
+
+test("paperErrorMessage: any other status also never leaks the raw string, and falls to a generic sentence", () => {
+	const err = { status: 500, message: "Backend returned 500" };
+	assert.doesNotMatch(paperErrorMessage(err), /Backend returned/);
+	assert.ok(paperErrorMessage(err).length > 0);
+});
+
+test("paperErrorMessage: a status-less error (e.g. a network failure) falls back to its own message, then the caller's fallback", () => {
+	assert.equal(paperErrorMessage(new Error("Failed to fetch")), "Failed to fetch");
+	assert.equal(paperErrorMessage({}, "Failed to load paper deployments"), "Failed to load paper deployments");
+	assert.equal(paperErrorMessage(null, "Failed to load paper deployments"), "Failed to load paper deployments");
+});
+
+// ── Wiring: PaperTrading.jsx actually calls these helpers at every site the
+// issue named, not a re-implemented fork — and the dead local `pct` is
+// gone (the now-unused-import ESLint would otherwise catch). Same
+// source-regex pattern ui/test/a11y.test.js and
+// ui/test/generate-quote.test.js already use for this file/kind of check. ──
+
+const paperTrading = readFileSync(
+	new URL("../src/components/PaperTrading.jsx", import.meta.url),
+	"utf8",
+);
+
+test("PaperTrading.jsx imports the shared copy/format helpers from ../paperCopy", () => {
+	assert.match(
+		paperTrading,
+		/import \{ driftTooltip, formatTotalReturn, paperErrorMessage \} from ['"]\.\.\/paperCopy['"]/,
+	);
+});
+
+test("PaperTrading.jsx's DRIFT tooltip calls driftTooltip(driftAt), not an inline literal", () => {
+	assert.match(paperTrading, /title=\{driftTooltip\(driftAt\)\}/);
+});
+
+test("PaperTrading.jsx's headline figure calls formatTotalReturn(dep.total_return, dep.days) — days is part of the call", () => {
+	assert.match(paperTrading, /formatTotalReturn\(dep\.total_return,\s*dep\.days\)/);
+});
+
+test("PaperTrading.jsx routes both catch blocks through paperErrorMessage, never bare e.message", () => {
+	assert.doesNotMatch(paperTrading, /setError\(e\.message/);
+	const calls = paperTrading.match(/setError\(paperErrorMessage\(e,/g) || [];
+	assert.equal(calls.length, 2, "expected paperErrorMessage(e, ...) at both the load() and stop() catch blocks");
+});
+
+test("the dead local pct() formatter is gone, not just unused", () => {
+	assert.doesNotMatch(paperTrading, /function pct\(/);
+});
