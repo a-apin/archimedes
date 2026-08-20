@@ -28,19 +28,33 @@ Three properties are enforced in code rather than asserted in prose:
 2. **An implausible count is refused, not accumulated.** Negative, non-finite,
    non-integral, stringly-typed, or absurd (> :data:`MAX_PLAUSIBLE_TOKENS`)
    counts are treated as missing.
-3. **No pricing math lives here.** Stage names, write-counter names, and meta
-   keys are screened against :data:`_PRICING_TOKENS` and a match raises
-   :class:`PricingLeakError`. The quote seam
+3. **No pricing math lives here.** Every caller-chosen label — stage name,
+   write-counter name, meta key — is screened against :data:`_PRICING_TOKENS` at
+   write time, and a match raises :class:`PricingLeakError`. That screening is
+   what generalizes: the rest of a snapshot's keys are this module's own fixed
+   literals (see :meth:`CostMeter.snapshot`), so a caller label is the only route
+   by which a pricing-shaped key could enter one at all. The quote seam
    (``generation_payment.quote()``) stays ``flat_v1``; this module feeds the
    flat-to-measured evolution with numbers, and the conversion from numbers to
    dollars happens outside the server.
 
 The meter is bound to a :mod:`contextvars` context for the duration of one job,
 so the LLM boundary can record usage without threading a parameter through the
-debate engine, the fusion proposer, and the portfolio agent. ``asyncio.to_thread``
-and ``asyncio.create_task`` both copy the current context, so worker threads and
+debate engine and the fusion proposer. ``asyncio.to_thread`` and
+``asyncio.create_task`` both copy the current context, so worker threads and
 child tasks see the same meter object; mutations are lock-guarded because the
 society proposes and backtests in parallel threads.
+
+**What the context binding does and does not reach.** A recorder is a no-op when
+no meter is bound, which is the correct behaviour outside a job — but it also
+means instrumenting a code path proves nothing on its own about whether that path
+is measured. Only ``run_generation`` binds a meter today. In particular the
+:mod:`archimedes.agents.portfolio_agent` tool-use loop carries a
+:func:`record_llm_call` that is **inert**: its only caller is
+``GET /api/strategies/advisor``, which never opens a :func:`measure` scope, and
+the generation pipeline's runners ignore the ``agent`` argument they are handed.
+The call is correct-if-reached rather than a gap it closes today. See
+``docs/generation-cost-instrumentation.md`` for the full coverage boundary.
 """
 
 from __future__ import annotations

@@ -8,6 +8,7 @@ Endpoints (per ``docs/specs/generation-streaming-spec.md``):
   GET  /api/generate/jobs                     — list recent jobs (status table)
   GET  /api/generate/jobs/{job_id}            — one job's status (poll fallback)
   GET  /api/generate/jobs/{job_id}/candidates — N candidates incl. rejected
+  GET  /api/generate/jobs/{job_id}/cost       — raw measurement, no prices (#1217)
 
 This router lives in its own file per the Spine+ v2 plan's cross-cutting
 principle #2 — no new endpoints go into ``api/routes.py``.

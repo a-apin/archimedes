@@ -27,7 +27,7 @@ a guess.
 | Piece | File |
 |---|---|
 | The meter — accumulation, guards, snapshot shape | [`backend/archimedes/services/cost_meter.py`](../backend/archimedes/services/cost_meter.py) |
-| Token capture at the provider boundary | [`backend/archimedes/services/llm_backend.py`](../backend/archimedes/services/llm_backend.py) (every `complete()`), [`backend/archimedes/agents/portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py) (raw-SDK tool-use loop) |
+| Token capture at the provider boundary | [`backend/archimedes/services/llm_backend.py`](../backend/archimedes/services/llm_backend.py) (every `complete()`) — plus an inert call in [`backend/archimedes/agents/portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py), see "What is not measured" below |
 | Stage timing + write tallies | [`backend/archimedes/agents/generation_pipeline.py`](../backend/archimedes/agents/generation_pipeline.py), [`backend/archimedes/agents/debate_engine.py`](../backend/archimedes/agents/debate_engine.py) |
 | Persistence onto the job | `JobStore.merge_result` in [`backend/archimedes/services/job_queue.py`](../backend/archimedes/services/job_queue.py) |
 | Read surfaces | `GET /api/generate/jobs/{job_id}/cost`, and the `cost` field on `GET /api/generate/jobs` |
@@ -35,10 +35,31 @@ a guess.
 
 The meter is bound to a `contextvars` context for the duration of one job, so
 the LLM boundary records usage without threading a parameter through the debate
-engine, the fusion proposer, and the portfolio agent. `asyncio.to_thread` and
-`asyncio.create_task` both copy the current context, so the society's parallel
-proposal and backtest workers write into the same meter; mutations are
-lock-guarded.
+engine and the fusion proposer. `asyncio.to_thread` and `asyncio.create_task`
+both copy the current context, so the society's parallel proposal and backtest
+workers write into the same meter; mutations are lock-guarded.
+
+### What is not measured
+
+A recorder is a no-op when no meter is bound to the context. That is the right
+behaviour outside a job, but it has a consequence worth stating plainly:
+**instrumenting a code path does not by itself put that path in a job's
+snapshot.** `run_generation` is the only thing that binds a meter.
+
+One instrumented call is therefore **inert today**:
+`propose_portfolio_with_tools()` in `portfolio_agent.py` carries a
+`record_llm_call`, and its raw-SDK tool-use loop genuinely does bypass
+`LLMBackend.complete()` — but that method is not on the generation pipeline's
+call graph. Its only caller is `GET /api/strategies/advisor`, which never opens
+a `cost_meter.measure()` scope, and the pipeline's two runners
+(`_run_debate_leaderboard`, `_run_fixture_candidate`) both accept an `agent`
+argument for signature parity and ignore it. So no generation reaches this loop,
+and the call cannot contribute to any job's cost snapshot as the code stands.
+
+It is kept rather than removed because it is correct the moment that changes: if
+this loop is ever joined to a metered job, the coverage is already in place
+instead of being discovered missing after the fact. It closes no gap today, and
+the snapshots in this document do not include anything from it.
 
 ## Snapshot shape (`cost_v1`)
 
@@ -122,11 +143,17 @@ lock-guarded.
 2. **An implausible count is refused, not accumulated.** Negative, `NaN`,
    infinite, stringly-typed, boolean, non-integral, or absurd (`>` 10M) counts
    are recorded as missing.
-3. **No pricing math server-side.** Stage names, write-counter names, and meta
-   keys are screened; a pricing-shaped label (`cost_usd`, `price_per_call`,
-   `bedrock_spend`, …) raises `PricingLeakError`. The snapshot carries no
-   pricing-shaped key at any depth, and `quote()["pricing_model"]` stays
-   `flat_v1`.
+3. **No pricing math server-side.** Every caller-chosen label — stage name,
+   write-counter name, meta key — is screened at write time, and a pricing-shaped
+   one (`cost_usd`, `price_per_call`, `bedrock_spend`, …) raises
+   `PricingLeakError`, whether or not a meter is bound. That write-time screening
+   is the enforcement: the remaining keys in a snapshot are the meter's own fixed
+   literals, so a caller label is the only route a pricing-shaped key could take
+   into one. The test complements it from the other side by walking a
+   representative snapshot's keys at every depth and asserting none contains
+   `usd` / `dollar` / `price` / `cost` / `fee` / `revenue` — a check on one
+   instance, not a proof over all of them; the screening is what makes it
+   general. `quote()["pricing_model"]` stays `flat_v1`.
 4. **The measurement never conjures a job.** `merge_result` refuses to write to a
    job id that does not exist, and undoes a write that raced an expiry —
    otherwise a bare `HSET` would materialise a TTL-less phantom hash that then

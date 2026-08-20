@@ -367,8 +367,21 @@ class PortfolioAgent:
 
             # Cost instrumentation (#1217). This tool-use loop calls the raw SDK
             # directly, bypassing LLMBackend.complete() where every other call is
-            # metered — so without this line these turns would be invisible in the
-            # per-job token count, and the snapshot would under-report.
+            # metered — so a metered job running through here would under-report
+            # without this line.
+            #
+            # INERT TODAY, deliberately. record_llm_call is a no-op when no meter
+            # is bound to the context, and nothing binds one on this path:
+            # propose_portfolio_with_tools() is not on the generation pipeline's
+            # call graph. Its only caller is GET /api/strategies/advisor, which
+            # never opens a cost_meter.measure() scope; the pipeline's two runners
+            # (_run_debate_leaderboard, _run_fixture_candidate) both accept an
+            # `agent` argument purely for signature parity and ignore it. So this
+            # call cannot contribute to any job's snapshot as the code stands.
+            #
+            # It is kept because it is correct the moment that changes: whoever
+            # wires this loop into a metered job gets the coverage already in
+            # place rather than discovering a silent under-report afterwards.
             record_llm_call(model=final_response_model, response=resp)
 
             # Capture the assistant turn for the next iteration
