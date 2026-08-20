@@ -372,3 +372,242 @@ def test_alembic_strategy_store_matches_a_fresh_create_all_schema(tmp_path):
     assert "strategy_spec" in create_all_cols
     assert "strategy_spec" in alembic_cols
     assert create_all_cols == alembic_cols
+
+
+# ── backtest_results dedupe data migration (issue #1347) ────────────────────
+#
+# canonical_artifact_hash used to hash run_id/timestamp_utc along with the
+# rest of the artifact payload, so every run's content_hash was unique by
+# construction and insert_backtest_if_missing's dedupe never fired — see
+# backend/archimedes/services/backtest_mapper.py's module-level docstring.
+# This migration (f0ab58339d55) is the one-time cleanup: it recomputes every
+# row's canonical hash from its OWN stored artifact_json and collapses rows
+# that recompute to the same (strategy_id, hash), keeping the earliest.
+
+_DEDUPE_MIGRATION_REVISION = (
+    "f0ab58339d55"  # migrations/versions/f0ab58339d55_dedupe_backtest_results_canonical_hash.py
+)
+
+
+def _dedupe_migration_down_revision() -> str:
+    """The dedupe migration's OWN down_revision, looked up from the script
+    directory (not hardcoded) — same rationale as the strategy_spec test
+    above: stays correct if another migration lands on top later."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision(_DEDUPE_MIGRATION_REVISION).down_revision
+    assert isinstance(target, str), f"expected a single down_revision, got {target!r}"
+    return target
+
+
+def _artifact_payload(run_id: str, timestamp_utc: str, sharpe: float) -> dict:
+    """Minimal artifact payload shaped like a real run_backtests.py artifact:
+    run_id/timestamp_utc are the two volatile fields the code fix excludes;
+    everything else is content."""
+    return {
+        "run_id": run_id,
+        "timestamp_utc": timestamp_utc,
+        "strategy": {"backtest_code_hash": "sha256:dedupe-fixture"},
+        "assumptions": {"transaction_cost_bps": 10},
+        "results": [{"operation": "SPY", "metrics": {"sharpe_ratio": sharpe, "total_trades": 12}}],
+    }
+
+
+def _seed_pre_dedupe_rows(db_path: Path) -> None:
+    """Seed rows AS THEY WOULD HAVE BEEN WRITTEN under the unfixed hash:
+    genuinely identical content (strat_A) but a distinct content_hash per
+    row, exactly like every real run_backtests.py refresh cycle produced
+    before the code fix. Uses the real ORM factory
+    (`BacktestResultRecord.from_backtest_result`) against the
+    already-alembic-built schema, so seeding tracks real column
+    nullability/defaults instead of hand-enumerating them.
+    """
+    import json as _json
+    from datetime import UTC, datetime
+
+    import sqlalchemy as sa
+    from archimedes.models.backtest import BacktestResult
+    from archimedes.models.backtest_store import BacktestResultRecord
+    from sqlalchemy.orm import sessionmaker
+
+    engine = sa.create_engine(f"sqlite:///{db_path}")
+    SessionLocal = sessionmaker(bind=engine)
+
+    def _result(sharpe: float) -> BacktestResult:
+        return BacktestResult(
+            strategy_id="unused",  # overwritten by from_backtest_result's own kwarg
+            sharpe_ratio=sharpe,
+            sortino_ratio=0.0,
+            max_drawdown=0.0,
+            cagr=0.0,
+            calmar_ratio=0.0,
+            win_rate=0.0,
+            profit_factor=0.0,
+            total_trades=12,
+            avg_holding_period_days=0.0,
+            correlation_to_spy=None,
+            correlation_to_btc=None,
+            equity_curve=[],
+            monthly_returns=[],
+            backtest_start=None,
+            backtest_end=None,
+            backtest_engine="backtrader",
+        )
+
+    with SessionLocal() as session:
+        # strat_A: three refreshes of IDENTICAL content (sharpe=0.7 every
+        # time), each stamped with the OLD volatile-inclusive hash — a
+        # different stale value per row even though the content never
+        # changed. Must collapse to ONE row: the earliest (r1, 2026-08-01).
+        for run_id, ts, created in (
+            ("r1", "2026-08-01T00:00:00+00:00", datetime(2026, 8, 1, tzinfo=UTC)),
+            ("r2", "2026-08-02T00:00:00+00:00", datetime(2026, 8, 2, tzinfo=UTC)),
+            ("r3", "2026-08-03T00:00:00+00:00", datetime(2026, 8, 3, tzinfo=UTC)),
+        ):
+            row = BacktestResultRecord.from_backtest_result(
+                strategy_id="strat_A",
+                content_hash=f"stale-hash-{run_id}",
+                result=_result(0.7),
+                source_pipeline="run_backtests",
+                run_id=run_id,
+                artifact_json=_json.dumps(_artifact_payload(run_id, ts, 0.7)),
+            )
+            row.created_at = created
+            session.add(row)
+
+        # strat_B: two rows with GENUINELY DIFFERENT content (sharpe 0.5 vs
+        # 0.9) — must NOT collapse; both survive, each gets its content_hash
+        # normalized to its own recomputed value.
+        for run_id, ts, sharpe, created in (
+            ("r4", "2026-08-01T00:00:00+00:00", 0.5, datetime(2026, 8, 1, tzinfo=UTC)),
+            ("r5", "2026-08-02T00:00:00+00:00", 0.9, datetime(2026, 8, 2, tzinfo=UTC)),
+        ):
+            row = BacktestResultRecord.from_backtest_result(
+                strategy_id="strat_B",
+                content_hash=f"stale-hash-{run_id}",
+                result=_result(sharpe),
+                source_pipeline="run_backtests",
+                run_id=run_id,
+                artifact_json=_json.dumps(_artifact_payload(run_id, ts, sharpe)),
+            )
+            row.created_at = created
+            session.add(row)
+
+        # strat_C: a row with NO resolvable artifact_json — must be left
+        # untouched (no payload to recompute a canonical hash from; the
+        # migration never guesses).
+        row_c = BacktestResultRecord.from_backtest_result(
+            strategy_id="strat_C",
+            content_hash="stale-hash-r6",
+            result=_result(0.3),
+            source_pipeline="run_backtests",
+            run_id="r6",
+            artifact_json=None,
+        )
+        row_c.created_at = datetime(2026, 8, 1, tzinfo=UTC)
+        session.add(row_c)
+
+        session.commit()
+
+    engine.dispose()
+
+
+def _fetch_backtest_rows(db_path: Path) -> list[sqlite3.Row]:
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT id, strategy_id, content_hash, run_id, artifact_json FROM backtest_results ORDER BY id")
+        return cur.fetchall()
+    finally:
+        con.close()
+
+
+def test_dedupe_backtest_results_migration_collapses_duplicates_and_keeps_earliest(tmp_path):
+    """Acceptance criterion: post-migration row count == number of distinct
+    recomputed canonical hashes, and the EARLIEST row per group survives.
+
+    strat_A: 3 content-identical rows -> 1 survivor (the earliest, r1).
+    strat_B: 2 content-DIFFERENT rows -> both survive, untouched-in-count.
+    strat_C: 1 unresolvable-payload row -> survives unchanged (own group).
+    Total before: 6 rows over 3 (strategy_id, recomputed_hash) groups (A has
+    1 distinct group despite 3 rows; B has 2; C has 1) -> 4 distinct groups,
+    4 rows after.
+    """
+    from archimedes.services.backtest_mapper import canonical_artifact_hash
+
+    db_path = tmp_path / "dedupe_collapse.db"
+    database_url = f"sqlite:///{db_path}"
+
+    pre = _run_alembic("upgrade", _dedupe_migration_down_revision(), database_url=database_url)
+    assert pre.returncode == 0, pre.stderr
+
+    _seed_pre_dedupe_rows(db_path)
+    assert len(_fetch_backtest_rows(db_path)) == 6, "sanity: 6 rows seeded before the dedupe migration runs"
+
+    post = _run_alembic("upgrade", "head", database_url=database_url)
+    assert post.returncode == 0, f"dedupe migration failed:\nSTDOUT:\n{post.stdout}\nSTDERR:\n{post.stderr}"
+
+    rows = _fetch_backtest_rows(db_path)
+    by_strategy: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        by_strategy.setdefault(row["strategy_id"], []).append(row)
+
+    # Row count == number of distinct recomputed canonical hashes (AC).
+    assert len(rows) == 4, f"expected 4 surviving rows, got {len(rows)}: {[dict(r) for r in rows]}"
+    recomputed_hashes = {row["content_hash"] for row in rows}
+    assert len(recomputed_hashes) == len(rows), "every surviving row must carry a distinct content_hash"
+
+    # strat_A collapsed to exactly the EARLIEST row (r1), and its content_hash
+    # is the fixed canonical_artifact_hash of its OWN payload — proving the
+    # migration used the real function, not a placeholder.
+    assert len(by_strategy["strat_A"]) == 1
+    survivor_a = by_strategy["strat_A"][0]
+    assert survivor_a["run_id"] == "r1", "the EARLIEST duplicate must survive, not an arbitrary one"
+    expected_hash_a = canonical_artifact_hash(_artifact_payload("r1", "2026-08-01T00:00:00+00:00", 0.7))
+    assert survivor_a["content_hash"] == expected_hash_a
+    # And that recomputed hash is identical to what r2/r3's payloads would
+    # produce too (proving run_id/timestamp really are excluded) even though
+    # r2/r3 themselves are gone.
+    assert expected_hash_a == canonical_artifact_hash(_artifact_payload("r2", "2026-08-02T00:00:00+00:00", 0.7))
+
+    # strat_B: both distinct-content rows survive, each normalized to its own
+    # recomputed hash (never merged with each other).
+    assert len(by_strategy["strat_B"]) == 2
+    hashes_b = {row["content_hash"] for row in by_strategy["strat_B"]}
+    assert hashes_b == {
+        canonical_artifact_hash(_artifact_payload("r4", "2026-08-01T00:00:00+00:00", 0.5)),
+        canonical_artifact_hash(_artifact_payload("r5", "2026-08-02T00:00:00+00:00", 0.9)),
+    }
+
+    # strat_C: unresolvable payload -> left exactly as it was.
+    assert len(by_strategy["strat_C"]) == 1
+    assert by_strategy["strat_C"][0]["content_hash"] == "stale-hash-r6"
+
+
+def test_dedupe_backtest_results_migration_upgrade_is_idempotent(tmp_path):
+    """Running the dedupe migration's upgrade a second time (downgrade to its
+    own down_revision — a documented structural no-op — then upgrade to head
+    again, which re-executes the SAME upgrade() body against
+    already-deduped data) must be a no-op: identical row set, no error."""
+    db_path = tmp_path / "dedupe_idempotent.db"
+    database_url = f"sqlite:///{db_path}"
+    down_revision = _dedupe_migration_down_revision()
+
+    pre = _run_alembic("upgrade", down_revision, database_url=database_url)
+    assert pre.returncode == 0, pre.stderr
+    _seed_pre_dedupe_rows(db_path)
+
+    first = _run_alembic("upgrade", "head", database_url=database_url)
+    assert first.returncode == 0, first.stderr
+    rows_after_first = [dict(r) for r in _fetch_backtest_rows(db_path)]
+
+    second_down = _run_alembic("downgrade", down_revision, database_url=database_url)
+    assert second_down.returncode == 0, second_down.stderr
+    second_up = _run_alembic("upgrade", "head", database_url=database_url)
+    assert second_up.returncode == 0, f"second upgrade head failed:\n{second_up.stderr}"
+
+    rows_after_second = [dict(r) for r in _fetch_backtest_rows(db_path)]
+    assert rows_after_second == rows_after_first, "re-running the dedupe migration changed already-deduped data"
