@@ -14,15 +14,25 @@ route share one source of truth. It deliberately does NOT synthesize returns
 from stubs: a strategy with no real backtest data surfaces an explicit
 ``pending`` verdict, never a fixture ``True``/``False``.
 
-Tri-state result (``RigorGateVerdict``):
-  - ``"pass"``    — real returns exist and the live gate passed.
-  - ``"fail"``    — real returns exist and the live gate failed at ≥1 criterion.
-  - ``"pending"`` — no real returns yet (genuinely pre-backtest): the gate cannot
-                    run, so the badge is honestly "unknown", not a boolean.
+Four-state result (``RigorGateVerdict``):
+  - ``"pass"``       — real returns exist and the live gate passed.
+  - ``"fail"``       — real returns exist, are non-degenerate, and the live gate
+                        failed at ≥1 criterion.
+  - ``"pending"``    — no real returns yet (genuinely pre-backtest): the gate
+                        cannot run, so the badge is honestly "unknown", not a
+                        boolean.
+  - ``"degenerate"`` — real returns exist but are a mathematically constant
+                        (zero-variance) series — broken data or a zero-trade
+                        backtest, not a legitimate DSR/OOS input (#1184). Kept
+                        distinct from both ``"pending"`` (which would wrongly
+                        say "not evaluated yet" for data that WAS evaluated and
+                        found broken) and ``"fail"`` (which would wrongly say
+                        "evaluated and statistically weak" for data that was
+                        never a legitimate gate input at all).
 
-Cheap-by-default: ``passes`` is ``True`` only for ``"pass"``; ``"pending"`` and
-``"fail"`` both map to ``passes is False`` so existing boolean consumers stay
-fail-closed.
+Cheap-by-default: ``passes`` is ``True`` only for ``"pass"``; ``"pending"``,
+``"fail"``, and ``"degenerate"`` all map to ``passes is False`` so existing
+boolean consumers stay fail-closed.
 """
 
 from __future__ import annotations
@@ -37,10 +47,11 @@ logger = logging.getLogger(__name__)
 # "no backtest data" branch the route reports as MISSING), never a fixture value.
 _MIN_RETURNS_FOR_GATE = 10
 
-# Literal verdict labels for the tri-state badge.
+# Literal verdict labels for the four-state badge.
 PASS = "pass"
 FAIL = "fail"
 PENDING = "pending"
+DEGENERATE = "degenerate"  # #1184: zero-variance persisted series — broken data, distinct from PENDING/FAIL.
 
 
 def _default_num_trials() -> int:
@@ -61,10 +72,10 @@ def _default_num_trials() -> int:
 class RigorGateVerdict:
     """A live rigor-gate verdict for one strategy.
 
-    ``status`` is the tri-state label ("pass" | "fail" | "pending"). ``passes``
-    is the fail-closed boolean for legacy consumers: only "pass" is truthy — and
-    it is the BADGE verdict, always evaluated at the strictest level (the
-    Archimedes Verified bar), never a user's slider level.
+    ``status`` is the four-state label ("pass" | "fail" | "pending" |
+    "degenerate"). ``passes`` is the fail-closed boolean for legacy consumers:
+    only "pass" is truthy — and it is the BADGE verdict, always evaluated at the
+    strictest level (the Archimedes Verified bar), never a user's slider level.
 
     ``min_passing_level`` and ``blocked_by_floor`` carry the strictness-ladder
     info (rigor_profiles) derived from the SAME single gate computation, so a
@@ -97,13 +108,29 @@ class RigorGateVerdict:
         return cls(status=FAIL, passes=False, source="live_gate", min_passing_level=None, blocked_by_floor=False)
 
     @classmethod
+    def degenerate(cls) -> RigorGateVerdict:
+        """#1184: a zero-variance persisted return series — never deployable at
+        any strictness level (the data itself is broken or the backtest placed
+        zero trades), and distinct from both PENDING ("not evaluated yet") and
+        FAIL ("evaluated, statistically weak")."""
+        return cls(status=DEGENERATE, passes=False, source="live_gate", min_passing_level=None, blocked_by_floor=True)
+
+    @classmethod
     def from_result(cls, result) -> RigorGateVerdict:
         """Build the badge verdict from a computed ``RigorGateResult``.
 
         ``passes`` is the badge (strictest-level) verdict; ``min_passing_level``
         and ``blocked_by_floor`` are read off the same result so the whole
         strictness ladder is available from one computation.
+
+        #1184: a degenerate (zero-variance) input is checked FIRST and short-
+        circuits straight to the ``degenerate()`` verdict — ``result.passes_all``
+        would already be ``False`` for it (via ``blocked_by_floor``), but folding
+        it into the ordinary PASS/FAIL branch would misreport "the data is
+        broken" as "the strategy was graded and lost."
         """
+        if getattr(result, "is_degenerate", False):
+            return cls.degenerate()
         passes = result.passes_all  # run_rigor_gate defaults to the strictest profile
         return cls(
             status=PASS if passes else FAIL,
@@ -125,7 +152,7 @@ def verdict_from_returns(
     average_correlation: float = 0.0,
     look_ahead_audit_passed: bool | None = None,
 ) -> RigorGateVerdict:
-    """Compute the live tri-state verdict from a strategy's persisted returns.
+    """Compute the live four-state verdict from a strategy's persisted returns.
 
     Reuses ``run_rigor_gate`` — the exact gate the ``/gate`` route runs — rather
     than reinventing it. With fewer than ``_MIN_RETURNS_FOR_GATE`` real returns the
@@ -200,7 +227,8 @@ def verdicts_for_strategies(strategies: list) -> dict[str, RigorGateVerdict]:
       * compute cohort PBO + avg-correlation from the strategies that actually
         HAVE returns (≥10 obs) — ``num_trials`` is self-contained (1 per
         strategy, decouple #2) and does NOT come from this cohort;
-      * run ``run_rigor_gate`` per strategy and map ``passes_all`` to a tri-state.
+      * run ``run_rigor_gate`` per strategy and map the result to the four-state badge
+        (``RigorGateVerdict.from_result`` — degenerate check first, #1184).
 
     Strategies with no real returns map to ``pending`` — never a fixture boolean.
     Returns ``{strategy_id: RigorGateVerdict}`` for every input strategy. Any DB or

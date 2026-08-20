@@ -119,6 +119,31 @@ class TestOneGateGradesBothPaths:
         verdict = verdict_from_returns("gen-degenerate", [0.0] * 600, num_trials=1)
         assert verdict.passes is False
 
+    def test_degenerate_series_reports_its_own_category_not_pending(self) -> None:
+        """#1184: a mathematically constant (zero-variance) persisted return
+        series is broken data or a zero-trade backtest — NOT "not yet
+        evaluated" (``pending``) and not an undifferentiated ``fail`` either
+        (that reads as "graded and statistically weak", which is not what
+        happened here: the series was never a legitimate gate input). Matches
+        five real strategies with a constant 5,659-observation series that were
+        surfacing as indistinguishable from genuinely-queued strategies.
+        """
+        verdict = verdict_from_returns("gen-degenerate-long", [0.0] * 5659, num_trials=1)
+        assert verdict.status == "degenerate"
+        assert verdict.status != "pending"
+        assert verdict.status != "fail"
+        assert verdict.passes is False
+
+        # A short series (too few observations to grade at all) must still be
+        # the ORIGINAL "pending" — the new category must not swallow it.
+        short = verdict_from_returns("gen-short-not-degenerate", [0.0] * 5, num_trials=1)
+        assert short.status == "pending"
+
+        # A real, non-constant series must still be gradeable as PASS/FAIL,
+        # never mislabeled "degenerate" just because it eventually fails.
+        real = verdict_from_returns("gen-real-not-degenerate", _series(seed=11, mu=0.0012, sigma=0.008), num_trials=1)
+        assert real.status in {"pass", "fail"}
+
 
 class TestPipelineUsesTheLiveGate:
     def test_pipeline_reads_returns_out_of_the_artifact(self) -> None:

@@ -458,6 +458,29 @@ def load_daily_returns_store(
 MIN_LIBRARY_N_FOR_PBO_GATING = 10
 
 
+def is_zero_variance_series(daily_returns: list[float] | np.ndarray) -> bool:
+    """True iff ``daily_returns`` is a non-empty, mathematically constant series.
+
+    Issue #1184: a zero-variance persisted return series (every bar identical,
+    most plausibly all-zero) is broken data or a zero-trade backtest — NOT a
+    strategy that is merely "pending more data." ``compute_dsr`` /
+    ``compute_oos_sharpe`` already guard on exactly this (``_rigor_helpers.py``,
+    ``float(np.ptp(arr)) == 0.0``) and correctly return ``None`` for it — a
+    constant series has no well-defined Sharpe/DSR. This helper reuses the
+    IDENTICAL test so ``RigorGateResult.is_degenerate`` and the ``None`` those
+    helpers produce agree by construction, and exposes it as a first-class,
+    explicit signal the gate can report as its own category instead of letting
+    the resulting ``None`` DSR/OOS collapse into "pending" or an undifferentiated
+    "fail" downstream (the actual defect: neither status distinguishes "broken
+    data" from "genuinely not yet evaluated" / "evaluated and statistically
+    weak").
+    """
+    arr = np.asarray(daily_returns, dtype=float)
+    if len(arr) == 0:
+        return False
+    return bool(np.ptp(arr) == 0.0)
+
+
 class RigorGateResult:
     """Result of running all four selection-bias checks on a strategy."""
 
@@ -482,8 +505,17 @@ class RigorGateResult:
         regime_robustness: dict | None = None,
         pbo_library_size: int | None = None,
         profile: RigorProfile | None = None,
+        is_degenerate: bool = False,
     ) -> None:
         self.strategy_id = strategy_id
+        # #1184: True when the persisted return series itself is zero-variance
+        # (see ``is_zero_variance_series``) — the reason ``deflated_sharpe`` /
+        # ``dsr_p_value`` / ``oos_sharpe`` are None here is "the data is broken
+        # or the backtest placed zero trades," never "not enough data yet"
+        # (that's `pending`, decided upstream before this result exists) nor
+        # "graded and statistically weak" (a real `fail`). Consumers must check
+        # this BEFORE treating a None DSR as either of those two.
+        self.is_degenerate = is_degenerate
         # The strictness profile whose thresholds ``passes_all`` / ``gate_details``
         # report against. Defaults to the strictest level (the badge bar), so an
         # unspecified profile is fail-safe. The strictness-adjustable thresholds
@@ -632,14 +664,44 @@ class RigorGateResult:
         return None
 
     @property
+    def tri_state_status(self) -> str:
+        """This result's category as one of ``"degenerate" | "pass" | "fail"``.
+
+        Issue #1184: single source of truth so a zero-variance persisted return
+        series (``is_degenerate``) reports its OWN category — never "pending"
+        (that status only exists upstream, before a ``RigorGateResult`` is even
+        computed, for a strategy with too few persisted returns to grade at
+        all) and never collapsed into an undifferentiated "fail" that reads as
+        "graded and statistically weak" when the truth is "the data itself is
+        broken or the backtest placed zero trades." Callers that reduce a
+        ``RigorGateResult`` to a badge status (``live_rigor_gate.py``,
+        ``strategies_routes.py``) should read this instead of re-deriving the
+        degenerate check from ``passes_all`` themselves, so the categorization
+        can't drift between call sites (the A7-cohort class of bug).
+        """
+        if self.is_degenerate:
+            return "degenerate"
+        return "pass" if self.passes_all else "fail"
+
+    @property
     def gate_details(self) -> dict[str, str]:
         details: dict[str, str] = {}
 
-        dsr_min = self.profile.dsr_p_min
-        if self.dsr_p_value is not None and self.dsr_p_value >= dsr_min:
+        # #1184: a zero-variance series makes DSR and OOS Sharpe undefined for a
+        # data-quality reason (broken data / a zero-trade backtest), not a
+        # "hasn't run" or "ran and lost" reason — say so explicitly instead of
+        # the generic "MISSING" a short series or an ordinary gate loss would
+        # also produce. The remaining criteria (PBO, look-ahead, CPCV, IID,
+        # regime-robustness) are computed identically either way below.
+        if self.is_degenerate:
+            details["dsr"] = (
+                "DEGENERATE (zero-variance persisted return series — broken data or a zero-trade backtest, "
+                "not a legitimate DSR)"
+            )
+        elif self.dsr_p_value is not None and self.dsr_p_value >= self.profile.dsr_p_min:
             details["dsr"] = f"PASS (p={self.dsr_p_value:.4f})"
         elif self.dsr_p_value is not None:
-            details["dsr"] = f"FAIL (p={self.dsr_p_value:.4f}, need ≥ {dsr_min:.2f})"
+            details["dsr"] = f"FAIL (p={self.dsr_p_value:.4f}, need ≥ {self.profile.dsr_p_min:.2f})"
         else:
             details["dsr"] = "MISSING"
         # Disclose the Sharpe convention behind the DSR (#547). The backend gate
@@ -683,7 +745,11 @@ class RigorGateResult:
         else:
             details["pbo"] = f"MISSING (source={self.pbo_source})"
 
-        if self.oos_sharpe is not None and self.in_sample_sharpe and self.in_sample_sharpe > 0:
+        if self.is_degenerate:
+            details["oos_sharpe"] = (
+                "DEGENERATE (zero-variance persisted return series — broken data or a zero-trade backtest)"
+            )
+        elif self.oos_sharpe is not None and self.in_sample_sharpe and self.in_sample_sharpe > 0:
             ratio = self.oos_sharpe / self.in_sample_sharpe
             if ratio >= self.profile.oos_is_ratio_min:
                 details["oos_sharpe"] = f"PASS (OOS/IS={ratio:.2f})"
@@ -847,6 +913,13 @@ def run_rigor_gate(
         daily_returns, num_trials, average_correlation, hac_lags="auto"
     )
 
+    # #1184: is the None DSR (and, symmetrically, the None OOS Sharpe computed
+    # below) an UNDEFINED-MATH artifact of a zero-variance series, or one of the
+    # gate's ordinary reasons for a None (too short, gate genuinely lost)? Same
+    # test _rigor_helpers.py's compute_dsr/compute_oos_sharpe guards use, so this
+    # agrees with them by construction rather than re-deriving the condition.
+    is_degenerate = is_zero_variance_series(daily_returns)
+
     # 2. PBO (criterion 4 in the gate ordering) — prefer the full-library CSCV
     #    PBO when supplied (#546). PBO is a property of the selection set, not of
     #    one strategy (Bailey et al. 2014), so the library-wide value is the
@@ -934,13 +1007,14 @@ def run_rigor_gate(
         iid_diagnostics=iid,
         regime_robustness=regime_robustness,
         pbo_library_size=effective_pbo_library_size,
+        is_degenerate=is_degenerate,
         profile=get_profile(strictness_level),
     )
 
     logger.info(
         "Rigor gate [%s]: %s (DSR p=%s, PBO=%s [%s], OOS=%s, CPCV+=%s, LA=%s, IID_violated=%s, regime_robust=%s [advisories])",
         strategy_id,
-        "PASS" if result.passes_all else "FAIL",
+        result.tri_state_status.upper(),
         dsr_p_value,
         pbo_score,
         pbo_source,

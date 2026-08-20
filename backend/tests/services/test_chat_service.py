@@ -425,12 +425,26 @@ class TestCuratedRigorStatuses:
     def test_passing_result_maps_to_pass(self) -> None:
         result = MagicMock()
         result.passes_all = True
+        # #1184: is_degenerate must be explicit on the double — MagicMock auto-vivifies
+        # unset attributes as truthy Mocks, which would otherwise make _verdict_from_result
+        # (which now checks is_degenerate first) misread this real-real RigorGateResult
+        # stand-in as a broken/zero-variance series.
+        result.is_degenerate = False
         assert self._statuses({"sid1": result}) == {"sid1": "pass"}
 
     def test_failing_result_maps_to_fail(self) -> None:
         result = MagicMock()
         result.passes_all = False
+        result.is_degenerate = False
         assert self._statuses({"sid1": result}) == {"sid1": "fail"}
+
+    def test_degenerate_result_maps_to_degenerate(self) -> None:
+        """#1184: a zero-variance persisted series reports its own category here
+        too — chat context must not fold it into 'fail' or 'pending'."""
+        result = MagicMock()
+        result.passes_all = False
+        result.is_degenerate = True
+        assert self._statuses({"sid1": result}) == {"sid1": "degenerate"}
 
     def test_absent_result_maps_to_pending(self) -> None:
         assert self._statuses({}) == {"sid1": "pending"}

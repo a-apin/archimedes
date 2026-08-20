@@ -452,10 +452,16 @@ def _verdict_from_result(result: RigorGateResult | None) -> RigorGateVerdict:
     duplicate gate run that verdicts_for_strategies would add, and eliminates
     the badge/numeric-fields divergence that arose when the two paths used different
     cohort filtering (#868, Copilot review).
+
+    #1184: delegates to ``RigorGateVerdict.from_result`` (rather than
+    hand-rolling ``passed()``/``failed()`` off ``passes_all`` here) so a
+    zero-variance persisted series reports the distinct ``degenerate`` status
+    through this route too, not just through ``live_rigor_gate.verdict_from_returns``
+    — the two badge-producing call sites can't drift apart on this check.
     """
     if result is None:
         return RigorGateVerdict.pending()
-    return RigorGateVerdict.passed() if result.passes_all else RigorGateVerdict.failed()
+    return RigorGateVerdict.from_result(result)
 
 
 # ── Library listing ─────────────────────────────────────────────

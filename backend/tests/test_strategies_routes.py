@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 from archimedes.services.live_rigor_gate import (
+    DEGENERATE,
     FAIL,
     PASS,
     PENDING,
@@ -292,11 +293,59 @@ class TestRigorGateVerdict:
         assert RigorGateVerdict.passed().passes is True
         assert RigorGateVerdict.failed().passes is False
         assert RigorGateVerdict.pending().passes is False
+        assert RigorGateVerdict.degenerate().passes is False
 
     def test_status_labels(self):
         assert RigorGateVerdict.passed().status == PASS
         assert RigorGateVerdict.failed().status == FAIL
         assert RigorGateVerdict.pending().status == PENDING
+        assert RigorGateVerdict.degenerate().status == DEGENERATE
+
+    def test_degenerate_never_deployable_at_any_level(self):
+        """#1184: broken/zero-trade data blocks every strictness level, same as
+        any other always-on correctness floor — never just the strictest bar."""
+        v = RigorGateVerdict.degenerate()
+        assert v.blocked_by_floor is True
+        assert v.min_passing_level is None
+
+
+class TestVerdictFromResultDegenerate:
+    """#1184: the LIST/DETAIL route badge (``_verdict_from_result``) must report
+    a zero-variance persisted series as ``degenerate`` — the same category
+    ``live_rigor_gate.verdict_from_returns`` reports for the identical input —
+    not silently diverge into a plain ``fail`` just because this route reduces
+    an already-computed ``RigorGateResult`` instead of calling the gate itself.
+    """
+
+    def test_degenerate_result_maps_to_degenerate_verdict(self):
+        from archimedes.api.strategies_routes import _verdict_from_result
+
+        result = run_rigor_gate(strategy_id="lib-degenerate", daily_returns=[0.0] * 5659, num_trials=1)
+        assert result.is_degenerate is True  # sanity: the input really is degenerate
+
+        v = _verdict_from_result(result)
+        assert v.status == DEGENERATE
+        assert v.status != FAIL
+        assert v.status != PENDING
+        assert v.passes is False
+
+    def test_none_result_still_maps_to_pending(self):
+        """No live gate result at all (insufficient/no persisted returns) stays
+        the pre-existing PENDING — the new category must not swallow this case."""
+        from archimedes.api.strategies_routes import _verdict_from_result
+
+        assert _verdict_from_result(None).status == PENDING
+
+    def test_non_degenerate_fail_result_still_maps_to_fail(self):
+        rng = np.random.default_rng(9)
+        losing = rng.normal(-0.002, 0.01, size=300).tolist()
+        result = run_rigor_gate(strategy_id="lib-real-loser", daily_returns=losing, num_trials=1)
+        assert result.is_degenerate is False
+
+        from archimedes.api.strategies_routes import _verdict_from_result
+
+        v = _verdict_from_result(result)
+        assert v.status == FAIL
 
 
 # ── Acceptance #1: served badge == live run_rigor_gate verdict ──────────

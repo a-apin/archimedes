@@ -213,11 +213,15 @@ class StrategyResponse(BaseModel):
     out_of_sample_sharpe: float | None = None
     kelly_fraction: float | None = None
     passes_rigor_gate: bool = False
-    # Tri-state live rigor-gate badge (#821): "pass" | "fail" | "pending".
-    # Sourced from the LIVE run_rigor_gate verdict on persisted real returns — never
-    # from a stored fixture boolean. "pending" = no real backtest data yet (the gate
-    # cannot run), surfaced honestly instead of defaulting to a fixture True/False.
-    # ``passes_rigor_gate`` stays the fail-closed boolean (True only when status == "pass").
+    # Four-state live rigor-gate badge (#821, #1184): "pass" | "fail" | "pending" |
+    # "degenerate". Sourced from the LIVE run_rigor_gate verdict on persisted real
+    # returns — never from a stored fixture boolean. "pending" = no real backtest
+    # data yet (the gate cannot run); "degenerate" = real data exists but is a
+    # mathematically constant (zero-variance) series — broken data or a zero-trade
+    # backtest, distinct from both "pending" (not evaluated yet) and "fail"
+    # (evaluated, statistically weak). Surfaced honestly instead of defaulting to a
+    # fixture True/False. ``passes_rigor_gate`` stays the fail-closed boolean (True
+    # only when status == "pass").
     rigor_gate_status: str = "pending"
     paper_claimed_sharpe: float | None = None
     paper_claim_blended_sharpe: float | None = None

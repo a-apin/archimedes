@@ -43,6 +43,7 @@ from archimedes.services.rigor_evaluator import (
     _get_func_name,
     align_returns_store,
     compute_library_pbo,
+    is_zero_variance_series,
     load_daily_returns_store,
     look_ahead_audit,
     run_rigor_gate,
@@ -949,6 +950,64 @@ class TestRigorGate:
             look_ahead_audit_passed=True,
         )
         assert result.look_ahead_passed is True
+
+
+class TestDegenerateSeriesCategory:
+    """#1184: a mathematically constant (zero-variance) persisted return series
+    is broken data or a zero-trade backtest, not "pending more data" and not an
+    ordinary statistical "fail". ``run_rigor_gate`` must categorize it as its own
+    honest, distinct state — reusing the SAME test ``_rigor_helpers.py``'s
+    ``compute_dsr``/``compute_oos_sharpe`` guards use (``np.ptp(arr) == 0.0``) so
+    the two agree by construction, never re-deriving or loosening it.
+    """
+
+    def test_is_zero_variance_series_matches_the_dsr_guard(self) -> None:
+        """Same predicate as _rigor_helpers.py:130 — by construction, not by luck."""
+        assert is_zero_variance_series([0.0] * 100) is True
+        assert is_zero_variance_series([0.001] * 5659) is True  # constant non-zero too
+        assert is_zero_variance_series([]) is False  # nothing to judge yet
+        rng = np.random.default_rng(3)
+        assert is_zero_variance_series(rng.normal(0.001, 0.008, size=100).tolist()) is False
+
+    def test_run_rigor_gate_flags_a_constant_5659_point_series_as_degenerate(self) -> None:
+        """Matches the real defect: five strategies with a constant 5,659-obs series."""
+        result = run_rigor_gate(strategy_id="degenerate-5659", daily_returns=[0.0] * 5659, num_trials=1)
+
+        assert result.is_degenerate is True
+        assert result.tri_state_status == "degenerate"
+        assert result.tri_state_status != "pending"
+        assert result.tri_state_status != "fail"
+        assert result.passes_all is False
+        # The math itself is untouched: DSR/OOS Sharpe are still correctly None
+        # (compute_dsr's own guard, unweakened) — is_degenerate is a NEW signal
+        # layered on top, not a replacement for it.
+        assert result.deflated_sharpe is None
+        assert result.dsr_p_value is None
+        assert result.oos_sharpe is None
+
+    def test_gate_details_says_degenerate_not_missing(self) -> None:
+        """The per-criterion detail string must not read as an ordinary MISSING —
+        that would still look like "not run yet" to a reader of the /gate route."""
+        result = run_rigor_gate(strategy_id="degenerate-details", daily_returns=[0.0] * 5659, num_trials=1)
+        assert "DEGENERATE" in result.gate_details["dsr"]
+        assert "DEGENERATE" in result.gate_details["oos_sharpe"]
+
+    def test_short_series_is_not_flagged_degenerate(self) -> None:
+        """The new category must not swallow the pre-existing 'too few observations
+        to grade at all' case — that stays the caller's job (verdict_from_returns
+        short-circuits to `pending` before run_rigor_gate even runs)."""
+        result = run_rigor_gate(strategy_id="too-short", daily_returns=[0.01, -0.02, 0.03], num_trials=1)
+        assert result.is_degenerate is False
+
+    def test_a_real_losing_series_is_not_flagged_degenerate(self) -> None:
+        """Genuinely graded-and-failed must stay 'fail', never misreported as
+        'degenerate' just because it lost — is_degenerate is about the INPUT
+        being constant, not about the verdict being negative."""
+        rng = np.random.default_rng(9)
+        losing = rng.normal(-0.002, 0.01, size=300).tolist()
+        result = run_rigor_gate(strategy_id="real-loser", daily_returns=losing, num_trials=1)
+        assert result.is_degenerate is False
+        assert result.tri_state_status == "fail"
 
 
 # ─── Additional coverage: gate_details branches + run_rigor_gate paths ──────
