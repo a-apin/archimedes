@@ -545,3 +545,35 @@ class TestCostEndpoint:
             resp = client.get("/api/generate/jobs", cookies=_cookies(_OWNER))
         assert resp.status_code == 200, resp.text
         assert resp.json()["jobs"][0]["cost"]["llm"]["calls"] == 9
+
+
+def test_passport_write_is_counted_inside_the_success_branch_not_at_the_caller():
+    """The strategy_passports persist is deliberately non-blocking: it can fail
+    with only a warning while _persist_candidate still succeeds, so a caller
+    cannot know whether the write landed. The counter must therefore live
+    INSIDE the swallowing try, after sess2.commit() (#1314 review — counting
+    at the caller overcounts on the logged failure path). Source-invariant in
+    the house slowapi-AST style; mutation-proven: restoring the caller-side
+    record_write("strategy_passports") fails this test."""
+    import re
+    from pathlib import Path
+
+    src = Path("backend/archimedes/agents/generation_pipeline.py").read_text()
+
+    # (a) The persist-winner path's strategy_passports count sits between the
+    # passport commit and the except that swallows its failure. (The two
+    # backtest-refresh sites count after their un-swallowed awaits inside
+    # their own trys — conditioned on success by construction.)
+    guarded = re.search(
+        r"sess2\.commit\(\)[\s\S]{0,400}?record_write\(\s*\"strategy_passports\"[\s\S]{0,400}?except Exception",
+        src,
+    )
+    assert guarded, "the passport counter must sit after sess2.commit() and before the swallowing except"
+
+    # (b) The caller block counts ONLY strategy_store — the K=1 comment block
+    # must not regain a passports count it cannot verify.
+    caller = re.search(r"K=1[\s\S]{0,400}?strategy_ids\[best\.candidate_id\]", src)
+    assert caller, "caller block not found"
+    assert not re.search(r'record_write\(\s*"strategy_passports"', caller.group(0)), (
+        "caller must not count the passport mirror (prose may mention it; the call may not)"
+    )

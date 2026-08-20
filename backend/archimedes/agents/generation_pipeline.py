@@ -1065,9 +1065,10 @@ async def run_generation(
             ownership["owner_user_id"] = owner_user_id
         with meter.stage("persist_winner"):
             sid, thash = await _persist_candidate(best, brief, **ownership)
-        # K=1: exactly one strategy_store row + its strategy_passports mirror.
+        # K=1: one strategy_store row. The strategy_passports mirror counts
+        # itself inside _persist_candidate's success branch, because its
+        # persist is deliberately non-blocking and can fail without raising.
         meter.record_write("strategy_store")
-        meter.record_write("strategy_passports")
         strategy_ids[best.candidate_id] = sid
         await emit.emit(
             "trace_hashed",
@@ -1359,6 +1360,11 @@ async def _persist_candidate(
                         owner_user_id=owner_user_id,
                     )
                     sess2.commit()
+                # Counted HERE, inside the success branch: the passport mirror
+                # is a swallowed-failure write, and the outer caller cannot see
+                # whether it landed — counting there overcounts on the logged
+                # non-blocking failure path (#1314 review).
+                cost_meter.record_write("strategy_passports")
             except Exception as exc:
                 logger.warning("unified passport persist failed (non-blocking): %s", exc)
 
