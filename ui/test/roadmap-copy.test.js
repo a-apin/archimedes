@@ -58,7 +58,6 @@ const SURFACE_FILES = [
 	"src/components/Insights.jsx",
 	"src/components/Strategies.jsx",
 	"src/components/OnboardingTour.jsx",
-	"src/components/FusionResult.jsx",
 ];
 
 //: `(name, regex, canonical_example)` — the example is the shortest string
