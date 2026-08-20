@@ -97,10 +97,18 @@ test("sign-up form wires the shared rules module, confirm field, and gate", () =
 test("sign-in view offers a Forgot password control wired to the reset request", () => {
 	assert.match(authPage, /Forgot password\?/);
 	assert.match(authPage, /requestPasswordReset/);
+	assert.match(authPage, /RESET_REQUESTED_MESSAGE/);
 	// No account-enumeration: the same confirmation copy must be shown
 	// regardless of whether the address has an account (mirrors the server's
-	// identical response — auth/auth.js sendResetPassword).
-	assert.match(authPage, /RESET_REQUESTED_MESSAGE/);
+	// identical response — auth/auth.js sendResetPassword). A grep for the
+	// constant's name alone can't detect a branch — it stays green even if a
+	// future edit does `setSent(result.userExists ? A : RESET_REQUESTED_MESSAGE)`.
+	// The actual invariant this call site must hold is that the server's
+	// response is never even looked at: requestPasswordReset's return value
+	// is discarded outright, and confirmation always follows a bare
+	// `setSent(true)` with no conditional between them.
+	assert.doesNotMatch(authPage, /=\s*await requestPasswordReset/);
+	assert.match(authPage, /await requestPasswordReset\([^)]*\)\s*\n\s*setSent\(true\)/);
 });
 
 test("an unverified sign-in (403) offers Resend verification email, wired to the resend endpoint", () => {
