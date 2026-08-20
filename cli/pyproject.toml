@@ -1,6 +1,6 @@
 [project]
 name = "archimedes-cli"
-version = "0.0.1"
+version = "0.1.0"
 description = "Run the Archimedes rigor gate over your own strategies and returns, from the command line."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -9,7 +9,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Archimedes" }]
 keywords = ["quantitative-finance", "backtesting", "deflated-sharpe", "overfitting", "rigor"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "Intended Audience :: Financial and Insurance Industry",
   "Intended Audience :: Science/Research",
@@ -20,14 +20,14 @@ classifiers = [
   "Topic :: Office/Business :: Financial :: Investment",
 ]
 
-# Deliberately small. `login` / `meter` / `verify` need an HTTP client and an
-# argument parser and nothing else, so `pip install archimedes-cli` stays a
-# seconds-long install. Two dependencies are not yet listed because the commands
-# that need them are not written:
-#   eth-account  -> `login` (SIWE signing), lands in 0.1.0
+# Deliberately small. `login` / `meter` / `verify` (0.1.0) need only an HTTP client and
+# an argument parser, so `pip install archimedes-cli` stays a seconds-long install.
+# Login is Better Auth email + password (POST /api/auth/sign-in/email), not a wallet
+# signature, so no eth-account/SIWE dependency was ever needed for it. One dependency
+# is not yet listed because the commands that need it are not written:
 #   archimedes-analytics-engine -> the `[local]` extra behind `verify --local`
 #                                  and `backtest`, once that package is on PyPI
-# Listing either one now would be metadata describing code that does not exist.
+# Listing it now would be metadata describing code that does not exist.
 dependencies = [
   "click>=8.1",
   "httpx>=0.27",
