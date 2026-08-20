@@ -10,6 +10,7 @@ import { ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
 import { apiGet, apiPost, apiDelete } from '../api'
 import { compactCostCell } from '../generationCost.js'
 import { signClass } from '../signClass.js'
+import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
 
 // A compact "deployable at your level" chip for a library row, driven by the
 // strategy's min_passing_level (from the live gate) and the user's strictness.
@@ -822,8 +823,9 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                       appear here once they've been backtested + cleared the rigor gate.
                     </p>
                     <p className="caption" style={{ color: 'var(--text-3)' }}>
-                      Generations in flight show in the agent activity feed on Portfolio and
-                      Reasoning. They land in this table once the rigor gate clears.
+                      {ROADMAP_SURFACES_ENABLED
+                        ? ROADMAP_COPY.emptyLibraryNoteRoadmap
+                        : 'Generations in flight show in the agent activity feed on Reasoning. They land in this table once the rigor gate clears.'}
                     </p>
                   </div>
                 )
