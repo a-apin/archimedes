@@ -11,8 +11,9 @@
 > **Where things live:** [`docs/README.md`](docs/README.md) — the doc index (a doc not
 > listed there does not exist) · [`docs/user-stories.md`](docs/user-stories.md) — canonical
 > product spine · [`docs/architecture.md`](docs/architecture.md) — architecture map ·
-> [`docs/adr/`](docs/adr/README.md) — 18 decision records · [`README.md`](README.md)
-> § Status — current status. Live numbers come from the live system.
+> [`docs/adr/`](docs/adr/README.md) — 18 decision records. Current status comes from
+> the live system, not a doc: `/health`, `GET /api/config/contracts`, and the
+> deploy history. (The README's dated Status section was retired 2026-08-20.)
 
 ## Project
 
@@ -46,7 +47,8 @@ Two corollaries an agent gets wrong by default:
   established**. Say "unestablished", not a number.
 - **Numbers come from the live source, not a doc.** Contract census: `GET
   /api/config/contracts`. Test count: `pytest --collect-only -q | tail -1`. Lint rules:
-  [`ruff.toml`](ruff.toml). Status: [`README.md`](README.md) § Status.
+  [`ruff.toml`](ruff.toml). Status: the live system (`/health`, the contract census),
+  not a doc — the README's dated Status section was retired 2026-08-20.
 
 ## Team
 
