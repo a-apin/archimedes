@@ -180,12 +180,17 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
               "Open Passport", the exports, the source links or the DSR/PBO
               numbers, which live only in the expanded row (2.1.1 / 4.1.2).
               The row keeps its onClick as a mouse convenience; the button
-              stops propagation so one activation is one toggle. */}
+              stops propagation so one activation is one toggle.
+              aria-controls is conditional on `open` (same pattern as
+              CustomSelect's listbox): the <tr id={detailId}> below only
+              exists in the DOM while open, so an unconditional aria-controls
+              pointed at a nonexistent id on every collapsed row — a #1318
+              residual of the #1311/#1319 pass. */}
           <button
             type="button"
             className="lib-row-toggle"
             aria-expanded={open}
-            aria-controls={detailId}
+            aria-controls={open ? detailId : undefined}
             onClick={(e) => { e.stopPropagation(); setOpen(o => !o) }}
           >
             <span aria-hidden="true" className={`${open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'} w-3 h-3 mr-1.5 text-[var(--text-4)] flex-shrink-0 inline-block`} />

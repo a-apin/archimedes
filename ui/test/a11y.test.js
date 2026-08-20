@@ -225,7 +225,11 @@ test("row-level click targets expose a real control", () => {
 	// the desktop table row was the only disclosure and it had no role, no tab
 	// stop and no aria-expanded.
 	assert.match(strategies, /className="lib-row-toggle"[\s\S]{0,120}aria-expanded=\{open\}/);
-	assert.match(strategies, /aria-controls=\{detailId\}/);
+	// aria-controls must be conditional: <tr id={detailId}> only exists in the
+	// DOM while open, so an unconditional aria-controls pointed at a
+	// nonexistent id on every collapsed row (4.1.2, #1318).
+	assert.match(strategies, /aria-controls=\{open \? detailId : undefined\}/);
+	assert.doesNotMatch(strategies, /aria-controls=\{detailId\}/);
 	assert.match(strategies, /className="lib-row-detail" id=\{detailId\}/);
 	// Corpus catalog: clicking the row was the only way into a paper.
 	assert.match(
