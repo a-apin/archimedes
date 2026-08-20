@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -26,7 +27,15 @@ def _template_env() -> dict[str, str]:
 
 def _compose_config(*, local: bool) -> dict:
     template = (ROOT / ".env.example").read_text()
-    template = template.replace("BETTER_AUTH_SECRET=", f"BETTER_AUTH_SECRET={TEST_AUTH_SECRET}", 1)
+    # Full-line substitution, not a prefix replace: .env.example now ships a
+    # non-empty placeholder value (PLACEHOLDER_SECRET in auth/auth.js), so a
+    # bare `.replace("BETTER_AUTH_SECRET=", "BETTER_AUTH_SECRET=<value>", 1)`
+    # would only prepend TEST_AUTH_SECRET onto that placeholder instead of
+    # overriding it — the resulting line would end up concatenated, not equal
+    # to TEST_AUTH_SECRET. re.sub with MULTILINE replaces the whole line.
+    template = re.sub(
+        r"^BETTER_AUTH_SECRET=.*$", f"BETTER_AUTH_SECRET={TEST_AUTH_SECRET}", template, count=1, flags=re.MULTILINE
+    )
     command = ["docker", "compose"]
     if local:
         template = template.replace("\nCOMPOSE_PROFILES=localdb\n", "\nCOMPOSE_PROFILES=localdb,runners\n", 1)
@@ -73,6 +82,20 @@ class TestLocalSetupContract(unittest.TestCase):
         self.assertEqual(
             self.config["services"]["nginx"]["ports"],
             [{"mode": "ingress", "target": 8080, "published": str(host_port), "protocol": "tcp"}],
+        )
+
+    def test_composed_auth_secret_equals_the_test_override_exactly(self) -> None:
+        """_compose_config's TEST_AUTH_SECRET substitution must fully REPLACE
+        whatever .env.example ships for BETTER_AUTH_SECRET, not concatenate
+        onto it. .env.example now ships a non-empty public placeholder
+        (auth/auth.js PLACEHOLDER_SECRET) for a verbatim `cp .env.example .env`
+        to work, so a naive prefix-replace of "BETTER_AUTH_SECRET=" would
+        prepend TEST_AUTH_SECRET onto that placeholder instead of overriding
+        it. The composed value reaching the auth service must be exactly
+        TEST_AUTH_SECRET — nothing appended, nothing left over."""
+        self.assertEqual(
+            self.config["services"]["auth"]["environment"]["BETTER_AUTH_SECRET"],
+            TEST_AUTH_SECRET,
         )
 
     def test_local_apps_wait_for_successful_schema_migration(self) -> None:
