@@ -67,7 +67,7 @@ of a surviving row's content, so there is nothing a downgrade could restore
 that the survivor doesn't already carry.
 
 Revision ID: f0ab58339d55
-Revises: c9396e0d95d4
+Revises: e2b7f4c81d93
 Create Date: 2026-08-20 00:00:00.000000
 
 """
@@ -83,7 +83,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "f0ab58339d55"
-down_revision: str | Sequence[str] | None = "c9396e0d95d4"
+down_revision: str | Sequence[str] | None = "e2b7f4c81d93"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
