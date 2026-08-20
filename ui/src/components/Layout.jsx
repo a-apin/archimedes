@@ -6,17 +6,28 @@ import { getStoredTheme, applyTheme } from "../theme";
 import { visibleNavigation } from "../routes";
 import { lockBodyScroll, unlockBodyScroll } from "../utils/scrollLock";
 
-// Sidebar groups separate Home (anchor / landing) from the three product-state
+// Sidebar groups separate Home (anchor / landing) from the product-state
 // bands. Empty group label is intentional for the Home entry — it renders as a
 // header-less section so Home reads as the top-of-shell anchor, not a peer of
-// the other groups. The three labelled groups split the remaining surfaces
+// the other groups. The five labelled groups split the remaining surfaces
 // along the gating boundary:
 //   DISCOVER — open to anonymous visitors (no wallet needed)
 //   STRATEGY — wallet-gated: generate + your saved strategies
-//   POSITION — wallet-gated: deployed vaults, on-chain audit, post-hoc review
-// Item order inside DISCOVER (Explore → Corpus → Architecture) follows the
-// natural user-onboarding read: browse the seed strategies first, see the
-// substrate they're drawn from second, see the system that fuses them third.
+//   POSITION — wallet-gated: on-chain audit, post-hoc review (Portfolio and
+//     Learnings are ROADMAP_PAGES, hidden by default (#1266); Quant Lab
+//     defaults off separately via the backend `quant` feature flag — in the
+//     shipped build this group renders as a single item, Reasoning)
+//   MARKET — the strategy marketplace (ROADMAP_PAGES, hidden by default)
+//   OPS — insights + account
+// Item order inside DISCOVER (Explore → Corpus) follows the natural
+// user-onboarding read: browse the seed strategies first, see the substrate
+// they're drawn from second. Architecture is deliberately NOT a shell nav
+// item (#1370) — `pageToPath('architecture')` resolves to the public
+// `/architecture` route (routes.js PUBLIC_PATHS), so a click here rendered it
+// inside PublicLayout instead: no sidebar, no breadcrumbs, sidebar destroyed.
+// Reachable from PublicLayout's own nav (public marketing pages only) and by
+// direct URL; see the anti-goal in #1370 against giving it a second, /app-side
+// route as a fix.
 const NAV = [
 	{
 		group: null,
@@ -27,7 +38,6 @@ const NAV = [
 		items: [
 			{ id: "explore", label: "Explore", icon: "i-lucide-compass" },
 			{ id: "corpus", label: "Corpus", icon: "i-lucide-library" },
-			{ id: "architecture", label: "Architecture", icon: "i-lucide-network" },
 		],
 	},
 	{

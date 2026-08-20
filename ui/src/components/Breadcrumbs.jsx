@@ -16,15 +16,22 @@ import { roadmapSurfaceHidden } from '../featureFlags.js'
 //
 // Deliberately excluded:
 //   - landing — it *is* Home; breadcrumb would be circular.
+//   - explore — it *is* the Home crumb's own target below. Discover has no
+//     landing page distinct from Home/Explore, so unlike Strategy/Position/
+//     Market it gets no group entry either (#1370: a "Discover" mid-crumb
+//     pointing at the same page as "Home" repeated a stop, and on /app/explore
+//     itself "Home" and the current-page crumb both named 'explore' — the
+//     same page listed twice in one trail either way).
+//   - architecture — moved out of the shell nav (#1370, see Layout.jsx); it
+//     renders under PublicLayout, which never mounts Breadcrumbs, so a
+//     CRUMB_MAP entry for it was unreachable dead config.
 //   - vault-detail, strategy, market-strategy — dynamic routes with an id/address
 //     param, not entries in PAGE_TO_PATH; reached via deep-link only.
-// Primary path (generate, leaderboard, library, corpus, architecture) all have
-// entries below; if one is intentionally omitted a comment must explain why.
+// Primary path (generate, leaderboard, library, corpus) all have entries
+// below; if one is intentionally omitted a comment must explain why.
 export const CRUMB_MAP = {
   // Discover — open to anonymous visitors
-  explore:      { group: null, groupPage: null },
-  corpus:       { group: 'Discover', groupPage: 'explore' },
-  architecture: { group: 'Discover', groupPage: 'explore' },
+  corpus:       { group: null, groupPage: null },
   // Strategy — wallet-gated, owns the primary generation path
   generate:     { group: null, groupPage: null },
   library:      { group: 'Strategy', groupPage: 'generate' },
@@ -41,6 +48,7 @@ export const CRUMB_MAP = {
   subscriptions:{ group: 'Market', groupPage: 'marketplace' },
   // Ops
   insights:     { group: null, groupPage: null },
+  account:      { group: 'Ops', groupPage: 'insights' },
 }
 
 export default function Breadcrumbs({ page, setPage }) {

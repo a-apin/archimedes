@@ -15,6 +15,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BREADCRUMBS = REPO_ROOT / "ui" / "src" / "components" / "Breadcrumbs.jsx"
 ROUTES = REPO_ROOT / "ui" / "src" / "routes.js"
+LAYOUT = REPO_ROOT / "ui" / "src" / "components" / "Layout.jsx"
 
 
 def _extract_crumb_keys(text: str) -> set[str]:
@@ -149,3 +150,114 @@ def test_crumb_map_covers_primary_path() -> None:
                 f"primary page '{page}' missing from CRUMB_MAP without a deliberate-exclusion comment. "
                 "Either add it with a correct group, or leave a comment explaining the exclusion per #1219."
             )
+
+
+# ---------------------------------------------------------------------------
+# #1370 — shell wayfinding: self-repeating breadcrumbs, a missing crumb, and a
+# sidebar item that routes outside the shell. Three new invariants below,
+# reusing the extraction helpers above rather than adding new parsers.
+# ---------------------------------------------------------------------------
+
+
+def _extract_crumb_keys_ordered(text: str) -> list[str]:
+    """Same source as _extract_crumb_keys, but preserves declaration order —
+    needed to report *which* trail collides, not just that one did."""
+    m = re.search(r"const\s+CRUMB_MAP\s*=\s*\{(.*?)\n\}", text, re.DOTALL)
+    assert m, "CRUMB_MAP block not found in Breadcrumbs.jsx"
+    block = m.group(1)
+    return re.findall(r"""^\s*['\"]?([a-z0-9_-]+)['\"]?\s*:""", block, re.MULTILINE | re.IGNORECASE)
+
+
+def _extract_home_page(text: str) -> str:
+    """The Home crumb's navigation target, e.g. `{ label: 'Home', page: 'explore' }`.
+
+    Parsed from source rather than hard-coded in the test: if the Home target
+    ever changes, the trails built below must move with it, not silently
+    compare against a stale literal.
+    """
+    m = re.search(r"""label:\s*['"]Home['"]\s*,\s*page:\s*['"]([a-z0-9_-]+)['"]""", text)
+    assert m, "Home crumb ({ label: 'Home', page: '<page>' }) not found in Breadcrumbs.jsx"
+    return m.group(1)
+
+
+def _extract_excluded_pages(text: str) -> set[str]:
+    """Page names listed under Breadcrumbs.jsx's `Deliberately excluded:` block.
+
+    Only true bullet lines (`//   - name[, name...] — reason`) count; wrapped
+    continuation lines (`//     ...`, no leading `-`) are prose, not entries.
+    """
+    m = re.search(r"Deliberately excluded:\n(.*?)\n// Primary path", text, re.DOTALL)
+    assert m, "'Deliberately excluded:' comment block not found in Breadcrumbs.jsx"
+    block = m.group(1)
+    pages: set[str] = set()
+    for line in block.splitlines():
+        item = re.match(r"^//\s{2,}-\s+(.+)$", line)
+        if not item:
+            continue
+        names_part = item.group(1).split("—")[0]
+        pages.update(n.strip() for n in names_part.split(",") if n.strip())
+    return pages
+
+
+def _extract_app_paths_pages(routes_text: str) -> set[str]:
+    m = re.search(r"const\s+APP_PATHS\s*=\s*\{(.*?)\n\}", routes_text, re.DOTALL)
+    assert m, "APP_PATHS block not found in routes.js"
+    return set(re.findall(r":\s*'([a-z0-9_-]+)'", m.group(1)))
+
+
+def _extract_layout_nav_ids(layout_text: str) -> list[str]:
+    m = re.search(r"const\s+NAV\s*=\s*\[(.*?)\n\];", layout_text, re.DOTALL)
+    assert m, "NAV block not found in Layout.jsx"
+    return re.findall(r'id:\s*"([a-z0-9_-]+)"', m.group(1))
+
+
+def test_no_page_appears_twice_in_one_trail() -> None:
+    """A breadcrumb trail that lists the same page twice is a link back to the
+    page you're already on wearing a different label (#1370 item 1: Home and
+    the Discover mid-crumb both pointed at 'explore', so /app/corpus read
+    'Home / Discover / Corpus' with Home and Discover both going nowhere new).
+    """
+    text = BREADCRUMBS.read_text(encoding="utf-8")
+    home_page = _extract_home_page(text)
+    keys = _extract_crumb_keys_ordered(text)
+    groups = _extract_crumb_groups(text)
+    group_pages = _extract_crumb_group_pages(text)
+    assert len(keys) == len(groups) == len(group_pages), (
+        f"CRUMB_MAP has {len(keys)} entries but {len(groups)} group: values and "
+        f"{len(group_pages)} groupPage: values — every entry must declare exactly one of each."
+    )
+    dupes: dict[str, list[str]] = {}
+    for key, group, group_page in zip(keys, groups, group_pages):
+        trail = [home_page]
+        if group:
+            trail.append(group_page)
+        trail.append(key)
+        if len(set(trail)) != len(trail):
+            dupes[key] = trail
+    assert not dupes, f"trails that visit the same page twice: {dupes}"
+
+
+def test_every_app_page_has_a_crumb_or_a_documented_exclusion() -> None:
+    """A CRUMB_MAP miss fails silently (Breadcrumbs returns null, #1219's
+    original bug) — #1370 item 2: 'account' is a real APP_PATHS route with no
+    crumb and no entry in the exclusion list, so it renders no trail at all.
+    """
+    text = BREADCRUMBS.read_text(encoding="utf-8")
+    app_pages = _extract_app_paths_pages(ROUTES.read_text(encoding="utf-8"))
+    crumbs = _extract_crumb_keys(text)
+    excluded = _extract_excluded_pages(text)
+    missing = sorted(app_pages - crumbs - excluded)
+    assert not missing, f"APP_PATHS pages with neither a crumb nor a documented exclusion: {missing}"
+
+
+def test_shell_nav_items_stay_inside_the_shell() -> None:
+    """#1370 item 4: Layout.jsx's Architecture nav item routed to the public
+    `/architecture` path (routes.js PUBLIC_PATHS, not APP_PATHS) — clicking it
+    unmounted the whole authenticated shell, sidebar included, with no way
+    back to where the user was. Every non-Home NAV id must resolve inside /app.
+    """
+    layout_text = LAYOUT.read_text(encoding="utf-8")
+    app_pages = _extract_app_paths_pages(ROUTES.read_text(encoding="utf-8"))
+    nav_ids = [i for i in _extract_layout_nav_ids(layout_text) if i != "landing"]
+    bad = sorted(set(nav_ids) - app_pages)
+    assert not bad, f"sidebar nav items that route outside /app (shell disappears): {bad}"
