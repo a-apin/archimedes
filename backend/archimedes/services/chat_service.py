@@ -58,7 +58,7 @@ def _curated_rigor_statuses(strategies: list) -> dict[str, str]:
     told the vault-chat LLM that every curated strategy had failed the gate.
     This reuses the library list's memoized live-gate batch over the full
     library cohort (same cohort context, same cache entry, so a warm library
-    page makes this free) and reduces each requested strategy to its tri-state
+    page makes this free) and reduces each requested strategy to its four-state
     status. Any failure returns ``{}`` and the caller omits the rigor line
     entirely — this context builder's law is "missing data is omitted, never
     invented".
@@ -378,7 +378,7 @@ class ChatService:
 
                         provider = default_provider()
                         found = [(sid, provider.get_strategy(sid)) for sid in strategy_ids[:3]]
-                        # LIVE tri-state verdicts, batched once (M2 fix). The
+                        # LIVE four-state verdicts, batched once (M2 fix). The
                         # in-memory passes_rigor_gate is a fail-closed sentinel,
                         # not a verdict — the old line told the LLM every curated
                         # strategy was "not passed".

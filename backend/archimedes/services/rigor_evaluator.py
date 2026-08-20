@@ -717,16 +717,24 @@ class RigorGateResult:
         zero trades."
 
         NOTE — this property is a convenience/logging accessor (used at the
-        gate's own INFO log line below), not a dependency the badge-reducing
-        call sites (``live_rigor_gate.RigorGateVerdict.from_result``,
-        ``strategies_routes._verdict_from_result``) actually import: they
-        re-derive the identical ``is_degenerate``-first / ``passes_all``-else
-        rule directly off ``is_degenerate`` and ``passes_all`` instead, so they
-        stay constructible from the ``MagicMock`` result doubles the chat/
+        gate's own INFO log line below), not a dependency
+        ``live_rigor_gate.RigorGateVerdict.from_result`` actually imports: it
+        re-derives the identical ``is_degenerate``-first / ``passes_all``-else
+        rule directly off ``is_degenerate`` and ``passes_all`` instead, so it
+        stays constructible from the ``MagicMock`` result doubles the chat/
         portfolio-agent test suites build (which don't stub this property).
-        The rule is duplicated in three places, not centralized here — if you
-        change one, change all three (this property, ``from_result``, and
-        ``_verdict_from_result``'s docstring pointer to it).
+        ``strategies_routes._verdict_from_result`` does NOT re-derive the rule
+        — it's a pure delegation to ``from_result`` — so the rule lives in two
+        places, not three: this property and ``from_result``. A separate,
+        still-hardcoded three-state map lives at
+        ``strategies_routes._passport_to_strategy_response`` (the
+        generated/fusion passport read path); it derives its status from a
+        stored aggregate rather than a ``RigorGateResult`` and can't report
+        "degenerate" at all — tracked as a known gap in its own inline
+        comment, not covered by this property or ``from_result``. If you
+        change the categorization rule, change it here and in
+        ``from_result``, and check whether ``_passport_to_strategy_response``
+        needs the equivalent fix.
         """
         if self.is_degenerate:
             return "degenerate"

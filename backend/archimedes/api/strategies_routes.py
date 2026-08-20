@@ -247,8 +247,8 @@ def _live_rigor_result_for_one(s: Strategy) -> RigorGateResult | None:
     """Full live ``RigorGateResult`` for a single strategy (#868).
 
     Companion to ``_live_verdict_for_one``: that function reduces the live gate
-    to the tri-state pass/fail/pending badge (``RigorGateVerdict`` carries no
-    numeric fields), but the served leaderboard numbers (``dsr_p_value``,
+    to the four-state pass/fail/pending/degenerate badge (``RigorGateVerdict``
+    carries no numeric fields), but the served leaderboard numbers (``dsr_p_value``,
     ``pbo_score``, ``out_of_sample_sharpe``, ``deflated_sharpe_ratio``) must
     also come from the SAME live gate run, not the stale ``s.dsr_p_value`` /
     ``bt.dsr_p_value`` fixture fields — otherwise the leaderboard can show
@@ -273,7 +273,7 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
     """Batch live ``RigorGateResult`` per strategy (#868), for the library list.
 
     Companion to ``verdicts_for_strategies``: that function collapses the live
-    gate to a tri-state pass/fail/pending badge, discarding the underlying
+    gate to a four-state pass/fail/pending/degenerate badge, discarding the underlying
     DSR/PBO/OOS numbers. The served leaderboard numeric fields must equal what
     ``GET /api/selection-bias/gate`` computes for the same strategy right now
     (not the stale ``s.dsr_p_value``/``bt.dsr_p_value`` fixture fields), so this
@@ -283,10 +283,12 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
     avg-correlation over the survivors, one ``run_rigor_gate`` call per
     strategy. ``num_trials`` is self-contained (1 per strategy, decouple #2) —
     it is NOT derived from this cohort. Strategies with no/insufficient
-    persisted returns or a degenerate series are simply absent from the
-    returned dict — the caller falls back to the stale fixture fields for
-    those ids (fail-closed: no fabricated number for a strategy the live gate
-    cannot evaluate).
+    persisted returns are simply absent from the returned dict — the caller
+    falls back to the stale fixture fields for those ids (fail-closed: no
+    fabricated number for a strategy the live gate cannot evaluate). A
+    degenerate (zero-variance) series IS graded and included here — it just
+    runs with self-contained cohort context (see the ``gate_kwargs`` branch
+    below) so it can't dilute ``avg_correlation`` for the rest of the cohort.
 
     Any DB or cohort-compute failure degrades to ``{}`` (every id falls back to
     the stale fields) rather than raising into the library-list response.
@@ -400,8 +402,8 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
                 # Degenerate (zero-variance) series: excluded from cohort context to
                 # prevent diluting avg_correlation (#868); num_trials is self-contained
                 # (1) either way, but the strategy still runs its own gate so the
-                # caller gets a live "fail" verdict rather than falling back to a
-                # stale fixture value.
+                # caller gets a live "degenerate" verdict (#1184) rather than falling
+                # back to a stale fixture value.
                 gate_kwargs = {"num_trials": 1, "pbo_scores": {}, "average_correlation": 0.0}
             try:
                 computed[s.id] = run_rigor_gate(

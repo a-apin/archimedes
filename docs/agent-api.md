@@ -166,7 +166,7 @@ candidate from its persisted strategy:
 
 ```
 GET /api/strategies/{strategy_id}
-→ { "rigor_gate_status": "pass" | "fail" | "pending",
+→ { "rigor_gate_status": "pass" | "fail" | "pending" | "degenerate",
     "passes_rigor_gate": <bool>,          # true ⇒ deployable
     "sharpe_ratio": <float|null>,          # real backtest Sharpe (null while pending)
     "deflated_sharpe_ratio": <float|null>,
@@ -178,6 +178,7 @@ GET /api/strategies/{strategy_id}
 - **`pass`** — real returns exist and the live gate passed → `passes_rigor_gate: true`, deployable.
 - **`fail`** — real returns exist and the gate failed ≥1 criterion → not deployable (honest).
 - **`pending`** — no real persisted returns yet → the gate cannot run; not deployable.
+- **`degenerate`** — real returns exist but are a mathematically constant (zero-variance) series (broken data or a zero-trade backtest) → not a legitimate DSR/OOS input, never deployable (#1184).
 
 > Fusion/debate candidates emit a DSL spec (`weights={}`) scored by
 > `evaluate_fusion_spec`, so they skip the static buy-and-hold backtester. Until the
