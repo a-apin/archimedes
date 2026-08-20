@@ -894,6 +894,49 @@ resource "aws_cloudwatch_metric_alarm" "chain_disconnected_alarm" {
   tags                = { Project = var.project_name }
 }
 
+# ── Oracle-freshness detection — HEALTH_ORACLE_STALE (issue #1371) ──
+#
+# Every deployed PriceOracle on Arc testnet has been stale since the T3.2
+# redeploy with nothing reporting it — isFresh()/lastUpdated() had zero
+# backend callers. backend/archimedes/services/oracle_health.py probes the
+# on-chain push set directly (never runner/process liveness — a stalled push
+# can loop happily every 60s and log success while the on-chain write itself
+# never lands, which is exactly what went undetected for 42+ days). The
+# `/health` handler (main.py) logs a loud WARNING (`HEALTH_ORACLE_STALE`)
+# whenever `oracle_fresh` is false while still returning HTTP 200 — same
+# "degraded but healthy task keeps serving traffic" reasoning as the
+# chain_disconnected pair above (see the boxed comment there); this
+# filter+alarm pair turns repeated occurrences into a paging alarm instead of
+# sitting silently in a JSON body nobody is reading.
+resource "aws_cloudwatch_log_metric_filter" "oracle_stale" {
+  name           = "${var.project_name}-oracle-stale"
+  log_group_name = aws_cloudwatch_log_group.app.name
+  pattern        = "\"HEALTH_ORACLE_STALE\""
+
+  metric_transformation {
+    name          = "OracleStaleCount"
+    namespace     = "Archimedes/Health"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "oracle_stale_alarm" {
+  alarm_name          = "${var.project_name}-oracle-stale"
+  alarm_description   = "/health reported oracle_fresh=false 3+ times in 5 min — the probed on-chain PriceOracle push set is not current (see oracle_oldest_age_s / oracle_reason in the /health response)."
+  namespace           = aws_cloudwatch_log_metric_filter.oracle_stale.metric_transformation[0].namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.oracle_stale.metric_transformation[0].name
+  statistic           = "Sum"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 3
+  period              = 300
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  tags                = { Project = var.project_name }
+}
+
 # ── Outputs ──────────────────────────────────────────────────────────────────
 
 output "alerts_topic_arn" {
