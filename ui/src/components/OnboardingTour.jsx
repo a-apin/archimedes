@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { roadmapSurfaceHidden } from '../featureFlags.js'
+import { roadmapSurfaceHidden, ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
 import { canNavigateTo } from '../routes.js'
 import { rectOnScreen } from '../tourGeometry.js'
 import useDialogFocus from '../hooks/useDialogFocus'
@@ -56,6 +56,32 @@ const ALL_CARDS = [
     illustration: 'corpus',
   },
   {
+    // Real regardless of the flag — paper trading isn't a ROADMAP_PAGES
+    // surface (routes.js), it's the MVP spine's act-on step (Layout.jsx
+    // "the act-on step of the MVP spine"). Named here so the tour has an
+    // honest next step even when 'deploy' below is filtered out (#1354).
+    //
+    // anchor is intentionally null, not 'paper': no nav item carries
+    // data-tour="paper" (Layout.jsx's NAV has no 'paper' entry), so the
+    // measure() effect would never find the element and would fall through
+    // to its "not mounted yet" branch, which calls setPage('paper') as a
+    // side effect. For a signed-out visitor that navigates to a page kind:
+    // 'app' route outside ANON_APP_PAGES (routes.js) and App.jsx bounces
+    // straight to /sign-in — the exact anon-bounce #1354's anti-goal
+    // forbids. A null anchor renders this as a centered, text-only card
+    // (rect stays null either way) with no navigation side effect at all.
+    id: 'paper',
+    title: 'Try it as paper trading',
+    body: (
+      <>
+        Every rigor-gate winner can run as a <strong>simulated, account-owned
+        paper trade</strong> — free, immediate, no wallet signature required.
+      </>
+    ),
+    anchor: null,
+    illustration: 'paper',
+  },
+  {
     id: 'deploy',
     title: 'Deploy as a vault',
     body: (
@@ -71,11 +97,18 @@ const ALL_CARDS = [
   {
     id: 'reasoning',
     title: 'Audit the reasoning',
-    body: (
+    body: ROADMAP_SURFACES_ENABLED ? (
       <>
         Every autonomous decision is <strong>hashed and anchored on Arc</strong> via
         the ReasoningTraceRegistry. Trace any action back to the strategy and the
         academic research that grounds it.
+      </>
+    ) : (
+      <>
+        Every rigor verdict carries the <strong>passport</strong> that produced it
+        — source papers, backtest, and gate values, all traceable. Trade-level
+        commit-reveal (hashed and anchored on Arc) activates once vault deploys
+        are live.
       </>
     ),
     anchor: 'reasoning',
@@ -109,7 +142,7 @@ function Illustration({ name }) {
           {[0, 1, 2, 3].map(i => (
             <rect key={i} x={20 + i * 30} y={20 + (i % 2) * 6} width="22" height="40" rx="2" fill={i === 2 ? accent : muted} opacity={i === 2 ? 1 : 0.5} />
           ))}
-          <text x="80" y="73" textAnchor="middle" fontFamily="monospace" fontSize="8" fill={muted}>10,000 papers</text>
+          <text x="80" y="73" textAnchor="middle" fontFamily="monospace" fontSize="8" fill={muted}>10,000 paper records</text>
         </svg>
       )
     case 'generate':
@@ -137,6 +170,15 @@ function Illustration({ name }) {
           <text x="134" y="38" textAnchor="middle" fontFamily="monospace" fontSize="7" fill={accent}>arc</text>
           <text x="134" y="50" textAnchor="middle" fontFamily="monospace" fontSize="7" fill={accent}>anchor</text>
           <text x="80" y="73" textAnchor="middle" fontFamily="monospace" fontSize="8" fill={muted}>hash → on-chain</text>
+        </svg>
+      )
+    case 'paper':
+      return (
+        <svg viewBox="0 0 160 80" width="100%" height="80" aria-hidden="true">
+          <rect x="2" y="2" width="156" height="76" rx="6" fill={bg} />
+          <rect x="30" y="16" width="100" height="48" rx="3" fill="none" stroke={text} strokeWidth="1" strokeDasharray="3 2" />
+          <polyline points="42,48 58,38 72,44 90,26 108,32 120,20" fill="none" stroke={accent} strokeWidth="1.5" />
+          <text x="80" y="73" textAnchor="middle" fontFamily="monospace" fontSize="8" fill={muted}>simulated · no funds</text>
         </svg>
       )
     case 'vault':

@@ -121,45 +121,66 @@ def paper_rag_health(probe: bool = False) -> PaperRAGHealth:
     return PaperRAGHealth(status="degraded", reason="embedding model unavailable, TF-IDF fallback")
 
 
-def _weights_present() -> bool:
-    """Cheap on-disk check that the baked model cache holds our model.
-
-    The Docker image bakes the weights into ``HF_HOME`` at build time
-    (backend/Dockerfile:70) and runs with ``HF_HUB_OFFLINE=1``, so "the
-    directory for this model exists and is non-empty" is the strongest claim
-    available without importing torch. It is deliberately NOT reported as
-    ``live`` — presence on disk is not proof the model loads.
-    """
-    hf_home = os.getenv("HF_HOME")
-    if not hf_home:
-        return False
-    slug = _model_name().replace("/", "--")
-    root = Path(hf_home)
-    try:
-        for candidate in root.iterdir():
-            if not candidate.is_dir():
-                continue
-            name = candidate.name
-            if slug in name or name in (slug, f"models--sentence-transformers--{slug}"):
-                return any(candidate.rglob("*.safetensors")) or any(candidate.rglob("*.bin"))
-    except OSError:
-        return False
-    return False
-
-
 def _semantic_enabled() -> bool:
     """Check the feature flag. Default ON for production."""
     val = os.getenv("FUSION_SEMANTIC_RETRIEVAL", "true").strip().lower()
     return val in _TRUTHY
 
 
-# ── Embedding engine ─────────────────────────────────────────────
-
 # Lazy-loaded embedding model (sentence-transformers).
 _embedding_model: Any = None
 # Sentinel: True once a load attempt has been made and failed, so repeated
 # health checks don't retry indefinitely (the result is cached after first try).
 _embedding_load_attempted: bool = False
+
+_weights_present_cache: bool | None = None
+
+
+def _weights_present() -> bool:
+    """Cheap on-disk check that the baked model cache holds our model.
+
+    The Docker image bakes the weights into ``HF_HOME`` at build time
+    (backend/Dockerfile:70-74) and runs with ``HF_HUB_OFFLINE=1``.
+
+    huggingface_hub NESTS its cache: the model lives at
+    ``$HF_HOME/hub/models--<org>--<name>/snapshots/<sha>/model.safetensors``,
+    not directly under ``$HF_HOME`` (whose top level holds only ``hub`` and
+    ``xet``). The first version of this function scanned one level with
+    ``iterdir()``, found neither, and reported ``degraded`` on a container
+    where the model loads perfectly — so search the tree instead.
+
+    Memoised: the cache is a static build artifact, and ``/health`` is polled
+    every 30s by the ALB. Presence on disk is deliberately NOT reported as
+    ``live`` — it is not proof the model loads.
+    """
+    global _weights_present_cache
+    if _weights_present_cache is not None:
+        return _weights_present_cache
+    _weights_present_cache = _scan_for_weights()
+    return _weights_present_cache
+
+
+def _scan_for_weights() -> bool:
+    hf_home = os.getenv("HF_HOME")
+    if not hf_home:
+        return False
+    slug = _model_name().replace("/", "--")
+    tail = slug.rsplit("--", 1)[-1]
+    root = Path(hf_home)
+    try:
+        for candidate in root.rglob("*"):
+            if not candidate.is_dir():
+                continue
+            name = candidate.name
+            if not (slug in name or tail in name):
+                continue
+            if next(candidate.rglob("*.safetensors"), None) is not None:
+                return True
+            if next(candidate.rglob("*.bin"), None) is not None:
+                return True
+    except OSError:
+        return False
+    return False
 
 
 def _get_embedding_model():
