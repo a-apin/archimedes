@@ -94,6 +94,11 @@ MANIFEST: dict = {
             "implemented": False,
             "lands_in": "unscheduled",
             "description": "Local-only backtest of a strategy file (never uploaded).",
+            "inputs": {
+                "--strategy-path": {"required": True},
+                "--strategy-class": {"required": True},
+                "--json": {"flag": True},
+            },
         },
         "manifest": {
             "implemented": True,

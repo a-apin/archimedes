@@ -37,16 +37,23 @@ def test_implemented_flags_match_reality():
     assert payload["tool"] == "archimedes"
 
 
-def test_manifest_flags_exist_on_the_real_commands():
-    """Every --flag the manifest declares for a command must exist on that
-    command's actual click params (positional/env-only entries excluded)."""
+def test_manifest_flags_match_the_real_commands_both_directions():
+    """Flag parity is BIDIRECTIONAL (the drift-proofing promise): every --flag
+    the manifest declares must exist on the command, AND every real click
+    --option must appear in the manifest — a new flag added to a command
+    without updating manifest.py must fail this test (review finding: the
+    original one-directional check let that drift through silently)."""
     for name, spec in MANIFEST["commands"].items():
         inputs = spec.get("inputs") or {}
+        declared_flags = {k for k in inputs if k.startswith("--")}
         cmd = main.commands[name]
-        real_flags = {opt for p in cmd.params if isinstance(p, click.Option) for opt in p.opts}
-        for input_name in inputs:
-            if input_name.startswith("--"):
-                assert input_name in real_flags, f"{name}: manifest declares {input_name} but the command lacks it"
+        real_flags = {opt for p in cmd.params if isinstance(p, click.Option) for opt in p.opts if opt.startswith("--")}
+        assert declared_flags <= real_flags, (
+            f"{name}: manifest declares {declared_flags - real_flags} but the command lacks them"
+        )
+        assert real_flags <= declared_flags, (
+            f"{name}: command has {real_flags - declared_flags} undeclared in the manifest"
+        )
 
 
 def test_manifest_exit_codes_match_exits_module():

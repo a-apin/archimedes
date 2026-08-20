@@ -116,11 +116,11 @@ a hard rule for anything a claim depends on.
 
 No session → exits `AUTH` (2) before any network call (cli.py:286-294).
 Expired/revoked session → the API 401s, mapped to `AUTH` with
-`error: "session_expired"` (cli.py:116-123, `_handle_api_error`).
+`error: "session_expired"` (cli.py:135-167, `_handle_api_error`).
 
 ### `archimedes verify RETURNS_CSV`
 
-cli.py:392-463. Requires a cached session.
+cli.py:392-486. Requires a cached session.
 
 ```bash
 archimedes verify returns.csv
@@ -143,7 +143,7 @@ archimedes verify returns.csv --trials 40 --json
 
 `RETURNS_CSV` is two columns (`date,daily_return`); a header row, or any row
 whose second column doesn't parse as a float, is skipped automatically
-(cli.py:319-344, `_parse_returns_csv`). `-` reads from stdin, so this pipes:
+(cli.py:341-364, `_parse_returns_csv`). `-` reads from stdin, so this pipes:
 
 ```bash
 archimedes backtest --strategy-path mine.py --strategy-class Mine | archimedes verify -
@@ -230,8 +230,8 @@ esac
 ## The `--json` contract
 
 Every command honors `--json` on **every** code path, including errors
-(cli.py docstring lines 11-12; `_unavailable`, cli.py:69-89; `_fail`,
-cli.py:92-100) — a script never has to parse prose to learn what happened.
+(cli.py docstring lines 11-12; `_unavailable`, cli.py:80-110; `_fail`,
+cli.py:113-121) — a script never has to parse prose to learn what happened.
 
 - **Success:** `{"ok": true, ...command-specific fields...}` — `login`:
   `{ok, email}` (cli.py:251); `meter`: `{ok, **usage}` (cli.py:313); `verify`:
@@ -249,7 +249,7 @@ cli.py:92-100) — a script never has to parse prose to learn what happened.
 ## What's still NOT implemented
 
 - **`archimedes backtest`** — always exits `NOT_IMPLEMENTED` (3), regardless of
-  arguments (cli.py:481-493). Running a strategy file means importing and
+  arguments (cli.py:489-516). Running a strategy file means importing and
   executing arbitrary Python, which is why it's local-only by design, not a
   performance choice — and that engine isn't published yet.
 - **`archimedes verify --local`** — same exit, same reason: needs the same
