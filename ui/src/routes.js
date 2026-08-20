@@ -1,3 +1,5 @@
+import { ROADMAP_PAGES, ROADMAP_SURFACES_ENABLED } from './featureFlags.js'
+
 const PUBLIC_PATHS = {
   '/': 'landing',
   '/architecture': 'architecture',
@@ -62,6 +64,12 @@ const route = (kind, page, extras = {}) => ({
 })
 
 export function featureEnabled(page, features = { quant: true }) {
+  // Roadmap surfaces (#1266): hidden at BUILD time (VITE_ROADMAP_SURFACES,
+  // default off), deliberately separate from the runtime features fetch —
+  // parseFeatures() never emits `roadmapSurfaces`, so the override below is
+  // reachable only from tests, never from the server.
+  const roadmapOn = features.roadmapSurfaces ?? ROADMAP_SURFACES_ENABLED
+  if (!roadmapOn && ROADMAP_PAGES.has(page)) return false
   return page !== 'quant' || features.quant === true
 }
 

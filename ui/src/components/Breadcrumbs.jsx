@@ -7,6 +7,7 @@
  */
 
 import { PAGE_LABELS } from './Layout'
+import { roadmapSurfaceHidden } from '../featureFlags.js'
 
 // `group: null` means "no intermediate label" — breadcrumb reads "Home / <page>".
 // Mirrors Layout.jsx NAV groups: Discover, Strategy, Position, Market, Ops.
@@ -45,9 +46,15 @@ export default function Breadcrumbs({ page, setPage }) {
   const info = CRUMB_MAP[page]
   if (!info) return null
 
+  // When the group's landing page is a hidden roadmap surface (#1266 —
+  // quant/reasoning point at Portfolio; learnings is itself hidden), the
+  // mid-crumb would link into a not-found route: fall back to a flat
+  // Home / <page> crumb.
   const crumbs = [
     { label: 'Home', page: 'explore' },
-    ...(info.group ? [{ label: info.group, page: info.groupPage }] : []),
+    ...(info.group && !roadmapSurfaceHidden(info.groupPage)
+      ? [{ label: info.group, page: info.groupPage }]
+      : []),
     { label: PAGE_LABELS[page] ?? page, page: null },
   ]
 

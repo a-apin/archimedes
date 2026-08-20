@@ -5,11 +5,13 @@
   anonymous visitor with no wallet connected and no selected entity.
 
   Excluded on purpose:
-    - generate, library, quant, portfolio, reasoning, learnings, publish,
-      subscriptions — each renders only a generic "Connect your wallet"
-      prompt for a cold/anonymous visitor (see ui/src/components/WalletGate.jsx
-      and the equivalent inline gates in PublishPage.jsx / SubscriptionsPage.jsx).
-      No unique indexable content exists at these URLs without a session.
+    - portfolio, marketplace, publish, subscriptions, learnings — hidden
+      roadmap surfaces (#1266): their routes resolve to not-found unless the
+      app is built with VITE_ROADMAP_SURFACES=true. A static sitemap can't
+      read a build flag, so it matches the default-off production build.
+    - generate, library, quant, reasoning — each renders only a generic
+      sign-in/"Connect your wallet" prompt for a cold/anonymous visitor. No
+      unique indexable content exists at these URLs without a session.
     - strategy, vault-detail, market-strategy — dynamic routes that require
       an id/address in the path; there is no single canonical URL to list.
 
@@ -30,11 +32,6 @@
   <url>
     <loc>https://archimedes-arc.com/explore</loc>
     <priority>0.9</priority>
-    <changefreq>daily</changefreq>
-  </url>
-  <url>
-    <loc>https://archimedes-arc.com/marketplace</loc>
-    <priority>0.8</priority>
     <changefreq>daily</changefreq>
   </url>
   <url>
