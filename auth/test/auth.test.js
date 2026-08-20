@@ -143,6 +143,85 @@ test('a failing mailer never breaks signup (fail-soft while SES is sandboxed)', 
   assert.equal(registration.status, 200)
 })
 
+// ── Password reset (SES wiring, mirrors email verification above) ──────
+
+test('password reset dispatches reset mail for a known address and lets the old password go, revoking sessions', async () => {
+  const { auth, mailer } = await testAuthWithMailer()
+  const credentials = { email: 'resetme@example.com', password: 'correct horse battery staple' }
+
+  const registration = await auth.api.signUpEmail({ body: { ...credentials, name: 'R' }, asResponse: true })
+  assert.equal(registration.status, 200)
+
+  const login = await auth.api.signInEmail({ body: credentials, asResponse: true })
+  const cookie = cookieHeader(login)
+  assert.ok(await auth.api.getSession({ headers: new Headers({ cookie }) }))
+
+  const request = await auth.api.requestPasswordReset({
+    body: { email: credentials.email, redirectTo: 'http://localhost:3000/reset-password' },
+    asResponse: true,
+  })
+  assert.equal(request.status, 200)
+
+  // signUpEmail already sent one verification mail (sendOnSignUp); the reset
+  // request must add exactly one more, distinguishable by subject.
+  const resetMail = mailer.sent.find(m => m.subject === 'Reset your Archimedes password')
+  assert.ok(resetMail, `no reset mail among: ${JSON.stringify(mailer.sent.map(m => m.subject))}`)
+  assert.equal(resetMail.to, credentials.email)
+  const url = resetMail.text.match(/https?:\/\/\S+/)?.[0]
+  assert.ok(url, `reset mail carried no url: ${resetMail.text}`)
+  const token = new URL(url).searchParams.get('token') ?? url.match(/\/reset-password\/([^/?]+)/)?.[1]
+  assert.ok(token, `reset url carried no token: ${url}`)
+
+  const reset = await auth.api.resetPassword({ body: { token, newPassword: 'new correct horse battery' }, asResponse: true })
+  assert.equal(reset.status, 200)
+
+  // Old password is rejected now.
+  const oldLogin = await auth.api.signInEmail({ body: credentials, asResponse: true })
+  assert.equal(oldLogin.status, 401)
+
+  // New password works.
+  const newLogin = await auth.api.signInEmail({
+    body: { email: credentials.email, password: 'new correct horse battery' },
+    asResponse: true,
+  })
+  assert.equal(newLogin.status, 200)
+
+  // The session that predated the reset was revoked (revokeSessionsOnPasswordReset).
+  assert.equal(await auth.api.getSession({ headers: new Headers({ cookie }) }), null)
+})
+
+test('password reset gives an unknown address the identical response, and sends no mail (no account enumeration)', async () => {
+  const { auth, mailer } = await testAuthWithMailer()
+  const credentials = { email: 'realaccount@example.com', password: 'correct horse battery staple' }
+  await auth.api.signUpEmail({ body: { ...credentials, name: 'K' }, asResponse: true })
+
+  const known = await auth.api.requestPasswordReset({ body: { email: credentials.email }, asResponse: true })
+  const knownBody = await known.json()
+  // One verification mail (signup) + one reset mail for the known address.
+  assert.equal(mailer.sent.length, 2)
+  assert.ok(mailer.sent.some(m => m.subject === 'Reset your Archimedes password'))
+
+  const unknown = await auth.api.requestPasswordReset({ body: { email: 'nobody-here@example.com' }, asResponse: true })
+  const unknownBody = await unknown.json()
+  // Still exactly two mails sent — the unknown address triggered no dispatch.
+  assert.equal(mailer.sent.length, 2)
+
+  // Status and body are indistinguishable between the two cases.
+  assert.equal(known.status, unknown.status)
+  assert.deepEqual(knownBody, unknownBody)
+})
+
+test('a failing reset mailer never 500s the request (fail-soft, and preserves anti-enumeration)', async () => {
+  const mailer = { kind: 'test', sender: 'x', send: async () => { throw new Error('SES sandbox: address not verified') } }
+  const auth = createAuth({ database: new DatabaseSync(':memory:'), env, mailer })
+  await (await getMigrations(auth.options)).runMigrations()
+  const credentials = { email: 'sandboxed-reset@example.com', password: 'correct horse battery staple' }
+  await auth.api.signUpEmail({ body: { ...credentials, name: 'S' }, asResponse: true })
+
+  const response = await auth.api.requestPasswordReset({ body: { email: credentials.email }, asResponse: true })
+  assert.equal(response.status, 200)
+})
+
 test('enforcement flag parses strictly', async () => {
   const { emailVerificationEnforced } = await import('../auth.js')
   assert.equal(emailVerificationEnforced({}), false)

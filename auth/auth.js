@@ -78,6 +78,29 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
       maxPasswordLength: 128,
       revokeSessionsOnPasswordReset: true,
       requireEmailVerification: emailVerificationEnforced(env),
+      sendResetPassword: async ({ user, url }) => {
+        try {
+          await mailer.send({
+            to: user.email,
+            subject: 'Reset your Archimedes password',
+            text:
+              'A password reset was requested for your Archimedes account:\n\n'
+              + `${url}\n\n`
+              + 'If you did not request this, ignore this message — your password will not change.',
+          })
+        } catch (error) {
+          // Fail-soft ON PURPOSE, same reasoning as sendVerificationEmail
+          // below: an undeliverable reset mail must not 500 the request.
+          // It matters MORE here than for verification mail — Better Auth
+          // already returns the identical response body/status for a known
+          // vs. unknown email (see requestPasswordReset in
+          // better-auth/dist/api/routes/password.mjs) precisely to prevent
+          // account-enumeration; a 500 that only known accounts can trigger
+          // (unknown emails never reach this callback) would reopen that
+          // same enumeration channel via status code. Loud single line.
+          console.error('reset password email send failed:', error instanceof Error ? error.name : 'UnknownError')
+        }
+      },
     },
     emailVerification: {
       sendOnSignUp: true,
