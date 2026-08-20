@@ -342,9 +342,9 @@ def test_unclaimed_legacy_data_detected_and_claimed_data_is_not():
     after a claim. Collapsing the two functions inverts the unlink guard.
     """
     from archimedes.api.wallet_routes import (
-        claim_legacy_wallet_data,
         _wallet_has_owned_data,
         _wallet_has_unclaimed_legacy_data,
+        claim_legacy_wallet_data,
     )
 
     with _session() as session:

@@ -233,13 +233,31 @@ async def _verify_wallet_proof(address: str, message: str, signature: str, chain
     return await verify_smart_wallet_signature(address, message, signature, rpc_url)
 
 
-def claim_legacy_wallet_data(session, user_id: str, address: str) -> None:
+def claim_legacy_wallet_data(
+    session,
+    user_id: str,
+    address: str,
+    *,
+    models: tuple[tuple[type, object], ...] | None = None,
+    include_profile: bool = True,
+) -> None:
     """Stamp ``owner_user_id`` onto every unclaimed pre-account row for
     ``address`` — the effect linking (or re-verifying) a wallet has, and the
     reclaim `rename_strategy`'s legacy-wallet fallback also triggers on write
     so pre-account rows migrate onto canonical ownership as they're touched
     (#1283). Public (not `_`-prefixed) because both callers cross the
     `wallet_routes` module boundary.
+
+    ``models``/``include_profile`` narrow which tables get stamped. The
+    default (both None/True) is the full claim a verified wallet link
+    performs: strategy tables + ``vault_metadata`` + ``user_profiles``.
+    ``rename_strategy``'s relaxed, non-fresh-signature lookup passes the
+    strategy-only trio and ``include_profile=False`` — it must not move
+    vault ownership (that gates a separate 409 whose ``None`` case exists
+    specifically to admit a legitimately transferred on-chain owner; a
+    stale reclaim from a rename would wrongly slam that door shut with no
+    un-claim path) or adopt a PII-bearing profile on a caller who has only
+    proven a stale wallet link, not fresh signature control.
     """
     from archimedes.models.chat import VaultMetadata
     from archimedes.models.strategy_passport_record import StrategyPassportRecord
@@ -247,23 +265,25 @@ def claim_legacy_wallet_data(session, user_id: str, address: str) -> None:
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.models.user_profile import UserProfile
 
-    for model, wallet_column in (
+    default_models = (
         (StrategyRecord, StrategyRecord.owner_wallet),
         (StrategyPassportRecord, StrategyPassportRecord.owner_wallet),
         (StrategyProposal, StrategyProposal.owner_wallet),
         (VaultMetadata, VaultMetadata.creator_address),
-    ):
+    )
+    for model, wallet_column in models if models is not None else default_models:
         session.query(model).filter(
             wallet_column == address,
             model.owner_user_id.is_(None),
         ).update({model.owner_user_id: user_id}, synchronize_session=False)
 
-    existing_profile = session.query(UserProfile).filter(UserProfile.owner_user_id == user_id).first()
-    if existing_profile is None:
-        session.query(UserProfile).filter(
-            UserProfile.wallet_address == address,
-            UserProfile.owner_user_id.is_(None),
-        ).update({UserProfile.owner_user_id: user_id}, synchronize_session=False)
+    if include_profile:
+        existing_profile = session.query(UserProfile).filter(UserProfile.owner_user_id == user_id).first()
+        if existing_profile is None:
+            session.query(UserProfile).filter(
+                UserProfile.wallet_address == address,
+                UserProfile.owner_user_id.is_(None),
+            ).update({UserProfile.owner_user_id: user_id}, synchronize_session=False)
 
 
 def _link_verified_wallet(session, user: CurrentUser, challenge: WalletLinkChallenge, now: datetime) -> LinkedWallet:
