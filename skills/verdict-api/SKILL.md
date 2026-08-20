@@ -23,11 +23,11 @@ Defined in [`backend/archimedes/api/generate_routes.py`](../../backend/archimede
 
 | Method | Path | Line | What it does |
 |---|---|---|---|
-| POST | `/api/generate/start` | 114 | Create a generation job; returns `job_id` + `stream_url` immediately (202) and runs the pipeline in the background |
-| GET | `/api/generate/stream/{job_id}` | 227 | Server-Sent Events (SSE) stream of the job's progress and final verdict |
-| POST | `/api/generate/jobs/{job_id}/cancel` | 315 | Best-effort cancel of a running job |
-| GET | `/api/generate/jobs` | 371 | List recent jobs (status table) |
-| GET | `/api/generate/jobs/{job_id}/candidates` | 418 | N candidates considered, including rejected ones, once the job is `done` |
+| POST | `/api/generate/start` | 106 | Create a generation job; returns `job_id` + `stream_url` immediately (202) and runs the pipeline in the background |
+| GET | `/api/generate/stream/{job_id}` | 250 | Server-Sent Events (SSE) stream of the job's progress and final verdict |
+| POST | `/api/generate/jobs/{job_id}/cancel` | 331 | Best-effort cancel of a running job |
+| GET | `/api/generate/jobs` | 381 | List recent jobs (status table) |
+| GET | `/api/generate/jobs/{job_id}/candidates` | 428 | N candidates considered, including rejected ones, once the job is `done` |
 
 This router deliberately lives outside `api/routes.py` — "no new endpoints go into
 `api/routes.py`" (generate_routes.py:11-12) — so don't look there for these.
@@ -63,7 +63,7 @@ Notable fields:
   the active pipeline).
 - `model` — optional model id; gated server-side, see "Model gating" below.
 
-Response is `202` with `{job_id, stream_url, ttl_seconds}` (generate_routes.py:197-201).
+Response is `202` with `{job_id, stream_url, ttl_seconds}` (generate_routes.py:218-222).
 `ttl_seconds` is `EVENT_LOG_TTL = 900` (15 minutes) from
 [`services/job_queue.py`](../../backend/archimedes/services/job_queue.py):26 — the
 event log a reconnecting client can replay from expires that long after the job
@@ -77,24 +77,24 @@ curl -N http://localhost:8000/api/generate/stream/<job_id> \
 ```
 
 This is a real `text/event-stream` response (`StreamingResponse`,
-generate_routes.py:296-304), not a polling endpoint. Behavior worth knowing before
+generate_routes.py:312-320), not a polling endpoint. Behavior worth knowing before
 you write a client:
 
-- **First byte is a comment**, not an event: `: stream opened\n\n` (generate_routes.py:255),
+- **First byte is a comment**, not an event: `: stream opened\n\n` (generate_routes.py:271),
   sent immediately so `EventSource.onopen` fires fast. A spec-compliant SSE parser
   ignores `:`-prefixed lines; a hand-rolled line-splitter must not choke on them.
 - **Heartbeats.** If no real event fires for 15s (`_HEARTBEAT_INTERVAL_SECONDS`,
-  generate_routes.py:63), the server emits `: heartbeat\n\n` so intermediaries with
+  generate_routes.py:71), the server emits `: heartbeat\n\n` so intermediaries with
   a shorter idle-read timeout (CloudFront, corporate proxies) don't drop the
   connection while a long debate/backtest step is still computing
-  (generate_routes.py:53-63, 280-289). Also invisible to a spec-compliant parser.
+  (generate_routes.py:61-71, 302-305). Also invisible to a spec-compliant parser.
 - **Resume with `Last-Event-ID`.** Each real event carries a numeric `id:` field;
   send it back as the `Last-Event-ID` header on reconnect and the server resumes
-  after that cursor (generate_routes.py:248-250, 257).
+  after that cursor (generate_routes.py:264-266, 273).
 - **Hard timeout.** One connection is capped at 300s (`_STREAM_TIMEOUT_SECONDS`,
-  generate_routes.py:52); past that it sends `: stream timeout\n\n` and closes —
+  generate_routes.py:60); past that it sends `: stream timeout\n\n` and closes —
   reconnect with `Last-Event-ID` to keep tailing a still-running job.
-- **Terminal events** are `done` and `error` (`_TERMINAL_EVENTS`, generate_routes.py:50);
+- **Terminal events** are `done` and `error` (`_TERMINAL_EVENTS`, generate_routes.py:58);
   the stream closes right after either.
 
 ### Event names on the wire
@@ -107,7 +107,7 @@ agent_iteration, tool_called, tool_result, candidate_drafted,
 candidate_evaluated, best_selected, trace_hashed, persisted, done, error
 ```
 
-Each SSE frame is built by `_format_sse` (generate_routes.py:307-312) as:
+Each SSE frame is built by `_format_sse` (generate_routes.py:323-328) as:
 
 ```
 id: <int>
@@ -156,7 +156,7 @@ aren't:
   When the backend's payment flag is on, `POST /start` without a
   `Payment-Signature` returns **402 with the quote in `detail`**, and the
   signed payer must equal the account's **linked wallet**
-  (generate_routes.py:132-153). Link a wallet via `POST
+  (generate_routes.py:132-154). Link a wallet via `POST
   /api/wallets/challenge` → sign the EIP-4361 message with your key → `POST
   /api/wallets/verify` — one round-trip, `cast`-signable.
 - **Premium models.** See "Model gating" below — entitlement is checked
@@ -184,7 +184,7 @@ the account's **linked wallet**, checked *before* the job is enqueued
 a non-entitled caller gets **HTTP 402**, never a silent downgrade
 (model_gate.py:18-20). A **free** model id is always allowed. Anything that
 isn't on the free allowlist and wasn't entitled falls back to the env default
-(generate_routes.py:142-151) — check `is_allowed_model` in
+(generate_routes.py:164-174) — check `is_allowed_model` in
 `services/llm_backend.py` for the current free-tier list.
 
 ## Reading DSR/PBO/holdout numbers honestly
@@ -200,20 +200,20 @@ number from this response to a user). The headline honesty traps specific to
    — the *search pool the winning candidate was actually selected from* —
    computed independently in
    [`agents/generation_pipeline.py`](../../backend/archimedes/agents/generation_pipeline.py):645
-   and threaded through `_backtest_and_persist` (generation_pipeline.py:1511,
-   1582-1590). It is deliberately **never** the size of the curated strategy
+   and threaded through `_backtest_and_persist` (generation_pipeline.py:1520,
+   1591-1599). It is deliberately **never** the size of the curated strategy
    library (generation_pipeline.py:334-335, "NEVER the curated library's count").
 2. **Curated strategies are graded at `num_trials=1` — always.** For a
    hand-curated single-paper strategy (no generation search of ours produced
    it), the self-contained trial count is 1: it's judged purely on its own return
    series, not deflated by how many *other* strategies sit in the library
-   ([`api/selection_bias_routes.py`](../../backend/archimedes/api/selection_bias_routes.py):313-320,
-   the hardcoded `num_trials = 1` at line 320). This is a deliberate 2026-07-09
+   ([`api/selection_bias_routes.py`](../../backend/archimedes/api/selection_bias_routes.py):313-321,
+   the hardcoded `num_trials = 1` at line 321). This is a deliberate 2026-07-09
    decision (decouple #2) that **reverses** an earlier library-size-deflation
    scheme and needed Önder's sign-off precisely because it raises curated pass
-   rates by removing a cross-strategy penalty (selection_bias_routes.py:314-319).
+   rates by removing a cross-strategy penalty (selection_bias_routes.py:319-320).
    A guard (`assert_self_contained_cohort_correlation`,
-   `services/_rigor_helpers.py`:615) raises loudly if a future edit ever
+   `services/_rigor_helpers.py`:577) raises loudly if a future edit ever
    re-couples curated DSR to the library's cross-strategy correlation — so this
    invariant is enforced, not just documented. **When you report a curated
    strategy's DSR p-value, say "graded at num_trials=1 against its own series" —

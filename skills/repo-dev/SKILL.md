@@ -50,14 +50,14 @@ collide (`ImportPathMismatch`) if scooped up here. `-m "not integration"` is
 the exact filter the CI unit-test gate uses (needs no DB/Redis); the
 `integration` marker is defined in `pytest.ini`:25.
 
-`make pytest` (repo root `Makefile`:105-107) runs the same suite with two
+`make pytest` (repo root `Makefile`:108-110) runs the same suite with two
 Redis-dependent tests deselected for a bare-metal local run without Redis —
 useful when you don't have the docker-compose stack up.
 
 ### Hermetic-test discipline (codified 2026-05-27) — read before writing any new test
 
 "CI green ≠ local green" is itself treated as a bug here. The rules
-(`CLAUDE.md`:580-641, "Testing conventions"):
+(`CLAUDE.md`:229-291, "Testing conventions"):
 
 - **No `.env` dependence, no live Redis/Postgres/Anthropic/Arc RPC.** A test
   that only passes with `.env` loaded, or only fails without it, is a real bug
@@ -76,33 +76,33 @@ useful when you don't have the docker-compose stack up.
   inheriting `os.environ` leaks the developer's `.env` (e.g. a
   docker-compose-only `DATABASE_URL` hostname) into the subprocess. Reference
   pattern: `backend/tests/test_security_hardening.py`
-  (`_clean_subprocess_env` at line 38, `_DOTENV_NEUTRALIZE` at line 29).
+  (`_clean_subprocess_env` at line 40, `_DOTENV_NEUTRALIZE` at line 31).
 - **Mock at boundaries, not internals** — the HTTP client, DB session, Redis
   client, chain client, Circle signer; never internal dict/helper calls.
-  Concrete precedents named in `CLAUDE.md`:606-628: `AgentStateStore` mock for
+  Concrete precedents named in `CLAUDE.md`:255-273: `AgentStateStore` mock for
   Redis-down (`backend/tests/test_api_routes.py`), the SIWE signed-cookie
   helper `_siwe_cookies()` (`backend/tests/test_user_routes.py`),
   `httpx.ASGITransport` for endpoint tests (`backend/tests/test_risk_routes.py`).
 - **Coverage:** per-module ≥85% line coverage is the standard for new test
   work; the repo-level `--cov-fail-under=60` gate fires only on agent (`t2o2`)
-  PRs and is informational for everything else (`CLAUDE.md`:632-635).
+  PRs and is informational for everything else (`CLAUDE.md`:281-285).
 - **No skip-marks on flaky tests.** Flakiness is almost always a missing
   boundary mock or hidden environment state — fix it. A skip-mark should be
   rare and load-bearing (a documented architectural limitation), not a way to
-  avoid diagnosing (`CLAUDE.md`:636-641).
+  avoid diagnosing (`CLAUDE.md`:286-290).
 
 ## Linting + formatting (ruff)
 
 `ruff.toml` (repo root): `line-length = 120`, `target-version = "py312"`, ruff
-defaults plus `I,UP,B,SIM,RUF`. Two checks block every Python PR
-(`quality-gate.yml` per `CLAUDE.md`'s CI table); broader `ruff check` and
-`npm run lint` in `ui/` are informational only (`continue-on-error`, posted as
-a PR comment table):
+defaults plus `I,UP,B,SIM,RUF,ARG,C4,PIE,RET,SLF` (`[lint] extend-select`). Two
+checks block every Python PR (`quality-gate.yml` per `CLAUDE.md`'s CI table);
+broader `ruff check` and `npm run lint` in `ui/` are informational only
+(`continue-on-error`, posted as a PR comment table):
 
 ```bash
-ruff format --check .                       # hard block
-ruff check --select E9,F63,F7,F40 .          # hard block (syntax + undefined-module only, deliberately narrow)
-ruff check .                                 # informational (broader rule set)
+ruff format --check .                            # hard block
+ruff check --select E9,F63,F7,F40,F82 .          # hard block (syntax + undefined-name only, deliberately narrow)
+ruff check .                                      # informational (broader rule set)
 ```
 
 Local cleanup before committing:
@@ -121,24 +121,25 @@ Pre-commit is **opt-in**; without it you get the same feedback from CI on push.
 
 ## Merge-commit-only — the branch model
 
-(`CLAUDE.md`:458-478, "Branch model")
+(`CLAUDE.md`:140-163, "Branch model")
 
 - **`main` is the only long-lived branch, and it is the deploy branch.** Every
   merge triggers a CI build + deploy. There is no `develop` branch.
 - **Merge commits only.** Squash-merge and rebase-merge are **disabled in repo
   settings** — use `gh pr merge <n> --merge`, not the squash/rebase buttons.
-  Rationale stated in `CLAUDE.md`:474-478: merge commits keep
+  Rationale stated in `CLAUDE.md`:150-154: merge commits keep
   `git log --merges` / `git log --graph` showing unit-of-work boundaries, and
   rebase-merge breaks `git branch --merged` (rewritten commits are no longer
   ancestors of `main`).
 - **Never force-push `main`.** Force-pushing your own unmerged feature branch
-  is fine and expected (rebase-before-merge, `CLAUDE.md`:471-472).
+  is fine and expected (rebase-before-merge, `CLAUDE.md`:155-157 — now folded
+  into the "few hard rules" bullet rather than stated standalone).
 - **One logical change per PR; atomic commits; imperative-mood commit
   messages** ("Add X" not "Added X"), optional scope tags
   (`[strategy]`, `[backtest]`, `[contracts]`, `[frontend]`, `[infra]`, `[docs]`)
-  — `CLAUDE.md`:481-484.
+  — `CLAUDE.md`:161-162.
 - **Branch naming:** `<discord-handle>/<short-name>` → PR → merge to `main`;
-  delete the branch after merge (`CLAUDE.md`:467-468, 900-908).
+  delete the branch after merge (`CLAUDE.md`:149 — one line covers both today).
 - **Contract/on-chain changes need the contract owner's review** — currently
   Dan, with a second reviewer preferred; see `CLAUDE.md`'s "Team" section for
   who that is at any given time. Don't merge a Solidity change on your own
@@ -154,12 +155,18 @@ Fargate roll); `main-format-guard.yml` self-heals unformatted pushes to `main`;
 `release-tag.yml` tags merged PRs by title marker (`!minor`/`!version-release`/
 none — default to none when unsure).
 
-**No repo-wide markdown/docs-link gate exists today.** This repo does not
-currently have a `.github/scripts/docs_links.py` or any equivalent
-link-checking script or workflow — verified by `find .github -iname
-"*docs*"` and `grep -rl docs_links .github` both returning nothing on this
-tree. If one is added later, re-check whether it scans `skills/` before
-assuming these files are covered by it.
+**A docs-link gate exists now (`docs-gate.yml`), but it does not cover
+`skills/`.** `.github/workflows/docs-gate.yml` runs
+`.github/scripts/docs_links.py` (link resolution, blocking-when-triggered) +
+`docs_index.py` (index completeness) + a staleness check (informational) —
+but its default scan scope (`markdown_files()` in `docs_links.py`, `--scope
+gate`) is `docs/**/*.md` plus **root-level** `*.md` only; `skills/*/SKILL.md`
+is neither. The workflow's own `on.pull_request.paths` trigger (`docs/**`,
+`*.md`, the two `docs_*.py`/workflow files) also won't fire on a PR that
+touches only `skills/`. It's also path-filtered and therefore must not be a
+required check (boxed warning at the top of the workflow) — see
+`CLAUDE.md`'s CI table. Don't assume `skills/` content is covered by it; if
+the scope is widened later, re-check before assuming these files are covered.
 
 ## Where things live (top-level map)
 
@@ -196,8 +203,9 @@ grep -n "PYTHONPATH=backend" CLAUDE.md
 # Merge-commit-only is still the repo policy:
 grep -n "Merge commits only" CLAUDE.md
 
-# No docs-link gate exists yet:
-find .github -iname "*docs*"; grep -rl "docs_links" .github 2>/dev/null; echo "(empty output above = confirmed absent)"
+# A docs-link gate exists but its scope + trigger both exclude skills/:
+grep -n "paths:" -A5 .github/workflows/docs-gate.yml
+python3 .github/scripts/docs_links.py --root . 2>&1 | grep -i "skills/"; echo "(empty output above = skills/ not in the gate's default scan scope)"
 
 # CLI is still an unimplemented stub:
 grep -n "NOT_IMPLEMENTED" cli/src/archimedes_cli/cli.py
@@ -208,5 +216,6 @@ grep -n "NOT_IMPLEMENTED" cli/src/archimedes_cli/cli.py
 - API-level detail for the generate/verdict flow — see `skills/verdict-api/SKILL.md`.
 - Passport field semantics — see `skills/strategy-passport/SKILL.md`.
 - The marketplace payment protocol — see `skills/x402-payment/SKILL.md`.
-- AWS/infra operations (SSM, Terraform, deploy) — see `CLAUDE.md`'s "AWS account
-  access" section and `OPERATIONS.md`; out of scope for a dev-workflow skill.
+- AWS/infra operations (SSM, Terraform, deploy) — see the AWS paragraph in
+  `CLAUDE.md`'s "Setup" section and `docs/runbooks/operations.md` (the doc
+  formerly at root-level `OPERATIONS.md`); out of scope for a dev-workflow skill.

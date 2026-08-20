@@ -12,7 +12,7 @@ triggers:
 # Reading a strategy passport
 
 A passport is one row in the `strategy_passports` table
-(`StrategyPassportRecord`, [`backend/archimedes/models/strategy_passport_record.py`](../../backend/archimedes/models/strategy_passport_record.py):44-139)
+(`StrategyPassportRecord`, [`backend/archimedes/models/strategy_passport_record.py`](../../backend/archimedes/models/strategy_passport_record.py):44-144)
 — the unified store for curated, fusion, and architect-generated strategies
 alike (record.py:1-11 module docstring). Read that table's columns as ground
 truth; anything summarized from it must trace back to a named field, never to
@@ -20,7 +20,7 @@ vibes.
 
 ## Every field, grouped as the model groups them
 
-Line numbers below are the `Column(...)` declarations in `strategy_passport_record.py`.
+Line numbers below are the `Column(...)` (or, for `owner_wallet`/`owner_user_id`, `mapped_column(...)`) declarations in `strategy_passport_record.py`.
 
 **Identity / provenance**
 | Field | Line | Meaning |
@@ -50,50 +50,51 @@ Line numbers below are the `Column(...)` declarations in `strategy_passport_reco
 **Ownership**
 | Field | Line | Meaning |
 |---|---|---|
-| `owner_wallet` (FK → `wallet_identities`) | 87 | SIWE-derived generating wallet, server-bound; `NULL` for curated/legacy rows |
+| `owner_user_id` (FK → `auth_users.id`) | 90-92 | **Canonical account ownership** (post-#1194 Better Auth cutover) — the account id that owns this strategy. This is the field that gates visibility/access, not `owner_wallet`. |
+| `owner_wallet` (FK → `wallet_identities`) | 87-89 | Wallet **provenance** only — the SIWE-derived generating wallet, server-bound; `NULL` for curated/legacy rows. Mirrors `strategy_store.owner_wallet`. Do not use this for ownership/access checks — that's `owner_user_id`. |
 
 **Code binding**
 | Field | Line |
 |---|---|
-| `strategy_code_path`, `strategy_code_hash` | 90-91 |
+| `strategy_code_path`, `strategy_code_hash` | 95-96 |
 
 **On-chain anchor**
 | Field | Line |
 |---|---|
-| `on_chain_registration_tx`, `on_chain_registration_block` | 94-95 |
+| `on_chain_registration_tx`, `on_chain_registration_block` | 99-100 |
 
 **Paper claims** (what the *source paper* reported — not what Archimedes measured)
 | Field | Line |
 |---|---|
-| `paper_claimed_sharpe`, `paper_claimed_cagr`, `paper_claimed_max_dd` | 98-100 |
-| `paper_claim_blended_sharpe` | 101 |
+| `paper_claimed_sharpe`, `paper_claimed_cagr`, `paper_claimed_max_dd` | 103-105 |
+| `paper_claim_blended_sharpe` | 106 |
 
 **Backtest results** (what Archimedes actually measured, denormalized for query speed)
 | Field | Line |
 |---|---|
-| `sharpe_ratio`, `sortino_ratio`, `max_drawdown`, `cagr`, `win_rate`, `total_trades`, `calmar_ratio`, `correlation_to_spy` | 104-111 |
-| `backtest_start`, `backtest_end` | 112-113 |
+| `sharpe_ratio`, `sortino_ratio`, `max_drawdown`, `cagr`, `win_rate`, `total_trades`, `calmar_ratio`, `correlation_to_spy` | 109-116 |
+| `backtest_start`, `backtest_end` | 117-118 |
 
 **Rigor gate results** — the four-primitive admission gate (DSR / PBO / OOS / look-ahead audit, per `docs/specs/selection-bias-corrections-spec.md`)
 | Field | Line | Meaning |
 |---|---|---|
-| `deflated_sharpe_ratio`, `dsr_p_value` | 116-117 | Deflated Sharpe Ratio + its p-value (Bailey & López de Prado 2014) |
-| `pbo_score` | 118 | Probability of Backtest Overfitting |
-| `out_of_sample_sharpe` | 119 | Walk-forward holdout Sharpe |
-| `passes_rigor_gate` | 120 | **The badge boolean — read the whole next section before quoting this** |
-| `kelly_fraction` | 121 | Position-sizing primitive |
-| `sharpe_ci_lower`, `sharpe_ci_upper` | 122-123 | Confidence interval on Sharpe |
-| `n_obs_daily` | 124 | Sample size the above were computed over |
+| `deflated_sharpe_ratio`, `dsr_p_value` | 121-122 | Deflated Sharpe Ratio + its p-value (Bailey & López de Prado 2014) |
+| `pbo_score` | 123 | Probability of Backtest Overfitting |
+| `out_of_sample_sharpe` | 124 | Walk-forward holdout Sharpe |
+| `passes_rigor_gate` | 125 | **The badge boolean — read the whole next section before quoting this** |
+| `kelly_fraction` | 126 | Position-sizing primitive |
+| `sharpe_ci_lower`, `sharpe_ci_upper` | 127-128 | Confidence interval on Sharpe |
+| `n_obs_daily` | 129 | Sample size the above were computed over |
 
-Timestamps (`created_at`/`updated_at`) at 127-128.
+Timestamps (`created_at`/`updated_at`) at 132-133.
 
-`StrategyPassportRecord.to_dict()` (record.py:200-217) is the compact API
-serialization; `to_strategy_passport()` (record.py:141-198) is the fuller
+`StrategyPassportRecord.to_dict()` (record.py:205-222) is the compact API
+serialization; `to_strategy_passport()` (record.py:146-203) is the fuller
 dataclass conversion including everything above. The live HTTP surface is
 `GET /api/strategies/passports/{strategy_id}`
-([`api/strategies_routes.py`](../../backend/archimedes/api/strategies_routes.py):1592-1609)
+([`api/strategies_routes.py`](../../backend/archimedes/api/strategies_routes.py):1622-1640)
 — 404s (never 403) for a non-owner on an unpublished non-example passport, so a
-mismatched caller can't confirm the id exists (strategies_routes.py:1596-1598).
+mismatched caller can't confirm the id exists (strategies_routes.py:1638-1639).
 
 ## `passes_rigor_gate` — what it means and what it does NOT mean
 
@@ -104,12 +105,12 @@ computed
 (`services/rigor_profiles.py` docstring line 22: "The badge (`passes_rigor_gate`)
 is always evaluated at `STRICTEST_LEVEL`"). For a **generated** (fusion/architect)
 strategy it is a real, persisted **live**-gate verdict —
-`strategies_routes.py`:1733-1741 is explicit that this is "a stored *live*
+`strategies_routes.py`:1764-1767 is explicit that this is "a stored *live*
 verdict, not a fixture boolean," legitimate per issue #821 ("read a persisted
 live-gate verdict"). The same route also derives a tri-state
 `rigor_gate_status`: `"pending"` when there's no real backtest yet
 (`sharpe_ratio is None`), else `"pass"`/`"fail"` from the boolean
-(strategies_routes.py:1739-1741) — **prefer `rigor_gate_status` over the bare
+(strategies_routes.py:1770-1772) — **prefer `rigor_gate_status` over the bare
 boolean when a "pending" state matters**, since a bare `False` can't
 distinguish "failed" from "never backtested."
 
@@ -126,7 +127,7 @@ distinguish "failed" from "never backtested."
   the loosest one a UI might be showing under a relaxed filter.
 - **For a curated strategy, it was graded at `num_trials=1`** — its own return
   series only, not deflated against the rest of the library
-  (`selection_bias_routes.py`:313-320; full mechanics in `skills/verdict-api/SKILL.md`
+  (`selection_bias_routes.py`:313-321; full mechanics in `skills/verdict-api/SKILL.md`
   point 2). Say that scope out loud if you're explaining *why* a curated
   strategy's DSR looks strong.
 
@@ -150,7 +151,7 @@ decoupling concrete:
   (strategy_provider.py:321-328). A curator can mark a strategy `live` by hand.
 - **Generated strategies (`StrategyRecord`, a *different* table from the
   passport):** `status` transitions to `"live"` purely as a function of the
-  rigor verdict at write time (`models/strategy_store.py`:269-278, 307) — but
+  rigor verdict at write time (`models/strategy_store.py`:281-289, 317) — but
   that's a one-time transition at persist time, not a live-recomputed value; a
   strategy whose returns later degrade doesn't automatically flip back.
 
@@ -185,29 +186,29 @@ contradicts every one of them on the curated path (`_rigor_helpers.py` sets
 
 Separately, the team-wide pitch-rigor anti-claims —
 [`docs/anti-features.md`](../../docs/anti-features.md), "Pitch-rigor anti-claims"
-section, lines 197–249 — also apply when summarizing a passport:
+section, lines 204–255 — also apply when summarizing a passport:
 
-1. **"Blockchain as memory" as the load-bearing claim.** (anti-features.md:203-214)
+1. **"Blockchain as memory" as the load-bearing claim.** (anti-features.md:210-221)
    The defensible framing is narrower: the on-chain registry is "the agent's
    externalized memory for the specific financial-decision artifacts no party —
    including Archimedes — can later rewrite," not "blockchain as universal
    computational substrate."
-2. **Predicted alpha or future-return guarantees.** (anti-features.md:216-222)
+2. **Predicted alpha or future-return guarantees.** (anti-features.md:223-229)
    McLean & Pontiff (2016): published cross-sectional predictors lose 26%
    out-of-sample and 58% post-publication. Bailey & López de Prado (2014):
    backtest-optimized strategies often do not exceed the median out-of-sample
    result. Never say a strategy "delivers" or "will achieve" a Sharpe/CAGR —
    only that it was backtested to one, over a stated window.
 3. **That an on-chain trace hash proves the agent *used* that trace.**
-   (anti-features.md:224-230) A hash anchored at time T proves the reasoning
+   (anti-features.md:231-237) A hash anchored at time T proves the reasoning
    *existed* at T. It does not prove the trade was *caused* by it — that needs
    the commit-reveal upgrade (`docs/specs/commit-reveal-trace-spec.md`, v1.5,
    not yet the default path). Say "verifiable record of the reasoning at the
    moment of the trade," never "proof the trade followed from the reasoning."
-4. **Regulatory clarity or production-readiness.** (anti-features.md:232-240)
+4. **Regulatory clarity or production-readiness.** (anti-features.md:239-247)
    Frame every passport as describing a research-prototype strategy on Arc
    testnet, not a launchable investment product.
-5. **That the rigor gate makes a strategy "right."** (anti-features.md:242-249)
+5. **That the rigor gate makes a strategy "right."** (anti-features.md:249-255)
    DSR/PBO/OOS *reduce* the false-positive rate of a backtest-selected
    strategy; they do not make any specific strategy a confirmed true positive.
    The honest claim is "we apply the corrections and surface the numbers" —
@@ -216,8 +217,12 @@ section, lines 197–249 — also apply when summarizing a passport:
 ## Verify (re-run these before trusting this document)
 
 ```bash
-# Column list still matches:
-grep -n '= Column(' backend/archimedes/models/strategy_passport_record.py
+# Column list still matches (Column(...) AND Mapped/mapped_column(...) fields —
+# owner_wallet/owner_user_id use the latter, so a bare '= Column(' grep misses them):
+grep -nE '= (Column|mapped_column)\(' backend/archimedes/models/strategy_passport_record.py
+
+# owner_user_id is the canonical ownership column (post-#1194):
+grep -n "owner_user_id" backend/archimedes/models/strategy_passport_record.py
 
 # passes_rigor_gate is always graded at the strictest level:
 grep -n "STRICTEST_LEVEL" backend/archimedes/services/rigor_profiles.py
@@ -228,7 +233,7 @@ grep -n "CANDIDATE .. VALIDATED.*fixture boolean\|hand-declare" backend/archimed
 
 # The five anti-claims are still all present under the Pitch-rigor section (expect 5):
 grep -n "^## Pitch-rigor" docs/anti-features.md
-awk 'NR>=197 && NR<=249 && /^### NOT/' docs/anti-features.md
+awk 'NR>=204 && NR<=255 && /^### NOT/' docs/anti-features.md
 ```
 
 ## What this skill deliberately does not cover

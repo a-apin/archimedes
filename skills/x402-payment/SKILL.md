@@ -35,20 +35,24 @@ no paid public endpoint today.
 ```
 MarketService (backend/archimedes/marketplace/service.py)
   └─ per tick, per subscriber, per pipeline step:
-       _charge_one()  ──────────────────────────────  service.py:824-905
+       _charge_one()  ──────────────────────────────  service.py:825-909
          ├─ dry-run short-circuit                       service.py:833-834
-         ├─ idempotency claim (SettlementIntent row)     service.py:864-877
-         ├─ spend-cap reservation                        service.py:879-889
+         ├─ idempotency claim (SettlementIntent row)     service.py:842-859
+         ├─ spend-cap reservation                        service.py:861-885
          └─ payments.charge(...)  ─────────────────────  payments.py:85-155
               ├─ 1. middleware.require()  → 402 reqs      payments.py:118-126
               ├─ 2. create_payment_header() (EIP-712)     payments.py:128-136
               └─ 3. middleware.verify() + middleware.settle()  payments.py:138-151
 ```
 
-`payments.py` is the **only** file that imports `circlekit`
-(payments.py:1-5 module docstring: "This module is the ONLY place circlekit is
+`payments.py`'s module docstring claims it is the **only** file that imports
+`circlekit` (payments.py:1-5: "This module is the ONLY place circlekit is
 imported... keeping the import surface here gives API drift a one-file blast
-radius") — if you need to touch the Circle SDK surface, this is the file.
+radius") — **that claim is now stale**: `settlement.py` also imports directly
+from `circlekit` (`circlekit.client.GatewayClient`,
+`circlekit.wallets.CircleTxExecutor`/`CircleWalletSigner`, settlement.py:21-22)
+for its own sweep signers/executors. If you need to touch the Circle SDK
+surface, check both files, not just this one.
 
 ## The three steps, with line numbers
 
@@ -64,7 +68,7 @@ radius") — if you need to touch the Circle SDK surface, this is the file.
    their Circle-managed wallet key via `create_payment_header`
    (payments.py:128-136), run through `asyncio.to_thread` because the signer
    and the header call both make blocking HTTPS calls to Circle
-   (payments.py:129-131 comment). `_get_signer` caches one `CircleWalletSigner`
+   (payments.py:129-130 comment). `_get_signer` caches one `CircleWalletSigner`
    per `wallet_id` (payments.py:42-49) so constructing a signer — which
    re-initializes the Circle client — doesn't happen on every tick.
 3. **Verify + settle.** `middleware.verify(header, price)` (payments.py:139)
@@ -111,12 +115,12 @@ with three things `payments.py` itself does **not** do:
 - **Idempotency.** x402 payment headers are **not** crash-retry-idempotent — a
   retry signs a fresh EIP-3009 nonce and settles as a *second* payment. A
   `SettlementIntent` row is claimed before calling `payments.charge`
-  (service.py:864-877) so a crash/retry short-circuits to "already settled"
+  (service.py:842-859) so a crash/retry short-circuits to "already settled"
   instead of double-charging.
 - **Per-wallet 24h spend cap**, reserved atomically immediately before the
   charge call to avoid a check-then-record TOCTOU race across concurrent ticks
-  (service.py:879-889, referencing issue #1099).
-- **Treating an unexpected raise as a failed charge anyway** (service.py:886-905)
+  (service.py:861-885, referencing issue #1099).
+- **Treating an unexpected raise as a failed charge anyway** (service.py:887-908)
   — `payments.charge`'s "never raises" contract is documented, not blindly
   trusted; a raise still releases the spend-cap reservation.
 
@@ -125,7 +129,7 @@ with three things `payments.py` itself does **not** do:
 - Default chain: `DEFAULT_GATEWAY_CHAIN = "arcTestnet"`
   ([`marketplace/config.py`](../../backend/archimedes/marketplace/config.py):7),
   overridable via the `GATEWAY_CHAIN` env var (payments.py:65, settlement.py:34).
-- `.env.example`:178 sets `CIRCLE_BLOCKCHAIN=ARC-TESTNET` for the
+- `.env.example`:194 sets `CIRCLE_BLOCKCHAIN=ARC-TESTNET` for the
   subscriber/publisher wallet-provisioning path — this whole seam is wired for
   Arc **testnet**, not mainnet, on `main` today.
 - On-chain settlement of the *aggregated* fee pool is a separate, three-stage
@@ -139,13 +143,13 @@ with three things `payments.py` itself does **not** do:
 
 ## `PAYMENTS_DRY_RUN` — semantics
 
-**Default is dry (safe).** `main.py`:203 —
+**Default is dry (safe).** `main.py`:212 —
 `payments_dry_run = os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")`
-— an out-of-the-box deploy does not move real money. `.env.example`:179-182 labels
+— an out-of-the-box deploy does not move real money. `.env.example`:195-198 labels
 it explicitly: "FAIL-SAFE money switch. Defaults to true (no real charges)."
 
 Two independent money switches must be turned on **together and deliberately**
-(`main.py`:196-202 comment): `PAYMENTS_DRY_RUN=false` *and* whatever gates real
+(`main.py`:206-211 comment): `PAYMENTS_DRY_RUN=false` *and* whatever gates real
 trade mirroring (`PAPER_TRADING`, also defaulting to `true`). The comment is
 explicit about why: the two used to default asymmetrically (`PAYMENTS_DRY_RUN`
 defaulting false while `PAPER_TRADING` defaulted true), so an out-of-the-box
@@ -169,7 +173,7 @@ layer up, at every call site:
   caller can't forget it — the manual withdraw endpoint (M1') did exactly that,
   bypassing PAYMENTS_DRY_RUN on a real on-chain path" (settlement.py:48-51).
 - `/api/marketplace/*` manual-withdraw route: also fails soft when dry-run is on
-  (`api/marketplace_routes.py`:727-732, returning
+  (`api/marketplace_routes.py`:724-729, returning
   `{"status": "dry_run_noop", ...}` rather than attempting a real settlement).
 
 **Practical implication for anyone testing this flow:** with `PAYMENTS_DRY_RUN`
@@ -177,7 +181,7 @@ unset (or `true`), every subscriber charge in the marketplace tick loop reports
 success without a single call into `circlekit`, and every sweep/withdraw is a
 logged no-op. To exercise the real Circle Gateway path — even on testnet — you
 must explicitly set `PAYMENTS_DRY_RUN=false` and have real `CIRCLE_API_KEY` /
-`CIRCLE_ENTITY_SECRET` configured (`.env.example`:123-131, 176-183).
+`CIRCLE_ENTITY_SECRET` configured (`.env.example`:137-147, 192-198).
 
 ## Custody model (read before assuming "non-custodial")
 
@@ -194,7 +198,8 @@ isn't, today.
 ## Verify (re-run these before trusting this document)
 
 ```bash
-# circlekit is imported nowhere else:
+# circlekit's import surface — expect payments.py AND settlement.py (the
+# module docstring's "ONLY place" claim is stale; see the note above):
 grep -rln "^from circlekit\|^import circlekit" backend/archimedes/
 
 # PAYMENTS_DRY_RUN defaults to true, and where each fund-moving method gates on it:
