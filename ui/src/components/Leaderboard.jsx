@@ -109,6 +109,21 @@ export default function Leaderboard() {
   const servedScope = data?.scope ?? (user ? 'own' : 'curated')
   const isOwn = servedScope === 'own'
 
+  // Selectivity headline (WP-7, docs/sprint/a6-rerun.md's rejection-rate item):
+  // "of N strategies graded, K clear the bar" — derived at render time from
+  // the SAME `data.entries` array the table below renders, never a hard-coded
+  // count (CLAUDE.md: "Don't quote a curated-library strategy pass count —
+  // anywhere"; live-derived is the one permitted source). Counts stay `null`
+  // until `data` arrives, so the loading/empty states below never render a
+  // zero-over-zero claim.
+  // Placeholder rows (generated, no backtest yet) have NOT been graded — a
+  // row the gate never saw cannot appear in a "graded" count in either
+  // direction. "Claims must be true" is about literal truth, not about which
+  // way an error would lean.
+  const gradedEntries = data ? data.entries.filter((e) => !e.is_backtest_placeholder) : null
+  const evaluatedCount = gradedEntries ? gradedEntries.length : null
+  const passingCount = gradedEntries ? gradedEntries.filter((e) => e.passes_rigor_gate).length : null
+
   return (
     <div className="leaderboard-page" style={{ maxWidth: 1100 }}>
       <div style={{ marginBottom: 18 }}>
@@ -123,6 +138,38 @@ export default function Leaderboard() {
             : <>The curated seed library, ranked by a transparent <strong>conviction score</strong> built from real
                 rigor-gate and backtest results — the ugly numbers included. A reference set, not a competition.</>}
         </p>
+
+        {/* Headline selectivity aggregate — see the derivation comment above
+            (evaluatedCount / passingCount). Guarded identically to the
+            table's non-empty state further down so a zero-over-zero claim
+            never renders while loading, on error, degraded, or before any
+            strategies exist. */}
+        {!loading && !error && data && !data.degraded && evaluatedCount > 0 && (
+          <div
+            role="status"
+            style={{
+              marginTop: 10,
+              padding: '10px 14px',
+              borderLeft: '3px solid var(--accent)',
+              background: 'var(--accent-muted)',
+              borderRadius: 4,
+              fontSize: 14,
+              color: 'var(--text-1)',
+            }}
+          >
+            {isOwn ? (
+              <>
+                Of your <strong>{evaluatedCount}</strong> strateg{evaluatedCount === 1 ? 'y' : 'ies'} graded by
+                the rigor gate, <strong>{passingCount}</strong> clear{passingCount === 1 ? 's' : ''} the bar.
+              </>
+            ) : (
+              <>
+                Of <strong>{evaluatedCount}</strong> library strateg{evaluatedCount === 1 ? 'y' : 'ies'} graded by
+                the rigor gate, <strong>{passingCount}</strong> clear{passingCount === 1 ? 's' : ''} the bar.
+              </>
+            )}
+          </div>
+        )}
 
         {!user && (
           <div
