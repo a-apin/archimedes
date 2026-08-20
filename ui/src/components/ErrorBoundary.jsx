@@ -11,11 +11,18 @@ const LOG_PREFIX = "[ErrorBoundary]";
 export default class ErrorBoundary extends Component {
 	constructor(props) {
 		super(props);
-		this.state = { error: null };
+		this.state = { hasError: false, error: null };
 	}
 
+	// hasError is a separate boolean, not "error is truthy": a descendant
+	// that throws null/undefined/""/0 is a rare but legal React throw, and
+	// using the caught value itself as the sentinel would leave the
+	// boundary transparent for exactly those cases — render() would return
+	// this.props.children, which just threw, React re-throws in the same
+	// boundary, gives up, and unmounts the root. That's the blank-page
+	// outage this component exists to prevent (#1357).
 	static getDerivedStateFromError(error) {
-		return { error };
+		return { hasError: true, error };
 	}
 
 	componentDidCatch(error, info) {
@@ -29,8 +36,8 @@ export default class ErrorBoundary extends Component {
 	};
 
 	render() {
-		const { error } = this.state;
-		if (!error) return this.props.children;
+		const { hasError, error } = this.state;
+		if (!hasError) return this.props.children;
 
 		// Name the actual failure rather than a generic "Something went
 		// wrong" card with no way out — a blank-but-polite fallback is the
