@@ -232,7 +232,7 @@ test("Library's in-page Published tab hides with the marketplace surface it lead
 	// evaluate false and Library would render an empty content area.
 	assert.match(
 		strategiesSrc,
-		/defaultTab === 'published' && !ROADMAP_SURFACES_ENABLED/,
+		/defaultTab === 'published' && !ROADMAP_SURFACES_ENABLED\) return 'generated'/,
 	);
 });
 
