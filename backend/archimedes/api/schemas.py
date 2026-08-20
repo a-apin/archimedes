@@ -282,6 +282,13 @@ class StrategyResponse(BaseModel):
 class StrategyListResponse(BaseModel):
     strategies: list[StrategyResponse]
     total: int
+    # Honest degradation signal (#1356): True when the strategy provider
+    # raised or the library came back empty for a reason other than a
+    # legitimate filter (e.g. the corpus is missing from the build).
+    # `degraded_reason` names which, so the UI can show a loud, specific
+    # unavailable state instead of rendering the false claim "no strategies".
+    degraded: bool = False
+    degraded_reason: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -544,11 +551,14 @@ class ContractAddressesResponse(BaseModel):
     # Individual synthetic token addresses
     synthetics: dict[str, str]  # symbol → address, e.g. {"sTSLA": "0x..."}
 
-    # AMM pool addresses
-    pools: dict[str, str]  # pair → address, e.g. {"USDC/sTSLA": "0x..."}
+    # AMM pool addresses. None means the on-chain read failed (RPC error) —
+    # distinct from {}, which means the chain was read and genuinely reports
+    # zero pools. Collapsing these into one falsy value is exactly the #1356
+    # defect: a failed read must never render as a measured zero.
+    pools: dict[str, str] | None  # pair → address, e.g. {"USDC/sTSLA": "0x..."}
 
-    # Vault addresses
-    vaults: dict[str, str]  # symbol → address, e.g. {"vMOMENTUM": "0x..."}
+    # Vault addresses. Same None-vs-{} distinction as `pools`.
+    vaults: dict[str, str] | None  # symbol → address, e.g. {"vMOMENTUM": "0x..."}
 
     # Chain info
     chain_id: int
