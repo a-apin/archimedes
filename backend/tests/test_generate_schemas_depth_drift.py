@@ -27,11 +27,11 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from archimedes.agents.strategy_fusion import FUSION_MAX_PAPERS, MIN_PAPERS
+from archimedes.api.generate_schemas import GenerateBrief
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from archimedes.agents.strategy_fusion import FUSION_MAX_PAPERS, MIN_PAPERS
-from archimedes.api.generate_schemas import GenerateBrief
 from tests.auth_helpers import auth_cookies
 
 
