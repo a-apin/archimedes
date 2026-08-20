@@ -154,6 +154,7 @@ test("roadmap surfaces are hidden by default: flat routes, deep links, nav (#126
 		"/app/marketplace",
 		"/app/publish",
 		"/app/subscriptions",
+		"/app/learnings",
 	]) {
 		assert.equal(resolveRoute(path).kind, "not-found", path);
 	}
@@ -171,6 +172,7 @@ test("roadmap surfaces are hidden by default: flat routes, deep links, nav (#126
 		{ id: "marketplace" },
 		{ id: "publish" },
 		{ id: "subscriptions" },
+		{ id: "learnings" },
 		{ id: "library" },
 	];
 	assert.deepEqual(visibleNavigation(nav, { quant: true }, { id: "u1" }), [
@@ -182,7 +184,7 @@ test("roadmap surfaces are hidden by default: flat routes, deep links, nav (#126
 		resolveRoute("/app/marketplace/strategy/alpha", "", ROADMAP_ON).strategyId,
 		"alpha",
 	);
-	assert.equal(visibleNavigation(nav, ROADMAP_ON, { id: "u1" }).length, 5);
+	assert.equal(visibleNavigation(nav, ROADMAP_ON, { id: "u1" }).length, 6);
 });
 
 test("anonymous nav shows browse + the Generate conversion path, nothing stateful", () => {

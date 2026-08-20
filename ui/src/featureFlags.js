@@ -19,11 +19,11 @@ export const GENERATION_QUOTE_ENABLED =
 
 // Single flag gating the UI surfaces that are out of scope for the MVP
 // (#1266): vaults (Portfolio + the vault-detail deep link), the strategy
-// Marketplace (+ market-strategy deep link), Publish, and Subscriptions.
-// All the code for these stays in the tree — this flag just keeps them out
-// of the shipped nav/routes/CTAs until they're back in scope. Set
-// VITE_ROADMAP_SURFACES=true at build time (see ui/.env.example) to
-// preview the full app.
+// Marketplace (+ market-strategy deep link), Publish, Subscriptions, and
+// Learnings. All the code for these stays in the tree — this flag just
+// keeps them out of the shipped nav/routes/CTAs until they're back in
+// scope. Set VITE_ROADMAP_SURFACES=true at build time (see
+// ui/.env.example) to preview the full app.
 export const ROADMAP_SURFACES_ENABLED =
 	import.meta.env?.VITE_ROADMAP_SURFACES === "true";
 
@@ -38,6 +38,7 @@ export const ROADMAP_PAGES = new Set([
 	"market-strategy",
 	"publish",
 	"subscriptions",
+	"learnings",
 ]);
 
 export function roadmapSurfaceHidden(page) {

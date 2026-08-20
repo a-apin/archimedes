@@ -47,8 +47,9 @@ export default function Breadcrumbs({ page, setPage }) {
   if (!info) return null
 
   // When the group's landing page is a hidden roadmap surface (#1266 —
-  // quant/reasoning/learnings point at Portfolio), the mid-crumb would be a
-  // link into a not-found route: fall back to a flat Home / <page> crumb.
+  // quant/reasoning point at Portfolio; learnings is itself hidden), the
+  // mid-crumb would link into a not-found route: fall back to a flat
+  // Home / <page> crumb.
   const crumbs = [
     { label: 'Home', page: 'explore' },
     ...(info.group && !roadmapSurfaceHidden(info.groupPage)
