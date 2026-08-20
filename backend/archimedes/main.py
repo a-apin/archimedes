@@ -113,37 +113,35 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     _logger = logging.getLogger("archimedes.startup")
 
     # ── STARTUP ──────────────────────────────────────────────────────────
-    # 1. Populate selection-bias rigor gate fields (idempotent). Only runs
-    # the full computation when some backtest row is missing DSR/PBO, and
-    # refreshes the provider cache afterwards so /api/strategies serves the
-    # new values immediately (mirrors the pre-lifespan startup handler).
-    try:
-        from archimedes.db import get_session
-        from archimedes.models.backtest_store import BacktestResultRecord
-        from archimedes.services.strategy_provider import default_provider
-
-        provider = default_provider()
-        strategies = provider.list_strategies()
-        if strategies:
-            strategy_ids = [s.id for s in strategies]
-            with get_session() as session:
-                rows = (
-                    session.query(BacktestResultRecord).filter(BacktestResultRecord.strategy_id.in_(strategy_ids)).all()
-                )
-                needs_rigor = [r for r in rows if r.deflated_sharpe_ratio is None]
-            if needs_rigor:
-                _logger.info("startup: computing rigor gate for %d strategies...", len(needs_rigor))
-                from archimedes.api.selection_bias_routes import evaluate_rigor_gate
-
-                result = await evaluate_rigor_gate()
-                _logger.info("startup: rigor gate computed — %d/%d passing", result.passing, result.total)
-                # Refresh provider's backtest cache so /api/strategies serves
-                # the new DSR/PBO values without waiting for a cache cycle.
-                provider.refresh()
-            else:
-                _logger.info("startup: all %d backtest rows have rigor gate fields", len(rows))
-    except Exception as exc:
-        _logger.warning("startup: rigor gate population failed (non-fatal): %s", exc)
+    # 1. (removed) Rigor-gate backfill.
+    #
+    # This used to load every backtest_results row for every curated strategy
+    # and then call evaluate_rigor_gate() to backfill DSR/PBO. Both halves were
+    # wrong, and it was a primary cause of the 2026-08-19 OOM crash loop:
+    #
+    #   * The query was `.all()` over full rows. artifact_json and
+    #     equity_curve_json are plain Text columns with no deferred loading
+    #     (models/backtest_store.py), so every row's JSON blob was materialised
+    #     — measured +1079 MB of RSS at 408 rows, strictly linear at ~2.6 MB
+    #     per row, and rising daily because nothing dedupes that table.
+    #   * Worse, `rows` was a local of THIS function, and lifespan() is an
+    #     @asynccontextmanager that suspends at the `yield` below for the entire
+    #     process lifetime. Python pins the frame, so those blobs were never
+    #     collected — retained garbage for the life of the container, not a
+    #     transient spike. `del rows; gc.collect()` in a probe returned 100% of it.
+    #   * evaluate_rigor_gate() is a FastAPI route handler whose `strictness`
+    #     parameter defaults to Query(DEFAULT_LEVEL). Called directly it stays a
+    #     Query object, the whole cohort DSR/PBO computation runs (~14-20 s of
+    #     one vCPU), and then StrategyRigorResult validation raises. It had
+    #     therefore NEVER once succeeded since 2026-07-05 (commit 4cf8d59b) —
+    #     46 days of burning that computation on every boot and discarding it.
+    #
+    # Nothing is lost by removing it. The rigor gate already runs where it
+    # belongs: in the generation pipeline for generated strategies
+    # (agents/generation_pipeline.py, via live_rigor_gate.verdict_from_returns),
+    # and on demand for the curated library via GET /api/selection-bias/gate —
+    # whose _compute() is the only production caller of update_rigor_gate_fields(),
+    # i.e. the only thing that ever persisted these columns anyway.
 
     # 2. Seed papers table from manifest.jsonl (idempotent)
     try:
@@ -163,7 +161,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         import hashlib
         import json
 
+        from archimedes.db import get_session
         from archimedes.models.strategy_store import StrategyRecord
+        from archimedes.services.strategy_provider import default_provider
 
         provider = default_provider()
         with get_session() as session:
