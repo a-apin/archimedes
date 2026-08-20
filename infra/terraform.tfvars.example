@@ -1,0 +1,65 @@
+# infra/terraform.tfvars.example
+#
+# Copy this file to infra/terraform.tfvars (gitignored — see .gitignore;
+# NEVER commit the real file) and fill in real values before running
+# `terraform apply` from infra/. Terraform auto-loads terraform.tfvars from
+# the working directory on every plan/apply — no -var-file flag needed.
+#
+# THE LANDMINE THIS FILE CLOSES: every variable below defaults to the
+# feature-OFF value (false / "") in variables.tf. If a variable is only ever
+# set via a one-off `TF_VAR_*` shell export — never persisted here — then the
+# next bare `terraform apply` (a different shell, a different session, a
+# teammate who doesn't know the export was ever needed) silently reverts it
+# to that default. For the OAuth flags that strips the whole Google/GitHub
+# secrets{} block out of the auth task definition; for the wallet variables
+# it blanks a live env value. No error, no destructive-looking plan line —
+# just a quiet, successful apply that undoes prod config. See
+# infra/README.md "Operational variables" for the full writeup and the rule:
+# EVERY apply must go through a maintained terraform.tfvars, never a bare
+# TF_VAR_* export used once and forgotten.
+#
+# NOT listed here: infra/variables.tf's aurora_master_password. It is a true
+# secret (sensitive = true, no default) and deliberately stays on the
+# existing SSM-piped `TF_VAR_aurora_master_password=$(aws ssm get-parameter
+# ...)` pattern documented in infra/README.md — putting a live DB password in
+# a tfvars file, even a gitignored one, is a worse blast radius than a
+# per-apply env var for the one variable Terraform genuinely cannot apply
+# without.
+
+# ── Better Auth OAuth providers (variables.tf:100, variables.tf:106) ───────
+# Gate the Google/GitHub secrets{} blocks in the "auth" container definition
+# (infra/ecs.tf:662-665 and :666-669). Only flip to true once BOTH SSM
+# parameters in the matching pair already exist —
+# /archimedes/prod/GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET, or
+# /archimedes/prod/GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET — seeded via
+# infra/scripts/setup-ssm-secrets.sh. Default false; verify the CURRENT
+# live value before you apply — do not assume false just because that's
+# the variable's declared default.
+google_oauth_enabled = false
+github_oauth_enabled = false
+
+# ── Marketplace / admin config (variables.tf:123, variables.tf:129) ────────
+# Public wallet addresses — not secrets, but operator-specific and NOT baked
+# into the image or a box .env (issue #1037 / PR #958). Sourced straight into
+# plain (non-secret) ECS task-definition env (infra/ecs.tf:589-590).
+#
+# Space/comma-separated wallets allowed to publish `is_example` strategies.
+# CONFIRMED: Dan applied a real value to prod via a one-off
+# TF_VAR_platform_admin_wallets export — that value is NOT captured anywhere
+# durable yet. Get the current value from Dan before your first real apply,
+# or the next bare apply blanks it.
+platform_admin_wallets = "" # e.g. "0xabc...,0xdef..." — confirm current prod value with Dan first
+
+# Platform revenue-share wallet (marketplace publish 10% split). Publishing
+# 503s (backend/archimedes/api/marketplace_routes.py) until this is set.
+# Same landmine class as platform_admin_wallets above; this PR did not
+# confirm whether a real value is currently applied in prod — check with Dan.
+archimedes_treasury_wallet = "" # e.g. "0x123..." — confirm current prod value with Dan first
+
+# ── Optional: CloudWatch alarm paging (cloudwatch.tf:17) ───────────────────
+# Email subscribed to the CloudWatch alarm SNS topic. Lower stakes than the
+# vars above — cloudwatch.tf is additive-only, so a reverted value only means
+# a missed page, not a stripped feature — but the same landmine class: if a
+# real address has been TF_VAR-exported and applied, put it here too so a
+# bare apply doesn't silently unsubscribe it.
+alarm_email = ""
