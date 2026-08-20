@@ -114,7 +114,7 @@ GET /api/generate/jobs/{job_id}
 ```json
 {
   "job_id": "…",
-  "state": "queued",            // queued | running | done | error | cancelled
+  "state": "queued",            // queued | running | stalled | done | error | cancelled
   "brief_intent": "…",
   "created_at": "…",             // ISO-8601 UTC
   "updated_at": "…",
@@ -123,7 +123,9 @@ GET /api/generate/jobs/{job_id}
 }
 ```
 Identical record to the matching entry in `GET /api/generate/jobs`, so a client can switch
-between the listing and the single-job read without the two disagreeing. `state == "done"`
+between the listing and the single-job read without the two disagreeing. `"stalled"`
+(#1355) is a READ-TIME derived state — a `"running"` job whose `heartbeat_at` has gone
+stale for over 5 minutes — never written to Redis. `state == "done"`
 with a non-null `best_strategy_id` is the signal to move on to the candidates read below;
 `error` and `cancelled` are terminal. The stored failure string is not exposed — it holds
 raw unscrubbed exception text; the `error` state and the SSE `error` event (which carries
