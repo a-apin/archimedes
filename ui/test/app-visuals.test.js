@@ -15,6 +15,13 @@ const layout = readFileSync(
 	new URL("../src/components/Layout.jsx", import.meta.url),
 	"utf8",
 );
+// PROOF_STAGES itself moved out of Layout.jsx into proofStages.js (#1354) so
+// the roadmap-copy guard can call getProofStages() under plain node — see
+// that file and ui/test/roadmap-copy.test.js for the 3-vs-5-stage guard.
+const proofStages = readFileSync(
+	new URL("../src/proofStages.js", import.meta.url),
+	"utf8",
+);
 const passport = readFileSync(
 	new URL("../src/components/StrategyPassport.jsx", import.meta.url),
 	"utf8",
@@ -32,11 +39,11 @@ test("authenticated shell has isolated operational tokens and journey rail", () 
 	assert.match(layout, /shell app-site/);
 	assert.match(layout, /PROOF_STAGES/);
 	assert.match(layout, /className="app-proof-rail"/);
-	assert.match(layout, /Brief/);
-	assert.match(layout, /Debate/);
-	assert.match(layout, /Gate/);
-	assert.match(layout, /Vault/);
-	assert.match(layout, /Monitor/);
+	assert.match(proofStages, /Brief/);
+	assert.match(proofStages, /Debate/);
+	assert.match(proofStages, /Gate/);
+	assert.match(proofStages, /Vault/);
+	assert.match(proofStages, /Monitor/);
 	assert.match(layout, /aria-current=\{isCurrent \? "step" : undefined\}/);
 	assert.match(
 		layout,
