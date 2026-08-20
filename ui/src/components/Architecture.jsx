@@ -1089,10 +1089,10 @@ function HonestyLedger({ health, healthError, agentStatus, agentStatusError }) {
 										<LedgerStatus tone="pending">
 											No recent heartbeat
 										</LedgerStatus>{" "}
-										— runs on a schedule against every deployed vault
-										(evaluate, commit, trade, reveal); no heartbeat in
-										the last 10 minutes, so uptime is not currently
-										confirmed
+										— the loop is defined to evaluate, then
+										commit/trade/reveal when not in dry-run; no
+										heartbeat in the last 10 minutes, so neither uptime
+										nor execution is confirmed
 									</>
 								)}
 							</td>

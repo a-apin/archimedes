@@ -159,7 +159,11 @@ test("honesty ledger's rebalance row does not tie the full commit/trade/reveal m
 	// (agent_runner.py gates each phase separately on `if not DRY_RUN`).
 	// The heartbeat alone cannot back a claim that evaluate/commit/trade/
 	// reveal actually ran; the live-verdict clause must say only what the
-	// heartbeat proves (the loop is ticking).
+	// heartbeat proves (the loop is ticking). Scoped to the whole row (not
+	// just the live branch): the pending branch is under the exact same
+	// AGENT_DRY_RUN=true recommended default (infra/scripts/setup-ssm-
+	// secrets.sh), so an unqualified mechanism claim there is the same
+	// defect, just reached via a different verdict.
 	const ledger = architecture.slice(
 		architecture.indexOf("function HonestyLedger"),
 	);
@@ -171,14 +175,14 @@ test("honesty ledger's rebalance row does not tie the full commit/trade/reveal m
 		.split("<tr>")
 		.slice(1)
 		.find((row) => row.includes("Autonomous rebalance loop"));
+	assert.doesNotMatch(
+		rebalanceRow,
+		/evaluate, commit, trade, reveal/,
+		"a branch of the rebalance row claims the full commit/trade/reveal mechanism ran off a signal (heartbeat) that doesn't measure it — same defect class this PR exists to police",
+	);
 	const liveBranch = rebalanceRow.slice(
 		rebalanceRow.indexOf("agentStatus.alive ? ("),
 		rebalanceRow.indexOf(") : ("),
-	);
-	assert.doesNotMatch(
-		liveBranch,
-		/evaluate, commit, trade, reveal/,
-		"the live-verdict clause claims the full commit/trade/reveal mechanism ran off a signal (heartbeat) that doesn't measure it — same defect class this PR exists to police",
 	);
 	assert.match(liveBranch, /heartbeat/i);
 });
