@@ -368,7 +368,15 @@ export default function Explore() {
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 6 }}>
-                <span className={`mono ${changeClass(a.change_24h_pct)}`} style={{ fontSize: '0.85rem' }}>
+                <span
+                  className={`mono ${changeClass(a.change_24h_pct)}`}
+                  style={{ fontSize: '0.85rem' }}
+                  title={
+                    a.rejected_fields?.includes('change_24h_pct')
+                      ? 'Suppressed: the computed change was arithmetically implausible (likely a bad tick), not a real move'
+                      : undefined
+                  }
+                >
                   {fmtPct(a.change_24h_pct)}
                 </span>
                 <span className="caption" style={{ color: 'var(--text-4)', fontSize: '0.65rem' }}>

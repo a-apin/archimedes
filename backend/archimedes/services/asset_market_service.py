@@ -75,9 +75,14 @@ _HISTORY_FETCH_BUDGET_SECONDS = 45.0
 # explosive ratio that passes every other check — e.g. sJUP's prior close of
 # 0.0003166165 produced a reported "+1483.08% 24h" move. 100%/day is already
 # an extremely generous bound (no major asset has ever moved >100% in a
-# single day without a corporate-action-style event); it scales with
-# sqrt(n) for multi-day windows so legitimate large cumulative moves in
-# volatile assets over a week/month aren't rejected.
+# single day without a corporate-action-style event); multi-day windows
+# compound this per-day bound rather than scaling it by sqrt(n) — sqrt(n)
+# models how a *volatility* (a standard deviation) grows with time and does
+# not apply to a point-to-point *cumulative simple return*, which compounds
+# multiplicatively. A sqrt(n)-scaled bound is both mathematically wrong for
+# this quantity and too tight in practice: at n=30 it allows only ±548%,
+# which would reject a real (if extreme) 10x month in a volatile crypto
+# name. See `_pct_change` for the compounding formula.
 _MAX_PLAUSIBLE_DAILY_PCT = 100.0
 
 # Trading-day conventions differ by asset class (#1322). Equities/ETFs/FX
@@ -152,24 +157,38 @@ def _explanations_for(item: dict[str, Any], is_247: bool = False) -> dict[str, s
 # ── Stat math ─────────────────────────────────────────────────────────────
 
 
-def _pct_change(prices: list[float], n: int) -> float | None:
-    """Pct change between prices[-1] and prices[-1-n]. None if not enough data,
-    or if the result exceeds a plausible bound for a window this size (#1322):
-    a bad tick / decimal-placement error in the upstream feed can turn a tiny
-    prior close into an explosive ratio that passes every other check. An
-    honest absence beats shipping an arithmetically-impossible number — see
-    docs/architectural-principles.md § fail-soft.
+def _pct_change_with_reason(prices: list[float], n: int) -> tuple[float | None, bool]:
+    """Pct change between prices[-1] and prices[-1-n].
+
+    Returns ``(value, was_rejected)``. ``value`` is None if not enough data,
+    the prior close is zero, or the result exceeds a plausible bound for a
+    window this size (#1322): a bad tick / decimal-placement error in the
+    upstream feed can turn a tiny prior close into an explosive ratio that
+    passes every other check. An honest absence beats shipping an
+    arithmetically-impossible number — see docs/architectural-principles.md
+    § fail-soft. ``was_rejected`` is True only for the plausibility-bound
+    case (not for insufficient data / zero start), so callers can
+    distinguish "not enough history yet" from "a value was actively
+    suppressed as implausible" — see ``AssetExploreItem.rejected_fields``.
+
+    The bound compounds the single-day bound across the window rather than
+    scaling it by sqrt(n): the n-bar quantity being checked is a cumulative
+    *simple* return, which compounds multiplicatively — sqrt(n) is a
+    volatility-scaling argument that doesn't apply here, and using it made
+    the bound too tight for legitimate large multi-day moves (e.g. a real
+    10x over a month in a volatile crypto name) while still being generous
+    enough to admit the sJUP-style single-bar decimal-placement defect at
+    n=1. Compounding means only the 1-day window stays tightly bounded
+    (100%) — exactly where that defect class lives.
     """
     if not prices or len(prices) < n + 1:
-        return None
+        return None, False
     end, start = prices[-1], prices[-1 - n]
     if not start:
-        return None
+        return None, False
     pct = (end - start) / start * 100.0
-    # sqrt(n) scaling (vol scales with sqrt of time) so a legitimate large
-    # cumulative move over a week/month isn't rejected by a bound sized for
-    # a single day.
-    bound = _MAX_PLAUSIBLE_DAILY_PCT * math.sqrt(max(n, 1))
+    n_eff = max(n, 1)
+    bound = ((1.0 + _MAX_PLAUSIBLE_DAILY_PCT / 100.0) ** n_eff - 1.0) * 100.0
     if abs(pct) > bound:
         logger.warning(
             "explore: rejecting implausible %.1f%% change over %d bar(s) (bound ±%.1f%%) — "
@@ -178,8 +197,69 @@ def _pct_change(prices: list[float], n: int) -> float | None:
             n,
             bound,
         )
-        return None
-    return pct
+        return None, True
+    return pct, False
+
+
+def _pct_change(prices: list[float], n: int) -> float | None:
+    """Pct change between prices[-1] and prices[-1-n]; see
+    ``_pct_change_with_reason`` for the full contract. Thin wrapper kept for
+    callers (and the existing unit-test surface) that only need the value."""
+    return _pct_change_with_reason(prices, n)[0]
+
+
+def _realized_vol_annual_with_reason(
+    prices: list[float],
+    window: int = 30,
+    trading_days_per_year: int = _EQUITY_TRADING_DAYS_PER_YEAR,
+) -> tuple[float | None, bool]:
+    """Annualized realized vol over the most recent ``window`` bars.
+
+    Returns ``(value, was_rejected)`` — see ``_pct_change_with_reason`` for
+    why callers need both.
+
+    ``trading_days_per_year`` is the annualization factor (#1322): 252 for
+    equities/ETFs/FX (yfinance bars only on trading days), 365 for crypto
+    (yfinance bars every calendar day, no weekend/holiday gaps) — applying
+    the equity constant to a 24/7 asset understates its vol by
+    sqrt(365/252) ≈ 1.20, about 17%.
+
+    Plausibility guard (#1322): a bad tick / decimal-placement error inside
+    the window inflates one bar-to-bar return past what's physically
+    plausible even when the *endpoint-to-endpoint* ratio `_pct_change`
+    checks would pass — vol is built from every bar-to-bar step, not just
+    the two ends, so a single corrupt bar corrupts the whole estimate.
+    Dropping the bad bar and computing vol on what's left would still ship
+    a clean-looking but fabricated number (the issue's anti-goal forbids
+    exactly that shape of "fix"); the honest response is None for the
+    whole window when any single bar exceeds the same per-day plausibility
+    bound `_pct_change` uses (bar-to-bar, so no compounding — n=1 always).
+    """
+    if not prices or len(prices) < window + 1:
+        return None, False
+    tail = prices[-(window + 1) :]
+    rets = []
+    for i in range(1, len(tail)):
+        prev = tail[i - 1]
+        if not prev:
+            continue
+        ret = (tail[i] - prev) / prev
+        if abs(ret) * 100.0 > _MAX_PLAUSIBLE_DAILY_PCT:
+            logger.warning(
+                "explore: rejecting realized-vol window — bar %d/%d implied a %.1f%% "
+                "single-bar move (bound ±%.1f%%) — treating as a bad tick, not a real move",
+                i,
+                len(tail) - 1,
+                ret * 100.0,
+                _MAX_PLAUSIBLE_DAILY_PCT,
+            )
+            return None, True
+        rets.append(ret)
+    if len(rets) < 2:
+        return None, False
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+    return math.sqrt(var) * math.sqrt(trading_days_per_year), False
 
 
 def _realized_vol_annual(
@@ -187,28 +267,11 @@ def _realized_vol_annual(
     window: int = 30,
     trading_days_per_year: int = _EQUITY_TRADING_DAYS_PER_YEAR,
 ) -> float | None:
-    """Annualized realized vol over the most recent ``window`` bars.
-
-    ``trading_days_per_year`` is the annualization factor (#1322): 252 for
-    equities/ETFs/FX (yfinance bars only on trading days), 365 for crypto
-    (yfinance bars every calendar day, no weekend/holiday gaps) — applying
-    the equity constant to a 24/7 asset understates its vol by
-    sqrt(365/252) ≈ 1.20, about 17%.
-    """
-    if not prices or len(prices) < window + 1:
-        return None
-    tail = prices[-(window + 1) :]
-    rets = []
-    for i in range(1, len(tail)):
-        prev = tail[i - 1]
-        if not prev:
-            continue
-        rets.append((tail[i] - prev) / prev)
-    if len(rets) < 2:
-        return None
-    mean = sum(rets) / len(rets)
-    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
-    return math.sqrt(var) * math.sqrt(trading_days_per_year)
+    """Annualized realized vol over the most recent ``window`` bars; see
+    ``_realized_vol_annual_with_reason`` for the full contract. Thin wrapper
+    kept for callers (and the existing unit-test surface) that only need the
+    value."""
+    return _realized_vol_annual_with_reason(prices, window, trading_days_per_year)[0]
 
 
 # ── Direct yfinance fetch (used by /assets/{symbol}/history) ─────────────
@@ -647,16 +710,38 @@ class AssetMarketService:
 
             # Change / vol from yfinance daily history (independent of where
             # the spot came from — both source paths benefit from these).
+            # Each `*_with_reason` call also reports whether the None came
+            # from an active plausibility rejection (#1322) vs. simply not
+            # having enough history yet; rejected_fields discloses the
+            # former on the served item rather than leaving a suppressed
+            # bad tick indistinguishable from "not fetched yet" (issue
+            # Precedent: route rejected values down an honest-absence path).
+            rejected_fields: list[str] = []
+            change_24h_pct, rej_24h = _pct_change_with_reason(hist_prices, 1) if hist_prices else (None, False)
+            change_7d_pct, rej_7d = _pct_change_with_reason(hist_prices, week_n) if hist_prices else (None, False)
+            change_30d_pct, rej_30d = _pct_change_with_reason(hist_prices, month_n) if hist_prices else (None, False)
+            realized_vol_30d, rej_vol = (
+                _realized_vol_annual_with_reason(hist_prices, 30, trading_days_per_year)
+                if hist_prices
+                else (None, False)
+            )
+            if rej_24h:
+                rejected_fields.append("change_24h_pct")
+            if rej_7d:
+                rejected_fields.append("change_7d_pct")
+            if rej_30d:
+                rejected_fields.append("change_30d_pct")
+            if rej_vol:
+                rejected_fields.append("realized_vol_30d")
+
             stat_dict: dict[str, Any] = {
                 "current_price": current_price,
-                "change_24h_pct": _pct_change(hist_prices, 1) if hist_prices else None,
-                "change_7d_pct": _pct_change(hist_prices, week_n) if hist_prices else None,
-                "change_30d_pct": _pct_change(hist_prices, month_n) if hist_prices else None,
+                "change_24h_pct": change_24h_pct,
+                "change_7d_pct": change_7d_pct,
+                "change_30d_pct": change_30d_pct,
                 "high_24h": high_24h,
                 "low_24h": low_24h,
-                "realized_vol_30d": _realized_vol_annual(hist_prices, 30, trading_days_per_year)
-                if hist_prices
-                else None,
+                "realized_vol_30d": realized_vol_30d,
             }
 
             # oracle_address is a capability marker — populated from settings
@@ -680,6 +765,7 @@ class AssetMarketService:
                     is_stale=displayed_is_stale,
                     price_source=price_source,
                     explanations=_explanations_for(stat_dict, is_247=is_247),
+                    rejected_fields=rejected_fields,
                     **stat_dict,
                 )
             )
