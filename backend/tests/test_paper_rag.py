@@ -515,6 +515,9 @@ class TestWeightsPresent:
     def setup_method(self):
         _reset_model_cache()
 
+    def teardown_method(self):
+        _reset_model_cache()
+
     def test_finds_weights_in_the_real_nested_hf_layout(self, monkeypatch):
         """THE REGRESSION: weights nested under hub/ must be found."""
         monkeypatch.setenv("MINILM_MODEL", "all-MiniLM-L6-v2")
