@@ -153,12 +153,17 @@ aren't:
 - **Payment.** `GET /api/generate/quote` is public and always tells the
   truth about whether payment is required (generate_routes.py:96-103;
   contract spec: [`docs/specs/generation-quote-contract.md`](../../docs/specs/generation-quote-contract.md)).
-  When the backend's payment flag is on, `POST /start` without a
-  `Payment-Signature` returns **402 with the quote in `detail`**, and the
-  signed payer must equal the account's **linked wallet**
-  (generate_routes.py:132-154). Link a wallet via `POST
-  /api/wallets/challenge` → sign the EIP-4361 message with your key → `POST
-  /api/wallets/verify` — one round-trip, `cast`-signable.
+  When the backend's payment flag is on, the error ladder on `POST /start`
+  is, in order: **409** `{reason: "wallet_link_required"}` when the account
+  has **no linked wallet** — the blocker is account state, not a missing
+  payment, and it fires before any 402 is possible
+  (generate_routes.py:132-149) — then **402 with the quote in `detail`**
+  when a wallet is linked but no valid `Payment-Signature` accompanies the
+  request, with the signed payer required to equal the account's linked
+  wallet (generate_routes.py:150-154); then **202** on success. Handle all
+  three. Link a wallet via `POST /api/wallets/challenge` → sign the
+  EIP-4361 message with your key → `POST /api/wallets/verify` — one
+  round-trip, `cast`-signable.
 - **Premium models.** See "Model gating" below — entitlement is checked
   against the linked wallet.
 
