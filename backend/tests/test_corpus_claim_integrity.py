@@ -299,19 +299,53 @@ def test_no_forbidden_ui_literals_on_disk():
 
 
 def test_kg_zero_state_names_the_pipeline_not_the_query():
-    """The ``entities.length === 0`` branch of CorpusKG.jsx must say the KB pipeline hasn't
-    produced an artifact (#1090) and name /health's ``corpus_kg_built`` field as the live
-    authority — not render copy indistinguishable from "your search matched nothing" (#1368).
-    Asserted here rather than by eyeball, per the issue's acceptance criteria.
+    """The ``entities.length === 0`` branch of CorpusKG.jsx must branch on the live
+    ``/health`` ``corpus_kg_built`` value, not assert "pipeline hasn't run" unconditionally.
+
+    A plain substring check (does "corpus_kg_built" / "#1090" appear anywhere in the file)
+    would also pass for an *unconditional* render of that copy — which is itself an
+    over-claim once #1090 lands and a legitimate empty search reaches this same branch
+    (adversarial reviewer finding on the first version of this fix). So this test locates
+    the actual zero-state ternary and requires: (1) it reads ``health.corpus_kg_built``
+    rather than asserting a value, (2) the ``corpus_kg_built === false`` side names the
+    pipeline + #1090, and (3) the ``corpus_kg_built === true`` side (a real empty search)
+    names the search term instead of repeating the pipeline claim.
     """
     text = (_repo_root() / "ui/src/components/CorpusKG.jsx").read_text(encoding="utf-8")
-    assert "corpus_kg_built" in text, (
-        "ui/src/components/CorpusKG.jsx: zero-state copy must name /health's corpus_kg_built "
-        "as the live authority for whether a KG artifact exists"
+
+    zero_state_match = re.search(
+        r"entities\.length === 0 \? \((?P<body>.*?)\n\s*\) : \(\s*\n\s*<div style=\{\{ overflow",
+        text,
+        re.DOTALL,
     )
-    assert re.search(r"#1090\b", text), (
-        "ui/src/components/CorpusKG.jsx: zero-state copy must reference #1090 (the KB pipeline "
-        "artifact issue) so it names the pipeline, not the query"
+    assert zero_state_match, (
+        "ui/src/components/CorpusKG.jsx: could not locate the `entities.length === 0` "
+        "zero-state branch — has the render structure changed? Update this test's anchor "
+        "regex to match."
+    )
+    zero_state = zero_state_match.group("body")
+
+    assert "health.corpus_kg_built ?" in zero_state, (
+        "ui/src/components/CorpusKG.jsx: the zero-state must branch on the live "
+        "health.corpus_kg_built value from /health, not assert a pipeline state "
+        "unconditionally (#1368)"
+    )
+
+    _cond, _sep, rest = zero_state.partition("health.corpus_kg_built ?")
+    built_branch, _sep, not_built_branch = rest.partition(") : (")
+
+    assert re.search(r"#1090\b", not_built_branch), (
+        "ui/src/components/CorpusKG.jsx: the corpus_kg_built===false branch must reference "
+        "#1090 (the KB pipeline artifact issue) so it names the pipeline, not the query"
+    )
+    assert "corpus_kg_built" in not_built_branch, (
+        "ui/src/components/CorpusKG.jsx: the corpus_kg_built===false branch must point at "
+        "/health's corpus_kg_built field as the live authority"
+    )
+    assert "searchedTerm" in built_branch or "query" in built_branch, (
+        "ui/src/components/CorpusKG.jsx: the corpus_kg_built===true branch (a legitimate "
+        "empty search once the pipeline HAS run) must name the search term, not repeat the "
+        "pipeline-not-built claim"
     )
 
 
