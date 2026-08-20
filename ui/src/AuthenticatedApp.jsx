@@ -4,6 +4,7 @@ import { disconnectWallet, reconnectWallet } from "./config";
 import { checkLegacyWallet, listLinkedWallets } from "./linked-wallets";
 import AccountSettings from "./components/AccountSettings";
 import CorpusExplorer from "./components/CorpusExplorer";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Explore from "./components/Explore";
 import Generate from "./components/Generate";
 import Insights from "./components/Insights";
@@ -285,7 +286,9 @@ export default function AuthenticatedApp({
 						</button>
 					</div>
 				)}
-				{renderPage()}
+				<ErrorBoundary key={route.page}>
+					{renderPage()}
+				</ErrorBoundary>
 			</Layout>
 			<OnboardingTour
 				open={tourOpen}
