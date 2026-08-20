@@ -245,8 +245,8 @@ def claim_legacy_wallet_data(
     ``address`` — the effect linking (or re-verifying) a wallet has, and the
     reclaim `rename_strategy`'s legacy-wallet fallback also triggers on write
     so pre-account rows migrate onto canonical ownership as they're touched
-    (#1283). Public (not `_`-prefixed) because both callers cross the
-    `wallet_routes` module boundary.
+    (#1283). Public (not `_`-prefixed) because `rename_strategy` calls it
+    from `strategies_routes`; the wallet-link path calls it in-module.
 
     ``models``/``include_profile`` narrow which tables get stamped. The
     default (both None/True) is the full claim a verified wallet link
