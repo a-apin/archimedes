@@ -762,6 +762,16 @@ async def health():
     # accumulating faster than the pass resolves them. Fail-safe like every
     # other Redis-backed field on this endpoint: a Redis outage reports 0
     # rather than 500ing the whole health check.
+    #
+    # MIGRATION CAVEAT (#1403 review): ``reveal_reconcile_pending`` under-counts
+    # any dangling record written before this index existed and not yet
+    # re-saved through the new ``save_trace`` path — it is SCARD of a set only
+    # that path populates, so a pre-index dangling record is invisible here
+    # until something re-saves it (the reconciliation pass's own retry does
+    # this the first time it touches one, same one-cycle migration window the
+    # bounded-scan backstop covers). This gauge can therefore read 0 at deploy
+    # time while real dangling reveals are outstanding; it becomes accurate
+    # once every pre-existing dangling record has been touched once.
     reveal_reconcile_pending = 0
     reveal_reconcile_terminal = 0
     try:

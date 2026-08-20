@@ -1785,7 +1785,12 @@ class StrategyRunner:
             kept as a one-cycle migration backstop for records written
             dangling before the index existed); either source failing is
             logged loudly but degrades to the other rather than aborting the
-            whole pass, since a partial candidate set is still real work.
+            whole pass, since a partial candidate set is still real work;
+          - candidates are then cross-checked against the durable TERMINAL
+            set (#1403 review, ``list_reveal_reconcile_terminal_hashes``) and
+            dropped if present — this is what makes a record closed by
+            ``mark_reveal_reconcile_terminal`` stay closed even on a tick
+            where its own JSON blob failed to save and still reads "pending".
         """
         if DRY_RUN:
             logger.debug("[tick %s] DRY RUN — skipping reveal reconciliation (no chain reads, no writes)", tick_id)
@@ -1811,7 +1816,22 @@ class StrategyRunner:
             logger.error("[tick %s] Reveal reconciliation scan FAILED: %s", tick_id, e)
             records = []
 
+        # Durable-terminal cross-check (#1403 review): ``mark_reveal_reconcile_terminal``
+        # closes the index directly, independent of whether that record's own
+        # JSON blob save (below, in ``_reconcile_terminal``) succeeded. A
+        # candidate's blob can therefore still read "pending" here even
+        # though it was already durably closed on an earlier tick — trust
+        # the index over the blob, or the compound-failure breaker's verdict
+        # would never actually stop the retries it computes.
+        try:
+            terminal_hashes = await self.state.list_reveal_reconcile_terminal_hashes()
+        except Exception as e:
+            logger.error("[tick %s] Reveal reconciliation terminal-index read FAILED: %s", tick_id, e)
+            terminal_hashes = set()
+
         candidates = _merge_dangling_candidates(indexed or [], records or [])
+        if terminal_hashes:
+            candidates = [c for c in candidates if c.get("trace_hash") not in terminal_hashes]
         dangling = [r for r in candidates if _needs_reveal_reconciliation(r)]
         if not dangling:
             return
@@ -1899,24 +1919,30 @@ class StrategyRunner:
             return
 
         # ── Permanently unrevealable #3: the signer that committed is no
-        # longer the backend's configured signer (#1353) ──
+        # longer the backend's confirmed signer (#1353, hardened by #1403
+        # review) ──
         #
         # reveal() requires msg.sender == committer. After a key rotation the
         # OLD retry loop burned all REVEAL_RECONCILE_MAX_ATTEMPTS on "Not
         # committer" reverts before going terminal — wasted gas on a result
         # that can never change. Checking it here is a cheap, zero-attempt
         # short-circuit straight to terminal instead. Skipped (falls through
-        # to the normal path) when the configured signer can't be determined
-        # (``backend_signer_address`` returns None) or the commitment carries
-        # no committer — never guess, only reject a confirmed mismatch.
-        configured_addr = chain_executor.backend_signer_address()
+        # to the normal path) when the signer can't be CONFIRMED
+        # (``backend_signer_address_confirmed`` returns None — always true on
+        # the Circle path, where the only address available, WALLET_ADDRESS,
+        # is a hand-maintained mirror of the real signer rather than a
+        # cryptographic derivation of it, see executor.py) or the commitment
+        # carries no committer — never guess, only reject a CONFIRMED
+        # mismatch, because terminal here is irreversible and a false
+        # positive would permanently kill a perfectly recoverable reveal.
+        configured_addr = chain_executor.backend_signer_address_confirmed()
         committer = commitment.get("committer")
         if configured_addr and committer and str(committer).lower() != str(configured_addr).lower():
             await self._reconcile_terminal(
                 record,
                 tick_id,
                 f"signer mismatch: reveal() requires msg.sender == committer ({committer}), but the "
-                f"configured agent signer is {configured_addr} (key rotation since commit) — every "
+                f"confirmed agent signer is {configured_addr} (key rotation since commit) — every "
                 "future attempt would revert 'Not committer'",
             )
             return
@@ -2111,11 +2137,34 @@ class StrategyRunner:
         exactly as it was, honestly unverified, and becomes countable/alertable
         via ``reveal_reconcile_state == "terminal"`` — which is also what stops
         ``_needs_reveal_reconciliation`` from ever picking it up again.
+
+        The durable index close (#1403 review) runs FIRST and independently
+        of the trace blob save below: ``mark_reveal_reconcile_terminal`` is
+        three small ops (SADD/SREM/HDEL) on their own keys, not gated on the
+        (larger) trace JSON's own ``SET`` succeeding. Without this, a broken
+        write path specifically on the blob would recompute "should be
+        terminal" correctly every tick without it ever sticking in Redis —
+        so the record would still read "pending" on the next scan and the
+        actual guarded ``reveal()`` call would keep firing, unbounded, exactly
+        the compound failure the max-age breaker exists to close.
         """
         record["reveal_reconcile_state"] = _RECONCILE_TERMINAL
         record["reveal_reconcile_terminal_reason"] = reason
         record["reveal_reconcile_terminal_at"] = datetime.now(UTC).isoformat()
         record.setdefault("reveal_reconcile_attempts", 0)
+
+        trace_hash = record.get("trace_hash")
+        if trace_hash:
+            try:
+                await self.state.mark_reveal_reconcile_terminal(trace_hash)
+            except Exception as e:
+                logger.error(
+                    "[tick %s] Durable terminal-index write FAILED for trace %s: %s — the trace "
+                    "blob save below is the only remaining chance this transition sticks this tick",
+                    tick_id,
+                    record.get("id"),
+                    e,
+                )
 
         logger.error(
             "[tick %s] REVEAL RECONCILIATION TERMINAL — trace %s (hash %s, vault %s, commit %s) "

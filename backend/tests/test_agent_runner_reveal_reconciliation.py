@@ -70,6 +70,11 @@ def runner_env():
         # unaffected; individual tests override to exercise the new paths.
         runner.state.list_dangling_reveal_traces = AsyncMock(return_value=[])
         runner.state.get_reveal_reconcile_first_seen = AsyncMock(return_value=None)
+        # Durable-terminal writes/reads (#1403 review) — default to "closes
+        # cleanly, nothing already terminal" so pre-existing tests are
+        # unaffected; individual tests override to exercise the new paths.
+        runner.state.mark_reveal_reconcile_terminal = AsyncMock()
+        runner.state.list_reveal_reconcile_terminal_hashes = AsyncMock(return_value=set())
         mock_tp.supports_commit_reveal = MagicMock(return_value=True)
         mock_tp.get_commitment = AsyncMock(return_value=None)
         mock_tp.find_reveal_tx = AsyncMock(return_value=None)
@@ -77,7 +82,7 @@ def runner_env():
         # Signer pre-check (#1353) default: "can't be determined" — the check
         # is skipped rather than guessed, matching every existing test's
         # commitment fixtures (none carry a "committer" key).
-        mock_executor.backend_signer_address = MagicMock(return_value=None)
+        mock_executor.backend_signer_address_confirmed = MagicMock(return_value=None)
         yield runner, mock_tp
 
 
@@ -605,7 +610,9 @@ class TestSignerPreCheck:
         mock_tp.reveal = AsyncMock(return_value=("0xSHOULDNOTHAPPEN", 999))
 
         with patch("archimedes.chain.agent_runner.chain_executor") as mock_executor:
-            mock_executor.backend_signer_address = MagicMock(return_value="0xNEWKEY000000000000000000000000000000000")
+            mock_executor.backend_signer_address_confirmed = MagicMock(
+                return_value="0xNEWKEY000000000000000000000000000000000"
+            )
             _run_pass(runner, [record])
 
         mock_tp.reveal.assert_not_awaited()  # zero gas burned on a doomed revert
@@ -634,7 +641,9 @@ class TestSignerPreCheck:
         mock_tp.reveal = AsyncMock(return_value=("0xRETRYREVEAL", 150))
 
         with patch("archimedes.chain.agent_runner.chain_executor") as mock_executor:
-            mock_executor.backend_signer_address = MagicMock(return_value="0xaaaabbbbccccddddeeeeffff000000000000aaaa")
+            mock_executor.backend_signer_address_confirmed = MagicMock(
+                return_value="0xaaaabbbbccccddddeeeeffff000000000000aaaa"
+            )
             _run_pass(runner, [record])
 
         mock_tp.reveal.assert_awaited_once()
@@ -642,9 +651,9 @@ class TestSignerPreCheck:
         assert saved["reveal_reconcile_state"] == "reconciled"
 
     def test_undeterminable_signer_skips_the_check_rather_than_guessing(self, runner_env):
-        """backend_signer_address() returning None (Circle configured,
-        WALLET_ADDRESS unset) must fall through to the normal path — never
-        terminal on a guess."""
+        """backend_signer_address_confirmed() returning None (Circle path, or
+        raw-key path with no account configured) must fall through to the
+        normal path — never terminal on a guess."""
         runner, mock_tp = runner_env
         record = _dangling_record(runner, mock_tp)
         mock_tp.get_commitment = AsyncMock(
@@ -659,10 +668,47 @@ class TestSignerPreCheck:
         mock_tp.reveal = AsyncMock(return_value=("0xRETRYREVEAL", 150))
 
         with patch("archimedes.chain.agent_runner.chain_executor") as mock_executor:
-            mock_executor.backend_signer_address = MagicMock(return_value=None)
+            mock_executor.backend_signer_address_confirmed = MagicMock(return_value=None)
             _run_pass(runner, [record])
 
         mock_tp.reveal.assert_awaited_once()
+        saved = _saved(runner)
+        assert saved["reveal_reconcile_state"] == "reconciled"
+
+    def test_circle_path_never_terminals_on_a_stale_operator_mirror(self, runner_env):
+        """PR #1403 review finding: on the Circle path the only address
+        available is WALLET_ADDRESS, an operator-maintained env var kept in
+        sync BY HAND with the wallet's true EVM address — signing itself is
+        keyed on the separate WALLET_ID (circle_signer.py), so WALLET_ADDRESS
+        can drift stale while the real signer is unchanged. Before the fix,
+        ``chain_executor.backend_signer_address()`` returned that mirror
+        directly and a stale value would read as a confirmed key rotation,
+        permanently terminaling a perfectly recoverable dangling reveal with
+        zero attempts and zero diagnostics. ``backend_signer_address_confirmed``
+        must return None on the Circle path — unconditionally, regardless of
+        what WALLET_ADDRESS says — so this always falls through to the normal
+        (reversible) retry path instead."""
+        runner, mock_tp = runner_env
+        record = _dangling_record(runner, mock_tp)
+        # The REAL committer that actually signed via WALLET_ID.
+        mock_tp.get_commitment = AsyncMock(
+            return_value={
+                "revealed": False,
+                "reveal_block": None,
+                "claimed_execution_time": 0,
+                "storage_pointer": "",
+                "committer": "0xREALSIGNER00000000000000000000000000000",
+            }
+        )
+        mock_tp.reveal = AsyncMock(return_value=("0xRETRYREVEAL", 150))
+
+        with patch("archimedes.chain.agent_runner.chain_executor") as mock_executor:
+            # backend_signer_address_confirmed() is None on the Circle path —
+            # even though a (stale) WALLET_ADDRESS mirror would disagree.
+            mock_executor.backend_signer_address_confirmed = MagicMock(return_value=None)
+            _run_pass(runner, [record])
+
+        mock_tp.reveal.assert_awaited_once()  # the retry actually ran — not short-circuited
         saved = _saved(runner)
         assert saved["reveal_reconcile_state"] == "reconciled"
 
@@ -677,7 +723,9 @@ class TestSignerPreCheck:
         mock_tp.reveal = AsyncMock(return_value=("0xRETRYREVEAL", 150))
 
         with patch("archimedes.chain.agent_runner.chain_executor") as mock_executor:
-            mock_executor.backend_signer_address = MagicMock(return_value="0xANYADDRESS0000000000000000000000000000")
+            mock_executor.backend_signer_address_confirmed = MagicMock(
+                return_value="0xANYADDRESS0000000000000000000000000000"
+            )
             _run_pass(runner, [record])
 
         mock_tp.reveal.assert_awaited_once()
@@ -827,3 +875,83 @@ class TestMaxAgeCompoundFailureGuard:
         saved = _saved(runner)
         assert saved["reveal_reconcile_state"] == "pending"  # normal attempt-cap path still worked
         assert saved["reveal_reconcile_attempts"] == 1
+
+
+# ── terminal survives a broken blob write (#1403 review) ──────
+
+
+class TestTerminalIndexSurvivesABrokenBlobWrite:
+    """PR #1403 review finding: the max-age breaker's own doc claims it closes
+    a compound failure of 'broken Redis writes AND a broken reveal' — but
+    ``_reconcile_terminal`` only ever wrote the terminal STATE inside the
+    trace's JSON blob via ``save_trace``. If THAT specific write kept
+    failing, the terminal verdict was recomputed correctly every tick but
+    never stuck in Redis, so the next tick's scan still saw "pending" and
+    retried the actual on-chain ``reveal()`` call unbounded — identical to
+    having no breaker at all. ``mark_reveal_reconcile_terminal`` closes the
+    durable index with its own small, independent writes so the verdict
+    survives even when the blob save keeps failing."""
+
+    def test_terminal_index_write_survives_a_broken_blob_save_and_stops_the_next_ticks_retry(
+        self, runner_env, monkeypatch
+    ):
+        runner, mock_tp = runner_env
+        monkeypatch.setattr("archimedes.chain.agent_runner.REVEAL_RECONCILE_MAX_ATTEMPTS", 1000)
+        monkeypatch.setattr("archimedes.chain.agent_runner.REVEAL_RECONCILE_MAX_AGE_SECONDS", 3600)
+        record = _dangling_record(runner, mock_tp)
+        trace_hash = record["trace_hash"]
+        # What Redis actually holds throughout: the blob save below never
+        # lands, so this stays "pending" forever — captured BEFORE the pass
+        # mutates `record` in place.
+        stale_snapshot = dict(record)
+        stale = datetime.now(UTC) - timedelta(hours=2)
+        runner.state.get_reveal_reconcile_first_seen = AsyncMock(return_value=stale)
+        mock_tp.get_commitment = AsyncMock(
+            return_value={"revealed": False, "reveal_block": None, "claimed_execution_time": 0, "storage_pointer": ""}
+        )
+        mock_tp.reveal = AsyncMock(side_effect=RuntimeError("still broken"))
+        # The broken write path: the blob save fails EVERY time, every tick.
+        runner.state.save_trace = AsyncMock(side_effect=RuntimeError("redis SET broken"))
+
+        _run_pass(runner, [record])  # tick N — age guard fires, goes terminal
+
+        # The durable index write ran, and succeeded, DESPITE the blob save
+        # failing right after it in the same call.
+        runner.state.mark_reveal_reconcile_terminal.assert_awaited_once_with(trace_hash)
+        runner.state.save_trace.assert_awaited_once()  # attempted — and it did fail (swallowed, not fatal)
+        assert record["reveal_reconcile_state"] == "terminal"  # computed correctly in memory
+
+        # Tick N+1: Redis hands back the SAME stale ("pending") blob via both
+        # the index and the scan backstop — save_trace never landed it — but
+        # the durable terminal set (populated by mark_reveal_reconcile_terminal
+        # above, independent of that failure) now has this trace_hash.
+        mock_tp.reveal.reset_mock()
+        runner.state.list_dangling_reveal_traces = AsyncMock(return_value=[])
+        runner.state.list_recent_traces = AsyncMock(return_value=[stale_snapshot])
+        runner.state.list_reveal_reconcile_terminal_hashes = AsyncMock(return_value={trace_hash})
+
+        asyncio.run(runner._reconcile_dangling_reveals("t-recon-2"))
+
+        # The compound failure no longer retries unbounded: the durable
+        # terminal cross-check filtered the stale-blob candidate out before
+        # reveal() could ever be attempted again.
+        mock_tp.reveal.assert_not_awaited()
+
+    def test_terminal_index_write_failure_is_loud_and_does_not_block_the_blob_save_attempt(self, runner_env, caplog):
+        """GUARD-DOESN'T-BLOCK demo: if the durable-index write itself fails
+        (e.g. that specific Redis op errors), the code must still attempt the
+        blob save — one broken write must not additionally suppress the
+        other, independent write."""
+        runner, mock_tp = runner_env
+        record = _dangling_record(runner, mock_tp)
+        runner.state.mark_reveal_reconcile_terminal = AsyncMock(side_effect=RuntimeError("sadd broken"))
+        mock_tp.get_commitment = AsyncMock(return_value=None)  # onchain unreadable → terminal path unrelated
+        # Force straight to terminal via the "no on-chain commitment id" path.
+        record["onchain_trace_id"] = 0
+
+        with caplog.at_level("ERROR"):
+            _run_pass(runner, [record])
+
+        assert "Durable terminal-index write FAILED" in caplog.text
+        saved = _saved(runner)
+        assert saved["reveal_reconcile_state"] == "terminal"  # blob save still ran and captured it

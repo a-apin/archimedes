@@ -483,6 +483,23 @@ class TestRevealReconcileIndex:
         assert [t["id"] for t in traces] == ["d3"]
 
     @pytest.mark.asyncio
+    async def test_list_dangling_reveal_traces_prunes_orphaned_index_members(self) -> None:
+        """#1403 review: a member whose blob is GONE (h1) must be removed
+        from the pending set and its first-seen field cleared — otherwise the
+        SCARD-backed pending gauge leaks upward forever with no path back to
+        zero. A malformed-but-PRESENT blob (h2) is left alone — that's a
+        content problem, not proof the index member is stale."""
+        store, fake = await _store_with_fake_redis()
+        fake.smembers.return_value = ["h1", "h2", "h3"]
+        fake.get = AsyncMock(side_effect=[None, "{not json", json.dumps({"id": "d3"})])
+
+        traces = await store.list_dangling_reveal_traces()
+
+        assert [t["id"] for t in traces] == ["d3"]
+        fake.srem.assert_awaited_once_with(KEY_TRACE_RECONCILE_PENDING, "h1")
+        fake.hdel.assert_awaited_once_with(KEY_TRACE_RECONCILE_FIRST_SEEN, "h1")
+
+    @pytest.mark.asyncio
     async def test_get_reveal_reconcile_pending_count_is_scard(self) -> None:
         store, fake = await _store_with_fake_redis()
         fake.scard.return_value = 3
