@@ -80,7 +80,8 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`specs/architecture-page-design.md`](specs/architecture-page-design.md) | implemented | Dan Browne | 2026-07-28 | Design for the Architecture page, **implemented in PR #1192**. Should leave `specs/` for `architecture/` or `archive/` once #1192 merges, per `CONVENTIONS.md` § 1. |
 | [`diagrams/strategy-passport-architecture.md`](diagrams/strategy-passport-architecture.md) | reference | Dan Browne | — | Passport architecture diagram + reference. |
 | [`bedrock-model-cost-comparison.md`](bedrock-model-cost-comparison.md) | reference | Dan Browne | — | Bedrock model costs, us-east-1 on-demand. LLM is `bedrock_converse` / `amazon.nova-micro-v1:0`. |
-| [`cost-estimates/generate-llm-costs.md`](cost-estimates/generate-llm-costs.md) | reference | Dan Browne | — | Per-generation LLM cost estimate. |
+| [`cost-estimates/generate-llm-costs.md`](cost-estimates/generate-llm-costs.md) | superseded (kept for history) | Dan Browne | — | Pre-cutover per-generation LLM cost estimate (`portfolio_agent`/Sonnet-class pricing) — replaced by the debate society (2026-07-14); see `cost/2026-08-20-scale-projection.md`. |
+| [`cost/2026-08-20-scale-projection.md`](cost/2026-08-20-scale-projection.md) | estimate | Dan Browne | 2026-08-20 | 10/100/1,000-user cost + performance projection ahead of MVP launch: flat-vs-linear cost breakdown, saturation-order watchlist, day-1 checklist. |
 
 ## On-chain and Arc
 
