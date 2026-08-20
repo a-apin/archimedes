@@ -85,12 +85,18 @@ class TestMetricsToSummary:
         summary = VaultService()._metrics_to_summary(_metrics())
         assert summary.created_at == ""
 
-    def test_returns_default_to_zero(self) -> None:
+    def test_returns_are_unavailable_not_fabricated(self) -> None:
+        """#1103: the listing surface never computes a per-vault oracle-baseline
+        return (that requires target allocations + oracle reads per token — an
+        N+1 cost only the detail endpoint pays), so summary returns must be
+        honestly None/"unavailable" — NOT a hardcoded 0.0, which is itself an
+        unearned "this vault is flat" claim."""
         summary = VaultService()._metrics_to_summary(_metrics())
-        assert summary.return_24h == 0.0
-        assert summary.return_7d == 0.0
-        assert summary.return_30d == 0.0
-        assert summary.return_inception == 0.0
+        assert summary.return_24h is None
+        assert summary.return_7d is None
+        assert summary.return_30d is None
+        assert summary.return_inception is None
+        assert summary.returns_source == "unavailable"
 
 
 class TestListVaults:
@@ -262,38 +268,77 @@ class TestListVaults:
 
 
 class TestComputeReturnsFallback:
+    """#1103: every "can't honestly compute this" branch must be None/"unavailable",
+    NEVER a synthesized number. These tests used to assert the FABRICATED
+    behaviour (a hardcoded 0.0 shape, and — in test_known_symbol_uses_expected_return_table
+    — a return derived from the ASSET_EXPECTED_RETURN table + MD5 noise). Both
+    were the bug issue #1103 named; they're rewritten here to guard the fix."""
+
     @pytest.mark.asyncio
-    async def test_empty_allocations_yield_zero_returns(self) -> None:
-        # When Redis is unreachable AND allocations is empty → all zeros
+    async def test_empty_allocations_yield_unavailable(self) -> None:
+        # No allocations at all → unavailable, no Redis round-trip needed.
         svc = VaultService()
         result = await svc._compute_returns("0xV", [])
         assert result == {
-            "return_24h": 0.0,
-            "return_7d": 0.0,
-            "return_30d": 0.0,
-            "return_inception": 0.0,
+            "return_24h": None,
+            "return_7d": None,
+            "return_30d": None,
+            "return_inception": None,
+            "returns_source": "unavailable",
         }
 
     @pytest.mark.asyncio
-    async def test_zero_weight_allocation_treated_as_empty(self) -> None:
+    async def test_zero_weight_allocation_yields_unavailable(self) -> None:
         svc = VaultService()
         alloc = VaultHolding(symbol="sTSLA", token_address="0xT", amount=0.0, value_usdc=0.0, weight_pct=0.0)
         result = await svc._compute_returns("0xV", [alloc])
-        # All zeros: total_weight == 0 falls through to the empty-allocation shape
-        assert result["return_24h"] == 0.0
-        assert result["return_30d"] == 0.0
+        assert result["return_24h"] is None
+        assert result["return_30d"] is None
+        assert result["returns_source"] == "unavailable"
 
     @pytest.mark.asyncio
-    async def test_known_symbol_uses_expected_return_table(self) -> None:
-        # sSPY → 10% annual per ASSET_EXPECTED_RETURN. Verify the period
-        # decomposition is finite and structured.
-        svc = VaultService()
+    async def test_no_baseline_in_redis_yields_unavailable_never_a_number(self) -> None:
+        """THE regression guard for #1103: no ``vault:prices:{addr}`` key in
+        Redis (the exact condition PR #1152 left unfixed — nothing writes that
+        key from the reader's perspective in this scenario) + non-empty
+        allocations used to fall through to the ASSET_EXPECTED_RETURN +
+        MD5-noise fabrication. It must now be honestly unavailable — assert NO
+        return field is a number."""
         alloc = VaultHolding(symbol="sSPY", token_address="0xS", amount=0.0, value_usdc=0.0, weight_pct=100.0)
-        result = await svc._compute_returns("0xVaultZ", [alloc])
-        assert "return_24h" in result
-        assert "return_30d" in result
-        # Sanity: 30-day return should be larger in magnitude than 24h
-        assert abs(result["return_30d"]) >= abs(result["return_24h"])
+
+        fake_redis = MagicMock()
+        fake_redis.ping = AsyncMock(return_value=True)
+        fake_redis.get = AsyncMock(return_value=None)  # no baseline snapshot
+        fake_redis.aclose = AsyncMock()
+
+        svc = VaultService()
+        with patch("redis.asyncio.from_url", return_value=fake_redis):
+            result = await svc._compute_returns("0xVaultZ", [alloc])
+
+        assert result["return_24h"] is None
+        assert result["return_7d"] is None
+        assert result["return_30d"] is None
+        assert result["return_inception"] is None
+        assert result["returns_source"] == "unavailable"
+        for key in ("return_24h", "return_7d", "return_30d", "return_inception"):
+            assert not isinstance(result[key], int | float)
+
+    @pytest.mark.asyncio
+    async def test_redis_unreachable_yields_unavailable_and_does_not_raise(self) -> None:
+        """Redis entirely down (connection refused, timeout, etc.) must degrade
+        to "unavailable", never raise and never fabricate."""
+        alloc = VaultHolding(symbol="sSPY", token_address="0xS", amount=0.0, value_usdc=0.0, weight_pct=100.0)
+
+        fake_redis = MagicMock()
+        fake_redis.ping = AsyncMock(side_effect=ConnectionError("redis down"))
+        fake_redis.aclose = AsyncMock()
+
+        svc = VaultService()
+        with patch("redis.asyncio.from_url", return_value=fake_redis):
+            result = await svc._compute_returns("0xVaultZ", [alloc])  # must not raise
+
+        assert result["returns_source"] == "unavailable"
+        assert all(result[k] is None for k in ("return_24h", "return_7d", "return_30d", "return_inception"))
 
 
 class TestComputeReturnsAsyncRedis:
@@ -303,10 +348,11 @@ class TestComputeReturnsAsyncRedis:
         client and await ping/get so it never blocks the event loop. We mock
         redis.asyncio.from_url (the REDIS_URL-based connection convention used
         everywhere else in the codebase — see services/redis_state.py) with a
-        valid snapshot plus a mocked oracle; the returns must come from the
-        Redis price path (not the deterministic fallback), which only happens
-        if the awaits land. A revert to the sync redis.Redis would miss this
-        patch and fall through to the fallback."""
+        valid per-vault BASELINE snapshot (token address → price, #1103) plus a
+        mocked oracle for the CURRENT price; the returns must come from the real
+        Redis baseline comparison (returns_source == "oracle_baseline"), which
+        only happens if the awaits land. A revert to the sync redis.Redis would
+        miss this patch and fall through to "unavailable"."""
         import json
 
         alloc = VaultHolding(symbol="sSPY", token_address="0xT", amount=1.0, value_usdc=1.0, weight_pct=100.0)
@@ -316,7 +362,7 @@ class TestComputeReturnsAsyncRedis:
         fake_redis.get = AsyncMock(return_value=json.dumps({"0xT": 1.0}))
         fake_redis.aclose = AsyncMock()
 
-        # Oracle reports $2.0 (raw 2_000_000 / 1e6) → +100% vs the $1.0 creation
+        # Oracle reports $2.0 (raw 2_000_000 / 1e6) → +100% vs the $1.0 baseline
         # price stored in the snapshot.
         oracle = MagicMock()
         oracle.functions.price.return_value.call = AsyncMock(return_value=2_000_000)
@@ -333,9 +379,164 @@ class TestComputeReturnsAsyncRedis:
         fake_redis.ping.assert_awaited_once()
         fake_redis.get.assert_awaited_once()
         fake_redis.aclose.assert_awaited_once()
-        # 100% weighted return → return_30d == 1.0, return_24h == 1.0 * 0.033.
-        assert result["return_30d"] == pytest.approx(1.0)
-        assert result["return_24h"] == pytest.approx(0.033)
+        assert result["returns_source"] == "oracle_baseline"
+        # 100% weighted return → return_inception == 1.0. The period fields are
+        # None BY DESIGN (#1201 review): one baseline supports exactly one
+        # honest number — since-inception; the old "assume uniform" 0.033/0.233
+        # scaling synthesized period returns no data supports.
+        assert result["return_inception"] == pytest.approx(1.0)
+        assert result["return_24h"] is None
+        assert result["return_7d"] is None
+        assert result["return_30d"] is None
+
+    @pytest.mark.asyncio
+    async def test_baseline_present_computes_correct_arithmetic(self) -> None:
+        """A non-trivial baseline/current pair, computed by hand: baseline
+        $10.0, current $12.5 → +25% asset return, weighted by 100% allocation
+        → weighted_return == 0.25."""
+        import json
+
+        alloc = VaultHolding(symbol="sBTC", token_address="0xB", amount=1.0, value_usdc=1.0, weight_pct=100.0)
+
+        fake_redis = MagicMock()
+        fake_redis.ping = AsyncMock(return_value=True)
+        fake_redis.get = AsyncMock(return_value=json.dumps({"0xB": 10.0}))
+        fake_redis.aclose = AsyncMock()
+
+        oracle = MagicMock()
+        oracle.functions.price.return_value.call = AsyncMock(return_value=12_500_000)  # $12.5
+        loader = MagicMock()
+        loader.oracle_for.return_value = oracle
+
+        svc = VaultService()
+        with (
+            patch("redis.asyncio.from_url", return_value=fake_redis),
+            patch("archimedes.chain.contracts.get_contract_loader", return_value=loader),
+        ):
+            result = await svc._compute_returns("0xVault", [alloc])
+
+        assert result["returns_source"] == "oracle_baseline"
+        assert result["return_inception"] == pytest.approx(0.25)
+        # Period fields are honestly None — see the docstring note on the
+        # async-redis test above (#1201 review).
+        assert result["return_24h"] is None
+        assert result["return_7d"] is None
+        assert result["return_30d"] is None
+
+
+class TestBaselineHonesty:
+    """#1201 review threads: casing agreement + no partial sums, adversarially.
+
+    Each test here was run against the PRE-fix reader to confirm it FAILED
+    (mixed-case → unavailable; partial baseline → \"oracle_baseline\" with an
+    underweighted number) before the fix made it pass — the guards guard.
+    """
+
+    @pytest.mark.asyncio
+    async def test_checksummed_addresses_still_find_the_baseline(self) -> None:
+        """Writer-side keys are normalized lowercase; a CHECKSUMMED vault and
+        token address on the reader side must still resolve the same snapshot
+        and token entry — casing can never fabricate 'unavailable'."""
+        import json
+
+        alloc = VaultHolding(
+            symbol="sBTC",
+            token_address="0xAbCdEF0000000000000000000000000000000042",
+            amount=1.0,
+            value_usdc=1.0,
+            weight_pct=100.0,
+        )
+
+        fake_redis = MagicMock()
+        fake_redis.ping = AsyncMock(return_value=True)
+        # Snapshot as the fixed writer stores it: lowercase token keys.
+        fake_redis.get = AsyncMock(return_value=json.dumps({"0xabcdef0000000000000000000000000000000042": 10.0}))
+        fake_redis.aclose = AsyncMock()
+
+        oracle = MagicMock()
+        oracle.functions.price.return_value.call = AsyncMock(return_value=12_500_000)
+        loader = MagicMock()
+        loader.oracle_for.return_value = oracle
+
+        svc = VaultService()
+        with (
+            patch("redis.asyncio.from_url", return_value=fake_redis),
+            patch("archimedes.chain.contracts.get_contract_loader", return_value=loader),
+        ):
+            result = await svc._compute_returns("0xVaultChecksummedCASE", [alloc])
+
+        # The reader must have asked Redis for the NORMALIZED key.
+        from archimedes.services.price_baseline import baseline_key
+
+        fake_redis.get.assert_awaited_once_with(baseline_key("0xVaultChecksummedCASE"))
+        assert result["returns_source"] == "oracle_baseline"
+        assert result["return_inception"] == pytest.approx(0.25)
+
+    @pytest.mark.asyncio
+    async def test_one_allocated_token_without_baseline_makes_the_whole_vault_unavailable(self) -> None:
+        """A 50/50 vault whose second token has no baseline entry must NOT
+        return a half-weighted number labeled 'oracle_baseline' (the silent
+        partial sum pretends the missing token returned 0%). Unavailable,
+        honestly."""
+        import json
+
+        allocs = [
+            VaultHolding(symbol="sBTC", token_address="0xb1", amount=1.0, value_usdc=1.0, weight_pct=50.0),
+            VaultHolding(symbol="sSPY", token_address="0xb2", amount=1.0, value_usdc=1.0, weight_pct=50.0),
+        ]
+
+        fake_redis = MagicMock()
+        fake_redis.ping = AsyncMock(return_value=True)
+        fake_redis.get = AsyncMock(return_value=json.dumps({"0xb1": 10.0}))  # no 0xb2
+        fake_redis.aclose = AsyncMock()
+
+        oracle = MagicMock()
+        oracle.functions.price.return_value.call = AsyncMock(return_value=12_500_000)
+        loader = MagicMock()
+        loader.oracle_for.return_value = oracle
+
+        svc = VaultService()
+        with (
+            patch("redis.asyncio.from_url", return_value=fake_redis),
+            patch("archimedes.chain.contracts.get_contract_loader", return_value=loader),
+        ):
+            result = await svc._compute_returns("0xVault", allocs)
+
+        assert result["returns_source"] == "unavailable"
+        assert all(result[k] is None for k in ("return_24h", "return_7d", "return_30d", "return_inception"))
+
+    @pytest.mark.asyncio
+    async def test_current_price_read_failure_makes_the_whole_vault_unavailable(self) -> None:
+        """Same law for the CURRENT-price side: an oracle revert for one
+        allocated token means the number is unknowable — never a partial sum."""
+        import json
+
+        allocs = [
+            VaultHolding(symbol="sBTC", token_address="0xb1", amount=1.0, value_usdc=1.0, weight_pct=50.0),
+            VaultHolding(symbol="sSPY", token_address="0xb2", amount=1.0, value_usdc=1.0, weight_pct=50.0),
+        ]
+
+        fake_redis = MagicMock()
+        fake_redis.ping = AsyncMock(return_value=True)
+        fake_redis.get = AsyncMock(return_value=json.dumps({"0xb1": 10.0, "0xb2": 10.0}))
+        fake_redis.aclose = AsyncMock()
+
+        good_oracle = MagicMock()
+        good_oracle.functions.price.return_value.call = AsyncMock(return_value=12_500_000)
+        bad_oracle = MagicMock()
+        bad_oracle.functions.price.return_value.call = AsyncMock(side_effect=RuntimeError("revert"))
+        loader = MagicMock()
+        loader.oracle_for.side_effect = lambda sym: good_oracle if sym == "sBTC" else bad_oracle
+
+        svc = VaultService()
+        with (
+            patch("redis.asyncio.from_url", return_value=fake_redis),
+            patch("archimedes.chain.contracts.get_contract_loader", return_value=loader),
+        ):
+            result = await svc._compute_returns("0xVault", allocs)
+
+        assert result["returns_source"] == "unavailable"
+        assert all(result[k] is None for k in ("return_24h", "return_7d", "return_30d", "return_inception"))
 
 
 class TestRecentTracesSwallowFailures:

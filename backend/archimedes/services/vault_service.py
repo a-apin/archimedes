@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import logging
 from datetime import UTC, datetime
-from typing import ClassVar
 
 from archimedes.api.schemas import (
     TraceResponse,
@@ -69,20 +67,6 @@ def _fee_refusal(metrics: dict) -> tuple[int, str] | None:
 
 class VaultService:
     """Serves vault data to the API layer."""
-
-    # Expected monthly returns by asset class (annualized, used for sim).
-    # ClassVar marks this as a shared lookup table (one per class), not a
-    # mutable per-instance default — the values are constants, never mutated.
-    ASSET_EXPECTED_RETURN: ClassVar[dict[str, float]] = {
-        "sTSLA": 0.15,  # 15% annual
-        "sNVDA": 0.20,  # 20% annual
-        "sSPY": 0.10,  # 10% annual
-        "sBTC": 0.30,  # 30% annual (high vol)
-        "sGOLD": 0.05,  #  5% annual
-        "sOIL": 0.03,  #  3% annual
-        "sNKY": 0.08,  #  8% annual
-        "USDC": 0.04,  #  4% annual (yield)
-    }
 
     _vault_list_cache: VaultListResponse | None = None
     _vault_list_cache_ts: float = 0
@@ -250,6 +234,7 @@ class VaultService:
                 return_7d=returns["return_7d"],
                 return_30d=returns["return_30d"],
                 return_inception=returns["return_inception"],
+                returns_source=returns["returns_source"],
                 recent_traces=recent_traces,
                 strategy_ids=strategy_ids,
                 current_regime=current_regime,
@@ -290,10 +275,17 @@ class VaultService:
             creator=creator,
             aum_usdc=metrics["total_aum_usdc"],
             share_price=metrics["share_price_usdc"],
-            return_24h=0.0,
-            return_7d=0.0,
-            return_30d=0.0,
-            return_inception=0.0,
+            # The listing surface doesn't do a per-vault oracle-baseline
+            # comparison (that needs target allocations + an oracle read per
+            # token — get_vault_detail's job, not an N-vault list endpoint's).
+            # A hardcoded 0.0 here would itself be a fabricated claim ("this
+            # vault is flat"), so the summary row is honestly "unavailable"
+            # too (#1103) — never a number the list endpoint didn't compute.
+            return_24h=None,
+            return_7d=None,
+            return_30d=None,
+            return_inception=None,
+            returns_source="unavailable",
             management_fee_pct=metrics["management_fee_bps"] / 100,
             performance_fee_pct=metrics["performance_fee_bps"] / 100,
             is_agent_assisted=metrics["is_agent_assisted"],
@@ -302,22 +294,46 @@ class VaultService:
         )
 
     async def _compute_returns(self, vault_address: str, allocations: list[VaultHolding]) -> dict:
-        """Compute vault returns from oracle price snapshots in Redis.
+        """Compute vault returns from the oracle price baseline snapshot in Redis.
 
-        Uses the vault's target allocations and the ASSET_EXPECTED_RETURN table
-        to compute a weighted return. If price snapshots exist in Redis (set by
-        the oracle updater), uses real price changes instead.
+        Reads the per-vault baseline ``ChainExecutor._write_price_baseline_if_absent``
+        writes at ``vault:prices:{vault_address}`` (JSON: token address → price,
+        human-scale float — the same units the current-price read below produces)
+        and compares it against CURRENT oracle prices for the vault's target
+        allocations.
+
+        #1103 — this must NEVER synthesize a number when no real baseline exists.
+        A prior version of this function fell back to an ASSET_EXPECTED_RETURN
+        lookup table plus deterministic MD5-of-address noise dressed up as a
+        computed return; that fabrication is exactly what issue #1103 named
+        ("displayed vault returns are always fabricated"), and PR #1152 claimed
+        to fix it without actually wiring a writer the reader here reads. Every
+        "can't honestly compute this" branch below returns the SAME
+        ``returns_source: "unavailable"`` shape — no numbers, ever — mirroring
+        the tri-state provenance pattern ``RigorGateVerdict`` uses for the rigor
+        gate (``live_rigor_gate.py``: ``source == "live_gate" | "pending"``).
         """
+        unavailable = {
+            "return_24h": None,
+            "return_7d": None,
+            "return_30d": None,
+            "return_inception": None,
+            "returns_source": "unavailable",
+        }
+
+        if not allocations:
+            return unavailable
+
         import os
 
         import redis.asyncio as _aioredis
 
         logger = logging.getLogger(__name__)
 
-        # Try Redis-based real returns first. This runs inside an async request
-        # handler, so the client MUST be the asyncio one and every call awaited
-        # — a blocking sync client here freezes the whole uvicorn event loop
-        # (every concurrent request on the worker stalls) if Redis is slow.
+        # This runs inside an async request handler, so the client MUST be the
+        # asyncio one and every call awaited — a blocking sync client here
+        # freezes the whole uvicorn event loop (every concurrent request on the
+        # worker stalls) if Redis is slow.
         r = None
         try:
             redis_url = (
@@ -330,90 +346,78 @@ class VaultService:
             )
             await r.ping()
 
-            # Check if we have a price snapshot for this vault
-            snapshot_key = f"vault:prices:{vault_address}"
-            snapshot = await r.get(snapshot_key)
+            from archimedes.services.price_baseline import baseline_key, normalize_token
 
-            if snapshot:
-                prices_at_creation = json.loads(snapshot)
-                # Get current oracle prices
-                from archimedes.chain.contracts import get_contract_loader
+            snapshot = await r.get(baseline_key(vault_address))
+            if not snapshot:
+                return unavailable
 
-                loader = get_contract_loader()
+            # Normalize the loaded token keys too — same helper the writer uses,
+            # so mixed-case addresses can never make a priced token look
+            # baseline-less (#1201 review).
+            prices_at_baseline = {normalize_token(k): v for k, v in json.loads(snapshot).items()}
 
-                weighted_return = 0.0
-                total_weight = 0
-                for alloc in allocations:
-                    token = alloc.token_address
-                    weight = int(alloc.weight_pct * 100)  # convert back to BPS
-                    if weight == 0:
-                        continue
-                    total_weight += weight
+            from archimedes.chain.contracts import get_contract_loader
 
-                    # Find symbol for this token
-                    symbol = alloc.symbol
+            loader = get_contract_loader()
 
-                    # Get current oracle price
-                    try:
-                        if symbol == "USDC":
-                            current_price = 1.0
-                        else:
-                            oracle = loader.oracle_for(symbol)
-                            current_raw = await oracle.functions.price().call()
-                            current_price = current_raw / 1e6
-                    except Exception:
-                        continue
+            weighted_return = 0.0
+            total_weight = 0
+            for alloc in allocations:
+                weight = int(alloc.weight_pct * 100)  # convert back to BPS
+                if weight == 0:
+                    continue
 
-                    creation_price = prices_at_creation.get(token, current_price)
-                    if creation_price > 0:
-                        asset_return = (current_price - creation_price) / creation_price
-                        weighted_return += asset_return * (weight / 10000)
+                baseline_price = prices_at_baseline.get(normalize_token(alloc.token_address))
+                if baseline_price is None or baseline_price <= 0:
+                    # No baseline for an allocated token: the whole computation
+                    # is unanswerable, not "answerable minus this token" — a
+                    # partial weighted sum silently pretends the missing token
+                    # returned 0% while still labeling the result
+                    # "oracle_baseline" (#1201 review). Unavailable, honestly.
+                    return unavailable
 
-                if total_weight > 0:
-                    # Scale to different periods (assume uniform for now)
-                    return {
-                        "return_24h": round(weighted_return * 0.033, 4),
-                        "return_7d": round(weighted_return * 0.233, 4),
-                        "return_30d": round(weighted_return, 4),
-                        "return_inception": round(weighted_return, 4),
-                    }
+                symbol = alloc.symbol
+                try:
+                    if symbol == "USDC":
+                        current_price = 1.0
+                    else:
+                        oracle = loader.oracle_for(symbol)
+                        current_raw = await oracle.functions.price().call()
+                        current_price = current_raw / 1e6
+                except Exception:
+                    # Same reasoning as the missing-baseline branch: a failed
+                    # CURRENT-price read for an allocated token makes the whole
+                    # number unknowable — never a partial sum.
+                    return unavailable
+
+                total_weight += weight
+                asset_return = (current_price - baseline_price) / baseline_price
+                weighted_return += asset_return * (weight / 10000)
+
+            if total_weight == 0:
+                return unavailable
+
+            # One baseline yields exactly ONE honest number: return since the
+            # baseline was written (inception). The previous "assume uniform"
+            # scaling (24h = 3.3% of inception, 7d = 23.3%) synthesized period
+            # returns no data supports — the same fabrication class #1103
+            # exists to kill. Periods we cannot measure are None, and the UI
+            # renders them as unavailable.
+            return {
+                "return_24h": None,
+                "return_7d": None,
+                "return_30d": None,
+                "return_inception": round(weighted_return, 4),
+                "returns_source": "oracle_baseline",
+            }
         except Exception as e:
-            logger.debug("Redis price snapshot not available for %s: %s", sanitize_log_value(vault_address), e)
+            logger.debug("Redis price baseline not available for %s: %s", sanitize_log_value(vault_address), e)
+            return unavailable
         finally:
             if r is not None:
                 with contextlib.suppress(Exception):
                     await r.aclose()
-
-        # Fallback: compute simulated returns from allocation weights
-        # This gives realistic numbers until real price history accumulates
-        if not allocations:
-            return {"return_24h": 0.0, "return_7d": 0.0, "return_30d": 0.0, "return_inception": 0.0}
-
-        weighted_annual = 0.0
-        total_weight = 0
-        for alloc in allocations:
-            weight = int(alloc.weight_pct * 100)  # BPS
-            if weight == 0:
-                continue
-            total_weight += weight
-            symbol = alloc.symbol
-            expected = self.ASSET_EXPECTED_RETURN.get(symbol, 0.05)
-            weighted_annual += expected * (weight / 10000)
-
-        if total_weight == 0:
-            return {"return_24h": 0.0, "return_7d": 0.0, "return_30d": 0.0, "return_inception": 0.0}
-
-        # Convert annual to period returns, add small deterministic noise from address
-        addr_hash = int(hashlib.md5(vault_address.encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
-        noise = (addr_hash - 0.5) * 0.04  # ±2% annual noise, deterministic per vault
-
-        annual = weighted_annual + noise
-        return {
-            "return_24h": round(annual / 365, 4),
-            "return_7d": round(annual * 7 / 365, 4),
-            "return_30d": round(annual * 30 / 365, 4),
-            "return_inception": round(annual * 30 / 365, 4),  # vaults are new
-        }
 
     async def _token_to_symbol(self, token_address: str, loader=None) -> str:
         """Resolve a token address to its symbol."""
