@@ -40,7 +40,12 @@ from archimedes.models.generation_cost import (
     generation_costs_for_strategies,
     record_generation_cost,
 )
-from archimedes.services.cost_meter import CostMeter, PricingLeakError, assert_measurement_only
+from archimedes.services.cost_meter import (
+    DATA_KEYED_PATHS,
+    CostMeter,
+    PricingLeakError,
+    assert_measurement_only,
+)
 from archimedes.services.job_queue import KEY_PREFIX, JobStore
 
 from tests.db_isolation import redirect_to_tmp_sqlite
@@ -139,6 +144,76 @@ class TestMeasurementOnlyGuard:
         assert payload["quote"]["pricing_model"] == "flat_v1"
         # …and the measurement half is still money-free.
         assert_measurement_only(payload["measurement"], where="test")
+
+
+# ── G2b: model ids are DATA, and screening data drops measurements ────────
+
+
+class TestModelIdsAreNotScreened:
+    """``llm.by_model``'s keys are provider identifiers copied off a response,
+    not labels this codebase chose. Screening them would let a vendor's naming
+    decide whether a generation's measurement survives at all — and it would
+    fail SILENTLY, because the persist runs inside a swallowing ``finally``."""
+
+    def test_the_exemption_is_exactly_one_path_and_it_is_by_model(self):
+        assert DATA_KEYED_PATHS == frozenset({"llm.by_model"})
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "price-aware-model-x",  # marketed on price
+            "llama-3-feedback-tuned",  # "fee" inside "feedback" — the ordinary case
+            "vendor/cost-optimized-v2",
+            "acme-spend-lite",
+        ],
+    )
+    def test_a_model_id_carrying_pricing_words_still_persists(self, model_id):
+        """The input that SHOULD NOT fail the guard. Against the unexempted walk
+        every one of these raises ``PricingLeakError`` and the durable row is
+        dropped, which is the loss this instrumentation exists to prevent."""
+        snapshot = {
+            **_SNAPSHOT,
+            "llm": {
+                **_SNAPSHOT["llm"],
+                "by_model": {model_id: {"calls": 3, "input_tokens": 10, "output_tokens": 2}},
+            },
+        }
+        assert_measurement_only(snapshot, where="test")
+
+        with get_session() as session:
+            record_generation_cost(session, job_id="j-model", strategy_id="s-model", measurement=snapshot)
+            session.commit()
+            payload = generation_cost_for_strategy(session, "s-model")
+
+        assert payload is not None, "a vendor's model name must never cost us the measurement"
+        assert payload["measurement"]["llm"]["by_model"][model_id]["calls"] == 3
+
+    def test_the_exemption_is_one_level_deep_counters_under_a_model_id_are_still_screened(self):
+        """The model id is data; the counters hanging off it are ours, and a
+        pricing-shaped one there still raises."""
+        snapshot = {
+            **_SNAPSHOT,
+            "llm": {**_SNAPSHOT["llm"], "by_model": {"price-aware-model-x": {"calls": 1, "cost_usd": 0.14}}},
+        }
+        with pytest.raises(PricingLeakError):
+            assert_measurement_only(snapshot, where="test")
+
+    @pytest.mark.parametrize(
+        ("payload", "why"),
+        [
+            ({"stages": {"usd_conversion": {"wall_seconds": 1.0}}}, "stage name"),
+            ({"writes": {"settlement_fee": 1}}, "write-counter name"),
+            ({"meta": {"unit_price": 1}}, "meta key"),
+            ({"llm": {"by_model_pricing": {"m": {}}}}, "a near-miss key that is NOT the exempt path"),
+            ({"by_model": {"price-aware-model-x": {}}}, "by_model at the WRONG path is not exempt"),
+        ],
+    )
+    def test_authored_labels_are_still_rejected(self, payload, why):
+        """The exemption must not have opened a hole: every caller-authored label
+        is screened exactly as before, including a key that merely resembles the
+        exempt path and a ``by_model`` that is not under ``llm``."""
+        with pytest.raises(PricingLeakError):
+            assert_measurement_only(payload, where="test")
 
 
 # ── G3: why the persistence write is not tallied ──────────────────────────
