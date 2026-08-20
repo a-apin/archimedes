@@ -269,7 +269,7 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
                   </div>
                 </div>
                 <div>
-                  <div className="caption">DSR conf&lt;{data.rigor_summary.dsr_significant_threshold}</div>
+                  <div className="caption">DSR conf&ge;{data.rigor_summary.dsr_significant_threshold}</div>
                   <div style={{ fontWeight: 700, fontSize: '1.2rem' }}>
                     {data.rigor_summary.dsr_significant}/{data.rigor_summary.total_picks}
                   </div>

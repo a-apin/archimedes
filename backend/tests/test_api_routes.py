@@ -895,6 +895,90 @@ class TestAdvisorRoutes:
         assert "plain" in captured
         assert captured["plain"][-1] == statuses
 
+    def test_advisor_rigor_summary_dsr_threshold_matches_badge_floor_direction(self, client, seeded_db):
+        """#1358 round-2 review: ``dsr_significant``/``dsr_significant_threshold``
+        must count HIGH-confidence strategies (>= the STRICTEST_LEVEL badge
+        floor — 0.90 today, rigor_profiles.py) — the SAME direction
+        RigorExplainer.jsx ("confidence >= 0.90 (badge)") and
+        RigorStrictnessControl.jsx ("DSR confidence >= dsr_p_min") already use.
+        Pre-fix, a ``< 0.05`` comparator counted the WORST (lowest-confidence)
+        strategies under this positive-sounding stat, self-contradicting the
+        PortfolioAdvisor.jsx "DSR conf" tile this same PR renamed."""
+        from archimedes.api import strategies_routes as sr
+        from archimedes.services.rigor_evaluator import RigorGateResult
+        from archimedes.services.rigor_profiles import STRICTEST_LEVEL, get_profile
+
+        badge_floor = get_profile(STRICTEST_LEVEL).dsr_p_min
+
+        def fake_batch(strategies):
+            results = {}
+            for i, s in enumerate(strategies):
+                # Alternate: even index confidently ABOVE the badge floor,
+                # odd index confidently BELOW it.
+                dsr_p = badge_floor + 0.02 if i % 2 == 0 else max(badge_floor - 0.30, 0.0)
+                results[s.id] = RigorGateResult(
+                    strategy_id=s.id,
+                    deflated_sharpe=1.0,
+                    dsr_p_value=dsr_p,
+                    num_trials=1,
+                    pbo_score=0.1,
+                    oos_sharpe=0.5,
+                    look_ahead_passed=True,
+                )
+            return results
+
+        with patch.object(sr, "_live_rigor_results_for_strategies", side_effect=fake_batch):
+            resp = client.get("/api/strategies/advisor?risk_profile=moderate")
+        assert resp.status_code == 200
+        body = resp.json()
+        summary = body["rigor_summary"]
+        allocations = body["allocations"]
+        assert allocations, "advisor returned no allocations to check"
+
+        assert summary["dsr_significant_threshold"] == pytest.approx(badge_floor)
+        expected = sum(1 for a in allocations if a.get("dsr_p_value") is not None and a["dsr_p_value"] >= badge_floor)
+        assert expected > 0, "fixture must produce >=1 above-floor allocation for this test to be meaningful"
+        assert summary["dsr_significant"] == expected
+
+    def test_build_rigor_summary_empty_branch_carries_same_keys_as_populated_branch(self):
+        """#1358 round-2 review: ``_build_rigor_summary``'s ``n == 0`` early
+        return must carry the SAME key set as its populated-case return, so
+        every consumer that reads ``dsr_significant_threshold`` /
+        ``pbo_acceptable_threshold`` unconditionally (``rigor_summary`` is
+        built unconditionally at both call sites in this route; the one
+        current UI consumer, ``PortfolioAdvisor.jsx``, happens to guard on
+        ``total_picks > 0`` today, but the API contract itself must not
+        depend on that guard existing) gets the honest floor value rather
+        than ``undefined``/a ``KeyError``.
+
+        Source-text assertion (not a live route call): every reachable path
+        through ``get_portfolio_advisor`` short-circuits to a *different*,
+        ``rigor_summary``-free error shape (``if not scored: return
+        {"error": ..., "allocations": []}``) before ``_build_rigor_summary``
+        is ever called with an empty list, so the ``n == 0`` branch is
+        currently unreachable via the live endpoint — this test guards the
+        function's internal key-symmetry contract directly, the same way
+        ``ui/test/rigor-tristate.test.js`` guards JSX branches via source
+        text rather than a full render.
+        """
+        import inspect
+
+        from archimedes.api import strategies_routes as sr
+
+        src = inspect.getsource(sr)
+        fn_start = src.index("def _build_rigor_summary(")
+        n0_start = src.index("if n == 0:", fn_start)
+        n0_body_start = src.index("return {", n0_start)
+        n0_body_end = src.index("}", n0_body_start)
+        n0_body = src[n0_body_start : n0_body_end + 1]
+
+        assert '"dsr_significant_threshold"' in n0_body, (
+            f"n==0 branch is missing dsr_significant_threshold — got: {n0_body}"
+        )
+        assert '"pbo_acceptable_threshold"' in n0_body, (
+            f"n==0 branch is missing pbo_acceptable_threshold — got: {n0_body}"
+        )
+
 
 class TestFusionEvaluatorIntegration:
     """Tests for fusion_evaluator wiring in _run_fusion_job.
