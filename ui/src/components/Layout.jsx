@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import WalletConnect from "./WalletConnect";
 import Breadcrumbs from "./Breadcrumbs";
-import { NEW_CONTRACTS, getStoredWalletName } from "../config";
+import { apiGet } from "../api";
+import { getStoredWalletName } from "../config";
+import { deriveChainStatus } from "../chainStatus";
 import { getStoredTheme, applyTheme } from "../theme";
 import { visibleNavigation } from "../routes";
 import { lockBodyScroll, unlockBodyScroll } from "../utils/scrollLock";
@@ -136,12 +138,31 @@ export default function Layout({
 	const [menuOpen, setMenuOpen] = useState(false);
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [theme, setTheme] = useState(getStoredTheme);
+	const [health, setHealth] = useState(null);
+	const [healthError, setHealthError] = useState(false);
 	const hamburgerRef = useRef(null);
-	const blockLabel = Object.keys(NEW_CONTRACTS).length
-		? "Arc · Testnet live"
-		: "Arc · Connecting";
+	const chainStatus = deriveChainStatus(health, healthError);
 	const proofStage =
 		(page === "generate" ? journeyStage : null) ?? CORE_PAGE_STAGE[page];
+
+	// Chain-status pill (#1321): a single fetch on mount, not a polling loop —
+	// the shell doesn't need a live-updating dot, it needs an HONEST one. The
+	// "unknown" tone (deriveChainStatus, ../chainStatus.js) covers both the
+	// pre-resolution window and a failed fetch, so a backend outage can never
+	// silently render as "Arc · Testnet live".
+	useEffect(() => {
+		let cancelled = false;
+		apiGet("/health")
+			.then((d) => {
+				if (!cancelled) setHealth(d);
+			})
+			.catch(() => {
+				if (!cancelled) setHealthError(true);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
 	// Lock body scroll while the mobile nav drawer is open — otherwise the
 	// page content underneath can still scroll behind the fixed overlay/drawer,
@@ -278,8 +299,11 @@ export default function Layout({
 				</nav>
 
 				<div className="sidebar-footer">
-					<span className="live-dot" />
-					<span className="sidebar-footer-label">{blockLabel}</span>
+					<span
+						className={`live-dot live-dot-${chainStatus.tone}`}
+						aria-hidden="true"
+					/>
+					<span className="sidebar-footer-label">{chainStatus.label}</span>
 					<button
 						type="button"
 						className="sidebar-collapse-btn"

@@ -635,6 +635,18 @@ h4,
 	flex-shrink: 0;
 }
 
+/* Tri-state chain-status pill (#1321) — "unknown" must read as visibly
+   distinct from "connected", never fall back to the same green as live. */
+.live-dot-connected {
+	background: var(--positive);
+}
+.live-dot-disconnected {
+	background: var(--negative);
+}
+.live-dot-unknown {
+	background: var(--warning);
+}
+
 /* --- Breadcrumbs --- */
 .breadcrumbs {
 	display: flex;
@@ -4947,6 +4959,19 @@ button:where(.tag) {
 .app-site .live-dot {
 	background: var(--app-verify);
 	box-shadow: 0 0 8px rgba(121, 201, 183, 0.5);
+}
+
+/* Tri-state overrides (#1321) — same specificity as `.app-site .live-dot`
+   above, declared after it so the tone-specific rule wins per element. The
+   "connected" case intentionally reproduces the prior always-on glow;
+   "disconnected"/"unknown" must not, or an outage still LOOKS alive. */
+.app-site .live-dot-disconnected {
+	background: var(--negative);
+	box-shadow: 0 0 8px rgba(239, 68, 68, 0.45);
+}
+.app-site .live-dot-unknown {
+	background: var(--warning);
+	box-shadow: none;
 }
 
 .app-site .topbar {
