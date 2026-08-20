@@ -59,6 +59,14 @@ export default function Landing({ onNavigate }) {
 	const poolCount = contracts?.pools
 		? Object.keys(contracts.pools).length
 		: null;
+	// contracts.pools is explicitly `null` (not just absent) when the fetch
+	// succeeded (200) but the on-chain pool read itself failed (#1356's
+	// ContractAddressesResponse contract: null means "not read", distinct
+	// from {} which means "read, genuinely zero"). That's a live failure, not
+	// a still-loading state — `contracts != null` means the fetch already
+	// resolved, so this must render as census-state--error, never as
+	// "Waiting for live deployment data…".
+	const poolsUnread = contracts != null && contracts.pools == null;
 	const totalLive =
 		coreCount != null && synthCount != null && poolCount != null
 			? coreCount + synthCount + poolCount
@@ -107,6 +115,7 @@ export default function Landing({ onNavigate }) {
 						contractsError={contractsError}
 						coreCount={coreCount}
 						poolCount={poolCount}
+						poolsUnread={poolsUnread}
 						synthCount={synthCount}
 						totalLive={totalLive}
 					/>
@@ -209,6 +218,7 @@ function ProofSpiral({
 	contractsError,
 	coreCount,
 	poolCount,
+	poolsUnread,
 	synthCount,
 	totalLive,
 }) {
@@ -289,12 +299,16 @@ function ProofSpiral({
 			</ol>
 
 			<div className="proof-spiral__census" aria-live="polite">
-				{contractsError ? (
+				{contractsError || poolsUnread ? (
 					<>
 						<span className="census-state census-state--error">
 							Live census unavailable
 						</span>
-						<p>Contract API did not respond. No cached count substituted.</p>
+						<p>
+							{contractsError
+								? "Contract API did not respond. No cached count substituted."
+								: "Contract API responded, but the on-chain pool count could not be read. No cached count substituted."}
+						</p>
 					</>
 				) : totalLive == null ? (
 					<>
@@ -307,8 +321,9 @@ function ProofSpiral({
 							Arc census live
 						</span>
 						<p>
-							<strong>≥{totalLive}</strong> reported instances · {coreCount}{" "}
-							core · {synthCount} synths · {poolCount} pools
+							<strong>≥{totalLive}</strong> reported instances ·{" "}
+							{coreCount}/{CORE_CONTRACT_FIELDS.length} core · {synthCount}{" "}
+							synths · {poolCount} pools
 						</p>
 					</>
 				)}
