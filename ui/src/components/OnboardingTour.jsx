@@ -196,8 +196,10 @@ export default function OnboardingTour({ open, onClose, setPage, user }) {
   const isLast = cardIndex === CARDS.length - 1
 
   // Measure the current step's anchor element. Falls back to `null` (centered
-  // card) when there's no anchor, the element is absent, or it's hidden
-  // (mobile drawer closed, collapsed sidebar → zero-size rect).
+  // card) when there's no anchor, the element is absent, or it's not on
+  // screen — mobile drawer closed → a full-size rect translated to
+  // left ≈ -260 (non-zero, off-viewport), collapsed sidebar → zero-size.
+  // See rectOnScreen in ../tourGeometry.js.
   const measure = useCallback(() => {
     const c = CARDS[cardIndex]
     if (!c.anchor) { setRect(null); return }
@@ -238,6 +240,12 @@ export default function OnboardingTour({ open, onClose, setPage, user }) {
   useEffect(() => {
     if (!open || rect !== null || !card.anchor) return
     if (!canNavigateTo(card.anchor, user)) return
+    // `rect === null` covers two cases and only one wants a navigation: the
+    // anchor absent from the DOM (navigating mounts it, e.g. from Landing),
+    // or the anchor mounted but off-screen (mobile drawer closed) — same
+    // page already, navigating just pushes a pointless history entry per
+    // card. Only navigate when the anchor truly isn't mounted yet.
+    if (document.querySelector(`[data-tour="${card.anchor}"]`)) return
     setPage(card.anchor)
     // Sidebar mounts on the next render; re-measure after it paints.
     const id = setTimeout(measure, 60)

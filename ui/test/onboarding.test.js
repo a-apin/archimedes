@@ -16,6 +16,14 @@ import { rectOnScreen } from "../src/tourGeometry.js";
 //      `transform`-positioned, not removed from layout, so its closed rect
 //      is non-zero but entirely off-screen; `measure()`'s zero-size-only
 //      check accepted it. Fixed by the pure predicate `rectOnScreen` below.
+//      Fixing #2 this way introduced a follow-on: `rectOnScreen` now
+//      correctly nulls `rect` for a mounted-but-off-screen anchor too, which
+//      would otherwise satisfy the anchor-navigation effect's `rect === null`
+//      condition and call `setPage` on every anchored card for a signed-in
+//      mobile visitor with the drawer closed — a same-page anchor that
+//      navigating cannot help. Fixed by gating that effect on DOM presence
+//      (`document.querySelector('[data-tour=...]')`) so it only navigates
+//      when the anchor is genuinely unmounted.
 //
 // ui/package.json's `"test": "node --test"` is bare node — no JSX
 // transform, no jsdom, no @testing-library (see the anti-goal against
@@ -26,8 +34,18 @@ import { rectOnScreen } from "../src/tourGeometry.js";
 // ones — they prove the component calls the tested predicate, not that the
 // resulting DOM is correct, which no harness here can observe.
 //
-// Every assertion in this file was confirmed to FAIL against the pre-fix
-// tree (transcripts in the PR body).
+// Swapping this file's OnboardingTour.jsx source for origin/main's (pre-fix)
+// while keeping everything else from this branch — the exact tree this file
+// regression-guards against — fails five tests: the `canNavigateTo` and
+// `rectOnScreen` wiring pins, the `user`-prop shape pin, the mobile
+// same-page-navigation guard, and the z-index floor (`node --test` →
+// `tests 11 / pass 6 / fail 5`). The five `rectOnScreen` cases above test
+// the new pure predicate directly, so they pass regardless of
+// OnboardingTour.jsx's content — see the guard transcripts in the PR body
+// for that predicate's own revert-and-check. The anti-goal `doesNotMatch`
+// check below also passes pre-fix, by construction: the string it guards
+// against was never in the tree, so it guards a future bad fix, not the
+// reported bug.
 
 const onboardingTour = readFileSync(
 	new URL("../src/components/OnboardingTour.jsx", import.meta.url),
@@ -85,10 +103,26 @@ test("OnboardingTour is wired to canNavigateTo before it calls setPage", () => {
 	assert.match(onboardingTour, /canNavigateTo\(/);
 	// The gate must run before setPage in the anchor-navigation effect —
 	// pin the shape, not just presence, so a guard added elsewhere in the
-	// file (e.g. only around measure()) doesn't satisfy this check.
+	// file (e.g. only around measure()) doesn't satisfy this check. Bounded
+	// (not `.*`) so it still can't match across unrelated effects; widened
+	// from immediate adjacency to allow the DOM-presence guard (#1364
+	// round-2) that now also sits between this gate and `setPage`.
 	assert.match(
 		onboardingTour,
-		/if \(!canNavigateTo\(card\.anchor, user\)\) return\s*\n\s*setPage\(card\.anchor\)/,
+		/if \(!canNavigateTo\(card\.anchor, user\)\) return[\s\S]{0,700}setPage\(card\.anchor\)/,
+	);
+});
+
+test("the anchor-navigation effect does not navigate when the anchor is already mounted", () => {
+	// `rect === null` fires the same whether the anchor is missing from the
+	// DOM entirely (navigating helps — mounts the Layout shell) or the
+	// anchor is mounted but off-screen behind a closed mobile drawer
+	// (navigating buys nothing and would push a history entry per card for
+	// every signed-in mobile visitor). Pin the shape: a DOM-presence check
+	// must gate `setPage` after the `canNavigateTo` gate.
+	assert.match(
+		onboardingTour,
+		/if \(!canNavigateTo\(card\.anchor, user\)\) return[\s\S]{0,600}if \(document\.querySelector\(`\[data-tour="\$\{card\.anchor\}"\]`\)\) return\s*\n\s*setPage\(card\.anchor\)/,
 	);
 });
 
