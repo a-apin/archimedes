@@ -140,6 +140,16 @@ jobs:
           # inline through shell quoting is a reliable source of "parse error
           # near ')'" failures.
           cat > /tmp/remote.sh <<EOS
+          # AWS-RunShellScript executes this with /bin/sh (dash on Ubuntu),
+          # which rejects 'set -o pipefail' at line 1 and can't do the
+          # 'exec 200>' fd redirection below — this script had NEVER run
+          # (first real dispatch 2026-08-20 failed exactly there; the
+          # first-execution-is-post-merge class). Re-exec under bash before
+          # anything else. The \${...} escapes are load-bearing: this heredoc
+          # is unquoted so the WORKFLOW shell interpolates \$-vars at
+          # authoring time — BASH_VERSION must be tested on the BOX, not on
+          # the GitHub runner (where it is always set).
+          [ -z "\${BASH_VERSION:-}" ] && exec /bin/bash "\$0" "\$@"
           set -euo pipefail
           # Instance-local mutex: GitHub's concurrency.cancel-in-progress only
           # cancels the Actions JOB — an already-dispatched SSM command keeps
