@@ -38,7 +38,7 @@ dependency: login is Better Auth email+password, not a wallet signature
 
 ### `archimedes login`
 
-[`cli/src/archimedes_cli/cli.py`](../../cli/src/archimedes_cli/cli.py):172-254.
+[`cli/src/archimedes_cli/cli.py`](../../cli/src/archimedes_cli/cli.py):190-275.
 
 ```bash
 archimedes login
@@ -82,7 +82,7 @@ not authenticate you (cli.py:183-185).
 
 ### `archimedes meter`
 
-cli.py:275-316. Requires a cached session (`archimedes login` first).
+cli.py:296-338. Requires a cached session (`archimedes login` first).
 
 ```bash
 archimedes meter
@@ -275,6 +275,19 @@ cli.py:92-100) — a script never has to parse prose to learn what happened.
   the same code path as a passport's real (evaluable) PBO.
 - Wallet linking, on-chain vault actions, or anything payment-related — the
   CLI's `meter` only *reads* the price quote; it never pays.
+
+## `archimedes manifest` — the machine-readable contract
+
+Everything this document says in prose, an agent can get declaratively:
+`archimedes manifest` emits one JSON object — every command's inputs
+(flags, env vars, defaults including the session-aware `--api-url`
+resolution), output shapes, cost class, side effects, exit codes, and
+`implemented` status — always exit 0, no network, no session
+(`cli/src/archimedes_cli/manifest.py`; command at cli.py:519). The
+contract cannot silently drift: `cli/tests/test_manifest.py` walks the real
+click command tree and asserts every command, flag, and exit code in the
+manifest matches it. Prefer the manifest over parsing `--help` when
+integrating programmatically.
 
 ## Verify (re-run these before trusting this document)
 
