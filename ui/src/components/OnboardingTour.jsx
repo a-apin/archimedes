@@ -1,6 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { roadmapSurfaceHidden } from '../featureFlags.js'
+import useDialogFocus from '../hooks/useDialogFocus'
 
 const STORAGE_KEY = 'archimedes.onboarding.v1'
 
@@ -246,6 +247,16 @@ export default function OnboardingTour({ open, onClose, setPage }) {
     else setCardIndex(i => i + 1)
   }, [isLast, finish])
 
+  // The tour auto-opens for every first-time signed-in user and declares
+  // aria-modal="true", which removes the rest of the page from the
+  // accessibility tree — but focus was never moved in, never trapped and never
+  // restored, so the tour was announced as nothing while a sighted keyboard
+  // user tabbed straight through the four dim panels into the app behind them.
+  // refocusKey: the centered-card branch and the spotlight branch are two
+  // different portal trees, so advancing off card 0 (the only unanchored card)
+  // destroys the panel the user's focus is in and strands it on <body>.
+  const panelRef = useDialogFocus(open, { refocusKey: cardIndex })
+
   // Keyboard support — Esc closes, ArrowRight advances, ArrowLeft goes back.
   useEffect(() => {
     if (!open) return
@@ -278,23 +289,33 @@ export default function OnboardingTour({ open, onClose, setPage }) {
         {card.body}
       </p>
 
-      {/* Pagination dots */}
-      <div className="flex gap-1.5 justify-center mb-5" role="tablist" aria-label="Tour progress">
+      {/* Pagination dots. The 8px visual dot is unchanged, but the hit area is
+          now the 24x24 minimum (2.5.8) — at 8px with a 6px gap the 24px
+          targets centred on adjacent dots overlapped, so the spacing exception
+          did not rescue them either. The tablist/tab roles are dropped rather
+          than kept: it promised arrow-key navigation between tabs and matching
+          tabpanels, neither of which this component implements. */}
+      <div className="flex justify-center mb-5" role="group" aria-label="Tour progress">
         {CARDS.map((c, i) => (
           <button
             key={c.id}
             type="button"
-            role="tab"
-            aria-selected={i === cardIndex}
+            aria-current={i === cardIndex ? 'true' : undefined}
             aria-label={`Card ${i + 1}: ${c.title}`}
             onClick={() => setCardIndex(i)}
-            className="w-2 h-2 rounded-full border-none cursor-pointer"
-            style={{
-              background: i === cardIndex ? 'var(--accent)' : 'var(--text-4)',
-              opacity: i === cardIndex ? 1 : 0.4,
-              padding: 0,
-            }}
-          />
+            className="w-6 h-6 flex items-center justify-center border-none cursor-pointer"
+            style={{ background: 'transparent', padding: 0 }}
+          >
+            <span
+              aria-hidden="true"
+              className="w-2 h-2 rounded-full"
+              style={{
+                display: 'block',
+                background: i === cardIndex ? 'var(--accent)' : 'var(--text-4)',
+                opacity: i === cardIndex ? 1 : 0.4,
+              }}
+            />
+          </button>
         ))}
       </div>
 
@@ -328,6 +349,8 @@ export default function OnboardingTour({ open, onClose, setPage }) {
         aria-labelledby="onboarding-title"
       >
         <div
+          ref={panelRef}
+          tabIndex={-1}
           className="card-elevated p-6 max-w-[460px] w-[90vw]"
           onClick={e => e.stopPropagation()}
           style={{ background: 'var(--surface-1)', opacity: 1 }}
@@ -387,6 +410,8 @@ export default function OnboardingTour({ open, onClose, setPage }) {
 
       {/* Tooltip */}
       <div
+        ref={panelRef}
+        tabIndex={-1}
         className="card-elevated tour-tooltip p-5"
         style={{
           position: 'fixed', top: tipTop, left: tipLeft, width: TIP_W, maxWidth: '90vw',

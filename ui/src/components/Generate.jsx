@@ -344,9 +344,18 @@ export default function Generate({ onNavigate, onStageChange }) {
 				{/* ── 1. BRIEF INPUT + SUBMIT ── */}
 				<section className="card generate-brief">
 					{/* Strategy name — promoted from Advanced options so it's seen before the brief */}
+					{/* Real <label htmlFor> associations. These three fields — the
+					    strategy name, the brief, and the asset search below — were
+					    labelled by plain <div>s and placeholders only, so a screen
+					    reader announced the product's single most important control
+					    as an anonymous "edit, multiline" the moment the user typed
+					    the first character (3.3.2 / 4.1.2). */}
 					<div className="mb-3">
-						<div className="label mb-1">Strategy name (optional)</div>
+						<label className="label mb-1 block" htmlFor="generate-strategy-name">
+							Strategy name (optional)
+						</label>
 						<input
+							id="generate-strategy-name"
 							type="text"
 							value={strategyName}
 							onChange={(e) => setStrategyName(e.target.value)}
@@ -361,13 +370,21 @@ export default function Generate({ onNavigate, onStageChange }) {
 						</p>
 					</div>
 
-					<div className="label mb-1">Your brief</div>
-					<p className="caption mb-2" style={{ color: "var(--text-3)" }}>
+					<label className="label mb-1 block" htmlFor="generate-brief">
+						Your brief
+					</label>
+					<p
+						className="caption mb-2"
+						id="generate-brief-help"
+						style={{ color: "var(--text-3)" }}
+					>
 						A good brief names concrete assets or classes, a mechanism (momentum
 						/ vol-managed / hedge / mean-reversion), and a goal.
 					</p>
 
 					<textarea
+						id="generate-brief"
+						aria-describedby="generate-brief-help"
 						value={intent}
 						onChange={(e) => setIntent(e.target.value)}
 						placeholder="e.g. blend momentum, quality and a gold hedge across major ETFs with volatility-managed sizing for idle USDC"
@@ -503,6 +520,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 										value={assetQuery}
 										onChange={(e) => setAssetQuery(e.target.value)}
 										placeholder="Search assets (e.g. SPY, GOLD, BTC)…"
+										aria-label="Search assets"
 										className="chat-input w-full mb-2 px-2.5 py-1.5"
 										disabled={starting}
 									/>
@@ -521,6 +539,11 @@ export default function Generate({ onNavigate, onStageChange }) {
 												No assets match "{assetQuery}".
 											</div>
 										)}
+										{/* Each ticker is a real toggle button: as a click-only
+										    <span> the universe picker had no tab stop and no
+										    role, so a keyboard user could clear the selection
+										    (the "Clear" affordance is a real button) but never
+										    set one (2.1.1 / 4.1.2). */}
 										{filteredAssetGroups.map((group) => (
 											<div key={group.id} className="mb-2">
 												<div
@@ -529,15 +552,21 @@ export default function Generate({ onNavigate, onStageChange }) {
 												>
 													{group.label}
 												</div>
-												<div className="flex gap-1.5 flex-wrap">
+												<div
+													className="flex gap-1.5 flex-wrap"
+													role="group"
+													aria-label={`${group.label} assets`}
+												>
 													{group.assets.map((a) => (
-														<span
+														<button
 															key={a}
+															type="button"
 															className={`tag ${selectedAssets.includes(a) ? "tag-accent" : "tag-muted"} cursor-pointer`}
+															aria-pressed={selectedAssets.includes(a)}
 															onClick={() => toggleAsset(a)}
 														>
 															{a}
-														</span>
+														</button>
 													))}
 												</div>
 											</div>
@@ -624,6 +653,21 @@ export default function Generate({ onNavigate, onStageChange }) {
 						className="flex items-center justify-between flex-wrap gap-2"
 						style={{ marginTop: 2 }}
 					>
+						{/* Every outcome of pressing Generate — start failure, quote not
+						    ready, wallet-link required, test mode, payments unavailable,
+						    and the success receipt — paints into this one slot. None of
+						    it was announced: the user heard the button label revert from
+						    "Starting…" and was never told whether the job started or why
+						    it failed (4.1.3). The live container is mounted
+						    unconditionally, because a live region added at the same
+						    moment as its text is usually missed by assistive tech. */}
+						<div
+							className="generate-submit-status"
+							role="status"
+							aria-live="polite"
+							aria-atomic="true"
+							style={{ flex: 1, display: "flex" }}
+						>
 						{paymentStatus === PAYMENT_STATUS.WALLET_LINK_REQUIRED ? (
 							<div className="info-box warning" style={{ flex: 1 }}>
 								<strong>Wallet link required.</strong> {paymentMessage}
@@ -704,10 +748,14 @@ export default function Generate({ onNavigate, onStageChange }) {
 						) : (
 							<div />
 						)}
+						</div>
 						<button
 							className="btn btn-primary"
 							onClick={startJob}
 							disabled={starting || !intent.trim() || !quoteReady}
+							aria-describedby={
+								!intent.trim() ? "generate-submit-hint" : undefined
+							}
 						>
 							{starting
 								? "Starting…"
@@ -716,6 +764,17 @@ export default function Generate({ onNavigate, onStageChange }) {
 									: "Generate →"}
 						</button>
 					</div>
+					{/* The submit button is disabled until a brief exists; state the
+					    cause rather than leaving the form looking stuck (3.3.1). */}
+					{!intent.trim() && (
+						<p
+							id="generate-submit-hint"
+							className="caption mt-2 mb-0"
+							style={{ color: "var(--text-3)" }}
+						>
+							Enter a brief above to enable generation.
+						</p>
+					)}
 				</section>
 
 				<aside

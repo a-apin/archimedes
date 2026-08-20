@@ -840,7 +840,7 @@ function PaperDeployCard({ strategyId, user, onNavigate }) {
 				building the track record that carries to mainnet.
 			</p>
 			{error && (
-				<p className="caption" role="alert" style={{ color: "var(--danger, #b91c1c)", marginTop: 6 }}>
+				<p className="caption" role="alert" style={{ color: "var(--negative)", marginTop: 6 }}>
 					{error}
 				</p>
 			)}

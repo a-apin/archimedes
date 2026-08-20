@@ -113,6 +113,7 @@ export default function AuthPage({ mode }) {
               minLength={PASSWORD_MIN}
               maxLength={PASSWORD_MAX}
               autoComplete={creating ? 'new-password' : 'current-password'}
+              aria-describedby={creating ? 'password-rules' : undefined}
               value={form.password}
               onChange={(event) => setForm({ ...form, password: event.target.value })}
             />
@@ -121,12 +122,17 @@ export default function AuthPage({ mode }) {
             <>
               <label className="flex flex-col gap-1.5">
                 <span className="caption">Confirm password</span>
+                {/* aria-invalid alone said "invalid entry" with no statement of
+                    what was wrong: the mismatch alert fires once while the user
+                    is still typing and is unreachable afterwards, and the rules
+                    list was never associated with the field (3.3.1). */}
                 <input
                   required
                   type="password"
                   maxLength={PASSWORD_MAX}
                   autoComplete="new-password"
                   aria-invalid={showMismatch}
+                  aria-describedby={showMismatch ? 'password-rules confirm-mismatch' : 'password-rules'}
                   value={form.confirm}
                   onChange={(event) => setForm({ ...form, confirm: event.target.value })}
                 />
@@ -144,30 +150,40 @@ export default function AuthPage({ mode }) {
                   ))}
                 </div>
                 {form.password.length > 0 && (
-                  <span className="caption text-[var(--text-4)]">
+                  <span className="caption">
                     Strength: {strength.label} — guidance only; the length rule below is the requirement.
                   </span>
                 )}
-                <ul className="caption flex flex-col gap-0.5" aria-label="Password requirements">
+                {/* Unmet rules inherit .caption's --text-3 rather than --text-4:
+                    on the base palette --text-4 is #3f3f46, i.e. 1.73:1 on the
+                    card — the rule text a user needs precisely when their
+                    password was rejected was the least readable text here.
+                    The ✓/○ glyph stays the state signal (1.4.1). */}
+                <ul className="caption flex flex-col gap-0.5" id="password-rules" aria-label="Password requirements">
                   {rules.map((rule) => (
-                    <li key={rule.id} className={rule.met ? 'text-[var(--accent)]' : 'text-[var(--text-4)]'}>
+                    <li key={rule.id} className={rule.met ? 'text-[var(--accent)]' : undefined}>
                       {rule.met ? '✓' : '○'} {rule.label}
                     </li>
                   ))}
-                  <li className={match ? 'text-[var(--accent)]' : 'text-[var(--text-4)]'}>
+                  <li className={match ? 'text-[var(--accent)]' : undefined}>
                     {match ? '✓' : '○'} Passwords match
                   </li>
                 </ul>
               </div>
               {showMismatch && (
-                <div className="status" role="alert">
+                <div className="status" role="alert" id="confirm-mismatch">
                   Passwords do not match.
                 </div>
               )}
             </>
           )}
           {error && <div className="status" role="alert">{error}</div>}
-          <button className="btn-primary" type="submit" disabled={busy || !canSubmit}>
+          <button
+            className="btn-primary"
+            type="submit"
+            disabled={busy || !canSubmit}
+            aria-describedby={creating && !canSubmit ? 'password-rules' : undefined}
+          >
             {busy ? 'Working…' : creating ? 'Create account' : 'Sign in'}
           </button>
         </form>
@@ -185,7 +201,7 @@ export default function AuthPage({ mode }) {
             {creating ? 'Sign in' : 'Create account'}
           </a>
         </p>
-        <p className="caption mt-5 text-[var(--text-4)]">
+        <p className="caption mt-5">
           Circle wallet passkeys authorize Circle smart wallets. They do not sign in to Archimedes.
         </p>
       </section>

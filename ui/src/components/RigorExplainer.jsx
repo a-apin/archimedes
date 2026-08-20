@@ -12,7 +12,8 @@ export default function RigorExplainer() {
   return (
     <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px' }}>
       <div>
-        <h1 style={{ fontSize: '1.6rem', marginBottom: 8, fontFamily: 'var(--serif)' }}>
+        {/* id is the aria-labelledby target for the Library's modal wrapper. */}
+        <h1 id="rigor-explainer-title" style={{ fontSize: '1.6rem', marginBottom: 8, fontFamily: 'var(--serif)' }}>
           The Rigor Gate
         </h1>
         <p className="body" style={{ color: 'var(--text-2)', marginBottom: 20, lineHeight: 1.65 }}>

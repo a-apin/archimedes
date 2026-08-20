@@ -9,6 +9,7 @@ import {
 } from '../config'
 import { sanitizeWalletName } from '../circle-wallet'
 import { linkConnectedWallet } from '../linked-wallets'
+import useDialogFocus from '../hooks/useDialogFocus'
 
 export default function WalletConnect({ address, displayName, onConnect, onDisconnect, onEditProfile }) {
   const [showModal, setShowModal] = useState(false)
@@ -20,6 +21,7 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
   const [balance, setBalance] = useState(null)
   const [walletName, setWalletName] = useState('')
   const menuRef = useRef(null)
+  const modalRef = useDialogFocus(showModal)
   const providerId = getConnectedProvider()
   const isPasskey = providerId === CIRCLE_PROVIDER_ID
 
@@ -281,10 +283,25 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
         Connect Wallet
       </button>
 
+      {/* The entry point to every on-chain action. It was portalled to <body>
+          with no dialog role, no accessible name and no focus move, so after
+          clicking "Connect Wallet" a screen-reader user's focus stayed on the
+          trigger behind the overlay and reaching the provider buttons meant
+          tabbing through the whole page behind it (2.4.3 / 4.1.2). Escape was
+          already handled above; the trap and focus restore come from the
+          shared hook. */}
       {showModal && createPortal(
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <h3>Connect Wallet</h3>
+          <div
+            ref={modalRef}
+            tabIndex={-1}
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="wallet-modal-title"
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 id="wallet-modal-title">Connect Wallet</h3>
             <p style={{ fontSize: '0.98rem', color: 'var(--text-2)', lineHeight: 1.55, marginBottom: 14 }}>
               {available.length > 1
                 ? 'Connect a Circle passkey wallet, or connect a browser wallet to interact with Arc Testnet contracts.'
@@ -394,7 +411,7 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
                               }}
                             />
                             {walletName.trim().length > 0 && sanitizeWalletName(walletName) === null && (
-                              <span style={{ fontSize: '0.7rem', color: 'var(--danger, #f87171)' }}>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--negative)' }}>
                                 At least 5 characters — letters, numbers, or _ @ . : + -
                               </span>
                             )}

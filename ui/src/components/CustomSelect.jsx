@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useId } from 'react'
 import { createPortal } from 'react-dom'
 
 export default function CustomSelect({
@@ -9,13 +9,20 @@ export default function CustomSelect({
   disabled = false,
   className = '',
   style,
+  // Without this the trigger is announced as its current value alone ("All
+  // Categories, button") with no indication of what it selects (4.1.2).
+  ariaLabel,
+  ariaLabelledBy,
 }) {
   const [open, setOpen] = useState(false)
+  const listboxId = `cs-listbox-${useId()}`
+  const optionId = (i) => `${listboxId}-opt-${i}`
   const [dropdownStyle, setDropdownStyle] = useState({})
   const triggerRef = useRef(null)
   const dropdownRef = useRef(null)
 
-  const selected = options.find(o => o.value === value)
+  const selectedIndex = options.findIndex(o => o.value === value)
+  const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined
 
   const close = useCallback(() => setOpen(false), [])
 
@@ -109,6 +116,14 @@ export default function CustomSelect({
         onKeyDown={handleKeyDown}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
+        // ArrowUp/ArrowDown mutate the selection while focus stays on the
+        // trigger; without activedescendant the value changed silently.
+        aria-activedescendant={
+          open && selectedIndex >= 0 ? optionId(selectedIndex) : undefined
+        }
         disabled={disabled}
       >
         <span className="cs-value">
@@ -133,10 +148,14 @@ export default function CustomSelect({
           className="cs-dropdown"
           style={dropdownStyle}
           role="listbox"
+          id={listboxId}
+          aria-label={ariaLabel}
+          aria-labelledby={ariaLabel ? undefined : ariaLabelledBy}
         >
-          {options.map(opt => (
+          {options.map((opt, i) => (
             <div
               key={opt.value}
+              id={optionId(i)}
               className={`cs-option ${opt.value === value ? 'cs-selected' : ''} ${opt.disabled ? 'cs-option-disabled' : ''}`}
               role="option"
               aria-selected={opt.value === value}

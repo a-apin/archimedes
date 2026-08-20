@@ -79,7 +79,7 @@ function Sparkline({ series }) {
       <polyline
         points={pts}
         fill="none"
-        stroke={up ? 'var(--accent)' : 'var(--danger, #b91c1c)'}
+        stroke={up ? 'var(--accent)' : 'var(--negative)'}
         strokeWidth="1.5"
       />
     </svg>
@@ -90,6 +90,7 @@ export default function PaperTrading({ onNavigate }) {
   const [deployments, setDeployments] = useState(null)
   const [names, setNames] = useState({})
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [stopping, setStopping] = useState(null)
 
   const load = useCallback(async () => {
@@ -133,9 +134,14 @@ export default function PaperTrading({ onNavigate }) {
     const label = names[dep.strategy_id] || dep.strategy_id
     if (!window.confirm(`Stop paper trading "${label}"? The track record freezes where it is; this cannot be restarted in place.`)) return
     setStopping(dep.deployment_id)
+    setNotice('')
     try {
       await apiPost(`/api/paper/deployments/${encodeURIComponent(dep.deployment_id)}/stop`, {})
       await load()
+      // The success path used to be silent: load() re-renders, the chip flips
+      // ACTIVE→STOPPED and the Stop button unmounts, so a screen-reader user
+      // was left with no statement of what happened (4.1.3).
+      setNotice(`Paper trading stopped for ${label}. The track record is frozen at ${dep.days} trading day${dep.days === 1 ? '' : 's'}.`)
     } catch (e) {
       setError(e.message || 'Failed to stop deployment')
     } finally {
@@ -157,8 +163,15 @@ export default function PaperTrading({ onNavigate }) {
         </p>
       </div>
 
+      {/* Mounted unconditionally so the message it later receives is actually
+          announced — a live region created at the same moment as its content
+          is routinely missed. */}
+      <div role="status" aria-live="polite" className={notice ? 'caption' : 'sr-only'} style={notice ? { marginBottom: 14 } : undefined}>
+        {notice}
+      </div>
+
       {error && (
-        <div role="alert" className="card" style={{ padding: 14, marginBottom: 14, color: 'var(--danger, #b91c1c)' }}>
+        <div role="alert" className="card" style={{ padding: 14, marginBottom: 14, color: 'var(--negative)' }}>
           {error}
         </div>
       )}
@@ -228,7 +241,7 @@ export default function PaperTrading({ onNavigate }) {
                       dep.total_return > 0
                         ? 'var(--accent)'
                         : dep.total_return < 0
-                          ? 'var(--danger, #b91c1c)'
+                          ? 'var(--negative)'
                           : 'var(--text-2)',
                   }}
                 >

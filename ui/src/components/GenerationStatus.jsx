@@ -125,15 +125,18 @@ export default function GenerationStatus({ activeJobId, onDrillIn }) {
           <table
             style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}
           >
+            <caption className="sr-only">Recent generations</caption>
             <thead>
               <tr
                 style={{ textAlign: 'left', borderBottom: '1px solid var(--glass-border)' }}
               >
-                <th style={{ padding: '6px 8px' }}>Brief</th>
-                <th style={{ padding: '6px 8px' }}>State</th>
-                <th style={{ padding: '6px 8px' }}>N</th>
-                <th style={{ padding: '6px 8px' }}>Updated</th>
-                <th style={{ padding: '6px 8px' }} />
+                <th scope="col" style={{ padding: '6px 8px' }}>Brief</th>
+                <th scope="col" style={{ padding: '6px 8px' }}>State</th>
+                <th scope="col" style={{ padding: '6px 8px' }}>N</th>
+                <th scope="col" style={{ padding: '6px 8px' }}>Updated</th>
+                <th scope="col" style={{ padding: '6px 8px' }}>
+                  <span className="sr-only">Open</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -141,18 +144,16 @@ export default function GenerationStatus({ activeJobId, onDrillIn }) {
                 const tag = STATE_TAGS[j.state] || STATE_TAGS.queued
                 const isActive = j.job_id === activeJobId
                 return (
+                  // role="button" on a <tr> destroys the row's table semantics:
+                  // the <td>s stop being exposed as cells and the aria-label
+                  // replaces the row content wholesale, so a screen-reader user
+                  // heard only "Open generation: <brief>, button" and never the
+                  // state, candidate count or updated time this table exists to
+                  // convey (4.1.2 / 1.3.1). The control now lives in the last
+                  // cell; the row keeps onClick as a mouse convenience.
                   <tr
                     key={j.job_id}
                     onClick={() => onDrillIn?.(j.job_id)}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Open generation: ${j.brief_intent || j.job_id}`}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        onDrillIn?.(j.job_id)
-                      }
-                    }}
                     style={{
                       borderBottom: '1px solid var(--glass)',
                       background: isActive
@@ -190,12 +191,23 @@ export default function GenerationStatus({ activeJobId, onDrillIn }) {
                       {timeAgo(j.updated_at)}
                     </td>
                     <td style={{ padding: '8px 8px', textAlign: 'right' }}>
-                      <span
+                      <button
+                        type="button"
                         className="caption"
-                        style={{ color: 'var(--accent)', whiteSpace: 'nowrap' }}
+                        onClick={e => { e.stopPropagation(); onDrillIn?.(j.job_id) }}
+                        aria-label={`Open generation: ${j.brief_intent || j.job_id}`}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          padding: 0,
+                          font: 'inherit',
+                          cursor: 'pointer',
+                          color: 'var(--accent)',
+                          whiteSpace: 'nowrap',
+                        }}
                       >
                         {j.state === 'running' || j.state === 'queued' ? 'resume →' : 'view →'}
-                      </span>
+                      </button>
                     </td>
                   </tr>
                 )

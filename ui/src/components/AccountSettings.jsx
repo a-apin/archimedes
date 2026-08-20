@@ -8,6 +8,7 @@ export default function AccountSettings({ walletAddr, onDisconnect }) {
   const { user, signOut } = useAuth()
   const [wallets, setWallets] = useState([])
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(null)
 
   const load = useCallback(() => listLinkedWallets().then(setWallets).catch((err) => setError(err.message)), [])
@@ -26,13 +27,25 @@ export default function AccountSettings({ walletAddr, onDisconnect }) {
     }
   }
 
+  // Unlinking deletes the account↔wallet binding that owns the user's on-chain
+  // history, with no undo — relinking means re-running the SIWE signature flow,
+  // and until then the wallet's data is invisible. It was a single unconfirmed
+  // click, so a mis-click or a stray Enter on a focused button silently
+  // stranded strategies (3.3.4). PaperTrading.jsx already confirms the
+  // comparable destructive action, so this was an inconsistency, not a policy.
   const unlink = async (wallet) => {
+    const label = wallet.display_address || wallet.address
+    if (!window.confirm(
+      `Unlink ${label}? This removes the account↔wallet binding; re-linking requires signing again with that wallet.`,
+    )) return
     setBusy(wallet.id)
     setError('')
+    setNotice('')
     try {
       await removeLinkedWallet(wallet.id)
       if (walletAddr?.toLowerCase() === wallet.address) onDisconnect?.()
       await load()
+      setNotice(`Unlinked ${label}.`)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -91,6 +104,9 @@ export default function AccountSettings({ walletAddr, onDisconnect }) {
             ))}
           </ul>
         )}
+        <div role="status" aria-live="polite" className={notice ? 'caption mt-3' : 'sr-only'}>
+          {notice}
+        </div>
         {error && <div className="status mt-3" role="alert">{error}</div>}
       </section>
 

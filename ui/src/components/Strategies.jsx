@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import RigorExplainer from './RigorExplainer'
 import RigorStrictnessControl, { levelLabel } from './RigorStrictnessControl'
 import { useRigorStrictness, BADGE_LEVEL } from '../hooks/useRigorStrictness'
+import useDialogFocus from '../hooks/useDialogFocus'
 
 import { apiGet, apiPost, apiDelete } from '../api'
 
@@ -155,6 +156,7 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
 
   const sharpeCI = s.sharpe_ci_95 != null ? s.sharpe_ci_95 : null
   const driftFlag = s.drift_detected === true
+  const detailId = `lib-detail-${s.id}`
 
   useEffect(() => {
     if (isHighlighted && rowRef.current) {
@@ -171,8 +173,24 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
     <>
       <tr ref={rowRef} className="lib-row cursor-pointer" onClick={() => setOpen(o => !o)} style={rowStyle}>
         <td className="font-semibold">
-          <span className={`${open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'} w-3 h-3 mr-1.5 text-[var(--text-4)] flex-shrink-0 inline-block`} />
-          {s.paper_title}
+          {/* The disclosure is a real <button> in the first cell rather than a
+              bare onClick on the <tr>: App.css hides the keyboard-accessible
+              card list above 768px, so on desktop a keyboard-only user could
+              open no strategy's detail panel at all — and with it none of
+              "Open Passport", the exports, the source links or the DSR/PBO
+              numbers, which live only in the expanded row (2.1.1 / 4.1.2).
+              The row keeps its onClick as a mouse convenience; the button
+              stops propagation so one activation is one toggle. */}
+          <button
+            type="button"
+            className="lib-row-toggle"
+            aria-expanded={open}
+            aria-controls={detailId}
+            onClick={(e) => { e.stopPropagation(); setOpen(o => !o) }}
+          >
+            <span aria-hidden="true" className={`${open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'} w-3 h-3 mr-1.5 text-[var(--text-4)] flex-shrink-0 inline-block`} />
+            {s.paper_title}
+          </button>
           {(s.papers || []).length > 1 && (
             <span
               className="tag tag-accent"
@@ -192,14 +210,22 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
             >
               {statusLabel(s.status, s.passes_rigor_gate)}
             </span>
+            {/* These UnoCSS icons render as a CSS mask on an empty <span>, so
+                without role/aria-label they contribute nothing to the
+                accessible name tree and `title` on a bare span is not
+                reliably exposed — the rigor-gate verdict, the fact that
+                decides whether a strategy may be deployed, was sighted-only
+                (1.1.1). --warning replaces the hardcoded base-dark amber so the drift
+                triangle follows the light palette (2.15:1 on a white card
+                before; --warning is 5.12:1 there and 8.12:1 in dark). */}
             {s.passes_rigor_gate === true && (
-              <span className="i-lucide-check w-3.5 h-3.5 text-[var(--positive)]" title="Passes rigor gate" />
+              <span role="img" aria-label="Passes rigor gate" className="i-lucide-check w-3.5 h-3.5 text-[var(--positive)]" title="Passes rigor gate" />
             )}
             {s.passes_rigor_gate === false && (
-              <span className="i-lucide-x w-3.5 h-3.5 text-[var(--text-4)]" title="Does not pass rigor gate" />
+              <span role="img" aria-label="Does not pass rigor gate" className="i-lucide-x w-3.5 h-3.5 text-[var(--text-4)]" title="Does not pass rigor gate" />
             )}
             {driftFlag && (
-              <span className="i-lucide-alert-triangle w-3.5 h-3.5 text-[#f59e0b]" title="Drift detected" />
+              <span role="img" aria-label="Drift detected" className="i-lucide-alert-triangle w-3.5 h-3.5 text-[var(--warning)]" title="Drift detected" />
             )}
             <DeployabilityChip deploy={deploy} level={level} />
           </div>
@@ -220,9 +246,14 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
         <td className="mono positive" style={{ textAlign: 'right' }}>{fmtPct(s.cagr)}</td>
         <td className="mono negative" style={{ textAlign: 'right' }}>
           {s.max_drawdown != null ? `−${fmtPct(s.max_drawdown)}` : '—'}
+          {/* Same defect: crossing the 0.5 overfitting threshold was signalled
+              only by the colour swap to --negative (1.4.1). */}
           {s.pbo_score != null && (
             <div style={{ fontSize: '0.68rem', color: s.pbo_score > 0.5 ? 'var(--negative)' : 'var(--text-4)' }}>
-              (PBO {s.pbo_score.toFixed(2)})
+              (PBO {s.pbo_score.toFixed(2)}{s.pbo_score > 0.5 && <span aria-hidden="true"> ⚠</span>})
+              {s.pbo_score > 0.5 && (
+                <span className="sr-only"> — above the 0.50 overfitting threshold</span>
+              )}
             </div>
           )}
         </td>
@@ -230,7 +261,7 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
         <td className="caption" style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{years != null ? `${years.toFixed(1)} yrs` : '—'}</td>
       </tr>
       {open && (
-        <tr className="lib-row-detail">
+        <tr className="lib-row-detail" id={detailId}>
           <td colSpan={8} style={{ padding: '12px 18px', background: 'var(--glass)' }}>
             <StrategyDetailContent
               s={s}
@@ -331,11 +362,26 @@ function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraA
           {s.paper_claimed_sharpe != null && (
             <div className="caption mt-2">
               Paper claim: <strong>{fmt(s.paper_claimed_sharpe)}</strong> · Backtest: <strong>{fmt(s.sharpe_ratio)}</strong>
+              {/* The pass/fail judgement against the 50% replication threshold
+                  used to live in the green/red class alone — "(43%)" and
+                  "(97%)" rendered identically to a colourblind reader (1.4.1).
+                  The ✓/✗ glyph carries it now, with the threshold spelled out
+                  for assistive tech; colour stays as reinforcement. */}
               {s.sharpe_ratio != null && (() => {
                 const ratio = s.paper_claimed_sharpe > 0.01 ? s.sharpe_ratio / s.paper_claimed_sharpe : null
+                const replicated = ratio != null && ratio >= 0.5
                 return (
-                  <span className={ratio != null && ratio >= 0.5 ? 'positive' : 'negative'} style={{ marginLeft: 6 }}>
+                  <span className={replicated ? 'positive' : 'negative'} style={{ marginLeft: 6 }}>
+                    <span aria-hidden="true">{replicated ? '✓' : '✗'}</span>{' '}
                     ({ratio != null ? `${(ratio * 100).toFixed(0)}%` : '—'})
+                    <span className="sr-only">
+                      {' '}
+                      {ratio == null
+                        ? 'replication ratio unavailable'
+                        : replicated
+                          ? 'of the paper claim — at or above the 50% replication threshold'
+                          : 'of the paper claim — below the 50% replication threshold'}
+                    </span>
                   </span>
                 )
               })()}
@@ -435,7 +481,7 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
         >
           {statusLabel(s.status, s.passes_rigor_gate)}
         </span>
-        {driftFlag && <span className="i-lucide-alert-triangle w-3.5 h-3.5 text-[#f59e0b]" title="Drift detected" />}
+        {driftFlag && <span role="img" aria-label="Drift detected" className="i-lucide-alert-triangle w-3.5 h-3.5 text-[var(--warning)]" title="Drift detected" />}
         <DeployabilityChip deploy={deploy} level={level} />
       </div>
       <div className="lib-card-stats">
@@ -594,6 +640,8 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
   // affordance. Single modal instance per page keeps state simple.
   const [rigorModalOpen, setRigorModalOpen] = useState(false)
   const openRigorExplainer = useCallback(() => setRigorModalOpen(true), [])
+  const closeRigorExplainer = useCallback(() => setRigorModalOpen(false), [])
+  const rigorModalRef = useDialogFocus(rigorModalOpen, { onEscape: closeRigorExplainer })
 
   // Deep-link to the strategy passport route — added in Phase 4.
   const openPassport = useCallback(
@@ -663,25 +711,36 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
         <RigorStrictnessControl level={level} onChange={setLevel} />
       </div>
 
-      <div className="strat-filter-bar mb-4">
-        <span
+      {/* Real <button>s, not click-only <span>s: activeTab defaults to
+          'generated', so a keyboard-only user was permanently pinned to that
+          one view and could never reach Examples or Published, and nothing in
+          the accessibility tree said which view was active (2.1.1 / 4.1.2).
+          Same shape Leaderboard.jsx:239 already uses. */}
+      <div className="strat-filter-bar mb-4" role="group" aria-label="Strategy view">
+        <button
+          type="button"
           className={`tag ${activeTab === 'generated' ? 'tag-accent' : 'tag-muted'}`}
+          aria-pressed={activeTab === 'generated'}
           onClick={() => setActiveTab('generated')}
         >
           Generated ({generated.length})
-        </span>
-        <span
+        </button>
+        <button
+          type="button"
           className={`tag ${activeTab === 'examples' ? 'tag-accent' : 'tag-muted'}`}
+          aria-pressed={activeTab === 'examples'}
           onClick={() => setActiveTab('examples')}
         >
           Examples ({examples.length})
-        </span>
-        <span
+        </button>
+        <button
+          type="button"
           className={`tag ${activeTab === 'published' ? 'tag-accent' : 'tag-muted'}`}
+          aria-pressed={activeTab === 'published'}
           onClick={() => setActiveTab('published')}
         >
           Published ({published.length})
-        </span>
+        </button>
       </div>
 
       {loadError && (
@@ -874,7 +933,12 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
 
       {/* EfficientFrontier + CorrelationMatrix removed (Issue #383) — synthetic RNG data */}
 
-      {/* Rigor Explainer modal (portal-rendered, page-level) */}
+      {/* Rigor Explainer modal (portal-rendered, page-level).
+          It had no dialog role, no accessible name, no Escape handler and no
+          focus management — and because the portal appends after #root its
+          Close button was the LAST focus stop in the document, so reaching it
+          meant tabbing the whole Library page underneath a blurred overlay
+          (2.4.3 / 4.1.2). */}
       {rigorModalOpen && createPortal(
         <div
           className="modal-overlay"
@@ -882,14 +946,19 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
           style={{ zIndex: 1000 }}
         >
           <div
+            ref={rigorModalRef}
+            tabIndex={-1}
             className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rigor-explainer-title"
             onClick={e => e.stopPropagation()}
             style={{ maxWidth: 820, maxHeight: '85vh', overflowY: 'auto', width: '90vw' }}
           >
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
               <button
                 type="button"
-                onClick={() => setRigorModalOpen(false)}
+                onClick={closeRigorExplainer}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-4)' }}
                 aria-label="Close"
               >

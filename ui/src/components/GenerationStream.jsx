@@ -209,21 +209,43 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
   return (
     <div className="card" style={{ padding: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        {/* Generation runs for minutes and every terminal outcome landed in
+            plain <div>s: a screen-reader user who submitted a brief had no way
+            to know the run was progressing, had finished, or had errored
+            (4.1.3). role="status" with aria-live toggled to "assertive" on failure
+ (and "polite" otherwise) — the explicit aria-live overrides the role's
+ implicit politeness, so an error is announced even when the user is not
+ on the log below. */}
         <div>
           <div className="label">Generating — job {jobId.slice(0, 10)}…</div>
-          {terminal === 'done' && (
-            <div className="positive caption" style={{ marginTop: 4 }}>
-              <span className="i-lucide-check w-3.5 h-3.5 mr-1" /> Strategy persisted{strategyId ? ` as ${strategyId}` : ''}
-              {servedModel && servedModel !== 'fixture' && (
-                <span style={{ color: 'var(--text-3)' }}> · served by <strong>{servedModel}</strong></span>
-              )}
-            </div>
-          )}
-          {terminal === 'error' && (
-            <div className="negative caption" style={{ marginTop: 4 }}>
-              <span className="i-lucide-x w-3.5 h-3.5 mr-1" /> {errorMsg}
-            </div>
-          )}
+          {/* The live region holds ONLY the terminal outcome, and is mounted
+              empty from the start so the message it later receives is actually
+              announced. The running-state event counter below is deliberately
+              OUTSIDE it: `events.length` increments on every SSE frame, and
+              while it sat inside this region a screen reader re-read the whole
+              block — job id and all — once per event, for the several minutes
+              a generation runs. That buried the very outcome the region exists
+              to convey, and it defeated the point of the role="log" feed
+              further down, which already reports progress one entry at a
+              time. */}
+          <div
+            role="status"
+            aria-live={terminal === 'error' ? 'assertive' : 'polite'}
+          >
+            {terminal === 'done' && (
+              <div className="positive caption" style={{ marginTop: 4 }}>
+                <span aria-hidden="true" className="i-lucide-check w-3.5 h-3.5 mr-1" /> Strategy persisted{strategyId ? ` as ${strategyId}` : ''}
+                {servedModel && servedModel !== 'fixture' && (
+                  <span style={{ color: 'var(--text-3)' }}> · served by <strong>{servedModel}</strong></span>
+                )}
+              </div>
+            )}
+            {terminal === 'error' && (
+              <div className="negative caption" style={{ marginTop: 4 }}>
+                <span aria-hidden="true" className="i-lucide-x w-3.5 h-3.5 mr-1" /> {errorMsg}
+              </div>
+            )}
+          </div>
           {!terminal && (
             <div className="caption" style={{ marginTop: 4, color: 'var(--text-3)' }}>
               Streaming live · {events.length} event{events.length === 1 ? '' : 's'}
@@ -248,8 +270,15 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
         </div>
       </div>
 
+      {/* role="log" is the right role for an append-only feed: it keeps
+          announcements to newly added entries instead of re-reading the whole
+          scroller on every event. */}
       <div
         ref={scrollRef}
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-label="Generation events"
         style={{
           maxHeight: 320,
           overflowY: 'auto',
