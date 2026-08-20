@@ -17,6 +17,10 @@ function csv(value) {
 // unverified account is REFUSED sign-in. Explicit opt-in ("true") because
 // SES starts in sandbox — enforcement flips on via env once production
 // sending access is granted, with no code change.
+// The literal shipped in .env.example. Public by design, refused in production
+// by createAuth() — keep these two in lockstep; auth/test/auth.test.js pins it.
+export const PLACEHOLDER_SECRET = 'insecure-local-dev-placeholder-change-me-before-any-deploy'
+
 export function emailVerificationEnforced(env = process.env) {
   return env.EMAIL_VERIFICATION_ENFORCED === 'true'
 }
@@ -42,6 +46,19 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
 
   if (!secret || secret.length < 32) {
     throw new Error('BETTER_AUTH_SECRET must contain at least 32 characters')
+  }
+
+  // .env.example ships PLACEHOLDER_SECRET so that `cp .env.example .env` gives a
+  // working LOCAL stack — without it every docker compose command, including
+  // `down`, dies during interpolation on `${BETTER_AUTH_SECRET:?}`. The value is
+  // public by construction, so it must never boot a deployed environment: it
+  // signs session cookies, and anyone reading the repo could forge them.
+  if (production && secret === PLACEHOLDER_SECRET) {
+    throw new Error(
+      'BETTER_AUTH_SECRET is still the public .env.example placeholder. '
+      + 'Set a real secret (production reads SSM /archimedes/prod/BETTER_AUTH_SECRET). '
+      + 'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(48))"',
+    )
   }
 
   // node-postgres does NOT honor libpq's `sslmode` query parameter — it must

@@ -4,7 +4,7 @@ import test from 'node:test'
 
 import { getMigrations } from 'better-auth/db/migration'
 
-import { createAuth, enabledProviders } from '../auth.js'
+import { createAuth, enabledProviders, PLACEHOLDER_SECRET } from '../auth.js'
 
 const env = {
   NODE_ENV: 'test',
@@ -149,4 +149,48 @@ test('enforcement flag parses strictly', async () => {
   assert.equal(emailVerificationEnforced({ EMAIL_VERIFICATION_ENFORCED: 'false' }), false)
   assert.equal(emailVerificationEnforced({ EMAIL_VERIFICATION_ENFORCED: '1' }), false)
   assert.equal(emailVerificationEnforced({ EMAIL_VERIFICATION_ENFORCED: 'true' }), true)
+})
+
+
+// ── .env.example placeholder must never boot production ─────────────────────
+//
+// .env.example ships PLACEHOLDER_SECRET so `cp .env.example .env` gives a
+// working local stack (an empty value broke every docker compose command,
+// including `down`, during ${BETTER_AUTH_SECRET:?} interpolation). The value is
+// public, and it signs session cookies — anyone reading the repo could forge
+// them — so production must refuse it.
+
+test('the public .env.example placeholder is refused in production', () => {
+  assert.throws(
+    () => createAuth({
+      database: new DatabaseSync(':memory:'),
+      env: { ...env, NODE_ENV: 'production', BETTER_AUTH_SECRET: PLACEHOLDER_SECRET },
+    }),
+    /still the public \.env\.example placeholder/,
+  )
+})
+
+test('the placeholder is accepted outside production so local dev works', () => {
+  assert.doesNotThrow(() => createAuth({
+    database: new DatabaseSync(':memory:'),
+    env: { ...env, NODE_ENV: 'development', BETTER_AUTH_SECRET: PLACEHOLDER_SECRET },
+  }))
+})
+
+test('a real secret still boots in production', () => {
+  assert.doesNotThrow(() => createAuth({
+    database: new DatabaseSync(':memory:'),
+    env: { ...env, NODE_ENV: 'production', BETTER_AUTH_SECRET: 'a-genuinely-random-production-secret-value-x7f2' },
+  }))
+})
+
+test('PLACEHOLDER_SECRET is exactly what .env.example ships', async () => {
+  const { readFileSync } = await import('node:fs')
+  const envExample = readFileSync(new URL('../../.env.example', import.meta.url), 'utf8')
+  const line = envExample.split('\n').find(l => l.startsWith('BETTER_AUTH_SECRET='))
+  assert.equal(line, `BETTER_AUTH_SECRET=${PLACEHOLDER_SECRET}`)
+})
+
+test('the shipped placeholder still satisfies the 32-char floor', () => {
+  assert.ok(PLACEHOLDER_SECRET.length >= 32)
 })
