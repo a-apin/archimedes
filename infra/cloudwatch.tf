@@ -159,60 +159,19 @@ resource "aws_cloudwatch_metric_alarm" "aurora_connections_high" {
   tags                = { Project = var.project_name }
 }
 
-# ── Ops dashboard ────────────────────────────────────────────────────────────
-
-resource "aws_cloudwatch_dashboard" "ops" {
-  dashboard_name = "${var.project_name}-ops"
-  dashboard_body = jsonencode({
-    # The "EC2 CPU" widget (aws_instance.archimedes) was removed 2026-08-19
-    # with the EC2 decommission (main.tf); the remaining three widgets were
-    # reflowed to fill the freed x=0,y=0 slot rather than leaving a gap.
-    widgets = [
-      {
-        type = "metric", x = 0, y = 0, width = 12, height = 6,
-        properties = {
-          title  = "ALB requests / 5xx",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", aws_lb.main.arn_suffix],
-            ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", aws_lb.main.arn_suffix]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 0, width = 12, height = 6,
-        properties = {
-          title   = "ALB target latency (p95)",
-          region  = var.aws_region,
-          view    = "timeSeries",
-          stat    = "p95",
-          metrics = [["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.main.arn_suffix, "TargetGroup", aws_lb_target_group.backend.arn_suffix]]
-        }
-      },
-      {
-        type = "metric", x = 0, y = 6, width = 12, height = 6,
-        properties = {
-          title  = "Aurora CPU / connections",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/RDS", "CPUUtilization", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier],
-            ["AWS/RDS", "DatabaseConnections", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier]
-          ]
-        }
-      }
-    ]
-  })
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Issue #418 — Layer 1 (AWS infrastructure metrics).
+# Issue #418 — Layer 1 (AWS infrastructure metrics) alarms.
 #
-# Adds versioned per-subsystem CloudWatch dashboards (Aurora, ElastiCache,
-# VPC/NAT, EC2 backend, ALB, WAF) plus the additional alarms named in the issue
-# (NAT transfer anomaly, ALB 5xx > 1% over 5 min, Aurora connections > 80%,
-# Aurora ACU pinned at max, ElastiCache evictions, WAF blocked-request spike).
+# Adds the additional per-subsystem CloudWatch alarms named in the issue (NAT
+# transfer anomaly, ALB 5xx > 1% over 5 min, Aurora connections > 80%, Aurora
+# ACU pinned at max, ElastiCache evictions, WAF blocked-request spike).
+#
+# The per-subsystem DASHBOARDS this section originally shipped alongside
+# (ops, aurora, elasticache, vpc_nat, ec2_backend, alb, waf — seven, then six
+# after ec2_backend was removed 2026-08-19 with the EC2 decommission) were
+# consolidated 2026-08-20 into the THREE founder-readable dashboards below
+# (product-health / data-stores / machines-and-network) — see that section's
+# header comment for why.
 #
 # Layer 2 (Prometheus app metrics) and Layer 3 (self-hosted Grafana) are
 # SEPARATE PRs — explicitly out of scope here.
@@ -445,261 +404,85 @@ resource "aws_cloudwatch_metric_alarm" "waf_blocked_spike" {
   tags               = { Project = var.project_name }
 }
 
-# ── Aurora dashboard ─────────────────────────────────────────────────────────
-
-resource "aws_cloudwatch_dashboard" "aurora" {
-  dashboard_name = "${var.project_name}-aurora"
-  dashboard_body = jsonencode({
-    widgets = [
-      {
-        type = "metric", x = 0, y = 0, width = 12, height = 6,
-        properties = {
-          title  = "Serverless capacity (ACU)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/RDS", "ServerlessDatabaseCapacity", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 0, width = 12, height = 6,
-        properties = {
-          title  = "Connections",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/RDS", "DatabaseConnections", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 0, y = 6, width = 12, height = 6,
-        properties = {
-          title  = "CPU utilization (%)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/RDS", "CPUUtilization", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 6, width = 12, height = 6,
-        properties = {
-          title  = "Read/write latency p95 / p99",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/RDS", "ReadLatency", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier, { stat = "p95", label = "ReadLatency p95" }],
-            ["AWS/RDS", "ReadLatency", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier, { stat = "p99", label = "ReadLatency p99" }],
-            ["AWS/RDS", "WriteLatency", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier, { stat = "p95", label = "WriteLatency p95" }],
-            ["AWS/RDS", "WriteLatency", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier, { stat = "p99", label = "WriteLatency p99" }]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 0, y = 12, width = 12, height = 6,
-        properties = {
-          title  = "IOPS (read / write)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/RDS", "ReadIOPS", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier],
-            ["AWS/RDS", "WriteIOPS", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 12, width = 12, height = 6,
-        properties = {
-          title  = "Storage / freeable memory",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/RDS", "VolumeBytesUsed", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier, { label = "VolumeBytesUsed" }],
-            ["AWS/RDS", "FreeableMemory", "DBInstanceIdentifier", aws_rds_cluster_instance.main.identifier, { label = "FreeableMemory" }]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 0, y = 18, width = 12, height = 6,
-        properties = {
-          title  = "Deadlocks / slow-query proxy (login failures, deadlocks)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/RDS", "Deadlocks", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier, { label = "Deadlocks" }],
-            ["AWS/RDS", "LoginFailures", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier, { label = "LoginFailures" }]
-          ]
-        }
-      }
-    ]
-  })
+# ── Runner EC2 liveness (issue #1402) ───────────────────────────────────────
+# The runner box (aws_instance.runner, runner_ec2.tf) has wedged 3x with an OS
+# memory-exhaustion signature: instance status check impaired + SSM dead. The
+# existing runner_ec2_status_check_failed alarm (runner_ec2.tf) watches the
+# COMBINED `StatusCheckFailed` metric (Max(_System, _Instance)) at 1-min
+# granularity; this alarm is a second, narrower signal scoped specifically to
+# `StatusCheckFailed_Instance` (OS/instance-level failures — exactly what an
+# OOM-wedged-but-hypervisor-healthy box produces), so a founder glancing at
+# the machines-and-network dashboard's alarm widget sees the OS-level failure
+# mode named explicitly rather than folded into a combined metric.
+#
+# Deliberately does NOT attach the `ec2:recover` automate action the way
+# nat_status_check_failed does: AWS documents that "The recover action can be
+# used only with StatusCheckFailed_System, not with StatusCheckFailed_Instance"
+# (Add recover actions to Amazon CloudWatch alarms) — attaching it here would
+# target a metric AWS's own API rejects it for. SNS wiring (topic, ok action,
+# tags, treat_missing_data="breaching" reasoning) otherwise mirrors
+# nat_status_check_failed exactly.
+resource "aws_cloudwatch_metric_alarm" "runner_instance_impaired" {
+  alarm_name          = "${var.project_name}-runner-instance-impaired"
+  alarm_description   = "Oracle+agent runner EC2 instance status check failed (StatusCheckFailed_Instance) for 2 consecutive 5-min periods — OS-level impairment (e.g. memory exhaustion, issue #1402) on the funds-adjacent singleton runners."
+  namespace           = "AWS/EC2"
+  metric_name         = "StatusCheckFailed_Instance"
+  statistic           = "Maximum"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  period              = 300
+  evaluation_periods  = 2
+  dimensions          = { InstanceId = aws_instance.runner.id }
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "breaching"
+  tags                = { Project = var.project_name }
 }
 
-# ── ElastiCache dashboard ────────────────────────────────────────────────────
+# ── Dashboards — consolidated 6→3, founder-readable (2026-08-20) ───────────
+# Replaces the per-subsystem dashboards this file used to define (ops,
+# aurora, elasticache, vpc_nat, alb, waf — six by the time of this change,
+# ec2_backend having been removed 2026-08-19 with the EC2 decommission) with
+# three dashboards organized around the three questions Dan (founder,
+# non-SRE — the actual reader) asks: is the site up and fast, are the
+# databases OK, are the background machines alive and is network traffic
+# normal. Cost driver, not just readability: CloudWatch bills the 4th+
+# dashboard at $3/mo each on top of the ~$19/mo CloudWatch base — 6
+# dashboards cost $9/mo more than 3 for zero benefit to the one person who
+# reads them.
+#
+# Each dashboard opens with an `alarm` widget (live state of every alarm the
+# dashboard's panels cover) and pairs every metric widget with a `text`
+# (markdown) widget explaining, in plain English, what normal looks like and
+# when to worry — using the SAME numbers as the matching alarm's threshold,
+# so the prose and the chart never disagree. `annotations.horizontal` draws
+# that threshold as a line on every latency/CPU/5xx-rate widget so the gap
+# (or breach) between "where we are" and "the alarm line" is visible without
+# reading the alarm widget at all.
 
-resource "aws_cloudwatch_dashboard" "elasticache" {
-  dashboard_name = "${var.project_name}-elasticache"
+resource "aws_cloudwatch_dashboard" "product_health" {
+  dashboard_name = "${var.project_name}-product-health"
   dashboard_body = jsonencode({
     widgets = [
       {
-        type = "metric", x = 0, y = 0, width = 12, height = 6,
+        type = "alarm", x = 0, y = 0, width = 24, height = 3,
         properties = {
-          title  = "Cache hits / misses",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/ElastiCache", "CacheHits", "CacheClusterId", local.redis_node_id],
-            ["AWS/ElastiCache", "CacheMisses", "CacheClusterId", local.redis_node_id]
+          title = "Alarms — product health",
+          alarms = [
+            aws_cloudwatch_metric_alarm.alb_5xx_high.arn,
+            aws_cloudwatch_metric_alarm.alb_5xx_rate_high.arn,
+            aws_cloudwatch_metric_alarm.alb_unhealthy_hosts.arn,
+            aws_cloudwatch_metric_alarm.alb_latency_high.arn,
+            aws_cloudwatch_metric_alarm.waf_blocked_spike.arn,
+            aws_cloudwatch_metric_alarm.chain_disconnected_alarm.arn,
           ]
         }
       },
+      # Row 1 — request volume
       {
-        type = "metric", x = 12, y = 0, width = 12, height = 6,
+        type = "metric", x = 0, y = 3, width = 12, height = 6,
         properties = {
-          title  = "Hit-rate (%)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            [{ expression = "100 * hits / IF((hits + misses) > 0, (hits + misses), 1)", label = "Hit-rate %", id = "hr" }],
-            ["AWS/ElastiCache", "CacheHits", "CacheClusterId", local.redis_node_id, { id = "hits", visible = false }],
-            ["AWS/ElastiCache", "CacheMisses", "CacheClusterId", local.redis_node_id, { id = "misses", visible = false }]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 0, y = 6, width = 12, height = 6,
-        properties = {
-          title  = "Memory usage (%) / bytes used",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/ElastiCache", "DatabaseMemoryUsagePercentage", "CacheClusterId", local.redis_node_id, { label = "Memory usage %" }],
-            ["AWS/ElastiCache", "BytesUsedForCache", "CacheClusterId", local.redis_node_id, { label = "BytesUsedForCache" }]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 6, width = 12, height = 6,
-        properties = {
-          title  = "Evictions",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/ElastiCache", "Evictions", "CacheClusterId", local.redis_node_id]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 0, y = 12, width = 12, height = 6,
-        properties = {
-          title  = "Current connections",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/ElastiCache", "CurrConnections", "CacheClusterId", local.redis_node_id]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 12, width = 12, height = 6,
-        properties = {
-          title  = "Slow-log entries / engine CPU (%)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            ["AWS/ElastiCache", "SlowlogLength", "CacheClusterId", local.redis_node_id, { label = "Slowlog length" }],
-            ["AWS/ElastiCache", "EngineCPUUtilization", "CacheClusterId", local.redis_node_id, { label = "Engine CPU %" }]
-          ]
-        }
-      }
-    ]
-  })
-}
-
-# ── VPC / NAT dashboard ──────────────────────────────────────────────────────
-# NAT instances are plain EC2, so their network + CPU metrics live in AWS/EC2.
-# "GB/day" is read off the NetworkOut/NetworkIn time series (Sum stat); the
-# alarm above pages on the per-datapoint anomaly.
-
-resource "aws_cloudwatch_dashboard" "vpc_nat" {
-  dashboard_name = "${var.project_name}-vpc-nat"
-  dashboard_body = jsonencode({
-    widgets = [
-      {
-        type = "metric", x = 0, y = 0, width = 12, height = 6,
-        properties = {
-          title  = "NAT data transfer out (bytes / 5 min — multiply for GB/day)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          stat   = "Sum",
-          metrics = [
-            for i, nat in aws_instance.nat :
-            ["AWS/EC2", "NetworkOut", "InstanceId", nat.id, { label = "NAT-${i} NetworkOut" }]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 0, width = 12, height = 6,
-        properties = {
-          title  = "NAT data transfer in (bytes / 5 min)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          stat   = "Sum",
-          metrics = [
-            for i, nat in aws_instance.nat :
-            ["AWS/EC2", "NetworkIn", "InstanceId", nat.id, { label = "NAT-${i} NetworkIn" }]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 0, y = 6, width = 12, height = 6,
-        properties = {
-          title  = "NAT CPU utilization (%)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          metrics = [
-            for i, nat in aws_instance.nat :
-            ["AWS/EC2", "CPUUtilization", "InstanceId", nat.id, { label = "NAT-${i} CPU" }]
-          ]
-        }
-      },
-      {
-        type = "metric", x = 12, y = 6, width = 12, height = 6,
-        properties = {
-          title  = "NAT network packets (out / in)",
-          region = var.aws_region,
-          view   = "timeSeries",
-          stat   = "Sum",
-          metrics = concat(
-            [for i, nat in aws_instance.nat : ["AWS/EC2", "NetworkPacketsOut", "InstanceId", nat.id, { label = "NAT-${i} pkts out" }]],
-            [for i, nat in aws_instance.nat : ["AWS/EC2", "NetworkPacketsIn", "InstanceId", nat.id, { label = "NAT-${i} pkts in" }]]
-          )
-        }
-      }
-    ]
-  })
-}
-
-# ── EC2 backend dashboard: REMOVED 2026-08-19 ───────────────────────────────
-# aws_cloudwatch_dashboard.ec2_backend was 100% dimensioned on
-# aws_instance.archimedes (CPU/network/memory/disk/EBS/status-check, all
-# InstanceId = the old box) and had no content left once that instance was
-# decommissioned (main.tf), so the whole dashboard resource was deleted
-# rather than emptied.
-
-# ── ALB dashboard ────────────────────────────────────────────────────────────
-
-resource "aws_cloudwatch_dashboard" "alb" {
-  dashboard_name = "${var.project_name}-alb"
-  dashboard_body = jsonencode({
-    widgets = [
-      {
-        type = "metric", x = 0, y = 0, width = 12, height = 6,
-        properties = {
-          title  = "Request count",
+          title  = "Requests served",
           region = var.aws_region,
           view   = "timeSeries",
           stat   = "Sum",
@@ -709,36 +492,89 @@ resource "aws_cloudwatch_dashboard" "alb" {
         }
       },
       {
-        type = "metric", x = 12, y = 0, width = 12, height = 6,
+        type = "text", x = 12, y = 3, width = 12, height = 6,
         properties = {
-          title  = "HTTP status breakdown (2xx / 4xx / 5xx)",
+          markdown = "### Requests served\n\nRequests the site handled. Normal: varies with traffic — watch the shape, not a fixed number. **Worry if** it drops to ~0 during hours it's normally non-zero (site may be unreachable), or if 5xx count (next row) climbs alongside it."
+        }
+      },
+      # Row 2 — 5xx count
+      {
+        type = "metric", x = 0, y = 9, width = 12, height = 6,
+        properties = {
+          title  = "Backend errors (5xx count)",
           region = var.aws_region,
           view   = "timeSeries",
           stat   = "Sum",
           metrics = [
-            ["AWS/ApplicationELB", "HTTPCode_Target_2XX_Count", "LoadBalancer", aws_lb.main.arn_suffix, { label = "2xx" }],
-            ["AWS/ApplicationELB", "HTTPCode_Target_4XX_Count", "LoadBalancer", aws_lb.main.arn_suffix, { label = "4xx" }],
-            ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", aws_lb.main.arn_suffix, { label = "5xx" }]
+            ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", aws_lb.main.arn_suffix]
           ]
+          annotations = {
+            horizontal = [
+              { label = "Alarm threshold (10 / 5 min)", value = 10 }
+            ]
+          }
         }
       },
       {
-        type = "metric", x = 0, y = 6, width = 12, height = 6,
+        type = "text", x = 12, y = 9, width = 12, height = 6,
         properties = {
-          title  = "Target response time (p50 / p95 / p99)",
+          markdown = "### Backend errors (5xx count)\n\nRequests the backend failed to serve. Normal: 0, or a handful during a deploy. **Worry if** this crosses **10 in a 5-min window** — that's the alarm line (dashed, on the chart)."
+        }
+      },
+      # Row 3 — 5xx rate
+      {
+        type = "metric", x = 0, y = 15, width = 12, height = 6,
+        properties = {
+          title  = "Backend error rate (%)",
+          region = var.aws_region,
+          view   = "timeSeries",
+          metrics = [
+            [{ expression = "100 * (m5xx / IF(reqs > 0, reqs, 1))", label = "5xx error rate (%)", id = "error_rate" }],
+            ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", aws_lb.main.arn_suffix, { id = "m5xx", visible = false, stat = "Sum" }],
+            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", aws_lb.main.arn_suffix, { id = "reqs", visible = false, stat = "Sum" }]
+          ]
+          annotations = {
+            horizontal = [
+              { label = "Alarm threshold (1%)", value = 1 }
+            ]
+          }
+        }
+      },
+      {
+        type = "text", x = 12, y = 15, width = 12, height = 6,
+        properties = {
+          markdown = "### Backend error rate (%)\n\n5xx errors as a share of all requests — catches problems that scale with traffic, not just raw count. Normal: well under 1%. **Worry if** it crosses **1% for 5 minutes** — that's the alarm line."
+        }
+      },
+      # Row 4 — latency
+      {
+        type = "metric", x = 0, y = 21, width = 12, height = 6,
+        properties = {
+          title  = "Response time (p50 / p99, seconds)",
           region = var.aws_region,
           view   = "timeSeries",
           metrics = [
             ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.main.arn_suffix, "TargetGroup", aws_lb_target_group.backend.arn_suffix, { stat = "p50", label = "p50" }],
-            ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.main.arn_suffix, "TargetGroup", aws_lb_target_group.backend.arn_suffix, { stat = "p95", label = "p95" }],
             ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.main.arn_suffix, "TargetGroup", aws_lb_target_group.backend.arn_suffix, { stat = "p99", label = "p99" }]
           ]
+          annotations = {
+            horizontal = [
+              { label = "Alarm threshold (p95 > 2s)", value = 2 }
+            ]
+          }
         }
       },
       {
-        type = "metric", x = 12, y = 6, width = 12, height = 6,
+        type = "text", x = 12, y = 21, width = 12, height = 6,
         properties = {
-          title  = "Healthy / unhealthy target count",
+          markdown = "### Response time\n\nHow long the backend takes to answer. p50 = typical request, p99 = the slowest 1%. Normal: p50 well under a second. **Worry if** either line approaches **2 seconds** — the alarm actually fires on p95 (not plotted directly), but p99 crossing this line is the earlier warning."
+        }
+      },
+      # Row 5 — healthy hosts
+      {
+        type = "metric", x = 0, y = 27, width = 12, height = 6,
+        properties = {
+          title  = "Healthy / unhealthy backend targets",
           region = var.aws_region,
           view   = "timeSeries",
           stat   = "Maximum",
@@ -749,87 +585,366 @@ resource "aws_cloudwatch_dashboard" "alb" {
         }
       },
       {
-        type = "metric", x = 0, y = 12, width = 12, height = 6,
+        type = "text", x = 12, y = 27, width = 12, height = 6,
         properties = {
-          title  = "Active connection count",
+          markdown = "### Backend targets\n\nHow many backend tasks are passing health checks (autoscaling floor ${var.ecs_service_min_count}, ceiling ${var.ecs_service_max_count}) vs. failing them. Normal: Healthy >= 1, Unhealthy = 0. **Worry if** Unhealthy is ever above 0 — that's the alarm line."
+        }
+      },
+      # Row 6 — WAF blocked
+      {
+        type = "metric", x = 0, y = 33, width = 12, height = 6,
+        properties = {
+          title  = "WAF blocked requests",
           region = var.aws_region,
           view   = "timeSeries",
           stat   = "Sum",
           metrics = [
-            ["AWS/ApplicationELB", "ActiveConnectionCount", "LoadBalancer", aws_lb.main.arn_suffix]
+            ["AWS/WAFV2", "BlockedRequests", "WebACL", local.waf_metric_name, "Region", var.aws_region, "Rule", "ALL", { label = "Blocked" }]
           ]
+          annotations = {
+            horizontal = [
+              { label = "Alarm threshold (6000 / 5 min, ~100/min)", value = 6000 }
+            ]
+          }
         }
       },
       {
-        type = "metric", x = 12, y = 12, width = 12, height = 6,
+        type = "text", x = 12, y = 33, width = 12, height = 6,
         properties = {
-          title  = "ELB-side 5xx (load balancer errors)",
+          markdown = "### WAF blocked requests\n\nRequests the firewall rejected (bad bots, known exploit patterns, rate-limit). Normal: a steady trickle — background noise on any public site. **Worry if** it spikes past **100/min (6000 per 5-min datapoint)** — that's the alarm line, signaling an active attack/abuse wave worth eyes-on even though WAF is already blocking it."
+        }
+      },
+      # Row 7 — ECS CPU/Memory
+      {
+        type = "metric", x = 0, y = 39, width = 12, height = 6,
+        properties = {
+          title  = "Backend service CPU / memory (%)",
           region = var.aws_region,
           view   = "timeSeries",
-          stat   = "Sum",
           metrics = [
-            ["AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count", "LoadBalancer", aws_lb.main.arn_suffix]
+            ["AWS/ECS", "CPUUtilization", "ClusterName", aws_ecs_cluster.main.name, "ServiceName", aws_ecs_service.backend.name, { label = "CPU %" }],
+            ["AWS/ECS", "MemoryUtilization", "ClusterName", aws_ecs_cluster.main.name, "ServiceName", aws_ecs_service.backend.name, { label = "Memory %" }]
           ]
+          annotations = {
+            horizontal = [
+              { label = "Autoscale adds capacity (~${var.ecs_autoscale_cpu_target}% CPU)", value = var.ecs_autoscale_cpu_target }
+            ]
+          }
+        }
+      },
+      {
+        type = "text", x = 12, y = 39, width = 12, height = 6,
+        properties = {
+          markdown = "### Backend service CPU / memory\n\nHow hard the running backend containers are working. Normal: comfortably under the autoscale line — above it, AWS adds another task automatically (floor ${var.ecs_service_min_count}, ceiling ${var.ecs_service_max_count}). **Worry if** it's pinned near 100% even after scaling out, or if Memory climbs steadily with no plateau (possible leak). No CloudWatch alarm is wired to this panel yet — it's watch-only."
         }
       }
     ]
   })
 }
 
-# ── WAF dashboard ────────────────────────────────────────────────────────────
-# Per-rule blocked counts use the metric_name set on each rule's
-# visibility_config in waf.tf. Top blocked source IPs / geo distribution are not
-# CloudWatch metrics — they live in the WAF sampled-requests / logs surface and
-# are linked from the dashboard via a text widget rather than synthesized here.
-
-resource "aws_cloudwatch_dashboard" "waf" {
-  dashboard_name = "${var.project_name}-waf"
+resource "aws_cloudwatch_dashboard" "data_stores" {
+  dashboard_name = "${var.project_name}-data-stores"
   dashboard_body = jsonencode({
     widgets = [
       {
-        type = "metric", x = 0, y = 0, width = 12, height = 6,
+        type = "alarm", x = 0, y = 0, width = 24, height = 3,
         properties = {
-          title  = "Allowed vs blocked (Web ACL total)",
+          title = "Alarms — data stores",
+          alarms = [
+            aws_cloudwatch_metric_alarm.aurora_cpu_high.arn,
+            aws_cloudwatch_metric_alarm.aurora_low_memory.arn,
+            aws_cloudwatch_metric_alarm.aurora_connections_high.arn,
+            aws_cloudwatch_metric_alarm.aurora_connections_pct_high.arn,
+            aws_cloudwatch_metric_alarm.aurora_acu_max.arn,
+            aws_cloudwatch_metric_alarm.redis_evictions.arn,
+          ]
+        }
+      },
+      # Row 1 — Aurora CPU
+      {
+        type = "metric", x = 0, y = 3, width = 12, height = 6,
+        properties = {
+          title  = "Aurora CPU (%)",
           region = var.aws_region,
           view   = "timeSeries",
-          stat   = "Sum",
           metrics = [
-            ["AWS/WAFV2", "AllowedRequests", "WebACL", local.waf_metric_name, "Region", var.aws_region, "Rule", "ALL", { label = "Allowed" }],
-            ["AWS/WAFV2", "BlockedRequests", "WebACL", local.waf_metric_name, "Region", var.aws_region, "Rule", "ALL", { label = "Blocked" }]
+            ["AWS/RDS", "CPUUtilization", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier]
+          ]
+          annotations = {
+            horizontal = [
+              { label = "Alarm threshold (85%)", value = 85 }
+            ]
+          }
+        }
+      },
+      {
+        type = "text", x = 12, y = 3, width = 12, height = 6,
+        properties = {
+          markdown = "### Aurora CPU\n\nHow hard the database is working. Normal: comfortably under 85%. **Worry if** it's pinned near **85%** for 10+ minutes — that's the alarm line."
+        }
+      },
+      # Row 2 — ACU
+      {
+        type = "metric", x = 0, y = 9, width = 12, height = 6,
+        properties = {
+          title  = "Aurora Serverless capacity (ACU)",
+          region = var.aws_region,
+          view   = "timeSeries",
+          metrics = [
+            ["AWS/RDS", "ServerlessDatabaseCapacity", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier]
+          ]
+          annotations = {
+            horizontal = [
+              { label = "Alarm threshold (15.5 of 16 max)", value = 15.5 }
+            ]
+          }
+        }
+      },
+      {
+        type = "text", x = 12, y = 9, width = 12, height = 6,
+        properties = {
+          markdown = "### Database capacity (ACU)\n\nAurora Serverless auto-scales compute between 0.5 and 16 ACU as load changes. Normal: floats well below 16. **Worry if** it's pinned near **16 (the max)** — the database is out of headroom to scale further, which is also a cost signal."
+        }
+      },
+      # Row 3 — connections
+      {
+        type = "metric", x = 0, y = 15, width = 12, height = 6,
+        properties = {
+          title  = "Aurora connections",
+          region = var.aws_region,
+          view   = "timeSeries",
+          metrics = [
+            ["AWS/RDS", "DatabaseConnections", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier]
+          ]
+          annotations = {
+            horizontal = [
+              { label = "Alarm threshold (80, ~80% of ~100 working ceiling)", value = 80 }
+            ]
+          }
+        }
+      },
+      {
+        type = "text", x = 12, y = 15, width = 12, height = 6,
+        properties = {
+          markdown = "### Database connections\n\nOpen connections to Aurora. Our working ceiling is ~100 connections at this ACU range, so the absolute alarm (80) and ~80% of that ceiling land on the same line. Normal: well under 80. **Worry if** this line crosses **80**."
+        }
+      },
+      # Row 4 — storage / freeable memory
+      {
+        type = "metric", x = 0, y = 21, width = 12, height = 6,
+        properties = {
+          title  = "Aurora storage / freeable memory (bytes)",
+          region = var.aws_region,
+          view   = "timeSeries",
+          metrics = [
+            ["AWS/RDS", "VolumeBytesUsed", "DBClusterIdentifier", aws_rds_cluster.main.cluster_identifier, { label = "VolumeBytesUsed" }],
+            ["AWS/RDS", "FreeableMemory", "DBInstanceIdentifier", aws_rds_cluster_instance.main.identifier, { label = "FreeableMemory" }]
+          ]
+          annotations = {
+            horizontal = [
+              { label = "Freeable-memory alarm threshold (256 MiB)", value = 268435456 }
+            ]
+          }
+        }
+      },
+      {
+        type = "text", x = 12, y = 21, width = 12, height = 6,
+        properties = {
+          markdown = "### Storage / freeable memory\n\nVolumeBytesUsed = data on disk (grows slowly, not urgent). FreeableMemory = RAM headroom on the instance — much smaller in bytes, so it reads near-flat on this shared axis. Normal: freeable memory well above 256 MiB. **Worry if** FreeableMemory drops toward the **256 MiB** line — that's the alarm, and it risks OOM / connection churn."
+        }
+      },
+      # Row 5 — Redis CPU/memory
+      {
+        type = "metric", x = 0, y = 27, width = 12, height = 6,
+        properties = {
+          title  = "Redis CPU / memory (%)",
+          region = var.aws_region,
+          view   = "timeSeries",
+          metrics = [
+            ["AWS/ElastiCache", "EngineCPUUtilization", "CacheClusterId", local.redis_node_id, { label = "Engine CPU %" }],
+            ["AWS/ElastiCache", "DatabaseMemoryUsagePercentage", "CacheClusterId", local.redis_node_id, { label = "Memory %" }]
           ]
         }
       },
       {
-        type = "metric", x = 12, y = 0, width = 12, height = 6,
+        type = "text", x = 12, y = 27, width = 12, height = 6,
         properties = {
-          title  = "Blocked requests per rule",
+          markdown = "### Redis CPU / memory\n\nHow hard the cache is working and how full it is. Normal: both comfortably under 100%. **Worry if** either climbs steadily with no plateau. No CloudWatch alarm is wired to this panel yet — Evictions (next row) is the earlier, more reliable memory-pressure signal."
+        }
+      },
+      # Row 6 — evictions
+      {
+        type = "metric", x = 0, y = 33, width = 12, height = 6,
+        properties = {
+          title  = "Redis evictions",
           region = var.aws_region,
           view   = "timeSeries",
-          stat   = "Sum",
           metrics = [
-            ["AWS/WAFV2", "BlockedRequests", "WebACL", local.waf_metric_name, "Region", var.aws_region, "Rule", "rate-limit", { label = "rate-limit" }],
-            ["AWS/WAFV2", "BlockedRequests", "WebACL", local.waf_metric_name, "Region", var.aws_region, "Rule", "aws-core-rules", { label = "core-rules" }],
-            ["AWS/WAFV2", "BlockedRequests", "WebACL", local.waf_metric_name, "Region", var.aws_region, "Rule", "aws-known-bad-inputs", { label = "known-bad-inputs" }],
-            ["AWS/WAFV2", "BlockedRequests", "WebACL", local.waf_metric_name, "Region", var.aws_region, "Rule", "aws-ip-reputation", { label = "ip-reputation" }]
+            ["AWS/ElastiCache", "Evictions", "CacheClusterId", local.redis_node_id]
+          ]
+          annotations = {
+            horizontal = [
+              { label = "Alarm threshold (100 / 5 min)", value = 100 }
+            ]
+          }
+        }
+      },
+      {
+        type = "text", x = 12, y = 33, width = 12, height = 6,
+        properties = {
+          markdown = "### Redis evictions\n\nKeys Redis discarded to free memory under pressure. Normal: 0. **Worry if** this crosses **100 in a 5-min window** — that's the alarm, meaning the cache is too small for what's being asked of it (regime state / job queue churn)."
+        }
+      },
+      # Row 7 — connections
+      {
+        type = "metric", x = 0, y = 39, width = 12, height = 6,
+        properties = {
+          title  = "Redis connections",
+          region = var.aws_region,
+          view   = "timeSeries",
+          metrics = [
+            ["AWS/ElastiCache", "CurrConnections", "CacheClusterId", local.redis_node_id]
           ]
         }
       },
       {
-        type = "metric", x = 0, y = 6, width = 12, height = 6,
+        type = "text", x = 12, y = 39, width = 12, height = 6,
         properties = {
-          title  = "Counted requests per rule (COUNT-mode SQLi)",
+          markdown = "### Redis connections\n\nOpen client connections to the cache. Normal: a small, roughly steady number tracking backend task count. **Worry if** it climbs unbounded (a connection leak) — no alarm is wired here; watch alongside CPU/memory above."
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_cloudwatch_dashboard" "machines_and_network" {
+  dashboard_name = "${var.project_name}-machines-and-network"
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "alarm", x = 0, y = 0, width = 24, height = 3,
+        properties = {
+          title = "Alarms — machines & network",
+          alarms = concat(
+            [
+              aws_cloudwatch_metric_alarm.runner_ec2_status_check_failed.arn,
+              aws_cloudwatch_metric_alarm.runner_instance_impaired.arn,
+            ],
+            aws_cloudwatch_metric_alarm.nat_status_check_failed[*].arn,
+            aws_cloudwatch_metric_alarm.nat_egress_anomaly[*].arn,
+          )
+        }
+      },
+      # Row 1 — runner status check
+      {
+        type = "metric", x = 0, y = 3, width = 12, height = 6,
+        properties = {
+          title  = "Runner instance status check (StatusCheckFailed_Instance)",
           region = var.aws_region,
           view   = "timeSeries",
-          stat   = "Sum",
+          stat   = "Maximum",
           metrics = [
-            ["AWS/WAFV2", "CountedRequests", "WebACL", local.waf_metric_name, "Region", var.aws_region, "Rule", "aws-sqli", { label = "sqli (count mode)" }]
+            ["AWS/EC2", "StatusCheckFailed_Instance", "InstanceId", aws_instance.runner.id]
+          ]
+          annotations = {
+            horizontal = [
+              { label = "Alarm threshold (>= 1, 2x 5-min periods)", value = 1 }
+            ]
+          }
+        }
+      },
+      {
+        type = "text", x = 12, y = 3, width = 12, height = 6,
+        properties = {
+          markdown = "### Runner instance status check\n\nThe oracle+agent runner's OS-level health check — catches memory exhaustion / OS wedges even when the underlying hardware is fine (issue #1402). Normal: flat at 0. **Worry if** this hits **1** — that's the alarm line, and it means no oracle price pushes and no agent rebalances until it recovers."
+        }
+      },
+      # Row 2 — runner CPU
+      {
+        type = "metric", x = 0, y = 9, width = 12, height = 6,
+        properties = {
+          title  = "Runner CPU utilization (%)",
+          region = var.aws_region,
+          view   = "timeSeries",
+          metrics = [
+            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.runner.id]
           ]
         }
       },
       {
-        type = "text", x = 12, y = 6, width = 12, height = 6,
+        type = "text", x = 12, y = 9, width = 12, height = 6,
         properties = {
-          markdown = "### Top blocked source IPs & geo distribution\n\nThese are **not** CloudWatch metrics. Open the WAF console for the `${aws_wafv2_web_acl.main.name}` Web ACL → **Sampled requests** for top source IPs and country breakdown, or query the WAF logs.\n\nThe `${var.project_name}-waf-blocked-spike` alarm pages when blocked requests exceed 100/min."
+          markdown = "### Runner CPU\n\nHow hard the runner box is working (two lightweight async Python loops — oracle + agent). Normal: low and steady. **Worry if** it climbs steadily or spikes with no plateau. No CloudWatch alarm is wired to this panel — memory is the box's known failure mode (#1402), and stock EC2 metrics don't expose memory without a CloudWatch agent install (deliberately not added here); the status-check panel above is the proxy signal."
+        }
+      },
+      # Row 3 — NAT status
+      {
+        type = "metric", x = 0, y = 15, width = 12, height = 6,
+        properties = {
+          title  = "NAT instance status check (StatusCheckFailed_System)",
+          region = var.aws_region,
+          view   = "timeSeries",
+          stat   = "Maximum",
+          metrics = [
+            for i, nat in aws_instance.nat :
+            ["AWS/EC2", "StatusCheckFailed_System", "InstanceId", nat.id, { label = "NAT-${i}" }]
+          ]
+          annotations = {
+            horizontal = [
+              { label = "Alarm threshold (> 0, 2x 1-min periods)", value = 0 }
+            ]
+          }
+        }
+      },
+      {
+        type = "text", x = 12, y = 15, width = 12, height = 6,
+        properties = {
+          markdown = "### NAT instance status\n\nHardware/hypervisor health of the two fck-nat instances that give the private subnets (backend, Aurora, ElastiCache, runner) their internet egress. Normal: flat at 0 for both. **Worry if** either goes above **0** — that's the alarm, and it auto-triggers AWS's ec2:recover action as well as paging."
+        }
+      },
+      # Row 4 — NAT egress bytes
+      {
+        type = "metric", x = 0, y = 21, width = 12, height = 6,
+        properties = {
+          title  = "NAT egress bytes (5-min Sum)",
+          region = var.aws_region,
+          view   = "timeSeries",
+          stat   = "Sum",
+          metrics = [
+            for i, nat in aws_instance.nat :
+            ["AWS/EC2", "NetworkOut", "InstanceId", nat.id, { label = "NAT-${i} NetworkOut" }]
+          ]
+          annotations = {
+            horizontal = [
+              { label = "Alarm threshold (5 GiB / 5-min datapoint)", value = 5368709120 }
+            ]
+          }
+        }
+      },
+      {
+        type = "text", x = 12, y = 21, width = 12, height = 6,
+        properties = {
+          markdown = "### NAT egress bytes\n\nOutbound data leaving each NAT instance. Normal: modest and steady (ECR pulls, Arc RPC, Aurora/ElastiCache traffic, CloudWatch Logs). **Worry if** a NAT instance crosses **5 GiB in a single 5-min datapoint, sustained 15 min** — that's the alarm, and it doubles as a surprise-bill / exfiltration signal."
+        }
+      },
+      # Row 5 — total NAT-processed bytes trend
+      {
+        type = "metric", x = 0, y = 27, width = 12, height = 6,
+        properties = {
+          title  = "VPC NAT-processed bytes (in + out, 5-min Sum)",
+          region = var.aws_region,
+          view   = "timeSeries",
+          stat   = "Sum",
+          metrics = concat(
+            [for i, nat in aws_instance.nat : ["AWS/EC2", "NetworkOut", "InstanceId", nat.id, { label = "NAT-${i} out" }]],
+            [for i, nat in aws_instance.nat : ["AWS/EC2", "NetworkIn", "InstanceId", nat.id, { label = "NAT-${i} in" }]]
+          )
+        }
+      },
+      {
+        type = "text", x = 12, y = 27, width = 12, height = 6,
+        properties = {
+          markdown = "### Total NAT traffic trend\n\nBoth directions of traffic through the NAT instances, together — the overall shape of how much the private subnet is talking to the internet. Normal: tracks app activity, gently varying, no big step changes. **Worry if** you see a sudden sustained step up or down with no matching deploy/traffic change — could be a stuck retry loop, a runaway job, or a network problem."
         }
       }
     ]
@@ -901,23 +1016,24 @@ output "alerts_topic_arn" {
   value       = aws_sns_topic.alerts.arn
 }
 
-output "ops_dashboard_name" {
-  description = "CloudWatch dashboard name."
-  value       = aws_cloudwatch_dashboard.ops.dashboard_name
+output "product_health_dashboard_name" {
+  description = "CloudWatch dashboard name — 'is the site up and fast' (product-health)."
+  value       = aws_cloudwatch_dashboard.product_health.dashboard_name
 }
 
 # All CloudWatch dashboard names (issue #418 acceptance — `terraform output
-# cloudwatch_dashboard_names`). Includes the pre-existing ops dashboard plus
-# the per-subsystem dashboards added for Layer 1 (originally six; ec2_backend
-# was removed 2026-08-19 with the EC2 decommission, leaving five).
+# cloudwatch_dashboard_names`). Consolidated 2026-08-20 from six per-subsystem
+# dashboards (ops, aurora, elasticache, vpc_nat, alb, waf — ec2_backend having
+# already been removed 2026-08-19 with the EC2 decommission) down to the three
+# founder-readable dashboards below — CloudWatch bills the 4th+ dashboard at
+# $3/mo each, and six SRE-shaped dashboards were not what the (non-SRE)
+# founder needed to answer "is it up, are the DBs ok, are the background
+# machines alive."
 output "cloudwatch_dashboard_names" {
   description = "Names of every CloudWatch dashboard managed by Terraform."
   value = [
-    aws_cloudwatch_dashboard.ops.dashboard_name,
-    aws_cloudwatch_dashboard.aurora.dashboard_name,
-    aws_cloudwatch_dashboard.elasticache.dashboard_name,
-    aws_cloudwatch_dashboard.vpc_nat.dashboard_name,
-    aws_cloudwatch_dashboard.alb.dashboard_name,
-    aws_cloudwatch_dashboard.waf.dashboard_name,
+    aws_cloudwatch_dashboard.product_health.dashboard_name,
+    aws_cloudwatch_dashboard.data_stores.dashboard_name,
+    aws_cloudwatch_dashboard.machines_and_network.dashboard_name,
   ]
 }
