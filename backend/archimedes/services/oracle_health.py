@@ -42,11 +42,24 @@ module's tests mirror) — never patch internals.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+# /health's total budget is hard-enforced twice at 5s — infra/alb.tf's
+# target-group check and infra/ecs.tf's container HEALTHCHECK (which gates
+# nginx's dependsOn HEALTHY condition) — and the handler already spends up to
+# chain/client.py's rpc_timeout_seconds (3.0s) on is_connected() before this
+# probe runs. The probe therefore gets a strict aggregate deadline of its own:
+# per-symbol reads run concurrently, and a deadline overrun is a LOUD miss
+# (oracle_fresh=False with a probe_timeout reason), never a slow success that
+# lets ALB/ECS kill a healthy task for an RPC-layer problem. Same risk class
+# asset_market_service._ORACLE_TOTAL_BUDGET_SECONDS already guards, tightened
+# for the health path's smaller budget.
+_PROBE_BUDGET_SECONDS = 1.5
 
 
 @dataclass(frozen=True)
@@ -106,18 +119,22 @@ def _universe_count() -> int:
     return len(ON_CHAIN_SYNTHS)
 
 
-async def oracle_health() -> OracleHealth:
+async def oracle_health(budget_seconds: float | None = None) -> OracleHealth:
     """Probe on-chain freshness for the currently-pushed oracle symbols.
 
     Reads each probed oracle's ``isFresh()`` and ``lastUpdated()`` through the
     existing chain client / contract loader
     (``chain.contracts.get_contract_loader().oracle_for(symbol)``) — the same
     call shape ``oracle_updater._get_reference_price_int`` uses for ``price()``.
+    All per-symbol reads run concurrently under one aggregate deadline
+    (``budget_seconds``, default ``_PROBE_BUDGET_SECONDS``) so the probe's
+    worst case is one bounded round-trip window, not reads × rpc_timeout —
+    see the constant's comment for the /health 5s budget arithmetic.
 
-    Never raises. Every failure path returns an ``OracleHealth`` with
-    ``oracle_fresh=False`` and an explicit marker in ``reason`` — see the
-    module docstring's fail-soft note. A read failure is NEVER silently
-    absent and NEVER reported as fresh.
+    Never raises. Every failure path — including a deadline overrun — returns
+    an ``OracleHealth`` with ``oracle_fresh=False`` and an explicit marker in
+    ``reason`` — see the module docstring's fail-soft note. A read failure is
+    NEVER silently absent and NEVER reported as fresh.
     """
     universe_count = _universe_count()
 
@@ -166,15 +183,48 @@ async def oracle_health() -> OracleHealth:
             reason=f"oracle_health chain_read_failed: contract loader unavailable ({exc})",
         )
 
-    for symbol in symbols:
-        try:
-            oracle = loader.oracle_for(symbol)
-            is_fresh = await oracle.functions.isFresh().call()
-            last_updated = await oracle.functions.lastUpdated().call()
-            ages.append(max(0, int(now - int(last_updated))))
-            all_fresh_flags.append(bool(is_fresh))
-        except Exception as exc:
-            errors.append(f"{symbol}: {exc}")
+    async def _read_one(symbol: str) -> tuple[bool, int]:
+        oracle = loader.oracle_for(symbol)
+        # The two view reads for one symbol are independent — run them
+        # concurrently too, so a symbol costs one round-trip window, not two.
+        is_fresh, last_updated = await asyncio.gather(
+            oracle.functions.isFresh().call(),
+            oracle.functions.lastUpdated().call(),
+        )
+        return bool(is_fresh), int(last_updated)
+
+    budget = _PROBE_BUDGET_SECONDS if budget_seconds is None else budget_seconds
+    try:
+        outcomes = await asyncio.wait_for(
+            asyncio.gather(*(_read_one(s) for s in symbols), return_exceptions=True),
+            timeout=budget,
+        )
+    except TimeoutError:
+        # Deadline overrun is a LOUD miss, never a slow success: a degraded
+        # (not down) RPC must not push /health past the 5s ALB/ECS budget and
+        # get a healthy task killed — the exact failure mode
+        # chain/client.py's rpc_timeout_seconds comment guards against.
+        logger.warning(
+            "oracle_health: probe exceeded %.1fs budget for %d oracle(s)",
+            budget,
+            probed_count,
+        )
+        return OracleHealth(
+            status="unknown",
+            oracle_fresh=False,
+            oracle_oldest_age_s=None,
+            oracle_probed_count=probed_count,
+            oracle_universe_count=universe_count,
+            reason=f"oracle_health probe_timeout: exceeded {budget:.1f}s budget",
+        )
+
+    for symbol, outcome in zip(symbols, outcomes, strict=True):
+        if isinstance(outcome, BaseException):
+            errors.append(f"{symbol}: {outcome}")
+            continue
+        is_fresh, last_updated = outcome
+        ages.append(max(0, int(now - last_updated)))
+        all_fresh_flags.append(is_fresh)
 
     if not ages:
         # Every probed read failed — unobtainable, not confirmed-stale (mirrors

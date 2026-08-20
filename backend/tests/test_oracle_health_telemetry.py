@@ -30,7 +30,9 @@ Hermetic gate:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time as time_mod
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -112,6 +114,44 @@ class TestOracleHealthAllFresh:
         assert diag.oracle_fresh is True
         assert diag.status == "fresh"
         assert diag.oracle_oldest_age_s == 90
+        assert diag.oracle_probed_count == 2
+        assert diag.oracle_universe_count == _universe_count()
+
+
+class TestOracleHealthProbeBudget:
+    @pytest.mark.asyncio
+    async def test_slow_rpc_is_a_loud_timeout_not_a_slow_success(self) -> None:
+        """A degraded-but-answering RPC must never turn /health into a slow
+        success: unbudgeted reads bounded only by the chain client's 3s
+        rpc_timeout could push /health past its 5s ALB/ECS budget and get a
+        healthy task killed (the exact failure mode chain/client.py's
+        rpc_timeout_seconds comment guards). The probe enforces its own
+        aggregate deadline and reports an overrun as an explicit not-fresh
+        marker — a loud miss, never a hang."""
+
+        async def _slow(*_a: object, **_k: object) -> bool:
+            await asyncio.sleep(0.5)
+            return True
+
+        loader = MagicMock()
+
+        def _oracle_for(_symbol: str) -> MagicMock:
+            contract = MagicMock()
+            contract.functions.isFresh.return_value.call = AsyncMock(side_effect=_slow)
+            contract.functions.lastUpdated.return_value.call = AsyncMock(side_effect=_slow)
+            return contract
+
+        loader.oracle_for.side_effect = _oracle_for
+
+        with patch("archimedes.chain.contracts.get_contract_loader", return_value=loader):
+            started = time_mod.monotonic()
+            diag = await oracle_health(budget_seconds=0.05)
+            elapsed = time_mod.monotonic() - started
+
+        assert elapsed < 0.4  # returned at the budget, not after the slow reads
+        assert diag.oracle_fresh is False
+        assert diag.status == "unknown"
+        assert "probe_timeout" in diag.reason
         assert diag.oracle_probed_count == 2
         assert diag.oracle_universe_count == _universe_count()
 
