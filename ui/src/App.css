@@ -204,23 +204,30 @@ html {
 	scroll-behavior: smooth;
 	overflow-x: hidden;
 	/* The document is the scroll container and .topbar (the APP shell's bar
-     only — see the .public-site override below) is sticky over it at a
-     fixed 56px on every breakpoint. Without this, Shift+Tab backwards up a
-     long page parks the newly focused control under the blurred bar and its
-     focus ring becomes unreadable (2.4.11 Focus Not Obscured). 56px bar +
-     3px outline + 3px offset = 62, rounded to 64. */
-	scroll-padding-top: 64px;
+     only — see the .public-site override below) is sticky over it. Without
+     this, Shift+Tab backwards up a long page parks the newly focused control
+     under the blurred bar and its focus ring becomes unreadable (2.4.11
+     Focus Not Obscured). `.topbar`'s own rule below says 56px, but `.topbar`
+     only ever renders inside `.app-site` (Layout.jsx nests it under
+     `.shell.app-site`), and `.app-site .topbar` (higher specificity, no
+     media query, so it always wins) overrides that to 64px — that is the
+     height that actually renders, not 56 (#1318 residual: the original
+     64px value here was derived from the un-overridden 56px). 64px bar +
+     3px outline + 3px offset (.app-site :focus-visible) = 70, rounded up
+     to 72. */
+	scroll-padding-top: 72px;
 }
-/* .public-header (public shell) is taller than .topbar and its
-   :focus-visible ring uses a wider offset, so the 64px clearance above is
-   short here by up to 15px — a focused control on Architecture/Landing
-   could still park under the blurred public header (2.4.11, #1318 residual:
-   the base 64px value was verified against .topbar only, never against
-   .public-header). .public-site is not itself the scroll container (the
-   document/html is, per the comment above), so the override has to target
-   html, reached via :has() since .public-site is a descendant, not an
-   ancestor, of it. 72px bar (66px on the ≤560px breakpoint) + 3px outline +
-   4px offset = 79, rounded up to 80. */
+/* .public-header (public shell) is taller than the app topbar's real 64px
+   (see the comment above) and its :focus-visible ring uses a wider offset,
+   so even the corrected clearance above would be short here — a focused
+   control on Architecture/Landing could still park under the blurred
+   public header (2.4.11, #1318 residual: the base value was verified
+   against .app-site .topbar only, never against .public-header).
+   .public-site is not itself the scroll container (the document/html is,
+   per the comment above), so the override has to target html, reached via
+   :has() since .public-site is a descendant, not an ancestor, of it. 72px
+   bar (66px on the ≤560px breakpoint) + 3px outline + 4px offset = 79,
+   rounded up to 80. */
 html:has(.public-site) {
 	scroll-padding-top: 80px;
 }
@@ -3688,15 +3695,23 @@ button:where(.tag) {
 	--text-3: #8da098;
 	/* Architecture's loading / error / "live number unavailable" copy is drawn
      in --text-4 (Architecture.jsx :86, :382, :514, :872, :901, :1054, :1084),
-     so it has to clear 4.5:1 on every surface it could paint against, not
-     just the ones call sites happen to use today — same standard already
-     applied to --chart-label above. #7d9189 (the #1319 fix) was 4.74:1 on
-     --surface-2 (#10252d) but only 3.94:1 on the lighter --surface-3
-     (#17343d) — flagged as a residual in #1318. #8b9f97 clears both:
-     5.67:1 on --surface-2, 4.71:1 on --surface-3, 6.31:1 on the glass card
-     (--surface-3 is the binding constraint). No current call site actually
-     paints --text-4 on --surface-3 inside .public-site — grepped clean —
-     so this raises the floor defensively rather than fixing a live defect. */
+     so it has to clear 4.5:1 on every surface it could actually paint
+     against — same standard already applied to --chart-label above.
+     #7d9189 (the #1319 fix) was 4.74:1 on --surface-2 (#10252d) but only
+     3.94:1 on the lighter --surface-3 (#17343d) — flagged as a residual in
+     #1318. #8b9f97 clears --surface-1 through --surface-3 (6.23:1, 5.67:1,
+     4.70:1 — --surface-3 is the binding constraint of the three) and the
+     glass card (6.31:1).
+     It does NOT clear --surface-4 (#21434a, 3.82:1), and deliberately isn't
+     raised to cover it: every `background: var(--surface-4)` rule
+     (.token-pill-select .cs-trigger:hover, .info-box code, .chat-count,
+     .timeline::before, ...) belongs to app-shell-only components that
+     Landing.jsx / Architecture.jsx never render, so --text-4 painted on
+     --surface-4 inside .public-site cannot actually happen — grepped
+     clean. No current call site pairs --text-4 with --surface-1/2/3 either
+     — this raises the floor defensively for those three, the same
+     standard already applied to --chart-label, rather than fixing a
+     rendered defect. */
 	--text-4: #8b9f97;
 	--accent-rgb: 217, 168, 92;
 	--accent: var(--public-bronze);

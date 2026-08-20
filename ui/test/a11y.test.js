@@ -45,6 +45,28 @@ function resolveHex(block, rawValue) {
 	return rawValue;
 }
 
+// A regex pinning `scroll-padding-top: 80px` only guards that one side of
+// the clearance pair too — the header height / focus-ring geometry it was
+// derived from can drift with the guard still green unless the relationship
+// is actually computed. These pull a raw px number off a declaration and,
+// for a rule nested one level inside another block (e.g. inside a @media
+// query), off a block whose own closing brace carries that block's indent
+// rather than sitting at column 0.
+
+function numPx(block, prop) {
+	const re = new RegExp(`\\b${prop}:\\s*(\\d+(?:\\.\\d+)?)px`);
+	const m = block.match(re);
+	assert.ok(m, `property not found in block: ${prop}`);
+	return Number(m[1]);
+}
+
+function nestedCssBlock(blockText, selector) {
+	const re = new RegExp(`${selector}\\s*\\{([\\s\\S]*?)\\n\\t\\}`);
+	const m = blockText.match(re);
+	assert.ok(m, `nested CSS block not found: ${selector}`);
+	return m[1];
+}
+
 function relativeLuminance(hex) {
 	const h = hex.replace("#", "");
 	const full = h.length === 3 ? [...h].map((c) => c + c).join("") : h;
@@ -202,16 +224,55 @@ test("no rule strips the focus indicator from a control", () => {
 // ── 2.4.11 Focus Not Obscured / 1.4.4 Resize Text ─────────────────────────
 
 test("sticky topbar cannot cover a focused control", () => {
-	// 56px bar + 3px outline + 3px offset.
-	assert.match(css, /^html \{[^}]*scroll-padding-top: 64px;/m);
-	// .public-header is taller (72px, 66px ≤560px) with a wider focus-ring
-	// offset (4px) than .topbar, so the 64px clearance above is short by up
-	// to 15px there. .public-site is not the scroll container — html is —
-	// so the override has to reach html via :has(), not sit on .public-site
-	// itself. 72 + 3 + 4 = 79, rounded up to 80 (#1318 residual).
-	assert.match(
-		css,
-		/html:has\(\.public-site\)\s*\{\s*scroll-padding-top: 80px;/,
+	// Pinning the scroll-padding-top literal alone only guards that one side
+	// of the clearance pair — the sticky bar's height and the focus ring's
+	// outline width / offset can drift out from under it with the guard
+	// still green. This resolves both sides out of the live CSS for each
+	// shell and asserts scroll-padding-top actually clears
+	// height + outline + outline-offset, the same static-parse approach the
+	// contrast test above uses.
+
+	// App shell: `.topbar`'s own rule below says 56px, but `.topbar` only
+	// ever renders inside `.app-site` (Layout.jsx nests it under
+	// `.shell.app-site`), and `.app-site .topbar` — higher specificity, not
+	// scoped to any breakpoint — overrides that to 64px. That is the height
+	// that actually renders, so it's what has to be measured, not the bare
+	// rule's 56px.
+	const appTopbarHeight = numPx(cssBlock(css, "\\.app-site \\.topbar"), "height");
+	const appFocus = cssBlock(css, "\\.app-site :focus-visible");
+	const appRequired =
+		appTopbarHeight + numPx(appFocus, "outline") + numPx(appFocus, "outline-offset");
+	const baseScrollPad = numPx(cssBlock(css, "html"), "scroll-padding-top");
+	assert.ok(
+		baseScrollPad >= appRequired,
+		`scroll-padding-top (${baseScrollPad}px) does not clear .app-site .topbar: ` +
+			`${appTopbarHeight}px height + focus ring needs ${appRequired}px`,
+	);
+
+	// Public shell: `.public-header__inner` is taller than the app topbar
+	// (72px, 66px on the ≤560px breakpoint) with a wider :focus-visible
+	// offset (4px) than `.app-site`'s (3px). `.public-site` is not the
+	// scroll container — html is — so the override has to reach html via
+	// :has(), not sit on .public-site itself (#1318 residual).
+	const publicHeaderHeight = numPx(cssBlock(css, "\\.public-header__inner"), "min-height");
+	const media560 = cssBlock(css, "@media \\(max-width: 560px\\)");
+	const publicHeaderHeight560 = numPx(
+		nestedCssBlock(media560, "\\.public-header__inner"),
+		"min-height",
+	);
+	const publicFocus = cssBlock(css, "\\.public-site :focus-visible");
+	const publicRequired =
+		Math.max(publicHeaderHeight, publicHeaderHeight560) +
+		numPx(publicFocus, "outline") +
+		numPx(publicFocus, "outline-offset");
+	const publicScrollPad = numPx(
+		cssBlock(css, "html:has\\(\\.public-site\\)"),
+		"scroll-padding-top",
+	);
+	assert.ok(
+		publicScrollPad >= publicRequired,
+		`html:has(.public-site) scroll-padding-top (${publicScrollPad}px) does not clear ` +
+			`.public-header__inner: needs ${publicRequired}px`,
 	);
 });
 
