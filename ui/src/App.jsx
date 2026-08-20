@@ -84,6 +84,7 @@ export default function App() {
       account: 'Account · Archimedes',
       'vault-detail': 'Vault · Archimedes',
       strategy: 'Strategy · Archimedes',
+      paper: 'Paper Trading · Archimedes',
       'sign-in': 'Sign in · Archimedes',
       'sign-up': 'Create account · Archimedes',
     }
