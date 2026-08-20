@@ -145,9 +145,12 @@ _VAULT_AI = "0x00000000000000000000000000000000000005ae"
 
 class TestArchimedesMentionBudgetGate:
     """Audit 2026-06-14: an @archimedes mention triggers a paid Claude
-    completion. That AI-triggering branch is gated behind the same
-    REQUIRE_SIWE_FOR_GENERATION flag as the generation endpoints — default OFF
-    keeps chat open; ON requires a verified session to spend tokens.
+    completion. Chat posting is gated unconditionally by
+    ``require_linked_wallet`` (a verified session — a body-supplied
+    ``wallet_address`` grants nothing), so anonymous callers can never spend
+    tokens. The retired ``REQUIRE_SIWE_FOR_GENERATION`` opt-out these tests
+    once toggled was deleted 2026-08-19; there is no flag that reopens
+    anonymous chat.
 
     The AI generator is stubbed so the "allowed" paths stay hermetic (no real
     Anthropic call); the 401 path fires before post_message is even reached.
@@ -159,8 +162,7 @@ class TestArchimedesMentionBudgetGate:
 
         monkeypatch.setattr(chat_service, "_generate_ai_response", lambda *a, **k: None)
 
-    def test_mention_blocked_without_session_when_flag_on(self, client, monkeypatch):
-        monkeypatch.setenv("REQUIRE_SIWE_FOR_GENERATION", "true")
+    def test_mention_blocked_without_session(self, client):
         res = client.post(
             f"/api/vaults/{_VAULT_AI}/chat",
             json={"wallet_address": _W_BODY, "message": "hey @archimedes rebalance me"},
@@ -168,8 +170,7 @@ class TestArchimedesMentionBudgetGate:
         assert res.status_code == 401, res.text
         assert "authentication" in res.json()["detail"].lower()
 
-    def test_mention_allowed_with_session_when_flag_on(self, client, monkeypatch):
-        monkeypatch.setenv("REQUIRE_SIWE_FOR_GENERATION", "true")
+    def test_mention_allowed_with_session(self, client):
         res = client.post(
             f"/api/vaults/{_VAULT_AI}/chat",
             json={"message": "@archimedes status please"},
@@ -177,16 +178,7 @@ class TestArchimedesMentionBudgetGate:
         )
         assert res.status_code == 200, res.text
 
-    def test_flag_off_does_not_restore_anonymous_wallet_identity(self, client, monkeypatch):
-        monkeypatch.delenv("REQUIRE_SIWE_FOR_GENERATION", raising=False)
-        res = client.post(
-            f"/api/vaults/{_VAULT_AI}/chat",
-            json={"wallet_address": _W_BODY, "message": "@archimedes hello"},
-        )
-        assert res.status_code == 401
-
-    def test_non_mention_still_requires_account(self, client, monkeypatch):
-        monkeypatch.setenv("REQUIRE_SIWE_FOR_GENERATION", "true")
+    def test_non_mention_still_requires_session(self, client):
         res = client.post(
             f"/api/vaults/{_VAULT_AI}/chat",
             json={"wallet_address": _W_BODY, "message": "just chatting, no mention"},
