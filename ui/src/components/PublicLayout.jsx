@@ -32,6 +32,25 @@ export default function PublicLayout({ user, children }) {
 			<div id="public-content" tabIndex="-1">
 				{children}
 			</div>
+			{/* Shell-level footer, moved here from Landing.jsx: it used to live on
+			    one page, so Architecture (and not-found) carried no footer at all
+			    and had nowhere to hang the policy links. Owning it at the shell
+			    means every public page — Landing, Architecture, Privacy, Terms,
+			    not-found — links to the policies, which is the point: Google's
+			    OAuth consent review looks for a discoverable privacy link, not a
+			    URL you only reach by typing it. */}
+			<footer className="public-footer">
+				<div className="public-shell">
+					<span>Archimedes</span>
+					<span>
+						Research-grounded strategy generation · Arc public testnet
+					</span>
+					<nav className="policy-links" aria-label="Policies">
+						<a href="/privacy">Privacy</a>
+						<a href="/terms">Terms</a>
+					</nav>
+				</div>
+			</footer>
 		</div>
 	);
 }

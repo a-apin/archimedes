@@ -6,7 +6,9 @@ import { pageToPath, resolveRoute } from './routes'
 import Architecture from './components/Architecture'
 import AuthPage from './components/AuthPage'
 import Landing from './components/Landing'
+import Privacy from './components/Privacy'
 import PublicLayout from './components/PublicLayout'
+import Terms from './components/Terms'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
@@ -74,6 +76,8 @@ export default function App() {
       leaderboard: 'Leaderboard · Archimedes',
       generate: 'Generate · Archimedes',
       architecture: 'Architecture · Archimedes',
+      privacy: 'Privacy Policy · Archimedes',
+      terms: 'Terms of Service · Archimedes',
       library: 'Library · Archimedes',
       corpus: 'Corpus · Archimedes',
       quant: 'Quant Lab · Archimedes',
@@ -110,11 +114,18 @@ export default function App() {
   if (route.kind === 'auth') return <AuthPage mode={route.page} oauthError={route.error} />
 
   if (route.kind === 'public') {
+    // A map, not a ternary chain: with four public pages the nested ternary
+    // stopped being readable, and its else-branch silently rendered Landing
+    // for any unrecognised page rather than failing visibly.
+    const publicPages = {
+      architecture: <Architecture onNavigate={navigateToPage} />,
+      privacy: <Privacy />,
+      terms: <Terms />,
+      landing: <Landing onNavigate={navigateToPage} />,
+    }
     return (
       <PublicLayout user={user}>
-        {route.page === 'architecture'
-          ? <Architecture onNavigate={navigateToPage} />
-          : <Landing onNavigate={navigateToPage} />}
+        {publicPages[route.page] ?? publicPages.landing}
       </PublicLayout>
     )
   }
