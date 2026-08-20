@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import PriceHistoryChart from './PriceHistoryChart'
 import AssetGroupIcon from './AssetGroupIcon'
 import { groupMeta } from '../assetGroups'
+import { median } from '../statUtils'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 const RANGES = ['1D', '1W', '1M', '1Y', '5Y', '10Y', 'MAX']
@@ -160,10 +161,9 @@ export default function AssetGroupModal({ assetClass, assets, onClose }) {
 
   // Aggregate 24h change across the whole group (not just the capped
   // aggregate-chart subset) — cheap since it's already in the /assets payload.
-  const avgChange24h = useMemo(() => {
+  const medianChange24h = useMemo(() => {
     const vals = members.map(a => a.change_24h_pct).filter(v => v != null && !Number.isNaN(v))
-    if (vals.length === 0) return null
-    return vals.reduce((a, b) => a + b, 0) / vals.length
+    return median(vals)
   }, [members])
 
   if (!assetClass) return null
@@ -222,10 +222,10 @@ export default function AssetGroupModal({ assetClass, assets, onClose }) {
         <div style={{ display: 'flex', gap: 24, alignItems: 'baseline', marginTop: 16, flexWrap: 'wrap' }}>
           <div>
             <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem' }}>
-              Avg 24h change (equal-weight, {members.length} assets)
+              Median 24h change ({members.length} assets)
             </div>
-            <div className={`mono ${changeClass(avgChange24h)}`} style={{ fontSize: '1.3rem', fontWeight: 600 }}>
-              {fmtPct(avgChange24h)}
+            <div className={`mono ${changeClass(medianChange24h)}`} style={{ fontSize: '1.3rem', fontWeight: 600 }}>
+              {fmtPct(medianChange24h)}
             </div>
           </div>
         </div>

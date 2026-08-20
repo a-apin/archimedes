@@ -22,6 +22,16 @@ function sourceLabel(price_source) {
   return 'No source available'
 }
 
+// A rejected field (#1322) is a computed value actively suppressed as
+// arithmetically implausible (a bad tick) — distinct from simply not having
+// enough history yet. Surfaced as a tooltip on the "—" so it doesn't read
+// as an unexplained gap.
+function rejectedTitle(asset, field) {
+  return asset.rejected_fields?.includes(field)
+    ? 'Suppressed: the computed value was arithmetically implausible (likely a bad tick), not a real move'
+    : undefined
+}
+
 export default function AssetModal({ asset, onClose }) {
   const [range, setRange] = useState('1M')
   const [history, setHistory] = useState([])
@@ -142,7 +152,11 @@ export default function AssetModal({ asset, onClose }) {
           </div>
           <div>
             <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem' }}>24h change</div>
-            <div className={`mono ${changeClass(asset.change_24h_pct)}`} style={{ fontSize: '1.1rem', fontWeight: 600 }}>
+            <div
+              className={`mono ${changeClass(asset.change_24h_pct)}`}
+              style={{ fontSize: '1.1rem', fontWeight: 600 }}
+              title={rejectedTitle(asset, 'change_24h_pct')}
+            >
               {fmtPct(asset.change_24h_pct)}
             </div>
           </div>
@@ -207,17 +221,21 @@ export default function AssetModal({ asset, onClose }) {
           </div>
           <div>
             <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem' }}>7d change</div>
-            <div className={`mono ${changeClass(asset.change_7d_pct)}`}>{fmtPct(asset.change_7d_pct)}</div>
+            <div className={`mono ${changeClass(asset.change_7d_pct)}`} title={rejectedTitle(asset, 'change_7d_pct')}>
+              {fmtPct(asset.change_7d_pct)}
+            </div>
           </div>
           <div>
             <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem' }}>30d change</div>
-            <div className={`mono ${changeClass(asset.change_30d_pct)}`}>{fmtPct(asset.change_30d_pct)}</div>
+            <div className={`mono ${changeClass(asset.change_30d_pct)}`} title={rejectedTitle(asset, 'change_30d_pct')}>
+              {fmtPct(asset.change_30d_pct)}
+            </div>
           </div>
           <div>
             <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem' }}>
               Realized vol (30d, annualized)
             </div>
-            <div className="mono">
+            <div className="mono" title={rejectedTitle(asset, 'realized_vol_30d')}>
               {asset.realized_vol_30d != null ? asset.realized_vol_30d.toFixed(2) : '—'}
             </div>
           </div>

@@ -41,6 +41,15 @@ class AssetExploreItem(BaseModel):
         default_factory=dict,
         description="Per-metric plain-English copy keyed by field name",
     )
+    rejected_fields: list[str] = Field(
+        default_factory=list,
+        description="Field names (e.g. 'change_24h_pct', 'realized_vol_30d') whose computed "
+        "value was actively suppressed as arithmetically implausible (#1322 — a bad tick / "
+        "decimal-placement error in the upstream feed), distinct from a field that is null "
+        "because there isn't enough history yet. The honest-absence mechanism this item's "
+        "is_stale/price_source already carry is about the displayed *price*; this discloses "
+        "suppression of a *derived* stat on an otherwise fresh, correctly-sourced price.",
+    )
 
 
 class ExploreAssetsResponse(BaseModel):

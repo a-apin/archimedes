@@ -70,6 +70,34 @@ _ORACLE_TOTAL_BUDGET_SECONDS = 12.0
 _HISTORY_CHUNK_SIZE = 60
 _HISTORY_FETCH_BUDGET_SECONDS = 45.0
 
+# Plausibility bound for computed pct changes (#1322). A bad tick / decimal-
+# placement error in the upstream feed (a tiny prior close) can turn into an
+# explosive ratio that passes every other check — e.g. sJUP's prior close of
+# 0.0003166165 produced a reported "+1483.08% 24h" move. 100%/day is already
+# an extremely generous bound (no major asset has ever moved >100% in a
+# single day without a corporate-action-style event). Multi-day windows
+# (n > 1) do NOT compound this into a single endpoint-ratio bound — sqrt(n)
+# scaling is mathematically wrong for a point-to-point cumulative simple
+# return (it's a volatility-scaling argument), but compounding the bound
+# itself (`(1+bound)**n - 1`) is vacuous, not just generous: ±12,700% at
+# n=7, ±107,374,182,300% at n=30 — wide enough to let the sJUP-shaped bad
+# tick straight through once it ages into the 7d/30d lookback (#1322
+# review, PR #1343 finding 5). Instead, multi-day windows are scanned
+# bar-to-bar against this same per-day bound, admitting a real 10x month
+# (many individually-plausible ~8%/day steps) while still rejecting a
+# single implausible bar anywhere in the window. See `_pct_change_with_reason`
+# for the bar-scan.
+_MAX_PLAUSIBLE_DAILY_PCT = 100.0
+
+# Trading-day conventions differ by asset class (#1322). Equities/ETFs/FX
+# only print a yfinance daily bar on trading days (weekends + holidays are
+# gaps), so ~5 bars ≈ 1 calendar week and ~21 bars ≈ 1 calendar month, and
+# annualizing realized vol uses the standard 252 trading days/year. Crypto
+# trades every calendar day with no gaps, so 1 bar == 1 calendar day: 7
+# bars == 1 week, 30 bars == 1 month, and annualizing must use 365.
+_EQUITY_TRADING_DAYS_PER_YEAR = 252
+_CRYPTO_TRADING_DAYS_PER_YEAR = 365
+
 # Range param → (yfinance period, yfinance interval). Daily intervals work
 # for week / month / year ranges; 1D uses 5-minute intraday data; the longer
 # ranges (5Y / 10Y / MAX) downsample to weekly / monthly bars to keep the
@@ -94,24 +122,50 @@ _EXPLANATIONS_TEMPLATES = {
         "Percentage move in the last trading day. Positive = up. "
         "Daily moves bigger than {vol_daily_pct:.1f}% are unusual for this asset."
     ),
-    "change_7d_pct": "Percentage move over the past week (5 trading days).",
-    "change_30d_pct": "Percentage move over the past month (≈21 trading days).",
+    "change_7d_pct": "Percentage move over the past week ({week_label}).",
+    "change_30d_pct": "Percentage move over the past month ({month_label}).",
     "realized_vol_30d": (
         "How much the price wobbles. Higher = bigger swings. {vol:.2f} annualized "
         "means daily moves of ~{vol_daily_pct:.1f}% are typical."
     ),
 }
 
+# change_24h_pct copy for when realized_vol_30d was suppressed (#1322
+# review finding 3) — the vol-guard makes this systematically more common
+# (one bad bar suppresses vol for the whole 30-session window it sits in),
+# and the vol-based "unusual" clause can't be honestly asserted from a
+# number the computation explicitly refused to produce.
+_CHANGE_24H_PCT_NO_VOL_TEMPLATE = "Percentage move in the last trading day. Positive = up."
 
-def _explanations_for(item: dict[str, Any]) -> dict[str, str]:
-    vol = item.get("realized_vol_30d") or 0.0
-    vol_daily_pct = (vol / math.sqrt(252)) * 100.0 if vol else 0.0
+
+def _explanations_for(item: dict[str, Any], is_247: bool = False) -> dict[str, str]:
+    """Plain-English copy for each metric. ``is_247`` (#1322) selects the
+    asset-class-correct trading-day convention so the copy never asserts a
+    convention the computation didn't actually use — crypto is 7/30 calendar
+    days annualized with sqrt(365); everything else is 5/21 trading days
+    annualized with sqrt(252)."""
+    vol = item.get("realized_vol_30d")
+    trading_days_per_year = _CRYPTO_TRADING_DAYS_PER_YEAR if is_247 else _EQUITY_TRADING_DAYS_PER_YEAR
+    vol_daily_pct = (vol / math.sqrt(trading_days_per_year)) * 100.0 if vol else 0.0
+    week_label = "7 calendar days" if is_247 else "5 trading days"
+    month_label = "30 calendar days" if is_247 else "≈21 trading days"
     fields = {}
     for key, template in _EXPLANATIONS_TEMPLATES.items():
         if item.get(key) is None:
             continue
+        if key == "change_24h_pct" and vol is None:
+            # realized_vol_30d was suppressed as implausible/insufficient —
+            # don't default it to a fabricated 0.0% just to fill the
+            # template; drop the vol clause instead.
+            fields[key] = _CHANGE_24H_PCT_NO_VOL_TEMPLATE
+            continue
         try:
-            fields[key] = template.format(vol=vol, vol_daily_pct=vol_daily_pct)
+            fields[key] = template.format(
+                vol=vol,
+                vol_daily_pct=vol_daily_pct,
+                week_label=week_label,
+                month_label=month_label,
+            )
         except (KeyError, IndexError):
             fields[key] = template
     return fields
@@ -120,32 +174,200 @@ def _explanations_for(item: dict[str, Any]) -> dict[str, str]:
 # ── Stat math ─────────────────────────────────────────────────────────────
 
 
-def _pct_change(prices: list[float], n: int) -> float | None:
-    """Pct change between prices[-1] and prices[-1-n]. None if not enough data."""
+def _pct_change_with_reason(prices: list[float], n: int) -> tuple[float | None, bool]:
+    """Pct change between prices[-1] and prices[-1-n].
+
+    Returns ``(value, was_rejected)``. ``value`` is None if not enough data,
+    either window endpoint (the prior close or the last close) is
+    non-positive, or the result exceeds a plausible bound for a window this
+    size (#1322): a bad tick / decimal-placement error in the upstream feed
+    can turn a tiny prior close into an explosive ratio that passes every
+    other check. An honest absence beats shipping an arithmetically-
+    impossible number — see docs/architectural-principles.md § fail-soft.
+    ``was_rejected`` is True for the plausibility-bound case AND for a
+    non-positive endpoint (a zero/negative close is a data hole, not a
+    computable return — round-3 fix, PR #1343: a zero *last* close at n=1
+    used to compute an undetected exact -100.0% "return" instead of being
+    caught here); it is False only for insufficient data, so callers can
+    distinguish "not enough history yet" from "a value was actively
+    suppressed as implausible" — see ``AssetExploreItem.rejected_fields``.
+
+    For n > 1, compounding the single-day bound onto the *endpoint* ratio
+    (e.g. `(1 + bound)**n - 1`) turns out to be vacuous rather than merely
+    generous: at n=7 it allows ±12,700%, at n=30 it allows
+    ±107,374,182,300% — wide enough to let the issue's own bad tick
+    (sJUP's +1479.20%, aged into the 7d/30d lookback) straight through
+    (#1322 review, PR #1343 finding 5). An endpoint-only check can never
+    tell "one bad tick" apart from "many small legitimate daily moves" —
+    both can produce the same huge endpoint ratio — so for n > 1 this scans
+    the window bar-to-bar instead, the same shape
+    `_realized_vol_annual_with_reason` uses: reject only if *some single
+    bar* in the window implies a move past the per-day bound. A real
+    multi-day move made of individually-plausible daily steps (e.g. a
+    genuine 10x over a month, ~8.1%/day compounded) is kept no matter how
+    large the compounded total is; a single implausible bar anywhere in the
+    window — including one that's since aged out of the 1-day window but
+    still sits inside the 7d/30d one — is not. n=1 keeps the simple
+    endpoint bound (identical to a 1-bar scan).
+    """
     if not prices or len(prices) < n + 1:
-        return None
+        return None, False
     end, start = prices[-1], prices[-1 - n]
-    if not start:
-        return None
-    return (end - start) / start * 100.0
+    if start <= 0 or end <= 0:
+        # A non-positive price at EITHER window endpoint is a data hole, not
+        # a computable return (#1322 review, PR #1343 round-3 finding): the
+        # old `if not start` only checked the *prior* close, so a zero/
+        # negative *last* close at n=1 fell through to `pct = (end - start)
+        # / start * 100.0` and computed an exact -100.0% "return" that slid
+        # past the strict `abs(pct) > bound` check below (-100.0 is not >
+        # 100.0) and got served as a real change_24h_pct — self-contradictory
+        # next to the n>1 bar-scan and the vol path below, which already
+        # reject any non-positive bar they touch. was_rejected=True (not
+        # False) here so this is classified the same as those rejections —
+        # not lumped in with "not enough history yet" — matching the bar-
+        # scan's treatment of the identical zero one bar deeper in the
+        # window.
+        return None, True
+    pct = (end - start) / start * 100.0
+    if n <= 1:
+        if abs(pct) > _MAX_PLAUSIBLE_DAILY_PCT:
+            logger.warning(
+                "explore: rejecting implausible %.1f%% change over %d bar(s) (bound ±%.1f%%) — "
+                "treating as a bad tick, not a real move",
+                pct,
+                n,
+                _MAX_PLAUSIBLE_DAILY_PCT,
+            )
+            return None, True
+        return pct, False
+    window = prices[-(n + 1) :]
+    for i in range(1, len(window)):
+        prev, curr = window[i - 1], window[i]
+        if prev <= 0 or curr <= 0:
+            # A non-positive price inside the window is itself a data hole
+            # (#1322 review finding 4's fix, applied consistently here too)
+            # — not a computable return, and not something a legitimate
+            # multi-day move can produce.
+            logger.warning(
+                "explore: rejecting implausible %.1f%% change over %d bar(s) — bar %d/%d has a "
+                "non-positive price (prev=%.6g, curr=%.6g) — treating as a bad tick, not a real move",
+                pct,
+                n,
+                i,
+                len(window) - 1,
+                prev,
+                curr,
+            )
+            return None, True
+        bar_pct = (curr - prev) / prev * 100.0
+        if abs(bar_pct) > _MAX_PLAUSIBLE_DAILY_PCT:
+            logger.warning(
+                "explore: rejecting implausible %.1f%% change over %d bar(s) — bar %d/%d implied a "
+                "%.1f%% single-bar move (bound ±%.1f%%) — treating as a bad tick, not a real move",
+                pct,
+                n,
+                i,
+                len(window) - 1,
+                bar_pct,
+                _MAX_PLAUSIBLE_DAILY_PCT,
+            )
+            return None, True
+    return pct, False
 
 
-def _realized_vol_annual(prices: list[float], window: int = 30) -> float | None:
-    """Annualized realized vol over the most recent ``window`` trading days."""
+def _pct_change(prices: list[float], n: int) -> float | None:
+    """Pct change between prices[-1] and prices[-1-n]; see
+    ``_pct_change_with_reason`` for the full contract. Thin wrapper kept for
+    callers (and the existing unit-test surface) that only need the value."""
+    return _pct_change_with_reason(prices, n)[0]
+
+
+def _realized_vol_annual_with_reason(
+    prices: list[float],
+    window: int = 30,
+    trading_days_per_year: int = _EQUITY_TRADING_DAYS_PER_YEAR,
+) -> tuple[float | None, bool]:
+    """Annualized realized vol over the most recent ``window`` bars.
+
+    Returns ``(value, was_rejected)`` — see ``_pct_change_with_reason`` for
+    why callers need both.
+
+    ``trading_days_per_year`` is the annualization factor (#1322): 252 for
+    equities/ETFs/FX (yfinance bars only on trading days), 365 for crypto
+    (yfinance bars every calendar day, no weekend/holiday gaps) — applying
+    the equity constant to a 24/7 asset understates its vol by
+    sqrt(365/252) ≈ 1.20, about 17%.
+
+    Plausibility guard (#1322): a bad tick / decimal-placement error inside
+    the window inflates one bar-to-bar return past what's physically
+    plausible even when the *endpoint-to-endpoint* ratio `_pct_change`
+    checks would pass — vol is built from every bar-to-bar step, not just
+    the two ends, so a single corrupt bar corrupts the whole estimate.
+    Dropping the bad bar and computing vol on what's left would still ship
+    a clean-looking but fabricated number (the issue's anti-goal forbids
+    exactly that shape of "fix"); the honest response is None for the
+    whole window when any single bar exceeds the same per-day plausibility
+    bound `_pct_change` uses (bar-to-bar, so no compounding — n=1 always).
+
+    A non-positive bar inside the window (#1322 review finding 4) is
+    rejected the same way, not silently skipped: skipping only the step
+    *out of* a zero close (the old ``if not prev: continue``) still let the
+    step *into* it compute an exact -100% return that slipped past a
+    strict ``>`` bound comparison (-100% is not > 100%) and got folded into
+    the vol estimate as real data. A zero/negative close is a data hole,
+    not a return — the same classification `_pct_change_with_reason` now
+    gives a non-positive price at either window endpoint (round-3 fix, PR
+    #1343: before it, `_pct_change_with_reason` only checked its *prior*
+    close and returned ``was_rejected=False`` for a zero — this docstring's
+    "same treatment" claim was not yet true; the n=1 endpoint check was
+    fixed to match this function's bar-scan instead of the other way
+    around).
+    """
     if not prices or len(prices) < window + 1:
-        return None
+        return None, False
     tail = prices[-(window + 1) :]
     rets = []
     for i in range(1, len(tail)):
-        prev = tail[i - 1]
-        if not prev:
-            continue
-        rets.append((tail[i] - prev) / prev)
+        prev, curr = tail[i - 1], tail[i]
+        if prev <= 0 or curr <= 0:
+            logger.warning(
+                "explore: rejecting realized-vol window — bar %d/%d has a non-positive "
+                "price (prev=%.6g, curr=%.6g) — treating as a bad tick, not real data",
+                i,
+                len(tail) - 1,
+                prev,
+                curr,
+            )
+            return None, True
+        ret = (curr - prev) / prev
+        if abs(ret) * 100.0 > _MAX_PLAUSIBLE_DAILY_PCT:
+            logger.warning(
+                "explore: rejecting realized-vol window — bar %d/%d implied a %.1f%% "
+                "single-bar move (bound ±%.1f%%) — treating as a bad tick, not a real move",
+                i,
+                len(tail) - 1,
+                ret * 100.0,
+                _MAX_PLAUSIBLE_DAILY_PCT,
+            )
+            return None, True
+        rets.append(ret)
     if len(rets) < 2:
-        return None
+        return None, False
     mean = sum(rets) / len(rets)
     var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
-    return math.sqrt(var) * math.sqrt(252)
+    return math.sqrt(var) * math.sqrt(trading_days_per_year), False
+
+
+def _realized_vol_annual(
+    prices: list[float],
+    window: int = 30,
+    trading_days_per_year: int = _EQUITY_TRADING_DAYS_PER_YEAR,
+) -> float | None:
+    """Annualized realized vol over the most recent ``window`` bars; see
+    ``_realized_vol_annual_with_reason`` for the full contract. Thin wrapper
+    kept for callers (and the existing unit-test surface) that only need the
+    value."""
+    return _realized_vol_annual_with_reason(prices, window, trading_days_per_year)[0]
 
 
 # ── Direct yfinance fetch (used by /assets/{symbol}/history) ─────────────
@@ -218,6 +440,18 @@ def _explore_universe() -> list[str]:
     except Exception as exc:  # pragma: no cover — SSOT loader logs its own errors
         logger.warning("explore: universe SSOT import failed: %s", exc)
         return []
+
+
+def _is_24_7_asset_class(asset_class: str) -> bool:
+    """True for asset classes that trade every calendar day, no gaps (#1322).
+
+    Crypto is the only such class in the current universe: a yfinance daily
+    bar for e.g. BTC-USD prints every calendar day (weekends included), so
+    1 bar == 1 calendar day. Equities/ETFs/FX/bonds/commodities only trade
+    (and only get a bar) on trading days — the same string-membership test
+    the existing group-sort already uses (see ``items.sort`` below).
+    """
+    return "crypto" in (asset_class or "")
 
 
 def _ssot_display_name(synth: str, fallback: str) -> str:
@@ -559,21 +793,52 @@ class AssetMarketService:
             high_24h = None
             low_24h = None
 
-            # Change / vol from yfinance daily history (independent of where
-            # the spot came from — both source paths benefit from these).
-            stat_dict: dict[str, Any] = {
-                "current_price": current_price,
-                "change_24h_pct": _pct_change(hist_prices, 1) if hist_prices else None,
-                "change_7d_pct": _pct_change(hist_prices, 5) if hist_prices else None,
-                "change_30d_pct": _pct_change(hist_prices, 21) if hist_prices else None,
-                "high_24h": high_24h,
-                "low_24h": low_24h,
-                "realized_vol_30d": _realized_vol_annual(hist_prices, 30) if hist_prices else None,
-            }
-
             entry = GLOBAL_ASSETS.get(synth)
             asset_class = entry[2] if entry else "unknown"
             real_ticker = entry[0] if entry else synth.lstrip("s")
+            # Trading-day convention is asset-class aware (#1322): crypto
+            # bars are 1-per-calendar-day (24/7 markets), everything else is
+            # 1-per-trading-day (weekends/holidays are gaps in the feed).
+            is_247 = _is_24_7_asset_class(asset_class)
+            week_n = 7 if is_247 else 5
+            month_n = 30 if is_247 else 21
+            trading_days_per_year = _CRYPTO_TRADING_DAYS_PER_YEAR if is_247 else _EQUITY_TRADING_DAYS_PER_YEAR
+
+            # Change / vol from yfinance daily history (independent of where
+            # the spot came from — both source paths benefit from these).
+            # Each `*_with_reason` call also reports whether the None came
+            # from an active plausibility rejection (#1322) vs. simply not
+            # having enough history yet; rejected_fields discloses the
+            # former on the served item rather than leaving a suppressed
+            # bad tick indistinguishable from "not fetched yet" (issue
+            # Precedent: route rejected values down an honest-absence path).
+            rejected_fields: list[str] = []
+            change_24h_pct, rej_24h = _pct_change_with_reason(hist_prices, 1) if hist_prices else (None, False)
+            change_7d_pct, rej_7d = _pct_change_with_reason(hist_prices, week_n) if hist_prices else (None, False)
+            change_30d_pct, rej_30d = _pct_change_with_reason(hist_prices, month_n) if hist_prices else (None, False)
+            realized_vol_30d, rej_vol = (
+                _realized_vol_annual_with_reason(hist_prices, 30, trading_days_per_year)
+                if hist_prices
+                else (None, False)
+            )
+            if rej_24h:
+                rejected_fields.append("change_24h_pct")
+            if rej_7d:
+                rejected_fields.append("change_7d_pct")
+            if rej_30d:
+                rejected_fields.append("change_30d_pct")
+            if rej_vol:
+                rejected_fields.append("realized_vol_30d")
+
+            stat_dict: dict[str, Any] = {
+                "current_price": current_price,
+                "change_24h_pct": change_24h_pct,
+                "change_7d_pct": change_7d_pct,
+                "change_30d_pct": change_30d_pct,
+                "high_24h": high_24h,
+                "low_24h": low_24h,
+                "realized_vol_30d": realized_vol_30d,
+            }
 
             # oracle_address is a capability marker — populated from settings
             # regardless of whether the oracle read succeeded (Issue #346).
@@ -595,7 +860,8 @@ class AssetMarketService:
                     last_updated=last_updated,
                     is_stale=displayed_is_stale,
                     price_source=price_source,
-                    explanations=_explanations_for(stat_dict),
+                    explanations=_explanations_for(stat_dict, is_247=is_247),
+                    rejected_fields=rejected_fields,
                     **stat_dict,
                 )
             )

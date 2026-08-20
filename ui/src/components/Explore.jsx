@@ -3,6 +3,7 @@ import AssetModal from './AssetModal'
 import AssetGroupModal from './AssetGroupModal'
 import AssetGroupIcon from './AssetGroupIcon'
 import { groupMeta } from '../assetGroups'
+import { median } from '../statUtils'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -213,10 +214,9 @@ export default function Explore() {
           }}
         >
           {groups.map(g => {
-            const avgChange = (() => {
+            const medianChange = (() => {
               const vals = g.members.map(a => a.change_24h_pct).filter(v => v != null && !Number.isNaN(v))
-              if (vals.length === 0) return null
-              return vals.reduce((a, b) => a + b, 0) / vals.length
+              return median(vals)
             })()
             return (
               <button
@@ -281,11 +281,11 @@ export default function Explore() {
                 </p>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 12 }}>
-                  <span className={`mono ${changeClass(avgChange)}`} style={{ fontSize: '0.85rem' }}>
-                    {fmtPct(avgChange)}
+                  <span className={`mono ${changeClass(medianChange)}`} style={{ fontSize: '0.85rem' }}>
+                    {fmtPct(medianChange)}
                   </span>
                   <span className="caption" style={{ color: 'var(--text-4)', fontSize: '0.65rem' }}>
-                    avg 24h
+                    median 24h
                   </span>
                 </div>
               </button>
@@ -368,7 +368,15 @@ export default function Explore() {
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 6 }}>
-                <span className={`mono ${changeClass(a.change_24h_pct)}`} style={{ fontSize: '0.85rem' }}>
+                <span
+                  className={`mono ${changeClass(a.change_24h_pct)}`}
+                  style={{ fontSize: '0.85rem' }}
+                  title={
+                    a.rejected_fields?.includes('change_24h_pct')
+                      ? 'Suppressed: the computed change was arithmetically implausible (likely a bad tick), not a real move'
+                      : undefined
+                  }
+                >
                   {fmtPct(a.change_24h_pct)}
                 </span>
                 <span className="caption" style={{ color: 'var(--text-4)', fontSize: '0.65rem' }}>

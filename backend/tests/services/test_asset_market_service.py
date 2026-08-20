@@ -16,6 +16,8 @@ timeout. All tests are hermetic — yfinance / chain boundaries are mocked.
 from __future__ import annotations
 
 import asyncio
+import math
+import random
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,10 +25,16 @@ import pytest
 from archimedes.api.explore_schemas import ExploreAssetsResponse
 from archimedes.services.asset_market_service import (
     _CACHE_TTL_SECONDS,
+    _CRYPTO_TRADING_DAYS_PER_YEAR,
+    _EQUITY_TRADING_DAYS_PER_YEAR,
     AssetMarketService,
+    _explanations_for,
     _explore_universe,
+    _is_24_7_asset_class,
     _pct_change,
+    _pct_change_with_reason,
     _realized_vol_annual,
+    _realized_vol_annual_with_reason,
     _ssot_display_name,
 )
 
@@ -50,6 +58,339 @@ class TestStatMath:
 
     def test_realized_vol_insufficient(self):
         assert _realized_vol_annual([100, 101], 30) is None
+
+
+# ── Plausibility guard (#1322 — sJUP's +1483.08% "24h" move) ───────────────
+
+
+class TestPctChangePlausibilityGuard:
+    """An arithmetically-impossible pct change must come back None, not a
+    fabricated number — honest absence per docs/architectural-principles.md
+    § fail-soft, not a clamp/winsorize (the issue's anti-goal)."""
+
+    def test_pct_change_rejects_implausible_24h_move(self):
+        """The exact defect class from the issue: a tiny prior close (a bad
+        tick / decimal-placement error) implies a >100%/day move. This
+        mirrors sJUP's real prior close of 0.0003166165."""
+        prices = [0.0003166165, 0.005]
+        implied_pct = (0.005 - 0.0003166165) / 0.0003166165 * 100.0
+        assert implied_pct > 100.0  # sanity: this genuinely trips the bound
+        assert _pct_change(prices, 1) is None
+
+    def test_pct_change_accepts_plausible_large_move(self):
+        """A legitimate outsized daily move — well inside the bound — is NOT
+        rejected. The guard targets impossible values, not merely large
+        ones; the anti-goal forbids hiding real moves behind the guard."""
+        assert _pct_change([100.0, 180.0], 1) == pytest.approx(80.0)
+
+    def test_pct_change_exactly_at_the_bound_is_kept(self):
+        """Exactly doubling in one bar (100% for n=1) sits ON the bound and
+        is kept, not rejected — the guard is a strict '>' check."""
+        assert _pct_change([100.0, 200.0], 1) == pytest.approx(100.0)
+
+    def test_pct_change_multiday_window_tolerates_a_wider_move(self):
+        """A large multi-day move survives when it's actually made of
+        individually-plausible daily steps (#1322 review finding 2 —
+        the guard scans bar-to-bar, not an endpoint-compounded bound, so
+        this must be a genuinely compounding series, not a flat run with
+        one terminal spike, which is the bad-tick shape the guard exists
+        to catch, not tolerate)."""
+        start = 10.0
+        end = start * 3.0  # +200% over 21 bars
+        daily_factor = (end / start) ** (1.0 / 21)
+        prices = [start * (daily_factor**i) for i in range(22)]
+        assert _pct_change(prices, 21) == pytest.approx(200.0, rel=1e-6)
+        # But the same +200% packed into a single bar is still rejected.
+        assert _pct_change([10.0, 30.0], 1) is None
+
+    def test_pct_change_multiday_bound_compounds_not_sqrt_scales(self):
+        """Regression for #1322 review: the multi-day bound must compound the
+        per-day bound (a legitimate large cumulative move — even a real 10x
+        over a month in a volatile crypto name — is many individually-
+        plausible daily steps), not scale it by sqrt(n). sqrt(n) applies a
+        volatility-scaling argument to a point-to-point cumulative simple
+        return, where it doesn't belong, and is strict enough to falsely
+        reject genuine moves: sqrt(30)*100% ≈ 548%, well under a real 10x
+        (+900%) month."""
+        # +900% (a real 10x) over 30 bars, each individual bar only a
+        # plausible ~8.1%/day compounded — no single bar is anywhere near
+        # the 100%/day bound, so this must NOT be rejected.
+        start = 10.0
+        end = start * 10.0  # +900%
+        daily_factor = (end / start) ** (1.0 / 30)
+        prices = [start * (daily_factor**i) for i in range(31)]
+        pct = _pct_change(prices, 30)
+        assert pct is not None, "a legitimate compounding 10x/month move must not be rejected"
+        assert pct == pytest.approx(900.0, rel=1e-6)
+
+    def test_pct_change_with_reason_distinguishes_rejection_from_no_data(self):
+        """rejected_fields (#1322 review) needs to tell "actively suppressed
+        as implausible" apart from "not enough history yet" — both surface
+        as None from `_pct_change`, but only the former is a rejection."""
+        # Implausible: was_rejected True.
+        value, was_rejected = _pct_change_with_reason([0.0003166165, 0.005], 1)
+        assert value is None
+        assert was_rejected is True
+        # Not enough data: was_rejected False.
+        value, was_rejected = _pct_change_with_reason([100.0], 1)
+        assert value is None
+        assert was_rejected is False
+        # Zero prior close: was_rejected True (round-3 fix, PR #1343 review).
+        # A non-positive endpoint is a data hole, not a computable return —
+        # the SAME classification the n>1 bar-scan and the vol path already
+        # give a non-positive bar, so this must not be a separate "no data"
+        # bucket. Pinning this as False (the pre-fix behavior) is exactly
+        # the bug: it let a zero prior close silently compute a "kept"
+        # value on the boundary case (see the negative control below for
+        # the case that actually leaked, a zero *last* close at n=1).
+        value, was_rejected = _pct_change_with_reason([0.0, 105.0], 1)
+        assert value is None
+        assert was_rejected is True
+        # A kept value: was_rejected False.
+        value, was_rejected = _pct_change_with_reason([100.0, 105.0], 1)
+        assert value == pytest.approx(5.0)
+        assert was_rejected is False
+        # Negative control (round-3 fix, PR #1343 review): a zero *last*
+        # close at n=1 — the exact shape that leaked. Before the fix, only
+        # `start` (the prior close) was checked; `end` (the last close)
+        # fell through to `pct = (end - start) / start * 100.0 == -100.0`,
+        # which then passed the `abs(pct) > 100.0` bound check (-100.0 is
+        # not > 100.0) and was served as a real, non-rejected change_24h_pct
+        # — self-contradictory next to the 7d/30d/vol paths, which already
+        # reject any non-positive bar they scan. Mutation check: reverting
+        # the `end <= 0` half of the endpoint guard back to checking only
+        # `start` makes this assertion fail with (-100.0, False) instead of
+        # (None, True) — see the PR body for the transcript.
+        assert _pct_change_with_reason([10.0] * 39 + [0.0], 1) == (None, True)
+
+    def test_pct_change_bound_is_1_day_tight_but_30_day_generous(self):
+        """Sanity-pins the guard's shape: the 1-day bound stays at the
+        strict 100% (where the sJUP defect class lives) while a genuinely
+        compounding 30-day move — every bar individually plausible — is
+        kept no matter how large the cumulative total is. (Not an endpoint-
+        compounded bound: see `test_pct_change_multiday_rejects_a_bad_bar_
+        anywhere_in_the_window` for why an endpoint-only check can't tell
+        this apart from a single bad tick.)"""
+        assert _pct_change([100.0, 201.0], 1) is None  # just over the 1-day bound
+        start = 10.0
+        end = start * 7.0  # +600% over 30 bars, each bar a plausible ~6.6%/day
+        daily_factor = (end / start) ** (1.0 / 30)
+        prices = [start * (daily_factor**i) for i in range(31)]
+        assert _pct_change(prices, 30) == pytest.approx(600.0, rel=1e-6)
+
+    def test_pct_change_multiday_rejects_a_bad_bar_anywhere_in_the_window(self):
+        """Negative control (#1322 review finding 1/2): a single implausible
+        bar must still sink the whole window at n=7 and n=30, even once
+        it's aged past the 1-day lookback — an endpoint-only bound (whether
+        compounded or sqrt(n)-scaled) can't distinguish "one bad tick
+        inside an otherwise-flat run" from "many small legitimate daily
+        moves"; only a bar-to-bar scan can. Mirrors the issue's own
+        sJUP-shaped bad bar (a tiny prior close that snaps back to a normal
+        price one bar later) aged 8 bars deep into a 40-bar history, so it
+        sits inside the 7d window (n=7) and the 30d window (n=30) but has
+        already fallen out of the 1d window (n=1).
+
+        Mutation check: deleting the multi-day bar-scan — e.g. reverting to
+        `if n_eff > 1: bound = float('inf')`, or any endpoint-only bound —
+        makes both assertions below fail (value stops being None)."""
+        prices = [10.0] * 32 + [0.0003166165] + [0.005] * 7  # bad bar at index -8
+        assert len(prices) == 40
+        for n in (7, 30):
+            value, was_rejected = _pct_change_with_reason(prices, n)
+            assert value is None, f"n={n}: bad bar must not survive as a value"
+            assert was_rejected is True, f"n={n}: must be flagged as a rejection, not 'no data'"
+        # The 1-day window no longer contains the bad bar at all (it aged
+        # out 7 bars ago) — the trailing bars are all plausible 0.5%/0.005
+        # steps, so n=1 is unaffected.
+        assert _pct_change(prices, 1) == pytest.approx(0.0, abs=1e-9)
+
+
+# ── Asset-class-aware trading-day convention (#1322) ────────────────────────
+
+
+class TestIs247AssetClass:
+    def test_crypto_is_24_7(self):
+        assert _is_24_7_asset_class("crypto") is True
+
+    def test_equity_etf_is_not_24_7(self):
+        assert _is_24_7_asset_class("us_equity_etf") is False
+
+    def test_empty_or_none_asset_class_is_not_24_7(self):
+        assert _is_24_7_asset_class("") is False
+        assert _is_24_7_asset_class(None) is False
+
+
+class TestAssetClassAwareAnnualization:
+    """Crypto trades 365 days/year with no weekend/holiday gaps; equities
+    trade ~252. Annualizing crypto's realized vol with the equity constant
+    understates it by sqrt(365/252) ≈ 1.20 — about 17% too low."""
+
+    def _series(self, seed: int) -> list[float]:
+        rng = random.Random(seed)
+        prices = [100.0]
+        for _ in range(31):
+            prices.append(prices[-1] * (1 + rng.uniform(-0.02, 0.02)))
+        return prices
+
+    def test_identical_daily_returns_annualize_differently_by_asset_class(self):
+        prices = self._series(1322)
+        equity_vol = _realized_vol_annual(prices, 30, _EQUITY_TRADING_DAYS_PER_YEAR)
+        crypto_vol = _realized_vol_annual(prices, 30, _CRYPTO_TRADING_DAYS_PER_YEAR)
+
+        assert equity_vol is not None
+        assert crypto_vol is not None
+        assert crypto_vol != equity_vol
+        assert crypto_vol > equity_vol
+        assert crypto_vol / equity_vol == pytest.approx(math.sqrt(365 / 252), rel=1e-9)
+
+    def test_realized_vol_annual_defaults_to_equity_252_unspecified(self):
+        """Backward-compatible default: a caller that omits
+        trading_days_per_year keeps the pre-#1322 (equity) behavior."""
+        prices = self._series(7)
+        assert _realized_vol_annual(prices, 30) == _realized_vol_annual(prices, 30, 252)
+
+    def test_realized_vol_annual_actually_uses_the_given_param(self):
+        """Guards the exact defect class this repo's CLAUDE.md rule 4 warns
+        about: a `trading_days_per_year` param that's accepted but silently
+        ignored (the return statement hard-coded back to `sqrt(252)`).
+        Unlike `test_identical_daily_returns_annualize_differently_by_asset_class`
+        and `test_daily_vol_copy_uses_the_matching_annualization_factor`
+        (which both derive their expected value from the function's own
+        output — see PR #1343 review), this computes the expected annualized
+        vol independently from the raw bar-to-bar returns, so a mutation
+        that hard-codes sqrt(252) actually makes the assertion fail rather
+        than passing on both sides of the mutation."""
+        prices = self._series(2024)
+        tail = prices[-31:]
+        rets = [(tail[i] - tail[i - 1]) / tail[i - 1] for i in range(1, len(tail))]
+        mean = sum(rets) / len(rets)
+        var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+        expected_crypto_vol = math.sqrt(var) * math.sqrt(_CRYPTO_TRADING_DAYS_PER_YEAR)
+
+        crypto_vol = _realized_vol_annual(prices, 30, _CRYPTO_TRADING_DAYS_PER_YEAR)
+        assert crypto_vol == pytest.approx(expected_crypto_vol)
+        # And it must differ from what the (wrong) hard-coded-252 mutation
+        # would produce, so this genuinely distinguishes the two.
+        wrong_if_ignored = math.sqrt(var) * math.sqrt(_EQUITY_TRADING_DAYS_PER_YEAR)
+        assert crypto_vol != pytest.approx(wrong_if_ignored)
+
+
+class TestRealizedVolPlausibilityGuard:
+    """A bad tick inside the realized-vol window must not survive as a
+    fabricated-but-plausible-looking vol number (#1322 review finding: the
+    plausibility guard was applied only to `_pct_change`, leaving
+    `_realized_vol_annual` unguarded — the same sJUP-style bad tick that
+    `_pct_change` rejects for change_24h_pct still flowed into
+    realized_vol_30d and produced an internally-impossible 'typical daily
+    move' figure via `_explanations_for`)."""
+
+    def test_realized_vol_rejects_window_containing_a_bad_tick(self):
+        """Mirrors sJUP's real prior close (0.0003166165) landing inside an
+        otherwise-normal 30-bar window: one implausible bar corrupts the
+        whole vol estimate, so the honest response is None, not a number."""
+        prices = [0.0003166165] + [0.005] * 30
+        assert _realized_vol_annual(prices, 30, _CRYPTO_TRADING_DAYS_PER_YEAR) is None
+
+    def test_realized_vol_accepts_a_window_with_no_bad_bars(self):
+        """Sanity: a normal (if volatile) window is unaffected by the guard."""
+        rng = random.Random(42)
+        prices = [100.0]
+        for _ in range(31):
+            prices.append(prices[-1] * (1 + rng.uniform(-0.05, 0.05)))
+        assert _realized_vol_annual(prices, 30, _CRYPTO_TRADING_DAYS_PER_YEAR) is not None
+
+    def test_realized_vol_with_reason_reports_rejection(self):
+        prices = [0.0003166165] + [0.005] * 30
+        value, was_rejected = _realized_vol_annual_with_reason(prices, 30, _CRYPTO_TRADING_DAYS_PER_YEAR)
+        assert value is None
+        assert was_rejected is True
+
+    def test_realized_vol_with_reason_insufficient_data_is_not_a_rejection(self):
+        """None from too little history is NOT a plausibility rejection —
+        callers (rejected_fields) must be able to tell the two apart."""
+        value, was_rejected = _realized_vol_annual_with_reason([100.0, 101.0], 30)
+        assert value is None
+        assert was_rejected is False
+
+    def test_realized_vol_rejects_a_zero_bar_in_the_window(self):
+        """#1322 review finding 4: a zero close inside the window is a data
+        hole, not a real -100% return — it must not slip through and get
+        folded into the vol estimate. Before the fix, `if not prev:
+        continue` only skipped the step *out of* the zero; the step *into*
+        it computed an exact -100% return that passed the strict `>` bound
+        comparison (-100% is not > 100%) and was silently included as real
+        data. Mutation check: reverting the `prev <= 0 or curr <= 0` guard
+        back to `if not prev: continue` makes this assertion fail (value
+        stops being None)."""
+        prices = [0.005] * 20 + [0.0] + [0.005] * 10
+        value, was_rejected = _realized_vol_annual_with_reason(prices, 30, _CRYPTO_TRADING_DAYS_PER_YEAR)
+        assert value is None
+        assert was_rejected is True
+
+
+class TestExplanationsAssetClassAware:
+    def test_period_labels_match_asset_class(self):
+        stat_dict = {
+            "current_price": 100.0,
+            "change_24h_pct": 1.0,
+            "change_7d_pct": 2.0,
+            "change_30d_pct": 3.0,
+            "realized_vol_30d": 0.4,
+        }
+        equity_expl = _explanations_for(stat_dict, is_247=False)
+        crypto_expl = _explanations_for(stat_dict, is_247=True)
+
+        assert "5 trading days" in equity_expl["change_7d_pct"]
+        assert "≈21 trading days" in equity_expl["change_30d_pct"]
+        assert "7 calendar days" in crypto_expl["change_7d_pct"]
+        assert "30 calendar days" in crypto_expl["change_30d_pct"]
+
+    def test_daily_vol_copy_uses_the_matching_annualization_factor(self):
+        """The de-annualized 'typical daily move' figure in the copy must be
+        computed with the SAME trading-day count the vol was actually
+        annualized with — otherwise the copy asserts a number the
+        computation didn't produce (#1322 honesty requirement: a hard-coded
+        wrong-convention explanation is the same defect class as a fabricated
+        statistic).
+
+        Scope note (PR #1343 review): this guards `_explanations_for`'s own
+        factor choice, NOT `_realized_vol_annual`'s `trading_days_per_year`
+        plumbing — `expected_daily_pct` here is derived from `crypto_vol`,
+        the same value both sides compare against, so it passes unchanged
+        even if `_realized_vol_annual` silently ignored its param and always
+        annualized with 252 (a mutation-checked demonstration lives in the
+        PR body). `test_realized_vol_annual_actually_uses_the_given_param`
+        above is what actually guards the param plumbing, by computing its
+        expectation independently."""
+        rng = random.Random(7)
+        prices = [100.0]
+        for _ in range(31):
+            prices.append(prices[-1] * (1 + rng.uniform(-0.03, 0.03)))
+        crypto_vol = _realized_vol_annual(prices, 30, _CRYPTO_TRADING_DAYS_PER_YEAR)
+        assert crypto_vol is not None
+
+        expl = _explanations_for({"realized_vol_30d": crypto_vol}, is_247=True)
+        expected_daily_pct = (crypto_vol / math.sqrt(365)) * 100.0
+        assert f"{expected_daily_pct:.1f}%" in expl["realized_vol_30d"]
+
+    def test_change_24h_copy_drops_vol_clause_when_vol_was_suppressed(self):
+        """#1322 review finding 3: when realized_vol_30d is None (suppressed
+        by the plausibility guard, or just not enough history), the
+        change_24h_pct copy must not assert a fabricated '0.0%' vol
+        threshold — a number the computation explicitly refused to
+        produce. It should read as a plain move description with no vol
+        clause at all. Mutation check: reverting `vol = item.get(...)` back
+        to `item.get(...) or 0.0` makes '0.0%' reappear in the copy."""
+        expl = _explanations_for({"change_24h_pct": 5.0, "realized_vol_30d": None}, is_247=True)
+        assert "0.0%" not in expl["change_24h_pct"]
+        assert expl["change_24h_pct"] == "Percentage move in the last trading day. Positive = up."
+
+    def test_change_24h_copy_keeps_vol_clause_when_vol_present(self):
+        """Sanity: the vol clause still renders normally when realized_vol_30d
+        is actually present, so the finding-3 fix doesn't drop it always."""
+        expl = _explanations_for({"change_24h_pct": 5.0, "realized_vol_30d": 0.5}, is_247=True)
+        assert "unusual for this asset" in expl["change_24h_pct"]
+        assert "0.0%" not in expl["change_24h_pct"]
 
 
 # ── Oracle read tests (mocked chain_client) ────────────────────────────────
@@ -385,6 +726,138 @@ class TestListAssets:
             assert refreshed is stale_resp
 
         assert call_count == 1  # deduplicated, not 5 separate rebuilds
+
+
+# ── End-to-end #1322 repro: impossible values never reach the API ──────────
+
+
+class TestExploreAssetsPlausibilityAndAssetClassAwareness:
+    @pytest.mark.asyncio
+    async def test_list_assets_change_24h_pct_none_for_impossible_move(self):
+        """Full repro of the issue: a corrupted history (tiny prior close,
+        mirroring sJUP's real 0.0003166165) must surface as
+        change_24h_pct=None on the served AssetExploreItem — never as a
+        fabricated triple-digit percentage. The price itself still shows."""
+        service = AssetMarketService()
+        mock_histories = {
+            "sJUP": {
+                "close": [0.0003166165, 0.005],
+                "dates": ["2026-08-19", "2026-08-20"],
+            }
+        }
+
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sJUP"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sJUP": ("JUP-USD", "JUP", "crypto", "Coinbase")},
+            ),
+        ):
+            resp = await service.list_assets()
+
+        jup = next(a for a in resp.assets if a.symbol == "sJUP")
+        assert jup.change_24h_pct is None  # honest absence, not +1479%
+        assert jup.current_price == pytest.approx(0.005)  # price still shown
+        # #1322 review: the served item must disclose WHICH field was
+        # actively suppressed as implausible, not merely leave the field
+        # null (indistinguishable from "not enough history yet" — see the
+        # issue's Precedent section on is_stale/price_source as the honest-
+        # absence mechanism this payload already carries for the price).
+        assert jup.rejected_fields == ["change_24h_pct"]
+
+    @pytest.mark.asyncio
+    async def test_list_assets_rejected_fields_empty_when_nothing_suppressed(self):
+        """A normal series must NOT carry a spurious rejected_fields entry —
+        the disclosure mechanism must not cry wolf on legitimate data."""
+        service = AssetMarketService()
+        mock_histories = {
+            "sSPY": {
+                "close": [540.0, 545.0, 548.0],
+                "dates": ["2026-05-22", "2026-05-23", "2026-05-24"],
+            }
+        }
+
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sSPY"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")},
+            ),
+        ):
+            resp = await service.list_assets()
+
+        spy = next(a for a in resp.assets if a.symbol == "sSPY")
+        assert spy.rejected_fields == []
+
+    @pytest.mark.asyncio
+    async def test_list_assets_realized_vol_rejected_field_disclosed(self):
+        """The realized_vol_30d guard (#1322 review finding: it was
+        previously unguarded) must also disclose via rejected_fields when it
+        fires, end to end through list_assets."""
+        service = AssetMarketService()
+        bad_tick_series = [0.0003166165] + [0.005] * 30
+        mock_histories = {
+            "sJUP": {
+                "close": bad_tick_series,
+                "dates": [f"d{i}" for i in range(len(bad_tick_series))],
+            }
+        }
+
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sJUP"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sJUP": ("JUP-USD", "JUP", "crypto", "Coinbase")},
+            ),
+        ):
+            resp = await service.list_assets()
+
+        jup = next(a for a in resp.assets if a.symbol == "sJUP")
+        assert jup.realized_vol_30d is None  # no fabricated "typical daily move ~270%"
+        assert "realized_vol_30d" in jup.rejected_fields
+
+    @pytest.mark.asyncio
+    async def test_list_assets_period_offsets_are_asset_class_aware(self):
+        """Same input series for a crypto symbol and an equity symbol must
+        produce DIFFERENT change_7d_pct / change_30d_pct: crypto indexes 7
+        and 30 bars back (24/7, one bar per calendar day); equity indexes 5
+        and 21 (trading days only)."""
+        service = AssetMarketService()
+        closes = [100.0 + i for i in range(35)]  # monotonic → offsets diverge
+        mock_histories = {
+            "sBTC": {"close": closes, "dates": [f"d{i}" for i in range(35)]},
+            "sSPY": {"close": closes, "dates": [f"d{i}" for i in range(35)]},
+        }
+
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sBTC", "sSPY"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {
+                    "sBTC": ("BTC-USD", "BTC", "crypto", "Coinbase"),
+                    "sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE"),
+                },
+            ),
+        ):
+            resp = await service.list_assets()
+
+        btc = next(a for a in resp.assets if a.symbol == "sBTC")
+        spy = next(a for a in resp.assets if a.symbol == "sSPY")
+        assert btc.change_7d_pct != spy.change_7d_pct
+        assert btc.change_30d_pct != spy.change_30d_pct
+        # Exact expected values pin the offsets down (7/30 vs 5/21 bars back).
+        assert btc.change_7d_pct == pytest.approx((closes[-1] - closes[-1 - 7]) / closes[-1 - 7] * 100.0)
+        assert spy.change_7d_pct == pytest.approx((closes[-1] - closes[-1 - 5]) / closes[-1 - 5] * 100.0)
+        assert btc.change_30d_pct == pytest.approx((closes[-1] - closes[-1 - 30]) / closes[-1 - 30] * 100.0)
+        assert spy.change_30d_pct == pytest.approx((closes[-1] - closes[-1 - 21]) / closes[-1 - 21] * 100.0)
 
 
 # ── Universe alignment (#759 follow-up to #842) ────────────────────────────
