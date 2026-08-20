@@ -120,6 +120,40 @@ class JobStore:
         await r.hset(key, mapping=updates)
         logger.info("job: %s → %s", sanitize_log_value(job_id), status)
 
+    async def merge_result(self, job_id: str, patch: dict[str, Any]) -> bool:
+        """Merge top-level keys into an EXISTING job's persisted ``result``.
+
+        Used by the cost meter (#1217) to attach the per-job measurement record
+        after the terminal ``update_status`` has already written the result —
+        including on the error / cancelled paths, where there is no result write
+        at all but the compute was still spent.
+
+        Returns ``True`` when the patch landed. **Never creates a job.** A bare
+        ``hset`` on a missing key would materialise a TTL-less phantom hash that
+        then shows up in ``list_recent_jobs`` as a statusless job, so existence
+        is checked before the write and re-checked after it (the key can expire
+        in between); a hash the write resurrected is deleted again.
+        """
+        r = await self._get_redis()
+        key = f"{KEY_PREFIX}{job_id}"
+        if not await r.exists(key):
+            logger.debug("job: merge_result skipped — %s not found", sanitize_log_value(job_id))
+            return False
+        current = _safe_json(await r.hget(key, "result"), {}, context=f"job:{job_id}:result")
+        if not isinstance(current, dict):
+            # A non-dict result (legacy / tampered) is left intact rather than
+            # clobbered — the measurement is not worth destroying a payload for.
+            logger.warning("job: merge_result skipped — %s has a non-dict result", sanitize_log_value(job_id))
+            return False
+        current.update(patch)
+        await r.hset(key, "result", json.dumps(current, default=str))
+        if not await r.hexists(key, "id"):
+            # The key expired between the check and the write; the hset above
+            # recreated it as a fragment. Undo rather than leave a phantom.
+            await r.delete(key)
+            return False
+        return True
+
     # ── Event log (for streaming jobs) ────────────────────────────────────
 
     async def push_event(self, job_id: str, event_payload: dict[str, Any]) -> int:

@@ -131,6 +131,16 @@ class GenerateEvent(BaseModel):
 # ── Job listing + candidates list ─────────────────────────────────────────
 
 
+#: What the cost meter measured for one job. Free-form on purpose: the payload
+#: carries its own ``schema`` version (``cost_v1``), so the measurement record
+#: can gain fields without a lockstep API-model change. It is RAW MEASUREMENT
+#: ONLY — token counts, seconds, byte counts, write tallies. No prices, and no
+#: money is derivable from it without the pricing table, which lives outside the
+#: server. The paywall quote seam (``generation_payment.quote()``) is unaffected
+#: and still reports ``pricing_model: "flat_v1"`` (#1217).
+JobCost = dict[str, Any]
+
+
 class JobSummary(BaseModel):
     job_id: str
     state: Literal["queued", "running", "done", "error", "cancelled"]
@@ -139,10 +149,24 @@ class JobSummary(BaseModel):
     updated_at: str
     n_candidates: int
     best_strategy_id: str | None = None
+    cost: JobCost | None = None
 
 
 class JobsListResponse(BaseModel):
     jobs: list[JobSummary]
+
+
+class JobCostResponse(BaseModel):
+    """One job's measured resource consumption.
+
+    ``cost`` is ``None`` while the job is still running (the snapshot is written
+    once, on the terminal path) and stays ``None`` for a job that predates the
+    instrumentation — an honest absence, not a zeroed record.
+    """
+
+    job_id: str
+    state: Literal["queued", "running", "done", "error", "cancelled"]
+    cost: JobCost | None = None
 
 
 class CandidateSummary(BaseModel):
