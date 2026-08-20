@@ -5004,7 +5004,11 @@ button:where(.tag) {
 
 .app-proof-rail {
 	display: grid;
-	grid-template-columns: repeat(5, minmax(92px, 1fr));
+	/* auto-fit, not a hardcoded stage count (#1354): the rail renders 3
+	   stages with ROADMAP_SURFACES_ENABLED off and 5 with it on
+	   (proofStages.js getProofStages()) — a fixed repeat(5, …) left two empty
+	   bordered columns when only 3 <li> exist. */
+	grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
 	margin: 0 0 38px;
 	border-top: 1px solid var(--glass-border);
 	border-bottom: 1px solid var(--glass-border);
@@ -5576,7 +5580,7 @@ button:where(.tag) {
 
 	.app-proof-rail {
 		margin-bottom: 28px;
-		grid-template-columns: repeat(5, minmax(78px, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(78px, 1fr));
 	}
 
 	.app-proof-rail li {
