@@ -554,7 +554,11 @@ resource "aws_ecs_task_definition" "backend" {
         # below): supplied at apply time once the platform DCW exists, so the
         # flip needs no code change.
         { name = "GENERATION_PAYMENT_REQUIRED", value = "false" },
-        { name = "GENERATION_PRICE_USD", value = "0.15" },
+        # $2.00/generation (Dan, 2026-08-20): the testnet faucet drips $20
+        # per 2h cooldown, so one drip = a clean 10 generations — and $2 sits
+        # inside the 10x-margin-over-measured-cost pricing direction (private
+        # docs repo, business-model refresh §3a).
+        { name = "GENERATION_PRICE_USD", value = "2.00" },
         { name = "GENERATION_PAYMENT_RECIPIENT", value = var.generation_payment_recipient },
         # KNOWN GAP #2 (see file header): these three paths have no Fargate
         # equivalent of the docker-compose host bind mount yet.
