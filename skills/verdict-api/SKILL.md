@@ -7,17 +7,8 @@ triggers:
   - "what does the SSE stream from Archimedes send"
   - reading a strategy's passes_rigor_gate / DSR / PBO / out_of_sample_sharpe fields
   - integrating an external agent against Archimedes' generation endpoint
-  - "is REQUIRE_SIWE_FOR_GENERATION on, and generation auth questions in general"
+  - "what auth does generation need — account session, wallet, or both"
 ---
-
-> **⚠️ Auth model transition in flight (2026-08):** this skill documents `main`
-> as of 2026-08-19, where generation auth is SIWE-based
-> (`REQUIRE_SIWE_FOR_GENERATION`, secure-by-default). **PR #1194 replaces this
-> with Better Auth accounts as canonical identity** (`require_current_user` +
-> per-account/per-IP generation caps). When #1194 merges, update this skill's
-> auth section before trusting it — the endpoints stay, the identity model
-> changes.
-
 
 # Requesting a strategy verdict over HTTP
 
@@ -135,58 +126,60 @@ full passport field list).
 
 ## Auth requirements — as they actually are on `main` today
 
-There is **no API key**. Authentication is a SIWE (EIP-4361) wallet-signature
-session cookie, and whether it's *required* is a runtime flag:
+There is **no API key** and **no wallet requirement to generate**. Canonical
+identity is a **Better Auth account session** (#1194): every generation
+endpoint takes `user: CurrentUser = Depends(require_current_user)`
+(generate_routes.py:27, 112) and returns **401** with no session. Wallets
+are *linked to* an account, never a login by themselves.
 
-- `_generation_auth_required()` in
-  [`api/auth_siwe.py`](../../backend/archimedes/api/auth_siwe.py):189-210 — **secure
-  by default**: unless `REQUIRE_SIWE_FOR_GENERATION` is explicitly set to a falsy
-  value (`0|false|no|off`), generation requires a verified session. Set it to a
-  truthy value to force the gate on explicitly; leave it unset for the default-on
-  behavior. Under `TESTING=1` with the var unset, the gate is off (the hermetic
-  suite exercises the open path) — an explicit true/false always overrides that
-  carve-out.
-- `gate_generation` (auth_siwe.py:213-225) is the FastAPI dependency actually
-  wired onto `POST /api/generate/start` (generate_routes.py:120). When the gate is
-  on it behaves like `require_verified_wallet` — **401** with no session. When
-  explicitly off, it's best-effort: returns whatever wallet the session cookie
-  carries (possibly `None`) without enforcing.
-- The **stream/cancel/jobs/candidates** endpoints use a *different*, narrower
-  dependency: `get_verified_wallet` (never raises on its own) plus an explicit
-  `_require_job_auth` / `_require_job_access` check
-  (generate_routes.py:76-111). When gating is on: an anonymous caller gets **401
-  before any job lookup** (existence-oracle avoidance, generate_routes.py:81-83);
-  a caller whose wallet doesn't own the job gets **404, not 403** — a mismatched
-  caller must not be able to tell the job exists (generate_routes.py:94-98).
-  Ownerless jobs (created while gating was off) stay readable by any
-  *authenticated* caller.
+**Getting a session, in short:** `POST /api/auth/sign-up/email
+{name, email, password}` (password minimum 12 chars) → `POST
+/api/auth/sign-in/email` → the response sets the session cookie; send it on
+every subsequent call (`credentials: include` / curl `-b`). Verify with
+`GET /api/auth/get-session`. `scripts/agent_journey.py` at the repo root is
+the reference implementation of the full account → wallet-link → generate →
+paper-deploy flow for an external agent — read it before hand-rolling your
+own client.
 
-**Getting a session, in short:** `GET /api/auth/nonce` → sign the returned SIWE
-message with your key → `POST /api/auth/verify {message, signature}` → the
-response sets an `httponly`+`secure`+`samesite=strict` cookie
-(`api/auth_siwe.py`:231-464). A production `PUBLIC_DOMAIN`/chain-id mismatch fails
-closed with 401/503 (auth_siwe.py:96-113, 320-333) — the message must be signed
-for *this* domain and Arc chain id, not replayed from elsewhere. `scripts/agent_journey.py`
-at the repo root is the reference implementation of this exact flow for an
-external agent — read it before hand-rolling your own signer.
+**Job access is account-scoped.** The stream/jobs/candidates endpoints
+resolve the session first, then check `_require_job_access(job, user.id,
+job_id, linked_wallet)` (generate_routes.py:84, 261, 354): a job you don't
+own returns **404, not 403** — a mismatched caller must not learn the job
+exists.
 
-**Rate limiting**, independent of the auth gate:
+**Where a wallet still matters** — two places, both *optional* until they
+aren't:
+
+- **Payment.** `GET /api/generate/quote` is public and always tells the
+  truth about whether payment is required (generate_routes.py:96-103;
+  contract spec: [`docs/specs/generation-quote-contract.md`](../../docs/specs/generation-quote-contract.md)).
+  When the backend's payment flag is on, `POST /start` without a
+  `Payment-Signature` returns **402 with the quote in `detail`**, and the
+  signed payer must equal the account's **linked wallet**
+  (generate_routes.py:132-153). Link a wallet via `POST
+  /api/wallets/challenge` → sign the EIP-4361 message with your key → `POST
+  /api/wallets/verify` — one round-trip, `cast`-signable.
+- **Premium models.** See "Model gating" below — entitlement is checked
+  against the linked wallet.
+
+**Rate limiting and quotas**, stacked and fail-closed:
 
 - `POST /api/generate/start` is capped at `5/minute` via slowapi
-  (`@limiter.limit("5/minute")`, generate_routes.py:115).
-- A **wallet-less** caller (gate off, or gate on but genuinely anonymous — only
-  possible when the gate is off) is additionally capped at a small **daily**
-  quota per IP by `enforce_generation_quota`
-  (`services/generation_quota.py`:1-40, called at generate_routes.py:131-132);
-  a SIWE-authenticated caller bypasses this cap entirely. Hitting it returns 429
-  with a "connect a wallet" steering payload — it's deliberately also a
-  conversion prompt, not just a rate limit.
+  (`@limiter.limit("5/minute")`, generate_routes.py:107).
+- `enforce_generation_quota(request, user.id)` (generate_routes.py:124,
+  [`services/generation_quota.py`](../../backend/archimedes/services/generation_quota.py):212)
+  enforces **two stacked daily caps**: per-account
+  (`GENERATION_DAILY_CAP_PER_USER`, default 10) and per-IP
+  (`GENERATION_DAILY_CAP_PER_IP`, default 20), user bucket checked first,
+  `<= 0` disables either (generation_quota.py:63-86). Hitting one returns
+  **429**. Quota runs **before** the payment check — you cannot pay your
+  way past the cap.
 
 ## Model gating (`model` field on the start request)
 
-Passing a **premium** (Anthropic-on-Bedrock) model id requires wallet-connected
-entitlement, checked *before* the job is enqueued
-(`enforce_model_entitlement`, generate_routes.py:139,
+Passing a **premium** (Anthropic-on-Bedrock) model id requires entitlement on
+the account's **linked wallet**, checked *before* the job is enqueued
+(`enforce_model_entitlement`, generate_routes.py:156-162,
 [`services/model_gate.py`](../../backend/archimedes/services/model_gate.py)):
 a non-entitled caller gets **HTTP 402**, never a silent downgrade
 (model_gate.py:18-20). A **free** model id is always allowed. Anything that
@@ -251,8 +244,8 @@ number from this response to a user). The headline honesty traps specific to
 # Endpoint list + line numbers still match:
 grep -n "@generate_router\.\(post\|get\)" backend/archimedes/api/generate_routes.py
 
-# Auth gate default is still secure-by-default:
-grep -n "_generation_auth_required\|REQUIRE_SIWE_FOR_GENERATION" backend/archimedes/api/auth_siwe.py
+# Generation is still account-session-gated with stacked daily caps:
+grep -n "require_current_user\|enforce_generation_quota" backend/archimedes/api/generate_routes.py
 
 # EVENT_LOG_TTL:
 grep -n "EVENT_LOG_TTL = " backend/archimedes/services/job_queue.py
@@ -261,7 +254,7 @@ grep -n "EVENT_LOG_TTL = " backend/archimedes/services/job_queue.py
 grep -n "num_trials = 1" backend/archimedes/api/selection_bias_routes.py
 grep -n "num_trials.*!= 1" backend/archimedes/services/_rigor_helpers.py
 
-# Reference client for the full SIWE + stream flow:
+# Reference client for the full account + wallet-link + stream flow:
 sed -n '1,40p' scripts/agent_journey.py
 ```
 

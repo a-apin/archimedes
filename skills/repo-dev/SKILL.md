@@ -179,7 +179,7 @@ backend/archimedes/
 analytics-engine/    ← backtrader-based backtest engine (own uv project, own pytest)
 contracts/           ← Solidity, Foundry layout
 ui/                  ← React 19 + Vite 8 + viem
-scripts/              ← operational scripts, incl. agent_journey.py (reference SIWE + generate client)
+scripts/              ← operational scripts, incl. agent_journey.py (reference account-auth + generate client)
 cli/                  ← archimedes CLI — 0.0.1 stub, every subcommand exits NOT_IMPLEMENTED (see skills/verdict-api)
 docs/                 ← specs, ADRs, design docs; docs/README.md is its own map
 ```
