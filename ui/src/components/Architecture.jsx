@@ -25,6 +25,8 @@ function useArchStats() {
 	const [healthError, setHealthError] = useState(false);
 	const [leaderboard, setLeaderboard] = useState(null);
 	const [leaderboardError, setLeaderboardError] = useState(false);
+	const [agentStatus, setAgentStatus] = useState(null);
+	const [agentStatusError, setAgentStatusError] = useState(false);
 
 	useEffect(() => {
 		apiGet("/api/config/contracts")
@@ -41,6 +43,14 @@ function useArchStats() {
 		apiGet("/api/leaderboard?scope=curated")
 			.then(setLeaderboard)
 			.catch(() => setLeaderboardError(true));
+		// /api/agent/status.alive is the same Redis-heartbeat liveness check
+		// vault_monitor.py surfaces per-vault (`agent_alive = age < 600`) —
+		// the honesty ledger's rebalance-loop row reads it live rather than
+		// asserting a static claim, same anti-rot rule as every other number
+		// on this page (see the module docstring).
+		apiGet("/api/agent/status")
+			.then(setAgentStatus)
+			.catch(() => setAgentStatusError(true));
 	}, []);
 
 	return {
@@ -50,6 +60,8 @@ function useArchStats() {
 		healthError,
 		leaderboard,
 		leaderboardError,
+		agentStatus,
+		agentStatusError,
 	};
 }
 
@@ -947,7 +959,7 @@ const PROTOCOLS = [
 	},
 	{
 		name: "Hierarchy of Truth",
-		what: "Chain state outranks the LLM's narrative — the rebalance loop reads vault holdings from chain, never from model output; V_check then enforces weights-sum and max-concentration bounds on the resulting trade.",
+		what: "Chain state outranks the LLM's narrative — the rebalance loop reads vault holdings from chain, never from model output; V_check then caps any single position at 60% concentration and rejects a malformed weight set before the trade is committed.",
 	},
 	{
 		name: "Source Tracking",
@@ -995,8 +1007,9 @@ function LedgerStatus({ children, tone }) {
 	);
 }
 
-function HonestyLedger({ health, healthError }) {
+function HonestyLedger({ health, healthError, agentStatus, agentStatusError }) {
 	const loading = !health && !healthError;
+	const agentLoading = !agentStatus && !agentStatusError;
 	return (
 		<div className="card p-5 mb-7">
 			<div className="label mb-3">The honest ledger</div>
@@ -1039,14 +1052,39 @@ function HonestyLedger({ health, healthError }) {
 						<tr>
 							<td>Autonomous rebalance loop</td>
 							<td>
-								<LedgerStatus tone="pending">
-									Liveness unverified
-								</LedgerStatus>{" "}
-								— runs on a schedule against every deployed vault
-								(evaluate, commit, trade, reveal); the runner has been
-								stranded on a detached EC2 box with no deploy path since
-								the Fargate cutover, so uptime is not independently
-								confirmed
+								{agentStatusError ? (
+									<span style={{ color: "var(--text-4)" }}>
+										— live value unavailable
+									</span>
+								) : agentLoading ? (
+									<span
+										style={{
+											color: "var(--text-4)",
+											animation: "pulse 1.4s infinite",
+										}}
+									>
+										···
+									</span>
+								) : agentStatus.alive ? (
+									<>
+										<LedgerStatus tone="live">Live</LedgerStatus>{" "}
+										— runs on a schedule against every deployed vault
+										(evaluate, commit, trade, reveal); runner heartbeat
+										confirmed within the last 10 minutes on the
+										dedicated runner instance (relocated off the old
+										detached EC2 box, #1043/#1065)
+									</>
+								) : (
+									<>
+										<LedgerStatus tone="pending">
+											No recent heartbeat
+										</LedgerStatus>{" "}
+										— runs on a schedule against every deployed vault
+										(evaluate, commit, trade, reveal); no heartbeat in
+										the last 10 minutes, so uptime is not currently
+										confirmed
+									</>
+								)}
 							</td>
 						</tr>
 						<tr>
@@ -1185,6 +1223,8 @@ export default function Architecture({ onNavigate }) {
 		healthError,
 		leaderboard,
 		leaderboardError,
+		agentStatus,
+		agentStatusError,
 	} = useArchStats();
 
 	return (
@@ -1210,7 +1250,12 @@ export default function Architecture({ onNavigate }) {
 			<MarketplaceSection />
 			<CorpusSection health={health} healthError={healthError} />
 			<ProtocolsPanel />
-			<HonestyLedger health={health} healthError={healthError} />
+			<HonestyLedger
+				health={health}
+				healthError={healthError}
+				agentStatus={agentStatus}
+				agentStatusError={agentStatusError}
+			/>
 			<CallToAction onNavigate={onNavigate} />
 		</div>
 	);

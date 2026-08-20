@@ -101,19 +101,30 @@ test("protocols panel describes V_check by the checks it performs", () => {
 	// chain-vs-narrative consistency gate. The "chain state outranks the
 	// narrative" half is true (agent_runner reads vault state from chain)
 	// and must survive; only the V_check attribution is retracted.
+	//
+	// Anchored to the Hierarchy of Truth entry specifically, not the whole
+	// 1200-line file: a bare `assert.match(architecture, /concentration/)`
+	// only guards anything today because the word happens to be unique in
+	// the file, so a future rewrite of this exact `what:` string back to a
+	// chain-vs-narrative claim would still pass as long as any other line
+	// anywhere in the file mentions concentration.
+	const hot = architecture.slice(
+		architecture.indexOf('name: "Hierarchy of Truth"'),
+	);
+	const what = hot.slice(0, hot.indexOf("},"));
 	assert.doesNotMatch(
-		architecture,
+		what,
 		/V_check fails any rebalance where they disagree/,
 	);
-	assert.match(architecture, /Chain state outranks the LLM's narrative/);
-	assert.match(architecture, /concentration/);
+	assert.match(what, /Chain state outranks the LLM's narrative/);
+	assert.match(what, /concentration/);
 });
 
 test("honesty ledger gives every row an explicit LedgerStatus verdict", () => {
 	// A status cell with no <LedgerStatus> verdict reads as an implicit
 	// "Live" next to coloured verdicts on neighbouring rows — on the
 	// ledger's highest-stakes row (the autonomous rebalance loop), that is
-	// exactly backwards: liveness there is unverified.
+	// exactly backwards when liveness is genuinely unverified.
 	const ledger = architecture.slice(
 		architecture.indexOf("function HonestyLedger"),
 	);
@@ -124,8 +135,17 @@ test("honesty ledger gives every row an explicit LedgerStatus verdict", () => {
 	const rows = tbody.split("<tr>").slice(1);
 	assert.equal(rows.length, 8);
 	for (const row of rows) assert.match(row, /<LedgerStatus/);
-	// The rebalance row specifically must not be marked live — runner
-	// liveness is unresolved (agent_runner is stranded post-Fargate-cutover).
-	const rebalanceRow = rows.find((row) => row.includes("Autonomous rebalance loop"));
+	// The rebalance row must not assert a single hardcoded verdict either
+	// way — runner liveness changes over time (the runner was relocated off
+	// the old detached EC2 box 2026-08-18/19, #1043/#1065, and could go
+	// down again later), so the row must be driven by the live
+	// /api/agent/status heartbeat (`agentStatus.alive`) and able to render
+	// either a "live" or a "pending" verdict depending on what it reports —
+	// never a claim asserted independent of that signal.
+	const rebalanceRow = rows.find((row) =>
+		row.includes("Autonomous rebalance loop"),
+	);
+	assert.match(rebalanceRow, /agentStatus\.alive/);
+	assert.match(rebalanceRow, /tone="live"/);
 	assert.match(rebalanceRow, /tone="pending"/);
 });
