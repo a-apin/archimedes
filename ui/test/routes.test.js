@@ -188,6 +188,40 @@ test("roadmap surfaces are hidden by default: flat routes, deep links, nav (#126
 	assert.equal(visibleNavigation(nav, ROADMAP_ON, { id: "u1" }).length, 6);
 });
 
+test("Library's in-page Published tab hides with the marketplace surface it leads into (#1324)", () => {
+	// #1266's dead-door audit only checked route/nav call sites
+	// (onNavigate/setPage/navigateToPage); it couldn't see a tab that
+	// renders and fetches inline with no route of its own. Strategies.jsx
+	// (the Library page, itself NOT a hidden route) must gate its Published
+	// tab the same way routes.js gates a hidden page: import the one flag
+	// and use it, not a second bespoke check.
+	const strategiesSrc = readFileSync(
+		new URL("../src/components/Strategies.jsx", import.meta.url),
+		"utf8",
+	);
+	assert.match(
+		strategiesSrc,
+		/import \{ ROADMAP_SURFACES_ENABLED \} from '\.\.\/featureFlags\.js'/,
+	);
+	// 1. The fetch must not fire unconditionally — a hidden tab that still
+	// calls the hidden API on every Library load is the exact bug filed.
+	assert.match(
+		strategiesSrc,
+		/ROADMAP_SURFACES_ENABLED \? apiGet\('\/api\/marketplace\/my-published'\) : Promise\.resolve\(\[\]\)/,
+	);
+	// 2. The tab button must not render unconditionally.
+	assert.match(
+		strategiesSrc,
+		/\{ROADMAP_SURFACES_ENABLED && \(\s*<button[\s\S]*?Published \(\{published\.length\}\)/,
+	);
+	// 3. The tab panel must not render either — belt-and-suspenders against
+	// a stale ?tab=published deep link coercing activeTab directly.
+	assert.match(
+		strategiesSrc,
+		/activeTab === 'published' && ROADMAP_SURFACES_ENABLED && \(/,
+	);
+});
+
 test("anonymous nav shows browse + the Generate conversion path, nothing stateful", () => {
 	const nav = [
 		{ id: "explore" },

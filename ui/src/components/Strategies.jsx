@@ -5,6 +5,7 @@ import RigorExplainer from './RigorExplainer'
 import RigorStrictnessControl, { levelLabel } from './RigorStrictnessControl'
 import { useRigorStrictness, BADGE_LEVEL } from '../hooks/useRigorStrictness'
 import useDialogFocus from '../hooks/useDialogFocus'
+import { ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
 
 import { apiGet, apiPost, apiDelete } from '../api'
 
@@ -634,8 +635,13 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
   // to their badge boolean (no chip).
   const [deployMap, setDeployMap] = useState({})
   // 'generated' is the first-class tab per product feedback — pushes user
-  // toward Generate when empty.
-  const [activeTab, setActiveTab] = useState(() => defaultTab || 'generated')
+  // toward Generate when empty. Published is a hidden roadmap surface
+  // (#1266/#1324) — a ?tab=published deep link must not land there with the
+  // flag off, since the tab button that would normally set this is gone too.
+  const [activeTab, setActiveTab] = useState(() => {
+    if (defaultTab === 'published' && !ROADMAP_SURFACES_ENABLED) return 'generated'
+    return defaultTab || 'generated'
+  })
   // Page-level rigor explainer modal, opened from any row expansion's "?"
   // affordance. Single modal instance per page keeps state simple.
   const [rigorModalOpen, setRigorModalOpen] = useState(false)
@@ -662,11 +668,13 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
     setLoading(true)
     setLoadError('')
     try {
+      // Published is a hidden roadmap surface (#1266/#1324) — its fetch must
+      // not fire with the flag off, not just its tab stay unclickable.
       const [seedRes, genRes, gateRes, publishedRes] = await Promise.allSettled([
         apiGet('/api/strategies/'),
         apiGet('/api/strategies/generated'),
         apiGet('/api/selection-bias/gate'),
-        apiGet('/api/marketplace/my-published'),
+        ROADMAP_SURFACES_ENABLED ? apiGet('/api/marketplace/my-published') : Promise.resolve([]),
       ])
       if (seedRes.status === 'fulfilled') {
         const sorted = [...(seedRes.value.strategies || [])].sort(
@@ -733,14 +741,19 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
         >
           Examples ({examples.length})
         </button>
-        <button
-          type="button"
-          className={`tag ${activeTab === 'published' ? 'tag-accent' : 'tag-muted'}`}
-          aria-pressed={activeTab === 'published'}
-          onClick={() => setActiveTab('published')}
-        >
-          Published ({published.length})
-        </button>
+        {/* Published leads into the marketplace surface #1266 hid — hides
+            with it (#1324). Anti-goal: gating render alone without gating
+            the fetch above would still hit the hidden API every load. */}
+        {ROADMAP_SURFACES_ENABLED && (
+          <button
+            type="button"
+            className={`tag ${activeTab === 'published' ? 'tag-accent' : 'tag-muted'}`}
+            aria-pressed={activeTab === 'published'}
+            onClick={() => setActiveTab('published')}
+          >
+            Published ({published.length})
+          </button>
+        )}
       </div>
 
       {loadError && (
@@ -862,7 +875,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
         </>
       )}
 
-      {activeTab === 'published' && (
+      {activeTab === 'published' && ROADMAP_SURFACES_ENABLED && (
         <>
           <div className="caption mb-3 text-[var(--text-3)] leading-relaxed">
             Strategies you have published to the on-chain marketplace. Subscribers
