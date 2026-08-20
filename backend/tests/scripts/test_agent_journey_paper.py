@@ -171,3 +171,15 @@ def test_malformed_201_body_fails_cleanly():
     client.post.return_value = _response(201, {"unexpected": "shape"})
     assert aj.step_paper(client, dict(_WINNER)) is None
     client.get.assert_not_called()
+
+
+def test_200_is_not_success_the_contract_is_201_only():
+    """The route's success is 201 Created, and the harness pins EXACTLY that:
+    a 200 carrying an otherwise valid summary body must still fail the leg —
+    a relaxed any-2xx check would mask a route/proxy behavior change the
+    harness exists to surface. (Review: the 422 test alone cannot prove this;
+    this test fails against a `status_code not in (200, 201)` relaxation.)"""
+    client = MagicMock()
+    client.post.return_value = _response(200, _summary())
+    assert aj.step_paper(client, dict(_WINNER)) is None
+    client.get.assert_not_called()

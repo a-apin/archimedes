@@ -663,8 +663,12 @@ def main() -> int:
         )
         # Requested hard steps must move the exit code (review): a --deploy
         # run that deployed nothing, or a failed monitor read, is not success.
-        # Same for the paper leg: skipped-for-no-winner is soft (readback
-        # already degraded `ok`), but a failed POST/readback is a failure.
+        # Same for the paper leg, but only when it was actually ATTEMPTED:
+        # no persisted winner means there was nothing to deploy — the journey
+        # RESULT line above already reports how the generation went (note
+        # `ok` covers verdict readability, not winner existence, so a
+        # winnerless-but-readable run legitimately exits 0 with paper
+        # skipped). A failed POST/readback on a real attempt is a failure.
         paper_ok = True
         if args.paper and (readback.get("winner") or {}).get("strategy_id"):
             if paper_id:
