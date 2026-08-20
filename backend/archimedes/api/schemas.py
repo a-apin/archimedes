@@ -13,7 +13,7 @@ Convention:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, model_validator
 
@@ -253,6 +253,20 @@ class StrategyResponse(BaseModel):
     # deterministic heuristic in services/return_source_classifier.py.
     return_source: str = "noise"  # "risk_premium" | "mispricing" | "productive_growth" | "noise"
     return_source_note: str = ""
+
+    # ── Generation cost (#1326) ─────────────────────────────────────────────
+    # What the generation run that produced this strategy actually consumed,
+    # read from the durable ``generation_costs`` row rather than the Redis job
+    # record (which expires after an hour). Shape:
+    #   {"schema": "cost_v1", "job_id", "recorded_at",
+    #    "measurement": {…the cost_v1 snapshot…},
+    #    "quote": {…the literal generation_payment.quote() payload…} | null}
+    # RAW MEASUREMENT beside a RECORDED PRICE, never a conversion of one into
+    # the other: no server-side $-conversion of token counts (#1217's remaining
+    # pricing work). ``None`` = nothing measured this strategy — every curated
+    # strategy, and every generated one from before the meter — which the UI
+    # renders as "not measured", never as zero.
+    generation_cost: dict[str, Any] | None = None
 
     # Whether the caller's wallet is permitted to publish this strategy.
     # Always False for anonymous requests; True only when the caller is the

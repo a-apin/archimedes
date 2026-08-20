@@ -576,12 +576,20 @@ async def list_generated_strategies(
                 )
             query = query.filter(StrategyRecord.is_published.is_(True) | or_(*owner_filters))
             records = query.order_by(StrategyRecord.created_at.desc()).limit(limit).all()
+            # One query for the whole page's generation-cost records (#1326) —
+            # the library's cost column reads this. Strategies with nothing
+            # measured are simply absent from the map and stay absent from the
+            # row, which the table renders as an em-dash, never as zero.
+            from archimedes.models.generation_cost import generation_costs_for_strategies
+
+            costs = generation_costs_for_strategies(session, [r.id for r in records])
             rows = []
             for r in records:
                 d = r.to_dict()
                 d["can_publish"] = bool(caller) and wallet_can_publish(
                     session, strategy_id=r.id, wallet_address=caller, is_example=False
                 )
+                d["generation_cost"] = costs.get(r.id)
                 rows.append(_redact_owner_wallet(d, caller))
     except Exception as exc:
         import logging as _logging
@@ -1663,6 +1671,32 @@ def _enrich_paper_titles_from_corpus(
         return {}
 
 
+def _generation_cost_for(strategy_id: str, session) -> dict | None:
+    """The durable generation-cost record for one strategy, or ``None`` (#1326).
+
+    ``None`` covers three genuinely different situations — no session on this
+    call path, no record for this strategy, and a record whose measurement will
+    not decode — and every one of them is the same claim to a reader: *nothing
+    measured this*. That is deliberate. The alternative, distinguishing them in
+    the payload, would invite a caller to treat "we didn't look" as "measured
+    zero". The corrupt-record case is logged loudly by the model layer.
+
+    A lookup failure must never take down a strategy read: the cost card is
+    decoration on a page whose subject is the strategy.
+    """
+    if session is None or not strategy_id:
+        return None
+    try:
+        from archimedes.models.generation_cost import generation_cost_for_strategy
+
+        return generation_cost_for_strategy(session, strategy_id)
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning("generation cost lookup failed for %s: %s", strategy_id, exc)
+        return None
+
+
 def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     """Reshape a StrategyPassportRecord (fusion/architect output) into the
     StrategyResponse schema that StrategyPassport.jsx expects. Curated
@@ -1680,6 +1714,12 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         StrategyView,
         classify_return_source,
     )
+
+    # What the generation run that produced this strategy consumed (#1326).
+    # Needs the session, so it is None on the session-less call path — and None
+    # is also the answer for every strategy generated before the meter existed.
+    # Either way the UI renders "not measured"; nothing is zeroed or invented.
+    generation_cost = _generation_cost_for(record.id, session)
 
     refs = list(record.paper_refs or [])
     first = refs[0] if refs else None
@@ -1778,6 +1818,7 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         regime_tag=record.regime_tag,
         return_source=return_source_enum.value,
         return_source_note=return_source_note,
+        generation_cost=generation_cost,
     )
 
 
