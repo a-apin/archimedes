@@ -607,6 +607,15 @@ class AgentStateStore:
         would inflate ``get_reveal_reconcile_pending_count()`` (SCARD-backed)
         forever with no path back to zero; this is the one call site that
         already pays for a GET per member, so self-healing here is free.
+
+        The prune is LOUD (round-2 review) and moves the member into the
+        terminal set rather than dropping it silently: the blob carried the
+        canonical bytes and storage pointer ``reveal()`` needs, so once it's
+        gone this commitment can never be revealed again regardless of what
+        the on-chain state says — that IS terminal, not a no-op. Without the
+        SADD here, a dangling record whose blob got evicted simply vanished
+        from BOTH ``/health`` gauges with zero telemetry, in a PR whose stated
+        purpose is making exactly this state countable and alertable.
         """
         r = await self._get_redis()
         hashes = await r.smembers(KEY_TRACE_RECONCILE_PENDING)
@@ -614,8 +623,14 @@ class AgentStateStore:
         for h in hashes:
             raw = await r.get(f"{KEY_TRACE_PREFIX}{h}")
             if not raw:
+                logger.warning(
+                    "Pruned orphaned reconcile-index member %s — trace blob is gone; this dangling "
+                    "commitment can no longer be revealed and is being marked terminal",
+                    h[:16],
+                )
                 await r.srem(KEY_TRACE_RECONCILE_PENDING, h)
                 await r.hdel(KEY_TRACE_RECONCILE_FIRST_SEEN, h)
+                await r.sadd(KEY_TRACE_RECONCILE_TERMINAL, h)
                 continue
             data = safe_json_loads(raw, context="trace:reconcile_pending")
             if data is not None:
@@ -677,6 +692,31 @@ class AgentStateStore:
         """
         r = await self._get_redis()
         return set(await r.smembers(KEY_TRACE_RECONCILE_TERMINAL))
+
+    async def seed_reveal_reconcile_first_seen(self, trace_hash: str) -> None:
+        """Independently seed the first-seen marker (HSETNX only — #1403 review).
+
+        Normally ``save_trace`` writes this marker as a side effect of
+        persisting the full trace JSON blob. That coupling is exactly the gap
+        this closes: a record that was ALREADY dangling before this index
+        existed (a migration-era record) has no marker yet, and if the thing
+        that's broken is that same blob write path, ``save_trace`` can keep
+        raising before it ever reaches the HSETNX line — so the marker is
+        never seeded and the max-age circuit breaker (which reads it) can
+        never fire for exactly the compound failure it exists to close.
+
+        Called from ``agent_runner._reconcile_failure`` the first time a
+        reconciliation pass sees a dangling record with no first-seen marker,
+        as a small write on its own key — independent of whether the blob
+        save that tick succeeds or fails — so the record acquires a clock
+        (starting from now, not its true unknown origin, same conservative
+        choice ``save_trace`` already makes) on this pass rather than staying
+        permanently unbounded.
+        """
+        if not trace_hash:
+            return
+        r = await self._get_redis()
+        await r.hsetnx(KEY_TRACE_RECONCILE_FIRST_SEEN, trace_hash, datetime.now(UTC).isoformat())
 
     async def get_reveal_reconcile_first_seen(self, trace_hash: str) -> datetime | None:
         """When this trace_hash FIRST entered the dangling index, or None.

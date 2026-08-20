@@ -70,6 +70,7 @@ def runner_env():
         # unaffected; individual tests override to exercise the new paths.
         runner.state.list_dangling_reveal_traces = AsyncMock(return_value=[])
         runner.state.get_reveal_reconcile_first_seen = AsyncMock(return_value=None)
+        runner.state.seed_reveal_reconcile_first_seen = AsyncMock()
         # Durable-terminal writes/reads (#1403 review) — default to "closes
         # cleanly, nothing already terminal" so pre-existing tests are
         # unaffected; individual tests override to exercise the new paths.
@@ -841,9 +842,9 @@ class TestMaxAgeCompoundFailureGuard:
 
     def test_missing_first_seen_skips_the_age_guard_entirely(self, runner_env, monkeypatch):
         """No first-seen marker (e.g. a record written before this index
-        existed) → the age guard is silently skipped, falling back to the
-        attempt-cap alone. MAX_AGE set to 1s here — it would fire instantly
-        if the guard didn't correctly no-op on a missing marker."""
+        existed) → the age guard is silently skipped THIS cycle, falling back
+        to the attempt-cap alone. MAX_AGE set to 1s here — it would fire
+        instantly if the guard didn't correctly no-op on a missing marker."""
         runner, mock_tp = runner_env
         monkeypatch.setattr("archimedes.chain.agent_runner.REVEAL_RECONCILE_MAX_ATTEMPTS", 1000)
         monkeypatch.setattr("archimedes.chain.agent_runner.REVEAL_RECONCILE_MAX_AGE_SECONDS", 1)
@@ -858,6 +859,47 @@ class TestMaxAgeCompoundFailureGuard:
 
         saved = _saved(runner)
         assert saved["reveal_reconcile_state"] == "pending"
+
+    def test_missing_first_seen_gets_seeded_independently_of_the_blob_save(self, runner_env, monkeypatch):
+        """#1403 round-2 review, item 4: a migration-era record with no
+        first-seen marker must acquire one on its first reconciliation pass
+        — via a small, independent write, not gated on ``save_trace``
+        succeeding — so the compound failure (broken blob write path AND a
+        pre-existing dangling record) doesn't leave the age guard permanently
+        unbounded for it."""
+        runner, mock_tp = runner_env
+        monkeypatch.setattr("archimedes.chain.agent_runner.REVEAL_RECONCILE_MAX_ATTEMPTS", 1000)
+        record = _dangling_record(runner, mock_tp)
+        runner.state.get_reveal_reconcile_first_seen = AsyncMock(return_value=None)
+        mock_tp.get_commitment = AsyncMock(
+            return_value={"revealed": False, "reveal_block": None, "claimed_execution_time": 0, "storage_pointer": ""}
+        )
+        mock_tp.reveal = AsyncMock(side_effect=RuntimeError("still broken"))
+
+        _run_pass(runner, [record])
+
+        runner.state.seed_reveal_reconcile_first_seen.assert_awaited_once_with(record["trace_hash"])
+
+    def test_seed_failure_is_loud_and_does_not_block_the_normal_attempt_cap(self, runner_env, caplog):
+        """A failed seed write (e.g. Redis down) must not abort reconciliation
+        — the normal attempt-cap path still has to work off the in-memory
+        record."""
+        runner, mock_tp = runner_env
+        record = _dangling_record(runner, mock_tp)
+        runner.state.get_reveal_reconcile_first_seen = AsyncMock(return_value=None)
+        runner.state.seed_reveal_reconcile_first_seen = AsyncMock(side_effect=RuntimeError("redis down"))
+        mock_tp.get_commitment = AsyncMock(
+            return_value={"revealed": False, "reveal_block": None, "claimed_execution_time": 0, "storage_pointer": ""}
+        )
+        mock_tp.reveal = AsyncMock(side_effect=RuntimeError("still broken"))
+
+        with caplog.at_level("WARNING"):
+            _run_pass(runner, [record])
+
+        assert "first-seen SEED FAILED" in caplog.text
+        saved = _saved(runner)
+        assert saved["reveal_reconcile_state"] == "pending"
+        assert saved["reveal_reconcile_attempts"] == 1
 
     def test_first_seen_read_failure_is_loud_and_does_not_block_the_normal_attempt_cap(self, runner_env, caplog):
         runner, mock_tp = runner_env

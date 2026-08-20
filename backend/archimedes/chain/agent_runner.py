@@ -2076,6 +2076,35 @@ class StrategyRunner:
             )
             return None
 
+    async def _seed_missing_first_seen(self, trace_hash: str | None, tick_id: str) -> None:
+        """Independently seed a missing first-seen marker (#1403 review, item 4).
+
+        A migration-era dangling record — one that was already dangling
+        before this index existed — has no first-seen marker, and normally
+        only ``save_trace`` writes one, as a side effect of persisting the
+        full trace JSON blob. If THAT blob write is the thing broken, the
+        marker can never get seeded that way, so the max-age circuit breaker
+        can never fire for exactly the compound failure it exists to close.
+
+        Seeding here — a small, independent write, NOT gated on the blob
+        save — gives such a record a clock (starting now) on its first
+        reconciliation pass, regardless of whether the blob save this same
+        tick succeeds. A write failure here is loud but never blocking: the
+        normal attempt-cap path still works off the in-memory ``record``.
+        """
+        if not trace_hash:
+            return
+        try:
+            await self.state.seed_reveal_reconcile_first_seen(trace_hash)
+        except Exception as e:
+            logger.warning(
+                "[tick %s] Reveal reconciliation first-seen SEED FAILED for %s: %s — will retry seeding "
+                "next cycle; age guard stays unbounded for this record until it succeeds",
+                tick_id,
+                trace_hash[:16],
+                e,
+            )
+
     async def _reconcile_failure(self, record: dict, tick_id: str, reason: str) -> None:
         """Count one failed retry; go terminal at the cap OR past the max age.
 
@@ -2115,6 +2144,15 @@ class StrategyRunner:
                     "first seen dangling), independent of the attempt counter (compound-failure guard, #1353)",
                 )
                 return
+        else:
+            # No marker at all (as opposed to a transient read failure) means
+            # this record — likely migration-era — has never had a clock.
+            # Seed one now, independently of whether this tick's blob save
+            # below succeeds (#1403 review, item 4): otherwise a record whose
+            # dangling-ness predates this index, combined with a blob write
+            # path that stays broken, can never acquire a first-seen marker
+            # and the age guard stays permanently unbounded for it.
+            await self._seed_missing_first_seen(record.get("trace_hash"), tick_id)
 
         record["reveal_reconcile_state"] = _RECONCILE_PENDING
         logger.warning(

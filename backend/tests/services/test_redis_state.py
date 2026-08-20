@@ -500,6 +500,26 @@ class TestRevealReconcileIndex:
         fake.hdel.assert_awaited_once_with(KEY_TRACE_RECONCILE_FIRST_SEEN, "h1")
 
     @pytest.mark.asyncio
+    async def test_list_dangling_reveal_traces_prune_is_loud_and_marks_terminal(self, caplog) -> None:
+        """Round-2 review finding: an orphan prune with no log and no terminal
+        SADD is a silent, untelemetered vanish from BOTH /health gauges — in a
+        PR whose stated purpose is making dangling-reveal state countable and
+        alertable. The prune must (a) log at WARNING with the trace hash and
+        (b) SADD the member into the terminal set, since a blob-less member
+        can never be revealed again."""
+        store, fake = await _store_with_fake_redis()
+        fake.smembers.return_value = ["h1"]
+        fake.get = AsyncMock(return_value=None)
+
+        with caplog.at_level("WARNING"):
+            traces = await store.list_dangling_reveal_traces()
+
+        assert traces == []
+        assert "Pruned orphaned reconcile-index member" in caplog.text
+        assert "h1"[:16] in caplog.text
+        fake.sadd.assert_awaited_once_with(KEY_TRACE_RECONCILE_TERMINAL, "h1")
+
+    @pytest.mark.asyncio
     async def test_get_reveal_reconcile_pending_count_is_scard(self) -> None:
         store, fake = await _store_with_fake_redis()
         fake.scard.return_value = 3
