@@ -93,7 +93,15 @@ class TestGetContractAddresses:
             assert resp.vaults == {"vault_0": "0xV0", "vault_1": "0xV1", "vault_2": "0xV2"}
 
     @pytest.mark.asyncio
-    async def test_chain_read_failure_yields_empty_dicts(self) -> None:
+    async def test_chain_read_failure_yields_null_not_empty(self) -> None:
+        """A failed chain read must render as null (unread), never {} (#1356).
+
+        {} is a real, distinct value: it means the chain was successfully
+        read and reports zero pools/vaults. Collapsing "the RPC call raised"
+        into the same {} the success path uses for a genuine zero is exactly
+        the defect #1356 exists to close — the frontend has no way to tell
+        "outage" from "measured zero" and renders a confident 0 either way.
+        """
         loader = MagicMock()
         loader.amm_router.functions.getAllPools.return_value.call = AsyncMock(side_effect=RuntimeError("rpc down"))
         loader.vault_factory.functions.getVaults.return_value.call = AsyncMock(side_effect=RuntimeError("rpc down"))
@@ -104,6 +112,5 @@ class TestGetContractAddresses:
             cc.settings = _fake_settings()
             get_loader.return_value = loader
             resp = await ConfigService().get_contract_addresses()
-            # Failures are swallowed — empty dicts, not exceptions
-            assert resp.pools == {}
-            assert resp.vaults == {}
+            assert resp.pools is None
+            assert resp.vaults is None
