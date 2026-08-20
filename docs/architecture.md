@@ -316,3 +316,22 @@ on the strength of `/health`'s `corpus_embedded` field. That field describes the
 the corpus: it is `paper_rag == "live"`, i.e. whether sentence-transformers loaded in *this*
 worker. The stored corpus is text either way, and prod serves the lexical path. #778 carries
 the correction; `backend/tests/test_corpus_claim_integrity.py` pins it.
+
+## 11. Stack at a glance
+
+Relocated from `README.md` (2026-08-20) and corrected against the live system. Anything
+that decays fast — contract counts, test totals — is deliberately a pointer, not a number.
+
+| Layer | Technology |
+| --- | --- |
+| Backend | Python 3.12 · FastAPI · Uvicorn · SQLAlchemy |
+| Frontend | React 19 + Vite 8 + UnoCSS + [viem](https://viem.sh/) |
+| Datastore | Aurora PostgreSQL 18.3 + ElastiCache Redis (local dev: Postgres 16 + Redis 7 in compose) |
+| LLM | `bedrock_converse` / `amazon.nova-micro-v1:0` ([ADR](adr/glm-to-bedrock-llm-migration.md)); BYOK and local-Ollama paths preserved behind the `LLM_*` env seam. Live value: `GET /health` → `llm_provider`, `llm_model`. |
+| Backtesting | [backtrader](https://github.com/mementum/backtrader) ([ADR](adr/backtrader-backtest-engine.md)) |
+| Generation | Multi-agent debate society — regime × mechanism steer grid, deterministic critics, K=1 ([spec](specs/multi-agent-debate-spec.md), [ADR](adr/debate-society-sole-generation-pipeline.md)) |
+| Corpus retrieval | Keyword filter selects candidates; only that set is re-scored at request time across title + abstract — `all-MiniLM-L6-v2` when the model is loaded in-process, lexical TF-IDF when it is not. Nothing is precomputed (no vector column, no prebuilt index). Live scorer: `GET /health` → `paper_rag`, `paper_rag_reason`. Detail: [`corpus-architecture.md`](corpus-architecture.md). |
+| Smart contracts | Solidity targeting Arc (EVM-compatible) + [Foundry](https://book.getfoundry.sh/). Census: `GET /api/config/contracts`. |
+| On-chain | Circle SDK (Wallets, Gateway, CCTP) + viem on the UI side |
+| Auth | Better Auth accounts/sessions; EIP-4361 only for optional wallet linking ([`security/auth-model.md`](security/auth-model.md)) |
+| Deployment | ECS Fargate behind ALB/WAF (build-in-CI → ECR → Fargate) ([ADR](adr/ec2-to-ecs-fargate-cutover.md)); docker compose is the local dev mirror |

@@ -160,6 +160,24 @@ const block = await client.getBlockNumber();
 2. **Per-team rate limiting.** Without auth, one runaway loop from any team would degrade the testnet for everyone.
 3. **Operational control.** Canteen can spin the testnet up/down and revoke individual tokens without distributing new node URLs.
 
+## Automated backtest refresh (no operator ritual)
+
+Relocated from `README.md` (2026-08-20).
+
+[`backend/archimedes/services/backtest_scheduler.py`](../../backend/archimedes/services/backtest_scheduler.py)
+runs a long-lived task that checks staleness on startup and then on a fixed cadence, and
+refreshes any curated strategy that has **no persisted backtest** or whose latest run is
+older than the max age. Nobody has to remember to re-run anything.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `BACKTEST_REFRESH_INTERVAL_HOURS` | `24` | how often the staleness check runs |
+| `BACKTEST_MAX_AGE_HOURS` | `168` (7 days) | a persisted backtest older than this is stale |
+
+The staleness check fails **closed**: if the check itself raises, it reports "not stale"
+rather than stampeding a refresh across the whole library. Read the module docstring before
+changing either bound — both are clamped.
+
 ## Local↔prod parity
 
 The local docker-compose stack runs the same code as the EC2 deployment. To verify your local setup matches production expectations:

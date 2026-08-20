@@ -135,6 +135,46 @@ Each step, expressed as the story the user is living:
 > performed well, which haven't, and what the agent's reasoning was in each case —
 > losing trades are first-class learning material, not hidden failures."*
 
+## The canonical click path
+
+The spine above is the story. This is the same story as routes and clicks — seven steps
+from a cold landing page to a verified on-chain decision. Relocated here from `README.md`
+(2026-08-20) so the click path and the spine stay in one place.
+
+```mermaid
+flowchart LR
+  L[/Landing/]
+  A[/sign-in/]
+  G[/app/generate/]
+  ST[/app/strategy/:id/]
+  CV{CreateVaultModal}
+  DF{DepositFlow stepper}
+  P[/app/portfolio/]
+  R[/app/reasoning?trace_id=X/]
+  V{Verify on-chain}
+
+  L -- 'Open app →' --> A
+  A -- account session --> G
+  G -- submit brief; SSE stream completes --> ST
+  ST -- 'Deploy as Vault →' (linked wallet required) --> CV
+  CV -- create succeeds --> DF
+  DF -- 3 signatures: approve → deposit → setTargetAllocations --> P
+  P -- click activity trace --> R
+  R -- 'Verify on-chain' --> V
+
+  %% Alternate paths (allowed; account required)
+  G -. sidebar Library .-> LIB[/app/library?tab=examples/]
+  LIB -. click row .-> ST
+  G -. sidebar Explore .-> E[/app/explore/]
+  G -. sidebar Corpus .-> C[/app/corpus/]
+  C -. paper detail → 'Generate from this' .-> G
+```
+
+Every other route (Library tabs, Corpus Graph/KG, Explore sparklines, Learnings) is
+reachable from the sidebar but supplementary. What each page is *for*:
+[`specs/page-roles-spec.md`](specs/page-roles-spec.md). What the wallet signatures in the
+`DepositFlow` step actually are: [`specs/vault-semantics-spec.md`](specs/vault-semantics-spec.md).
+
 ## Stories by page / surface
 
 The pages exist to support the spine. Each one earns its place by enabling specific

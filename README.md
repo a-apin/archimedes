@@ -1,293 +1,181 @@
 # Archimedes
 
-> # Agentic trading, grounded in research.
->
-> Tell Archimedes what you want from a portfolio in plain English. It fuses your intent with the quant-finance literature, live market data, and statistical rigor — into an autonomous on-chain strategy that runs in a non-custodial vault on Arc, with every decision hashed and verifiable on-chain.
->
-> *The lever is academic research. The fulcrum is autonomous AI. The world is your portfolio.*
+*The lever is academic research. The fulcrum is autonomous AI. The world is your portfolio.*
 
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](LICENSE)
-[![Hackathon: Agora](https://img.shields.io/badge/hackathon-Agora%20Agents-violet.svg)](https://luma.com/7i50p2r9)
 [![Settled on: Arc](https://img.shields.io/badge/settled%20on-Arc-2A4DD1.svg)](https://www.arc.network/)
 
-## TL;DR
+## What it is
 
-Describe what you want; Archimedes fuses your intent with live market data and a ~10,000-paper quantitative-finance research corpus into novel strategies, gates them through selection-bias rigor (Deflated Sharpe, Probability of Backtest Overfitting), and lets you execute them into non-custodial vaults on Arc testnet — every reasoning step traceable to a source paper and anchored on-chain.
+Describe what you want from a portfolio in plain English. Archimedes proposes strategies
+grounded in a corpus of 10,000 arXiv quantitative-finance preprints, puts each one through
+four admission checks — a deflated Sharpe ratio, a probability of backtest overfitting, a
+walk-forward out-of-sample pass, and a static look-ahead audit — and lets you deploy what
+survives into a non-custodial vault on the Arc testnet, where every decision the agent
+reaches is written down as a reasoning trace you can read.
 
-**Research marketplace, not a casino.** Payments are real (USDC on Arc); settlement is stubbed pending mainnet. Single-user MVP — multi-user library and social features are roadmap.
+Three things to know before anything else:
 
-**Hackathon RFB alignment.** Archimedes is built against **[RFB 04 — Adaptive Portfolio Manager](https://luma.com/7i50p2r9)** — the only one of the six Agora Request-For-Builds whose primitives map one-to-one onto what we ship (regime detection, asset allocation by regime, autonomous rebalancing, Kelly + risk-parity sizing, correlation-based diversification, cross-chain-ready execution). **Adjacent fit:** RFB 02 (Prediction Market Trader Intelligence — our +EV / Kelly primitive maps without requiring us to ship prediction markets) and RFB 06 (Social Trading Intelligence — our Tier-1 verified library + paper-anchored passport + DSR/PBO rigor *is* the "AI selects, weights, monitors" leaderboard pattern the RFB describes). RFB 04 is the core claim; the others are bonus surface area.
+- **Most briefs fail the gate. That is the product working.** A strategy that fails is
+  shown to you with its DSR, PBO and out-of-sample numbers, so you can see exactly why.
+  How many strategies in the curated library currently pass is **unestablished** — the
+  live gate is the only authority on that, and this file will never quote a count.
+- **Research marketplace, not a casino.** Payments are real (USDC on Arc); settlement is
+  stubbed pending mainnet. Single-user MVP — multi-user library and social features are
+  roadmap.
+- **Arc testnet only** (chain `5042002`). Faucet USDC comes from
+  <https://faucet.circle.com/> (20 USDC / 2h — on Arc, USDC *is* gas). **No real money is
+  at risk, by design.** Arc has no mainnet yet; mainnet launch, real-funds custody, and
+  the regulatory architecture are roadmap.
 
-### Run it locally in three commands
+The gate is evidence, not proof. The deflation prices in how many candidates were searched
+before this one was picked; the 0.90 DSR bar is a deliberate calibration, a one-sided ~10%
+test. PBO is computed and disclosed on every passport but does not block the badge while
+the library holds fewer than ten graded strategies — below that, CSCV lacks the power to
+gate honestly, so it reports `NOT_RUN` with the reason rather than a pass. Full method and
+thresholds: [`docs/rigor-methods.md`](docs/rigor-methods.md) and
+[`docs/specs/selection-bias-corrections-spec.md`](docs/specs/selection-bias-corrections-spec.md).
+
+## Quickstart
+
+### The live site
+
+<https://archimedes-arc.com/> runs against Arc testnet. Sign in with email and password,
+describe a brief, and read the verdict — a wallet is only needed to deploy a vault. Fund a
+wallet from the Circle faucet above first if you want to go all the way through.
+
+### Run it locally
 
 ```bash
-git clone --recurse-submodules git@github.com:a-apin/archimedes-arcadia.git archimedes && cd archimedes
+git clone --recurse-submodules https://github.com/a-apin/archimedes.git
+cd archimedes
 cp .env.example .env       # generate BETTER_AUTH_SECRET; LLM credentials are optional
 docker compose up -d --build
 ```
 
-Then open <http://localhost:8080>. Backend health and docs use the same ingress at
-<http://localhost:8080/health> and <http://localhost:8080/docs>. Full walkthrough:
-[`SETUP.md`](SETUP.md).
+Then open <http://localhost:8080>. The backend shares that ingress:
+<http://localhost:8080/health> for the honesty flags, <http://localhost:8080/docs> for the
+API. Full walkthrough — prerequisites, host tooling, platform notes, the test suite — is
+[`SETUP.md`](SETUP.md). `make help` lists the dev targets.
 
-> **`pytest` requires the docker stack to be running.** Before running the test suite,
-> always spin up the services first: `docker compose up -d --build` (the `--build` flag
-> rebuilds images after dependency changes). The tests depend on Postgres + Redis being
-> reachable; without the stack you'll see connection errors, not test failures. Full
-> testing notes in [`SETUP.md` § Running the test suite](SETUP.md#running-the-test-suite).
+### The CLI
 
-### Common dev commands (`make help`)
-
-The repo ships a [`Makefile`](Makefile) with shortcuts for the daily workflow.
-Run `make` (or `make help`) for the full list. Most useful:
-
-```
-make up         # migrate schema, then build + start the stack
-make down       # stop the stack
-make logs       # tail backend logs
-make pytest     # run the backend test suite (stack must be up)
-make lint       # ruff check
-make format     # ruff format
-make ui-dev     # Vite dev server (ui/)
-make routes     # dump FastAPI route inventory
-make clean      # nuke __pycache__/.pytest_cache/.ruff_cache
-```
-
-Foundry, Circle wallet, and oracle targets (`compile`, `test`, `wallet`, `feed`, …) are also there — see `make help`.
-
-## Status (2026-07-04)
-
-**Live on the Arc public testnet** (chain ID `5042002`): grab faucet USDC at <https://faucet.circle.com/> (20 USDC / 2h — on Arc, USDC *is* gas) and try the full flow with test funds. **No real money at risk, by design.** Arc has no mainnet yet; mainnet launch, real-funds custody, and the regulatory architecture are the **business-plan roadmap**, not hackathon scope.
-
-**Built and live:**
-
-- **Live HTTPS testnet deploy** at <https://archimedes-arc.com/> behind nginx + Route 53 + ACM. 11 Solidity contracts deployed on Arc testnet (chain ID `5042002`).
-- **SPEC-1 end-to-end evidence on-chain** — two vaults deployed by a real user wallet, **8 transactions confirmed** on Arc testnet (`txreceipt_status: 1` for every one), `vault.creator == user wallet` verified on each — the architectural proof that user funds never pass through platform custody.
-- **Real on-chain rebalance traces in production** — the autonomous agent has been writing rebalance txs against the deployed `Vault` + `ReasoningTraceRegistry` contracts; `curl https://archimedes-arc.com/api/traces/?limit=10` returns `arc_tx_hash` values verifiable on `testnet.arcscan.app`.
-- **End-to-end deposit flow** — `CreateVaultModal` → `DepositFlow` stepper signs 3 wallet txs (USDC.approve → vault.deposit → vault.setTargetAllocations). `StrategyPublisher` anchors the passport's `methodology_hash` on the `StrategyRegistry` contract per vault created.
-- **Verify-on-chain (O(1))** — the Reasoning page's "Verify on-chain" button runs a single `eth_getTransactionReceipt` + log decode and surfaces a `testnet.arcscan.app/tx/...` link on success.
-- **Debate-society generation pipeline** — the multi-agent debate society is the sole generation engine (T1.1 Phase-3, PR #880). Legacy fusion/architect/agent modes are retired. Every user brief fans out across a regime × mechanism steer grid, survives deterministic critics (C-rigor, C-null, C-regime GMM, C-prov), and a deterministic synthesizer ranks the survivors into a leaderboard; only the K=1 winner is persisted. Considered-alternatives are recorded in episodic memory and surfaced in the UI.
-- **Honest rigor gate** — every generated strategy runs four admission controls before it is deployable: Deflated Sharpe (dsr_p ≥ 0.90 at the badge level, HAC standard errors, library-size multiple-testing deflation), PBO (CSCV), positive OOS Sharpe with no in-sample/OOS cliff, and a static look-ahead AST audit. Most briefs honestly FAIL the gate — that is the product working. **What actually gates at the current library size:** the "Archimedes Verified" badge is enforced by DSR + OOS + the look-ahead audit (plus the always-on correctness floors). PBO is computed and disclosed on every passport but does **not** block the badge while the library has fewer than 10 graded strategies — below that N, CSCV lacks the statistical power to gate honestly (it reports `NOT_RUN` with the reason instead). It starts gating automatically once the library reaches N = 10. The 0.90 DSR bar is a deliberate calibration (PR #901): a one-sided ~10% test — evidence, not proof.
-- **Real multi-asset market data** — fusion backtests pull real daily OHLCV via yfinance, resolved through the Chainlink-only universe SSOT, strictly inner-joined across assets (missing data = fail-closed, never synthetic unless the real fetch fails).
-- **Automated backtest refresh** — `backtest_scheduler.py` checks staleness on startup and on a 24h cadence, refreshing any curated strategy that has no persisted backtest or whose latest run is older than 7 days. No operator ritual required.
-- **Paper corpus + query-time rerank** — a 10,000-paper quant-finance corpus (arXiv metadata + abstracts, seeded from a JSONL manifest into Postgres) backs `paper_rag.py`, which reranks the keyword-pre-filtered candidate set against the brief. **Seeding writes metadata and abstracts, and stops there** — the `papers` schema carries no vector column and no KB artifact exists, so ranking is computed at request time over title + abstract: `all-MiniLM-L6-v2` sentence embeddings when that model loads in-process, lexical TF-IDF cosine otherwise. **Production serves the lexical path today** (verified against prod 2026-08-19: no embedding column, `corpus_meta` = 0 rows, `kg_entities`/`kg_relations` = 0/0). `FUSION_SEMANTIC_RETRIEVAL=true` default; `/health` reports the live state as `paper_rag: live | degraded | disabled` — read that field rather than this line, which is a snapshot. Tracked in [#778](https://github.com/a-apin/archimedes/issues/778).
-- **Canonical Better Auth accounts** — email/password login is always available; Google/GitHub appear only when configured. `/app/*` and generation require account session. Wallets are optional EIP-4361 proof-linked accounts used only for wallet/on-chain actions.
-- **Multi-wallet UX** with EIP-6963 wallet discovery — MetaMask, Coinbase, and Circle Modular Wallets passkey paths all working.
-- **Unified `strategy_passports` store on Postgres** — both curated and generated strategies live in one typed table; the Considered-Alternatives panel reads from `strategy_proposals` so visitors see what was rejected and why.
-- **806+ backend tests** + 16 analytics-engine tests green; server-side ruff format guard (`main-format-guard.yml`) auto-heals direct-to-main commits if any land unformatted.
-
-## How generation works
-
-```
-User brief (plain-English intent + risk appetite)
-  │
-  ▼
-Brief validation (LLM, 15 s timeout — permissive fallback on failure)
-  │
-  ▼
-Debate society — the sole generation pipeline (T1.1 Phase-3)
-  │
-  ├─ Proposer pool: fans over regime × mechanism steer grid (up to 10 steers
-  │   from 18 possible: 3 regimes × 6 mechanisms). Each proposer call:
-  │     • selects corpus candidates via keyword filter → query-time rerank
-  │       (MiniLM when the model is loaded; lexical TF-IDF in prod today)
-  │     • StrategyFusion(model=…) proposes a DSL strategy spec
-  │     • non-actionable or non-conformant specs are dropped immediately
-  │
-  ├─ Adversarial round: best-effort bull/bear transcript (thin LLM call;
-  │   surfaces topology on the SSE stream but does not gate)
-  │
-  ├─ C-rigor: backtests every survivor via evaluate_fusion_spec
-  │   (deterministic Python, 0 tokens). Real OHLCV data (yfinance panel,
-  │   fail-closed to synthetic). Computes DSR, PBO (CSCV), OOS Sharpe,
-  │   look-ahead audit. num_trials = pool_size + library_size (#770).
-  │
-  ├─ C-null: survivor must beat passive buy-and-hold by ≥ 5 bps.
-  │   If none clears it → first-class ABSTAIN (no silent fallback).
-  │
-  └─ Synthesizer: deterministic rank of survivors →
-       leaderboard (composite: rigor + null-margin + regime fit)
-
-K=1 persistence: winner only → StrategyRecord + passport + on-chain trace hash
-Considered-alternatives → strategy_proposals (episodic memory, surfaced in UI)
-```
-
-The rigor gate is the product's core promise. **Most generated strategies fail it** — strategies that do pass are a small, honest subset. Failing results are surfaced with their DSR/PBO/OOS numbers so the user knows exactly why.
-
-## Dogfooding as an agent
-
-Archimedes is built for the Agora thesis that AI agents are first-class users. The `scripts/agent_journey.py` harness exercises the full human journey — land, read library, authenticate, generate, read rigor verdict — over the public `/api/*` surface with no browser and no manual wallet.
+The `archimedes` CLI runs the rigor gate over your own returns series. It is **not on PyPI
+yet**, so install it from this repo:
 
 ```bash
-# Read-only smoke (no auth needed)
-python scripts/agent_journey.py --base https://archimedes-arc.com --no-auth --read-only
-
-# Full journey with disposable account
-python scripts/agent_journey.py --base https://archimedes-arc.com --ephemeral
-
-# Full journey with existing account
-ARCHIMEDES_EMAIL=agent@example.test ARCHIMEDES_PASSWORD='<secret>' \
-  python scripts/agent_journey.py --base https://archimedes-arc.com
+conda env create -f environment.yml   # first time only
+conda activate archimedes
+pip install -e ./cli
 ```
 
-Script retains Better Auth cookie, streams generation, and prints rigor verdict. After generation the winner is deployed to **free paper trading** by default (`--no-paper` to skip) — note this creates a **persistent paper deployment** on whatever `--base` points at. On `--ephemeral` runs the script stops the deployment at the end (the disposable account is unreachable afterwards); on real-account runs it is left ACTIVE deliberately — that running ledger is the point — stop it later via `POST /api/paper/deployments/{id}/stop`. `--deploy` additionally links wallet from `AGENT_WALLET_KEY` (or disposable wallet with `--ephemeral`) through EIP-4361. Explicit agent `User-Agent` keeps telemetry classification. Exit code is nonzero on hard failure.
+Check the install and read the machine-readable contract — no network, no account:
 
-See [`scripts/agent_journey.py`](scripts/agent_journey.py) for the full implementation.
-
-Reaching for the API surface directly (not via the script)? See
-[`skills/`](skills/README.md) for grounded, file:line-cited agent skills on the
-generate/verdict flow, reading a strategy passport honestly, and the x402
-marketplace payment flow.
-
-## Why Archimedes
-
-| Category                  | Examples                                  | What's missing                                            |
-| ------------------------- | ----------------------------------------- | --------------------------------------------------------- |
-| TradFi robo-advisors      | Wealthfront, Betterment                   | Rule-based, opaque, no on-chain settlement                |
-| DeFi yield aggregators    | Yearn, Morpho-curated vaults              | Chase live yield, curation without proof of methodology   |
-| AI-flavored crypto agents | Virtuals, SingularityDAO, Theoriq         | Token-mediated speculation; reasoning opaque              |
-
-**Nobody is grounding portfolio decisions in bleeding-edge academic quant research with verifiable on-chain reasoning, settled in pure USDC.** That's the gap.
-
-## User journey
-
-**Canonical user journey** — 7 click steps from cold land to a verified on-chain decision.
-
-```mermaid
-flowchart LR
-  L[/Landing/]
-  A[/sign-in/]
-  G[/app/generate/]
-  ST[/app/strategy/:id/]
-  CV{CreateVaultModal}
-  DF{DepositFlow stepper}
-  P[/app/portfolio/]
-  R[/app/reasoning?trace_id=X/]
-  V{Verify on-chain}
-
-  L -- 'Open app →' --> A
-  A -- account session --> G
-  G -- submit brief; SSE stream completes --> ST
-  ST -- 'Deploy as Vault →' (linked wallet required) --> CV
-  CV -- create succeeds --> DF
-  DF -- 3 signatures: approve → deposit → setTargetAllocations --> P
-  P -- click activity trace --> R
-  R -- 'Verify on-chain' --> V
-
-  %% Alternate paths (allowed; account required)
-  G -. sidebar Library .-> LIB[/app/library?tab=examples/]
-  LIB -. click row .-> ST
-  G -. sidebar Explore .-> E[/app/explore/]
-  G -. sidebar Corpus .-> C[/app/corpus/]
-  C -. paper detail → 'Generate from this' .-> G
+```bash
+archimedes --version        # archimedes, version 0.1.0
+archimedes manifest         # JSON: every command, flag, exit code, and cost class
 ```
 
-Every other route (Library tabs, Corpus Graph/KG, Explore sparklines, Learnings) is reachable from the sidebar but supplementary.
+Sign in (Better Auth email + password — no wallet signature), then read your meter and run
+the gate:
 
-## Documentation map
+```bash
+archimedes login            # prompts; or set ARCHIMEDES_EMAIL / ARCHIMEDES_PASSWORD
+archimedes meter            # today's generation usage + the live price quote
+archimedes verify returns.csv --trials 40
+```
 
-Three documents are the front door for different audiences:
+`returns.csv` is two columns — date and daily return — or `-` to read stdin; a header row
+is skipped automatically. Exit codes are a stable contract: `0` the gate passed, `1` the
+gate ran and failed, `2` bad input or no session, `3` not implemented in this release.
+Branch on `1` specifically — anything else means no verdict was produced:
+
+```bash
+archimedes verify returns.csv
+case $? in
+  0) echo "gate passed" ;;
+  1) echo "gate failed, not deploying"; exit 1 ;;
+  *) echo "verify did not run"; exit 2 ;;
+esac
+```
+
+`verify` sends only numbers; your strategy code is never uploaded. Two of the gate's four
+checks cannot run over a bare returns series — PBO needs a trial matrix and the look-ahead
+audit needs strategy source — so both always report `not_evaluable` with a reason, never a
+silent pass. `archimedes backtest` and `archimedes verify --local` are not implemented yet
+and exit `3`. Full reference: [`cli/README.md`](cli/README.md) and
+[`skills/archimedes-cli/SKILL.md`](skills/archimedes-cli/SKILL.md).
+
+## How a strategy gets made
+
+A brief fans out across a regime × mechanism steer grid. Each proposer selects candidate
+papers from the corpus, and fusion turns them into a strategy spec in the internal DSL.
+Deterministic critics then cull the pool with zero LLM calls: provenance and embargo audit,
+a real backtest per survivor, and a null check that a candidate must beat buy-and-hold by
+at least 5 bps net — if none clears it, the run abstains rather than shipping a weak
+winner. A deterministic synthesizer ranks what is left; only the K=1 winner is persisted,
+and the rejected alternatives are kept and surfaced so you can see what was tried. The
+externalized rigor gate then runs on the winner, outside the debate, and it is what enables
+Deploy. Mechanism in full:
+[`docs/specs/multi-agent-debate-spec.md`](docs/specs/multi-agent-debate-spec.md).
+
+## Documentation
 
 | If you want to… | Read |
 |---|---|
-| Run Archimedes locally | [`SETUP.md`](SETUP.md) |
-| Operate the live stack + understand the RPC | [`docs/runbooks/operations.md`](docs/runbooks/operations.md) |
-| Understand Arc / Circle integration | [`docs/arc-integration.md`](docs/arc-integration.md) |
+| Run it locally, including the test suite | [`SETUP.md`](SETUP.md) |
+| Drive the whole journey programmatically | [`docs/agent-api.md`](docs/agent-api.md) |
+| Use the command-line tool | [`cli/README.md`](cli/README.md) |
+| Load a grounded agent skill (every claim file:line cited) | [`skills/README.md`](skills/README.md) |
 | Know what the product *is* (the locked spine) | [`docs/user-stories.md`](docs/user-stories.md) |
-| Browse all design + planning docs | [`docs/README.md`](docs/README.md) |
-| Submit Archimedes to the Arc OSS Showcase | ``docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`` (routed to the private docs repo, 2026-08-19) |
-| Project context for a Claude Code session | [`CLAUDE.md`](CLAUDE.md) |
+| See the architecture map and the stack | [`docs/architecture.md`](docs/architecture.md) |
+| Understand the rigor gate's math | [`docs/rigor-methods.md`](docs/rigor-methods.md) |
+| Read the papers the claims rest on | [`docs/cited-literature.md`](docs/cited-literature.md) |
+| Understand the paper corpus end to end | [`docs/corpus-architecture.md`](docs/corpus-architecture.md) |
+| Understand Arc / Circle integration | [`docs/arc-integration.md`](docs/arc-integration.md) |
+| Operate the live stack | [`docs/runbooks/operations.md`](docs/runbooks/operations.md) |
+| Browse every design + planning doc | [`docs/README.md`](docs/README.md) |
+| Add a doc without misfiling it | [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) |
+| Know who owns what | [`docs/team.md`](docs/team.md) |
+| Get context for a Claude Code session | [`CLAUDE.md`](CLAUDE.md) |
 
-## Repository structure (top level)
+Live numbers come from the live system, never from this file: contract census is
+`GET /api/config/contracts`, honesty flags are `GET /health`, and the test count is
+`pytest --collect-only -q | tail -1`.
 
-```
-archimedes/
-├── README.md             ← this file
-├── SETUP.md              ← prerequisites + 5-step install + platform notes + test suite
-├── CLAUDE.md             ← project context for Claude Code sessions
-├── LICENSE               ← Unlicense (public-domain dedication)
-│
-├── docs/                 ← the whole documentation tree: architecture, specs, ADRs, runbooks,
-│                         quant, audits, handovers, plans, archive (index: docs/README.md)
-├── backend/              ← FastAPI app (Python 3.12) — see docs/chuan-architecture-survey.md
-├── auth/                 ← Better Auth Node sidecar (canonical accounts/sessions)
-├── analytics-engine/     ← backtest engine (uv-managed)
-├── contracts/            ← Solidity (Foundry layout) — 12 sources → 570 live instances on Arc testnet (T3.2 redeploy 2026-07-09)
-├── ui/                   ← React 19 + Vite 8 + viem 2.48 (the live frontend)
-├── nginx/                ← reverse-proxy + UI build container
-├── wallet-setup/         ← Circle Wallets scripts (oracle wallet, entity-secret rotation)
-├── infra/                ← Terraform (ECS Fargate + ALB/WAF + Aurora + ElastiCache; ecs.tf is the live stack)
-└── submodules/           ← context-arc + KnowledgeBase + Linus (git submodules)
-```
+## Known limitations (Arc testnet)
 
-## Tech stack
-
-| Layer             | Technology                                                                                |
-| ----------------- | ----------------------------------------------------------------------------------------- |
-| Backend           | Python 3.12 · FastAPI · Uvicorn · SQLAlchemy                                              |
-| Frontend          | React 19 + Vite 8 + [viem](https://viem.sh/) 2.48 (plain CSS)                             |
-| Database          | PostgreSQL 16 + Redis 7                                                                   |
-| LLM               | Provider-agnostic (`LLM_*` env): GLM via z.ai, Anthropic, OpenAI, Ollama                  |
-| Backtesting       | [backtrader](https://github.com/mementum/backtrader) ([ADR](docs/adr/backtrader-backtest-engine.md)) |
-| Generation        | Multi-agent debate society (regime × mechanism steer grid, deterministic critics, K=1)    |
-| Corpus retrieval  | Keyword filter → query-time rerank over title + abstract (`paper_rag.py`), scored per request with no vector index behind it: `all-MiniLM-L6-v2` when the model loads, lexical TF-IDF otherwise (prod today) |
-| Smart contracts   | Solidity targeting Arc (EVM-compatible) + [Foundry](https://book.getfoundry.sh/)          |
-| On-chain          | Circle SDK (Wallets, Gateway, CCTP) + viem on the UI side                                 |
-| Auth              | Better Auth accounts/sessions; EIP-4361 only for optional wallet linking                  |
-| Hackathon CLI     | [arc-canteen](https://github.com/the-canteen-dev/ARC-cli) (RPC proxy + telemetry)         |
-| Deployment        | ECS Fargate behind ALB/WAF (build-in-CI → ECR → Fargate); Aurora PostgreSQL + ElastiCache; docker compose = local dev mirror |
-
-Full architecture: [`docs/architecture.md`](docs/architecture.md)
-(2026-07-14 system map) with the repo-map figure
-[`docs/reference/file-tree.svg`](docs/reference/file-tree.svg) and dataflow diagram
-[`docs/reference/flow-diagram.svg`](docs/reference/flow-diagram.svg);
-historical lineage: [`docs/design.md`](docs/archive/agora-2026-05/design.md) + [`docs/chuan-architecture-survey.md`](docs/archive/agora-2026-05/chuan-architecture-survey.md).
-
-## Development workflow
-
-See [`CLAUDE.md`](CLAUDE.md) for full conventions. Headline points:
-
-- **Branch model:** `main` is the single live branch — build-on-deploy (every merge triggers a CI deploy). Short-lived `<discord-handle>/<name>` branches → PR → `main`; rebase late, merge fast.
-- **One approving review** for non-contract changes; two for contract changes.
-- **Commit style:** imperative mood with optional scope tags (`[strategy]`, `[backend]`, `[contracts]`, `[docs]`, `[infra]`).
-- **Lanes are descriptive, not prescriptive** — everyone is full-stack ([`CLAUDE.md` § Lead + coverage](CLAUDE.md)).
-
-## Team
-
-5 builders across 5 timezones with deep coverage on every load-bearing skill — see the team table in [`CLAUDE.md`](CLAUDE.md).
+- **The corpus is 10,000 arXiv preprints, not peer-reviewed papers.** Candidate selection
+  over it is a **keyword filter**. Only that already-selected candidate set is then
+  re-scored, at request time, across title and abstract — by `all-MiniLM-L6-v2` when that
+  model is loaded in-process, by lexical TF-IDF when it is not. Nothing is precomputed: the
+  `papers` schema carries title and abstract text and no vector column, so no index is
+  built ahead of the request. `/health` names the scorer that is actually live in
+  `paper_rag` and `paper_rag_reason` — and `corpus_embedded` is defined as
+  `paper_rag == "live"`, so read those fields rather than this line. Tracked in
+  [#778](https://github.com/a-apin/archimedes/issues/778).
+- **The knowledge graph is not built.** No KB artifact has ever been produced, so `/health`
+  reports `corpus_kg_built: false` with zero entities and zero relations,
+  `GET /api/corpus/graph` refuses with **503 `kb_artifact_not_found`** instead of
+  synthesizing a graph, and `GET /api/corpus/kg/*` returns empty entity and relation sets.
+  Citation-link extraction over the corpus is roadmap. Tracked in
+  [#778](https://github.com/a-apin/archimedes/issues/778).
+- **AMM pools are thinly funded**, so many swaps are not executable. The agent's liquidity
+  guard skips empty pools and logs the reason instead of routing capital into a doomed
+  trade — see [`docs/arc-integration.md`](docs/arc-integration.md).
+- **Not every reasoning trace is anchored on-chain.** The agent writes a trace for every
+  decision it reaches, including a `skip`, and a decision that produced no transaction has
+  no hash to verify. Read `GET /api/traces/` and check `arc_tx_hash` before treating a
+  trace as anchored.
 
 ## Contributing
 
-Fork, branch (`<your-handle>/<short-name>`), PR to `main`. One logical change per PR. Never force-push `main`. Never commit secrets. See [`CLAUDE.md`](CLAUDE.md) for full conventions.
-
-## Cited literature
-
-The deck, the rigor gate, and the pitch all rest on a specific reading of the academic
-record. The five papers below are load-bearing and worth reading first if you want to
-audit our claims.
-
-| Citation | What it gives us |
-|---|---|
-| **Xia et al. 2026** — *Agentic Trading: When LLM Agents Meet Financial Markets*. ESWA. [arxiv 2605.19337](https://arxiv.org/abs/2605.19337) | The audit-grade survey our R3 reproducibility target is built against (**15/19 trading-agent papers are R0**, **0/19 reach R3**). We implement all five named protocols Xia formalizes (Outcome Embargo, Time-Aware Retrieval, Hierarchy of Truth, Source Tracking, `V_check`) as enforced mechanisms — see [`docs/specs/xia-2026-protocols.md`](docs/specs/xia-2026-protocols.md). |
-| **Chen et al. 2026** — *StockBench: A Contamination-Free, Closed-Loop Trading Agent Benchmark*. [arxiv 2510.02209](https://arxiv.org/abs/2510.02209) | The empirical proof-point our LLM family ranks #3 globally on (GLM-4.5, behind Kimi-K2 and Qwen3-235B; ahead of Claude-4-Sonnet #7 and GPT-5 #9). Our own Strategy Generation Agent layered on top ran the harness and landed #15/15 (Sortino -0.91) — surfaced honestly in [`docs/benchmarks/stockbench-results.md`](docs/benchmarks/stockbench-results.md) rather than hidden. |
-| **Bailey & López de Prado 2014** — *The Deflated Sharpe Ratio*. Journal of Portfolio Management. | The first of the four selection-bias controls every Tier-1 strategy must pass before admission to the library. Detail in [`docs/specs/selection-bias-corrections-spec.md`](docs/specs/selection-bias-corrections-spec.md). |
-| **Bailey, Borwein, López de Prado & Zhu 2014** — *Pseudo-Mathematics and Financial Charlatanism*. Notices of the AMS. | The CSCV-PBO procedure (Probability of Backtest Overfitting) — Tier-1 admission control #2. Our `fusion_evaluator` computes real CSCV PBO over the parameter-variant grid generated per strategy. |
-| **Ang & Bekaert 2002** — *International Asset Allocation with Regime Shifts*. Review of Financial Studies. | Empirical basis for the regime-conditional risk-aversion γ scaling in the Kelly optimizer — γ widens in `risk_off` / `crisis` regimes so a single strategy generates regime-appropriate sizing without needing two parallel agents. |
-
-**Where else literature is cited.** Every Tier-1 strategy passport (`/library?tab=examples`) links to the paper that backs it. Every reasoning trace anchored on-chain via `ReasoningTraceRegistry` includes a `consulted_paper_hashes` field binding the decision to a specific corpus snapshot. The full implementation is in [`backend/archimedes/services/source_tracker.py`](backend/archimedes/services/source_tracker.py).
-
-## Known Limitations (testnet)
-
-- **AMM liquidity:** Only the sTSLA/USDC pool has reserves ($3.97 USDC). The 4 remaining pools (sNVDA, sSPY, sBTC, sGOLD) are deployed but empty — the synthetic token mint authority (`0x0546…`) is a separate Foundry deployer wallet not accessible to the bootstrap script's Circle signer. The autonomous agent's liquidity guard honestly skips swaps into empty pools and logs the reason on-chain. This is the rigor system working as designed: capital is never exposed to doomed trades.
-- **Metadata only — no vector index, no knowledge graph:** The production corpus is title + abstract rows and nothing else. The `papers` schema carries no vector column, `corpus_meta` holds 0 rows, and `kg_entities`/`kg_relations` are 0/0 — the KB pipeline (SPECTER2 embeddings, HDBSCAN clusters, REBEL/SciSpacy triples) has never produced a production artifact. `/api/corpus/graph` therefore returns **503 with `kb_artifact_not_found`** rather than a synthesized graph, `/api/corpus/kg/*` returns **empty entity and relation sets**, and `/health` reports `corpus_kg_built=false`. Corpus retrieval in production is consequently **lexical** (TF-IDF cosine over title + abstract), not semantic. Tracked in [#778](https://github.com/a-apin/archimedes/issues/778).
-- **Corpus is seeded; full text is not:** All 10,000 manifest rows are in Postgres with title + abstract — which is the whole of what retrieval reads. Full-text (PDF body) hydration is incomplete, and is a prerequisite for the KB pipeline producing a real artifact ([#1091](https://github.com/a-apin/archimedes/issues/1091)). Generation requires ≥ 2 papers for any given steer to pass the corpus viability precheck.
+Fork, branch (`<your-handle>/<short-name>`), PR to `main`. One logical change per PR. Never
+force-push `main`. Never commit secrets. Full conventions — branch model, review rules,
+commit style, testing — are in [`CLAUDE.md`](CLAUDE.md); doc conventions are in
+[`docs/CONVENTIONS.md`](docs/CONVENTIONS.md).
 
 ## License
 
-[Unlicense](LICENSE) — full public-domain dedication. Use, modify, distribute freely. No warranty.
-
----
-
-> *In classical Athens, the agora was the heart of the city — the original information-processing machine. AI agents are the new citizens.*
->
-> — [Agora Agents Hackathon](https://luma.com/7i50p2r9)
+[Unlicense](LICENSE) — full public-domain dedication. Use, modify, distribute freely. No
+warranty.

@@ -20,12 +20,16 @@ exited 3.
 
 ## Install
 
+**Not on PyPI yet** — `pip install archimedes-cli` does not resolve (verified 2026-08-20:
+`https://pypi.org/pypi/archimedes-cli/json` → HTTP 404). Install it from this repo:
+
 ```bash
-pip install archimedes-cli
+pip install -e ./cli          # from the repo root
 ```
 
 Python 3.10 or newer. Two dependencies, both small, so this is a seconds-long install
-rather than a compiler-and-a-coffee one.
+rather than a compiler-and-a-coffee one. Once the package is published, `pip install
+archimedes-cli` becomes the one-liner and this section gets shorter.
 
 ## Commands
 

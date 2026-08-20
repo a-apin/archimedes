@@ -170,8 +170,9 @@ the scope is widened later, re-check before assuming these files are covered.
 
 ## Where things live (top-level map)
 
-Full annotated tree in `README.md`'s "Repository structure" section; the
-parts most relevant to backend/API work:
+Full annotated tree in `docs/reference/file-tree.md` (the README's old
+"Repository structure" section was retired 2026-08-20); the parts most
+relevant to backend/API work:
 
 ```
 backend/archimedes/
