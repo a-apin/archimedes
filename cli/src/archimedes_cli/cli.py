@@ -493,5 +493,21 @@ def backtest(strategy_path: str, strategy_class: str, as_json: bool) -> None:
     _unavailable("backtest", as_json=as_json)
 
 
+@main.command()
+def manifest() -> None:
+    """Emit this CLI's machine-readable contract and exit 0.
+
+    Agentic connectivity is the interface: an agent should discover what this
+    tool accepts, returns, costs, and exits with from a declarative contract —
+    not by parsing --help prose. Always JSON, no network, no session. A test
+    walks the real click command tree and asserts this contract matches it,
+    so the promise cannot silently drift from the truth.
+    """
+    from .manifest import MANIFEST
+
+    click.echo(json.dumps(MANIFEST, indent=2))
+    sys.exit(exits.OK)
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
