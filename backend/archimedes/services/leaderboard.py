@@ -57,8 +57,8 @@ STOCKBENCH_GLOBAL = StockBenchGlobalContext(
 _DISCLAIMER = (
     "Testnet — paper/simulated performance. Strategies are ranked on real, "
     "rigor-gated backtest results. Per-strategy StockBench and live paper-P&L "
-    "are the next inputs to this engine and render as 'pending' until that data "
-    "flows; no number here is fabricated."
+    "are the next inputs to this engine and are not scored per strategy yet; "
+    "no number here is fabricated."
 )
 
 # Sortable real fields → (StrategyResponse attribute, higher_is_better).

@@ -8,8 +8,9 @@ import { apiGet } from '../api'
 // transparent conviction score (real rigor gate + backtest). Signed out (or
 // explicitly toggled): shows the curated seed library as an honestly-labeled
 // REFERENCE set, never framed as competition. Nothing here is fabricated:
-// validation metrics are real passport fields; the forward axis renders as
-// "pending" until that data flows. Never auth-gated — public browse stays;
+// validation metrics are real passport fields; the forward axis (per-strategy
+// StockBench + live paper-P&L) is not scored yet and is called out as
+// "pending" in its own section, not rendered per row. Never auth-gated — public browse stays;
 // see backend's `scope` field (own|curated), which reports what was actually
 // served, not just what was requested.
 
@@ -325,9 +326,13 @@ export default function Leaderboard() {
                     {rigorBadge(e)}
                     {(e.dsr_p_value != null || e.pbo_score != null || e.out_of_sample_sharpe != null) && (
                       <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }} title="DSR confidence (0–1, higher is better): probability the Sharpe survives deflation/multiple-testing. Not a classical p-value. OOS = out-of-sample Sharpe.">
-                        {e.dsr_p_value != null && `DSR conf=${fmt(e.dsr_p_value)}`}
-                        {e.pbo_score != null && ` · PBO ${fmt(e.pbo_score)}`}
-                        {e.out_of_sample_sharpe != null && ` · OOS ${fmt(e.out_of_sample_sharpe)}`}
+                        {[
+                          e.dsr_p_value != null && `DSR conf=${fmt(e.dsr_p_value)}`,
+                          e.pbo_score != null && `PBO ${fmt(e.pbo_score)}`,
+                          e.out_of_sample_sharpe != null && `OOS ${fmt(e.out_of_sample_sharpe)}`,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
                       </div>
                     )}
                   </td>
