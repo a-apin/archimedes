@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { canUnlink, connectedProviderLabel } from '../account-linking'
+import { canUnlink, connectedProviderLabel, isKnownConnectedProvider } from '../account-linking'
 import { linkErrorMessage } from '../auth-errors'
 import { getProviders, linkSocial, listAccounts, unlinkAccount } from '../auth-client'
 import { useAuth } from '../AuthContext'
@@ -15,16 +15,35 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
   const [busy, setBusy] = useState(null)
 
   const [connectedAccounts, setConnectedAccounts] = useState([])
+  const [connectedLoaded, setConnectedLoaded] = useState(false)
   const [connectedProviders, setConnectedProviders] = useState({ google: false, github: false })
   const [connectedError, setConnectedError] = useState('')
   const [connectedNotice, setConnectedNotice] = useState('')
   const [connectedBusy, setConnectedBusy] = useState(null)
+  // Set once a link/unlink attempt discovers the session is too old to
+  // change connected accounts (round-2 review, blocker: auth.js now gates
+  // BOTH /link-social and /unlink-account on session freshness — see
+  // auth/auth.js's hooks.before). Client-side we only learn this
+  // reactively, from a 403 — there is no lighter-weight signal to poll
+  // ahead of a click — so once discovered it disables the whole section
+  // and offers the one way out, instead of leaving live-looking buttons
+  // that will just 403 again.
+  const [connectedSessionStale, setConnectedSessionStale] = useState(false)
 
   const load = useCallback(() => listLinkedWallets().then(setWallets).catch((err) => setError(err.message)), [])
   useEffect(() => { load() }, [load])
 
+  // connectedLoaded is tracked separately from connectedAccounts.length so
+  // "Loading…" cannot render forever: before this fix, a rejected
+  // listAccounts() left connectedAccounts at its initial `[]`, which the
+  // render below was (mis)using as the loading sentinel — the same empty
+  // state a successful-but-truly-empty load would also produce (round-2
+  // review finding). Both branches below now set connectedLoaded so the
+  // request always resolves out of the loading state, error or not.
   const loadConnected = useCallback(
-    () => listAccounts().then(setConnectedAccounts).catch((err) => setConnectedError(err.message)),
+    () => listAccounts()
+      .then((accounts) => { setConnectedAccounts(accounts); setConnectedLoaded(true) })
+      .catch((err) => { setConnectedError(err.message); setConnectedLoaded(true) }),
     [],
   )
   useEffect(() => { loadConnected() }, [loadConnected])
@@ -32,14 +51,27 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
     getProviders().then((providers) => setConnectedProviders({ google: !!providers.google, github: !!providers.github })).catch(() => {})
   }, [])
 
-  // Read the explicit-link round trip's success marker off the URL once on
-  // mount — same local, one-shot pattern AuthPage.jsx uses for its
-  // reset-password token. The account already appearing in connectedAccounts
-  // is the actual proof it worked; this is just the confirmation toast.
+  // Read the explicit-link round trip's success marker off the URL, once,
+  // after the first successful account load — same local pattern
+  // AuthPage.jsx uses for its reset-password token. Round-2 review finding:
+  // this used to fire straight off the URL with no check at all, so it
+  // could assert a link that never happened (any `?linked=` value rendered
+  // verbatim) instead of being the confirmation toast its own comment
+  // claimed it was. Now it only fires once connectedAccounts has actually
+  // loaded, and only for a value that both names a real provider AND is
+  // present in that freshly reloaded list — the account appearing in
+  // connectedAccounts is the real proof; this becomes strictly a toast on
+  // top of it, never a substitute for it.
+  const linkedNoticeChecked = useRef(false)
   useEffect(() => {
+    if (!connectedLoaded || linkedNoticeChecked.current) return
+    linkedNoticeChecked.current = true
     const linked = new URLSearchParams(window.location.search).get('linked')
-    if (linked) setConnectedNotice(`Linked ${connectedProviderLabel(linked)}.`)
-  }, [])
+    if (!linked || !isKnownConnectedProvider(linked)) return
+    if (connectedAccounts.some((account) => account.providerId === linked)) {
+      setConnectedNotice(`Linked ${connectedProviderLabel(linked)}.`)
+    }
+  }, [connectedLoaded, connectedAccounts])
 
   const linkErrorNotice = linkErrorMessage(linkError)
 
@@ -54,7 +86,8 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
       // decides success/failure before either is reached.
       await linkSocial(provider, `${origin}/app/account?linked=${provider}`, `${origin}/app/account`)
     } catch (err) {
-      setConnectedError(err.message)
+      if (err.code === 'SESSION_NOT_FRESH') setConnectedSessionStale(true)
+      setConnectedError(err.code === 'SESSION_NOT_FRESH' ? linkErrorMessage('SESSION_NOT_FRESH') : err.message)
       setConnectedBusy(null)
     }
   }
@@ -76,7 +109,8 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
       await loadConnected()
       setConnectedNotice(`Unlinked ${label}.`)
     } catch (err) {
-      setConnectedError(err.message)
+      if (err.code === 'SESSION_NOT_FRESH') setConnectedSessionStale(true)
+      setConnectedError(err.code === 'SESSION_NOT_FRESH' ? linkErrorMessage('SESSION_NOT_FRESH') : err.message)
     } finally {
       setConnectedBusy(null)
     }
@@ -150,20 +184,27 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
 
         {linkErrorNotice && <div className="status mb-3" role="alert">{linkErrorNotice}</div>}
 
-        {connectedAccounts.length === 0 ? (
+        {!connectedLoaded ? (
           <p className="body">Loading…</p>
+        ) : connectedAccounts.length === 0 ? (
+          <p className="body">No connected sign-in methods.</p>
         ) : (
           <ul className="flex flex-col gap-3">
             {connectedAccounts.map((account) => {
               const label = connectedProviderLabel(account.providerId)
-              const disabled = connectedBusy === account.id || !canUnlink(connectedAccounts.length)
+              const disabled = connectedBusy === account.id || connectedSessionStale || !canUnlink(connectedAccounts.length)
+              const title = connectedSessionStale
+                ? 'Sign in again to change connected accounts.'
+                : !canUnlink(connectedAccounts.length)
+                  ? 'This is your only sign-in method — link another before unlinking it.'
+                  : undefined
               return (
                 <li key={account.id} className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--glass-border)] pt-3">
                   <div className="mono text-sm">{label}</div>
                   <button
                     className="btn-secondary"
                     disabled={disabled}
-                    title={!canUnlink(connectedAccounts.length) ? 'This is your only sign-in method — link another before unlinking it.' : undefined}
+                    title={title}
                     onClick={() => unlinkConnected(account)}
                   >
                     Unlink
@@ -177,12 +218,12 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
         {(connectedProviders.google || connectedProviders.github) && (
           <div className="mt-4 flex gap-2">
             {connectedProviders.google && !connectedAccounts.some((a) => a.providerId === 'google') && (
-              <button className="btn-secondary" disabled={connectedBusy === 'google'} onClick={() => link('google')}>
+              <button className="btn-secondary" disabled={connectedBusy === 'google' || connectedSessionStale} onClick={() => link('google')}>
                 Link Google
               </button>
             )}
             {connectedProviders.github && !connectedAccounts.some((a) => a.providerId === 'github') && (
-              <button className="btn-secondary" disabled={connectedBusy === 'github'} onClick={() => link('github')}>
+              <button className="btn-secondary" disabled={connectedBusy === 'github' || connectedSessionStale} onClick={() => link('github')}>
                 Link GitHub
               </button>
             )}
@@ -192,7 +233,21 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
         <div role="status" aria-live="polite" className={connectedNotice ? 'caption mt-3' : 'sr-only'}>
           {connectedNotice}
         </div>
-        {connectedError && <div className="status mt-3" role="alert">{connectedError}</div>}
+        {connectedError && (
+          <div className="status mt-3" role="alert">
+            {connectedError}
+            {/* SESSION_NOT_FRESH (round-2 review, blocker): the session is
+                still signed in, just too old for auth.js's freshness gate
+                on /link-social and /unlink-account — re-authenticating is
+                the fix, not "you got logged out". logout() below drives the
+                same sign-out/redirect path the page's own Sign out button
+                uses; signing back in mints a brand-new session, which
+                resets createdAt and clears this state on next visit. */}
+            {connectedSessionStale && (
+              <button className="btn-secondary ml-2" onClick={logout}>Sign in again</button>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="card-flat p-5 mb-5">

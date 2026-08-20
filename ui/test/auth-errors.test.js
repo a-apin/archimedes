@@ -5,12 +5,12 @@ import { readFileSync } from "node:fs";
 import { linkErrorMessage, oauthErrorMessage } from "../src/auth-errors.js";
 
 // ── #1420: OAuth account-not-linked error goes silent ───────────────────
-// auth/auth.js's implicit auto-link path refuses to attach a Google/GitHub
-// identity to an existing password account whose emailVerified isn't
-// already true (requireLocalEmailVerified — see the long comment on
-// accountLinking in auth/auth.js; never weakened to "fix" this). Its
-// consequence: an existing, plausibly-unverified email/password user who
-// clicks "Continue with Google/GitHub" gets 302'd back with
+// auth/auth.js's implicit auto-link path unconditionally refuses to attach a
+// Google/GitHub identity to an existing password account
+// (accountLinking.disableImplicitLinking: true — see the long comment on
+// accountLinking in auth/auth.js). Its consequence: an existing email/
+// password user who clicks "Continue with Google/GitHub" for an email that
+// already owns a password account gets 302'd back with
 // `?error=account_not_linked` and the UI previously rendered nothing. These
 // tests pin the error->message mapping and its wiring into the actual
 // sign-in surface.
@@ -102,6 +102,32 @@ test("linkErrorMessage falls back to a generic honest message for unmapped codes
 // messages collapse to the same string. Confirmed by hand before commit.
 test("email_doesn't_match gets a MORE SPECIFIC message than the generic link-error fallback", () => {
 	const specific = linkErrorMessage("email_doesn't_match");
+	const generic = linkErrorMessage("totally_unmapped_code");
+	assert.notEqual(specific, generic);
+});
+
+// ── Round-2 review (blocker): session-freshness parity ──────────────────
+// auth.js now gates BOTH /link-social and /unlink-account behind session
+// freshness (auth/auth.js hooks.before mirrors the library's own
+// freshSessionMiddleware). A stale session gets a same-request 403 with
+// code SESSION_NOT_FRESH, before any provider redirect happens — a
+// different source than the `error` query param entries above, but the
+// same "why did Connected accounts refuse me" question, so it lives in the
+// same map (AccountSettings.jsx passes err.code here, not a URL param).
+
+test("linkErrorMessage(SESSION_NOT_FRESH) gives an actionable, honest message — not the raw library string", () => {
+	const message = linkErrorMessage("SESSION_NOT_FRESH");
+	// Must not just parrot Better Auth's own error body ({ message: "Session
+	// is not fresh" }) at the user with no next step.
+	assert.doesNotMatch(message, /^Session is not fresh$/i);
+	assert.match(message, /sign in again/i);
+});
+
+// Mutation-prove: delete the SESSION_NOT_FRESH entry from LINK_ERROR_MESSAGES
+// and this fails, because the specific and generic messages collapse to the
+// same string. Confirmed by hand before commit.
+test("SESSION_NOT_FRESH gets a MORE SPECIFIC message than the generic link-error fallback", () => {
+	const specific = linkErrorMessage("SESSION_NOT_FRESH");
 	const generic = linkErrorMessage("totally_unmapped_code");
 	assert.notEqual(specific, generic);
 });

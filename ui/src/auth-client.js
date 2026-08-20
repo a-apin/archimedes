@@ -12,6 +12,12 @@ async function authRequest(path, options = {}) {
   if (!response.ok) {
     const error = new Error(data?.message || data?.error || 'Authentication failed')
     error.status = response.status
+    // Better Auth's own APIError body carries a stable machine `code`
+    // alongside the human `message` (e.g. { message: 'Session is not
+    // fresh', code: 'SESSION_NOT_FRESH' }) — expose it so callers can branch
+    // on the code instead of string-matching the prose, which is fragile
+    // and would silently stop matching if the library ever reworded it.
+    error.code = data?.code
     throw error
   }
   return data

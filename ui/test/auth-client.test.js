@@ -157,3 +157,29 @@ test("unlinkAccount surfaces the server's last-credential guard message rather t
 
 	await assert.rejects(() => unlinkAccount("credential"), /You can't unlink your last account/);
 });
+
+// Round-2 review (blocker follow-through): AccountSettings.jsx needs to
+// branch on Better Auth's machine-readable `code` (SESSION_NOT_FRESH) rather
+// than string-matching `message`, which would silently stop working the
+// moment the library rewords its own copy. authRequest() must expose it on
+// the thrown Error for every endpoint, not just unlinkAccount.
+test("a non-ok response exposes the server's machine-readable code on the thrown Error, not just its message", async (t) => {
+	mockFetch(t, async () => jsonResponse(403, { message: "Session is not fresh", code: "SESSION_NOT_FRESH" }));
+
+	await assert.rejects(() => unlinkAccount("google", "sub-1"), (err) => {
+		assert.equal(err.message, "Session is not fresh");
+		assert.equal(err.code, "SESSION_NOT_FRESH");
+		assert.equal(err.status, 403);
+		return true;
+	});
+});
+
+test("linkSocial also exposes err.code on a non-ok response (same authRequest path as unlinkAccount)", async (t) => {
+	mockFetch(t, async () => jsonResponse(403, { message: "Session is not fresh", code: "SESSION_NOT_FRESH" }));
+	withStubWindow(t, []);
+
+	await assert.rejects(() => linkSocial("google", "https://app.test/app/account"), (err) => {
+		assert.equal(err.code, "SESSION_NOT_FRESH");
+		return true;
+	});
+});

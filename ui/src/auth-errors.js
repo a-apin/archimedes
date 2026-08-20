@@ -2,13 +2,13 @@
 // back to honest, sign-in-surface copy.
 //
 // `account_not_linked` is the one this exists for: auth/auth.js's implicit
-// (plain sign-in) auto-link path refuses to attach a Google/GitHub identity
-// to an existing password account unless that account's emailVerified is
-// already true (requireLocalEmailVerified, the library's default — see the
-// long comment on accountLinking in auth/auth.js). While
-// EMAIL_VERIFICATION_ENFORCED is off (SES sandbox), most password accounts
-// — plausibly including the operator's own — sit unverified, so this refusal
-// is the common case in practice, not an edge case.
+// (plain sign-in) auto-link path unconditionally refuses to attach a
+// Google/GitHub identity to an existing password account
+// (accountLinking.disableImplicitLinking: true — see the long comment on
+// accountLinking in auth/auth.js, including the round-2 review finding that
+// keeps it that way). This is the common case whenever the visitor's
+// Google/GitHub email already owns a password account here, not an edge
+// case.
 //
 // #1420 follow-up shipped the explicit alternative: signed-in "Link Google /
 // Link GitHub" buttons in Account Settings → Connected accounts
@@ -47,6 +47,17 @@ const LINK_ERROR_MESSAGES = {
   account_already_linked_to_different_user:
     'That account is already linked to a different Archimedes account.',
   unable_to_link_account: 'Could not link that account. Try again.',
+  // Not from the /link-social → /callback/:id redirect like the entries
+  // above — this key is the `code` on a same-request 403 from Better Auth's
+  // own freshSessionMiddleware (/unlink-account) and this PR's matching
+  // guard on /link-social (auth/auth.js hooks.before — round-2 review
+  // blocker), thrown directly on the initiating POST before any provider
+  // redirect happens. AccountSettings.jsx passes err.code here instead of
+  // an `error` query param. "Session not fresh" does not mean signed out —
+  // the fix is re-entering credentials, not discovering you were logged
+  // out.
+  SESSION_NOT_FRESH:
+    'For your security, changing connected accounts requires a recent sign-in. Sign in again, then retry.',
 }
 
 const GENERIC_LINK_ERROR_MESSAGE =

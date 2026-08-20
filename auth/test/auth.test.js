@@ -368,14 +368,18 @@ test('the shipped placeholder still satisfies the 32-char floor', () => {
 // where they live in node_modules):
 //
 //   1. IMPLICIT auto-link — a plain "Continue with Google/GitHub" sign-in
-//      for an email that already owns a password account. Gated on BOTH
-//      trustedProviders (skips re-checking the provider's own emailVerified
-//      claim) AND requireLocalEmailVerified (default true, never overridden
-//      here) which independently requires the EXISTING password account's
-//      emailVerified already be true. Tests below prove both halves of that
-//      AND — refused when the base account is unverified, allowed once it
-//      isn't — with a real signed OAuth callback round trip, not a mock of
-//      Better Auth's own internals.
+//      for an email that already owns a password account. Stays OFF
+//      (disableImplicitLinking: true, unchanged from before #1420) — round-2
+//      review (major finding) reverted an earlier revision that flipped this
+//      on with trustedProviders: ['google', 'github']. trustedProviders only
+//      ever skipped re-checking the PROVIDER's own emailVerified claim; it
+//      did nothing for the explicit flow below (the half that actually
+//      ships), and arming implicit auto-link is its own security decision —
+//      see the long comment on accountLinking in ../auth.js for why. Tests
+//      below prove the refusal holds unconditionally, including once the
+//      base account IS verified (the one case that used to succeed) — with
+//      a real signed OAuth callback round trip, not a mock of Better Auth's
+//      own internals.
 //   2. EXPLICIT link — POST /link-social from a live session, i.e. the
 //      "Link Google/GitHub" buttons in Account Settings. Does not check the
 //      base account's emailVerified at all (ownership comes from the live
@@ -424,33 +428,37 @@ function forwardedCookies(response) {
   return response.headers.getSetCookie().map(cookie => cookie.split(';', 1)[0]).join('; ')
 }
 
-async function googleEnabledAuth(overrides = {}) {
+async function googleEnabledAuth(overrides = {}, mailer = undefined) {
   const database = new DatabaseSync(':memory:')
   const auth = createAuth({
     database,
     env: { ...env, GOOGLE_CLIENT_ID: 'test-google-client-id', GOOGLE_CLIENT_SECRET: 'test-google-client-secret', ...overrides },
+    ...(mailer ? { mailer } : {}),
   })
   await (await getMigrations(auth.options)).runMigrations()
   return { auth, database }
 }
 
-test('accountLinking config carries the exact verified semantics — trustedProviders + implicit linking on, verification NOT weakened', async () => {
+test('accountLinking config keeps implicit auto-link OFF (round-2 review: trustedProviders reverted)', async () => {
   const { auth } = await googleEnabledAuth()
   const accountLinking = auth.options.account.accountLinking
   assert.deepEqual(accountLinking, {
     enabled: true,
-    disableImplicitLinking: false,
-    trustedProviders: ['google', 'github'],
+    disableImplicitLinking: true,
     allowDifferentEmails: false,
     allowUnlinkingAll: false,
   })
-  // Load-bearing: requireLocalEmailVerified must be left UNSET so the
-  // library's own default (true) applies. Setting it to `false` here would
-  // silently disable the guard the tests below prove is active — mutation-
-  // prove by adding `requireLocalEmailVerified: false` to auth.js and
-  // re-running; "implicit auto-link is refused when the existing password
-  // account is unverified" (below) then fails.
-  assert.equal(accountLinking.requireLocalEmailVerified, undefined)
+  // No trustedProviders key at all — an earlier revision of this PR set
+  // trustedProviders: ['google', 'github'] alongside disableImplicitLinking:
+  // false; review found that pairing armed implicit auto-link for no
+  // present-day benefit (the explicit flow below never reads either
+  // setting) while quietly discarding the provider's own emailVerified
+  // signal for the day EMAIL_VERIFICATION_ENFORCED flips on. Mutation-prove
+  // by setting disableImplicitLinking: false and re-running — "implicit
+  // auto-link stays refused even once the existing password account is
+  // verified" (below) then fails (302 to /app instead of an
+  // account_not_linked error).
+  assert.equal(accountLinking.trustedProviders, undefined)
 })
 
 test("the installed library's implicit-link gate still reads requireLocalEmailVerified + the base account's emailVerified (source-pinned)", async () => {
@@ -466,12 +474,15 @@ test("the installed library's implicit-link gate still reads requireLocalEmailVe
   assert.match(src, /accountLinking\?\.disableImplicitLinking === true/)
 })
 
-test('implicit auto-link is refused when the existing password account is unverified, even though trustedProviders lists google', async (t) => {
+test('implicit auto-link is refused when the existing password account is unverified', async (t) => {
   const { auth } = await googleEnabledAuth()
   const credentials = { email: 'unverified-owner@example.com', password: 'correct horse battery staple' }
   await auth.api.signUpEmail({ body: { ...credentials, name: 'Owner' }, asResponse: true })
   // Never verified — this IS the SES-sandbox-realistic state this PR
-  // documents (auth.js's comment on accountLinking).
+  // documents (auth.js's comment on accountLinking). Refused twice over now:
+  // disableImplicitLinking: true refuses unconditionally regardless of this,
+  // and requireLocalEmailVerified (library default, still left unset) would
+  // refuse on its own even if disableImplicitLinking were ever flipped back.
 
   const initiate = await auth.api.signInSocial({
     body: { provider: 'google', callbackURL: 'http://localhost:3000/app', disableRedirect: true },
@@ -492,11 +503,17 @@ test('implicit auto-link is refused when the existing password account is unveri
   assert.equal(location.searchParams.get('error'), 'account_not_linked')
 })
 
-test('implicit auto-link succeeds once the existing password account is verified (trustedProviders doing its job)', async (t) => {
+test('implicit auto-link stays refused even once the existing password account is verified (round-2 review: disableImplicitLinking reverted to true)', async (t) => {
   const { auth, database } = await googleEnabledAuth()
   const credentials = { email: 'verified-owner@example.com', password: 'correct horse battery staple' }
   await auth.api.signUpEmail({ body: { ...credentials, name: 'Owner' }, asResponse: true })
   database.exec(`UPDATE auth_users SET emailVerified = 1 WHERE email = '${credentials.email}'`)
+  // This is the ONE case where an earlier revision of this PR (before
+  // review) let implicit auto-link through: a verified base account +
+  // trustedProviders. With trustedProviders reverted and
+  // disableImplicitLinking back to true, it must now stay refused
+  // regardless of emailVerified — proving the revert actually took, not
+  // just that the config object looks right in isolation.
 
   const initiate = await auth.api.signInSocial({
     body: { provider: 'google', callbackURL: 'http://localhost:3000/app', disableRedirect: true },
@@ -514,8 +531,13 @@ test('implicit auto-link succeeds once the existing password account is verified
   ))
   assert.equal(callback.status, 302)
   const location = new URL(callback.headers.get('location'))
-  assert.equal(location.searchParams.get('error'), null)
-  assert.equal(location.origin + location.pathname, 'http://localhost:3000/app')
+  assert.equal(location.searchParams.get('error'), 'account_not_linked')
+
+  // Nothing was attached — the base account still has only its password
+  // credential.
+  const login = await auth.api.signInEmail({ body: credentials, asResponse: true })
+  const accounts = await auth.api.listUserAccounts({ headers: new Headers({ cookie: cookieHeader(login) }) })
+  assert.deepEqual(accounts.map(a => a.providerId), ['credential'])
 })
 
 test('explicit link-social (Account Settings "Link Google") requires a live session — refused with no cookie at all', async () => {
@@ -658,4 +680,210 @@ test('unlinking one of two linked accounts succeeds; the sole survivor is then p
     asResponse: true,
   })
   assert.equal(unlinkGoogle.status, 400)
+})
+
+// ── Session freshness parity (round-2 review, blocker) ───────────────────
+//
+// better-auth gates /unlink-account behind its OWN freshSessionMiddleware
+// (node_modules/better-auth/dist/api/routes/account.mjs:229 `use:
+// [freshSessionMiddleware]`) but /link-social carries only the plain
+// sessionMiddleware (same file, :117) — no freshness check. Left alone, a
+// session older than freshAge could permanently ATTACH a new sign-in
+// credential while the same stale session could not remove one: a one-way
+// door a password reset does not close either (resetPassword revokes
+// sessions, it does not touch already-linked accounts). auth.js's `hooks.
+// before` now applies the identical freshAge check to /link-social. These
+// tests drive the REAL HTTP handler (auth.handler, what toNodeHandler /
+// production actually serve — see the origin-check tests above for why
+// auth.api.* alone is not a stand-in) and age a session by writing
+// auth_sessions.createdAt directly, the same technique the accountLinking
+// tests above use for emailVerified.
+
+function ageSession(database, cookie, hoursAgo) {
+  const token = cookie.split('=')[1].split('.')[0]
+  const agedIso = new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString()
+  database.exec(`UPDATE auth_sessions SET createdAt = '${agedIso}' WHERE token = '${token}'`)
+}
+
+function postJson(auth, path, body, cookie) {
+  return auth.handler(new Request(`http://localhost:3000${path}`, {
+    method: 'POST',
+    // origin is required — Better Auth's originCheck middleware 403s
+    // "Missing or null Origin" first otherwise, which would make this test
+    // pass for the wrong reason (any 403 looks like a win if you don't
+    // check the code).
+    headers: { 'content-type': 'application/json', cookie, origin: 'http://localhost:3000' },
+    body: JSON.stringify(body),
+  }))
+}
+
+test('session.freshAge is pinned explicitly in auth.js, not the library\'s inherited 24h default', async () => {
+  const { auth } = await googleEnabledAuth()
+  // Left unset, better-auth silently defaults freshAge to 24h regardless of
+  // expiresIn (node_modules/better-auth/dist/context/create-context.mjs:148
+  // `freshAge: options.session?.freshAge === void 0 ? 3600 * 24 :
+  // options.session.freshAge`) — a 7-day session (expiresIn above) carrying
+  // a 1-day "fresh" window nobody actually chose. Asserting the literal
+  // here means a future edit to auth.js has to touch this number on
+  // purpose; it can no longer drift back to "whatever the library
+  // defaults to" silently.
+  assert.equal(auth.options.session.freshAge, 60 * 60 * 24)
+})
+
+test('/link-social now requires the same session freshness as /unlink-account', async () => {
+  const { auth, database } = await googleEnabledAuth()
+  const credentials = { email: 'stale-session@example.com', password: 'correct horse battery staple' }
+  await auth.api.signUpEmail({ body: { ...credentials, name: 'Owner' }, asResponse: true })
+  const login = await auth.api.signInEmail({ body: credentials, asResponse: true })
+  const cookie = cookieHeader(login)
+
+  // Fresh session: /link-social still works (no false-positive block).
+  const freshLink = await postJson(auth, '/api/auth/link-social', {
+    provider: 'google', callbackURL: 'http://localhost:3000/app/account', disableRedirect: true,
+  }, cookie)
+  assert.equal(freshLink.status, 200)
+
+  ageSession(database, cookie, 25)
+
+  const agedLink = await postJson(auth, '/api/auth/link-social', {
+    provider: 'google', callbackURL: 'http://localhost:3000/app/account', disableRedirect: true,
+  }, cookie)
+  assert.equal(agedLink.status, 403)
+  assert.equal((await agedLink.json()).code, 'SESSION_NOT_FRESH')
+
+  const agedUnlink = await postJson(auth, '/api/auth/unlink-account', { providerId: 'credential' }, cookie)
+  assert.equal(agedUnlink.status, 403)
+  assert.equal((await agedUnlink.json()).code, 'SESSION_NOT_FRESH')
+
+  // A request with no session at all still gets the library's own 401, not
+  // our hook's freshness 403 — freshness is moot with nothing to be fresh.
+  const noSession = await postJson(auth, '/api/auth/link-social', {
+    provider: 'google', callbackURL: 'http://localhost:3000/app/account', disableRedirect: true,
+  }, '')
+  assert.equal(noSession.status, 401)
+
+  // Mutation-proof (done by hand before this commit, transcript in the PR
+  // body): replace the hook's `if (ctx.path !== '/link-social') return`
+  // guard with an unconditional `return` and rerun — agedLink.status goes
+  // back to 200 (asymmetric again) while agedUnlink.status stays 403,
+  // proving this test actually exercises the hook and not some other gate.
+})
+
+// ── Account-change notification email (round-2 review, minor) ────────────
+//
+// Linking or unlinking a sign-in credential used to be completely silent to
+// the account owner — no email at all — despite being exactly the kind of
+// change an account-takeover attempt would make. auth.js's databaseHooks.
+// account.{create,delete}.after now emails the owner either way, via the
+// same real OAuth round trip the accountLinking tests above drive.
+
+async function linkGoogleForReal(auth, sessionCookie, email) {
+  const initiate = await auth.api.linkSocialAccount({
+    headers: new Headers({ cookie: sessionCookie }),
+    body: { provider: 'google', callbackURL: 'http://localhost:3000/app/account', disableRedirect: true },
+    asResponse: true,
+  })
+  const { url } = await initiate.json()
+  const state = new URL(url).searchParams.get('state')
+  const linkCookie = forwardedCookies(initiate)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const href = typeof input === 'string' ? input : input?.url ?? String(input)
+    if (!href.startsWith('https://oauth2.googleapis.com/token')) throw new Error(`unexpected network call to ${href}`)
+    return new Response(JSON.stringify({
+      access_token: 'fake-access-token',
+      id_token: fakeGoogleIdToken({ sub: 'g1', email, emailVerified: true, name: 'Owner' }),
+      token_type: 'Bearer',
+      expires_in: 3600,
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    return await auth.handler(new Request(
+      `http://localhost:3000/api/auth/callback/google?code=fake-code&state=${encodeURIComponent(state)}`,
+      { headers: { cookie: linkCookie } },
+    ))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
+test('signup sends only the verification mail — no redundant "sign-in method added" mail for the credential account it also creates', async () => {
+  const mailer = capturingMailer()
+  const { auth } = await googleEnabledAuth({}, mailer)
+  await auth.api.signUpEmail({
+    body: { email: 'signup-quiet@example.com', password: 'correct horse battery staple', name: 'Q' },
+    asResponse: true,
+  })
+  assert.deepEqual(mailer.sent.map(m => m.subject), ['Verify your Archimedes account'])
+})
+
+test('linking a Google account emails the account owner (account-takeover signal, round-2 review)', async () => {
+  const mailer = capturingMailer()
+  const { auth } = await googleEnabledAuth({}, mailer)
+  const credentials = { email: 'notify-link@example.com', password: 'correct horse battery staple' }
+  await auth.api.signUpEmail({ body: { ...credentials, name: 'Owner' }, asResponse: true })
+  const login = await auth.api.signInEmail({ body: credentials, asResponse: true })
+  mailer.sent.length = 0 // drop the signup verification mail; only the link notification matters here
+
+  const callback = await linkGoogleForReal(auth, cookieHeader(login), credentials.email)
+  assert.equal(callback.status, 302)
+  // databaseHooks.account.create.after is queued to run after the write
+  // commits (@better-auth/core/dist/context/transaction.mjs), not
+  // necessarily before the response headers are constructed — give it a
+  // tick, same reasoning as the reset-mailer fire-and-forget test above.
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(mailer.sent.length, 1)
+  assert.equal(mailer.sent[0].to, credentials.email)
+  assert.equal(mailer.sent[0].subject, 'A sign-in method was added to your Archimedes account')
+  assert.match(mailer.sent[0].text, /Google/)
+})
+
+test('unlinking a sign-in credential also emails the account owner, naming the credential that was removed', async () => {
+  const mailer = capturingMailer()
+  const { auth } = await googleEnabledAuth({}, mailer)
+  const credentials = { email: 'notify-unlink@example.com', password: 'correct horse battery staple' }
+  await auth.api.signUpEmail({ body: { ...credentials, name: 'Owner' }, asResponse: true })
+  const login = await auth.api.signInEmail({ body: credentials, asResponse: true })
+  const sessionCookie = cookieHeader(login)
+  await linkGoogleForReal(auth, sessionCookie, credentials.email)
+  await new Promise(resolve => setImmediate(resolve))
+  mailer.sent.length = 0 // drop signup + link notification mails
+
+  const unlink = await auth.api.unlinkAccount({
+    headers: new Headers({ cookie: sessionCookie }),
+    body: { providerId: 'credential' },
+    asResponse: true,
+  })
+  assert.equal(unlink.status, 200)
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(mailer.sent.length, 1)
+  assert.equal(mailer.sent[0].to, credentials.email)
+  assert.equal(mailer.sent[0].subject, 'A sign-in method was removed from your Archimedes account')
+  assert.match(mailer.sent[0].text, /Email & password/)
+})
+
+test('a failing account-change mailer never breaks the link/unlink it is reporting on (fail-soft)', async () => {
+  const mailer = { kind: 'test', sender: 'x', send: async () => { throw new Error('SES sandbox: address not verified') } }
+  const { auth } = await googleEnabledAuth({}, mailer)
+  const credentials = { email: 'notify-failsoft@example.com', password: 'correct horse battery staple' }
+  await auth.api.signUpEmail({ body: { ...credentials, name: 'Owner' }, asResponse: true })
+  const login = await auth.api.signInEmail({ body: credentials, asResponse: true })
+
+  // Mutation-proof (done by hand before this commit, transcript in the PR
+  // body): remove notifyAccountChange's try/catch in auth.js and rerun —
+  // this callback then rejects with the mailer's own thrown Error instead
+  // of resolving 302, because databaseHooks' create.after is awaited by the
+  // library itself (@better-auth/core/dist/context/transaction.mjs: `for
+  // (const hook of pendingHooks) await hook();` then `if (hasError) throw
+  // error;`) — unlike sendResetPassword's hand-rolled, genuinely
+  // not-awaited fire-and-forget above, an uncaught throw HERE fails the
+  // request that triggered it.
+  const callback = await linkGoogleForReal(auth, cookieHeader(login), credentials.email)
+  assert.equal(callback.status, 302)
+  assert.equal(new URL(callback.headers.get('location')).searchParams.get('error'), null)
+
+  const accounts = await auth.api.listUserAccounts({ headers: new Headers({ cookie: cookieHeader(login) }) })
+  assert.deepEqual(accounts.map(a => a.providerId).sort(), ['credential', 'google'])
 })

@@ -2,12 +2,21 @@
 // Settings → Connected accounts"). Kept out of AccountSettings.jsx so they
 // are directly unit-testable under plain `node --test` — .jsx files aren't
 // importable there (no JSX transform in the test runner), only readable as
-// source text. See ui/test/account-linking.test.js.
+// source text. See ui/test/account-settings.test.js.
 
 const CONNECTED_PROVIDER_LABELS = { credential: 'Email & password', google: 'Google', github: 'GitHub' }
 
 export function connectedProviderLabel(providerId) {
   return CONNECTED_PROVIDER_LABELS[providerId] || providerId
+}
+
+// Round-2 review finding (minor): the `?linked=` success notice used to
+// render `connectedProviderLabel(linked)` straight off the URL with no
+// check at all, so an arbitrary/unrecognized value came back out verbatim
+// ("Linked anything.") instead of being treated as untrusted input.
+// AccountSettings.jsx now calls this before trusting `linked` for anything.
+export function isKnownConnectedProvider(providerId) {
+  return Object.hasOwn(CONNECTED_PROVIDER_LABELS, providerId)
 }
 
 // Never let the UI enable unlinking an account's last remaining sign-in

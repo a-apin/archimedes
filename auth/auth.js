@@ -1,4 +1,5 @@
 import { betterAuth } from 'better-auth'
+import { APIError, createAuthMiddleware, getSessionFromCtx } from 'better-auth/api'
 import pg from 'pg'
 
 import { createMailer } from './mailer.js'
@@ -37,6 +38,51 @@ function socialProviders(env) {
     clientId: env[`${provider.toUpperCase()}_CLIENT_ID`],
     clientSecret: env[`${provider.toUpperCase()}_CLIENT_SECRET`],
   }]))
+}
+
+const CONNECTED_ACCOUNT_LABELS = { credential: 'Email & password', google: 'Google', github: 'GitHub' }
+
+// Round-2 review finding (minor): linking or unlinking a sign-in credential
+// used to be completely silent to the account owner — no email, nothing —
+// despite being exactly the kind of change an account-takeover attempt would
+// make (see the freshAge/hooks.before comment above: this is the other half
+// of closing that off, an out-of-band signal alongside the in-band guard).
+// Wired via databaseHooks.account.{create,delete}.after below.
+//
+// MUST NOT throw. Unlike sendResetPassword/sendVerificationEmail above
+// (hand-rolled fire-and-forget, or awaited inside their OWN try/catch),
+// better-auth's databaseHooks create.after/delete.after are awaited by the
+// library itself as part of the write (node_modules/@better-auth/core/dist/
+// context/transaction.mjs: `for (const hook of pendingHooks) await hook();`
+// followed by `if (hasError) throw error;`) — an uncaught throw here would
+// fail the /link-social or /unlink-account request that triggered it, over
+// a notification email that is not the actual security control. Every
+// awaited step is inside the try/catch for exactly that reason.
+async function notifyAccountChange(mailer, endpointContext, account, action) {
+  try {
+    // 'credential' fires on every signup (the password account itself) —
+    // that already gets its own "verify your email" mail, and a second
+    // "new sign-in method added" mail for the same event would just be
+    // noise, not a signal. Removing a 'credential' account (unlinking the
+    // password while Google/GitHub remain) is a real, later, distinct
+    // event and still notifies.
+    if (action === 'added' && account.providerId === 'credential') return
+    const user = await endpointContext?.context?.internalAdapter?.findUserById(account.userId)
+    if (!user?.email) return
+    const label = CONNECTED_ACCOUNT_LABELS[account.providerId] || account.providerId
+    const verb = action === 'added' ? 'added to' : 'removed from'
+    await mailer.send({
+      to: user.email,
+      subject: `A sign-in method was ${verb} your Archimedes account`,
+      text:
+        `${label} was just ${action === 'added' ? 'linked as a sign-in method on' : 'unlinked as a sign-in method from'} `
+        + 'your Archimedes account.\n\n'
+        + "If this wasn't you, sign in and review Account Settings → Connected accounts immediately"
+        + (action === 'added' ? ', then remove it and reset your password.' : '.'),
+    })
+  } catch (error) {
+    console.error(`account ${action} notification email send failed:`, error instanceof Error ? error.name : 'UnknownError')
+  }
 }
 
 export function createAuth({ database, env = process.env, mailer = createMailer(env) } = {}) {
@@ -157,6 +203,19 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
       expiresIn: 60 * 60 * 24 * 7,
       updateAge: 60 * 60 * 24,
       cookieCache: { enabled: false },
+      // Explicit, not the library's inherited default (round-2 review
+      // finding, blocker). Left unset, better-auth defaults freshAge to 24h
+      // regardless of expiresIn (node_modules/better-auth/dist/context/
+      // create-context.mjs:148: `freshAge: options.session?.freshAge ===
+      // void 0 ? 3600 * 24 : options.session.freshAge`) — a 7-day session
+      // silently carrying a 1-day "fresh" window nobody chose. Pinned here
+      // so it is a deliberate value, tracked by
+      // auth/test/auth.test.js's "freshAge is pinned, not an inherited
+      // default" test. This ONE value now governs both the library's own
+      // freshSessionMiddleware (/unlink-account, /list-sessions, ...) and
+      // the hand-rolled twin on /link-social below (hooks.before) — see
+      // that comment for why both must move together.
+      freshAge: 60 * 60 * 24,
     },
     account: {
       modelName: 'auth_accounts',
@@ -170,46 +229,52 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
       //
       // 1. IMPLICIT auto-link (plain "Continue with Google/GitHub" on the
       //    sign-in screen, no prior session — link-account.mjs
-      //    handleOAuthUserInfo). Gate, verbatim:
+      //    handleOAuthUserInfo) stays OFF (disableImplicitLinking: true,
+      //    same as before this feature). Gate, verbatim:
       //      (!isTrustedProvider && !userInfo.emailVerified)
       //      || (requireLocalEmailVerified && !dbUser.user.emailVerified)
       //      || accountLinking.enabled === false
       //      || accountLinking.disableImplicitLinking === true
-      //    trustedProviders below makes isTrustedProvider true for google/
-      //    github, which only skips re-checking the PROVIDER's emailVerified
-      //    claim (both providers attest verified emails, which is the whole
-      //    point of trusting them). It does NOT touch the second clause:
-      //    requireLocalEmailVerified defaults to true (deliberately left
-      //    unset here, NOT overridden to false) and independently requires
-      //    the EXISTING password account already have emailVerified: true.
-      //    Consequence, stated honestly: while EMAIL_VERIFICATION_ENFORCED
-      //    is off (SES sandbox — see emailVerificationEnforced above) most
-      //    password accounts, quite possibly including the operator's own,
-      //    sit at emailVerified: false and this auto-link path stays
-      //    REFUSED (account_not_linked) for them regardless of
-      //    trustedProviders. That is correct, not a bug: it is the exact
-      //    guard (added upstream in better-auth/better-auth#9578) against an
-      //    attacker pre-registering a victim's email with a password account
-      //    the attacker controls, then having the victim's later real OAuth
-      //    sign-in silently linked into the attacker's row. Do not set
-      //    requireLocalEmailVerified: false to "fix" the refusal — that
-      //    removes the guard. The working path for an unverified base
-      //    account is the EXPLICIT flow below.
+      //    The last clause alone makes the whole OR always true, so this
+      //    path unconditionally refuses (account_not_linked) regardless of
+      //    provider trust or either side's emailVerified.
+      //
+      //    Round-2 review finding (major): an earlier revision of this PR
+      //    flipped this to false and added trustedProviders: ['google',
+      //    'github'] to enable it. That was reverted here before merge —
+      //    trustedProviders is consulted in exactly ONE place in the
+      //    installed library (link-account.mjs's isTrustedProvider check)
+      //    and only skips re-checking the PROVIDER's own emailVerified
+      //    claim; it does nothing for the EXPLICIT flow below, which never
+      //    reads disableImplicitLinking or trustedProviders at all and is
+      //    the half of this PR that actually ships. Enabling implicit
+      //    auto-link is a real security decision — the moment
+      //    EMAIL_VERIFICATION_ENFORCED flips on (emailVerificationEnforced
+      //    above), dbUser.user.emailVerified stops being the guard that was
+      //    blocking it in practice, and an anonymous "Continue with
+      //    GitHub/Google" click could silently attach to an existing user's
+      //    account with only the provider's own emailVerified claim
+      //    standing between an attacker and a takeover. It is not
+      //    reintroduced here without that decision being made and reviewed
+      //    on its own, with EMAIL_VERIFICATION_ENFORCED actually on.
       //
       // 2. EXPLICIT link (signed-in user clicks "Link Google/GitHub" in
       //    Account Settings — api/routes/account.mjs linkSocialAccount +
       //    api/routes/callback.mjs's `if (link)` branch). This path does NOT
+      //    consult disableImplicitLinking or trustedProviders, and does NOT
       //    check the base account's emailVerified at all — proof of account
       //    ownership comes from the live session state binds to at call
       //    time, not from any verification flag — so it works today
       //    regardless of the operator's own emailVerified value. It DOES
-      //    still enforce, unconditionally: (a) isTrustedProvider-or-
-      //    providerEmailVerified (same trustedProviders effect as above) and
-      //    (b) allowDifferentEmails — the provider's OAuth email must equal
-      //    the signed-in user's account email, or the callback redirects
-      //    with ?error=email_doesn't_match. Kept false here (unchanged): the
-      //    owner's Google/GitHub email is expected to match their password
-      //    account's email, and this is not weakened to let them differ.
+      //    still enforce, unconditionally: (a) the provider's own
+      //    emailVerified claim (Google/GitHub both attest verified emails
+      //    for their own OAuth users — no trustedProviders needed for that)
+      //    and (b) allowDifferentEmails — the provider's OAuth email must
+      //    equal the signed-in user's account email, or the callback
+      //    redirects with ?error=email_doesn't_match. Kept false here
+      //    (unchanged): the owner's Google/GitHub email is expected to
+      //    match their password account's email, and this is not weakened
+      //    to let them differ.
       //
       // allowUnlinkingAll stays false: /unlink-account (api/routes/
       // account.mjs) throws FAILED_TO_UNLINK_LAST_ACCOUNT when it is the
@@ -219,10 +284,63 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
       // false.
       accountLinking: {
         enabled: true,
-        disableImplicitLinking: false,
-        trustedProviders: ['google', 'github'],
+        disableImplicitLinking: true,
         allowDifferentEmails: false,
         allowUnlinkingAll: false,
+      },
+    },
+    // Round-2 review finding (blocker): /unlink-account is gated behind
+    // better-auth's OWN freshSessionMiddleware (node_modules/better-auth/
+    // dist/api/routes/account.mjs:229 `use: [freshSessionMiddleware]`) but
+    // /link-social is not (same file, :117 `use: [sessionMiddleware]` —
+    // no freshness check at all). With sessions living 7 days
+    // (session.expiresIn above) and freshAge at 24h, that asymmetry let a
+    // >24h-old session permanently ATTACH a new sign-in credential (an
+    // attacker who rides a stale/hijacked session in) while the legitimate
+    // owner's own stale session could not remove it — a one-way door not
+    // even closed by a password reset (auth/node_modules/better-auth/dist/
+    // api/routes/password.mjs revokes sessions on reset, but does not touch
+    // already-linked accounts).
+    //
+    // better-auth has no per-endpoint config knob for this — the fix is a
+    // global hooks.before that runs before every request (dispatch.mjs:139
+    // `matcher: () => true`) and applies the exact same check
+    // freshSessionMiddleware runs (api/routes/session.mjs:359-371) to
+    // /link-social specifically. session.freshAge above is what both sides
+    // now read, so they cannot drift apart again. Proven in
+    // auth/test/auth.test.js: "/link-social now requires the same session
+    // freshness as /unlink-account" ages a real session's createdAt past
+    // freshAge and asserts BOTH endpoints 403 identically; mutation-proof —
+    // commenting this hook out (done by hand before this commit) makes that
+    // test fail with AGED link-social returning 200.
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== '/link-social') return
+        const session = await getSessionFromCtx(ctx)
+        // No session at all: fall through to the endpoint's own
+        // sessionMiddleware, which produces the correct 401 — freshness is
+        // moot when there is no session to be fresh or stale.
+        if (!session?.session) return
+        const freshAge = ctx.context.sessionConfig.freshAge
+        if (freshAge === 0) return
+        const createdAt = new Date(session.session.createdAt).getTime()
+        if (Date.now() - createdAt >= freshAge * 1000) {
+          // Identical {message, code} shape to better-auth's own
+          // BASE_ERROR_CODES.SESSION_NOT_FRESH (@better-auth/core/dist/
+          // error/codes.mjs) — spelled out literally rather than imported
+          // from @better-auth/core, which is a transitive dep of
+          // better-auth, not one of auth/package.json's own dependencies.
+          throw APIError.from('FORBIDDEN', { code: 'SESSION_NOT_FRESH', message: 'Session is not fresh' })
+        }
+      }),
+    },
+    // Round-2 review finding (minor): notify the account owner's email
+    // whenever a sign-in credential is added or removed — see
+    // notifyAccountChange above for why it must never throw.
+    databaseHooks: {
+      account: {
+        create: { after: (account, ctx) => notifyAccountChange(mailer, ctx, account, 'added') },
+        delete: { after: (account, ctx) => notifyAccountChange(mailer, ctx, account, 'removed') },
       },
     },
     verification: {
