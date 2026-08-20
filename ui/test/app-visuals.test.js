@@ -154,7 +154,8 @@ test("leaderboard caveat banner is own-scope-gated with only the refresh residua
 	// The remaining banner renders ONLY under isOwn — the gate expression must
 	// immediately precede the banner's status div.
 	assert.match(leaderboard, /\{isOwn && \(\s*<div\s*\n?\s*role="status"/);
-	// The one remaining residual: pre-correction rows that refresh later.
+	// The one remaining residual: pre-correction rows are fixed at generation
+	// time (never refreshed) — see the dedicated test below (#1365).
 	assert.match(leaderboard, /before the August engine corrections/);
 	// The interpreter-divergence clause is RETIRED (F2/F3 landed via #1320,
 	// parity-pinned, verified on the redeployed runner) — its claim would now
@@ -163,6 +164,18 @@ test("leaderboard caveat banner is own-scope-gated with only the refresh residua
 	// fixes, so pin the banner's own load-bearing phrases, not the comment.)
 	assert.doesNotMatch(leaderboard, /live execution currently interprets/);
 	assert.doesNotMatch(leaderboard, /awaiting\s*\n?\s*live-trading sign-off/);
+});
+
+test("leaderboard renders every field it sorts by, and no constant forward column (#1365)", () => {
+	assert.doesNotMatch(leaderboard, /refresh on their next/);
+	assert.match(leaderboard, /fixed at generation time/);
+	const block = leaderboard.match(/const SORT_OPTIONS = \[([\s\S]*?)\]/)[1];
+	for (const [, id] of block.matchAll(/id: '([a-z_]+)'/g)) {
+		assert.match(leaderboard, new RegExp(`e\\.${id}\\b`), `sort option ${id} has no rendered value`);
+	}
+	assert.match(leaderboard, /e\.out_of_sample_sharpe/);
+	assert.doesNotMatch(leaderboard, /SB pending/);
+	assert.doesNotMatch(leaderboard, /P&L pending/);
 });
 
 test("Insights headline claim matches the write path — no bot-exclusion claim, per-stage split shown instead (#1366 AC3)", () => {

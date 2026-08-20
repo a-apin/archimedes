@@ -182,10 +182,12 @@ export default function Leaderboard() {
             on the redeployed agent runner, so the old divergence clause here
             was removed (its claim became false). The ONE remaining residual:
             the own view still holds July-era rows for older generated
-            strategies that predate the corrections and refresh on their next
-            cycle — hence the single-caveat banner below, scoped to the own
-            view; curated rows are reference-only backtests, all verified
-            fresh. */}
+            strategies that predate the corrections. Those numbers are FIXED
+            at generation time — no re-backtest loop exists for generated
+            strategies (#1365; the prior claim of a backtest-cycle refresh was
+            false and is retired) — hence the single-caveat banner below,
+            scoped to the own view; curated rows are reference-only backtests,
+            all verified fresh. */}
         {isOwn && (
           <div
             role="status"
@@ -200,8 +202,10 @@ export default function Leaderboard() {
             }}
           >
             <strong style={{ color: 'var(--warning, #b45309)' }}>One caveat on your figures.</strong>{' '}
-            Older strategies may still show numbers computed before the August engine corrections —
-            they refresh on their next backtest cycle.
+            These numbers are <strong>fixed at generation time</strong> — a strategy generated
+            before the August engine corrections keeps the numbers it was scored with. Generated
+            strategies are not re-backtested; generate again to get a strategy scored by the
+            current engine.
           </div>
         )}
         {engine?.disclaimer && (
@@ -287,7 +291,7 @@ export default function Leaderboard() {
                 <th style={{ padding: '8px 10px' }}>CAGR</th>
                 <th style={{ padding: '8px 10px' }}>Max DD</th>
                 <th style={{ padding: '8px 10px' }}>Rigor</th>
-                <th style={{ padding: '8px 10px' }}>Forward</th>
+                <th style={{ padding: '8px 10px' }} title="Deflated Sharpe Ratio — Sharpe adjusted for selection bias / multiple testing">DSR</th>
               </tr>
             </thead>
             <tbody>
@@ -319,12 +323,15 @@ export default function Leaderboard() {
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
                     {rigorBadge(e)}
-                    {e.dsr_p_value != null && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }} title="DSR confidence (0–1, higher is better): probability the Sharpe survives deflation/multiple-testing. Not a classical p-value.">DSR conf={fmt(e.dsr_p_value)}{e.pbo_score != null ? ` · PBO ${fmt(e.pbo_score)}` : ''}</div>}
+                    {(e.dsr_p_value != null || e.pbo_score != null || e.out_of_sample_sharpe != null) && (
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }} title="DSR confidence (0–1, higher is better): probability the Sharpe survives deflation/multiple-testing. Not a classical p-value. OOS = out-of-sample Sharpe.">
+                        {e.dsr_p_value != null && `DSR conf=${fmt(e.dsr_p_value)}`}
+                        {e.pbo_score != null && ` · PBO ${fmt(e.pbo_score)}`}
+                        {e.out_of_sample_sharpe != null && ` · OOS ${fmt(e.out_of_sample_sharpe)}`}
+                      </div>
+                    )}
                   </td>
-                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
-                    <span className="tag-muted" title="Per-strategy StockBench eval is pending">SB pending</span>{' '}
-                    <span className="tag-muted" title="Live paper-P&L tracking is pending (testnet — paper)">P&L pending</span>
-                  </td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmt(e.deflated_sharpe_ratio)}</td>
                 </tr>
               ))}
             </tbody>
