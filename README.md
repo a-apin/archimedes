@@ -146,13 +146,20 @@ Live numbers come from the live system, never from this file: contract census is
 ## Known limitations (Arc testnet)
 
 - **The corpus is 10,000 arXiv preprints, not peer-reviewed papers.** Candidate selection
-  over it is a **keyword filter**; an `all-MiniLM-L6-v2` pass then re-scores only that
-  already-selected candidate set, at request time, falling back to TF-IDF when the model is
-  unavailable. There is no stored embedding index over the corpus, and `/health`'s
-  `corpus_embedded` flag reports whether that model loaded — not that the corpus is
-  embedded.
-- **The knowledge graph is not built.** `/health` reports `corpus_kg_built: false` with
-  zero entities and relations. Citation-link extraction over the corpus is roadmap.
+  over it is a **keyword filter**. Only that already-selected candidate set is then
+  re-scored, at request time, across title and abstract — by `all-MiniLM-L6-v2` when that
+  model is loaded in-process, by lexical TF-IDF when it is not. Nothing is precomputed: the
+  `papers` schema carries title and abstract text and no vector column, so no index is
+  built ahead of the request. `/health` names the scorer that is actually live in
+  `paper_rag` and `paper_rag_reason` — and `corpus_embedded` is defined as
+  `paper_rag == "live"`, so read those fields rather than this line. Tracked in
+  [#778](https://github.com/a-apin/archimedes/issues/778).
+- **The knowledge graph is not built.** No KB artifact has ever been produced, so `/health`
+  reports `corpus_kg_built: false` with zero entities and zero relations,
+  `GET /api/corpus/graph` refuses with **503 `kb_artifact_not_found`** instead of
+  synthesizing a graph, and `GET /api/corpus/kg/*` returns empty entity and relation sets.
+  Citation-link extraction over the corpus is roadmap. Tracked in
+  [#778](https://github.com/a-apin/archimedes/issues/778).
 - **AMM pools are thinly funded**, so many swaps are not executable. The agent's liquidity
   guard skips empty pools and logs the reason instead of routing capital into a doomed
   trade — see [`docs/arc-integration.md`](docs/arc-integration.md).

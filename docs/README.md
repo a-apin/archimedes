@@ -63,7 +63,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`corpus-architecture.md`](corpus-architecture.md) | current | Dan Browne | 2026-08-20 | 10,000 arXiv preprints (not peer-reviewed). Candidate selection over the corpus is a **keyword filter**; MiniLM re-scores only that already-selected candidate set, at request time, with a TF-IDF fallback. There is no stored embedding index over the corpus and the knowledge graph is not built. |
+| [`corpus-architecture.md`](corpus-architecture.md) | target-state | Dan Browne | 2026-08-20 | 10,000 arXiv preprints (not peer-reviewed), metadata + abstracts only. **Describes embeddings/clusters/KG as built; in prod none of the three exist** (#778). Selection is a **keyword filter** and only that candidate set is re-scored at request time — nothing is precomputed; `/health` `paper_rag` names the live scorer, and the graph/KG endpoints 503 or return empty. |
 | [`specs/multi-agent-debate-spec.md`](specs/multi-agent-debate-spec.md) | shipped | Dan Browne | 2026-07-28 | The debate society — the sole generation pipeline. |
 | [`specs/strategy-fusion-spec.md`](specs/strategy-fusion-spec.md) | shipped | Dan Browne | 2026-07-28 | Multi-paper synthesis feeding the debate proposals. |
 | [`specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md) | shipped | Dan Browne | — | Paper-grounding contract carried by every strategy. |

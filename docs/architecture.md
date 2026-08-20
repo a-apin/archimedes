@@ -330,7 +330,7 @@ that decays fast — contract counts, test totals — is deliberately a pointer,
 | LLM | `bedrock_converse` / `amazon.nova-micro-v1:0` ([ADR](adr/glm-to-bedrock-llm-migration.md)); BYOK and local-Ollama paths preserved behind the `LLM_*` env seam. Live value: `GET /health` → `llm_provider`, `llm_model`. |
 | Backtesting | [backtrader](https://github.com/mementum/backtrader) ([ADR](adr/backtrader-backtest-engine.md)) |
 | Generation | Multi-agent debate society — regime × mechanism steer grid, deterministic critics, K=1 ([spec](specs/multi-agent-debate-spec.md), [ADR](adr/debate-society-sole-generation-pipeline.md)) |
-| Corpus retrieval | Keyword filter over the 10,000-paper corpus, then an `all-MiniLM-L6-v2` re-score of that candidate set at request time (TF-IDF fallback). No stored embedding index — [`corpus-architecture.md`](corpus-architecture.md). |
+| Corpus retrieval | Keyword filter selects candidates; only that set is re-scored at request time across title + abstract — `all-MiniLM-L6-v2` when the model is loaded in-process, lexical TF-IDF when it is not. Nothing is precomputed (no vector column, no prebuilt index). Live scorer: `GET /health` → `paper_rag`, `paper_rag_reason`. Detail: [`corpus-architecture.md`](corpus-architecture.md). |
 | Smart contracts | Solidity targeting Arc (EVM-compatible) + [Foundry](https://book.getfoundry.sh/). Census: `GET /api/config/contracts`. |
 | On-chain | Circle SDK (Wallets, Gateway, CCTP) + viem on the UI side |
 | Auth | Better Auth accounts/sessions; EIP-4361 only for optional wallet linking ([`security/auth-model.md`](security/auth-model.md)) |
