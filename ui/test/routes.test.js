@@ -26,6 +26,12 @@ test("account routes remain public", () => {
 	assert.equal(resolveRoute("/sign-up").kind, "auth");
 });
 
+test("reset-password is a public auth route (#1323)", () => {
+	const route = resolveRoute("/reset-password");
+	assert.equal(route.kind, "auth");
+	assert.equal(route.page, "reset-password");
+});
+
 test("application routes use /app boundary", () => {
 	const route = resolveRoute("/app/library", "?tab=examples");
 	assert.equal(route.kind, "app");
@@ -186,6 +192,54 @@ test("roadmap surfaces are hidden by default: flat routes, deep links, nav (#126
 		"alpha",
 	);
 	assert.equal(visibleNavigation(nav, ROADMAP_ON, { id: "u1" }).length, 6);
+});
+
+test("Library's in-page Published tab hides with the marketplace surface it leads into (#1324)", () => {
+	// #1266's dead-door audit only checked route/nav call sites
+	// (onNavigate/setPage/navigateToPage); it couldn't see a tab that
+	// renders and fetches inline with no route of its own. Strategies.jsx
+	// (the Library page, itself NOT a hidden route) must gate its Published
+	// tab the same way routes.js gates a hidden page: import the one flag
+	// and use it, not a second bespoke check.
+	const strategiesSrc = readFileSync(
+		new URL("../src/components/Strategies.jsx", import.meta.url),
+		"utf8",
+	);
+	assert.match(
+		strategiesSrc,
+		/import \{ ROADMAP_SURFACES_ENABLED \} from '\.\.\/featureFlags\.js'/,
+	);
+	// 1. The fetch must not fire unconditionally — a hidden tab that still
+	// calls the hidden API on every Library load is the exact bug filed.
+	assert.match(
+		strategiesSrc,
+		/ROADMAP_SURFACES_ENABLED \? apiGet\('\/api\/marketplace\/my-published'\) : Promise\.resolve\(\[\]\)/,
+	);
+	// 2. The tab button must not render unconditionally. Anchored directly to
+	// the Published button's own attributes (no `[\s\S]*?` gap) — a lazy gap
+	// here previously let an unrelated gated button elsewhere in the file
+	// satisfy the assertion while the real Published tab stayed ungated.
+	// Demonstrated: inserting `{ROADMAP_SURFACES_ENABLED && (<button ...>Publish
+	// to marketplace</button>)}` above the tab row while removing the Published
+	// tab's own gate passed the old regex and fails this one.
+	assert.match(
+		strategiesSrc,
+		/\{ROADMAP_SURFACES_ENABLED && \(\s*<button\s+type="button"\s+className=\{`tag \$\{activeTab === 'published'/,
+	);
+	// 3. The tab panel must not render either — belt-and-suspenders against
+	// a stale ?tab=published deep link coercing activeTab directly.
+	assert.match(
+		strategiesSrc,
+		/activeTab === 'published' && ROADMAP_SURFACES_ENABLED && \(/,
+	);
+	// 4. The activeTab deep-link fallback: with the flag off, a stale
+	// ?tab=published link must not leave activeTab pinned to 'published' —
+	// every panel (generated/examples/now-gated published) would then
+	// evaluate false and Library would render an empty content area.
+	assert.match(
+		strategiesSrc,
+		/defaultTab === 'published' && !ROADMAP_SURFACES_ENABLED\) return 'generated'/,
+	);
 });
 
 test("anonymous nav shows browse + the Generate conversion path, nothing stateful", () => {
