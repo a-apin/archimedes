@@ -43,6 +43,7 @@ from archimedes.services.rigor_evaluator import (
     _get_func_name,
     align_returns_store,
     compute_library_pbo,
+    is_oos_zero_variance_series,
     is_zero_variance_series,
     load_daily_returns_store,
     look_ahead_audit,
@@ -1008,6 +1009,57 @@ class TestDegenerateSeriesCategory:
         result = run_rigor_gate(strategy_id="real-loser", daily_returns=losing, num_trials=1)
         assert result.is_degenerate is False
         assert result.tri_state_status == "fail"
+
+    # ── OOS-window-only flatness (#1184 follow-up) ───────────────────────
+    #
+    # is_zero_variance_series alone tests the FULL series. compute_oos_sharpe
+    # tests only the chronological OOS slice. A series that is non-constant
+    # overall but goes flat only inside the OOS window (a strategy that stops
+    # trading partway through the backtest — the exact "zero-trade backtest"
+    # cause #1184 names) made compute_oos_sharpe return None while
+    # is_zero_variance_series(full series) returned False, silently falling
+    # through to an undifferentiated "fail" + "MISSING" — the defect #1184
+    # exists to eliminate. is_oos_zero_variance_series + its OR into
+    # run_rigor_gate's is_degenerate closes that gap.
+
+    def test_is_oos_zero_variance_series_matches_compute_oos_sharpes_guard(self) -> None:
+        """Mirrors compute_oos_sharpe's own split/length thresholds exactly."""
+        rng = np.random.default_rng(11)
+        real = rng.normal(0.001, 0.01, 3900).tolist()
+        flat_tail = [0.0] * 1759
+        series = real + flat_tail  # len 5659, split@0.70 = 3961 -> oos is the flat tail
+        assert is_oos_zero_variance_series(series) is True
+        # The FULL series is NOT constant -- the two predicates are independent.
+        assert is_zero_variance_series(series) is False
+        # Too short for compute_oos_sharpe to even attempt (T < 10).
+        assert is_oos_zero_variance_series([0.0, 0.01, -0.02]) is False
+        # OOS slice too short (< 21 bars) even though T >= 10.
+        assert is_oos_zero_variance_series([0.01] * 25) is False
+        # A real (non-constant) OOS slice is not flagged.
+        assert is_oos_zero_variance_series(rng.normal(0.001, 0.01, 200).tolist()) is False
+
+    def test_compute_oos_sharpe_returns_none_for_the_same_oos_only_flat_series(self) -> None:
+        """Pins the exact defect: compute_oos_sharpe is None for this series even
+        though it is not degenerate by the full-series test alone."""
+        rng = np.random.default_rng(11)
+        series = rng.normal(0.001, 0.01, 3900).tolist() + [0.0] * 1759
+        assert compute_oos_sharpe(series) is None
+        assert is_zero_variance_series(series) is False
+
+    def test_run_rigor_gate_flags_oos_only_flat_series_as_degenerate_not_fail(self) -> None:
+        """Before the OR-in of is_oos_zero_variance_series, this reproduced the
+        exact defect the finding names: is_degenerate=False, tri_state='fail',
+        gate_details['oos_sharpe']='MISSING' — a real bug hidden behind the
+        undifferentiated fail. Now it must categorize as 'degenerate'."""
+        rng = np.random.default_rng(11)
+        series = rng.normal(0.001, 0.01, 3900).tolist() + [0.0] * 1759
+        result = run_rigor_gate(strategy_id="oos-only-flat", daily_returns=series, num_trials=1)
+
+        assert result.is_degenerate is True
+        assert result.tri_state_status == "degenerate"
+        assert result.tri_state_status != "fail"
+        assert "DEGENERATE" in result.gate_details["oos_sharpe"]
+        assert result.oos_sharpe is None  # the underlying math is still untouched
 
 
 # ─── Additional coverage: gate_details branches + run_rigor_gate paths ──────

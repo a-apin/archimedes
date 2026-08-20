@@ -463,22 +463,60 @@ def is_zero_variance_series(daily_returns: list[float] | np.ndarray) -> bool:
 
     Issue #1184: a zero-variance persisted return series (every bar identical,
     most plausibly all-zero) is broken data or a zero-trade backtest — NOT a
-    strategy that is merely "pending more data." ``compute_dsr`` /
-    ``compute_oos_sharpe`` already guard on exactly this (``_rigor_helpers.py``,
-    ``float(np.ptp(arr)) == 0.0``) and correctly return ``None`` for it — a
-    constant series has no well-defined Sharpe/DSR. This helper reuses the
-    IDENTICAL test so ``RigorGateResult.is_degenerate`` and the ``None`` those
-    helpers produce agree by construction, and exposes it as a first-class,
-    explicit signal the gate can report as its own category instead of letting
-    the resulting ``None`` DSR/OOS collapse into "pending" or an undifferentiated
-    "fail" downstream (the actual defect: neither status distinguishes "broken
-    data" from "genuinely not yet evaluated" / "evaluated and statistically
-    weak").
+    strategy that is merely "pending more data." ``compute_dsr`` guards on
+    exactly this over the FULL series (``_rigor_helpers.py``,
+    ``float(np.ptp(arr)) == 0.0``) and correctly returns ``None`` for it — a
+    constant series has no well-defined DSR. This helper reuses the IDENTICAL
+    full-series test, so ``is_degenerate`` and ``compute_dsr``'s ``None`` agree
+    by construction on the "whole series is flat" case.
+
+    NOTE — this is ONE-DIRECTIONAL, not an equivalence, and does not by itself
+    cover ``compute_oos_sharpe``: that helper's ptp guard runs on the
+    chronological OOS *slice*, not the full series (see
+    ``is_oos_zero_variance_series`` below), so a series that goes flat only
+    inside the OOS window makes ``compute_oos_sharpe`` return ``None`` while
+    this function alone would still say ``False``. ``run_rigor_gate`` ORs both
+    predicates into ``is_degenerate`` so the two agree by construction on
+    either kind of flatness — read that combination, not this function alone,
+    as the "DSR/OOS agree with is_degenerate" guarantee.
     """
     arr = np.asarray(daily_returns, dtype=float)
     if len(arr) == 0:
         return False
     return bool(np.ptp(arr) == 0.0)
+
+
+def is_oos_zero_variance_series(
+    daily_returns: list[float] | np.ndarray,
+    train_fraction: float = 0.70,
+) -> bool:
+    """True iff the chronological OOS slice ``compute_oos_sharpe`` grades is a
+    non-empty, mathematically constant series — even when the FULL series is
+    not (``is_zero_variance_series`` alone misses this case).
+
+    Issue #1184 follow-up: the PR's original claim that ``is_zero_variance_series``
+    "agrees by construction" with ``compute_oos_sharpe`` was false for a series
+    that goes flat only inside the OOS window (e.g. a strategy that stops
+    placing trades partway through the backtest — exactly the "zero-trade
+    backtest" cause #1184 names). That case made ``compute_oos_sharpe`` return
+    ``None`` while ``is_zero_variance_series`` returned ``False``, so it still
+    fell through to the undifferentiated "fail" + "MISSING" this issue exists
+    to eliminate.
+
+    Mirrors ``compute_oos_sharpe``'s own split/length guards exactly (same
+    ``train_fraction``, same ``T < 10`` / ``len(oos) < 21`` thresholds) so the
+    two agree by construction on both where the OOS window starts and how
+    short is "too short to test" — not just on the zero-variance check itself.
+    """
+    arr = np.asarray(daily_returns, dtype=float)
+    T = len(arr)
+    if T < 10:
+        return False
+    split = int(T * train_fraction)
+    oos = arr[split:]
+    if len(oos) < 21:  # mirrors compute_oos_sharpe's 1-trading-month floor
+        return False
+    return bool(np.ptp(oos) == 0.0)
 
 
 class RigorGateResult:
@@ -508,8 +546,10 @@ class RigorGateResult:
         is_degenerate: bool = False,
     ) -> None:
         self.strategy_id = strategy_id
-        # #1184: True when the persisted return series itself is zero-variance
-        # (see ``is_zero_variance_series``) — the reason ``deflated_sharpe`` /
+        # #1184: True when the persisted return series itself is zero-variance —
+        # either the FULL series (``is_zero_variance_series``) or just the
+        # chronological OOS slice ``compute_oos_sharpe`` grades
+        # (``is_oos_zero_variance_series``) — the reason ``deflated_sharpe`` /
         # ``dsr_p_value`` / ``oos_sharpe`` are None here is "the data is broken
         # or the backtest placed zero trades," never "not enough data yet"
         # (that's `pending`, decided upstream before this result exists) nor
@@ -667,17 +707,26 @@ class RigorGateResult:
     def tri_state_status(self) -> str:
         """This result's category as one of ``"degenerate" | "pass" | "fail"``.
 
-        Issue #1184: single source of truth so a zero-variance persisted return
-        series (``is_degenerate``) reports its OWN category — never "pending"
-        (that status only exists upstream, before a ``RigorGateResult`` is even
-        computed, for a strategy with too few persisted returns to grade at
-        all) and never collapsed into an undifferentiated "fail" that reads as
-        "graded and statistically weak" when the truth is "the data itself is
-        broken or the backtest placed zero trades." Callers that reduce a
-        ``RigorGateResult`` to a badge status (``live_rigor_gate.py``,
-        ``strategies_routes.py``) should read this instead of re-deriving the
-        degenerate check from ``passes_all`` themselves, so the categorization
-        can't drift between call sites (the A7-cohort class of bug).
+        Issue #1184: expresses the categorization rule so a zero-variance
+        persisted return series (``is_degenerate``) reports its OWN category —
+        never "pending" (that status only exists upstream, before a
+        ``RigorGateResult`` is even computed, for a strategy with too few
+        persisted returns to grade at all) and never collapsed into an
+        undifferentiated "fail" that reads as "graded and statistically weak"
+        when the truth is "the data itself is broken or the backtest placed
+        zero trades."
+
+        NOTE — this property is a convenience/logging accessor (used at the
+        gate's own INFO log line below), not a dependency the badge-reducing
+        call sites (``live_rigor_gate.RigorGateVerdict.from_result``,
+        ``strategies_routes._verdict_from_result``) actually import: they
+        re-derive the identical ``is_degenerate``-first / ``passes_all``-else
+        rule directly off ``is_degenerate`` and ``passes_all`` instead, so they
+        stay constructible from the ``MagicMock`` result doubles the chat/
+        portfolio-agent test suites build (which don't stub this property).
+        The rule is duplicated in three places, not centralized here — if you
+        change one, change all three (this property, ``from_result``, and
+        ``_verdict_from_result``'s docstring pointer to it).
         """
         if self.is_degenerate:
             return "degenerate"
@@ -915,10 +964,14 @@ def run_rigor_gate(
 
     # #1184: is the None DSR (and, symmetrically, the None OOS Sharpe computed
     # below) an UNDEFINED-MATH artifact of a zero-variance series, or one of the
-    # gate's ordinary reasons for a None (too short, gate genuinely lost)? Same
-    # test _rigor_helpers.py's compute_dsr/compute_oos_sharpe guards use, so this
-    # agrees with them by construction rather than re-deriving the condition.
-    is_degenerate = is_zero_variance_series(daily_returns)
+    # gate's ordinary reasons for a None (too short, gate genuinely lost)? Two
+    # predicates, ORed, because compute_dsr and compute_oos_sharpe guard on ptp
+    # over DIFFERENT slices (full series vs. the chronological OOS tail) — a
+    # series can be flat only inside the OOS window while non-constant overall
+    # (e.g. a strategy that stops trading partway through). Each predicate
+    # mirrors its corresponding helper's own guard, so this agrees with BOTH
+    # by construction rather than re-deriving either condition.
+    is_degenerate = is_zero_variance_series(daily_returns) or is_oos_zero_variance_series(daily_returns)
 
     # 2. PBO (criterion 4 in the gate ordering) — prefer the full-library CSCV
     #    PBO when supplied (#546). PBO is a property of the selection set, not of
