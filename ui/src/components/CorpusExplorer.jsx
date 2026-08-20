@@ -179,8 +179,11 @@ function CatalogTab({ papers, total, page, loading, search, setSearch, categoryF
   return (
     <div className="corpus-catalog">
       <div className="catalog-controls">
+        {/* The placeholder is not a label: it disappears on the first keystroke
+            and the field is then anonymous to a screen reader (3.3.2). */}
         <input
           type="text" placeholder="Search papers..." value={search}
+          aria-label="Search papers"
           onChange={e => { setSearch(e.target.value); setPage(1) }}
           className="catalog-search"
         />
@@ -188,13 +191,14 @@ function CatalogTab({ papers, total, page, loading, search, setSearch, categoryF
           value={categoryFilter}
           onChange={v => { setCategoryFilter(v); setPage(1) }}
           className="catalog-filter"
+          ariaLabel="Filter papers by category"
           options={[{ value: '', label: 'All Categories' }, ...categories.map(c => ({ value: c.name, label: `${c.label || c.name} (${c.count})` }))]}
         />
       </div>
 
       {loading ? <div className="corpus-loading">Loading...</div> : (
         <>
-          <div className="catalog-results-info">{total.toLocaleString()} papers found</div>
+          <div className="catalog-results-info" role="status">{total.toLocaleString()} papers found</div>
           <div className="overflow-x-auto rounded-lg border border-[var(--glass-border)]">
             {/* Tight one-line-per-entry table. arxiv ID dropped from the
                 listing (it shows on the paper detail page after click);
@@ -233,7 +237,19 @@ function CatalogTab({ papers, total, page, loading, search, setSearch, categoryF
                       style={{ padding: '5px 12px', color: 'var(--text-1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
                       title={cleanLatex(p.title) || p.arxiv_id}
                     >
-                      {cleanLatex(p.title) || p.arxiv_id}
+                      {/* Real control in the title cell: the row onClick was the
+                          only way into a paper's detail view and no cell held a
+                          link, so on this anonymous-OK front door a keyboard or
+                          switch user could page the catalog but never open a
+                          paper (2.1.1). The row keeps its onClick for the mouse;
+                          stopPropagation keeps that one activation. */}
+                      <button
+                        type="button"
+                        className="catalog-title-btn"
+                        onClick={(e) => { e.stopPropagation(); openPaper(p.arxiv_id) }}
+                      >
+                        {cleanLatex(p.title) || p.arxiv_id}
+                      </button>
                     </td>
                     <td style={{ padding: '5px 12px', whiteSpace: 'nowrap' }}>
                       {p.primary_category && (

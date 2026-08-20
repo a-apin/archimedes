@@ -151,16 +151,20 @@ export default function Explore() {
       {/* Filter pills — only meaningful for the flat asset list */}
       {view === 'assets' && (
         <div className="strat-filter-bar" style={{ marginBottom: 18 }}>
+          {/* Buttons with aria-pressed, matching the view toggles directly
+              above — as click-only spans these were unreachable from the
+              keyboard on the default /app landing page (2.1.1 / 4.1.2). */}
           {classes.map(c => (
-            <span
+            <button
               key={c}
+              type="button"
               className={`tag ${filterClass === c ? 'tag-accent' : 'tag-muted'}`}
+              aria-pressed={filterClass === c}
               onClick={() => setFilterClass(c)}
-              style={{ cursor: 'pointer' }}
             >
               {c === 'all' ? 'All' : c.replace(/_/g, ' ')}
               {c !== 'all' && ` (${assets.filter(a => a.asset_class === c).length})`}
-            </span>
+            </button>
           ))}
         </div>
       )}

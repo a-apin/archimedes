@@ -220,6 +220,33 @@ export default function CorpusKG({ onOpenPaper }) {
 
   const resetView = useCallback(() => setViewTransform({ scale: 1, x: 0, y: 0 }), [])
 
+  // Single-pointer alternatives to the drag-pan and wheel-zoom (2.5.7 Dragging
+  // Movements). "Reset view" was the only non-drag control and it only ever
+  // returns to the origin, so a head-pointer / eye-gaze / switch user — or
+  // anyone who cannot hold a button while moving — saw only whatever fell
+  // inside the default viewport. Drag and wheel are untouched; they simply
+  // stop being the only route.
+  const zoomBy = useCallback((factor) => {
+    setViewTransform((prev) => {
+      const nextScale = Math.min(8, Math.max(0.4, prev.scale * factor))
+      // Keep the viewport centre fixed, the same invariant the wheel handler
+      // holds for the cursor position.
+      const cx = layout.svgW / 2
+      const cy = layout.svgH / 2
+      return {
+        scale: nextScale,
+        x: cx - ((cx - prev.x) / prev.scale) * nextScale,
+        y: cy - ((cy - prev.y) / prev.scale) * nextScale,
+      }
+    })
+  }, [layout.svgW, layout.svgH])
+
+  const panBy = useCallback((dx, dy) => {
+    setViewTransform((prev) => ({ ...prev, x: prev.x + dx, y: prev.y + dy }))
+  }, [])
+
+  const PAN_STEP = 80
+
   // --- Render ---
 
   if (error) {
@@ -310,8 +337,14 @@ export default function CorpusKG({ onOpenPaper }) {
         <div style={{ padding: 40, textAlign: 'center' }} className="caption">No entities found.</div>
       ) : (
         <div style={{ overflow: 'hidden', padding: '0 12px 12px', position: 'relative' }}>
+          {/* Informative chart, so it gets the same role="img" + aria-label
+              treatment every other real chart in the repo already carries
+              (BacktestVisualizer, RiskAnalysis). Without it this 500px region
+              was announced as nothing at all (1.1.1). */}
           <svg
             ref={setSvgRef}
+            role="img"
+            aria-label={`Topic cluster graph: ${entities.length} entities, ${relations.length} relations`}
             viewBox={`0 0 ${layout.svgW} ${layout.svgH}`}
             style={{
               width: '100%', maxWidth: 800, height: 500, background: 'rgba(0,0,0,0.15)', borderRadius: 8,
@@ -394,14 +427,25 @@ export default function CorpusKG({ onOpenPaper }) {
             </g>
           </svg>
 
-          <button
-            type="button"
-            className="btn btn-outline corpus-kg-reset-view"
-            onClick={resetView}
-            style={{ position: 'absolute', top: 8, right: 20, padding: '4px 10px', fontSize: '0.75rem' }}
+          <div
+            className="corpus-kg-controls"
+            role="group"
+            aria-label="Graph view controls"
           >
-            Reset view
-          </button>
+            <button type="button" className="btn btn-outline" onClick={() => zoomBy(1.25)} aria-label="Zoom in">+</button>
+            <button type="button" className="btn btn-outline" onClick={() => zoomBy(1 / 1.25)} aria-label="Zoom out">−</button>
+            <button type="button" className="btn btn-outline" onClick={() => panBy(PAN_STEP, 0)} aria-label="Pan left">←</button>
+            <button type="button" className="btn btn-outline" onClick={() => panBy(-PAN_STEP, 0)} aria-label="Pan right">→</button>
+            <button type="button" className="btn btn-outline" onClick={() => panBy(0, PAN_STEP)} aria-label="Pan up">↑</button>
+            <button type="button" className="btn btn-outline" onClick={() => panBy(0, -PAN_STEP)} aria-label="Pan down">↓</button>
+            <button
+              type="button"
+              className="btn btn-outline corpus-kg-reset-view"
+              onClick={resetView}
+            >
+              Reset view
+            </button>
+          </div>
 
           {/* Hover tooltip — full, untruncated entity title with strong
               contrast so it stays readable over a busy/filtered graph. */}
