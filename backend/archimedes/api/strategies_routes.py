@@ -181,7 +181,8 @@ def _to_strategy_response(
         kelly_fraction=s.kelly_fraction,
         # Badge from the LIVE gate verdict (#821) — never the fixture boolean.
         # passes_rigor_gate is the fail-closed boolean (True only when status=="pass");
-        # rigor_gate_status carries the honest tri-state ("pass"|"fail"|"pending").
+        # rigor_gate_status carries the honest four-state badge (#1184):
+        # "pass" | "fail" | "pending" | "degenerate".
         passes_rigor_gate=verdict.passes,
         rigor_gate_status=verdict.status,
         # is_backtest_placeholder: True when no BacktestResultRecord row exists.
@@ -1773,6 +1774,16 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         # per #821 ("read a persisted live-gate verdict"). Map it to the tri-state:
         # a passport with no real backtest (sharpe_ratio is None) is "pending".
         passes_rigor_gate=bool(record.passes_rigor_gate),
+        # #1184 KNOWN GAP: this three-state map is NOT threaded through the
+        # DEGENERATE category live_rigor_gate/_verdict_from_result added — it
+        # reads only the stored aggregate (record.sharpe_ratio /
+        # passes_rigor_gate), not the persisted daily-return series, so a
+        # generated/fusion strategy with a zero-variance series still reports
+        # "fail" here rather than "degenerate". Fixing this needs the same
+        # is_zero_variance_series/is_oos_zero_variance_series check run against
+        # this passport's own persisted returns (get_daily_returns), which this
+        # read path does not currently load. Tracked as an open follow-up on
+        # #1184, not closed by this PR.
         rigor_gate_status=(
             "pending" if record.sharpe_ratio is None else ("pass" if bool(record.passes_rigor_gate) else "fail")
         ),
