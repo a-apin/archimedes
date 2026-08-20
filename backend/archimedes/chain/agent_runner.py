@@ -84,7 +84,35 @@ RUNNER_NAME = "agent_runner"
 LEASE_TTL_MS = int(os.getenv("AGENT_LEASE_TTL_MS", "180000"))  # 3 min
 LEASE_RENEW_INTERVAL_S = int(os.getenv("AGENT_LEASE_RENEW_S", "50"))  # ~ttl/3
 
-# Drift threshold for rebalance trigger
+# Drift threshold for rebalance trigger.
+#
+# CADENCE GATE FIRST, DRIFT THRESHOLD WITHIN THE OPEN WINDOW (divergence audit
+# F3). These are two different gates on two different objects and they compose
+# in this order:
+#
+#   1. CADENCE, per strategy, upstream of here. A DSL strategy declares
+#      ``rebalance_frequency`` (daily / weekly / monthly). The live evaluator
+#      now honours it — strategy_signal_evaluator._replay_position_state only
+#      re-decides entry/exit on cadence-eligible bars and HOLDS the position
+#      through the rest, mirroring DSLStrategy._should_rebalance in the
+#      backtest. A monthly strategy therefore emits the SAME per-asset weight on
+#      every one of the ~288 ticks a day between its decision bars, so it
+#      contributes no new drift here. Before that fix the live path never read
+#      ``rebalance_frequency`` at all and a monthly spec was effectively re-run
+#      every tick, with _DRIFT_THRESHOLD as the only thing standing between it
+#      and a trade.
+#
+#      Note the gate holds the strategy's VOTE rather than skipping it:
+#      aggregate_signals averages every bound strategy's weight, so a strategy
+#      that simply stopped emitting on off-cadence ticks would silently change
+#      every OTHER co-bound strategy's effective allocation in the vault.
+#
+#   2. DRIFT, per vault, below. Once the vault's aggregated target weights are
+#      built, a leg only trades when it has drifted at least this far from the
+#      target. This is a cost/no-op filter on an ALREADY cadence-gated target —
+#      it does not, and must not, decide WHEN a strategy is allowed to change
+#      its mind. A vault binding a daily strategy alongside a monthly one still
+#      rebalances daily, because the daily strategy is due; that is correct.
 _DRIFT_THRESHOLD = 0.15
 
 # The exogenous market regime is detected each tick by VixRegimeDetector
@@ -1183,7 +1211,13 @@ class StrategyRunner:
         portfolio: Portfolio,
         targets: list[TargetAllocation],
     ) -> list[TradeOrder]:
-        """Diff current portfolio vs target weights → trade list."""
+        """Diff current portfolio vs target weights → trade list.
+
+        Second of the two gates described at ``_DRIFT_THRESHOLD``: the targets
+        arriving here are already cadence-gated per strategy by the evaluator, so
+        this is purely a cost filter on how far the vault has drifted — never the
+        thing that decides when a strategy may change its mind.
+        """
         current_weights = portfolio.weights_dict
         target_map = {t.symbol: t for t in targets}
 

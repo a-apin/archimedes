@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pandas as pd
 import pytest
 from archimedes.models.portfolio import Portfolio, PortfolioHolding, TargetAllocation
 from archimedes.models.regime import ConsensusLabel, EnsembleConsensus, Regime, RegimeClassification
@@ -819,3 +820,151 @@ class TestRunLoop:
         lease.install_sigterm_release.assert_called_once()
         assert runner.lease is lease
         runner.tick.assert_awaited_once()
+
+
+# ── Cadence gate upstream of the drift threshold (divergence audit F3) ────
+
+
+def _band_price_series() -> pd.Series:
+    """20-bar-down / 20-bar-up sawtooth. Deterministic; RSI(14) sweeps 0–83 so
+    an RSI 30/70 band spec genuinely flips both ways."""
+    vals = [100.0]
+    for i in range(1, 320):
+        step = 0.010 if (i // 20) % 2 else -0.010
+        zig = 0.002 if (i * 7919) % 7 < 3 else -0.001
+        vals.append(round(vals[-1] * (1.0 + step + zig), 10))
+    return pd.Series(vals, name="sSPY")
+
+
+def _band_spec(rebalance_frequency: str) -> dict:
+    return {
+        "name": f"RSI band ({rebalance_frequency})",
+        "asset_universe": ["SPY"],
+        "rebalance_frequency": rebalance_frequency,
+        "entry": {"lt": ["rsi_14", 30]},
+        "exit": {"gt": ["rsi_14", 70]},
+        "position_sizing": {"type": "full_invested_when_in_market"},
+        "source_arxiv_ids": ["0000.0000"],
+        "look_ahead_safe": True,
+    }
+
+
+def _spec_strategy(spec: dict):
+    from archimedes.models.paper_ref import PaperRef
+    from archimedes.models.strategy import Strategy
+
+    return Strategy(
+        id="band_001",
+        papers=[PaperRef(title=spec["name"])],
+        asset_universe=["SPY"],
+        strategy_spec=spec,
+    )
+
+
+def _portfolio_at(weights: dict[str, float], total: float = 1000.0) -> Portfolio:
+    return Portfolio(
+        vault_address="0xVault",
+        total_value_usdc=total,
+        holdings=[
+            PortfolioHolding(
+                symbol=sym,
+                token_address=f"0x{sym.lower()}",
+                amount=w * total,
+                weight=w,
+                value_usdc=w * total,
+            )
+            for sym, w in weights.items()
+        ],
+        risk_profile="moderate",
+    )
+
+
+class TestCadenceGateRunsBeforeDriftThreshold:
+    """F3, at the runner boundary: the per-strategy cadence gate decides WHEN a
+    strategy may change its target; _DRIFT_THRESHOLD only decides whether an
+    already-cadence-gated change is worth trading. Same vault, same bar, same
+    drift gate — only the spec's declared ``rebalance_frequency`` differs.
+
+    Hermetic: a real StrategySignalEvaluator over an injected in-memory price
+    Series (no yfinance), and _compute_trades called directly (no chain).
+    """
+
+    @staticmethod
+    def _targets(evaluator, spec: dict, prices, upto: int) -> list[TargetAllocation]:
+        signals = evaluator.evaluate_strategies(
+            [_spec_strategy(spec)],
+            ["sSPY"],
+            price_histories={"sSPY": prices.iloc[: upto + 1]},
+        )
+        weights = evaluator.aggregate_signals(signals, usdc_floor=0.20)
+        return [
+            TargetAllocation(symbol=s, token_address=f"0x{s.lower()}", weight=w, strategy_ids=["band_001"])
+            for s, w in weights.items()
+        ]
+
+    def test_monthly_spec_holds_target_where_a_daily_spec_would_trade(self, runner_env):
+        from archimedes.chain.agent_runner import _DRIFT_THRESHOLD
+        from archimedes.services.strategy_signal_evaluator import StrategySignalEvaluator
+
+        runner, _ = runner_env
+        evaluator = StrategySignalEvaluator()
+        prices = _band_price_series()
+        monthly, daily = _band_spec("monthly"), _band_spec("daily")
+        warmup = 14  # max indicator period → first bar the FSM can act on
+
+        def weight_of(targets, sym):
+            return next((t.weight for t in targets if t.symbol == sym), 0.0)
+
+        # An OFF-cadence bar on which the daily version of the same spec wants a
+        # different sSPY weight than the monthly version is holding.
+        bar = next(
+            (
+                t
+                for t in range(warmup + 1, 200)
+                if (t - warmup) % 21 != 0
+                and abs(
+                    weight_of(self._targets(evaluator, daily, prices, t), "sSPY")
+                    - weight_of(self._targets(evaluator, monthly, prices, t), "sSPY")
+                )
+                > _DRIFT_THRESHOLD
+            ),
+            None,
+        )
+        assert bar is not None, (
+            "no off-cadence bar where the daily and monthly versions of one spec disagree — "
+            "either the fixture stopped exercising cadence, or the live path is ignoring "
+            "rebalance_frequency again (audit F3)"
+        )
+
+        # The vault sits exactly on the monthly strategy's target from the
+        # previous bar.
+        prev_targets = self._targets(evaluator, monthly, prices, bar - 1)
+        portfolio = _portfolio_at({t.symbol: t.weight for t in prev_targets})
+
+        # Cadence gate holds the target → nothing for the drift gate to fire on.
+        held_trades = runner._compute_trades(portfolio, self._targets(evaluator, monthly, prices, bar))
+        assert held_trades == [], f"monthly spec produced trades on off-cadence bar {bar}: {held_trades}"
+
+        # Same vault, same bar, same 15% threshold — the DAILY spec is due, so it
+        # moves and the drift gate lets it through. This is the contrast that
+        # makes the assertion above mean something rather than "nothing ever
+        # trades on this fixture".
+        due_trades = runner._compute_trades(portfolio, self._targets(evaluator, daily, prices, bar))
+        assert due_trades, f"daily spec produced no trades on bar {bar} — contrast case is vacuous"
+        assert any(t.symbol == "sSPY" for t in due_trades)
+
+    def test_repeated_intraday_ticks_never_accumulate_drift(self, runner_env):
+        """The literal ~288-ticks-a-day case: re-evaluating the same daily-bar
+        window over and over must keep producing the identical target, so the
+        vault never drifts into a trade between decision bars."""
+        from archimedes.services.strategy_signal_evaluator import StrategySignalEvaluator
+
+        runner, _ = runner_env
+        evaluator = StrategySignalEvaluator()
+        prices = _band_price_series()
+        monthly = _band_spec("monthly")
+
+        targets = self._targets(evaluator, monthly, prices, 150)
+        portfolio = _portfolio_at({t.symbol: t.weight for t in targets})
+        for _ in range(24):
+            assert runner._compute_trades(portfolio, self._targets(evaluator, monthly, prices, 150)) == []
