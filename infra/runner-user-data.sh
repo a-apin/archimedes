@@ -258,7 +258,7 @@ ExecStartPre=-/usr/bin/docker rm archimedes-oracle
 ExecStartPre=/opt/archimedes-runners/fetch-secrets.sh
 ExecStartPre=/opt/archimedes-runners/ecr-login.sh
 ExecStart=/usr/bin/docker run --rm --name archimedes-oracle \
-  --memory=512m --memory-swap=768m \
+  --memory=512m --memory-swap=768m --cpus=0.50 \
   --env-file /opt/archimedes-runners/runner.env \
   -e AWS_REGION=${aws_region} \
   -e ORACLE_INTERVAL_SECONDS=60 \
@@ -291,7 +291,7 @@ ExecStartPre=-/usr/bin/docker rm archimedes-agent
 ExecStartPre=/opt/archimedes-runners/fetch-secrets.sh
 ExecStartPre=/opt/archimedes-runners/ecr-login.sh
 ExecStart=/usr/bin/docker run --rm --name archimedes-agent \
-  --memory=900m --memory-swap=1152m \
+  --memory=900m --memory-swap=1152m --cpus=1.00 \
   --env-file /opt/archimedes-runners/runner.env \
   -e AWS_REGION=${aws_region} \
   -e AGENT_INTERVAL_SECONDS=300 \

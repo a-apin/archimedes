@@ -171,7 +171,12 @@ jobs:
           # OOM-killed and restarted by systemd (Restart=always) instead of
           # taking the host down. Caps: oracle 512m (light price feeder),
           # agent 900m (observed steady RSS 654MB + headroom); worst-case sum
-          # 1412m leaves ~600m for OS+docker+SSM on the 2GB box.
+          # 1412m leaves ~600m for OS+docker+SSM on the 2GB box. CPU caps
+          # (oracle 0.50, agent 1.00 of the 2 vCPU) added for the second
+          # observed wedge signature — a log-silent CPU-spinning agent
+          # container burning 100% for hours (strategy-session diagnostics,
+          # #1402): whatever spins, the host keeps >=0.5 vCPU for the
+          # kernel + SSM agent, so the box stays reachable and diagnosable.
           if [ ! -f /swapfile ]; then
             fallocate -l 1G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=1024
             chmod 600 /swapfile
@@ -182,10 +187,10 @@ jobs:
             grep -q '^vm.swappiness' /etc/sysctl.conf || echo 'vm.swappiness=10' >> /etc/sysctl.conf
           fi
           if [ -f /etc/systemd/system/archimedes-oracle.service ] && ! grep -q -e '--memory=' /etc/systemd/system/archimedes-oracle.service; then
-            sed -i 's|--env-file /opt/archimedes-runners/runner.env|--memory=512m --memory-swap=768m --env-file /opt/archimedes-runners/runner.env|' /etc/systemd/system/archimedes-oracle.service
+            sed -i 's|--env-file /opt/archimedes-runners/runner.env|--memory=512m --memory-swap=768m --cpus=0.50 --env-file /opt/archimedes-runners/runner.env|' /etc/systemd/system/archimedes-oracle.service
           fi
           if [ -f /etc/systemd/system/archimedes-agent.service ] && ! grep -q -e '--memory=' /etc/systemd/system/archimedes-agent.service; then
-            sed -i 's|--env-file /opt/archimedes-runners/runner.env|--memory=900m --memory-swap=1152m --env-file /opt/archimedes-runners/runner.env|' /etc/systemd/system/archimedes-agent.service
+            sed -i 's|--env-file /opt/archimedes-runners/runner.env|--memory=900m --memory-swap=1152m --cpus=1.00 --env-file /opt/archimedes-runners/runner.env|' /etc/systemd/system/archimedes-agent.service
           fi
           # Loud verification — a sed pattern mismatch must FAIL the deploy,
           # not silently leave the box one leak away from its 4th wedge.
