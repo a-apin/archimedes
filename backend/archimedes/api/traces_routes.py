@@ -327,7 +327,7 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
                 agent=detail["agent"],
                 vault=detail["vault"],
                 on_chain_timestamp=detail["timestamp"],
-                details="Hash is anchored on-chain (no off-chain data to recompute against)",
+                details="Hash is anchored on-chain — no off-chain trace body was stored, so no hashes were compared",
             )
 
         trace_hash = off_chain.get("trace_hash", "")

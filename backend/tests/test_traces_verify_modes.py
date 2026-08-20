@@ -199,6 +199,13 @@ async def test_reachable_empty_store_with_onchain_trace_reports_anchored_only():
     assert body["verification_mode"] == "anchored_only"
     assert body["is_verified"] is True
     assert body["trace_id"] == 42
+    # #1359 round-4 review: this is the only path that renders `details` in
+    # the UI (Reasoning.jsx's `{vResult && (...)}` gate covers every mode,
+    # not just the failed ones), so the word "recompute" reaching the screen
+    # here would contradict the criterion-D language this PR removed from
+    # the component's own prose — the verify mechanism never recomputes
+    # anything, it compares two stored strings.
+    assert "recompute" not in body["details"]
 
 
 async def test_reachable_empty_store_with_no_onchain_trace_is_404():
