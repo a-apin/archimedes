@@ -1355,6 +1355,7 @@ class TestBoardLevelFdrWiring:
         baseline_by_id = {r["strategy_id"]: r for r in resp_baseline.json()["strategies"]}
         baseline_passes = {sid: baseline_by_id[sid]["passes_all"] for sid in ids}
         baseline_min_level = {sid: baseline_by_id[sid]["min_passing_level"] for sid in ids}
+        baseline_blocked = {sid: baseline_by_id[sid]["blocked_by_floor"] for sid in ids}
 
         # Sanity: the cohort really is mixed under the REAL (unforced)
         # correction — otherwise this test would silently degrade back into
@@ -1403,3 +1404,7 @@ class TestBoardLevelFdrWiring:
                     f"({bug_direction} bug, strategy {sid}, forced={forced_value})"
                 )
                 assert forced_by_id[sid]["min_passing_level"] == baseline_min_level[sid]
+                assert forced_by_id[sid]["blocked_by_floor"] == baseline_blocked[sid], (
+                    f"board_fdr_significant must never gate blocked_by_floor "
+                    f"({bug_direction} bug, strategy {sid}, forced={forced_value})"
+                )
