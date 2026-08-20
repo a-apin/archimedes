@@ -7,8 +7,9 @@ Read [README](README.md) session rules first.
 
 ## The bug, precisely
 
-`enforce_generation_quota()` opens with `if wallet: return`. `REQUIRE_SIWE_FOR_GENERATION` is
-secure-by-default **on**, so every live caller has a wallet, so **the cap never applies to
+`enforce_generation_quota()` opens with `if wallet: return`. Authentication on generation
+is unconditional (the `REQUIRE_SIWE_FOR_GENERATION` opt-out was retired and deleted
+2026-08-19), so every live caller has a wallet, so **the cap never applies to
 anyone** and `WALLET_LESS_GENERATION_DAILY_CAP=5` is dead config (#1199).
 
 ## The load-bearing technical call
@@ -32,7 +33,8 @@ verbatim** — it already correctly refuses `X-Forwarded-For`.
 
 **The lowercased-wallet constraint is satisfied by construction:** for an API key,
 `Principal.wallet` is the resolved *owner* wallet and resolution happens **inside**
-`get_verified_wallet` / `gate_generation`, which keep returning a lowercased `0x` string. So
+`get_verified_wallet` (the `gate_generation` wrapper around it was deleted 2026-08-19),
+which keeps returning a lowercased `0x` string. So
 `owner_wallet` columns, `wallet_can_publish`, `is_strategy_visible`, `derive_pool_id`, and
 `spend_cap._key` all keep working **untouched**.
 

@@ -1,12 +1,14 @@
-"""Owner scoping of the generate job READ endpoints under SIWE gating (#788 slice 2).
+"""Owner scoping of the generate job endpoints (#788 slice 2, account-first).
 
-With REQUIRE_SIWE_FOR_GENERATION ON (the secure default outside TESTING), the
+Authentication on the generate surfaces is mandatory and unconditional: the
 per-job read surfaces — ``GET /api/generate/stream/{job_id}``, ``GET
 /api/generate/jobs`` and ``GET /api/generate/jobs/{job_id}/candidates`` — plus
-``POST /api/generate/start`` require a verified session, and per-job reads are
-scoped to canonical user ID, with verified-wallet fallback for unclaimed legacy
-jobs. Mismatches return **404**. Account authentication remains mandatory even
-when old SIWE generation gating flag is disabled.
+``POST /api/generate/start`` all require a verified session, and per-job reads
+are scoped to canonical user ID, with verified-wallet fallback for unclaimed
+legacy jobs. Mismatches return **404** (no existence oracle). The retired
+``REQUIRE_SIWE_FOR_GENERATION`` opt-out and its ``gate_generation`` dependency
+were deleted 2026-08-19 — there is no flag that reopens anonymous access, so
+these tests set nothing.
 
 Hermetic: the Redis-backed job store is boundary-mocked (test_generate_cancel_scoping
 precedent); SIWE sessions are real signed cookies (test_user_routes precedent);
@@ -18,7 +20,6 @@ from __future__ import annotations
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
 from fastapi.testclient import TestClient
 
@@ -67,30 +68,13 @@ def _patched(store: MagicMock):
     )
 
 
-@pytest.fixture
-def gate_on(monkeypatch):
-    monkeypatch.setenv("REQUIRE_SIWE_FOR_GENERATION", "true")
-
-
-@pytest.fixture
-def gate_off(monkeypatch):
-    monkeypatch.setenv("REQUIRE_SIWE_FOR_GENERATION", "false")
-
-
 _START_BODY = {"brief": {"intent": "momentum on majors", "risk_appetite": "moderate"}, "n_candidates": 1}
 
 
-# ── Gating ON: session required everywhere ───────────────────────────
+# ── Session required everywhere ──────────────────────────────────────
 
 
-def test_start_anonymous_401_when_gated(gate_on):
-    p1, p2 = _patched(_mock_store(None))
-    with p1, p2:
-        resp = _client().post("/api/generate/start", json=_START_BODY)
-    assert resp.status_code == 401, resp.text
-
-
-def test_start_with_session_202_when_gated(gate_on):
+def test_start_with_session_202():
     store = _mock_store(None)
     p1, p2 = _patched(store)
     with p1, p2:
@@ -100,14 +84,14 @@ def test_start_with_session_202_when_gated(gate_on):
     assert store.enqueue.await_args.kwargs["payload"]["owner_wallet"] == _OWNER.lower()
 
 
-def test_start_with_session_writes_the_identity_ledger_generation_started_event(gate_on):
+def test_start_with_session_writes_the_identity_ledger_generation_started_event():
     """Issue #1028 (D2/D2a): only an IDENTIFIED start is ledgered — a
-    SIWE-verified caller's ``generation_started`` event must land in
+    verified caller's ``generation_started`` event must land in
     ``identity_events`` (the fire-and-forget pipeline itself is stubbed via
     ``_patched``, matching this file's existing hermetic precedent).
 
     Delta-based (not an absolute count) — ``_OWNER`` is reused by
-    ``test_start_with_session_202_when_gated`` above in the same shared
+    ``test_start_with_session_202`` above in the same shared
     test-process DB, matching this whole suite's established convention
     (see ``test_identity_metrics.py``'s module docstring)."""
     from archimedes.db import get_session
@@ -138,8 +122,8 @@ def test_start_with_session_writes_the_identity_ledger_generation_started_event(
     assert after[-1][1] == "human"
 
 
-def test_start_anonymous_stays_blocked_when_legacy_gate_is_off(gate_off):
-    """Legacy opt-out cannot bypass canonical account authentication."""
+def test_start_anonymous_401_and_never_ledgered():
+    """Anonymous start is rejected (401) and leaves no identity-ledger trace."""
     from archimedes.db import get_session
     from archimedes.models.identity import IdentityEvent
 
@@ -162,14 +146,14 @@ def test_start_anonymous_stays_blocked_when_legacy_gate_is_off(gate_off):
     assert after == before
 
 
-def test_stream_anonymous_401_when_gated(gate_on):
+def test_stream_anonymous_401():
     p1, p2 = _patched(_mock_store(_OWNER.lower()))
     with p1, p2:
         resp = _client().get(f"/api/generate/stream/{_JOB_ID}")
     assert resp.status_code == 401, resp.text
 
 
-def test_stream_owner_can_read_when_gated(gate_on):
+def test_stream_owner_can_read():
     p1, p2 = _patched(_mock_store(_OWNER.lower()))
     with p1, p2:
         resp = _client().get(f"/api/generate/stream/{_JOB_ID}", cookies=_cookies(_OWNER))
@@ -177,7 +161,7 @@ def test_stream_owner_can_read_when_gated(gate_on):
     assert "event: done" in resp.text
 
 
-def test_stream_mismatch_404_no_existence_oracle(gate_on):
+def test_stream_mismatch_404_no_existence_oracle():
     """Another wallet gets a 404 whose body is IDENTICAL to a truly-missing job —
     an attacker cannot distinguish 'exists but not mine' from 'does not exist'."""
     p1, p2 = _patched(_mock_store(_OWNER.lower()))
@@ -191,14 +175,14 @@ def test_stream_mismatch_404_no_existence_oracle(gate_on):
     assert mismatch.json()["detail"] == missing.json()["detail"]
 
 
-def test_candidates_anonymous_401_when_gated(gate_on):
+def test_candidates_anonymous_401():
     p1, p2 = _patched(_mock_store(_OWNER.lower()))
     with p1, p2:
         resp = _client().get(f"/api/generate/jobs/{_JOB_ID}/candidates")
     assert resp.status_code == 401, resp.text
 
 
-def test_candidates_owner_can_read_when_gated(gate_on):
+def test_candidates_owner_can_read():
     p1, p2 = _patched(_mock_store(_OWNER.lower()))
     with p1, p2:
         resp = _client().get(f"/api/generate/jobs/{_JOB_ID}/candidates", cookies=_cookies(_OWNER))
@@ -206,14 +190,14 @@ def test_candidates_owner_can_read_when_gated(gate_on):
     assert resp.json()["job_id"] == _JOB_ID
 
 
-def test_candidates_mismatch_404_when_gated(gate_on):
+def test_candidates_mismatch_404():
     p1, p2 = _patched(_mock_store(_OWNER.lower()))
     with p1, p2:
         resp = _client().get(f"/api/generate/jobs/{_JOB_ID}/candidates", cookies=_cookies(_ATTACKER))
     assert resp.status_code == 404, resp.text
 
 
-def test_ownerless_job_readable_by_any_authenticated_caller_when_gated(gate_on):
+def test_ownerless_job_readable_by_any_authenticated_caller():
     """Pre-flip jobs (owner_wallet None) stay readable by authenticated callers —
     no lock-out, but still no anonymous access."""
     p1, p2 = _patched(_mock_store(None))
@@ -222,14 +206,14 @@ def test_ownerless_job_readable_by_any_authenticated_caller_when_gated(gate_on):
     assert resp.status_code == 200, resp.text
 
 
-def test_jobs_list_anonymous_401_when_gated(gate_on):
+def test_jobs_list_anonymous_401():
     p1, p2 = _patched(_mock_store(None))
     with p1, p2:
         resp = _client().get("/api/generate/jobs")
     assert resp.status_code == 401, resp.text
 
 
-def test_jobs_list_filtered_to_caller_when_gated(gate_on):
+def test_jobs_list_filtered_to_caller():
     """The listing shows the caller's own jobs + ownerless ones — never another
     wallet's job ids (that would be the existence oracle the 404 avoids)."""
     p1, p2 = _patched(_mock_store(None))
@@ -240,32 +224,23 @@ def test_jobs_list_filtered_to_caller_when_gated(gate_on):
     assert len(jobs) == 2  # own + ownerless; the attacker-owned job is filtered out
 
 
-# ── Legacy gate OFF: canonical account boundary still holds ──────────
+# ── No existence oracle on per-job reads (Copilot, #851) ─────────────
 
 
-def test_start_anonymous_401_when_legacy_gate_off(gate_off):
-    p1, p2 = _patched(_mock_store(None))
-    with p1, p2:
-        resp = _client().post("/api/generate/start", json=_START_BODY)
-    assert resp.status_code == 401, resp.text
+async def test_missing_job_reads_401_before_lookup_no_existence_oracle():
+    """Anonymous + a MISSING job must yield 401 (same as an existing one),
+    never 404 — a 404-for-missing / 401-for-existing split lets an
+    unauthenticated caller probe which job_ids exist. The auth check must run
+    before the store lookup on both the SSE stream and the candidates read.
+    (Moved from the deleted test_generation_gating.py — the guard predates the
+    account-first flip and survives it unchanged.)"""
+    from archimedes.main import app
+    from httpx import ASGITransport, AsyncClient
 
-
-def test_stream_anonymous_blocked_when_off(gate_off):
-    p1, p2 = _patched(_mock_store(_OWNER.lower()))
-    with p1, p2:
-        resp = _client().get(f"/api/generate/stream/{_JOB_ID}")
-    assert resp.status_code == 401, resp.text
-
-
-def test_candidates_anonymous_blocked_when_off(gate_off):
-    p1, p2 = _patched(_mock_store(_OWNER.lower()))
-    with p1, p2:
-        resp = _client().get(f"/api/generate/jobs/{_JOB_ID}/candidates")
-    assert resp.status_code == 401, resp.text
-
-
-def test_jobs_list_anonymous_blocked_when_off(gate_off):
-    p1, p2 = _patched(_mock_store(None))
-    with p1, p2:
-        resp = _client().get("/api/generate/jobs")
-    assert resp.status_code == 401, resp.text
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for path in (
+            "/api/generate/stream/nonexistent-job-id",
+            "/api/generate/jobs/nonexistent-job-id/candidates",
+        ):
+            resp = await client.get(path)
+            assert resp.status_code == 401, f"{path}: expected 401 pre-lookup, got {resp.status_code}"
