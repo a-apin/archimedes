@@ -21,6 +21,38 @@ Path corrections vs the source doc:
 
 ~20 working days remain to Sept 16 against a 24-day estimate. See the re-cut at the bottom.
 
+## State — 2026-08-20 (verified, main @ 0a22d034)
+
+The 2026-08-16 section below is superseded: far from "zero sprint work landed," a
+card-by-card verification of all 118 actionable items against current `main` found
+**35 DONE, 27 PARTIAL, 42 OPEN, 14 SUPERSEDED/OBSOLETE**. Highlights:
+
+| Card | Disposition |
+|---|---|
+| cluster-0-unblock | Code asks absorbed; residue is owner-only (creds, ADRs, PyPI, Bedrock) |
+| cluster-1-cost-ssot | #1242 shipped the core; every PARTIAL closes by landing #1379 |
+| cluster-2 / cluster-3 | Ride #1379 + two work packages in flight (fusion dates, sleeve label) |
+| cluster-4-strategies-route | #1340/#1374 landed both mains; two small items in a work package |
+| cluster-5-meter | **Retired** — #1194 + #1296/#1300 rebuilt this space (flat settle, no reservation); the missing refund/release path is now #1441 |
+| cluster-6-boot-paywall | A1/A2 sit in draft #1401; the `/api/v1` half needs an owner architecture call (`/api/rigor/verify` already occupies the space) |
+| cluster-7-ui-surface | Core retired by #1266's flag model; surviving tail dispatched as work packages |
+| cluster-8-returns-csv | Blocked on the same `/api/v1` architecture call |
+| a6-rerun | **Retired** — the re-run self-healed via #1263/#1306; read-path fix + copy item remain |
+
+Work packages dispatched 2026-08-20 evening (draft PRs, adversarially reviewed before
+merge): manifest honesty (E3/E5), UI dead-code + check scripts, api-surface status doc,
+quota on the bare generate endpoint, derived leaderboard selectivity copy. #1379's rebase
+follows the market-data seam PR (#1439) to avoid a same-file collision. Owner-gated items
+(payment flags, multisig, Circle mainnet data, `/api/v1` fork, QuantLab disposition) are
+with Dan.
+
+**Execution-style note (Dan, 2026-08-20):** rules 5 and 7 below ("no subagents/workflows",
+"max 2 merges/day") were written for a solo token-constrained session and are superseded
+for sessions running the repo's parallel-agent pipeline (see CLAUDE.md § parallel agent
+fan-out): builder agents + adversarial review + 0-behind merge watchers + post-burst union
+suites. The anti-goals in rule 6 remain in force except where explicitly shipped past
+(React.lazy and the Architecture.jsx rework landed via sanctioned #1194/#1123).
+
 ## Session rules — apply to every card
 
 1. **Anchor-trust.** Re-anchor with `grep -n "<symbol>" <file>` (~200 tok), then `Read` with
