@@ -381,6 +381,31 @@ class TestDailyOhlcvCache:
         assert vendor.ohlcv_calls == [("SPY", long_start, end)]  # coverage gap → refetched
         assert len(result) == 365
 
+    def test_insufficient_forward_coverage_refetches(self, session_factory):
+        """A warm, TTL-fresh cache primed through an earlier end day must NOT
+        satisfy a later request whose end has advanced past it. This is the
+        routine case, not an edge: both call sites default ``end`` to "today"
+        on every call, so any date rollover inside the TTL window lands here —
+        and serving the old frame silently truncates the backtest window
+        (moving every graded number computed over it) with no signal."""
+        old_frame = _ohlcv_frame(30)
+        old_frame.index = old_frame.index - pd.Timedelta(days=10)
+        vendor = _FakeOhlcvVendor({"SPY": old_frame})
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
+        start = old_frame.index[0].date().isoformat()
+        old_end = old_frame.index[-1].date().isoformat()
+        provider.get_daily_ohlcv("SPY", start, old_end)  # primes through old_end only
+
+        new_frame = _ohlcv_frame(40)  # same first day, ends today (10 days later)
+        vendor.frames_by_ticker["SPY"] = new_frame
+        new_end = new_frame.index[-1].date().isoformat()
+        vendor.ohlcv_calls.clear()
+
+        result = provider.get_daily_ohlcv("SPY", start, new_end)
+
+        assert vendor.ohlcv_calls == [("SPY", start, new_end)]  # end advanced past cache → refetched
+        assert len(result) == 40
+
     def test_close_only_cached_row_is_not_a_valid_ohlcv_hit(self, session_factory):
         """A row primed by ``get_daily_close_batch``'s writer only carries
         ``close`` — open/high/low/volume are NULL. ``get_daily_ohlcv`` must

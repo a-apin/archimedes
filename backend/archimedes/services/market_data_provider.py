@@ -445,6 +445,19 @@ def _read_cached_ohlcv(session, ticker: str, start_date: date, end_date: date, t
     if earliest > start_date + timedelta(days=_COVERAGE_TOLERANCE_DAYS):
         return None  # cache doesn't reach back far enough for this request
 
+    # Forward-coverage is load-bearing, not symmetry for its own sake: both
+    # call sites default `end` to "today" on every call, so a cache primed
+    # through day D is routinely re-read after the date rolls to D+1 while
+    # still inside the TTL. Without this check that read is a "hit" on a
+    # silently shorter frame — a backtest window truncation that moves every
+    # graded number with no signal. Known tradeoff: a symbol whose vendor
+    # data genuinely ends before `end_date` (delisted/halted) now misses and
+    # re-fetches every call; correctness over cache hits — recording a
+    # vendor-end marker at write time is the fix for that, out of scope here.
+    latest = rows[-1].trade_date
+    if latest < end_date - timedelta(days=_COVERAGE_TOLERANCE_DAYS):
+        return None  # cache doesn't reach forward to the requested end
+
     newest_fetch = max(r.fetched_at for r in rows)
     if newest_fetch.tzinfo is None:
         newest_fetch = newest_fetch.replace(tzinfo=UTC)
