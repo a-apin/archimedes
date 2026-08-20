@@ -6,9 +6,12 @@ import { getStoredTheme, applyTheme } from "../theme";
 import { visibleNavigation } from "../routes";
 import { lockBodyScroll, unlockBodyScroll } from "../utils/scrollLock";
 
-// Sidebar groups separate Home (anchor / landing) from the product-state
-// bands. Empty group label is intentional for the Home entry — it renders as a
-// header-less section so Home reads as the top-of-shell anchor, not a peer of
+// Sidebar groups separate the marketing-site anchor (labelled "Marketing
+// site", NOT "Home" — the breadcrumb's Home crumb already owns that label for
+// the in-app anchor at Explore; two controls both reading "Home" ~40px apart
+// with different destinations was #1370 item 3) from the product-state
+// bands. Empty group label is intentional for that entry — it renders as a
+// header-less section so it reads as the top-of-shell anchor, not a peer of
 // the other groups. The five labelled groups split the remaining surfaces
 // along the gating boundary:
 //   DISCOVER — open to anonymous visitors (no wallet needed)
@@ -31,7 +34,9 @@ import { lockBodyScroll, unlockBodyScroll } from "../utils/scrollLock";
 const NAV = [
 	{
 		group: null,
-		items: [{ id: "landing", label: "Home", icon: "i-lucide-home" }],
+		items: [
+			{ id: "landing", label: "Marketing site", icon: "i-lucide-home" },
+		],
 	},
 	{
 		group: "Discover",
@@ -94,7 +99,7 @@ const NAV = [
 ];
 
 export const PAGE_LABELS = {
-	landing: "Home",
+	landing: "Marketing site",
 	explore: "Explore",
 	leaderboard: "Leaderboard",
 	generate: "Generate",

@@ -46,9 +46,13 @@ export const CRUMB_MAP = {
   marketplace:  { group: null, groupPage: null },
   publish:      { group: 'Market', groupPage: 'marketplace' },
   subscriptions:{ group: 'Market', groupPage: 'marketplace' },
-  // Ops
+  // Ops — only two members (Insights, Account); routing Account through an
+  // "Ops" mid-crumb that lands on Insights repeats item 1's pattern (a group
+  // crumb wearing a section name while linking to a sibling page, not a real
+  // section landing page) with no third member to justify a group crumb at
+  // all. Flat like the other two-page-or-fewer anchors above.
   insights:     { group: null, groupPage: null },
-  account:      { group: 'Ops', groupPage: 'insights' },
+  account:      { group: null, groupPage: null },
 }
 
 export default function Breadcrumbs({ page, setPage }) {

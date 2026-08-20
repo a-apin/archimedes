@@ -157,7 +157,7 @@ export default function Insights() {
           that loaded the app (JS-gated) — this is the funnel’s <em>Landed</em> count below, and it still
           includes sessions the telemetry classifier positively tags as agents. See the human / external
           bot / internal split under each stage below for exactly how many.
-          <strong> Real users</strong> = canonical Better Auth accounts, all-time. This differs from
+          <strong> Real users</strong> = canonical accounts, all-time. This differs from
           “Connected Wallet”, which counts visitor sessions reaching optional wallet-link step.
         </p>
         <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--glass-border)', fontSize: 12, color: 'var(--text-3)' }}>

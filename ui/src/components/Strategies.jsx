@@ -787,11 +787,14 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
       )}
 
       {activeTab === 'generated' && (() => {
-        // Split generated strategies by rigor verdict so the main table only
-        // shows what passed (the wedge: "the Library is a quality filter, not
-        // a junk drawer"). Rejected candidates stay accessible in a collapsed
-        // section below so the user can inspect *why* they failed — honest
-        // rather than hidden, but visually de-prioritised.
+        // Split generated strategies by rigor verdict. The main table shows
+        // [...passing, ...pending] — cleared strategies plus candidates still
+        // awaiting a verdict, NOT "only what passed" (a stricter claim this
+        // file used to make in both a comment here and in rendered copy;
+        // #1370 item 7 corrected both to match what's actually shown).
+        // Rejected candidates stay accessible in a collapsed section below so
+        // the user can inspect *why* they failed — honest rather than
+        // hidden, but visually de-prioritised.
         const passing = generated.filter(s => s.passes_rigor_gate === true)
         const rejected = generated.filter(s => s.passes_rigor_gate === false)
         const pending = generated.filter(s => s.passes_rigor_gate == null)
@@ -828,7 +831,8 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                     <p className="body" style={{ marginBottom: 10 }}>
                       Multi-paper fusion strategies you create from the{' '}
                       <a href="/app/generate" style={{ color: 'var(--accent)' }}>Generate</a> page will
-                      appear here once they've been backtested + cleared the rigor gate.
+                      appear here once they've been backtested; the rigor verdict (pass/fail) lands
+                      here after, once DSR / PBO / OOS scoring completes.
                     </p>
                     <p className="caption" style={{ color: 'var(--text-3)' }}>
                       Generations in flight show in the agent activity feed on Portfolio and

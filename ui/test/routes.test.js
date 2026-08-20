@@ -6,6 +6,7 @@ import { parseFeatures } from "../src/features.js";
 import {
 	isAnonymousAppPage,
 	pageToPath,
+	passportBackLabel,
 	passportBackPage,
 	postAuthPath,
 	resolveRoute,
@@ -248,6 +249,49 @@ test("the strategy passport's back control never signs out an anonymous visitor 
 	assert.equal(isAnonymousAppPage(passportBackPage(null)), true);
 	// A signed-in visitor keeps going back to their own Library.
 	assert.equal(passportBackPage({ id: "u1" }), "library");
+	// The button's own label must track where it actually navigates — a
+	// control that says "Back to Library" while landing on Explore is a
+	// mislabeled affordance, not a fixed one.
+	assert.equal(passportBackLabel(null), "← Back to Explore");
+	assert.equal(passportBackLabel({ id: "u1" }), "← Back to Library");
+});
+
+test("the strategy passport component actually wires the back-navigation helpers at both back-button call sites (#1370)", () => {
+	// The test above only proves routes.js's helpers are correct in
+	// isolation — it imports nothing from StrategyPassport.jsx, so reverting
+	// the component's two `onClick`/label call sites back to the literal
+	// regression (`onNavigate("library")` / hard-coded "← Back to Library")
+	// would still leave it fully green. Read the component source directly,
+	// precedent: this file's own "Library's in-page Published tab..." test
+	// above and backend/tests/test_breadcrumbs.py's source-parsing tests.
+	const passportSrc = readFileSync(
+		new URL("../src/components/StrategyPassport.jsx", import.meta.url),
+		"utf8",
+	);
+	const wiredNavigate = passportSrc.match(
+		/onClick=\{\(\) => onNavigate\(passportBackPage\(user\)\)\}/g,
+	);
+	assert.equal(
+		wiredNavigate?.length,
+		2,
+		`expected both back buttons to call onNavigate(passportBackPage(user)), found ${wiredNavigate?.length ?? 0}`,
+	);
+	const wiredLabel = passportSrc.match(/\{passportBackLabel\(user\)\}/g);
+	assert.equal(
+		wiredLabel?.length,
+		2,
+		`expected both back buttons to render {passportBackLabel(user)}, found ${wiredLabel?.length ?? 0}`,
+	);
+	assert.doesNotMatch(
+		passportSrc,
+		/onNavigate\(\s*["']library["']\s*\)/,
+		"a back button still hard-codes onNavigate(\"library\") instead of the anonymous-safe helper",
+	);
+	assert.doesNotMatch(
+		passportSrc,
+		/←\s*Back to Library\s*</,
+		"a back button still hard-codes the Library label instead of passportBackLabel(user)",
+	);
 });
 
 test("anonymous nav shows browse + the Generate conversion path, nothing stateful", () => {
