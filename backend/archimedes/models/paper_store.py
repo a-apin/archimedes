@@ -49,13 +49,16 @@ class PaperDeployment(Base):
     # content_hash[:16] (16 chars), so this is headroom, not a live-data
     # change. FK retrofit: closes the gap this module's own docstring already
     # named ("Same pattern as strategy_store" — strategy_store carries this
-    # FK, this table didn't). Added NOT VALID in the migration; historical
-    # orphans (if any) are left un-enforced rather than blocking the deploy.
+    # FK, this table didn't). Added NOT VALID in fb8d0bae8112; historical
+    # orphans (if any) are left un-enforced rather than blocking the deploy —
+    # VALIDATE CONSTRAINT runs, gated on a live orphan count, in the separate
+    # follow-up revision 9c2e7b5a1f4d.
     strategy_id: Mapped[str] = mapped_column(String(128), ForeignKey("strategy_store.id"), nullable=False)
     # Ownership carries BOTH identity columns during the canonical-identity
     # transition (#1194): wallet for the SIWE model live today, user id for
     # Better Auth once it lands. Same pattern as strategy_store. Both FKs
-    # retrofitted in schema-relations Phase 1 (NOT VALID in the migration).
+    # retrofitted in schema-relations Phase 1 — added NOT VALID in
+    # fb8d0bae8112, validated (gated on a live orphan count) in 9c2e7b5a1f4d.
     owner_wallet: Mapped[str | None] = mapped_column(
         String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True
     )

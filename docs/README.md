@@ -27,7 +27,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`reference/file-tree.md`](reference/file-tree.md) | reference | Dan Browne | 2026-07-14 | Repository map generated alongside the architecture map. |
 | [`reference/flow-diagram.mmd`](reference/flow-diagram.mmd) | reference | Dan Browne | 2026-07-14 | Request/generation flow, Mermaid source (`flow-diagram.svg`, `file-tree.svg` render it). |
 | [`database-architecture.md`](database-architecture.md) | current | Dan Browne | 2026-06-28 | Data stores, schemas, migration posture. |
-| [`database-relations.md`](database-relations.md) | current | Dan Browne | 2026-08-20 | Identity/ownership/money-table relational structure: the schema-relations audit (corrections + gaps found), the Phase 1 indices + gated FKs that shipped, the target ERD, and the Phase 2 proposal (not built). |
+| [`database-relations.md`](database-relations.md) | draft | Dan Browne | 2026-08-20 | Identity/ownership/money-table relational structure: the schema-relations audit (corrections + gap found), the Phase 1 indices + gated FKs [PR #1438](https://github.com/a-apin/archimedes/pull/1438) introduces (unmerged draft, not yet live), the target ERD, and the Phase 2 proposal (not built). |
 | [`deployment.md`](deployment.md) | current | Dan Browne | 2026-07-28 | Local vs production topology from one compose file. |
 | [`architectural-principles.md`](architectural-principles.md) | current | Dan Browne | 2026-07-28 | The four primitives the product is built to defend. |
 | [`anti-features.md`](anti-features.md) | current | Dan Browne | 2026-07-28 | What Archimedes deliberately does not build. |

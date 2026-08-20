@@ -1,7 +1,8 @@
 """schema relations Phase 1 — identity/ownership indices + gated FKs
 
 Additive-only retrofit from the schema-relations audit. Three classes of
-change, all reversible, none touching a writer:
+change, all reversible (see the downgrade-safety note in § 2 below for the
+one honest exception), none touching a writer:
 
 1. **Ten indices** on columns that sit on hot or money-adjacent read paths
    and are seq-scanning today — either because Postgres never auto-indexes a
@@ -19,11 +20,14 @@ change, all reversible, none touching a writer:
    below. Legal in Postgres (both are ``character varying``, same operator
    family — a widen is a metadata-only change, no rewrite). Actual values
    are ``content_hash[:16]`` (16 chars), so this is headroom, not a
-   live-data change.
+   live-data change. Downgrade narrows it back — see
+   ``fb8d0bae8112_validate``'s sibling revision docstring for why the
+   *narrow* direction is NOT unconditionally safe the way the widen is, and
+   what this migration's ``downgrade()`` does about it.
 
-3. **Three foreign keys**, each added ``NOT VALID`` and gated on a runtime
-   orphan check taken against the SAME connection this migration is running
-   against, immediately after the constraint is created:
+3. **Four foreign keys**, each added ``NOT VALID`` here and ONLY here — this
+   migration never calls ``VALIDATE CONSTRAINT``. Validation is a SEPARATE
+   follow-up revision (``fb8d0bae8112_validate`` — see its own docstring):
 
    - ``linked_wallets.address -> wallet_identities.wallet_address`` — the
      sole bridge between Better Auth and the SIWE identity ledger.
@@ -41,37 +45,54 @@ change, all reversible, none touching a writer:
      ("Same pattern as strategy_store" — strategy_store carries these FKs,
      paper_deployments didn't).
 
-   WHY a runtime gate instead of a purely manual pre-flight checklist: this
-   repo has exactly one measured production row count on record (see above)
-   — every other table's count, including these four, is unverified. A
-   migration that blindly issues ``VALIDATE CONSTRAINT`` on unmeasured data
-   is how a "minimal blast radius" change becomes an outage (a failed
-   VALIDATE takes an ``ACCESS EXCLUSIVE`` lock for its duration). Running
-   the same orphan-count query the audit specified for a human to run by
-   hand, but running it FROM INSIDE the migration against the live
-   connection, makes the safety property hold unconditionally — on a
-   pristine dev SQLite db, on a freshly seeded test fixture, and on
-   whatever prod's row counts turn out to be on the day this actually
-   deploys — rather than depending on someone remembering to run the
-   checklist first. Every constraint is created ``NOT VALID`` in every case;
-   the gate only decides whether the immediate follow-up
-   ``VALIDATE CONSTRAINT`` also runs in the SAME migration. An orphan count
-   > 0 is not a failure — it is the documented, expected outcome for
-   ``paper_deployments.strategy_id`` / ``.owner_wallet`` (no historical
-   backfill has ever run against those columns) and simply leaves the
-   constraint enforcing all FUTURE writes while historical rows stay
-   untouched, exactly as the audit's own §1.3 table specifies.
+   WHY ``NOT VALID`` is load-bearing here, not cosmetic: a 2026-07-05
+   data-architecture investigation (team record, not a doc checked into this
+   repo) found prod Aurora already contains unjoinable / orphaned
+   populations across exactly this kind of identity/ownership column. A plain
+   ``ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY`` (no ``NOT VALID``)
+   scans and validates every existing row as part of adding the constraint
+   and ABORTS THE WHOLE STATEMENT the instant it finds one violation — on a
+   table with a known or even just unmeasured orphan population, that is a
+   deploy-time hard failure, not a degraded-but-working state. ``NOT VALID``
+   decouples "the constraint exists and enforces every future write" from
+   "every historical row has been checked" — the first is unconditionally
+   safe to ship additively; the second is exactly what
+   ``fb8d0bae8112_validate`` attempts, separately, with its own live orphan
+   gate, so that a known orphan population can only ever be *named*, never
+   turned into a blocked deploy.
 
-   ``VALIDATE CONSTRAINT`` and ``NOT VALID`` are Postgres-only concepts (no
-   SQLite equivalent — SQLite doesn't validate FK data on ``ALTER`` at all
-   unless ``PRAGMA foreign_keys=ON``, which nothing in this repo's default
-   connection sets). On SQLite this migration still adds the SAME named
-   constraints (via ``batch_alter_table``'s table-rebuild path, this repo's
-   established two-path pattern per ``migrations/env.py``), just without an
-   orphan gate — a real orphan on SQLite becomes a live app-level FK
-   violation the next time that row is touched, which is the correct
-   SQLite-native failure mode for a fresh/local database, not a prod-outage
-   risk on an unmeasured table.
+   This migration and its own row count are otherwise in the same boat as
+   the audit's C1 finding: this repo has exactly one measured production row
+   count on record (``f0ab58339d55``'s docstring) — every other table's
+   count, including these four FK columns, is unverified. ``NOT VALID``
+   makes that lack of measurement a non-issue for the additive step; it is
+   the validation step (deferred, see above) that actually needs to reckon
+   with whatever prod's row counts turn out to be on the day this deploys.
+
+   ``NOT VALID`` is a Postgres-only concept (no SQLite equivalent — SQLite
+   doesn't validate FK data on ``ALTER`` at all unless ``PRAGMA
+   foreign_keys=ON``, which nothing in this repo's default connection
+   sets). On SQLite this migration still adds the SAME named constraints in
+   full (via ``batch_alter_table``'s table-rebuild path, this repo's
+   established two-path pattern per ``migrations/env.py``) — a real orphan
+   on SQLite becomes a live app-level FK violation the next time that row is
+   touched, which is the correct SQLite-native failure mode for a
+   fresh/local database, not a prod-outage risk on an unmeasured table.
+
+4. **A bounded ``lock_timeout``** (Postgres only, set once at the top of
+   ``upgrade()``): every statement below that touches an existing table
+   (``CREATE INDEX``, ``ALTER COLUMN TYPE``, ``ADD CONSTRAINT ... NOT
+   VALID``) takes a brief ``ACCESS EXCLUSIVE`` lock to update the catalog.
+   Without a timeout, a blocked acquire queues silently behind whatever
+   already holds a conflicting lock (a long-running query, an open
+   transaction) — and because Postgres grants locks in request order, every
+   subsequent query against that table queues behind THIS migration too,
+   turning a should-be-instant metadata change into a visible outage. A
+   failed acquire instead raises immediately. The whole migration runs in
+   one transaction (``migrations/env.py``'s ``context.begin_transaction()``
+   wraps the full ``alembic upgrade`` invocation), so that failure aborts
+   the transaction cleanly — no partial schema change is left behind, and
+   re-running ``alembic upgrade head`` afterwards is always safe.
 
 Explicit skip, stated once and not repeated per-row below: this migration
 does NOT add a FK from ``backtest_results.strategy_id`` to
@@ -79,8 +100,8 @@ does NOT add a FK from ``backtest_results.strategy_id`` to
 (``main.py``'s startup seed + ``strategy_provider.py``'s unified-table sync),
 but BOTH of those write paths are explicitly best-effort / non-fatal on
 failure — the invariant is plausible, not provable, and adding an FK on
-unverified data here is exactly the mistake this migration's gated pattern
-exists to avoid making blind.
+unverified data here is exactly the mistake this migration's ``NOT VALID``
+pattern exists to avoid making blind.
 
 Revision ID: fb8d0bae8112
 Revises: f0ab58339d55
@@ -92,7 +113,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
 revision: str = "fb8d0bae8112"
 down_revision: str | Sequence[str] | None = "f0ab58339d55"
@@ -118,9 +139,15 @@ _INDICES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 )
 
 # (constraint_name, table, local_cols, referent_table, remote_cols, ondelete,
-#  orphan_sql) — every gated FK this revision adds. `orphan_sql` is the exact
-# live-connection form of the audit's own pre-flight query for that FK (see
-# module docstring § 3); it must return a single integer count.
+# orphan_sql) — every gated FK this revision adds NOT VALID. `orphan_sql` is
+# NOT used by this migration (it never calls VALIDATE CONSTRAINT) — it is
+# carried here as the single source of truth that the sibling
+# ``fb8d0bae8112_validate`` revision's own copy is tested against (see
+# ``test_phase1_validate_orphan_sql_matches_source_revision`` in
+# ``test_alembic_migrations.py``), so the two files cannot silently drift
+# apart. Migrations intentionally do not import each other's modules at
+# runtime (a later rename/removal of one must not break replaying the
+# other), so the duplication is deliberate, not an oversight.
 _GatedFK = tuple[str, str, tuple[str, ...], str, tuple[str, ...], str | None, str]
 
 _GATED_FKS: tuple[_GatedFK, ...] = (
@@ -179,7 +206,7 @@ _GATED_FKS: tuple[_GatedFK, ...] = (
 )
 
 
-def _add_gated_fk(
+def _add_gated_fk_not_valid(
     bind,
     *,
     constraint_name: str,
@@ -188,13 +215,13 @@ def _add_gated_fk(
     referent_table: str,
     remote_cols: tuple[str, ...],
     ondelete: str | None,
-    orphan_sql: str,
 ) -> None:
-    """Create ``constraint_name`` NOT VALID (Postgres) / fully (SQLite), then
-    VALIDATE it only if a live orphan count on THIS connection is zero.
+    """Create ``constraint_name`` NOT VALID (Postgres) / fully (SQLite).
 
-    See the module docstring § 3 for why the gate runs here instead of (or
-    rather, as the executable form of) a manual pre-migration checklist.
+    Deliberately does NOT validate — see module docstring § 3. Only needs
+    ``bind.dialect.name`` (works identically online and in ``--sql`` offline
+    rendering; no live query is issued), so this function never needs an
+    ``is_offline_mode()`` guard.
     """
     is_postgres = bind.dialect.name == "postgresql"
     fk_kwargs: dict[str, object] = {}
@@ -212,25 +239,17 @@ def _add_gated_fk(
             **fk_kwargs,
         )
 
-    if not is_postgres:
-        # SQLite has no NOT VALID / VALIDATE CONSTRAINT concept — the
-        # batch-mode table rebuild above already applied the constraint in
-        # full (see module docstring § 3's SQLite paragraph).
-        return
-
-    orphan_count = bind.execute(sa.text(orphan_sql)).scalar_one()
-    if orphan_count == 0:
-        op.execute(f"ALTER TABLE {table} VALIDATE CONSTRAINT {constraint_name}")
-        print(f"[fb8d0bae8112] {constraint_name}: 0 orphans -- validated")
-    else:
-        print(
-            f"[fb8d0bae8112] {constraint_name}: {orphan_count} orphan row(s) -- "
-            "left NOT VALID (enforces future writes only; historical rows untouched)"
-        )
-
 
 def upgrade() -> None:
     bind = op.get_bind()
+    is_postgres = bind.dialect.name == "postgresql"
+
+    if is_postgres:
+        # Bounded lock acquisition — see module docstring § 4. No
+        # is_offline_mode() guard needed: `op.execute` of a literal string
+        # renders as-is in `--sql` mode, and `bind.dialect.name` above is
+        # resolved from the configured URL even without a live connection.
+        op.execute("SET lock_timeout = '5s'")
 
     for name, table, columns in _INDICES:
         op.create_index(name, table, list(columns))
@@ -249,8 +268,8 @@ def upgrade() -> None:
             existing_nullable=False,
         )
 
-    for constraint_name, table, local_cols, referent_table, remote_cols, ondelete, orphan_sql in _GATED_FKS:
-        _add_gated_fk(
+    for constraint_name, table, local_cols, referent_table, remote_cols, ondelete, _orphan_sql in _GATED_FKS:
+        _add_gated_fk_not_valid(
             bind,
             constraint_name=constraint_name,
             table=table,
@@ -258,14 +277,48 @@ def upgrade() -> None:
             referent_table=referent_table,
             remote_cols=remote_cols,
             ondelete=ondelete,
-            orphan_sql=orphan_sql,
+        )
+
+
+def _fail_if_narrow_would_truncate(bind, is_postgres: bool, is_offline: bool | None = None) -> None:
+    """Downgrade-safety check for the strategy_id width narrow (VARCHAR(128)
+    -> VARCHAR(64)) — see the module docstring's § 2 pointer and
+    ``fb8d0bae8112_validate``'s docstring for the full "this is the one
+    honestly-irreversible piece" discussion.
+
+    Skipped entirely offline (no live rows to check — `alembic downgrade
+    --sql` renders the ALTER unconditionally for review) and on SQLite
+    (SQLite never enforces VARCHAR(N) length at all, so a narrow can never
+    truncate-fail there — the check would just be dead code). `is_offline`
+    takes an explicit default of ``context.is_offline_mode()`` rather than
+    calling it inline, so this function stays callable from a plain unit
+    test with no live Alembic ``MigrationContext`` established.
+    """
+    if is_offline is None:
+        is_offline = context.is_offline_mode()
+    if is_offline or not is_postgres:
+        return
+    count = bind.execute(sa.text("SELECT COUNT(*) FROM paper_deployments WHERE length(strategy_id) > 64")).scalar_one()
+    if count:
+        raise RuntimeError(
+            f"downgrade of fb8d0bae8112 aborted: {count} paper_deployments row(s) have "
+            "strategy_id longer than 64 characters. Narrowing the column back to "
+            "VARCHAR(64) would truncate-fail on those rows. This downgrade is NOT safe "
+            "to run as-is — clean up or re-home the offending rows first, or accept that "
+            "this widen is a one-way door in practice. Left untouched; no schema change "
+            "was made."
         )
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    is_postgres = bind.dialect.name == "postgresql"
+
     for constraint_name, table, *_rest in reversed(_GATED_FKS):
         with op.batch_alter_table(table) as batch_op:
             batch_op.drop_constraint(constraint_name, type_="foreignkey")
+
+    _fail_if_narrow_would_truncate(bind, is_postgres)
 
     with op.batch_alter_table("paper_deployments") as batch_op:
         batch_op.alter_column(
