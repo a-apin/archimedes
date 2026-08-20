@@ -161,12 +161,42 @@ async def test_old_public_wallet_roster_paths_are_gone():
             assert "wallets" not in body and "connections" not in body
 
 
+def _wallet_bearing_fields(model, prefix: str = "", seen: frozenset = frozenset()) -> list[str]:
+    """Collect dotted paths of every field named ``*wallet*`` in ``model``,
+    RECURSING into nested pydantic models (including through list/dict/Optional
+    annotations). The re-review of #1373 showed a flat top-level walk is a
+    false-negative guard: WalletConnectionsResponse's own field names are
+    ``count``/``connections``/``timestamp`` — the per-wallet address lives one
+    level down in WalletConnectionOut.wallet, so only recursion catches a
+    re-mounted connections roster."""
+    import typing
+
+    from pydantic import BaseModel
+
+    if not (isinstance(model, type) and issubclass(model, BaseModel)) or model in seen:
+        return []
+    seen = seen | {model}
+    found: list[str] = []
+    for field_name, field in model.model_fields.items():
+        path = f"{prefix}{model.__name__}.{field_name}"
+        if "wallet" in field_name.lower():
+            found.append(path)
+        stack = [field.annotation]
+        while stack:
+            ann = stack.pop()
+            if isinstance(ann, type) and issubclass(ann, BaseModel):
+                found.extend(_wallet_bearing_fields(ann, prefix=f"{path} -> ", seen=seen))
+            else:
+                stack.extend(typing.get_args(ann))
+    return found
+
+
 @pytest.mark.asyncio
 async def test_no_public_metrics_route_carries_a_wallet_response_model():
     """#1366 AC2 regression guard: no route on the public ``metrics_router`` may
-    declare a response model with a wallet-bearing field. Walks the router so
-    the SAME drift (mounting an identity roster on the anonymous traction
-    instrument) cannot recur silently."""
+    declare a response model with a wallet-bearing field AT ANY DEPTH. Walks the
+    router so the SAME drift (mounting an identity roster on the anonymous
+    traction instrument) cannot recur silently."""
     from archimedes.api.metrics_routes import metrics_router
 
     offending: list[str] = []
@@ -174,10 +204,42 @@ async def test_no_public_metrics_route_carries_a_wallet_response_model():
         model = getattr(route, "response_model", None)
         if model is None:
             continue
-        for field_name in getattr(model, "model_fields", {}):
-            if "wallet" in field_name.lower():
-                offending.append(f"{route.path} -> {model.__name__}.{field_name}")
+        for hit in _wallet_bearing_fields(model):
+            offending.append(f"{route.path} -> {hit}")
     assert offending == [], f"public metrics routes expose wallet fields: {offending}"
+
+
+def test_the_walk_guard_catches_both_roster_models():
+    """Negative control for the guard itself (a guard must be shown to reject
+    something): mounting either roster model on a throwaway router IS flagged —
+    including WalletConnectionsResponse, whose wallet field is nested one level
+    down and which a flat top-level walk provably missed (#1373 re-review)."""
+    from fastapi import APIRouter
+
+    from archimedes.models.telemetry import WalletConnectionsResponse, WalletsResponse
+
+    throwaway = APIRouter()
+
+    @throwaway.get("/drifted-roster", response_model=WalletsResponse)
+    async def _a():  # pragma: no cover - never called
+        raise NotImplementedError
+
+    @throwaway.get("/drifted-connections", response_model=WalletConnectionsResponse)
+    async def _b():  # pragma: no cover - never called
+        raise NotImplementedError
+
+    flagged: dict[str, list[str]] = {}
+    for route in throwaway.routes:
+        model = getattr(route, "response_model", None)
+        if model is not None:
+            flagged[route.path] = _wallet_bearing_fields(model)
+
+    assert flagged["/drifted-roster"], "top-level wallets field must be flagged"
+    assert flagged["/drifted-connections"], (
+        "the NESTED WalletConnectionOut.wallet field must be flagged — a flat "
+        "top-level walk misses it, which is exactly the false negative this "
+        "control exists to prevent"
+    )
 
 
 # ── The roster endpoints on their new ADMIN paths (#1366 six-case minimum:
