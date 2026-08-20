@@ -50,7 +50,13 @@ function OptimizerSelector() {
       setStatus('done')
     } catch (e) {
       // Endpoint may not exist yet — surface gracefully rather than crashing.
-      setError(e.message || 'Optimizer endpoint unavailable')
+      // User-facing text stays free of routes/status codes; e.status still
+      // distinguishes "not deployed" (404) from a real backend failure for us.
+      setError(
+        e.status === 404
+          ? 'Optimizer is not available in this deployment.'
+          : 'Optimizer request failed — try again shortly.',
+      )
       setStatus('error')
     }
   }
@@ -79,7 +85,7 @@ function OptimizerSelector() {
       {status === 'loading' && <div className="caption" style={{ marginTop: 8 }}>Optimizing allocation…</div>}
       {status === 'error' && (
         <div className="info-box warning" style={{ marginTop: 8 }}>
-          Optimizer unavailable: {error}. (POST {OPTIMIZE_ENDPOINT})
+          {error}
         </div>
       )}
       {status === 'done' && result?.weights && (

@@ -40,6 +40,21 @@ set -euxo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
+# ── Swap (#1402) — the box wedged 3x on OS memory exhaustion (status check
+# impaired + SSM agent dead, console-reboot-only recovery). 1GiB swapfile so
+# a memory spike degrades instead of wedging the kernel; low swappiness so it
+# is emergency headroom, not routine paging. NOTE: the LIVE instance never
+# re-runs this file (lifecycle.ignore_changes = [user_data]) — the same prep
+# is applied to it idempotently by deploy-runners.yml's SSM host-prep block;
+# keep the two in sync.
+fallocate -l 1G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=1024
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+sysctl -w vm.swappiness=10
+echo 'vm.swappiness=10' >> /etc/sysctl.conf
+
 # ── System + Docker (same as the main box's user-data.sh) ──────────────────
 apt-get update -y
 apt-get upgrade -y
@@ -243,6 +258,7 @@ ExecStartPre=-/usr/bin/docker rm archimedes-oracle
 ExecStartPre=/opt/archimedes-runners/fetch-secrets.sh
 ExecStartPre=/opt/archimedes-runners/ecr-login.sh
 ExecStart=/usr/bin/docker run --rm --name archimedes-oracle \
+  --memory=512m --memory-swap=768m --cpus=0.50 \
   --env-file /opt/archimedes-runners/runner.env \
   -e AWS_REGION=${aws_region} \
   -e ORACLE_INTERVAL_SECONDS=60 \
@@ -275,6 +291,7 @@ ExecStartPre=-/usr/bin/docker rm archimedes-agent
 ExecStartPre=/opt/archimedes-runners/fetch-secrets.sh
 ExecStartPre=/opt/archimedes-runners/ecr-login.sh
 ExecStart=/usr/bin/docker run --rm --name archimedes-agent \
+  --memory=900m --memory-swap=1152m --cpus=1.00 \
   --env-file /opt/archimedes-runners/runner.env \
   -e AWS_REGION=${aws_region} \
   -e AGENT_INTERVAL_SECONDS=300 \

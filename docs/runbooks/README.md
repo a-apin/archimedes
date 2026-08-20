@@ -24,6 +24,7 @@ an incident should not have to know which tree a procedure lives in.
 | [`spec-1-walkthrough.md`](spec-1-walkthrough.md) | Dan Browne | SPEC-1 user-journey walkthrough, start to finish. |
 | [`t3.2-contract-redeploy.md`](t3.2-contract-redeploy.md) | Dan Browne | Contract redeploy procedure and secret handling. |
 | [`github-security-toggles.md`](github-security-toggles.md) | Dan Browne | Repository security settings and how to change them. |
+| [`docs-site-setup.md`](docs-site-setup.md) | Dan Browne | GitHub Pages docs site (#1381): the two manual steps to go live (Pages source, Route 53 CNAME), local preview, and the `mkdocs --strict` findings. |
 | `infra/runbooks/ecs-fargate-cutover.md` | owner of `infra/` | The 2026-07-09 EC2 → ECS Fargate cutover, **including the rollback procedure**. This is the closest thing to a break-glass path that currently exists. |
 | `infra/runbooks/disaster-recovery.md` | owner of `infra/` | Recovery from data-store and account-level loss. |
 
