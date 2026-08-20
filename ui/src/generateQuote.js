@@ -182,6 +182,20 @@ export function buildDryRunPaymentHeader(payerAddress) {
 }
 
 /**
+ * Resolve the dry-run payer ADDRESS: the account's primary linked wallet's
+ * address first (the server-side truth that already cleared the 409 wallet
+ * precondition), the browser-connected wallet second, null when neither
+ * exists. Always a string or null — NEVER the LinkedWalletResponse object
+ * (#1299 review: the call site passed `primaryLinkedWallet(...)` — the whole
+ * object — into buildDryRunPaymentHeader, so the header's `from` carried an
+ * object whenever a linked wallet existed; the object is truthy, so neither
+ * the caller's no-payer bail nor the header's falsy-payer throw caught it).
+ */
+export function resolveDryRunPayer(linkedWallets, walletAddr) {
+	return primaryLinkedWallet(linkedWallets)?.address || walletAddr || null;
+}
+
+/**
  * The settlement receipt (PAYMENT-RESPONSE header, #1296) from a
  * successful /start response, if present — surfaced subtly, never
  * fabricated. Accepts either a Fetch `Headers` object or a plain object

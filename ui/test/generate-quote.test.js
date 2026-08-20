@@ -13,6 +13,7 @@ import {
 	isWalletLinkRequiredError,
 	paymentErrorMessage,
 	primaryLinkedWallet,
+	resolveDryRunPayer,
 } from "../src/generateQuote.js";
 
 // ── deriveQuoteView: shapes the ratified GET /api/generate/quote response
@@ -193,13 +194,37 @@ test("buildDryRunPaymentHeader: REFUSES a falsy payer (loud contract for #1298)"
 	assert.throws(() => buildDryRunPaymentHeader(""), /requires a payer address/);
 });
 
-test("Generate.jsx resolves the test-mode payer linked-wallet-first with a no-payer guard", () => {
+test("resolveDryRunPayer: the header carries the linked wallet's ADDRESS STRING, never the object", () => {
+	// #1299 review: the old call site passed primaryLinkedWallet(...) — the
+	// whole LinkedWalletResponse object — into buildDryRunPaymentHeader. The
+	// object is truthy, so neither the no-payer bail nor the falsy-payer
+	// throw caught it. This test EXECUTES the resolution end to end and pins
+	// the decoded payer as the address string.
+	const wallets = [
+		{ address: "0xAAA", is_primary: false },
+		{ address: "0xBBB", is_primary: true },
+	];
+	const payer = resolveDryRunPayer(wallets, "0xBrowserWallet");
+	assert.equal(payer, "0xBBB"); // linked-first, and the ADDRESS, not the object
+	const header = buildDryRunPaymentHeader(payer);
+	const decoded = JSON.parse(globalThis.Buffer.from(header, "base64").toString("utf8"));
+	assert.equal(decoded.payload.authorization.from, "0xBBB");
+	assert.equal(typeof decoded.payload.authorization.from, "string");
+});
+
+test("resolveDryRunPayer: browser-wallet fallback, then null (the bail case)", () => {
 	// Reaching a 402 proves the SERVER-side link, not that the browser wallet
-	// is connected or the linked-wallets fetch succeeded — the component must
-	// resolve linked-first, fall back to the active wallet, and bail with a
-	// message (no submit) when neither resolves.
+	// is connected or the linked-wallets fetch succeeded.
+	assert.equal(resolveDryRunPayer([], "0xBrowserWallet"), "0xBrowserWallet");
+	assert.equal(resolveDryRunPayer(null, ""), null);
+	assert.equal(resolveDryRunPayer(undefined, undefined), null);
+});
+
+test("Generate.jsx wires the shared resolver, the bail message, and the header call", () => {
+	// Wiring pin only — the LOGIC is executed by the two tests above (a
+	// source regex can't catch a type bug; #1299 review).
 	const generateSrc = readFileSync(new URL("../src/components/Generate.jsx", import.meta.url), "utf8");
-	assert.match(generateSrc, /primaryLinkedWallet\(linkedWallets\) \|\| walletAddr/);
+	assert.match(generateSrc, /resolveDryRunPayer\(linkedWallets, walletAddr\)/);
 	assert.match(generateSrc, /No payment was attempted/);
 	assert.match(generateSrc, /buildDryRunPaymentHeader\(payer\)/);
 });

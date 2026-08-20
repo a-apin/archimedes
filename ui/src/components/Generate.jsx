@@ -16,7 +16,7 @@ import {
 	describePayerMismatch,
 	extractReceipt,
 	paymentErrorMessage,
-	primaryLinkedWallet,
+	resolveDryRunPayer,
 } from "../generateQuote";
 
 const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "");
@@ -244,7 +244,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// linked-wallets fetch succeeded — so the none-available case is handled
 	// here as UX, never shipped as an empty payer.
 	const continueInTestMode = async () => {
-		const payer = primaryLinkedWallet(linkedWallets) || walletAddr;
+		const payer = resolveDryRunPayer(linkedWallets, walletAddr);
 		if (!payer) {
 			setPaymentMessage(
 				"Could not resolve your linked wallet (reconnect your wallet or reload). No payment was attempted.",
