@@ -246,19 +246,40 @@ async def test_gate_endpoint_has_required_top_level_keys():
 
 @pytest.mark.asyncio
 async def test_gate_endpoint_counts_are_consistent():
-    """total == passing + failing and strategies list length matches total."""
+    """total == passing + failing + pending (#1358) and strategies list length
+    matches total. Pre-#1358 this asserted total == passing + failing, which
+    silently counted every never-scored (pending) row as a rigor-gate failure."""
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/selection-bias/gate")
     data = resp.json()
-    assert data["total"] == data["passing"] + data["failing"]
+    assert data["total"] == data["passing"] + data["failing"] + data["pending"]
     assert len(data["strategies"]) == data["total"]
 
 
 @pytest.mark.asyncio
+async def test_gate_endpoint_pending_rows_excluded_from_failing():
+    """#1358: a strategy with no persisted backtest data (this hermetic test's
+    fresh tmp-sqlite DB has none) reports as ``pending``, not ``failing`` — a
+    strategy with zero statistics computed must never render as a rigor-gate
+    failure. Every ``StrategyRigorResult`` in the curated library response is
+    marked ``pending`` in this fixture (no backtests have been persisted), so
+    ``failing`` must be 0 and ``pending`` must equal ``total``."""
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/selection-bias/gate")
+    data = resp.json()
+    assert data["total"] > 0, "expected at least one curated strategy in the fixture library"
+    assert data["failing"] == 0
+    assert data["pending"] == data["total"]
+    assert all(s["pending"] is True for s in data["strategies"])
+
+
+@pytest.mark.asyncio
 async def test_gate_endpoint_counts_non_negative():
-    """total, passing, failing are all non-negative integers."""
+    """total, passing, failing, pending are all non-negative integers."""
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -267,6 +288,7 @@ async def test_gate_endpoint_counts_non_negative():
     assert data["total"] >= 0
     assert data["passing"] >= 0
     assert data["failing"] >= 0
+    assert data["pending"] >= 0
 
 
 @pytest.mark.asyncio

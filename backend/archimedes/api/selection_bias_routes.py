@@ -179,6 +179,15 @@ class StrategyRigorResult(BaseModel):
     # rather than dropped: it is the more honest number to show alongside
     # dsr_p_value, since both now read "large = confident" the same way.
     board_fdr_confidence: float | None = None
+    # True for a strategy with fewer than 10 persisted daily returns — the gate
+    # genuinely could not run (#1358). ``passes_all`` is False for these rows
+    # too (an all-MISSING gate never passes), but collapsing "never evaluated"
+    # into the same bucket as "evaluated and lost" is the defect this field
+    # exists to fix: a transient DB blip or a strategy that hasn't been
+    # backtested yet must never render as a rigor-gate FAILURE. Both no-data
+    # branches below (the cohort loop and ``_generated_strategy_rigor``) set
+    # this explicitly; every other branch leaves the ``False`` default.
+    pending: bool = False
 
 
 class RigorGateResponse(BaseModel):
@@ -188,6 +197,12 @@ class RigorGateResponse(BaseModel):
     total: int
     passing: int
     failing: int
+    # Rows with fewer than 10 persisted daily returns — the gate genuinely could
+    # not run (#1358). ``passing + failing + pending == total`` always; a
+    # pending row was never counted toward ``failing`` (previously it was —
+    # a strategy with zero statistics computed rendered as a rigor-gate
+    # failure on the Library table, mobile cards, and deployability chip).
+    pending: int = 0
     library_pbo: LibraryPbo = LibraryPbo()
     # The strictness level the ``passing``/``failing`` counts + each
     # ``passes_all`` were evaluated at (1 = strictest/badge … 5 = loosest).
@@ -279,7 +294,13 @@ async def evaluate_rigor_gate(
 
     if not strategies:
         return RigorGateResponse(
-            strategies=[], total=0, passing=0, failing=0, library_pbo=library_pbo, strictness_level=strictness
+            strategies=[],
+            total=0,
+            passing=0,
+            failing=0,
+            pending=0,
+            library_pbo=library_pbo,
+            strictness_level=strictness,
         )
 
     # ── Collect real daily returns from persisted backtest results ──
@@ -413,6 +434,7 @@ async def evaluate_rigor_gate(
                         strictness_level=strictness,
                         min_passing_level=None,
                         blocked_by_floor=False,
+                        pending=True,
                     )
                 )
                 continue
@@ -533,12 +555,16 @@ async def evaluate_rigor_gate(
         n_significant=sum(1 for v in board_fdr.values() if v["board_fdr_significant"]),
     )
 
+    # ``pending`` rows never have ``passes_all=True`` (an all-MISSING gate can't
+    # pass), so ``passing`` is unaffected by carving pending out of ``failing``.
+    pending = sum(1 for r in results if r.pending)
     passing = sum(1 for r in results if r.passes_all)
     return RigorGateResponse(
         strategies=results,
         total=len(results),
         passing=passing,
-        failing=len(results) - passing,
+        failing=len(results) - passing - pending,
+        pending=pending,
         library_pbo=library_pbo,
         strictness_level=strictness,
         board_level_fdr=board_level_fdr,
@@ -697,6 +723,7 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
                 strictness_level=strictness,
                 min_passing_level=None,
                 blocked_by_floor=False,
+                pending=True,
             )
 
         # Persisted context from the latest backtest row — never recomputed
