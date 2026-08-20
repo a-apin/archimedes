@@ -22,8 +22,17 @@ USAGE = 2
 """Bad arguments or a missing file. Click exits with this on its own; it is named here
 so the full set is documented in one place."""
 
+AUTH = 2
+"""No valid cached session (run ``archimedes login`` first), or the server rejected it.
+Deliberately the SAME value as ``USAGE``, not a new code: a missing/expired session means
+the command could not run to a verdict at all, exactly like a bad argument — it is not a
+real answer about a strategy the way ``GATE_FAILED`` is. Kept as a separate name (rather
+than spelling ``USAGE`` at every auth call site) purely so the reason is legible in the
+code that raises it."""
+
 NOT_IMPLEMENTED = 3
 """The subcommand exists in the command tree but has no implementation in this
-release. Every subcommand returns this in 0.0.1."""
+release. 0.0.1 returned this for every subcommand; 0.1.0 narrows it to ``backtest``
+and ``verify --local``, which still need the not-yet-published local execution engine."""
 
-__all__ = ["GATE_FAILED", "NOT_IMPLEMENTED", "OK", "USAGE"]
+__all__ = ["AUTH", "GATE_FAILED", "NOT_IMPLEMENTED", "OK", "USAGE"]

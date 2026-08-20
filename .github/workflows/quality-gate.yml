@@ -134,6 +134,13 @@ jobs:
           pip install --quiet -r /tmp/req-ci.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0" "fakeredis[lua]>=2.26.0"
       - name: Test
         run: pytest -m "not integration" --tb=short -q
+      - name: CLI tests
+        # archimedes-cli has its own small suite (click + httpx, mocked at the
+        # boundary, no network) — running it here makes the CLI's test claims
+        # CI-backed instead of author-attested (#1307 review finding).
+        run: |
+          pip install --quiet -e ./cli
+          python -m pytest cli/tests --tb=short -q
 
   frontend-and-auth:
     name: Frontend + Better Auth

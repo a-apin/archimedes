@@ -167,6 +167,37 @@ class GenerationQuota:
 
         return (count <= cap, int(count))
 
+    async def peek(self, scope: str, identity: str) -> int | None:
+        """Read (never increment) today's count for ``scope:identity``.
+
+        Companion to :meth:`check_and_increment` for DISPLAY-only reads (e.g.
+        ``GET /api/account/usage``) — it never touches enforcement and never
+        writes. Uses the exact same key format and UTC-day bucketing as the
+        enforcement path, so a peek always reads the same counter a concurrent
+        ``check_and_increment`` would be incrementing.
+
+        Returns the current count (``0`` when the key has never been written
+        today), or ``None`` on a Redis error. ``None`` is a DIFFERENT signal
+        than ``check_and_increment``'s fail-closed ``(False, 0)`` — this method
+        backs a read-only display, not a gate, so the honest degraded state is
+        "unknown" (``None``), never a fabricated ``0`` that would tell a caller
+        they have used nothing when the truth is merely unreachable (the
+        repo's fail-soft rule: an outage renders as a loud absence, not a
+        plausible substitute).
+        """
+        try:
+            r = await self._get_redis()
+            day = datetime.now(UTC).strftime("%Y-%m-%d")
+            key = f"archimedes:genquota:{scope}:{day}:{identity}"
+            val = await r.get(key)
+            # int() stays INSIDE the try: a corrupt/non-numeric stored value is
+            # the same "unknown" as an unreachable Redis — the promised None,
+            # never a raised ValueError surfacing as a 500 on a display read.
+            return int(val) if val is not None else 0
+        except Exception as exc:
+            logger.warning("generation quota peek failed for %s=%s: %s", scope, identity, exc)
+            return None
+
     async def close(self) -> None:
         if self._redis:
             try:

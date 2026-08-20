@@ -39,6 +39,7 @@ if os.getenv("PUBLIC_DOMAIN"):
 # Shared rate limiter (Redis-backed, falls back to in-memory).
 # Defined in a separate module to avoid circular imports with route modules.
 from archimedes.api.account_auth import better_auth_session_middleware, require_current_user
+from archimedes.api.account_usage_routes import account_usage_router
 from archimedes.api.agent_manifest_routes import agent_manifest_router
 from archimedes.api.chat_routes import chat_router
 from archimedes.api.corpus_routes import corpus_router
@@ -69,6 +70,7 @@ from archimedes.api.metrics_private_routes import metrics_private_router
 from archimedes.api.metrics_routes import metrics_router
 from archimedes.api.portfolio_routes import portfolio_router
 from archimedes.api.proposals_routes import proposals_router
+from archimedes.api.rigor_verify_routes import rigor_verify_router
 from archimedes.api.risk_routes import risk_router
 from archimedes.api.routes import (
     agent_router,
@@ -508,6 +510,8 @@ if marketplace_router is not None:
 app.include_router(risk_router)
 app.include_router(portfolio_router, dependencies=[Depends(require_current_user)])
 app.include_router(selection_bias_router)
+app.include_router(rigor_verify_router)
+app.include_router(account_usage_router)
 app.include_router(papers_router)
 app.include_router(user_router, dependencies=[Depends(require_current_user)])
 app.include_router(wallet_router)

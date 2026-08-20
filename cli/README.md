@@ -11,13 +11,12 @@ four the series survives.
 
 ## Status
 
-**0.0.1 is a name reservation.** The command tree is in place and the flags are settled,
-but every subcommand exits 3 with a message saying so. Nothing here opens a network
-connection.
+**0.1.0** — `login`, `meter`, and `verify` work against the hosted API. `verify --local`
+and `backtest` still exit 3 (`NOT_IMPLEMENTED`); both need the local execution engine,
+which is published separately and isn't out yet.
 
-The first working release is 0.1.0, with `login`, `meter`, and `verify` against the hosted
-API. `verify --local` and `backtest` follow once the local execution engine is published
-separately.
+0.0.1 was a name reservation: the command tree and flags were fixed, but every subcommand
+exited 3.
 
 ## Install
 
@@ -31,11 +30,15 @@ rather than a compiler-and-a-coffee one.
 ## Commands
 
 ```
-archimedes login                      authenticate with a wallet signature
-archimedes meter                      show calls used and USDC spent this period
+archimedes login                      sign in (Better Auth email + password) and cache the session
+archimedes meter                      show today's generation usage and the live price
 archimedes verify RETURNS_CSV         run the gate over a returns series
 archimedes backtest --strategy-path   run a strategy locally and print its returns
 ```
+
+`login` prompts for email and password (or reads `ARCHIMEDES_EMAIL` / `ARCHIMEDES_PASSWORD`
+for CI) and caches the session cookie at `~/.config/archimedes/session.json`, mode 600.
+`meter` and `verify` read that cache; run `login` first.
 
 `RETURNS_CSV` is two columns, date and daily return, or `-` to read from stdin. So the
 whole loop is one line:
@@ -44,10 +47,17 @@ whole loop is one line:
 archimedes backtest --strategy-path mine.py --strategy-class Mine | archimedes verify -
 ```
 
+`verify` sends the returns series to `POST /api/rigor/verify`, which computes DSR and a
+walk-forward out-of-sample check for real against those numbers, using the exact functions
+and thresholds the strategy-passport verdict uses. PBO and the look-ahead audit can't run
+over a bare series (PBO needs a trial matrix, look-ahead needs strategy source), so both
+always render `not_evaluable` — never a silent pass.
+
 Every command takes `--json` and prints a single object on stdout, including on its error
 paths. A script never has to parse prose to find out what happened.
 
-`verify --local` runs the gate on your machine with no network, no account, and no charge.
+`verify --local` runs the gate on your machine with no network, no account, and no charge
+— not implemented yet.
 
 ## Exit codes
 
@@ -55,15 +65,15 @@ These are stable from 0.0.1 onward.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | The gate passed |
+| 0 | The command completed; for `verify`, the gate passed |
 | 1 | The gate ran and returned a failing verdict |
-| 2 | Bad arguments or a missing file |
+| 2 | Bad arguments, a missing file, or no valid session (`login` first) |
 | 3 | Subcommand not implemented in this release |
 
 The line worth drawing is 1 against everything else. Exit 1 is a real answer about the
 strategy. Any other non-zero code means no verdict was produced at all, so a CI job that
-treats every failure as "strategy rejected" would report a network timeout as a research
-finding. Branch on 1 specifically:
+treats every failure as "strategy rejected" would report a network timeout — or an expired
+session — as a research finding. Branch on 1 specifically:
 
 ```bash
 archimedes verify returns.csv
