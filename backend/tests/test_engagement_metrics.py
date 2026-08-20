@@ -260,6 +260,100 @@ def test_generation_cost_metrics_sums_tokens_and_skips_corrupt_rows(tmp_db):
     assert result["total_input_tokens"] == 300
     assert result["total_output_tokens"] == 125
     assert result["total_tokens"] == 425
+    # _cost_row's llm block carries no calls_missing_usage/usage_complete
+    # keys at all — the real cost_meter.py shape always does, but the
+    # aggregator must still default an absent key to "complete" rather than
+    # crash or silently mark everything incomplete.
+    assert result["calls_missing_usage"] == 0
+    assert result["usage_complete"] is True
+
+
+def test_generation_cost_metrics_partial_usage_row_is_not_banked_as_measured(tmp_db):
+    """Round 3 fix: a row whose llm block reports usage_complete=False (some
+    calls in that job never returned usage) must not count toward
+    measured_count — folding it in there is indistinguishable on the page
+    from a fully-measured job. calls_missing_usage must survive to the
+    aggregate payload rather than being silently dropped.
+
+    Mutation-verified: reverting `if usage_complete: measured_count += 1` to
+    the old `measured_count += 1` (unconditional) makes this assertion fail
+    (`assert 2 == 1`); reverting the calls_missing_usage/usage_complete
+    plumbing back out makes the KeyError-shaped assertion fail outright.
+    """
+    with get_session() as session:
+        session.add(_cost_row("job-full", input_tokens=100, output_tokens=50))
+        session.add(
+            GenerationCostRecord(
+                job_id="job-partial",
+                strategy_id="strat-partial",
+                schema_version="cost_v1",
+                measurement_json=json.dumps(
+                    {
+                        "schema": "cost_v1",
+                        "job_id": "job-partial",
+                        "llm": {
+                            "calls": 8,
+                            "calls_missing_usage": 8,
+                            "usage_complete": False,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                        },
+                    }
+                ),
+                recorded_at=_now(),
+            )
+        )
+        session.commit()
+
+    result = engagement_metrics.get_generation_cost_metrics()
+    assert result["measured_count"] == 1  # only job-full counts as measured
+    assert result["rows_total"] == 2
+    assert result["calls_missing_usage"] == 8
+    assert result["usage_complete"] is False
+    assert result["total_input_tokens"] == 100
+    assert result["total_output_tokens"] == 50
+
+
+def test_generation_cost_metrics_dedupes_by_job_id_for_k_greater_than_one(tmp_db):
+    """Round 3 fix: models/generation_cost.py's docstring says a job-level
+    measurement persisted onto more than one strategy row (K>1) must be
+    counted ONCE, not once per row, or the sum double-counts. K=1 today, but
+    the guard must hold the moment that changes.
+
+    Mutation-verified: removing the `if job_id in seen_job_ids: continue`
+    guard makes total_input_tokens read 1000 instead of 500.
+    """
+    shared_measurement = {
+        "schema": "cost_v1",
+        "job_id": "job-k2",
+        "llm": {"input_tokens": 500, "output_tokens": 200},
+    }
+    with get_session() as session:
+        session.add(
+            GenerationCostRecord(
+                job_id="job-k2",
+                strategy_id="strat-a",
+                schema_version="cost_v1",
+                measurement_json=json.dumps(shared_measurement),
+                recorded_at=_now(),
+            )
+        )
+        session.add(
+            GenerationCostRecord(
+                job_id="job-k2",
+                strategy_id="strat-b",
+                schema_version="cost_v1",
+                measurement_json=json.dumps(shared_measurement),
+                recorded_at=_now(),
+            )
+        )
+        session.commit()
+
+    result = engagement_metrics.get_generation_cost_metrics()
+    assert result["rows_total"] == 2
+    assert result["measured_count"] == 1  # one job, banked once
+    assert result["total_input_tokens"] == 500  # NOT 1000
+    assert result["total_output_tokens"] == 200
 
 
 # ── Paper deployments ───────────────────────────────────────────────────
@@ -304,6 +398,66 @@ def test_repeat_generation_metrics_empty_db_is_honest_zero(tmp_db):
     result = engagement_metrics.get_repeat_generation_metrics()
     assert result["generating_users"] == 0
     assert result["repeat_users"] == 0
+
+
+def test_repeat_generation_metrics_normalizes_tz_aware_timestamps_at_day_boundary(monkeypatch):
+    """Round 3 fix: day-bucketing here must go through _to_naive_utc, exactly
+    like _daily_buckets already does — otherwise a tz-aware created_at
+    shifts which calendar day a row counts toward (_to_naive_utc's own
+    docstring: "a non-UTC session would silently shift... the day a row
+    buckets into" — this was the one bucketing site over
+    strategy_store.created_at that claim did not actually cover).
+
+    A real DB round-trip can't exercise this: SQLite (this suite's backend)
+    silently truncates a tz-aware bind to its unconverted wall-clock value at
+    INSERT time rather than reproducing the Postgres session-TimeZone cast
+    hazard _to_naive_utc exists to close — so the query boundary is faked
+    here instead, to hand the loop the exact tz-aware values it must
+    normalize.
+
+    Two timestamps for ONE owner, chosen so a raw `.date()` (ignoring
+    tzinfo, which is what a bare `created_at.date()` does) puts BOTH on
+    2026-08-13 — not a repeat — while `_to_naive_utc(...).date()` correctly
+    resolves them to two DIFFERENT UTC calendar days — a repeat. Reverting
+    the `_to_naive_utc(created_at)` wrap back to a bare `created_at` makes
+    `repeat_users` read 0 instead of 1 (verified by hand before this fix was
+    pushed).
+    """
+    from datetime import timezone as tz
+
+    est = tz(timedelta(hours=-5))
+    late_est = datetime(2026, 8, 13, 23, 30, 0, tzinfo=est)  # == 2026-08-14 04:30 UTC
+    morning_est = datetime(2026, 8, 13, 8, 0, 0, tzinfo=est)  # == 2026-08-13 13:00 UTC
+
+    class _FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def filter(self, *_a, **_kw):
+            return self
+
+        def yield_per(self, _n):
+            return self
+
+        def __iter__(self):
+            return iter(self._rows)
+
+    class _FakeSession:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def query(self, *_a, **_kw):
+            return _FakeQuery(self._rows)
+
+        def close(self):
+            pass
+
+    rows = [("tz-user", late_est), ("tz-user", morning_est)]
+    monkeypatch.setattr("archimedes.db.get_session", lambda: _FakeSession(rows))
+
+    result = engagement_metrics.get_repeat_generation_metrics()
+    assert result["generating_users"] == 1
+    assert result["repeat_users"] == 1  # two DIFFERENT UTC calendar days
 
 
 # ── Payments (dry-run marker, no query) ─────────────────────────────────
@@ -355,12 +509,14 @@ def test_db_failure_degrades_to_none_not_zero(monkeypatch):
     assert wallets == {"total": None, "unavailable": True}
 
     strategies = engagement_metrics.get_strategy_metrics()
-    assert strategies == {"total": None, "new_7d": None, "daily_new": None, "unavailable": True}
+    assert strategies == {"total": None, "new_7d": None, "daily_new": None, "note": None, "unavailable": True}
 
     costs = engagement_metrics.get_generation_cost_metrics()
     assert costs == {
         "measured_count": None,
         "rows_total": None,
+        "calls_missing_usage": None,
+        "usage_complete": None,
         "total_input_tokens": None,
         "total_output_tokens": None,
         "total_tokens": None,

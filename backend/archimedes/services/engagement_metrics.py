@@ -65,6 +65,35 @@ assumed):**
 See the PR body for the Phase 2 list of metrics this module does NOT attempt
 (the schema-relations work that would make them possible is in flight
 separately).
+
+**Round 3 corrections (2026-08-20, adversarial review):** three more
+fail-soft/honesty gaps closed on top of round 2's four. (1)
+``get_generation_cost_metrics`` was summing ``measurement_json["llm"]``
+blocks that carry their OWN completeness flags
+(``calls_missing_usage``/``usage_complete``, written by
+``services/cost_meter.py``'s ``CostMeter.snapshot()``) without reading them —
+a row whose usage was only partially instrumented was banked into
+``measured_count`` exactly like a fully-measured one, reintroducing the same
+"partial measurement rendered as complete" defect round 2 fix #5 closed for
+the COUNT(*)-vs-decoded-row case. Fixed by reading those flags and only
+counting a row as measured when its usage accounting is complete; the
+aggregate-level ``calls_missing_usage``/``usage_complete`` are now reported
+so a caller can tell "the totals below are honest" from "some calls in here
+are invisibly undercounted." (2) The same function summed every row
+unconditionally; ``models/generation_cost.py``'s own docstring states that if
+generation ever persists more than one strategy per job (K>1), each gets a
+row carrying the SAME job-level measurement and "summing across rows would
+double-count" — latent today (K=1), now guarded by de-duplicating on
+``job_id`` before summing so a future K>1 can't silently inflate this
+dashboard. (3) "Strategies generated" (this file) and the "Repeat generators"
+tile (``Insights.jsx``) both counted/labelled ``strategy_store`` rows as if
+they were generation events; ``upsert_strategy``'s content-hash dedup means
+two different users generating identical content — or one user
+regenerating — produces ONE row, so these are proxies for distinct stored
+content, not a generation count. That caveat was already disclosed for the
+repeat-generator proxy; it now ships as an explicit ``note`` on
+``get_strategy_metrics``'s response too, rendered on the page rather than
+left implicit.
 """
 
 from __future__ import annotations
@@ -233,10 +262,18 @@ def get_strategy_metrics() -> dict[str, Any]:
             "total": total,
             "new_7d": len(timestamps),
             "daily_new": _daily_buckets(timestamps, days=_TREND_DAYS),
+            "note": (
+                "Counts distinct strategy_store rows (deduped by content hash), not "
+                "generation runs. Content-identical output — same generation method, "
+                "strategy name, thesis, source papers, and asset universe — dedupes to "
+                "one row regardless of how many users or runs produced it, so this is a "
+                "proxy for distinct stored content, not an exact per-user or per-run "
+                "generation count (round 3 correction)."
+            ),
         }
     except Exception as exc:
         logger.debug("engagement_metrics.get_strategy_metrics failed: %s", exc)
-        return {"total": None, "new_7d": None, "daily_new": None, "unavailable": True}
+        return {"total": None, "new_7d": None, "daily_new": None, "note": None, "unavailable": True}
 
 
 def get_generation_cost_metrics() -> dict[str, Any]:
@@ -250,44 +287,86 @@ def get_generation_cost_metrics() -> dict[str, Any]:
     crashing the sum — the same "corrupt row is an absence, not a zero baked
     into the total" posture ``GenerationCostRecord.to_payload`` already uses.
 
-    ``measured_count`` counts ROWS THAT ACTUALLY CONTRIBUTED to the token
-    sums below it — i.e. it is incremented in the SAME pass that decodes and
-    sums, not taken as a separate ``COUNT(*)`` up front (round 2 fix: a
-    ``COUNT(*)`` counts every row regardless of whether its JSON decodes,
-    which made a corrupt row both "skipped from the sum" and "counted as
-    measured" at once — a reader computing total_tokens / measured_count as
-    an average would silently understate it whenever any row was corrupt).
+    **De-duplicated by ``job_id`` (round 3 fix).** ``models/generation_cost
+    .py``'s module docstring is explicit that a row is keyed to a
+    ``(job_id, strategy_id)`` pair and the measurement is the JOB's — if a
+    job ever persists more than one strategy again (K>1), each strategy gets
+    its OWN row carrying the SAME job-level measurement, and "summing across
+    rows would double-count." Generation is K=1 today, so this de-dup is
+    currently a no-op in practice; it is applied unconditionally so a future
+    K>1 does not silently start over-counting every token figure on this
+    dashboard.
+
+    **``measured_count`` counts rows whose usage accounting is COMPLETE**
+    (round 3 fix), not merely rows that decoded and carried an ``llm`` block.
+    ``services/cost_meter.py``'s ``CostMeter.snapshot()`` writes
+    ``calls_missing_usage``/``usage_complete`` into that block precisely so a
+    reader can distinguish a fully-measured job from one where some calls
+    reported no usage — folding a ``usage_complete: false`` row into
+    "measured" reintroduced, one level deeper, the exact fail-soft defect
+    round 2 fix #5 closed for the COUNT(*)-vs-decoded-row case. The aggregate
+    ``calls_missing_usage`` (summed across every llm-bearing row) and
+    ``usage_complete`` (true iff that sum is zero) are reported alongside the
+    totals so a caller — ``Insights.jsx`` included — can tell "this total is
+    a complete accounting" from "some calls in here are invisibly
+    undercounted," mirroring how ``payments.settled_volume_usd`` already
+    distinguishes "not measured" from "measured at zero" instead of
+    presenting either as a plausible plain number.
+
     ``rows_total`` is the separate, honest "how many generation_costs rows
-    exist at all" figure for anyone who wants it.
+    exist at all" figure for anyone who wants it (round 2 fix).
+
+    Streams the query with ``yield_per`` (round 3 fix) instead of
+    materializing every row into a Python list up front. This table has no
+    LIMIT/time-window — unlike ``get_strategy_metrics`` — because "Total LLM
+    tokens" is an honest all-time total, not a windowed one; a LIMIT would
+    silently under-report the total instead of bounding cost, which is worse.
+    Streaming bounds peak memory for that unavoidably-unbounded scan without
+    changing what gets counted.
     """
     try:
         from archimedes.db import get_session
         from archimedes.models.generation_cost import GenerationCostRecord
 
-        session = get_session()
-        try:
-            rows = session.query(GenerationCostRecord.measurement_json).all()
-        finally:
-            session.close()
-        rows_total = len(rows)
+        rows_total = 0
         measured_count = 0
+        calls_missing_usage_total = 0
         input_tokens = 0
         output_tokens = 0
-        for (raw,) in rows:
-            try:
-                measurement = json.loads(raw) if raw else None
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("engagement_metrics: corrupt generation_costs.measurement_json — skipping row")
-                continue
-            llm = measurement.get("llm") if isinstance(measurement, dict) else None
-            if not isinstance(llm, dict):
-                continue
-            measured_count += 1
-            input_tokens += int(llm.get("input_tokens") or 0)
-            output_tokens += int(llm.get("output_tokens") or 0)
+        seen_job_ids: set[str] = set()
+        session = get_session()
+        try:
+            query = session.query(GenerationCostRecord.job_id, GenerationCostRecord.measurement_json).yield_per(500)
+            for job_id, raw in query:
+                rows_total += 1
+                try:
+                    measurement = json.loads(raw) if raw else None
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("engagement_metrics: corrupt generation_costs.measurement_json — skipping row")
+                    continue
+                llm = measurement.get("llm") if isinstance(measurement, dict) else None
+                if not isinstance(llm, dict):
+                    continue
+                if job_id in seen_job_ids:
+                    # Same job's measurement persisted again for a second
+                    # strategy row (K>1 — see docstring) — already banked
+                    # once, below, the first time this job_id was seen.
+                    continue
+                seen_job_ids.add(job_id)
+                calls_missing_usage = int(llm.get("calls_missing_usage") or 0)
+                usage_complete = bool(llm.get("usage_complete", calls_missing_usage == 0))
+                calls_missing_usage_total += calls_missing_usage
+                if usage_complete:
+                    measured_count += 1
+                input_tokens += int(llm.get("input_tokens") or 0)
+                output_tokens += int(llm.get("output_tokens") or 0)
+        finally:
+            session.close()
         return {
             "measured_count": measured_count,
             "rows_total": rows_total,
+            "calls_missing_usage": calls_missing_usage_total,
+            "usage_complete": calls_missing_usage_total == 0,
             "total_input_tokens": input_tokens,
             "total_output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
@@ -297,6 +376,8 @@ def get_generation_cost_metrics() -> dict[str, Any]:
         return {
             "measured_count": None,
             "rows_total": None,
+            "calls_missing_usage": None,
+            "usage_complete": None,
             "total_input_tokens": None,
             "total_output_tokens": None,
             "total_tokens": None,
@@ -353,25 +434,35 @@ def get_repeat_generation_metrics() -> dict[str, Any]:
     rather than an activity-log join that does not exist yet — the ``note``
     below states the proxy's actual definition rather than the informal
     "days a user generated" framing the field name suggests.
+
+    Every ``created_at`` is coerced through ``_to_naive_utc`` before
+    ``.date()`` (round 3 fix) — this is the same naive-column/tz-aware-bind
+    hazard ``_to_naive_utc``'s own docstring calls out for ``_daily_buckets``
+    and ``get_strategy_metrics``'s window; this was the one bucketing site
+    over ``strategy_store.created_at`` round 2's fix left unguarded.
+
+    Streams the query with ``yield_per`` (round 3 fix, same rationale as
+    ``get_generation_cost_metrics``) rather than materializing every
+    ``strategy_store`` row into a Python list up front.
     """
     try:
         from archimedes.db import get_session
         from archimedes.models.strategy_store import StrategyRecord
 
+        days_by_user: dict[str, set[date]] = {}
         session = get_session()
         try:
-            rows = (
+            query = (
                 session.query(StrategyRecord.owner_user_id, StrategyRecord.created_at)
                 .filter(StrategyRecord.owner_user_id.isnot(None))
-                .all()
+                .yield_per(500)
             )
+            for owner_user_id, created_at in query:
+                if not owner_user_id or created_at is None:
+                    continue
+                days_by_user.setdefault(owner_user_id, set()).add(_to_naive_utc(created_at).date())
         finally:
             session.close()
-        days_by_user: dict[str, set[date]] = {}
-        for owner_user_id, created_at in rows:
-            if not owner_user_id or created_at is None:
-                continue
-            days_by_user.setdefault(owner_user_id, set()).add(created_at.date())
         generating_users = len(days_by_user)
         repeat_users = sum(1 for days in days_by_user.values() if len(days) > 1)
         return {

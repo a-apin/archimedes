@@ -7,6 +7,11 @@ import {
 	ADMIN_PROBE_TTL_MS,
 	getCachedAdminProbe,
 } from "../src/adminProbeCache.js";
+import {
+	filterInsightsNavItem,
+	isInsightsPageBlocked,
+	resolveInsightsAdminState,
+} from "../src/insightsGate.js";
 
 // ── getCachedAdminProbe: shared TTL cache backing fetchAdminProbe()
 // (src/adminProbe.js) — same shape as healthCache.js's getCachedHealth
@@ -72,6 +77,61 @@ test("_resetAdminProbeCache: forces the next call to probe again even within the
 	assert.equal(calls, 2);
 });
 
+// ── insightsGate.js: the actual decisions App.jsx/Layout.jsx make from a
+// probe result, exercised with REAL inputs rather than asserted on source
+// text (round 3 review finding: every gate assertion below this point used
+// to be a readFileSync + regex match, none of which executed the line that
+// actually consumes a probe result — a mutation collapsing
+// `setIsInsightsAdmin(admin)` to `setIsInsightsAdmin(true)` left every one
+// of those regexes passing while every signed-in non-admin got the Ops nav
+// item and the live dashboard). App.jsx/Layout.jsx now route every such
+// decision through these three functions, so a mutation to any of them has
+// a real behavioral test to fail. ─────────────────────────────────────────
+
+test("resolveInsightsAdminState: only a literal admin:true probe result resolves to true", () => {
+	assert.equal(resolveInsightsAdminState({ admin: true, wallet: "0xadmin" }), true);
+	assert.equal(resolveInsightsAdminState({ admin: false, wallet: null }), false);
+	// Truthy-but-not-`true` values (a mutation returning the wallet string,
+	// or a stray "true" string from a bad deserialize) must NOT pass —
+	// `=== true` is the whole point of this function existing.
+	assert.equal(resolveInsightsAdminState({ admin: "true", wallet: null }), false);
+	assert.equal(resolveInsightsAdminState({ admin: 1, wallet: null }), false);
+	assert.equal(resolveInsightsAdminState(undefined), false);
+});
+
+test("isInsightsPageBlocked: blocks a denied (false) AND an unresolved (null) probe alike — only admin===true renders", () => {
+	assert.equal(isInsightsPageBlocked("insights", true), false);
+	assert.equal(isInsightsPageBlocked("insights", false), true);
+	assert.equal(isInsightsPageBlocked("insights", null), true);
+});
+
+test("isInsightsPageBlocked: never blocks a route other than insights, regardless of admin state", () => {
+	assert.equal(isInsightsPageBlocked("portfolio", false), false);
+	assert.equal(isInsightsPageBlocked("portfolio", null), false);
+	assert.equal(isInsightsPageBlocked(null, false), false);
+});
+
+test("filterInsightsNavItem: drops the insights item unless isAdmin===true; every other item passes through", () => {
+	const items = [
+		{ id: "insights", label: "Insights" },
+		{ id: "account", label: "Account" },
+	];
+	assert.deepEqual(
+		filterInsightsNavItem(items, true).map((i) => i.id),
+		["insights", "account"],
+	);
+	assert.deepEqual(
+		filterInsightsNavItem(items, false).map((i) => i.id),
+		["account"],
+	);
+	// Mutation-check target: a truthy-but-not-strictly-true isAdmin (e.g. a
+	// stray non-empty string) must not let the item through either.
+	assert.deepEqual(
+		filterInsightsNavItem(items, "yes").map((i) => i.id),
+		["account"],
+	);
+});
+
 // ── adminProbe.js: classifies apiGet's thrown Error shape (err.status set
 // on every non-2xx HTTP response, per api.js) into an authoritative
 // {admin:false} vs. a genuine network failure that must NOT be cached. ────
@@ -127,9 +187,13 @@ const insights = readFileSync(
 	"utf8",
 );
 
-test("App.jsx: the insights page gate calls the shared fetchAdminProbe(), not a bespoke apiGet call", () => {
+test("App.jsx: the insights page gate calls the shared fetchAdminProbe(), routing its result through resolveInsightsAdminState()", () => {
 	assert.match(app, /from '\.\/adminProbe\.js'/);
-	assert.match(app, /fetchAdminProbe\(\)\.then\(\(\{ admin \}\) => \{/);
+	assert.match(app, /from '\.\/insightsGate\.js'/);
+	assert.match(
+		app,
+		/fetchAdminProbe\(\)\.then\(\(result\) => \{\n\s+if \(!cancelled\) setInsightsAdmin\(resolveInsightsAdminState\(result\)\)/,
+	);
 	assert.doesNotMatch(
 		app,
 		/apiGet\(['"]\/api\/metrics\/private\/whoami['"]\)/,
@@ -158,12 +222,17 @@ test("App.jsx: an anonymous visitor hitting /app/insights is never redirected to
 	);
 });
 
-test("Layout.jsx: the Ops nav item is filtered on the shared admin probe, defaulting closed", () => {
+test("Layout.jsx: the Ops nav item is filtered on the shared admin probe (via filterInsightsNavItem), defaulting closed", () => {
 	assert.match(layout, /from "\.\.\/adminProbe\.js"/);
+	assert.match(layout, /from "\.\.\/insightsGate\.js"/);
 	assert.match(layout, /const \[isInsightsAdmin, setIsInsightsAdmin\] = useState\(false\)/);
 	assert.match(
 		layout,
-		/item\.id !== "insights" \|\| isInsightsAdmin/,
+		/filterInsightsNavItem\(\s*\n?\s*visibleNavigation\(group\.items, features, user\),\s*\n?\s*isInsightsAdmin,?\s*\n?\s*\)/,
+	);
+	assert.match(
+		layout,
+		/fetchAdminProbe\(\)\.then\(\(result\) => \{\n\s+if \(!cancelled\) setIsInsightsAdmin\(resolveInsightsAdminState\(result\)\)/,
 	);
 });
 

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 
 import { fetchAdminProbe } from './adminProbe.js'
+import { isInsightsPageBlocked, resolveInsightsAdminState } from './insightsGate.js'
 import { useAuth } from './AuthContext'
 import { defaultFeatures, fetchFeatures } from './features'
 import { pageToPath, resolveRoute } from './routes'
@@ -114,8 +115,8 @@ export default function App() {
     }
     let cancelled = false
     setInsightsAdmin(null)
-    fetchAdminProbe().then(({ admin }) => {
-      if (!cancelled) setInsightsAdmin(admin)
+    fetchAdminProbe().then((result) => {
+      if (!cancelled) setInsightsAdmin(resolveInsightsAdminState(result))
     })
     return () => {
       cancelled = true
@@ -149,11 +150,15 @@ export default function App() {
       // a failed deep link from home (2.4.2 Page Titled).
       'not-found': 'Page not found · Archimedes',
     }
-    // A denied insights probe titles the tab identically to a real 404 —
-    // "do not advertise existence" applies to the tab title too, not just
-    // the rendered page (a many-tabs user should not be able to tell
-    // "unknown route" from "gated route I'm not allowed on" apart).
-    const deniedInsights = route.page === 'insights' && insightsAdmin === false
+    // A denied OR still-resolving insights probe titles the tab identically
+    // to a real 404 — "do not advertise existence" applies to the tab title
+    // too, not just the rendered page (a many-tabs user should not be able
+    // to tell "unknown route" from "gated route I'm not allowed on" — or
+    // from "gate still resolving" — apart). isInsightsPageBlocked treats
+    // `null` (unresolved) the same as `false` (denied) here (round 3 fix):
+    // titling the tab "Insights · Archimedes" while the probe is still in
+    // flight was itself a disclosure a genuinely unknown route never makes.
+    const deniedInsights = isInsightsPageBlocked(route.page, insightsAdmin)
     const key = route.kind === 'not-found' || deniedInsights ? 'not-found' : route.page
     document.title = titles[key] ?? 'Archimedes'
   }, [route.kind, route.page, insightsAdmin])
@@ -185,16 +190,17 @@ export default function App() {
 
   if (route.kind === 'app' && route.page === 'insights') {
     // Server-truth admin gate (owner directive 2026-08-20, supersedes
-    // #1028 D8): a denied probe renders EXACTLY the not-found page — same
-    // component the true 404 above uses — never a "you need admin access"
-    // message, which would itself confirm the page exists. While the probe
-    // is in flight, render a neutral chrome-free loader: no "Insights"
-    // heading, no sidebar, nothing that would flash gated UI before a
-    // non-admin's swap to not-found lands.
-    if (insightsAdmin === false) return <NotFound user={user} />
-    if (insightsAdmin !== true) {
-      return <main className="min-h-screen grid place-items-center">Loading…</main>
-    }
+    // #1028 D8): a denied OR still-resolving probe renders EXACTLY the
+    // not-found page — same component the true 404 above uses — never a
+    // "you need admin access" message (would itself confirm the page
+    // exists) and never an intermediate "Loading…" screen either (round 3
+    // fix: a genuinely unknown route never shows a loading state on first
+    // paint, so a chrome-free loader while the probe resolves was itself a
+    // vector for telling "gated route" apart from "unknown route" — the
+    // exact thing this gate exists to prevent). isInsightsPageBlocked
+    // treats `null` (unresolved) the same as `false` (denied): both render
+    // NotFound immediately.
+    if (isInsightsPageBlocked(route.page, insightsAdmin)) return <NotFound user={user} />
     // admin === true falls through to the normal authenticated render below.
   }
 

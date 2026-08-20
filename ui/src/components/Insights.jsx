@@ -251,15 +251,32 @@ export default function Insights() {
               <Stat label="Linked wallets" value={engagement.linked_wallets?.total} accent="#7c6cff" />
             </div>
 
-            <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', marginBottom: 10 }}>
+            <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', marginBottom: 8 }}>
               <Stat label="Strategies generated (total)" value={engagement.strategies?.total} accent="#3fb56b" />
               <Stat label="Generated (7d)" value={engagement.strategies?.new_7d} accent="#5b9dff" />
               <Stat
-                label="Repeat generators"
-                value={engagement.repeat_generation_users?.repeat_users}
+                label="Repeat generators (proxy)"
+                value={
+                  engagement.repeat_generation_users?.repeat_users == null ||
+                  engagement.repeat_generation_users?.generating_users == null
+                    ? null
+                    : `${engagement.repeat_generation_users.repeat_users} / ${engagement.repeat_generation_users.generating_users}`
+                }
                 accent="#f0a63a"
               />
             </div>
+            {/* Both tiles above count distinct strategy_store rows / accounts owning
+                them, not generation events — content-hash dedup means a regeneration
+                or a second user's identical output doesn't add a new row. Surfaced
+                directly under the tile row (round 3 fix), not buried below the
+                trend chart, money-paid block, and everything else. */}
+            <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 0, marginBottom: 4 }}>
+              {engagement.strategies?.note}
+            </p>
+            <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 0, marginBottom: 14 }}>
+              <strong>Repeat generators</strong> shown as repeat / generating accounts —{' '}
+              {engagement.repeat_generation_users?.note}
+            </p>
             {(engagement.strategies?.daily_new?.length ?? 0) > 0 && (
               <div style={{ marginBottom: 18 }}>
                 <h3 style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 8px' }}>
@@ -291,12 +308,31 @@ export default function Insights() {
               </div>
             )}
 
-            <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', marginBottom: 18 }}>
+            <div
+              style={{
+                display: 'flex',
+                gap: 28,
+                flexWrap: 'wrap',
+                marginBottom: engagement.generation_costs?.usage_complete === false ? 6 : 18,
+              }}
+            >
               <Stat label="Measured generations" value={engagement.generation_costs?.measured_count} accent="#3fb56b" />
               <Stat label="Total LLM tokens" value={engagement.generation_costs?.total_tokens} accent="#5b9dff" />
               <Stat label="Paper trading — active" value={engagement.paper_deployments?.active} accent="#3fb56b" />
               <Stat label="Paper trading — stopped" value={engagement.paper_deployments?.stopped} accent="#8a8f9c" />
             </div>
+            {/* usage_complete is false when some LLM calls in the summed rows
+                reported no usage data (services/cost_meter.py's calls_missing_usage) —
+                the totals above still add up their real reported tokens, but are an
+                honest UNDERCOUNT, not a complete measurement (claims-must-be-true:
+                round 3 fix — a partial measurement must not read as a plain,
+                trustworthy number with no qualifier). */}
+            {engagement.generation_costs?.usage_complete === false && (
+              <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 0, marginBottom: 18 }}>
+                ⚠ <strong>Partial measurement</strong> — {engagement.generation_costs?.calls_missing_usage ?? '—'} LLM
+                call(s) reported no usage data; the totals above only include calls that did, so they undercount.
+              </p>
+            )}
 
             {/* Money paid — claims-must-be-true: PAYMENTS_DRY_RUN gates every
                 settlement path today, so there is no settled volume to
@@ -325,18 +361,6 @@ export default function Insights() {
                 {engagement.payments?.note}
               </p>
             </div>
-
-            {/* `?? '—'`, not `?? 0` (round 2 fix): repeat_users/generating_users
-                are None (not 0) when engagement_metrics.get_repeat_generation_metrics
-                fails, same honest-absence rule Stat applies below — this line
-                renders the numbers directly instead of through <Stat>, so it
-                needs its own fallback to avoid the exact "outage reads as a
-                measured zero" bug the backend fix closed. */}
-            <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 14, marginBottom: 0 }}>
-              <strong>Repeat generators</strong> ({engagement.repeat_generation_users?.repeat_users ?? '—'} of{' '}
-              {engagement.repeat_generation_users?.generating_users ?? '—'} generating accounts) —{' '}
-              {engagement.repeat_generation_users?.note}
-            </p>
           </>
         )}
       </section>

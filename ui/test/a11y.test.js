@@ -336,10 +336,12 @@ test("a failed deep link does not share the landing page's title", () => {
 test("a denied insights admin-gate probe titles the tab as not-found, not 'Insights'", () => {
 	// "do not advertise existence" (owner directive 2026-08-20) applies to the
 	// tab title too — a many-tabs user must not be able to tell "unknown
-	// route" apart from "gated route I'm not allowed on".
+	// route" apart from "gated route I'm not allowed on" — or from "gate
+	// still resolving" (round 3: isInsightsPageBlocked treats an unresolved
+	// probe the same as a denied one, for the title as well as the render).
 	assert.match(
 		app,
-		/const deniedInsights = route\.page === 'insights' && insightsAdmin === false/,
+		/const deniedInsights = isInsightsPageBlocked\(route\.page, insightsAdmin\)/,
 	);
 });
 

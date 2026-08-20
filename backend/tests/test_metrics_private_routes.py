@@ -125,6 +125,30 @@ def test_whoami_403_for_non_admin_wallet(client):
     assert res.status_code == 403
 
 
+def test_whoami_403_for_signed_in_account_with_no_linked_wallet(client, monkeypatch):
+    """A valid session whose account has NO linked wallet (docs/api/admin-
+    private.md step 2) → 403 "A verified linked wallet is required" — a
+    DIFFERENT 403 than the admin-membership one above.
+
+    This file's `client` fixture builds sessions through the autouse
+    `_legacy_siwe_test_adapter` (conftest.py), which monkeypatches
+    `wallet_routes.get_linked_wallet_address` to derive the wallet straight
+    from the SIWE cookie — so session and linked wallet agree BY
+    CONSTRUCTION in every other test here, and `require_linked_wallet`'s own
+    403 branch (the actual `LinkedWallet` DB lookup / X-Wallet-Address
+    header / is_primary fallback in production) was never exercised by any
+    test on this router. Re-overriding the shim here to return `None`
+    (mid-request the account clearly still exists — the cookie verifies —
+    it simply has no linked wallet) reaches that branch directly.
+    """
+    from archimedes.api import wallet_routes
+
+    monkeypatch.setattr(wallet_routes, "get_linked_wallet_address", lambda request: None)
+    res = client.get("/api/metrics/private/whoami", cookies=_siwe_cookies(_ADMIN_WALLET))
+    assert res.status_code == 403
+    assert res.json()["detail"] == "A verified linked wallet is required"
+
+
 def test_whoami_200_with_valid_admin_siwe_session(client):
     """Valid SIWE session for an admin wallet → 200 {admin: true, wallet}."""
     res = client.get("/api/metrics/private/whoami", cookies=_siwe_cookies(_ADMIN_WALLET))
@@ -172,6 +196,18 @@ def test_engagement_401_with_bad_cookie(client):
 def test_engagement_403_for_non_admin_wallet(client):
     res = client.get("/api/metrics/private/engagement", cookies=_siwe_cookies(_NON_ADMIN_WALLET))
     assert res.status_code == 403
+
+
+def test_engagement_403_for_signed_in_account_with_no_linked_wallet(client, monkeypatch):
+    """Same gap as test_whoami_403_for_signed_in_account_with_no_linked_wallet
+    above, on the second new endpoint — the linked-wallet half of the gate
+    was mocked away for BOTH new routes, not just one."""
+    from archimedes.api import wallet_routes
+
+    monkeypatch.setattr(wallet_routes, "get_linked_wallet_address", lambda request: None)
+    res = client.get("/api/metrics/private/engagement", cookies=_siwe_cookies(_ADMIN_WALLET))
+    assert res.status_code == 403
+    assert res.json()["detail"] == "A verified linked wallet is required"
 
 
 def test_engagement_admin_wallets_parsed_case_insensitively(client, monkeypatch):

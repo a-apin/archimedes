@@ -51,6 +51,26 @@ on-chain activity — the module docstring is explicit that "any linked wallet i
 appropriate bar for it," which is why the gate is `PLATFORM_ADMIN_WALLETS` membership and
 not merely "has a linked wallet."
 
+**Self-lockout note (round 3, 2026-08-20).** Which wallet counts as "the caller's linked
+wallet" is resolved from the `X-Wallet-Address` header when the frontend sends one
+(`wallet_routes.get_linked_wallet_address`) — and `ui/src/api.js` always sends it whenever a
+browser wallet is connected, regardless of whether that wallet is linked to the signed-in
+account. So the gate keys off whichever wallet the *browser extension* happens to have
+selected, not off "is the admin signed in": if the admin's browser is connected to a wallet
+that is either unlinked or linked-but-not-the-admin-wallet, `/whoami` and `/engagement` 403
+even for the admin — and by this PR's own design that renders the bare not-found page with
+no on-page explanation (never advertise the gate exists). Recovery: disconnect the
+non-admin/unlinked wallet, or switch the browser extension back to the account's
+admin-linked wallet, so either no `X-Wallet-Address` header is sent (the gate then falls
+back to the account's `is_primary` linked wallet) or the header names the linked admin
+wallet. To tell a real 404 apart from a self-lockout without guessing from the UI:
+```bash
+curl -sS -b session.jar https://<host>/api/metrics/private/whoami
+```
+`403` + `"A verified linked wallet is required"` → the connected wallet isn't linked to this
+account at all. `403` + `"Admin access required."` → it's linked, but not on
+`PLATFORM_ADMIN_WALLETS`. `200` → you're in.
+
 ---
 
 ### GET /api/metrics/private/whoami
@@ -84,8 +104,10 @@ Response:
 {
   accounts: {total: int, new_7d: int, new_30d: int},
   linked_wallets: {total: int},
-  strategies: {total: int, new_7d: int, daily_new: [{date: "YYYY-MM-DD", count: int}, ...7]},
-  generation_costs: {measured_count: int, total_input_tokens: int, total_output_tokens: int,
+  strategies: {total: int, new_7d: int, daily_new: [{date: "YYYY-MM-DD", count: int}, ...7],
+                note: str},
+  generation_costs: {measured_count: int, rows_total: int, calls_missing_usage: int,
+                      usage_complete: bool, total_input_tokens: int, total_output_tokens: int,
                       total_tokens: int},
   paper_deployments: {active: int, stopped: int},
   repeat_generation_users: {generating_users: int, repeat_users: int, note: str},
@@ -105,6 +127,25 @@ silently rounded into either bucket. `payments.settled_volume_usd` is always `nu
 record for this endpoint to read; it is the real field name settlement wiring will
 eventually populate, not a placeholder `0`. Fail-safe per sub-metric: a DB error on any one
 tile degrades that tile to its own zero shape without blanking the rest of the response.
+
+**`strategies`/`repeat_generation_users` count distinct stored content, not generation
+events (round 3 correction).** `upsert_strategy`'s content-hash dedup means two different
+users generating identical output — or one user regenerating — produces ONE
+`strategy_store` row, so `strategies.total`/`new_7d`/`daily_new` and
+`repeat_generation_users` are both proxies for distinct stored content, not an exact
+per-run or per-user generation count; `strategies.note` states this explicitly and is
+rendered on the page rather than left implicit.
+
+**`generation_costs`'s completeness fields (round 3 addition).** `measured_count` only
+counts rows whose LLM usage accounting is complete (`calls_missing_usage == 0` for that
+job) — a row where some calls in the job reported no usage is NOT counted as measured, even
+though its available tokens still contribute to the totals. `calls_missing_usage` is that
+count summed across every row, and `usage_complete` is `true` iff it is zero; when `false`,
+`total_tokens` is a real but *undercounting* total, the same "partial ≠ absent, but still
+not a plain measured number" distinction `payments.settled_volume_usd` makes. Rows are also
+de-duplicated by `job_id` before summing — `generation_costs` is K=1 today (one row per
+job), so this is currently a no-op, but it prevents a future K>1 from silently
+double-counting a job's tokens once per persisted strategy.
 
 ```bash
 curl -sS -b /tmp/session.jar http://localhost:8080/api/metrics/private/engagement

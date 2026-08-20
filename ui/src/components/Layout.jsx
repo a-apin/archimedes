@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { fetchAdminProbe } from "../adminProbe.js";
+import { filterInsightsNavItem, resolveInsightsAdminState } from "../insightsGate.js";
 import WalletConnect from "./WalletConnect";
 import Breadcrumbs from "./Breadcrumbs";
 import { getStoredWalletName } from "../config";
@@ -225,8 +226,8 @@ export default function Layout({
 			return;
 		}
 		let cancelled = false;
-		fetchAdminProbe().then(({ admin }) => {
-			if (!cancelled) setIsInsightsAdmin(admin);
+		fetchAdminProbe().then((result) => {
+			if (!cancelled) setIsInsightsAdmin(resolveInsightsAdminState(result));
 		});
 		return () => {
 			cancelled = true;
@@ -329,10 +330,12 @@ export default function Layout({
 						// successful admin-gate probe (owner directive
 						// 2026-08-20, supersedes #1028 D8) — visibleNavigation
 						// has no notion of that server-truth check, so it is
-						// applied here as a second, narrower filter rather than
-						// widening that helper's contract for one item.
-						items: visibleNavigation(group.items, features, user).filter(
-							(item) => item.id !== "insights" || isInsightsAdmin,
+						// applied here as a second, narrower filter (
+						// filterInsightsNavItem, ../insightsGate.js) rather
+						// than widening that helper's contract for one item.
+						items: filterInsightsNavItem(
+							visibleNavigation(group.items, features, user),
+							isInsightsAdmin,
 						),
 					}))
 						.filter((group) => group.items.length > 0)
