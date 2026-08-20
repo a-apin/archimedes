@@ -203,12 +203,33 @@ html {
 	-moz-osx-font-smoothing: grayscale;
 	scroll-behavior: smooth;
 	overflow-x: hidden;
-	/* The document is the scroll container and .topbar is sticky over it at a
-     fixed 56px on every breakpoint. Without this, Shift+Tab backwards up a
-     long page parks the newly focused control under the blurred bar and its
-     focus ring becomes unreadable (2.4.11 Focus Not Obscured). 56px bar +
-     3px outline + 3px offset = 62, rounded to 64. */
-	scroll-padding-top: 64px;
+	/* The document is the scroll container and .topbar (the APP shell's bar
+     only — see the .public-site override below) is sticky over it. Without
+     this, Shift+Tab backwards up a long page parks the newly focused control
+     under the blurred bar and its focus ring becomes unreadable (2.4.11
+     Focus Not Obscured). `.topbar`'s own rule below says 56px, but `.topbar`
+     only ever renders inside `.app-site` (Layout.jsx nests it under
+     `.shell.app-site`), and `.app-site .topbar` (higher specificity, no
+     media query, so it always wins) overrides that to 64px — that is the
+     height that actually renders, not 56 (#1318 residual: the original
+     64px value here was derived from the un-overridden 56px). 64px bar +
+     3px outline + 3px offset (.app-site :focus-visible) = 70, rounded up
+     to 72. */
+	scroll-padding-top: 72px;
+}
+/* .public-header (public shell) is taller than the app topbar's real 64px
+   (see the comment above) and its :focus-visible ring uses a wider offset,
+   so even the corrected clearance above would be short here — a focused
+   control on Architecture/Landing could still park under the blurred
+   public header (2.4.11, #1318 residual: the base value was verified
+   against .app-site .topbar only, never against .public-header).
+   .public-site is not itself the scroll container (the document/html is,
+   per the comment above), so the override has to target html, reached via
+   :has() since .public-site is a descendant, not an ancestor, of it. 72px
+   bar (66px on the ≤560px breakpoint) + 3px outline + 4px offset = 79,
+   rounded up to 80. */
+html:has(.public-site) {
+	scroll-padding-top: 80px;
 }
 body {
 	font-family: var(--sans);
@@ -428,55 +449,6 @@ h4,
 	padding: var(--space-7) var(--space-6);
 	max-width: var(--max-w);
 	margin: 0 auto;
-}
-
-/* --- Section subnav (Explore) --- */
-.explore-subnav {
-	position: sticky;
-	top: 56px;
-	z-index: 40;
-	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
-	padding: 10px 0;
-	margin-bottom: var(--space-5);
-	background: var(--topbar-bg);
-	backdrop-filter: blur(16px) saturate(1.2);
-	-webkit-backdrop-filter: blur(16px) saturate(1.2);
-	border-bottom: 1px solid var(--glass-border);
-}
-.explore-subnav-btn {
-	display: inline-flex;
-	align-items: center;
-	padding: 6px 12px;
-	font-size: 0.78rem;
-	font-weight: 500;
-	color: var(--text-3);
-	background: var(--glass);
-	border: 1px solid var(--glass-border);
-	border-radius: var(--radius-sm);
-	text-decoration: none;
-	transition:
-		color 0.15s,
-		background 0.15s,
-		border-color 0.15s;
-}
-.explore-subnav-btn:hover {
-	color: var(--text-1);
-	background: var(--glass-hover);
-	border-color: var(--accent-muted);
-}
-.scroll-anchor {
-	scroll-margin-top: 120px;
-}
-
-@media (max-width: 900px) {
-	.explore-subnav {
-		top: 0;
-	}
-	.scroll-anchor {
-		scroll-margin-top: 16px;
-	}
 }
 
 /* --- Sidebar --- */
@@ -3735,9 +3707,22 @@ button:where(.tag) {
 	--text-3: #8da098;
 	/* Architecture's loading / error / "live number unavailable" copy is drawn
      in --text-4 (Architecture.jsx :86, :382, :514, :872, :901, :1054, :1084),
-     so it has to clear 4.5:1: #7d9189 is 4.74:1 on --surface-2 (#10252d) and
-     5.28:1 on the glass card, where #657a73 was 3.46 / 3.86:1. */
-	--text-4: #7d9189;
+     so it has to clear 4.5:1 on every surface it could actually paint
+     against — same standard already applied to --chart-label above.
+     #7d9189 (the #1319 fix) was 4.74:1 on --surface-2 (#10252d) but only
+     3.94:1 on the lighter --surface-3 (#17343d) — flagged as a residual in
+     #1318. #8b9f97 clears --surface-1 through --surface-3 (6.23:1, 5.67:1,
+     4.70:1 — --surface-3 is the binding constraint of the three) and the
+     glass card (6.31:1).
+     It does NOT clear --surface-4 (#21434a, 3.82:1), and deliberately isn't
+     raised to cover it: the surface-4 backgrounds that can render inside
+     .public-site are chrome-only (::-webkit-scrollbar-thumb) and carry no
+     text; the shell's children are Landing, Architecture and the 404 page,
+     none of which pairs --text-4 with --surface-4. No current call site
+     pairs --text-4 with --surface-1/2/3 either — this raises the floor
+     defensively for those three, the same standard already applied to
+     --chart-label, rather than fixing a rendered defect. */
+	--text-4: #8b9f97;
 	--accent-rgb: 217, 168, 92;
 	--accent: var(--public-bronze);
 	--accent-hover: #e4ba78;
