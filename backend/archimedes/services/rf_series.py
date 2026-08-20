@@ -243,7 +243,7 @@ def resolve_annual_rf_for_dates(
         # response as every other failure mode here: the WHOLE grade falls
         # back to flat, loudly, never a crash.
         try:
-            iso = _to_iso(raw)
+            truncated = _to_iso(raw)
         except TypeError as exc:
             logger.warning(
                 "rf_series: unsupported date type %r for entry %r (%s) -- WHOLE grade (%d bars) "
@@ -257,13 +257,28 @@ def resolve_annual_rf_for_dates(
             )
             return [flat_annual_pct] * len(dates), RF_CONVENTION_FALLBACK
 
-        exact = series.get(iso)
-        if exact is not None:
-            resolved.append(exact)
-            continue
-
+        # #1409 round-4 review fix (2026-08-21): parse-and-canonicalize BEFORE
+        # any lookup, not after the exact-match dict.get() has already missed.
+        # `_to_iso` only TRUNCATES a string to its first 10 characters -- it
+        # does not validate or normalize the format. `date.fromisoformat`
+        # (Python 3.11+) accepts several non-extended ISO 8601 forms besides
+        # "YYYY-MM-DD" (e.g. the basic "YYYYMMDD"), so a caller-supplied date
+        # like "20150102" parses successfully here -- but `series` and
+        # `sorted_dates` are always keyed in the EXTENDED "YYYY-MM-DD" form
+        # the vendored CSV uses. Looking such a value up (dict.get, or worse,
+        # `_forward_fill_at`'s `bisect_right` below) against those keys BEFORE
+        # re-rendering it canonically compares two different string shapes:
+        # the dict lookup silently misses (safe, if wasteful) but the bisect
+        # is a LEXICOGRAPHIC string comparison, where "20150102" sorts after
+        # every "2015-01-*" key (ASCII '0' > '-'), silently resolving to the
+        # wrong (most-recent) published rate instead of falling back or
+        # matching correctly -- a wrong-but-plausible-looking number, not a
+        # loud fallback. Parsing to a `date` and re-rendering via
+        # `.isoformat()` immediately fixes `iso` to the SAME canonical
+        # "YYYY-MM-DD" shape `series`/`sorted_dates` use, for every valid
+        # `date.fromisoformat`-parseable input, before either lookup runs.
         try:
-            d_obj = date.fromisoformat(iso)
+            d_obj = date.fromisoformat(truncated)
         except ValueError as exc:
             logger.warning(
                 "rf_series: malformed date %r (%s) -- WHOLE grade (%d bars) falls back to the "
@@ -275,6 +290,13 @@ def resolve_annual_rf_for_dates(
                 RF_CONVENTION_FALLBACK,
             )
             return [flat_annual_pct] * len(dates), RF_CONVENTION_FALLBACK
+        iso = d_obj.isoformat()  # canonical "YYYY-MM-DD" -- see the comment above
+
+        exact = series.get(iso)
+        if exact is not None:
+            resolved.append(exact)
+            continue
+
         if d_obj > last_date_obj:
             gap_days = (d_obj - last_date_obj).days
             if gap_days > MAX_FORWARD_FILL_DAYS:

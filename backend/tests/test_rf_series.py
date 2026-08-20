@@ -248,3 +248,47 @@ def test_numpy_datetime64_nat_still_falls_back_not_silently_accepted() -> None:
     rates, convention = rf_series.resolve_annual_rf_for_dates([np.datetime64("NaT", "s")], flat_annual_pct=6.0)
     assert convention == rf_series.RF_CONVENTION_FALLBACK
     assert rates == [6.0]
+
+
+def test_basic_iso_format_exact_match_resolves_same_as_extended_form() -> None:
+    """#1409 round-4 review fix (blocker): `date.fromisoformat` (Python 3.11+)
+    parses the non-extended basic ISO 8601 form (`"20150102"`, no dashes) as
+    well as the extended form (`"2015-01-02"`) -- but `_to_iso` previously
+    only TRUNCATED a string to its first 10 characters without validating or
+    normalizing its shape, so the basic form was passed through UNCHANGED as
+    `"20150102"`. `series`/`sorted_dates` are always keyed in the extended
+    form, so the exact-match `dict.get("20150102")` always missed even when
+    the date genuinely has a published rate. Canonicalizing via
+    `date.fromisoformat(...).isoformat()` before the lookup fixes the exact
+    match: both forms must now resolve to the identical published rate."""
+    extended_rates, extended_convention = rf_series.resolve_annual_rf_for_dates(["2015-01-02"])
+    basic_rates, basic_convention = rf_series.resolve_annual_rf_for_dates(["20150102"])
+    assert extended_convention == rf_series.RF_CONVENTION_SERIES
+    assert basic_convention == rf_series.RF_CONVENTION_SERIES
+    assert basic_rates == extended_rates
+
+
+def test_basic_iso_format_forward_fill_is_not_corrupted_by_lexicographic_bisect() -> None:
+    """#1409 round-4 review fix (blocker): the SAME bug as the exact-match
+    case above, but for the forward-fill path (`_forward_fill_at`'s
+    `bisect_right`) -- and more dangerous, because it does not merely miss
+    (falling through to a slower/different-but-still-correct branch), it
+    silently resolves to a WRONG rate. `bisect_right` does a LEXICOGRAPHIC
+    string comparison: the basic-format string `"20200104"` sorts AFTER every
+    `"2020-01-*"` key (ASCII `'0'` (0x30) > `'-'` (0x2D)), so pre-fix, a
+    basic-format Saturday would bisect past the END of the entire vendored
+    series and forward-fill from its LAST published date (in 2026) instead of
+    the preceding Friday in 2020 -- a wrong-but-plausible-looking rate, not a
+    loud fallback. 2020-01-04 is a Saturday with no published row (see
+    `test_saturday_forward_fills_from_friday` above); both date forms must
+    forward-fill to the SAME (2020-01-03, Friday) rate."""
+    series = rf_series._load_csv()
+    friday_rate = series["2020-01-03"]
+    assert "2020-01-04" not in series  # precondition: no row published for the Saturday
+
+    extended_rates, extended_convention = rf_series.resolve_annual_rf_for_dates(["2020-01-03", "2020-01-04"])
+    basic_rates, basic_convention = rf_series.resolve_annual_rf_for_dates(["20200103", "20200104"])
+
+    assert extended_convention == rf_series.RF_CONVENTION_SERIES
+    assert basic_convention == rf_series.RF_CONVENTION_SERIES
+    assert basic_rates == extended_rates == [friday_rate, friday_rate]

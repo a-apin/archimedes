@@ -102,6 +102,27 @@ def test_compute_dsr_rf_convention_via_direct_resolution() -> None:
 # ─── 2. 2015 window regression, hand-computed, mutation-proof (manual) ──
 
 
+# Hand-transcribed DGS3MO published rates (annualized PERCENT) for the FIRST
+# 60 "2015-0*" dates in the vendored series, in `_2015_dates(60)`'s own sort
+# order — 2026-08-21 round-4 review fix. Pinned as a LITERAL, sourced by a
+# plain independent line-split of `DGS3MO.csv`'s raw text (NOT by calling
+# `rf_series._parse_csv_text`/`_load_csv`, the module under test), so a
+# parser-level defect in `rf_series.py` cannot move both sides of the
+# hand-computed comparison below together — the specific gap a prior version
+# of this test left open (loading `hand_rf_daily` via `rf_series._load_csv()`
+# shares the exact parser the production path also uses). Historical FRED
+# values never change once published (only new dates append), so this literal
+# does not go stale across a `scripts/refresh_rf_series.py` run.
+_2015_FIRST_60_DGS3MO_PCT = [
+    0.02, 0.03, 0.03, 0.03, 0.03, 0.02, 0.03, 0.03, 0.04, 0.03,
+    0.03, 0.03, 0.03, 0.03, 0.02, 0.03, 0.02, 0.02, 0.03, 0.02,
+    0.02, 0.02, 0.01, 0.02, 0.02, 0.01, 0.01, 0.01, 0.02, 0.01,
+    0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.03, 0.02, 0.02,
+    0.02, 0.01, 0.02, 0.01, 0.02, 0.02, 0.03, 0.03, 0.03, 0.05,
+    0.05, 0.03, 0.03, 0.01, 0.03, 0.02, 0.04, 0.03, 0.04, 0.04,
+]  # fmt: skip
+
+
 def test_2015_window_regresses_from_flat_5pct_with_hand_computed_excess_mean() -> None:
     """A window straddling 2015 (rf≈0.02-0.05% annual) grades MEASURABLY
     differently from the flat-5% convention — hand-computed expected excess
@@ -132,14 +153,20 @@ def test_2015_window_regresses_from_flat_5pct_with_hand_computed_excess_mean() -
     assert _ANNUALIZATION == 252, "the literal 252 below assumes this; update both together if it ever changes"
     assert pytest.approx(0.05 / 252.0, abs=1e-15) == _RF_DAILY
 
+    # Sanity: the pinned literal really is what `_2015_dates(60)` returns from
+    # the CURRENTLY vendored CSV — guards against the literal silently going
+    # stale relative to `_2015_dates`'s own date selection (not against a
+    # parser defect, which is the whole point of NOT reading this via
+    # `rf_series._load_csv()` below).
+    series_for_sanity_check_only = rf_series._load_csv()
+    assert [series_for_sanity_check_only[d] for d in dates] == _2015_FIRST_60_DGS3MO_PCT
+
     # Hand-computed: the ACTUAL published DGS3MO rate for every date in the
-    # window, independently re-derived from the vendored series (not by
-    # calling any _rigor_helpers code), converted to a daily fraction the same
-    # way the decision record specifies: rate/100/252 (252 is a LITERAL here,
-    # not the imported `_ANNUALIZATION` — see the independence-check comment
-    # above).
-    series = rf_series._load_csv()
-    hand_rf_daily = np.array([series[d] for d in dates], dtype=float) / 100.0 / 252.0
+    # window, from the PINNED LITERAL above (not the module under test),
+    # converted to a daily fraction the same way the decision record
+    # specifies: rate/100/252 (252 is a LITERAL here, not the imported
+    # `_ANNUALIZATION` — see the independence-check comment above).
+    hand_rf_daily = np.array(_2015_FIRST_60_DGS3MO_PCT, dtype=float) / 100.0 / 252.0
     hand_excess_mean = float((arr - hand_rf_daily).mean())
 
     dates_inputs = _sharpe_dsr_inputs(returns, dates=dates)
@@ -493,7 +520,53 @@ def test_run_rigor_gate_dates_produces_measurably_different_values_from_flat() -
     assert with_dates.in_sample_sharpe != flat.in_sample_sharpe
 
 
-# ─── 8. PBO's dates threading has a real, mutation-provable value effect ──
+# ─── 8. gate_details["rf_convention"] reports MISSING when nothing at all ──
+#        was computed (2026-08-21 round-4 review fix)
+
+
+def test_gate_details_rf_convention_is_missing_when_no_excess_metric_computed() -> None:
+    """A too-short return series (< 4 bars) computes NO DSR (T<4 guard), NO
+    OOS Sharpe (T<10 guard), and NO in-sample Sharpe (`run_rigor_gate`'s own
+    inline in-sample block requires `len(daily_returns) >= 4`) at all —
+    `_resolve_gate_rf` still unconditionally resolves `rf_convention` from
+    `dates` alone (here, `dates=None` -> `excess_flat_fallback`), independent
+    of whether any metric downstream actually used it. Disclosing
+    `excess_flat_fallback` in that case implies a flat-rate COMPUTATION
+    genuinely ran, when none did — the same distinction `LibraryPbo.rf_convention`
+    already draws ("MISSING", not the raw resolution, when there is no PBO
+    value to attribute a convention to). `gate_details["rf_convention"]` must
+    report `"MISSING"` here, not the raw (possibly misleading)
+    `self.rf_convention`."""
+    too_short_returns = [0.001, 0.002, -0.001]  # T=3: below every one of the three metrics' own length floors
+
+    result = run_rigor_gate("s-degenerate-no-metrics", too_short_returns, num_trials=1)
+
+    assert result.deflated_sharpe is None
+    assert result.oos_sharpe is None
+    assert result.in_sample_sharpe is None
+    # The raw attribute is untouched (still reflects `_resolve_gate_rf`'s
+    # resolution, for any consumer that wants it) — only the DISCLOSURE layer
+    # (`gate_details`) substitutes "MISSING".
+    assert result.rf_convention == rf_series.RF_CONVENTION_FALLBACK
+    assert result.gate_details["rf_convention"] == "MISSING"
+
+
+def test_gate_details_rf_convention_stays_real_when_any_one_metric_computed() -> None:
+    """The MISSING substitution above must NOT fire just because ONE of the
+    three metrics is None (e.g. a series too short for OOS but long enough
+    for DSR) — only when ALL THREE are None. A normal, healthy series with
+    dates in coverage must still disclose the real convention."""
+    dates = _2015_dates(60)
+    returns = _seeded_returns(len(dates))
+
+    result = run_rigor_gate("s-healthy", returns, num_trials=1, dates=dates)
+
+    assert result.deflated_sharpe is not None  # at least DSR computed
+    assert result.rf_convention == rf_series.RF_CONVENTION_SERIES
+    assert result.gate_details["rf_convention"] == rf_series.RF_CONVENTION_SERIES
+
+
+# ─── 9. PBO's dates threading has a real, mutation-provable value effect ──
 
 
 def _business_days(start: str, end: str) -> list[str]:
@@ -538,3 +611,45 @@ def test_compute_pbo_dates_materially_changes_the_value() -> None:
     assert flat_v == pytest.approx(0.828571, abs=1e-6)
     assert dated_v == pytest.approx(0.814286, abs=1e-6)
     assert flat_v != dated_v
+
+
+def test_compute_pbo_dates_axis_truncates_from_head_not_tail() -> None:
+    """2026-08-21 round-4 review finding: `compute_pbo` truncates `dates` the
+    SAME way it truncates the returns matrix (`list(dates)[:T]` at
+    `_rigor_helpers.py`, matching `R`'s own `[:T]` per-series truncation) --
+    the FIRST T entries, never the last. No prior test distinguished head-
+    from tail-truncation, so flipping that slice to `[-T:]` would silently
+    misalign the rf array against the return rows while the whole suite
+    stayed green.
+
+    Reuses `test_compute_pbo_dates_materially_changes_the_value`'s exact
+    matrix/dates/seed above -- its two pinned values (0.814286 dates-aligned,
+    0.828571 flat-fallback) are the two outcomes this test distinguishes
+    between -- and pads `dates` with unresolvable far-future entries so the
+    array handed to `compute_pbo` is longer than T. Correct (head)
+    truncation recovers exactly the real business-day dates -> the SERIES
+    value (0.814286); tail truncation would recover only the unresolvable
+    padding -> every date unresolvable -> the FLAT-fallback value (0.828571).
+    """
+    dates = _business_days("2008-01-02", "2010-12-31")
+    T = len(dates)
+    padding = [f"2999-01-{(i % 28) + 1:02d}" for i in range(T)]  # >= T unresolvable dates
+    padded_dates = dates + padding  # length 2T; [:T] == dates, [-T:] == padding
+
+    rng = np.random.default_rng(0)
+    matrix = {
+        "a": rng.normal(0.0004, 0.01, T).tolist(),
+        "b": rng.normal(0.0002, 0.012, T).tolist(),
+        "c": rng.normal(0.0006, 0.009, T).tolist(),
+        "d": rng.normal(-0.0001, 0.011, T).tolist(),
+    }
+
+    result_padded = compute_pbo(matrix, s_partitions=8, dates=padded_dates)
+    v_padded = next(iter(result_padded.values()))
+
+    # Correct (head-truncation) behavior: padding the TAIL of `dates` must not
+    # change the result from the un-padded, dates-aligned run.
+    assert v_padded == pytest.approx(0.814286, abs=1e-6)
+    # And it must NOT collapse to what tail-truncation (`dates[-T:]` ==
+    # `padding`, all unresolvable) would have produced.
+    assert v_padded != pytest.approx(0.828571, abs=1e-6)

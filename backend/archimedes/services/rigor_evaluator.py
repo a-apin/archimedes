@@ -320,8 +320,10 @@ def align_returns_store_with_dates(
     around this (kept for backward compatibility with its existing callers,
     which don't need the date axis). ``compute_library_pbo`` uses the date
     axis this returns to thread ``dates`` into ``compute_pbo`` so the library
-    PBO's per-split Sharpe ranking uses the historical T-bill rf series
-    instead of the flat fallback.
+    PBO's per-split Sharpe ranking CAN use the historical T-bill rf series
+    instead of the flat fallback — only when its caller opts in via
+    ``use_tbill_series=True`` (#1409 round-4 review fix; default ``False``,
+    the not-yet-wired convention every other call site in this module uses).
 
     Returns:
         ``(joint_dates_sorted, {strategy_stem: returns_on_joint_dates})`` —
@@ -352,6 +354,7 @@ def align_returns_store_with_dates(
 def compute_library_pbo(
     returns_store: dict[str, dict[str, list]],
     s_partitions: int = 16,
+    use_tbill_series: bool = False,
 ) -> float | None:
     """Single library-level CSCV PBO over the whole selection set (#546).
 
@@ -375,6 +378,22 @@ def compute_library_pbo(
         returns_store: ``{strategy_stem: {"dates": [...], "daily_returns": [...]}}``.
         s_partitions: Number of equal time-partitions S (even ≥ 2; default 16,
             the paper's recommended value).
+        use_tbill_series: Opt-in (#1409 round-4 review fix), default ``False``.
+            When ``True``, threads the joint date axis into ``compute_pbo`` so
+            CSCV's per-split Sharpe ranking uses the historical T-bill series
+            for this window instead of the flat fallback. Defaulting to
+            ``False`` matches every other production caller in this module
+            (``run_rigor_gate``'s ``dates`` parameter, also opt-in) — the "wired
+            but not yet fed" pattern this file already uses for
+            ``cv_returns_matrix``/CPCV. Earlier drafts of this PR threaded
+            dates unconditionally here, making this the one live production
+            number the PR's rf-series change actually moved without an
+            explicit flip-the-switch decision or a before/after value in the
+            re-grade delta table; gating it behind this flag (default off)
+            restores "every live grade is byte-identical to what production
+            has always produced" as literally true with no exceptions, until a
+            product/quant decision explicitly turns it on (see
+            ``docs/rigor-methods.md`` §1a).
 
     Returns:
         The single library PBO ∈ [0, 1], or ``None`` when it cannot be computed
@@ -400,9 +419,11 @@ def compute_library_pbo(
 
     # #1409: thread the joint date axis through so CSCV's per-split Sharpe
     # ranking uses the historical T-bill rf series for this window instead of
-    # the flat fallback. `align_returns_store_with_dates` returns one date per
-    # row already common to every series, so it lines up with `matrix` as-is.
-    scores = compute_pbo(matrix, s_partitions=s_partitions, dates=joint_dates)
+    # the flat fallback — ONLY when the caller opts in (see `use_tbill_series`
+    # above). `align_returns_store_with_dates` returns one date per row
+    # already common to every series, so it lines up with `matrix` as-is.
+    dates_for_pbo = joint_dates if use_tbill_series else None
+    scores = compute_pbo(matrix, s_partitions=s_partitions, dates=dates_for_pbo)
     if not scores:
         return None
 
@@ -413,27 +434,29 @@ def compute_library_pbo(
     return float(pbo)
 
 
-def compute_library_pbo_rf_convention(returns_store: dict[str, dict[str, list]]) -> str:
+def compute_library_pbo_rf_convention(
+    returns_store: dict[str, dict[str, list]],
+    use_tbill_series: bool = False,
+) -> str:
     """The rf_convention ``compute_library_pbo`` actually used for
     ``returns_store``'s joint-date-aligned window (#1409 review fix).
 
-    ``compute_library_pbo`` threads ``dates=joint_dates`` into ``compute_pbo``
-    unconditionally (no caller opt-in) — unlike every ``run_rigor_gate`` call
-    site, which all still omit ``dates`` today. That makes the library-wide
-    PBO the ONE live production number this PR's rf-series change actually
-    moves, yet ``LibraryPbo`` (``selection_bias_routes.py``) carried no
-    convention marker — a changed number with no disclosure, riding next to
-    per-strategy ``rf_convention`` fields that (correctly) still say
-    ``excess_flat_fallback``. This resolves the SAME joint-date axis
-    ``compute_library_pbo`` resolves, the same way, so ``_library_pbo_payload``
-    can disclose it honestly instead of leaving ``LibraryPbo.rf_convention``
-    silent about which rate produced ``value``.
+    Mirrors ``compute_library_pbo``'s own ``use_tbill_series`` opt-in (default
+    ``False``) exactly, so this always resolves the SAME convention that
+    function's ``dates_for_pbo`` argument actually used — never a second,
+    independent guess. With the flag left at its default, this returns
+    ``RF_CONVENTION_FALLBACK`` unconditionally, matching
+    ``compute_library_pbo``'s own not-yet-wired default (byte-identical to
+    every pre-#1409 caller); ``_library_pbo_payload`` (``selection_bias_routes.py``)
+    can therefore disclose ``LibraryPbo.rf_convention`` honestly either way.
 
     Returns ``RF_CONVENTION_FALLBACK`` when fewer than two series survive
     date-alignment (no joint date axis to resolve against at all) — matching
     ``compute_library_pbo``'s own < 2-series -> ``None`` fail-closed shape;
     there is no PBO value to have a convention for.
     """
+    if not use_tbill_series:
+        return rf_series.RF_CONVENTION_FALLBACK
     joint_dates, matrix = align_returns_store_with_dates(returns_store)
     if len(matrix) < 2 or not joint_dates:
         return rf_series.RF_CONVENTION_FALLBACK
@@ -982,7 +1005,24 @@ class RigorGateResult:
         # the historical 3-month T-bill series (per-window aligned) or the flat-5%
         # fallback (no date index supplied, or the window fell outside the vendored
         # series' coverage, both loudly logged at resolution time — never silent).
-        details["rf_convention"] = self.rf_convention
+        #
+        # #1409 round-4 review fix: `self.rf_convention` is set unconditionally by
+        # `_resolve_gate_rf` from `dates` alone, independent of whether DSR/OOS/IS
+        # actually produced a number from it. When NONE of the three excess-return
+        # metrics were computed at all (e.g. too-short/degenerate series), disclosing
+        # "excess_flat_fallback" implies a flat-rate COMPUTATION happened here, when
+        # in fact no computation of any kind ran — the same distinction
+        # `_library_pbo_payload` already draws for the analogous `LibraryPbo` case
+        # ("MISSING", not whichever convention the resolution alone would have
+        # picked, when there is no PBO value to attribute a convention to). Any ONE
+        # of the three succeeding is enough to keep the real convention — that
+        # metric genuinely used it, and this must not diverge from what OTHER
+        # gate_details entries (e.g. `details["dsr"]`) say about the SAME computation.
+        details["rf_convention"] = (
+            "MISSING"
+            if self.deflated_sharpe is None and self.oos_sharpe is None and self.in_sample_sharpe is None
+            else self.rf_convention
+        )
         # Disclose the standard-error model behind the DSR (#621 follow-up): the
         # gate uses a Newey–West HAC SE robust to serial dependence. Surface the
         # IID-SE p-value as a delta so the reader sees the size of the correction.

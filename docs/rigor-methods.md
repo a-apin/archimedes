@@ -69,12 +69,17 @@ score must not change because the library around it grew (see
 `rigor_evaluator.py` logs this verbatim when it fires. Do not describe the curated gate as
 correcting for multiple testing; on that path it does not.
 
-**Disclosure is not correction.** The product *discloses* the board-level selection bias a
-user incurs by choosing the best of N displayed strategies; it does not *correct* it.
-Benjamini–Hochberg helpers exist in
-[`_rigor_helpers.py:1244`](../backend/archimedes/services/_rigor_helpers.py) with **zero
-non-test callers** — a written-down, unimplemented decision. Saying otherwise would claim
-a control the live path does not run.
+**Disclosure is not correction, on the curated per-strategy gate.** The product *discloses*
+the board-level selection bias a user incurs by choosing the best of N displayed strategies;
+it does not *correct* the individual strategy's DSR for it. Benjamini–Hochberg helpers exist
+in [`_rigor_helpers.py:1261`](../backend/archimedes/services/_rigor_helpers.py) (`benjamini_hochberg_fdr`)
+and, as of #1185, DO have a live non-test caller —
+[`compute_board_level_fdr`](../backend/archimedes/services/rigor_evaluator.py) — but it is
+deliberately **ADVISORY/annotation only**, not wired into `RigorGateResult.passes_all` or
+any strictness threshold (see that function's own docstring for the scope rationale). So
+the correction above still holds for the thing it was written about — no per-strategy
+`passes_all` verdict moves because of a board-level FDR adjustment — but "zero non-test
+callers" is no longer accurate as a blanket statement; correct as of 2026-08-21 (this PR).
 
 **Why it's better than raw Sharpe:** The standard Sharpe assumes returns are normally
 distributed, serially independent, and that you only ran one backtest. None of those is
@@ -101,19 +106,48 @@ verdict** today still takes the flat-rate path and honestly discloses it via
 `rf_convention` below; wiring real per-bar dates into those four callers is tracked
 follow-up work, not implied by "the mechanism exists."
 
-**Two things already run on the real series today, disclosed via their own
-`rf_convention`, precisely because they already have real per-bar dates and did not
-need new plumbing (2026-08-21 correction — this section previously implied a blanket
-"nothing production-side threads dates yet," which was not true even at the time it was
-written):**
-- `compute_library_pbo` (the library-wide CSCV PBO, #546, *display-only* — it never
-  feeds a gate verdict) threads the joint date axis into `compute_pbo`
-  **unconditionally**, reachable live via `selection_bias_routes.py` ->
-  `_cached_library_pbo`. Disclosed via `LibraryPbo.rf_convention`.
+**One thing already runs on the real series today, disclosed via its own
+`rf_convention`, precisely because it already has real per-bar dates and did not need new
+plumbing:**
 - `POST /api/rigor/verify` (the CLI's `archimedes verify` backend, #1305) — unlike
   `run_rigor_gate`'s callers, this endpoint's request schema already carries real
   per-bar dates on every call (the CLI builds them from the returns CSV), so no schema
-  change was needed to wire it. Disclosed via `RigorVerifyResponse.rf_convention`.
+  change was needed to wire it. Disclosed via `RigorVerifyResponse.rf_convention`. This
+  is the ONE genuinely new live behavior this PR turns on — a deliberate design choice
+  (issue #1409's item 3), not an oversight.
+
+**2026-08-21 round-4 correction.** An earlier draft of this PR also threaded dates
+**unconditionally** into `compute_library_pbo` (the library-wide, display-only CSCV PBO,
+#546), making it a second live-series exception with no explicit flip-the-switch decision
+and no before/after value in the re-grade delta table below. That is now gated behind an
+opt-in `use_tbill_series` parameter (default `False`) on `compute_library_pbo` /
+`compute_library_pbo_rf_convention`, matching every other not-yet-wired call site in this
+file — `_cached_library_pbo` (`selection_bias_routes.py`) calls it at the default, so
+`LibraryPbo.rf_convention` is `excess_flat_fallback` today, byte-identical to every
+pre-#1409 grade. The mechanism is built and tested (see
+`test_matches_the_convention_compute_library_pbo_actually_used`,
+`test_rigor_evaluator.py`), ready to flip on the moment product/quant decides to — the
+same "wired but not fed" pattern this file already uses for `cv_returns_matrix`/CPCV.
+
+**Disclosed no-dates holdouts.** Two callers of the shared Sharpe helpers stay on the flat
+5% convention regardless of whether the gate around them threads dates, by design —
+neither is in this issue's scope, and mixing conventions inside one grade only happens
+where explicitly noted:
+- **Kelly fraction** (`compute_kelly_fraction`, `_rigor_helpers.py`) and the **MVO
+  portfolio optimizer** — both take only the flat `rf_annual` constant (see
+  `docs/quant/methodology.md`'s risk-free-rate section). Kelly sizing and the optimizer are
+  downstream of the gate verdict, not part of the DSR/OOS/IS admission checks this issue
+  scoped.
+- **`regime_conditional_sharpe`** (reached via `regime_robustness_score`, which
+  `run_rigor_gate` DOES call and surface on every gate result long enough to classify more
+  than one volatility regime) has no `dates` parameter and always computes on the flat
+  5% rate — **this one IS live**, so a grade that threads `dates` mixes a T-bill-series
+  DSR/OOS/IS with flat-5% per-regime Sharpes inside the SAME `RigorGateResult`. Advisory
+  only (never gates pass/fail), but disclose it here so a reader of `_annualized_sharpe_arr`'s
+  docstring (`_rigor_helpers.py`) finds this list, not a dangling citation.
+- **`compute_cpcv_oos_sharpe`** also takes no `dates` — out of scope, and moot today since
+  it has no production caller (CPCV is reported `NOT_RUN` until a real combinatorial OOS
+  matrix is wired in).
 
 **Why a flat constant was wrong.** The 3-month T-bill has ranged from roughly 0.00%
 (the 2008–2015 near-zero-rate era, mean 0.25% over the vendored series) to double
@@ -140,14 +174,27 @@ days past the vendored series' last published date also forward-fills the same w
 Beyond that grace window the **whole grade** falls back to the flat convention — never
 a silent partial substitution.
 
-**Disclosure — `rf_convention`.** Every gate result carries an `rf_convention` field,
-riding the same payload path `dsr_convention` already does:
+**Disclosure — `rf_convention`.** Every `RigorGateResult` (the live gate's own object),
+`RigorVerifyResponse`, and `LibraryPbo` carries an `rf_convention` field, riding the same
+payload path `dsr_convention` already does:
 - `excess_tbill_series` — the historical T-bill series was used, per-window aligned.
 - `excess_flat_fallback` — the flat rate was used (no date index was available for
   that grade, or the window fell outside the vendored series' coverage). This is a
   **disclosed** fallback state, not a silent one — it is always logged and always
   visible on the result, per this repo's fail-soft principle
   ([`architectural-principles.md`](architectural-principles.md) § fail-soft).
+- `MISSING` — no excess-return metric was computed at all (e.g. a too-short or
+  degenerate return series), so there is no computation to attribute a convention to;
+  distinct from `excess_flat_fallback`, which means a flat-rate computation genuinely ran.
+
+**Scope of that guarantee.** This is a promise about the LIVE gate's own objects, not
+every historical persisted summary. Pre-#1409 served/imported fixture rows — the
+`StrategyBacktestFixture.dsr_convention` column
+(`backend/archimedes/models/backtest_fixtures_store.py`) and the
+`analytics-engine/scripts/regen_fixtures.py` / `regen_buy_hold_fixture.py` generators that
+populate it — still emit `dsr_convention` with no `rf_convention` companion at all; see
+"Deliberately scoped-out `dsr_convention` payload paths" in the PR that shipped this
+section for why that gap was disclosed rather than silently left out.
 
 **Where the series lives.** Vendored (not fetched at grade time — determinism is
 load-bearing for the same reason the commit-reveal provenance posture is):

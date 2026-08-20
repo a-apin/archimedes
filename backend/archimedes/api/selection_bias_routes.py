@@ -924,11 +924,14 @@ def _cached_library_pbo() -> tuple[float | None, str | None, int, str]:
     ``data_vintage`` is the store's max vintage, ``selection_set_size`` is the
     number of aligned series actually used by the CSCV, and ``rf_convention``
     (#1409 review fix) discloses which rf rate ``value`` was actually computed
-    against — ``compute_library_pbo`` threads the joint date axis
-    unconditionally, so this can genuinely be ``excess_tbill_series`` even
-    while every ``run_rigor_gate`` verdict still reports the flat fallback.
-    Cached on the store's DB signature so the expensive CSCV does not re-run
-    on every request.
+    against. ``compute_library_pbo`` is called here at its default
+    ``use_tbill_series=False`` (#1409 round-4 review fix — the mechanism to
+    thread the joint date axis exists and is tested, but is not flipped on for
+    this live route, matching every ``run_rigor_gate`` call site's own
+    not-yet-wired ``dates`` default), so ``rf_convention`` is always
+    ``excess_flat_fallback`` here today — byte-identical to every pre-#1409
+    grade. Cached on the store's DB signature so the expensive CSCV does not
+    re-run on every request.
 
     Never raises: an empty store or a DB read failure yields
     ``(None, None, 0, "MISSING")``.
