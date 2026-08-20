@@ -139,6 +139,72 @@ def _assert_no_pricing(label: str, kind: str) -> str:
     return text
 
 
+#: Dotted paths inside a snapshot whose IMMEDIATE keys are runtime **data**
+#: rather than caller-authored labels, and are therefore exempt from
+#: :func:`assert_measurement_only`'s key screen.
+#:
+#: Only ``llm.by_model`` qualifies today: its keys are provider model
+#: identifiers copied verbatim off a response (``response.model``), never
+#: something this codebase chose. Screening them would let a vendor's naming
+#: decide whether a generation's measurement gets persisted at all — a model id
+#: as ordinary as ``llama-3-feedback-tuned`` contains ``fee``, and one marketed
+#: as cost- or price-optimized contains the words outright. The write would then
+#: raise inside the pipeline's ``finally``, be swallowed, and drop the durable
+#: row: the exact silent-loss failure this instrumentation exists to end.
+#:
+#: The exemption is one level deep. Values beneath an exempt key are still
+#: walked, so ``llm.by_model["some-model"]["cost_usd"]`` still raises — the model
+#: id is data, the counters hanging off it are ours.
+DATA_KEYED_PATHS = frozenset({"llm.by_model"})
+
+
+def assert_measurement_only(payload: Any, *, where: str = "snapshot") -> None:
+    """Refuse a payload whose KEYS carry pricing vocabulary, at any depth.
+
+    :func:`_assert_no_pricing` screens one caller-chosen label at write time,
+    which is what keeps a live meter's snapshot clean. This is the same screen
+    applied to a *whole assembled payload* — the check a persistence boundary
+    needs, because by the time a snapshot reaches storage the labels that built
+    it are long gone and the only thing left to inspect is the document.
+
+    It exists for the durable ``generation_costs`` row (#1326): that row stores
+    the measurement and the price quote in **two separate columns** precisely so
+    the two never share a namespace, and this is the guard that makes "separate"
+    enforced rather than merely intended. Merging the quote into the measurement
+    — the obvious future shortcut — raises here instead of silently shipping a
+    priced ``cost_v1`` record.
+
+    Values are deliberately not screened: a *quote* is a legitimately priced
+    document and stores fine in its own column, and a measurement's values are
+    numbers, not labels. Keys are the namespace; keys are what is policed —
+    except where the keys are themselves data, which is what
+    :data:`DATA_KEYED_PATHS` records and why.
+
+    Each key is screened on its own, with the dotted path carried only for the
+    error message. Screening the concatenated path would be equivalent for
+    ordinary keys (no deny-listed token contains a ``.``, and every ancestor
+    segment is screened when it is visited), but it would leak an exempt key's
+    text into its children's screens and re-raise on exactly the model ids the
+    exemption exists to allow.
+
+    Raises :class:`PricingLeakError` on the first offending key.
+    """
+
+    def _walk(node: Any, path: str) -> None:
+        if isinstance(node, Mapping):
+            keys_are_data = path in DATA_KEYED_PATHS
+            for key, value in node.items():
+                child = f"{path}.{key}" if path else str(key)
+                if not keys_are_data:
+                    _assert_no_pricing(str(key), f"{where} key at {child}")
+                _walk(value, child)
+        elif isinstance(node, (list, tuple)):
+            for index, value in enumerate(node):
+                _walk(value, f"{path}[{index}]")
+
+    _walk(payload, "")
+
+
 def _peak_rss_bytes() -> int | None:
     """Process peak resident set size in bytes, or ``None`` if unavailable.
 

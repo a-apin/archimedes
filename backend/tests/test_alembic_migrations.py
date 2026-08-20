@@ -95,6 +95,7 @@ def test_alembic_upgrade_head_from_empty_db(tmp_path):
         "marketplace_agents",
         "user_profiles",
         "request_count_snapshots",
+        "generation_costs",
     ):
         assert expected in tables, f"table {expected!r} missing after upgrade head; got {sorted(tables)}"
 
@@ -181,6 +182,95 @@ def test_alembic_strategy_spec_column_added_and_removed(tmp_path):
     reupgrade_again = _run_alembic("upgrade", "head", database_url=database_url)
     assert reupgrade_again.returncode == 0, reupgrade_again.stderr
     assert _has_strategy_spec_column()
+
+
+def test_alembic_generation_costs_table_added_and_removed(tmp_path):
+    """Durable generation cost (#1326): ``generation_costs`` lands on upgrade, is
+    gone on downgrade, and comes back on re-upgrade — the per-migration
+    up/down/idempotent contract exercised directly.
+
+    Same derived-target discipline as the ``strategy_spec`` test above: the
+    downgrade target is looked up as this revision's OWN ``down_revision``, never
+    a hardcoded hash or a relative ``-1``, so it keeps testing this migration
+    however many revisions later land on top of it.
+    """
+    db_path = tmp_path / "generation_costs.db"
+    database_url = f"sqlite:///{db_path}"
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision("e2b7f4c81d93").down_revision
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert "generation_costs" in _table_names(db_path)
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert "generation_costs" not in _table_names(db_path)
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert "generation_costs" in _table_names(db_path)
+
+    again = _run_alembic("upgrade", "head", database_url=database_url)
+    assert again.returncode == 0, again.stderr
+    assert "generation_costs" in _table_names(db_path)
+
+
+def test_alembic_generation_costs_matches_a_fresh_create_all_schema(tmp_path):
+    """Column parity for ``generation_costs`` between the two schema-management
+    paths — the ORM's ``GenerationCostRecord`` (create_all, every hermetic test
+    and local dev) and this migration's ``create_table`` (Alembic, CI/prod).
+
+    Divergence here is not cosmetic: the cost card reads
+    ``measurement_json`` / ``quote_json`` by name, so a column that exists on one
+    path and not the other means the passport renders "not measured" in exactly
+    one environment — the hardest kind of gap to notice.
+    """
+    create_all_db = tmp_path / "create_all_generation_costs.db"
+    script = (
+        "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthUser\n"
+        "from archimedes.models.chat import Base\n"
+        # vault_metadata.creator_address FKs wallet_identities; register it or
+        # create_all() cannot resolve the whole metadata graph.
+        "from archimedes.models.identity import WalletIdentity\n"
+        "from archimedes.models.generation_cost import GenerationCostRecord\n"
+        f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
+        "Base.metadata.create_all(bind=engine)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(_BACKEND_DIR),
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    alembic_db = tmp_path / "alembic_built_generation_costs.db"
+    upgrade = _run_alembic("upgrade", "head", database_url=f"sqlite:///{alembic_db}")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    def _columns(db_path: Path, table: str) -> set[str]:
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    create_all_cols = _columns(create_all_db, "generation_costs")
+    alembic_cols = _columns(alembic_db, "generation_costs")
+    assert {"job_id", "strategy_id", "schema_version", "measurement_json", "quote_json", "recorded_at"} <= (
+        create_all_cols
+    )
+    assert create_all_cols == alembic_cols
 
 
 def test_alembic_upgrade_head_matches_a_fresh_create_all_schema(tmp_path):

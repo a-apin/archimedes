@@ -7,7 +7,8 @@
 Every generation now carries a measurement record: how many tokens the debate
 society actually consumed, how long each pipeline phase took in wall and CPU
 seconds, the process peak RSS, and how many rows the run wrote. The record is
-persisted on the job and readable over the API.
+persisted on the job, **written durably to the database keyed to the strategy the
+run produced**, and readable over the API and on the strategy passport.
 
 This exists because the only figure ever quoted for a generation was a Bedrock
 inference estimate — the language-model term alone, excluding the walk-forward
@@ -29,9 +30,11 @@ a guess.
 | The meter — accumulation, guards, snapshot shape | [`backend/archimedes/services/cost_meter.py`](../backend/archimedes/services/cost_meter.py) |
 | Token capture at the provider boundary | [`backend/archimedes/services/llm_backend.py`](../backend/archimedes/services/llm_backend.py) (every `complete()`) — plus an inert call in [`backend/archimedes/agents/portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py), see "What is not measured" below |
 | Stage timing + write tallies | [`backend/archimedes/agents/generation_pipeline.py`](../backend/archimedes/agents/generation_pipeline.py), [`backend/archimedes/agents/debate_engine.py`](../backend/archimedes/agents/debate_engine.py) |
-| Persistence onto the job | `JobStore.merge_result` in [`backend/archimedes/services/job_queue.py`](../backend/archimedes/services/job_queue.py) |
-| Read surfaces | `GET /api/generate/jobs/{job_id}/cost`, and the `cost` field on `GET /api/generate/jobs` |
-| Tests | [`backend/tests/test_generation_cost_meter.py`](../backend/tests/test_generation_cost_meter.py) |
+| Persistence onto the job (expires with `JOB_TTL`) | `JobStore.merge_result` in [`backend/archimedes/services/job_queue.py`](../backend/archimedes/services/job_queue.py) |
+| Durable persistence (`generation_costs`) | [`backend/archimedes/models/generation_cost.py`](../backend/archimedes/models/generation_cost.py) + migration `e2b7f4c81d93`, written from `run_generation`'s `finally` |
+| Read surfaces | `GET /api/generate/jobs/{job_id}/cost`, the `cost` field on `GET /api/generate/jobs`, `generation_cost` on `GET /api/strategies/{id}` and `GET /api/strategies/generated` |
+| UI | passport card + library column via [`ui/src/generationCost.js`](../ui/src/generationCost.js) |
+| Tests | [`backend/tests/test_generation_cost_meter.py`](../backend/tests/test_generation_cost_meter.py), [`backend/tests/test_generation_cost_persistence.py`](../backend/tests/test_generation_cost_persistence.py), [`ui/test/generation-cost.test.js`](../ui/test/generation-cost.test.js) |
 
 The meter is bound to a `contextvars` context for the duration of one job, so
 the LLM boundary records usage without threading a parameter through the debate
@@ -133,6 +136,71 @@ the snapshots in this document do not include anything from it.
   snapshot is written on the error and cancelled paths too, so the rejected path
   is measurable rather than assumed to be cheaper.
 
+## Where it is stored, and for how long (#1326)
+
+The snapshot is written **twice, from the same object**, in `run_generation`'s
+`finally` — so the two copies can never be two different readings:
+
+1. **Onto the Redis job record** via `merge_result`. Expires with `JOB_TTL`
+   (3600s). This is what `GET /api/generate/jobs/{job_id}/cost` serves.
+2. **Into the `generation_costs` table**, keyed to the strategy the run
+   produced. This is what the passport card and the library column read, an
+   hour or a year later.
+
+One row per `(job_id, strategy_id)` pair, with two payload columns:
+
+| Column | What it holds |
+|---|---|
+| `measurement_json` | The literal `cost_v1` snapshot. Screened by `cost_meter.assert_measurement_only` on the way in — a pricing-shaped key at any depth raises `PricingLeakError` rather than landing in the column. |
+| `quote_json` | The literal `generation_payment.quote()` payload in force when the job **started**. NULL when the seam could not be read, which means "not recorded", never "$0.00". |
+
+**Two columns is the design, not normalization.** Quote-vs-measured has to be a
+pairing of two independently recorded facts. Merging the quote into the snapshot
+— the obvious shortcut — would produce a priced `cost_v1` record, and the screen
+above exists to make that raise instead.
+
+**The measurement is the JOB's.** Generation is K=1 (one `strategy_store` row per
+job), so the pairing is one-to-one today. If a job ever persists more than one
+strategy again, each gets a row carrying the *same* job-level measurement: read a
+row as "the run that produced this strategy consumed this", never as "this
+strategy's private share", and never sum across rows.
+
+**Nothing is written when no strategy row exists.** A run that bails before
+persistence — an invalid brief, an early crash — leaves the job record as the
+only copy. There is nothing to key a durable record to, and inventing an id to
+hang one on would be worse than the gap.
+
+**No backfill, and none is possible.** Every generation before the meter was
+never measured. Those strategies render as *not measured* on the passport and as
+an em-dash in the library. That is the honest state, and manufacturing a figure
+for them is precisely the failure this instrumentation exists to end.
+
+### Reading the surfaced record honestly
+
+`GET /api/strategies/{id}` serves `generation_cost` as
+`{schema, job_id, recorded_at, measurement, quote}`, or `null`. The UI's rules
+(all in `ui/src/generationCost.js`, all covered by `ui/test/generation-cost.test.js`):
+
+* **`null` renders as "not measured", never as zero.** A count that arrives as a
+  string, a boolean, `NaN`, `Infinity` or a negative is *not measured* either —
+  the same refusal `_coerce_count` makes server-side.
+* **A genuinely measured zero stays zero.** The fixture path makes no LLM calls
+  and honestly reports `total_tokens: 0`; that must remain distinguishable from
+  "we don't know".
+* **`usage_complete: false` renders the totals with a `≥`.** They are a floor,
+  not a total, and the card says how many calls were unreadable. An *absent*
+  `usage_complete` fails closed to the same treatment — completeness is claimed
+  only when the record literally says `true`.
+* **The dominant stage excludes `candidate_generation`.** It is the umbrella that
+  contains `corpus_load` / `debate_propose` / `debate_transcript` /
+  `debate_backtest`, so a plain maximum names it every time and says nothing.
+* **The library column shows total tokens.** Design call: it is the term that
+  scales with the model and the one #1217 exists to pin down, while wall time is
+  dominated by backtests and moves with whatever else the worker is doing. Wall
+  time and the dominant stage ride in the cell's tooltip.
+* **No `$`-conversion anywhere client-side.** The only money on the card is the
+  price string the server recorded from the quote seam.
+
 ## Guarantees the code enforces
 
 1. **A missing measurement is never a zero.** A provider response with no usable
@@ -159,9 +227,16 @@ the snapshots in this document do not include anything from it.
    otherwise a bare `HSET` would materialise a TTL-less phantom hash that then
    lists forever as a statusless job.
 5. **Instrumentation cannot fail a generation.** `record_llm_call` swallows
-   unexpected errors, and the snapshot persist is suppressed on failure. A
-   deliberate pricing-label violation is the one exception: it raises, because it
-   is a code bug with a fixed literal label, not a data-dependent condition.
+   unexpected errors, and both snapshot persists — the job record and the durable
+   row — are suppressed-and-logged on failure. A deliberate pricing-label
+   violation is the one exception: it raises, because it is a code bug with a
+   fixed literal label, not a data-dependent condition.
+6. **The durable write is deliberately untallied.** The pipeline does not call
+   `cost_meter.record_write` for its own `generation_costs` row. The snapshot is
+   already sealed by then — a tally cannot appear inside the document it counts —
+   and the label is pricing vocabulary inside a measurement record, so the meter
+   would refuse it anyway. The table's *name* is fine; a counter label inside a
+   `cost_v1` snapshot is not.
 
 ## Measurement procedure
 

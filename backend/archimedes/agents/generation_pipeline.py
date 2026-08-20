@@ -710,6 +710,85 @@ def _served_model_for(job_agent: Any, use_live: bool) -> str:
         return "unknown"
 
 
+def _quote_in_force() -> dict[str, Any] | None:
+    """The literal ``generation_payment.quote()`` payload, or ``None``.
+
+    Read-only use of the quote seam (#1326 anti-goal: don't touch it). The
+    payload is recorded verbatim next to the measurement so the passport can
+    show "quoted X / measured Y" as two facts we wrote down, rather than as a
+    conversion — no token count is ever turned into money server-side.
+
+    ``None`` when the seam cannot be read. That is an honest "we did not record
+    what was quoted", and it renders as unknown; it is never a zero price.
+    """
+    try:
+        from archimedes.services import generation_payment
+
+        return dict(generation_payment.quote())
+    except Exception:
+        logger.warning("cost record: could not read the generation quote — recording it as unknown", exc_info=True)
+        return None
+
+
+async def _persist_generation_cost(
+    *,
+    job_id: str,
+    strategy_ids: dict[str, str],
+    measurement: dict[str, Any],
+    quote: dict[str, Any] | None,
+) -> None:
+    """Write the durable ``generation_costs`` row(s) for this job (#1326).
+
+    No strategy row ⇒ nothing to key a durable record to, so nothing is written
+    and the job record (with its TTL) remains the only copy. That is the issue's
+    own boundary: persist "on rigor-failed/errored terminal paths **where a
+    strategy row exists**".
+
+    Two deliberate omissions:
+
+    * The write is **not** tallied through ``cost_meter.record_write``. The
+      snapshot being written is already sealed — a tally could not appear inside
+      the document it is counting — and ``record_write("generation_costs")``
+      raises :class:`~archimedes.services.cost_meter.PricingLeakError` anyway,
+      because "cost" is pricing vocabulary inside a measurement record. The
+      table's *name* is fine; a counter label inside a ``cost_v1`` snapshot is
+      not, and that screen is working as designed.
+    * Failure is logged, never raised. Instrumentation is not allowed to change
+      the outcome of a generation (``docs/generation-cost-instrumentation.md``
+      § guarantee 5), and this runs in a ``finally`` that may already be
+      unwinding a cancellation.
+    """
+    if not strategy_ids:
+        logger.debug("cost record: job %s produced no strategy row — durable cost not written", job_id)
+        return
+
+    def _write() -> int:
+        from archimedes.db import get_session
+        from archimedes.models.generation_cost import record_generation_cost
+
+        written = 0
+        with get_session() as session:
+            for strategy_id in dict.fromkeys(strategy_ids.values()):
+                if not strategy_id:
+                    continue
+                record_generation_cost(
+                    session,
+                    job_id=job_id,
+                    strategy_id=strategy_id,
+                    measurement=measurement,
+                    quote=quote,
+                )
+                written += 1
+            session.commit()
+        return written
+
+    try:
+        count = await asyncio.to_thread(_write)
+        logger.info("cost record: persisted %d durable generation cost row(s) for job %s", count, job_id)
+    except (Exception, asyncio.CancelledError):
+        logger.warning("cost record: durable persist failed for job %s (non-blocking)", job_id, exc_info=True)
+
+
 async def run_generation(
     *,
     job_id: str,
@@ -755,6 +834,19 @@ async def run_generation(
     meter_token = cost_meter.bind(meter)
     meter.set_meta("n_candidates_requested", n_candidates)
     meter.set_meta("model_requested", model)
+
+    # The price quote in force as this job starts (#1326). Read once, here,
+    # because that is the quote the caller was actually charged against — a
+    # quote re-read at the end would be a different fact wearing this run's
+    # name. Stored in its OWN column beside the measurement so quote-vs-measured
+    # is a pairing of two recorded facts, never a conversion. Read-only: the
+    # quote seam itself is untouched.
+    quote_in_force = _quote_in_force()
+
+    # Populated by the persist step inside the try. Declared out here so the
+    # `finally` can write the durable cost row on the rigor-FAILED, errored and
+    # cancelled paths too — every path where a strategy row already exists.
+    strategy_ids: dict[str, str] = {}  # candidate_id → strategy_id
 
     await store.update_status(job_id, "running")
     await emit.emit("job_queued", brief=brief.model_dump())
@@ -1059,7 +1151,7 @@ async def run_generation(
         # rigor verdicts) and surfaced via the job's candidates payload — they
         # must NOT accumulate as rejected StrategyRecords (the orphan pattern
         # the ownership purge removed).
-        strategy_ids: dict[str, str] = {}  # candidate_id → strategy_id
+        # (`strategy_ids` is declared before the try — the `finally` reads it.)
         ownership = {"owner_wallet": owner_wallet}
         if owner_user_id is not None:
             ownership["owner_user_id"] = owner_user_id
@@ -1250,8 +1342,21 @@ async def run_generation(
         # so a failure here is swallowed (CancelledError included: this runs
         # while a cancellation is already propagating).
         cost_meter.unbind(meter_token)
+        snapshot: dict[str, Any] | None = None
         with contextlib.suppress(Exception, asyncio.CancelledError):
-            await store.merge_result(job_id, {"cost": meter.snapshot()})
+            snapshot = meter.snapshot()
+            await store.merge_result(job_id, {"cost": snapshot})
+        # …and durably, keyed to the strategy the run produced (#1326). The job
+        # record above expires with JOB_TTL; this one is what the passport card
+        # and the library column read an hour, a week or a year later. Same
+        # snapshot object as the job record gets, so the two can never disagree.
+        if snapshot is not None:
+            await _persist_generation_cost(
+                job_id=job_id,
+                strategy_ids=strategy_ids,
+                measurement=snapshot,
+                quote=quote_in_force,
+            )
 
 
 async def _persist_candidate(
