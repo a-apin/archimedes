@@ -104,10 +104,11 @@ export default function PaperTrading({ onNavigate }) {
     }
     // Name join is best-effort decoration — the list renders with ids if the
     // library calls fail, so these settle independently of the load above.
-    // limit=200 is /generated's max (default 50 could miss names for older
-    // strategies; a deployment beyond even 200 falls back to its id honestly).
+    // Each list is fetched at its endpoint's max (curated 100, generated 200 —
+    // the defaults, 20/50, could miss names for older rows; anything beyond
+    // the max falls back to its id honestly).
     const [seed, generated] = await Promise.allSettled([
-      apiGet('/api/strategies/'),
+      apiGet('/api/strategies/?limit=100'),
       apiGet('/api/strategies/generated?limit=200'),
     ])
     const map = {}
