@@ -56,6 +56,16 @@ def _payments_dry_run() -> bool:
     return os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")
 
 
+def _payments_halted() -> bool:
+    """#1240 kill switch — see marketplace.config.payments_halted's docstring.
+    This is the metered-API path, the one surface the mainnet scope decision
+    allows to run PAYMENTS_DRY_RUN=false on, so it needs the same no-redeploy
+    stop lever as the marketplace tick-charging rail."""
+    from archimedes.marketplace.config import payments_halted
+
+    return payments_halted()
+
+
 def _recipient() -> str:
     return os.getenv("GENERATION_PAYMENT_RECIPIENT", "").strip()
 
@@ -91,6 +101,7 @@ def quote() -> dict:
         "chain": os.getenv("GATEWAY_CHAIN", DEFAULT_GATEWAY_CHAIN).strip(),
         "recipient": _recipient() or None,
         "dry_run": _payments_dry_run(),
+        "halted": _payments_halted(),
         "how": (
             "POST /api/generate/start without a Payment-Signature header returns 402 "
             "with these requirements in the PAYMENT-REQUIRED header; sign them "
@@ -156,6 +167,16 @@ async def enforce_generation_payment(request: Request, linked_wallet: str):
         logger.warning(
             "PAYMENTS_DRY_RUN — generation payment header accepted UNVERIFIED and UNSETTLED (no value moved)"
         )
+        return None
+
+    if _payments_halted():
+        # #1240 kill switch — same no-redeploy stop lever as the marketplace
+        # tick-charging rail (marketplace.service._charge_one). Read fresh on
+        # every call, unlike PAYMENTS_DRY_RUN's own boot-time env read here —
+        # both are re-read per call already, so PAYMENTS_HALT adds a distinct,
+        # separately-labelled reason an operator can flip without touching the
+        # money-scope PAYMENTS_DRY_RUN switch itself.
+        logger.warning("PAYMENTS_HALT active — generation payment header accepted UNVERIFIED and UNSETTLED")
         return None
 
     from circlekit.x402 import decode_payment_header

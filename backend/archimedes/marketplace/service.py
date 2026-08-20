@@ -26,6 +26,7 @@ from archimedes.chain.v_check import VCheck
 from archimedes.db import get_session
 from archimedes.interfaces.math import IRegimeDetector
 from archimedes.marketplace import payments, spend_cap
+from archimedes.marketplace.config import payments_halted
 from archimedes.marketplace.settlement import SettlementSweeper
 from archimedes.marketplace.state import MarketState
 from archimedes.marketplace.tick_registry import (
@@ -831,6 +832,18 @@ class MarketService:
         #713 spend cap) — callers should prefer it over their default message
         when it isn't None."""
         if self.payments_dry_run:
+            return True, None
+        if payments_halted():
+            # #1240 kill switch: read fresh every charge (never cached), unlike
+            # payments_dry_run above. Treated exactly like dry-run — no real
+            # charge, subscriber stays "paid" for this tick — so flipping it
+            # cannot itself trigger cascading defer/halt side effects; it only
+            # stops money from moving.
+            logger.warning(
+                "[%s] PAYMENTS_HALT active — refusing real charge for sub %s (treated as no-op)",
+                tick_id,
+                sub.sub_id,
+            )
             return True, None
         if not pub.gateway_seller_address:
             logger.warning("[%s] no gateway_seller_address for pub %s — unpaid", tick_id, strategy_id)
