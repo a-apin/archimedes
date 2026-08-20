@@ -137,6 +137,13 @@ function HeroStrip({
 		? Object.keys(contracts.vaults).length
 		: undefined;
 	const contractsLoading = !contracts && !contractsError;
+	// `contracts.vaults` is explicitly `null` (not just absent) when the fetch
+	// succeeded but the on-chain read of vault addresses failed (#1356's
+	// ContractAddressesResponse contract) — distinct from "still loading",
+	// which `contracts == null` already covers via contractsLoading above.
+	// Guarding on `contracts != null` keeps the tile in its loading "···"
+	// state during the initial fetch rather than jumping straight to "—".
+	const vaultsUnread = contracts != null && contracts.vaults == null;
 	const healthLoading = !health && !healthError;
 	const leaderboardLoading = !leaderboard && !leaderboardError;
 
@@ -164,14 +171,14 @@ function HeroStrip({
 				label="Strategies on the public leaderboard"
 				value={leaderboard?.total}
 				loading={leaderboardLoading}
-				failed={leaderboardError}
+				failed={leaderboardError || leaderboard?.degraded}
 				caption="ranked by real backtest + live rigor gate"
 			/>
 			<StatTile
 				label="Live user vaults on Arc"
 				value={vaultCount}
 				loading={contractsLoading}
-				failed={contractsError}
+				failed={contractsError || vaultsUnread}
 				caption="grows with every deploy"
 			/>
 		</div>

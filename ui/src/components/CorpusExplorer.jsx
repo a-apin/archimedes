@@ -17,6 +17,10 @@ const TAB_LABELS = {
 export default function CorpusExplorer() {
   const [tab, setTab] = useState('catalog')
   const [overview, setOverview] = useState(null)
+  // Overview fetch failure (#1356): a null overview used to be permanently
+  // indistinguishable from "still loading" — OverviewTab rendered "Loading
+  // overview..." forever, with no error and no retry.
+  const [overviewError, setOverviewError] = useState(false)
   const [papers, setPapers] = useState([])
   const [selectedPaper, setSelectedPaper] = useState(null)
   const [search, setSearch] = useState('')
@@ -24,17 +28,26 @@ export default function CorpusExplorer() {
   const [page, setPage] = useState(1)
   const [totalPapers, setTotalPapers] = useState(0)
   const [loading, setLoading] = useState(false)
+  // Catalog fetch failure (#1356): totalPapers stayed at its initial 0 on a
+  // failed fetch, and CatalogTab announced that 0 as "0 papers found" inside
+  // a role="status" live region — an outage read to a screen reader as a
+  // measured result.
+  const [catalogError, setCatalogError] = useState(false)
 
   // Fetch overview
-  useEffect(() => {
-    apiGet('/api/corpus/overview')
+  const fetchOverview = useCallback(() => {
+    setOverviewError(false)
+    return apiGet('/api/corpus/overview')
       .then(setOverview)
-      .catch(() => setOverview(null))
+      .catch(() => setOverviewError(true))
   }, [])
+
+  useEffect(() => { fetchOverview() }, [fetchOverview])
 
   // Fetch papers catalog
   const fetchPapers = useCallback(async () => {
     setLoading(true)
+    setCatalogError(false)
     try {
       const params = new URLSearchParams({ page: String(page), limit: '20' })
       if (search) params.set('search', search)
@@ -45,7 +58,10 @@ export default function CorpusExplorer() {
       const data = await apiGet(`/api/papers/?${params}`)
       setPapers(data.papers || [])
       setTotalPapers(data.total || 0)
-    } catch { setPapers([]) }
+    } catch {
+      setPapers([])
+      setCatalogError(true)
+    }
     setLoading(false)
   }, [page, search, categoryFilter])
 
@@ -67,7 +83,16 @@ export default function CorpusExplorer() {
     <div className="corpus-explorer">
       <div className="corpus-header">
         <h2>Research Corpus Explorer</h2>
-        {overview && (
+        {/* An overview fetch failure must stay visible on every tab, not just
+            the Overview tab — this header renders regardless of which tab is
+            active (default 'catalog'), so silently falling through to
+            `overview && (...)` here would make the outage invisible on the
+            tab a visitor lands on first (#1356). */}
+        {overviewError ? (
+          <div className="corpus-stats">
+            <span className="stat-chip">corpus stats unavailable</span>
+          </div>
+        ) : overview && (
           <div className="corpus-stats">
             <span className="stat-chip">{overview.total_papers?.toLocaleString()} papers</span>
             <span className="stat-chip">{overview.categories?.length} categories</span>
@@ -84,10 +109,13 @@ export default function CorpusExplorer() {
         ))}
       </div>
 
-      {tab === 'overview' && <OverviewTab overview={overview} />}
+      {tab === 'overview' && (
+        <OverviewTab overview={overview} overviewError={overviewError} onRetry={fetchOverview} />
+      )}
       {tab === 'catalog' && (
         <CatalogTab
           papers={papers} total={totalPapers} page={page} loading={loading}
+          catalogError={catalogError} onRetry={fetchPapers}
           search={search} setSearch={setSearch}
           categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter}
           setPage={setPage} openPaper={openPaper}
@@ -108,7 +136,17 @@ export default function CorpusExplorer() {
   )
 }
 
-function OverviewTab({ overview }) {
+function OverviewTab({ overview, overviewError, onRetry }) {
+  if (overviewError) {
+    return (
+      <div className="corpus-loading">
+        Overview unavailable — the corpus overview request failed.{' '}
+        <button type="button" className="btn btn-sm btn-outline" onClick={onRetry} style={{ marginLeft: 4 }}>
+          Retry
+        </button>
+      </div>
+    )
+  }
   if (!overview) return <div className="corpus-loading">Loading overview...</div>
 
   const maxCatCount = Math.max(...(overview.categories || []).map(c => c.count), 1)
@@ -174,7 +212,7 @@ function formatAuthors(authors) {
   return `${authors[0]}, ${authors[1]} et al.`
 }
 
-function CatalogTab({ papers, total, page, loading, search, setSearch, categoryFilter, setCategoryFilter, setPage, openPaper, categories }) {
+function CatalogTab({ papers, total, page, loading, catalogError, onRetry, search, setSearch, categoryFilter, setCategoryFilter, setPage, openPaper, categories }) {
   const totalPages = Math.ceil(total / 20)
   return (
     <div className="corpus-catalog">
@@ -196,7 +234,14 @@ function CatalogTab({ papers, total, page, loading, search, setSearch, categoryF
         />
       </div>
 
-      {loading ? <div className="corpus-loading">Loading...</div> : (
+      {loading ? <div className="corpus-loading">Loading...</div> : catalogError ? (
+        <div className="catalog-results-info" role="status">
+          Catalog unavailable — the papers request failed.{' '}
+          <button type="button" className="btn btn-sm btn-outline" onClick={onRetry} style={{ marginLeft: 4 }}>
+            Retry
+          </button>
+        </div>
+      ) : (
         <>
           <div className="catalog-results-info" role="status">{total.toLocaleString()} papers found</div>
           <div className="overflow-x-auto rounded-lg border border-[var(--glass-border)]">
