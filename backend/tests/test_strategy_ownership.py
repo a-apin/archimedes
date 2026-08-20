@@ -344,6 +344,59 @@ async def test_rename_owner_only():
         assert session.query(StrategyRecord).filter_by(id=sid).first().strategy_name == "After"
 
 
+async def test_rename_legacy_wallet_fallback_reclaims_row_onto_canonical_owner():
+    """#1283: renaming a pre-account row via the legacy-wallet fallback must
+    migrate it onto canonical account ownership in the same request, not just
+    permit the rename and leave ``owner_user_id`` NULL forever."""
+    sid = "ren00000000000004"
+    _mk_strategy(sid, owner=_W_OWNER, published=False, name="Before")  # owner_user_id NULL
+
+    from archimedes.main import app
+    from archimedes.models.strategy_store import StrategyRecord
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.patch(f"/api/strategies/{sid}", json={"name": "After"}, cookies=_siwe_cookies(_W_OWNER))
+    assert resp.status_code == 200
+
+    expected_owner_user_id = f"legacy-test:{_W_OWNER.lower()}"
+    with db.get_session() as session:
+        row = session.query(StrategyRecord).filter_by(id=sid).first()
+        assert row.strategy_name == "After"
+        assert row.owner_user_id == expected_owner_user_id  # reclaimed, no longer NULL
+        assert row.owner_wallet == _W_OWNER.lower()  # wallet provenance untouched
+
+
+async def test_rename_legacy_wallet_fallback_reclaims_sibling_rows_but_not_other_wallets():
+    """The reclaim triggered by a legacy-wallet rename is the SAME bulk claim
+    wallet-linking performs (`claim_legacy_wallet_data`): every unclaimed row
+    for that wallet migrates, not just the one row touched by the request —
+    and a different wallet's unclaimed rows must be left alone."""
+    renamed_sid = "sib00000000000001"
+    _mk_strategy(renamed_sid, owner=_W_OWNER, published=False, name="Before")
+    sibling_sid = "sib00000000000002"
+    _mk_strategy(sibling_sid, owner=_W_OWNER, published=False, name="Sibling")  # same wallet, untouched by request
+    other_wallet_sid = "sib00000000000003"
+    _mk_strategy(other_wallet_sid, owner=_W_OTHER, published=False, name="Other")  # different wallet
+
+    from archimedes.main import app
+    from archimedes.models.strategy_store import StrategyRecord
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.patch(
+            f"/api/strategies/{renamed_sid}", json={"name": "After"}, cookies=_siwe_cookies(_W_OWNER)
+        )
+    assert resp.status_code == 200
+
+    expected_owner_user_id = f"legacy-test:{_W_OWNER.lower()}"
+    with db.get_session() as session:
+        renamed = session.query(StrategyRecord).filter_by(id=renamed_sid).first()
+        sibling = session.query(StrategyRecord).filter_by(id=sibling_sid).first()
+        other = session.query(StrategyRecord).filter_by(id=other_wallet_sid).first()
+        assert renamed.owner_user_id == expected_owner_user_id
+        assert sibling.owner_user_id == expected_owner_user_id  # reclaimed as a side effect
+        assert other.owner_user_id is None  # a different wallet's data is never touched
+
+
 async def test_rename_published_non_owner_403():
     sid = "ren00000000000002"
     _mk_strategy(sid, owner=_W_OWNER, published=True)

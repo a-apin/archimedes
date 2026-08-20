@@ -2014,11 +2014,23 @@ async def rename_strategy(
     NOT recomputed — they are provenance of the original generation, not of the
     display name. The strategy_passports table carries no display-name column,
     so only strategy_store is updated.
+
+    Legacy-wallet fallback (#1283): a pre-account row (``owner_user_id`` NULL)
+    matched via the caller's linked wallet is reclaimed onto canonical account
+    ownership in the same transaction as the rename — the identical effect
+    (re-)linking that wallet has via ``claim_legacy_wallet_data`` — rather than
+    re-deriving ownership from the wallet match on every future call. This is
+    the same relaxed, non-fresh-signature lookup already accepted here for the
+    rename itself (metadata mutation, not money-moving; see the boundary rule
+    on ``get_linked_wallet_address``), applied to the identical class of write.
+    It migrates pre-account rows toward zero over time; deleting the fallback
+    branch entirely is a follow-up gated on verifying no unclaimed rows remain.
     """
     from datetime import datetime
 
     from fastapi import HTTPException
 
+    from archimedes.api.wallet_routes import claim_legacy_wallet_data
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
 
@@ -2035,9 +2047,14 @@ async def rename_strategy(
             # Curated examples are not user-owned — same 404 as a missing row.
             raise HTTPException(status_code=404, detail="Strategy not found")
         caller = get_linked_wallet_address(request)
-        is_owner = row.owner_user_id == user.id or (
-            row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower()
-        )
+        is_owner = row.owner_user_id == user.id
+        if not is_owner and row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower():
+            # Proven via linked-wallet match on a still-unclaimed row: reclaim
+            # every pre-account row tied to this wallet (not just this one),
+            # matching what re-verifying the wallet link would do.
+            claim_legacy_wallet_data(session, user.id, caller)
+            row.owner_user_id = user.id
+            is_owner = True
         if not is_owner:
             # Hide unpublished rows from non-owners (404); published rows are
             # visible, so an honest 403 is returned instead.
