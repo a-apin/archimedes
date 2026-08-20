@@ -702,6 +702,46 @@ resource "aws_ecs_task_definition" "backend" {
         { containerPort = 8080, protocol = "tcp" } # the ALB target — matches archimedes-backend-tg's traffic-port health check
       ]
 
+      # Issue #1309 — nginx is the ONE container actually registered as the
+      # ALB target (the `load_balancer` block below points at it, not at
+      # backend/auth), yet until this healthCheck it was the ONLY essential
+      # container in this task WITHOUT one. Per AWS's documented deployment
+      # semantics (ECS service-definition-parameters "For services that do
+      # use a load balancer"), the rolling-deployment scheduler computes a
+      # task's healthStatus from whichever essential containers declare a
+      # Docker healthCheck — a container with none simply doesn't
+      # participate. With nginx silent, ECS's task-level healthStatus was
+      # driven ENTIRELY by backend + auth, and could read HEALTHY as soon as
+      # those two containers' checks pass — regardless of whether nginx
+      # itself (started only after `dependsOn` is satisfied, then still
+      # needs envsubst-render + `nginx -t` + listen) is actually up and
+      # proxying traffic on 8080 yet. `dependsOn: HEALTHY` below governs
+      # container START ORDER only; it does not make nginx count toward the
+      # service's deployment healthStatus.
+      #
+      # Same path + port the ALB target group itself checks (traffic-port
+      # /health, alb.tf) so ECS's own signal converges on the same fact the
+      # ALB needs true before it will route real traffic here — closing the
+      # gap between "ECS's deployment thinks this task is healthy" and "the
+      # ALB confirms this target is healthy" that the observed incident
+      # timeline is symptomatic of (old target deregistered 9s after the new
+      # task started — long before backend's own 30s startPeriod could have
+      # produced a first passing check, let alone before the ALB's
+      # healthy_threshold=2 × interval=30s could mark the new target
+      # healthy). wget mirrors the "auth" container's healthCheck pattern
+      # above (both images ship BusyBox wget; no curl/python dependency to add).
+      #
+      # NOT proven to be the sole cause of the incident by this PR — see the
+      # PR body / issue comment for what still needs a live-AWS timed probe
+      # (infra/scripts/verify-zero-downtime-deploy.sh) to confirm.
+      healthCheck = {
+        command     = ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/health || exit 1"]
+        interval    = 10
+        timeout     = 5
+        retries     = 3
+        startPeriod = 15
+      }
+
       dependsOn = [
         { containerName = "backend", condition = "HEALTHY" },
         { containerName = "auth", condition = "HEALTHY" }
