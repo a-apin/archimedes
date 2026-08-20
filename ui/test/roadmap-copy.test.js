@@ -6,7 +6,7 @@
 // Two guards, both hermetic (no network, no DB, no Redis, no `.env`, no
 // import.meta.env mutation):
 //
-// 1. Prose guard — the six surface files below must not contain any of the
+// 1. Prose guard — the seven surface files below must not contain any of the
 //    phrase-shapes in OVERCLAIM_PATTERNS. This is a raw source-text scan
 //    (readFileSync, no JSX parsing), so it does not distinguish "rendered
 //    unconditionally" from "rendered inside a ROADMAP_SURFACES_ENABLED
@@ -58,6 +58,7 @@ const SURFACE_FILES = [
 	"src/components/Insights.jsx",
 	"src/components/Strategies.jsx",
 	"src/components/OnboardingTour.jsx",
+	"src/components/FusionResult.jsx",
 ];
 
 //: `(name, regex, canonical_example)` — the example is the shortest string
@@ -164,5 +165,31 @@ test("proof rail is flag-derived: 3 stages off, 5 on (explicit override, no impo
 	assert.deepEqual(
 		getProofStages().map((s) => s.id),
 		["brief", "debate", "gate"],
+	);
+});
+
+test("onboarding tour's paper card has no nav anchor — anon-bounce guard (#1354)", () => {
+	// No nav item carries data-tour="paper" (Layout.jsx's NAV has no 'paper'
+	// entry), so an `anchor: 'paper'` here would make measure() always miss,
+	// which falls through to OnboardingTour.jsx's "not mounted yet" effect
+	// and calls setPage('paper') as a side effect. 'paper' is a page kind:
+	// 'app' route outside ANON_APP_PAGES (routes.js), so for a signed-out
+	// visitor App.jsx bounces straight to /sign-in — the exact anon-bounce
+	// #1354's anti-goal forbids ("linking or navigating to [paper trading]
+	// from an anon-reachable surface is not [fine]"). The manual help-icon
+	// path that (re)opens the tour has no `user` gate (AuthenticatedApp.jsx
+	// passes onOpenTour unconditionally), so an anonymous visitor really can
+	// reach this card.
+	const onboardingTour = readFileSync(
+		repoFile("src/components/OnboardingTour.jsx"),
+		"utf8",
+	);
+	const paperCard = onboardingTour.match(/id:\s*'paper',[\s\S]*?anchor:\s*(\S+),/);
+	assert.ok(paperCard, "could not find the 'paper' tour card in OnboardingTour.jsx");
+	assert.equal(
+		paperCard[1],
+		"null",
+		"the 'paper' tour card must keep anchor: null (no reachable nav element to spotlight, " +
+			"and a non-null anchor triggers an unconditional setPage() navigation side effect)",
 	);
 });

@@ -12,6 +12,7 @@
 //      reachable destination while vault surfaces are off the build, #1354).
 
 import { ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
+import { fusion as ROADMAP_COPY } from '../roadmapCopyApp.js'
 
 export default function FusionResult({ result, onNavigate }) {
   if (!result) return null
@@ -165,10 +166,10 @@ export default function FusionResult({ result, onNavigate }) {
             className="btn btn-primary"
             disabled
             title={rigorPassing
-              ? 'Deploy as vault — coming in Phase 4 (time-bound vaults + on-chain agent)'
+              ? ROADMAP_COPY.deployAsVaultTitle
               : 'Deploy disabled — strategy did not pass the rigor gate'}
           >
-            Deploy as Vault — coming in Phase 4
+            {ROADMAP_COPY.deployAsVaultLabel}
           </button>
         )}
       </div>

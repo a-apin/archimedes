@@ -17,11 +17,9 @@ const layout = readFileSync(
 );
 // PROOF_STAGES itself moved out of Layout.jsx into proofStages.js (#1354) so
 // the roadmap-copy guard can call getProofStages() under plain node — see
-// that file and ui/test/roadmap-copy.test.js for the 3-vs-5-stage guard.
-const proofStages = readFileSync(
-	new URL("../src/proofStages.js", import.meta.url),
-	"utf8",
-);
+// that file and ui/test/roadmap-copy.test.js for the 3-vs-5-stage guard
+// (getProofStages(false)/(true)/() pins the flag-derived stage count; this
+// file only pins that Layout.jsx wires to it, see below).
 const passport = readFileSync(
 	new URL("../src/components/StrategyPassport.jsx", import.meta.url),
 	"utf8",
@@ -37,13 +35,17 @@ const insights = readFileSync(
 
 test("authenticated shell has isolated operational tokens and journey rail", () => {
 	assert.match(layout, /shell app-site/);
-	assert.match(layout, /PROOF_STAGES/);
+	// Pin the wiring, not just the identifier: Layout.jsx must actually call
+	// the flag-derived getProofStages() (proofStages.js), not a hardcoded
+	// array — CORE_PROOF_STAGES/ROADMAP_PROOF_STAGES both declare their
+	// labels unconditionally as source literals, so a plain
+	// `assert.match(proofStages, /Vault/)` (etc.) against that file's text
+	// would pass regardless of whether the flag-derived split is wired
+	// correctly; the 3-vs-5-stage behaviour itself is exercised by
+	// getProofStages(false)/(true)/() in roadmap-copy.test.js.
+	assert.match(layout, /import \{ getProofStages \} from ["']\.\.\/proofStages\.js["'];/);
+	assert.match(layout, /const PROOF_STAGES = getProofStages\(\);/);
 	assert.match(layout, /className="app-proof-rail"/);
-	assert.match(proofStages, /Brief/);
-	assert.match(proofStages, /Debate/);
-	assert.match(proofStages, /Gate/);
-	assert.match(proofStages, /Vault/);
-	assert.match(proofStages, /Monitor/);
 	assert.match(layout, /aria-current=\{isCurrent \? "step" : undefined\}/);
 	assert.match(
 		layout,

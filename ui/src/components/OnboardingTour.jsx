@@ -60,6 +60,16 @@ const ALL_CARDS = [
     // surface (routes.js), it's the MVP spine's act-on step (Layout.jsx
     // "the act-on step of the MVP spine"). Named here so the tour has an
     // honest next step even when 'deploy' below is filtered out (#1354).
+    //
+    // anchor is intentionally null, not 'paper': no nav item carries
+    // data-tour="paper" (Layout.jsx's NAV has no 'paper' entry), so the
+    // measure() effect would never find the element and would fall through
+    // to its "not mounted yet" branch, which calls setPage('paper') as a
+    // side effect. For a signed-out visitor that navigates to a page kind:
+    // 'app' route outside ANON_APP_PAGES (routes.js) and App.jsx bounces
+    // straight to /sign-in — the exact anon-bounce #1354's anti-goal
+    // forbids. A null anchor renders this as a centered, text-only card
+    // (rect stays null either way) with no navigation side effect at all.
     id: 'paper',
     title: 'Try it as paper trading',
     body: (
@@ -68,7 +78,7 @@ const ALL_CARDS = [
         paper trade</strong> — free, immediate, no wallet signature required.
       </>
     ),
-    anchor: 'paper',
+    anchor: null,
     illustration: 'paper',
   },
   {
