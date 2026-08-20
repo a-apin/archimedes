@@ -41,10 +41,23 @@
 	--glass-border: rgba(255, 255, 255, 0.06);
 	--glass-hover: rgba(255, 255, 255, 0.05);
 
-	/* — Text — */
+	/* Form fields are the one place --glass-border is load-bearing rather than
+     decorative: an input's fill matches the card it sits in, so the 1px
+     border IS the component boundary and 1.4.11 wants it at 3:1. Separate
+     token so raising it can't brighten every hairline in the system.
+     rgba(255,255,255,0.35) on --surface-2 = 3.23:1 (0.06 gave 1.17:1). */
+	--field-border: rgba(255, 255, 255, 0.35);
+
+	/* — Text —
+     --text-3 is the `.caption` colour and the only muted text token that ever
+     lands on the BASE palette (the auth screen renders outside both
+     .app-site and .public-site, so it gets these values verbatim). It is
+     therefore pinned at ≥4.5:1 on --surface-2 for WCAG 2.2 AA 1.4.3:
+     #8a8a93 on #16161a = 5.27:1 (was #71717a = 3.73:1). --text-4 stays a
+     border/decoration token — never use it as a text colour on this palette. */
 	--text-1: #fafafa;
 	--text-2: #a1a1aa;
-	--text-3: #71717a;
+	--text-3: #8a8a93;
 	--text-4: #3f3f46;
 
 	/* — Semantic —
@@ -70,7 +83,12 @@
      on both canvases. */
 	--chart-grid: rgba(255, 255, 255, 0.06);
 	--chart-grid-strong: rgba(255, 255, 255, 0.22);
-	--chart-label: rgba(255, 255, 255, 0.42);
+	/* Axis tick values are real 8–10px <text>, so they need 4.5:1 (1.4.3).
+     Neither .app-site nor .public-site overrides these, and the asset price
+     modal portals to <body> (outside both shells), so the BASE value has to
+     hold on every card we draw a chart on: 0.52 gives ≥4.74:1 from #081218
+     through #19343d (0.42 gave 3.88:1 on --app-raised). */
+	--chart-label: rgba(255, 255, 255, 0.52);
 	--chart-label-strong: rgba(255, 255, 255, 0.55);
 
 	/* — Type — */
@@ -107,12 +125,17 @@
 :root[data-theme="light"] {
 	color-scheme: light;
 
-	/* — Brand — */
-	--accent-rgb: 156, 107, 11;
-	--accent: #9c6b0b;
+	/* — Brand —
+     Darkened from #9c6b0b to clear 4.5:1 as link/label text on --surface-2
+     (#8a5f0a on #eceae2 = 4.68:1, was 3.86:1) — the auth screen is the one
+     surface still on this palette and its "← Archimedes" link and met
+     password rules are drawn in --accent. --canvas on --accent (the
+     .btn-primary pairing) improves to 5.40:1 at the same time. */
+	--accent-rgb: 138, 95, 10;
+	--accent: #8a5f0a;
 	--accent-hover: #b47f17;
-	--accent-muted: rgba(156, 107, 11, 0.12);
-	--accent-glow: rgba(156, 107, 11, 0.06);
+	--accent-muted: rgba(138, 95, 10, 0.12);
+	--accent-glow: rgba(138, 95, 10, 0.06);
 
 	/* — Canvas — */
 	--canvas: #fafaf7;
@@ -126,11 +149,13 @@
 	--glass: rgba(9, 9, 11, 0.02);
 	--glass-border: rgba(9, 9, 11, 0.09);
 	--glass-hover: rgba(9, 9, 11, 0.05);
+	--field-border: rgba(9, 9, 11, 0.5);
 
-	/* — Text — */
+	/* — Text — (see the dark note above: --text-3 is pinned for the auth
+     screen; #62626b on #eceae2 = 5.01:1, was #71717a = 4.01:1) */
 	--text-1: #18181b;
 	--text-2: #52525b;
-	--text-3: #71717a;
+	--text-3: #62626b;
 	--text-4: #a1a1aa;
 
 	/* — Semantic —
@@ -147,10 +172,10 @@
 	--info: #2563eb;
 	--info-bg: rgba(37, 99, 235, 0.08);
 
-	/* — Chart ink — */
+	/* — Chart ink — (0.6 → ≥4.99:1 on every light card; 0.5 gave 3.74:1) */
 	--chart-grid: rgba(9, 9, 11, 0.1);
 	--chart-grid-strong: rgba(9, 9, 11, 0.28);
-	--chart-label: rgba(9, 9, 11, 0.5);
+	--chart-label: rgba(9, 9, 11, 0.6);
 	--chart-label-strong: rgba(9, 9, 11, 0.65);
 }
 
@@ -168,6 +193,12 @@ html {
 	-moz-osx-font-smoothing: grayscale;
 	scroll-behavior: smooth;
 	overflow-x: hidden;
+	/* The document is the scroll container and .topbar is sticky over it at a
+     fixed 56px on every breakpoint. Without this, Shift+Tab backwards up a
+     long page parks the newly focused control under the blurred bar and its
+     focus ring becomes unreadable (2.4.11 Focus Not Obscured). 56px bar +
+     3px outline + 3px offset = 62, rounded to 64. */
+	scroll-padding-top: 64px;
 }
 body {
 	font-family: var(--sans);
@@ -260,6 +291,21 @@ h4,
 }
 .negative {
 	color: var(--negative);
+}
+
+/* Visually hidden but announced — the text half of a colour/glyph signal, and
+   accessible names for table captions. Not `display: none`, which would hide
+   it from assistive tech too. */
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
 }
 
 /* --- App Shell --- */
@@ -1211,7 +1257,7 @@ textarea {
 	width: 100%;
 	padding: 9px 13px;
 	background: var(--surface-2);
-	border: 1px solid var(--glass-border);
+	border: 1px solid var(--field-border);
 	border-radius: var(--radius-sm);
 	color: var(--text-1);
 	font-family: var(--sans);
@@ -1220,10 +1266,12 @@ textarea {
 	transition:
 		border-color 0.15s,
 		box-shadow 0.15s;
-	outline: none;
 	-webkit-appearance: none;
 	appearance: none;
 }
+/* NOTE: no `outline: none` here. It used to sit in this block and, because
+   the auth screen has no :focus-visible rule of its own, it deleted the
+   focus indicator outright on every sign-in / sign-up field (2.4.7). */
 
 /* Restore native checkbox / radio appearance */
 input[type="checkbox"],
@@ -1323,7 +1371,7 @@ textarea {
 	gap: 8px;
 	padding: 9px 13px;
 	background: var(--surface-2);
-	border: 1px solid var(--glass-border);
+	border: 1px solid var(--field-border);
 	border-radius: var(--radius-sm);
 	color: var(--text-1);
 	font-family: var(--sans);
@@ -1333,8 +1381,9 @@ textarea {
 	transition:
 		border-color 0.15s,
 		box-shadow 0.15s;
-	outline: none;
 }
+/* The focus indicator is deliberately left intact on .cs-trigger — see the
+   note on the base input rule above (2.4.7). */
 .cs-trigger:hover {
 	border-color: rgba(var(--accent-rgb), 0.2);
 }
@@ -2190,6 +2239,20 @@ button.primary:disabled {
 	letter-spacing: 0.02em;
 	white-space: nowrap;
 }
+/* Pill-shaped controls (filter tabs, asset toggles) are real <button>s so they
+   are focusable and expose a role (2.1.1 / 4.1.2). `:where()` keeps this at
+   element specificity so every .tag-* variant below still wins on background,
+   colour and border; all it does is strip the UA button chrome that the
+   <span> version never had. */
+button:where(.tag) {
+	font-family: inherit;
+	color: inherit;
+	background: transparent;
+	border: 1px solid transparent;
+	margin: 0;
+	cursor: pointer;
+}
+
 .tag-accent {
 	background: var(--accent-muted);
 	color: var(--accent);
@@ -2286,6 +2349,19 @@ button.primary:disabled {
 		flex-direction: column;
 		gap: 10px;
 	}
+}
+
+/* The library row's disclosure control — renders exactly as the title text it
+   replaced, but with a native button role, name and keyboard activation. */
+.lib-row-toggle {
+	background: none;
+	border: none;
+	padding: 0;
+	margin: 0;
+	font: inherit;
+	color: inherit;
+	text-align: left;
+	cursor: pointer;
 }
 
 .lib-card {
@@ -3200,14 +3276,18 @@ button.primary:disabled {
 	align-items: center;
 	gap: 8px;
 }
+/* Sized in flex basis, not a hard px width, and allowed to wrap: the label is
+   rem-based so it grows under text zoom and under the 1.4.12 text-spacing
+   overrides while a fixed 140px box does not — category names like
+   "Statistical Finance (q-fin.ST)" were clipped to a few characters and the
+   content was simply lost (`title` only helps a hovering mouse). */
 .bar-label,
 .year-label {
-	width: 140px;
+	flex: 0 1 140px;
+	min-width: 0;
 	font-size: 0.7rem;
 	color: var(--text-2);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	overflow-wrap: break-word;
 }
 .bar-track,
 .year-track {
@@ -3271,14 +3351,49 @@ button.primary:disabled {
 	padding: 8px 12px;
 	border-radius: 6px;
 	background: var(--surface-2);
-	border: 1px solid var(--glass-border);
+	border: 1px solid var(--field-border);
 	color: var(--text-1);
 	font-size: 0.85rem;
 }
+/* No `outline: none` — see the note on the base input rule (2.4.7). */
 .catalog-search:focus,
 .kg-search:focus {
-	outline: none;
 	border-color: var(--accent);
+}
+
+/* Knowledge-graph view controls — the single-pointer alternative to drag-pan
+   and wheel-zoom (2.5.7). Sits where the lone "Reset view" button used to. */
+.corpus-kg-controls {
+	position: absolute;
+	top: 8px;
+	right: 20px;
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 4px;
+	max-width: calc(100% - 32px);
+}
+.corpus-kg-controls .btn {
+	padding: 4px 10px;
+	font-size: 0.75rem;
+	min-width: 30px;
+}
+
+/* Paper titles in the catalog are the control that opens a paper, so they are
+   buttons; the reset keeps the cell looking exactly as it did. */
+.catalog-title-btn {
+	background: none;
+	border: none;
+	padding: 0;
+	margin: 0;
+	font: inherit;
+	color: inherit;
+	text-align: left;
+	cursor: pointer;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 /* .catalog-filter now wraps a CustomSelect (a div-based cs-wrap, not a raw
    <select>) — it only controls layout/sizing here; the visible chrome
@@ -3596,7 +3711,11 @@ button.primary:disabled {
 	--text-1: var(--public-paper);
 	--text-2: #b8c2bb;
 	--text-3: #8da098;
-	--text-4: #657a73;
+	/* Architecture's loading / error / "live number unavailable" copy is drawn
+     in --text-4 (Architecture.jsx :86, :382, :514, :872, :901, :1054, :1084),
+     so it has to clear 4.5:1: #7d9189 is 4.74:1 on --surface-2 (#10252d) and
+     5.28:1 on the glass card, where #657a73 was 3.46 / 3.86:1. */
+	--text-4: #7d9189;
 	--accent-rgb: 217, 168, 92;
 	--accent: var(--public-bronze);
 	--accent-hover: #e4ba78;
@@ -3632,20 +3751,34 @@ button.primary:disabled {
 	font-family: inherit;
 }
 
-.public-skip-link {
+/* Bypass Blocks (2.4.1). `.app-skip-link` is the authenticated shell's copy:
+   it cannot reuse `.public-skip-link`'s colours because --public-paper /
+   --public-abyss are undefined inside .app-site, which would compute the link
+   to a transparent background and make it unreadable when focused. */
+.public-skip-link,
+.app-skip-link {
 	position: fixed;
 	top: 10px;
 	left: 12px;
 	z-index: 100;
 	padding: 10px 14px;
-	background: var(--public-paper);
-	color: var(--public-abyss);
 	font-size: 0.8rem;
 	font-weight: 600;
 	transform: translateY(-180%);
 }
 
-.public-skip-link:focus {
+.public-skip-link {
+	background: var(--public-paper);
+	color: var(--public-abyss);
+}
+
+.app-skip-link {
+	background: var(--text-1);
+	color: var(--canvas);
+}
+
+.public-skip-link:focus,
+.app-skip-link:focus {
 	transform: translateY(0);
 }
 
@@ -4609,6 +4742,11 @@ button.primary:disabled {
 	--app-verify: #79c9b7;
 	--app-action: #d9a85c;
 	--app-risk: #c56f55;
+	/* Fields are filled with --app-canvas inside --app-surface cards, so the
+     fill gives no cue (1.08:1) and the border is the whole boundary:
+     rgba(225,230,222,0.45) is 3.81:1 on the fill and 3.54:1 on the card
+     (--glass-border was 1.32 / 1.22:1). */
+	--field-border: rgba(225, 230, 222, 0.45);
 	--canvas: var(--app-canvas);
 	--surface-1: var(--app-surface);
 	--surface-2: var(--app-raised);
@@ -4654,6 +4792,7 @@ button.primary:disabled {
 	--app-verify: #287566;
 	--app-action: #97630b;
 	--app-risk: #a64e38;
+	--field-border: rgba(8, 18, 24, 0.5);
 	--canvas: var(--app-canvas);
 	--surface-1: var(--app-surface);
 	--surface-2: var(--app-raised);
@@ -4970,19 +5109,22 @@ button.primary:disabled {
 .app-site input,
 .app-site select,
 .app-site textarea {
-	border-color: var(--glass-border);
+	border-color: var(--field-border);
 	border-radius: 3px;
 	background: var(--app-canvas);
 	color: var(--text-1);
 }
 
+/* `outline: none` was here and out-specified `.app-site :focus-visible`
+   (0,2,1 vs 0,2,0), stripping the 3px ring from every text input, select and
+   textarea in the shell — the controls where a keyboard user needs it most
+   (2.4.7). The border tint + shadow stay as the polish they always were. */
 .app-site .chat-input:focus,
 .app-site input:focus,
 .app-site select:focus,
 .app-site textarea:focus {
 	border-color: var(--app-verify);
 	box-shadow: 0 0 0 2px rgba(121, 201, 183, 0.12);
-	outline: none;
 }
 
 .app-site .tag {
