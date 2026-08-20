@@ -22,7 +22,7 @@ still quotes (402 without a payment header — so the approval UX is exercised
 end to end) but accepts a presented payment WITHOUT verify/settle, loudly.
 No real value can move while the custody migration (#975) is pending.
 
-Pricing is flat (``GENERATION_PRICE_USD``, default $0.15 testnet USDC) behind
+Pricing is flat (``GENERATION_PRICE_USD``, default $2.00 testnet USDC — one $20 faucet drip = 10 generations) behind
 ``quote()`` — the single seam #1217's measured per-generation budget replaces
 later without touching the paywall flow.
 """
@@ -37,7 +37,7 @@ from fastapi import HTTPException, Request
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PRICE_USD = "0.15"
+DEFAULT_PRICE_USD = "2.00"
 
 # The logical resource identifier bound into the 402 requirements. One flat
 # resource for now — per-job binding is unnecessary while the price is flat
