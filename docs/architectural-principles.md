@@ -181,7 +181,7 @@ Three instances of the same failure were found in one week:
 | Instance | Mechanism | Cost |
 |---|---|---|
 | SSM credentials | `load_ssm_secrets()` catches the IAM denial and boots degraded by design | Marketplace publish never worked in production. 19 days, silent, no alarm. |
-| Leaderboard fixture fallback | Numeric fields fall back to migrated fixture columns when live compute is unavailable | Fabricated statistics presented as measured, on the flagship public page |
+| Leaderboard fixture fallback | Numeric fields fall back to migrated fixture columns when live compute is unavailable | Fabricated statistics presented as measured, on the flagship public page (fixed [#1187](https://github.com/a-apin/archimedes/issues/1187): the four rigor numeric fields now render `None` — not a fixture number — whenever the live gate could not run) |
 | T-bill / Maillard rows | Persisted return series bound to the wrong asset | The top-ranked strategy graded the null benchmark's returns |
 
 Note what the three have in common: each one was a *deliberate* design choice at the time,

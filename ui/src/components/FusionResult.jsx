@@ -7,7 +7,12 @@
 //      and surface an honest "pre-backtest hypothesis" note.
 //   2. Backtested + rigor-gated — result also has backtest { sharpe_ratio, cagr, ... }
 //      and rigor { passing, dsr, dsr_p_value, pbo_score, oos_sharpe, look_ahead_clean }.
-//      We render metrics + verdict + deploy CTA (gated on rigor.passing).
+//      We render metrics + verdict + deploy CTA (gated on rigor.passing AND
+//      ROADMAP_SURFACES_ENABLED — the Phase-4 vault deploy preview has no
+//      reachable destination while vault surfaces are off the build, #1354).
+
+import { ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
+import { fusion as ROADMAP_COPY } from '../roadmapCopyApp.js'
 
 export default function FusionResult({ result, onNavigate }) {
   if (!result) return null
@@ -156,15 +161,17 @@ export default function FusionResult({ result, onNavigate }) {
             Open in Library →
           </button>
         )}
-        <button
-          className="btn btn-primary"
-          disabled
-          title={rigorPassing
-            ? 'Deploy as vault — coming in Phase 4 (time-bound vaults + on-chain agent)'
-            : 'Deploy disabled — strategy did not pass the rigor gate'}
-        >
-          Deploy as Vault — coming in Phase 4
-        </button>
+        {ROADMAP_SURFACES_ENABLED && (
+          <button
+            className="btn btn-primary"
+            disabled
+            title={rigorPassing
+              ? ROADMAP_COPY.deployAsVaultTitle
+              : 'Deploy disabled — strategy did not pass the rigor gate'}
+          >
+            {ROADMAP_COPY.deployAsVaultLabel}
+          </button>
+        )}
       </div>
     </div>
   )

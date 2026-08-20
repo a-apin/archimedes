@@ -49,16 +49,17 @@ curl -sX POST http://localhost:8000/api/generate/start \
 ```
 
 Request/response schema: `GenerateStartRequest` / `GenerateStartResponse` in
-[`generate_schemas.py`](../../backend/archimedes/api/generate_schemas.py) (lines 27–86).
+[`generate_schemas.py`](../../backend/archimedes/api/generate_schemas.py) (lines 40–110).
 Notable fields:
 
 - `brief.intent` — free text, required.
-- `brief.risk_appetite` — one of `fixed_income | conservative | moderate | aggressive | hyper_risky` (generate_schemas.py:31).
-- `brief.max_papers` — 1–20, default 5 (generate_schemas.py:34).
-- `n_candidates` — 1–5, default 1 (generate_schemas.py:63). This is **not** the DSR
+- `brief.risk_appetite` — one of `fixed_income | conservative | moderate | aggressive | hyper_risky` (generate_schemas.py:44).
+- `brief.max_papers` — 2–6, default 5 (generate_schemas.py:47, == strategy_fusion's
+  MIN_PAPERS/FUSION_MAX_PAPERS, the range the pipeline actually enforces).
+- `n_candidates` — 1–5, default 1 (generate_schemas.py:87). This is **not** the DSR
   multiple-testing count — see "Reading DSR/PBO honestly" below.
 - `mode` — accepted for API compatibility but **ignored**: "the debate society is
-  the sole generation pipeline" (generate_schemas.py:66-69, generate_routes.py's
+  the sole generation pipeline" (generate_schemas.py:90-93, generate_routes.py's
   `_run_with_cleanup` never branches on it besides passing it through unused by
   the active pipeline).
 - `model` — optional model id; gated server-side, see "Model gating" below.
@@ -99,7 +100,7 @@ you write a client:
 
 ### Event names on the wire
 
-The full `EventName` literal (generate_schemas.py:92-107):
+The full `EventName` literal (generate_schemas.py:116-131):
 
 ```
 job_queued, brief_validated, pipeline_selected, candidates_selected,
@@ -117,7 +118,7 @@ data: <json>
 ```
 
 `data` is an arbitrary JSON object (`GenerateEvent.data: dict[str, Any]`,
-generate_schemas.py:114-128) — the event name tells you how to interpret it; there
+generate_schemas.py:138-152) — the event name tells you how to interpret it; there
 is no single fixed schema across all fourteen event types. The verdict itself
 arrives inside the `done` event's payload (and via the separate
 `/api/generate/jobs/{job_id}/candidates` and `/api/strategies/passports/{id}`

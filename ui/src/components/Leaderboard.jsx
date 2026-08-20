@@ -257,13 +257,35 @@ export default function Leaderboard() {
           style={{ background: 'var(--surface-3)', color: 'var(--text-2)', border: '1px solid var(--glass-border)', borderRadius: 6, padding: '4px 8px', fontSize: 12 }}>
           {REGIMES.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
         </select>
-        {data && <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 'auto' }}>{data.total} strateg{data.total === 1 ? 'y' : 'ies'}</span>}
+        {data && (
+          <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 'auto' }}>
+            {data.degraded ? '—' : `${data.total} strateg${data.total === 1 ? 'y' : 'ies'}`}
+          </span>
+        )}
       </div>
 
       {loading && <div className="body" style={{ color: 'var(--text-3)' }}>Loading the board…</div>}
       {error && <div className="tag-warning" style={{ display: 'inline-block', padding: '6px 10px' }}>Couldn’t load the leaderboard: {error}</div>}
 
-      {!loading && !error && data && data.entries.length === 0 && isOwn && (
+      {/* A degraded board (#1356: the strategy provider raised, or the
+          curated cohort came back empty for a reason other than a
+          legitimate filter — e.g. the corpus missing from the build) is a
+          200 with intact scoring-engine metadata, not an `error` — so it
+          must be surfaced here, and it must pre-empt BOTH honest-empty
+          messages below, which claim something specific ("you haven't
+          generated any" / "no strategies match these filters") that is not
+          what actually happened. */}
+      {!loading && !error && data?.degraded && (
+        <div role="status" className="tag-warning" style={{ display: 'block', padding: '10px 14px', marginBottom: 14, borderRadius: 4 }}>
+          <strong>Board data is degraded.</strong>{' '}
+          {data.degraded_reason || 'Some strategies could not be loaded.'}{' '}
+          <button type="button" className="btn btn-sm btn-outline" onClick={load} style={{ marginLeft: 4 }}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {!loading && !error && data && !data.degraded && data.entries.length === 0 && isOwn && (
         <div className="body" style={{ color: 'var(--text-3)', padding: 20, textAlign: 'center', border: '1px dashed var(--glass-border)', borderRadius: 8 }}>
           You haven't generated any strategies yet.{' '}
           <a href="/app/generate" style={{ color: 'var(--accent)' }}>Generate one</a>, or{' '}
@@ -274,7 +296,7 @@ export default function Leaderboard() {
         </div>
       )}
 
-      {!loading && !error && data && data.entries.length === 0 && !isOwn && (
+      {!loading && !error && data && !data.degraded && data.entries.length === 0 && !isOwn && (
         <div className="body" style={{ color: 'var(--text-3)', padding: 20, textAlign: 'center', border: '1px dashed var(--glass-border)', borderRadius: 8 }}>
           No strategies match these filters yet.
         </div>

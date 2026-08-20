@@ -9,12 +9,12 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from functools import lru_cache
 
 import numpy as np
 import scipy.stats
 from fastapi import APIRouter, Depends, Request
 
+from archimedes.api._route_helpers import strategy_provider as _strategy_provider
 from archimedes.api.risk_schemas import (
     CVaRLevel,
     PortfolioCVaRResponse,
@@ -26,20 +26,17 @@ from archimedes.api.risk_schemas import (
     StrategyRiskSummary,
 )
 from archimedes.feature_flags import require_quant_feature
-from archimedes.services.strategy_provider import LocalStrategyProvider, default_provider
 
 logger = logging.getLogger(__name__)
 
 risk_router = APIRouter(prefix="/api/risk", tags=["risk"])
 
-
-@lru_cache(maxsize=1)
-def _strategy_provider() -> LocalStrategyProvider:
-    """Lazily-constructed, cached strategy provider (see _route_helpers.py's
-    strategy_provider() for the full rationale — this module has its own
-    copy of the singleton rather than importing the shared one, so it gets
-    its own lazy accessor). Call sites: ``_strategy_provider().foo()``."""
-    return default_provider()
+# `_strategy_provider` used to be this module's own lazily-cached accessor,
+# built at its own first-call time — a second cache over the same on-disk
+# corpus that `_route_helpers.strategy_provider()` already served to five
+# other route modules (#1356: a fixtures backfill landing between two
+# first-calls left them permanently disagreeing). Now an alias for the same
+# shared singleton; call sites (`_strategy_provider().foo()`) are unchanged.
 
 
 def _all_strategies(request: Request) -> list:

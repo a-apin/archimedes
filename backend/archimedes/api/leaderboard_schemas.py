@@ -149,3 +149,11 @@ class LeaderboardResponse(BaseModel):
         ),
     )
     scoring_engine: LeaderboardScoringEngine
+    # Honest degradation signal (#1356): True when the underlying strategy
+    # provider raised, or the curated cohort came back empty for a reason
+    # other than a legitimate filter (e.g. the corpus is missing from the
+    # build). `degraded_reason` names which. The UI must never render "No
+    # strategies match these filters yet." while this is True — that is a
+    # different, false claim.
+    degraded: bool = False
+    degraded_reason: str = ""

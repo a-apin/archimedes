@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 import { parseFeatures } from "../src/features.js";
 import {
+	canNavigateTo,
 	pageToPath,
 	postAuthPath,
 	resolveRoute,
@@ -21,9 +22,47 @@ test("landing and architecture remain public", () => {
 	assert.deepEqual(resolveRoute("/architecture").kind, "public");
 });
 
+// Better Auth's account-linking guard (auth/auth.js disableImplicitLinking)
+// redirects a rejected OAuth sign-in to `/?error=account_not_linked` — the
+// bare landing route, which has no sign-in form. Landing must not swallow it:
+// resolveRoute bounces it to /sign-in, the actual sign-in surface, instead.
+test("landing OAuth error bounces to the sign-in surface instead of being swallowed (#1420)", () => {
+	const route = resolveRoute("/", "?error=account_not_linked");
+	assert.equal(route.kind, "redirect");
+	assert.equal(route.redirect, "/sign-in?error=account_not_linked");
+});
+
+test("landing with no error query param stays plain public landing", () => {
+	const route = resolveRoute("/", "");
+	assert.equal(route.kind, "public");
+	assert.equal(route.redirect, null);
+});
+
+test("an error query param reaching /sign-in directly is carried onto the route", () => {
+	const route = resolveRoute("/sign-in", "?error=account_not_linked");
+	assert.equal(route.kind, "auth");
+	assert.equal(route.error, "account_not_linked");
+});
+
+// Mutation-prove: this assertion is worthless if it also passes with the
+// `error` field never wired into the redirect target. Removing the
+// `?error=...` suffix from routes.js's redirect template (or dropping the
+// `pathname === '/' && query.error` guard entirely) makes this test fail —
+// confirmed by hand before this file was committed.
+test("the redirect target actually encodes the error value, not just any redirect", () => {
+	const route = resolveRoute("/", "?error=some_other_code");
+	assert.equal(route.redirect, "/sign-in?error=some_other_code");
+});
+
 test("account routes remain public", () => {
 	assert.equal(resolveRoute("/sign-in").kind, "auth");
 	assert.equal(resolveRoute("/sign-up").kind, "auth");
+});
+
+test("reset-password is a public auth route (#1323)", () => {
+	const route = resolveRoute("/reset-password");
+	assert.equal(route.kind, "auth");
+	assert.equal(route.page, "reset-password");
 });
 
 test("application routes use /app boundary", () => {
@@ -248,4 +287,26 @@ test("anonymous nav shows browse + the Generate conversion path, nothing statefu
 		{ id: "explore" },
 		{ id: "generate" },
 	]);
+});
+
+test("canNavigateTo gates on ANON_APP_PAGES for a null user, always true when signed in (#1364)", () => {
+	// The onboarding tour's card 3 ('library') and card 4 ('reasoning') are
+	// app pages an anonymous visitor may not open (routes.js ANON_APP_PAGES).
+	// Before this predicate existed, the tour navigated to them unconditionally
+	// and App.jsx's anonymous-app-page guard replaced the whole page with
+	// /sign-in — this is the pure check that now gates that navigation.
+	assert.equal(canNavigateTo("library", null), false);
+	assert.equal(canNavigateTo("reasoning", null), false);
+	// 'generate' is in ANON_NAV_IDS (visible in the anon nav, so it measures
+	// fine on desktop) but NOT in ANON_APP_PAGES — the exact trap the issue's
+	// anti-goal warns against gating on an id allowlist instead of this.
+	assert.equal(canNavigateTo("generate", null), false);
+	assert.equal(canNavigateTo("explore", null), true);
+	assert.equal(canNavigateTo("leaderboard", null), true);
+	assert.equal(canNavigateTo("corpus", null), true);
+	// Any page is navigable once a user is present — canNavigateTo does not
+	// re-derive ANON_APP_PAGES for the signed-in branch.
+	assert.equal(canNavigateTo("library", { id: "u1" }), true);
+	assert.equal(canNavigateTo("reasoning", { id: "u1" }), true);
+	assert.equal(canNavigateTo("generate", { id: "u1" }), true);
 });
