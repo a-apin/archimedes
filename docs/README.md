@@ -57,12 +57,13 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`benchmarks/stockbench-results.md`](benchmarks/stockbench-results.md) | findings | Önder Akkaya | — | StockBench evaluation results (`stockbench-results.json`, `stockbench-vs-baselines.png`). |
 | [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md) | spec | Önder Akkaya | 2026-07-28 | DSR + PBO + walk-forward + look-ahead audit math and thresholds. |
 | [`specs/transaction-cost-turnover-model.md`](specs/transaction-cost-turnover-model.md) | shipped | Önder Akkaya | 2026-06-11 | Transaction-cost and turnover model in the analytics engine. |
+| [`cited-literature.md`](cited-literature.md) | current | Dan Browne | 2026-08-20 | The five load-bearing papers behind the gate, including the two that are cited against us. |
 
 ## Corpus and generation
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`corpus-architecture.md`](corpus-architecture.md) | target-state | Dan Browne | 2026-08-19 | 10,000 arXiv preprints (not peer-reviewed), metadata + abstracts only. Describes embeddings/clusters/KG as built; in prod none of the three exist — retrieval is lexical and the graph/KG endpoints 503 (#778). |
+| [`corpus-architecture.md`](corpus-architecture.md) | current | Dan Browne | 2026-08-20 | 10,000 arXiv preprints (not peer-reviewed). Candidate selection over the corpus is a **keyword filter**; MiniLM re-scores only that already-selected candidate set, at request time, with a TF-IDF fallback. There is no stored embedding index over the corpus and the knowledge graph is not built. |
 | [`specs/multi-agent-debate-spec.md`](specs/multi-agent-debate-spec.md) | shipped | Dan Browne | 2026-07-28 | The debate society — the sole generation pipeline. |
 | [`specs/strategy-fusion-spec.md`](specs/strategy-fusion-spec.md) | shipped | Dan Browne | 2026-07-28 | Multi-paper synthesis feeding the debate proposals. |
 | [`specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md) | shipped | Dan Browne | — | Paper-grounding contract carried by every strategy. |
@@ -79,7 +80,6 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`diagrams/strategy-passport-architecture.md`](diagrams/strategy-passport-architecture.md) | reference | Dan Browne | — | Passport architecture diagram + reference. |
 | [`bedrock-model-cost-comparison.md`](bedrock-model-cost-comparison.md) | reference | Dan Browne | — | Bedrock model costs, us-east-1 on-demand. LLM is `bedrock_converse` / `amazon.nova-micro-v1:0`. |
 | [`cost-estimates/generate-llm-costs.md`](cost-estimates/generate-llm-costs.md) | reference | Dan Browne | — | Per-generation LLM cost estimate. |
-| [`generation-cost-instrumentation.md`](generation-cost-instrumentation.md) | current | Dan Browne | 2026-08-20 | What one generation actually consumes: per-job token counts, per-stage wall/CPU seconds, peak RSS, row writes. Raw measurement only — the quote seam stays `flat_v1`. |
 
 ## On-chain and Arc
 

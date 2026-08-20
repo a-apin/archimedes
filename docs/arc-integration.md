@@ -17,7 +17,7 @@ How Archimedes uses Arc and the Circle SDK, plus pointers into the `context-arc`
 | USDC (ERC-20, 6 decimals) | `0x3600000000000000000000000000000000000000` |
 | Gas token | USDC (18 decimals native) — no ETH needed |
 
-**Onboarding flow:** visit <https://faucet.circle.com> → connect wallet → receive 20 testnet USDC on Arc. Refills every 2 hours. USDC is the native gas token, so faucet funds cover both gas and trading. **No Arc mainnet yet** — see [`README.md` § Status](../README.md#status-2026-05-22) for the honest framing.
+**Onboarding flow:** visit <https://faucet.circle.com> → connect wallet → receive 20 testnet USDC on Arc. Refills every 2 hours. USDC is the native gas token, so faucet funds cover both gas and trading. **No Arc mainnet yet** — mainnet launch, real-funds custody, and the regulatory architecture are roadmap. Testnet only means no real money is at risk, by design.
 
 ## Circle sponsor alignment
 
@@ -71,9 +71,25 @@ git submodule update --remote submodules/context-arc
 
 Or via the canteen CLI: `arc-canteen context sync` (drops a copy into `~/.arc-canteen/context/`).
 
+## Known limitation — AMM pool liquidity
+
+Relocated from `README.md` (2026-08-20), with its numbers removed rather than refreshed.
+
+The AMM pools are deployed but **thinly or not at all funded**. The synthetic-token mint
+authority is a separate Foundry deployer wallet that the bootstrap script's Circle signer
+cannot reach, so seeding reserves is a manual step that has only been done for a handful of
+pairs. How many pools exist and which ones hold reserves is a live fact, not a doc fact —
+read `GET /api/config/contracts` for the pool census and query the pool for its reserves.
+
+What matters is the mechanism, and it is the rigor system working as designed: **the
+autonomous agent's liquidity guard skips swaps into empty pools and logs the reason** rather
+than routing capital into a doomed trade. A `liquidity_failure` trace is the honest outcome,
+not a bug. See the failure-mode table in
+[`specs/vault-semantics-spec.md`](specs/vault-semantics-spec.md).
+
 ## Related docs
 
-- [`README.md`](../README.md) — project overview + status
+- [`README.md`](../README.md) — project overview + quickstart
 - [`SETUP.md`](../SETUP.md) — prerequisites + 5-step install
 - [`docs/runbooks/operations.md`](runbooks/operations.md) — RPC URL deep-dive + LLM backends + security
 - ``docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md`` (routed to the private docs repo, 2026-08-19) — forkable primitives for the Arc OSS Showcase competition

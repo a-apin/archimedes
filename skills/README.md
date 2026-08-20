@@ -19,6 +19,7 @@ ship with the repo.
 | [`x402-payment/`](x402-payment/SKILL.md) | Understanding or touching the x402/Circle Gateway copy-trading fee flow (`marketplace/payments.py`) — the in-process 402→sign→verify→settle protocol, testnet posture, and `PAYMENTS_DRY_RUN` semantics. |
 | [`strategy-passport/`](strategy-passport/SKILL.md) | Reading or summarizing a strategy passport — every `strategy_passports` field, what `passes_rigor_gate` does and does not mean, why `status="live"` is not a rigor claim, and the five claims never to make about a strategy's rigor. |
 | [`repo-dev/`](repo-dev/SKILL.md) | Doing general development work in this repo — the conda env (Python + Node), hermetic pytest conventions, merge-commit-only branch policy, CI gates, and where things live. |
+| [`archimedes-cli/`](archimedes-cli/SKILL.md) | Installing and driving the `archimedes` command-line tool — `login`, `meter`, `verify`, `manifest`, the `--json` shape on every path, the exit-code contract, and why `verify` can only evaluate two of the gate's four checks over a bare returns series. |
 
 ## Ground rules for every skill in this directory
 
@@ -37,10 +38,11 @@ ship with the repo.
   interim/custodial arrangement, the skill says so — see `strategy-passport/`'s
   "five forbidden phrasings" and `x402-payment/`'s custody-model note for the
   house style on this.
-- **The CLI is deliberately not covered.** `cli/` is a `0.0.1`
-  name-reservation stub — every subcommand exits `NOT_IMPLEMENTED`
-  (`cli/src/archimedes_cli/cli.py`). There is no `skills/cli/` here on purpose;
-  add one only once the CLI actually does something.
+- **The CLI is covered only as far as it works.** `cli/` is at `0.1.0`: `login`,
+  `meter`, `verify`, and `manifest` are implemented; `backtest` and `verify --local`
+  still exit `NOT_IMPLEMENTED` (3). [`archimedes-cli/`](archimedes-cli/SKILL.md) says
+  so explicitly rather than implying a fuller tool. (`0.0.1` was a name reservation in
+  which every subcommand exited 3 — that is history, not the current state.)
 
 ## Adding a new skill
 

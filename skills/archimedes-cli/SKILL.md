@@ -25,8 +25,11 @@ still not implemented" below. Don't imply otherwise.
 
 ## Install
 
+The package is **not published to PyPI yet** — `pip install archimedes-cli` returns "No
+matching distribution found" (PyPI 404, verified 2026-08-20). Install from the repo:
+
 ```bash
-pip install archimedes-cli
+pip install -e ./cli          # from the repo root
 ```
 
 Python ≥3.10, two dependencies (`click`, `httpx`) —

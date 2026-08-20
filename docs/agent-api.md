@@ -35,7 +35,34 @@ python scripts/agent_journey.py --base https://archimedes-arc.com --ephemeral
 ```
 
 The client identifies itself with an agent `User-Agent`, so its traffic shows up
-as an external agent in `/api/metrics`.
+as an external agent in `/api/metrics`. It retains the Better Auth cookie across the
+run, streams generation, and prints the rigor verdict. Exit code is nonzero on hard
+failure.
+
+### The paper deployment the harness leaves behind
+
+Relocated from `README.md` (2026-08-20); it is the one side effect of a "read-only-ish"
+run that surprises people.
+
+After generation the winner is deployed to **free paper trading by default**
+(`--no-paper` skips it). That creates a **persistent paper deployment** on whatever
+`--base` points at:
+
+- On `--ephemeral` runs the script stops the deployment at the end — the disposable
+  account is unreachable afterwards, so leaving it running would strand a ledger nobody
+  can read.
+- On real-account runs it is left **ACTIVE deliberately** — that running ledger is the
+  point. Stop it later with `POST /api/paper/deployments/{id}/stop`.
+
+`--deploy` additionally links a wallet from `AGENT_WALLET_KEY` (or a disposable in-memory
+wallet under `--ephemeral`) through EIP-4361. Paper trading needs neither a wallet nor gas;
+`--deploy` needs both.
+
+Reference implementation: [`scripts/agent_journey.py`](../scripts/agent_journey.py).
+For the raw `/api/*` surface without the harness, see
+[`skills/`](../skills/README.md) — grounded, file:line-cited agent skills on the
+generate/verdict flow, reading a strategy passport honestly, the `archimedes` CLI, and
+the x402 marketplace payment flow.
 
 ## The journey
 

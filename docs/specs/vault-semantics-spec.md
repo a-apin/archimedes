@@ -62,6 +62,39 @@ The contract itself remains on-chain (immutable history) but accepts no new
 deposits. **No "redeploy same strategy into same vault" path** — the new market
 regime warrants a fresh rigor check.
 
+## What the user signs (the deploy path in the UI)
+
+Relocated from `README.md` (2026-08-20) — it is implementation detail of this spec's
+Created → Funded → Active transitions, not front-door content.
+
+`CreateVaultModal` deploys the vault; the `DepositFlow` stepper then walks the user
+through **three wallet signatures**, in order:
+
+1. `USDC.approve(vault, amount)` — allowance for the deposit
+2. `vault.deposit(amount)` — capital moves user → vault (Created → Funded)
+3. `vault.setTargetAllocations(weights)` — the strategy's initial weights (Funded → Active)
+
+`StrategyPublisher` anchors the passport's `methodology_hash` on the `StrategyRegistry`
+contract per vault created, so the strategy the vault runs is pinned to the passport the
+user read before deploying.
+
+Every one of those three is signed by the user's own wallet. The platform never holds a
+key that can move user capital — that is the non-custodial claim, and it is a property of
+this signature sequence, not a policy statement. See
+[`../adr/non-custodial-vault-owner-agent.md`](../adr/non-custodial-vault-owner-agent.md).
+
+### Verifying a trace on-chain is O(1)
+
+The Reasoning page's "Verify on-chain" button does **not** scan the chain. It runs a single
+`eth_getTransactionReceipt` against the recorded tx hash, decodes the log, and — on success
+— surfaces a `testnet.arcscan.app/tx/...` link. Cost is constant per trace, independent of
+how many traces exist.
+
+The honest edge: a trace row whose `arc_tx_hash` is `null` has nothing to verify. The agent
+publishes a trace for every decision it reaches, including a `skip` (see the `V_check`
+floor), and a decision that produced no transaction produces no hash. Read
+`GET /api/traces/` and check `arc_tx_hash` before claiming a trace is anchored.
+
 ## Agent interaction during the window
 
 1. **At `window_start`:** Agent calls `setTargetAllocations()` once with the

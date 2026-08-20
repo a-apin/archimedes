@@ -26,7 +26,7 @@ The local docker-compose stack reproduces the production EC2 deployment exactly.
 ## Step 1 — Clone the repository (with submodules)
 
 ```bash
-git clone --recurse-submodules git@github.com:a-apin/archimedes-arcadia.git archimedes
+git clone --recurse-submodules https://github.com/a-apin/archimedes.git
 cd archimedes
 ```
 
@@ -84,6 +84,28 @@ docker compose down -v              # stop containers; wipe postgres volume (fre
 docker compose logs -f backend      # tail backend logs
 docker compose logs postgres        # database logs
 ```
+
+## Common dev commands (`make help`)
+
+The repo ships a [`Makefile`](Makefile) with shortcuts for the daily workflow. Run `make`
+(or `make help`) for the authoritative list — it is generated from the Makefile itself, so
+it cannot drift. The ones you will reach for most:
+
+```
+make up         # migrate schema, then build + start the stack
+make down       # stop the stack
+make logs       # tail backend logs
+make pytest     # run the backend test suite
+make lint       # ruff check
+make format     # ruff format
+make ui-dev     # Vite dev server (ui/)
+make routes     # dump the FastAPI route inventory
+make docs-check # run the docs gate locally (links + index)
+make clean      # remove __pycache__ / .pytest_cache / .ruff_cache
+```
+
+Foundry (`compile`, `test`), Circle-wallet (`wallet`, `fund`, `deploy`, `rotate-secret`)
+and oracle (`feed`) targets are there too — `make help` lists them with one line each.
 
 ---
 
@@ -170,21 +192,26 @@ cd ui && npm ci && npm run dev
 
 ## Running the test suite
 
-> ⚠️ **`pytest` requires the docker stack to be running.** The tests depend on Postgres + Redis being reachable. Spin up the stack first:
+> **The default suite is hermetic — no docker stack required.** Tests must pass with no
+> `.env` and no live Postgres / Redis / RPC; that is a hard convention ([`CLAUDE.md`](CLAUDE.md)
+> § Testing conventions), and CI runs them exactly that way. Only tests marked
+> `-m integration` need running services; they are excluded from the default run.
 >
-> ```bash
-> docker compose up -d --build
-> ```
->
-> Use the `--build` flag whenever you've changed dependencies (`environment.yml`, `requirements.txt`, `package.json`) so the images are rebuilt with the new deps. For a quick restart with unchanged code, plain `docker compose up -d` is fine.
+> Use `docker compose up -d --build` when you want the *stack* (to click through the app,
+> or to run the integration marker) — not as a prerequisite for `pytest`. The `--build`
+> flag matters whenever you have changed dependencies (`environment.yml`,
+> `requirements.txt`, `package.json`).
 
 The backend suite runs with a single command from the repo root — no flags, no `PYTHONPATH`, no cwd juggling. `pytest.ini` wires `pythonpath`, `testpaths`, and a verbose default.
 
 ```bash
-docker compose up -d --build            # required prereq
 conda activate archimedes               # one-time per shell
-pytest                                  # 806 backend tests, verbose, green
+pytest                                  # backend unit suite, verbose, green
+pytest --collect-only -q | tail -1      # how many cases there are, from the suite itself
 ```
+
+Ask the suite for the case count rather than trusting a number written in a doc — a count
+in prose goes stale silently.
 
 `pytest` is configured `-v --tb=short --durations=10` — you see each test name, a short traceback on any failure, and the slowest tests. Filter as usual:
 
@@ -197,7 +224,7 @@ pytest --cov=archimedes --cov-report=term-missing  # coverage
 The **analytics-engine** has its own suite (own `pyproject.toml`):
 
 ```bash
-cd analytics-engine && uv sync && uv run pytest    # 16 tests, green
+cd analytics-engine && uv sync && uv run pytest
 ```
 
 Other suites:
