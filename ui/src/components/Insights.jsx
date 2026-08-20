@@ -40,11 +40,26 @@ const FUNNEL_LABELS = {
 
 const DEVICE_LABELS = { mobile: 'Mobile', tablet: 'Tablet', desktop: 'Desktop', tv: 'TV', unknown: 'Unknown' }
 
-const COUNTRY_NAMES = {
-  US: 'United States', GB: 'United Kingdom', DE: 'Germany', BR: 'Brazil', TR: 'Türkiye',
-  CA: 'Canada', FR: 'France', IN: 'India', NL: 'Netherlands', SG: 'Singapore',
-  ZZ: 'Unknown / not provided',
+// Built-in Intl API resolves any ISO-3166 alpha-2 code to a display name —
+// no dependency, no hand-maintained (and inevitably incomplete) map (#1366
+// AC4). ZZ needs an explicit case: Intl.DisplayNames renders it as "Unknown
+// Region", which would contradict the "unknown / not provided" wording this
+// page already uses for ZZ (see the visitor-insights caption below).
+const REGION_NAMES = new Intl.DisplayNames(['en'], { type: 'region' })
+
+function countryName(code) {
+  if (code === 'ZZ') return 'Unknown / not provided'
+  try {
+    return REGION_NAMES.of(code) || code
+  } catch {
+    return code
+  }
 }
+
+// Labels for the per-stage by_agent_type split the funnel API already
+// returns (issue #788) and this page now renders instead of describing a
+// filter the write path doesn't perform (#1366 AC3).
+const AGENT_TYPE_LABELS = { human: 'Human', external: 'External bot', internal: 'Internal' }
 
 const card = {
   background: 'var(--surface-1)',
@@ -104,6 +119,12 @@ export default function Insights() {
   const landed = funnel ? (funnel.stages?.find(s => s.stage === 'landed')?.distinct_visitors ?? 0) : null
   const totalDevices = visitors ? Object.values(visitors.devices || {}).reduce((a, b) => a + b, 0) : 0
   const maxCountry = visitors?.countries?.[0]?.distinct_visitors ?? 0
+  // Formatted, not hard-coded (#1366 AC4) — metrics.epoch_started_at is the
+  // real durable-counting start time; null only when no snapshot has ever
+  // been recorded, in which case we say so rather than guessing a date.
+  const epochStarted = metrics?.epoch_started_at
+    ? new Date(metrics.epoch_started_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
+    : null
 
   return (
     <div style={{ maxWidth: 880, margin: '0 auto', padding: '8px 4px 48px' }}>
@@ -114,7 +135,7 @@ export default function Insights() {
         </button>
       </div>
       <p style={{ color: 'var(--text-2)', marginTop: 0, fontSize: 14 }}>
-        Live conversion instruments for our (un-promoted) traffic. Read-only, PII-free.
+        Public, read-only conversion and traffic metrics. PII-free by design.
       </p>
 
       {error && (
@@ -132,8 +153,10 @@ export default function Insights() {
           <Stat label="Real users (accounts)" value={metrics?.real_users} accent="#3fb56b" />
         </div>
         <p style={{ color: 'var(--text-2)', fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
-          The honest “how many people” numbers. <strong>Distinct visitors</strong> = unique people who loaded
-          the app (JS-gated, so crawlers and bots drop out — this is the funnel’s <em>Landed</em> count below).
+          The honest “how many people” numbers. <strong>Distinct visitors</strong> = every browser session
+          that loaded the app (JS-gated) — this is the funnel’s <em>Landed</em> count below, and it still
+          includes sessions the telemetry classifier positively tags as agents. See the human / external
+          bot / internal split under each stage below for exactly how many.
           <strong> Real users</strong> = canonical Better Auth accounts, all-time. This differs from
           “Connected Wallet”, which counts visitor sessions reaching optional wallet-link step.
         </p>
@@ -154,21 +177,35 @@ export default function Insights() {
         ) : !funnel ? (
           <Empty>Couldn’t load the funnel{error ? `: ${error}` : '.'}</Empty>
         ) : landed === 0 ? (
-          <Empty>No visitors recorded yet. The funnel started collecting when it deployed today.</Empty>
+          <Empty>
+            No visitors recorded yet.{' '}
+            {epochStarted ? `Durable counting began ${epochStarted}.` : 'Durable counting start date is unknown.'}
+          </Empty>
         ) : (
           <div style={{ display: 'grid', gap: 14 }}>
-            {funnel.stages.map((s, i) => (
-              <div key={s.stage}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 5 }}>
-                  <span>{FUNNEL_LABELS[s.stage] || s.stage}</span>
-                  <span style={{ color: 'var(--text-2)' }}>
-                    <strong style={{ color: 'var(--text-1)' }}>{s.distinct_visitors}</strong>
-                    {i > 0 && <> · {(s.step_conversion * 100).toFixed(0)}% of prev</>}
-                  </span>
+            {funnel.stages.map((s, i) => {
+              const bt = s.by_agent_type || {}
+              const tagged = (bt.human ?? 0) + (bt.external ?? 0) + (bt.internal ?? 0)
+              // HLL estimates on both sides of the subtraction, so floor at 0
+              // rather than show a nonsensical negative "unclassified" count.
+              const unclassified = Math.max(0, s.distinct_visitors - tagged)
+              return (
+                <div key={s.stage}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 5 }}>
+                    <span>{FUNNEL_LABELS[s.stage] || s.stage}</span>
+                    <span style={{ color: 'var(--text-2)' }}>
+                      <strong style={{ color: 'var(--text-1)' }}>{s.distinct_visitors}</strong>
+                      {i > 0 && <> · {(s.step_conversion * 100).toFixed(0)}% of prev</>}
+                    </span>
+                  </div>
+                  <Bar pct={s.pct_of_landed * 100} color={i === 0 ? '#5b9dff' : s.distinct_visitors > 0 ? '#3fb56b' : '#3a3f4b'} />
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>
+                    {Object.entries(AGENT_TYPE_LABELS).map(([key, label]) => `${label} ${bt[key] ?? 0}`).join(' · ')}
+                    {' · Unclassified '}{unclassified}
+                  </div>
                 </div>
-                <Bar pct={s.pct_of_landed * 100} color={i === 0 ? '#5b9dff' : s.distinct_visitors > 0 ? '#3fb56b' : '#3a3f4b'} />
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </section>
@@ -198,7 +235,7 @@ export default function Insights() {
                 {(visitors.countries || []).slice(0, 8).map(c => (
                   <div key={c.code}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
-                      <span>{COUNTRY_NAMES[c.code] || c.code}</span>
+                      <span>{countryName(c.code)}</span>
                       <strong>{c.distinct_visitors}</strong>
                     </div>
                     <Bar pct={maxCountry ? (c.distinct_visitors / maxCountry) * 100 : 0} color="#7c6cff" />

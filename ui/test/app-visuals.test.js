@@ -23,6 +23,10 @@ const portfolio = readFileSync(
 	new URL("../src/components/Portfolio.jsx", import.meta.url),
 	"utf8",
 );
+const insights = readFileSync(
+	new URL("../src/components/Insights.jsx", import.meta.url),
+	"utf8",
+);
 
 test("authenticated shell has isolated operational tokens and journey rail", () => {
 	assert.match(layout, /shell app-site/);
@@ -159,4 +163,30 @@ test("leaderboard caveat banner is own-scope-gated with only the refresh residua
 	// fixes, so pin the banner's own load-bearing phrases, not the comment.)
 	assert.doesNotMatch(leaderboard, /live execution currently interprets/);
 	assert.doesNotMatch(leaderboard, /awaiting\s*\n?\s*live-trading sign-off/);
+});
+
+test("Insights headline claim matches the write path — no bot-exclusion claim, per-stage split shown instead (#1366 AC3)", () => {
+	// record_funnel writes the landed HLL for every beacon regardless of the
+	// classifier's verdict (metrics_routes.py:278 runs before is_agent is even
+	// read at :285) — the funnel's landed count does NOT drop crawlers/bots.
+	// The old copy claimed otherwise; it must not come back.
+	assert.doesNotMatch(insights, /crawlers and bots drop out/);
+	// The fix: render the by_agent_type per-stage split the API already
+	// returns (issue #788) instead of describing a filter the code doesn't
+	// perform.
+	assert.match(insights, /by_agent_type/);
+});
+
+test("Insights country names use Intl.DisplayNames, not a hand-maintained map, and the epoch date is real (#1366 AC4)", () => {
+	assert.doesNotMatch(insights, /const COUNTRY_NAMES/);
+	assert.match(insights, /Intl\.DisplayNames/);
+	// ZZ must stay an explicit case — Intl renders it "Unknown Region", which
+	// would contradict the "unknown / not provided" copy this page uses for ZZ.
+	assert.match(insights, /ZZ.*Unknown \/ not provided/);
+	assert.doesNotMatch(insights, /deployed today/);
+	assert.match(insights, /epoch_started_at/);
+});
+
+test("Insights drops the first-person operator copy (#1366 AC5)", () => {
+	assert.doesNotMatch(insights, /Live conversion instruments for our/);
 });
