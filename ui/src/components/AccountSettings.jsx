@@ -62,7 +62,7 @@ export default function AccountSettings({ walletAddr, onDisconnect }) {
   return (
     <div className="max-w-[760px]">
       <h1 className="serif text-[2rem] mb-2">Account</h1>
-      <p className="body mb-7">Better Auth user owns application data. Linked wallets prove on-chain control only.</p>
+      <p className="body mb-7">Your account owns application data. Linked wallets prove on-chain control only.</p>
 
       <section className="card-flat p-5 mb-5">
         <h2 className="serif text-xl mb-3">Profile</h2>
