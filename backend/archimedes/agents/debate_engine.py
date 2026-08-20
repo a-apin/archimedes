@@ -46,6 +46,7 @@ from archimedes.agents.generation_pipeline import (
     _CandidateResult,
     _society_num_trials,
 )
+from archimedes.services import cost_meter
 from archimedes.services._fusion_helpers import equity_curve_to_daily_returns
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -696,8 +697,13 @@ async def _run_debate_leaderboard(
         args_summary=f"steers={len(_STEERS)}, asset_classes={brief.asset_classes or '(any)'}",
     )
 
-    corpus = await asyncio.to_thread(load_corpus)
-    pool = await _propose_pool(brief, model, corpus)
+    # Cost instrumentation (#1217): the society's own phases are timed here so the
+    # per-phase breakdown answers "which phase dominates" — corpus retrieval vs.
+    # the LLM debate vs. the backtests — rather than collapsing into one number.
+    with cost_meter.stage("corpus_load"):
+        corpus = await asyncio.to_thread(load_corpus)
+    with cost_meter.stage("debate_propose"):
+        pool = await _propose_pool(brief, model, corpus)
     pool_size = len(pool)
     if pool_size == 0:
         raise DebateUnavailable("debate produced no actionable, DSL-conformant candidate (empty pool)")
@@ -710,7 +716,8 @@ async def _run_debate_leaderboard(
     )
 
     # Step 2 — best-effort adversarial transcript (never gates).
-    await _debate_round(pool, model, emit, candidate_id)
+    with cost_meter.stage("debate_transcript"):
+        await _debate_round(pool, model, emit, candidate_id)
 
     # Step 3a — C-prov (non-votable, Xia 1/2/4): cull candidates citing outside the
     # embargo+decay surface. Does NOT change pool_size (the DSR denominator counts
@@ -739,7 +746,8 @@ async def _run_debate_leaderboard(
         tool_name="evaluate_fusion_spec",
         args_summary=f"backtest ×{len(prov_clean)}, num_trials={num_trials} (own pool, decouple #2)",
     )
-    rigor_results = await _critic_rigor(prov_clean, num_trials)
+    with cost_meter.stage("debate_backtest"):
+        rigor_results = await _critic_rigor(prov_clean, num_trials)
     if not rigor_results:
         raise DebateUnavailable("debate: no candidate produced a successful backtest")
 

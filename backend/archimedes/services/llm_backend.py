@@ -15,6 +15,8 @@ import logging
 import os
 from typing import Protocol
 
+from archimedes.services.cost_meter import record_llm_call
+
 logger = logging.getLogger(__name__)
 
 # ── Protocol ─────────────────────────────────────────────────────────
@@ -142,6 +144,9 @@ class AnthropicBackend:
         served = getattr(resp, "model", None)
         if served:
             self._served = str(served)
+        # Cost instrumentation (#1217): the provider's own usage block, banked
+        # against whatever job meter is bound to this context. No-op when none is.
+        record_llm_call(model=self._served, response=resp)
         return _first_text_block(resp.content)
 
 
@@ -193,6 +198,9 @@ class AnthropicCompatibleBackend:
         served = getattr(resp, "model", None)
         if served:
             self._served = str(served)
+        # Cost instrumentation (#1217): the provider's own usage block, banked
+        # against whatever job meter is bound to this context. No-op when none is.
+        record_llm_call(model=self._served, response=resp)
         return _first_text_block(resp.content)
 
 
@@ -259,6 +267,9 @@ class BedrockBackend:
         served = getattr(resp, "model", None)
         if served:
             self._served = str(served)
+        # Cost instrumentation (#1217): the provider's own usage block, banked
+        # against whatever job meter is bound to this context. No-op when none is.
+        record_llm_call(model=self._served, response=resp)
         return _first_text_block(resp.content)
 
 
@@ -327,6 +338,9 @@ class BedrockConverseBackend:
                 resp = self._client.converse(**kwargs)
             else:
                 raise
+        # Cost instrumentation (#1217). Converse reports usage as
+        # {"usage": {"inputTokens": n, "outputTokens": n, "totalTokens": n}}.
+        record_llm_call(model=self._served, response=resp)
         blocks = resp.get("output", {}).get("message", {}).get("content", []) or []
         # Reasoning models may emit a reasoningContent block before the text — return
         # the first block that actually carries text.
@@ -379,6 +393,8 @@ class OpenAIBackend:
         resp.raise_for_status()
         data = resp.json()
         self._served = data.get("model", self._model)
+        # Cost instrumentation (#1217): {"usage": {"prompt_tokens", "completion_tokens"}}.
+        record_llm_call(model=self._served, response=data)
         # Defensive: OpenAI-style APIs can legitimately return empty `choices`
         # (content filtering, tool-only responses, etc.). Mirror OllamaBackend's
         # `.get()`-chain pattern so we never IndexError mid-request.
@@ -449,6 +465,9 @@ class OllamaBackend:
         resp.raise_for_status()
         data = resp.json()
         self._served = data.get("model", self._model)
+        # Cost instrumentation (#1217): Ollama reports counts at the top level
+        # as prompt_eval_count / eval_count, with no usage block.
+        record_llm_call(model=self._served, response=data)
         return data.get("message", {}).get("content", "").strip()
 
 

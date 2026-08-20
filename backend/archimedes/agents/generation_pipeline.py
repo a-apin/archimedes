@@ -33,6 +33,7 @@ See ``docs/specs/generation-streaming-spec.md`` for the full SSE contract.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import hashlib
 import json
@@ -45,6 +46,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from archimedes.api.generate_schemas import GenerateBrief
+from archimedes.services import cost_meter
 from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import JobStore, get_job_store
 
@@ -743,22 +745,34 @@ async def run_generation(
     store = store or get_job_store()
     emit = _Emitter(job_id, store)
 
+    # Cost instrumentation (#1217). Bound for the whole job so every LLM call
+    # made anywhere beneath this frame — including inside `asyncio.to_thread`
+    # workers, which copy the context — lands in one per-job record. The
+    # snapshot is persisted in the `finally` below, so it exists for the
+    # rigor-FAILED and errored runs too; those spend the same backtest compute
+    # and are the common case, which is exactly what this measurement is for.
+    meter = cost_meter.CostMeter(job_id=job_id)
+    meter_token = cost_meter.bind(meter)
+    meter.set_meta("n_candidates_requested", n_candidates)
+    meter.set_meta("model_requested", model)
+
     await store.update_status(job_id, "running")
     await emit.emit("job_queued", brief=brief.model_dump())
 
     try:
         # Real LLM validation step (live path only). The fixture path skips
         # the validator so tests stay hermetic.
-        if _llm_available():
-            validated = await _validate_brief(brief)
-        else:
-            validated = {
-                "is_valid": True,
-                "intent_summary": brief.intent[:140],
-                "asset_classes_inferred": brief.asset_classes or [],
-                "time_horizon_inferred": "unknown",
-                "risk_appetite_adjusted": brief.risk_appetite,
-            }
+        with meter.stage("brief_validation"):
+            if _llm_available():
+                validated = await _validate_brief(brief)
+            else:
+                validated = {
+                    "is_valid": True,
+                    "intent_summary": brief.intent[:140],
+                    "asset_classes_inferred": brief.asset_classes or [],
+                    "time_horizon_inferred": "unknown",
+                    "risk_appetite_adjusted": brief.risk_appetite,
+                }
 
         if not validated.get("is_valid", True):
             # Brief failed validation — emit a recoverable error and stop.
@@ -771,6 +785,7 @@ async def run_generation(
                 recoverable=True,
                 code="BRIEF_INVALID",
             )
+            meter.set_meta("outcome", "brief_invalid")
             await store.update_status(job_id, "error", error="brief invalid")
             return
 
@@ -829,7 +844,9 @@ async def run_generation(
         fixture_mode = os.getenv("GENERATION_PIPELINE_FIXTURE", "").lower() in ("1", "true") or (
             not use_live and os.getenv("TESTING")
         )
-        if use_live and await asyncio.to_thread(_debate_can_run, brief):
+        with meter.stage("pipeline_select"):
+            debate_can_run = use_live and await asyncio.to_thread(_debate_can_run, brief)
+        if debate_can_run:
             runner: Callable[..., Awaitable[Any]] = functools.partial(_run_debate_leaderboard, model=model)
         elif fixture_mode:
             pipeline_name = "fixture"
@@ -847,6 +864,7 @@ async def run_generation(
                 recoverable=True,
                 code="GENERATION_UNAVAILABLE",
             )
+            meter.set_meta("outcome", "generation_unavailable")
             await store.update_status(job_id, "error", error=f"generation unavailable: {reason}")
             return
 
@@ -900,14 +918,18 @@ async def run_generation(
         for i, regime in enumerate(regimes):
             candidate_id = f"cand_{regime}" if dual_regime else f"cand_{i + 1}"
             try:
-                cand = await runner(
-                    candidate_id=candidate_id,
-                    brief=brief,
-                    emit=emit,
-                    regime=regime,
-                    agent=job_agent,
-                    selection_pool_size=n_candidates,  # #770: DSR deflates for the N-candidate search
-                )
+                # The society's own sub-phases (corpus load, proposal fan-out,
+                # adversarial transcript, per-proposal backtests) are timed
+                # separately inside debate_engine; this outer stage is the total.
+                with meter.stage("candidate_generation"):
+                    cand = await runner(
+                        candidate_id=candidate_id,
+                        brief=brief,
+                        emit=emit,
+                        regime=regime,
+                        agent=job_agent,
+                        selection_pool_size=n_candidates,  # #770: DSR deflates for the N-candidate search
+                    )
             except FusionUnavailable as exc:
                 # T1.1 Phase-3: the society declined at runtime (empty pool /
                 # nothing conformant). There is NO fallback pipeline anymore —
@@ -972,6 +994,7 @@ async def run_generation(
                 recoverable=True,
                 code="NO_CANDIDATES",
             )
+            meter.set_meta("outcome", "no_candidates")
             await store.update_status(job_id, "error", error="no candidates generated")
             return
 
@@ -979,14 +1002,15 @@ async def run_generation(
         # et al. CSCV needs N≥2 to be meaningful; the helper handles N<2
         # gracefully by setting PBO=0.0). After this, every candidate's
         # rigor_verdict has all four fields (DSR, PBO, OOS Sharpe, lookahead).
-        _patch_pbo(candidates)
-        # Re-deflate DSR using the REAL candidate-pool correlation (#822, approach B
-        # for #770/#811). Runs after PBO so it can re-derive `passing`'s PBO leg from
-        # the already-patched value. Falls back to the untouched ρ̄=0 verdicts (approach
-        # A) whenever fewer than two buy-and-hold return series are available.
-        _patch_dsr_with_pool_correlation(candidates)
-        for c in candidates:
-            c.passes_rigor = c.rigor_verdict.get("passing", False)
+        with meter.stage("rigor_gate"):
+            _patch_pbo(candidates)
+            # Re-deflate DSR using the REAL candidate-pool correlation (#822, approach B
+            # for #770/#811). Runs after PBO so it can re-derive `passing`'s PBO leg from
+            # the already-patched value. Falls back to the untouched ρ̄=0 verdicts (approach
+            # A) whenever fewer than two buy-and-hold return series are available.
+            _patch_dsr_with_pool_correlation(candidates)
+            for c in candidates:
+                c.passes_rigor = c.rigor_verdict.get("passing", False)
 
         # Selection: prefer rigor-passing candidates; fall back to the full set only to
         # still surface a "considered best" for the alternatives panel. Whether that best
@@ -994,6 +1018,11 @@ async def run_generation(
         # gate is persisted with passes_rigor_gate=False and the server-side vault gate
         # refuses to deploy it — we must not imply it is validated.
         validated = [c for c in candidates if c.passes_rigor]
+        # The rejected path is the common case and costs the same compute — record
+        # which one this run was, so a stored snapshot can be read as pass or fail
+        # rather than assumed to be the happy path (#1217 anti-goal 2).
+        meter.set_meta("candidates_considered", len(candidates))
+        meter.set_meta("candidates_passing_rigor", len(validated))
         pool = validated or candidates
         if pipeline_name == "debate":
             # The society's deterministic synthesizer already ranked the board
@@ -1034,7 +1063,11 @@ async def run_generation(
         ownership = {"owner_wallet": owner_wallet}
         if owner_user_id is not None:
             ownership["owner_user_id"] = owner_user_id
-        sid, thash = await _persist_candidate(best, brief, **ownership)
+        with meter.stage("persist_winner"):
+            sid, thash = await _persist_candidate(best, brief, **ownership)
+        # K=1: exactly one strategy_store row + its strategy_passports mirror.
+        meter.record_write("strategy_store")
+        meter.record_write("strategy_passports")
         strategy_ids[best.candidate_id] = sid
         await emit.emit(
             "trace_hashed",
@@ -1074,28 +1107,29 @@ async def run_generation(
         # emit a DSL spec (weights={}) scored by evaluate_fusion_spec, or are a
         # populated ABSTAIN — so they skip the static backtester too (T1.1).
         _static_skip = ("fusion", "debate", "debate_abstain")
-        await asyncio.gather(
-            *[
-                # num_trials = the strategy's OWN candidate pool (N), never the library
-                # size — a strategy's rigor depends only on itself (decouple #2).
-                _backtest_and_persist(c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates))
-                for c in candidates
-                if c.generation_method not in _static_skip and c.candidate_id in strategy_ids
-            ]
-        )
+        with meter.stage("backtest_persist"):
+            await asyncio.gather(
+                *[
+                    # num_trials = the strategy's OWN candidate pool (N), never the library
+                    # size — a strategy's rigor depends only on itself (decouple #2).
+                    _backtest_and_persist(c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates))
+                    for c in candidates
+                    if c.generation_method not in _static_skip and c.candidate_id in strategy_ids
+                ]
+            )
 
-        # Fusion (and debate) candidates skipped the static backtester above but carry
-        # a REAL DSL backtest — persist its returns so live_rigor_gate reads pass/fail
-        # (not "pending") and the strategy is deployable (#788/#818). Without this, a
-        # fusion winner with a genuine backtest forever reads rigor_gate_status=pending
-        # and the server-side create_vault gate (#829) refuses to deploy it.
-        await asyncio.gather(
-            *[
-                _persist_real_returns(c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates))
-                for c in candidates
-                if c.has_real_rigor and c.return_series and c.candidate_id in strategy_ids
-            ]
-        )
+            # Fusion (and debate) candidates skipped the static backtester above but carry
+            # a REAL DSL backtest — persist its returns so live_rigor_gate reads pass/fail
+            # (not "pending") and the strategy is deployable (#788/#818). Without this, a
+            # fusion winner with a genuine backtest forever reads rigor_gate_status=pending
+            # and the server-side create_vault gate (#829) refuses to deploy it.
+            await asyncio.gather(
+                *[
+                    _persist_real_returns(c, strategy_ids[c.candidate_id], emit, _society_num_trials(n_candidates))
+                    for c in candidates
+                    if c.has_real_rigor and c.return_series and c.candidate_id in strategy_ids
+                ]
+            )
 
         # ── Persist all candidates to episodic memory (T-PE.8) ──
         try:
@@ -1141,6 +1175,7 @@ async def run_generation(
                     owner_wallet=owner_wallet,
                     owner_user_id=owner_user_id,
                 )
+                meter.record_write("strategy_proposals")
         except Exception:
             pass  # Non-blocking per spec
 
@@ -1171,6 +1206,9 @@ async def run_generation(
         # the post-call value when available (e.g. response.model), else the
         # configured id; falls back to the fixture marker on the non-live path.
         served_model = _served_model_for(job_agent, use_live)
+        meter.set_meta("served_model", served_model)
+        meter.set_meta("pipeline", pipeline_name)
+        meter.set_meta("outcome", "done")
         await emit.emit(
             "done",
             strategy_id=strategy_id,
@@ -1194,13 +1232,25 @@ async def run_generation(
         )
 
     except asyncio.CancelledError:
+        meter.set_meta("outcome", "cancelled")
         await emit.emit("error", message="job cancelled", recoverable=False, code="CANCELLED")
         await store.update_status(job_id, "cancelled", error="cancelled by client")
         raise
     except Exception as exc:
+        meter.set_meta("outcome", "pipeline_crash")
         logger.exception("generation pipeline crashed: %s", exc)
         await emit.emit("error", message=str(exc), recoverable=False, code="PIPELINE_CRASH")
         await store.update_status(job_id, "error", error=str(exc))
+    finally:
+        # Persist the measurement on EVERY terminal path — done, rigor-failed,
+        # errored, cancelled. Merged into the job's result rather than written
+        # with it, because most of those paths never write a result at all.
+        # Instrumentation is not allowed to change the outcome of a generation,
+        # so a failure here is swallowed (CancelledError included: this runs
+        # while a cancellation is already propagating).
+        cost_meter.unbind(meter_token)
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await store.merge_result(job_id, {"cost": meter.snapshot()})
 
 
 async def _persist_candidate(
@@ -1509,6 +1559,8 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
 
     try:
         await asyncio.to_thread(_do)
+        cost_meter.record_write("backtest_results")
+        cost_meter.record_write("strategy_passports")
         await emit.emit(
             "backtest_done", candidate_id=c.candidate_id, strategy_id=strategy_id, source=c.generation_method
         )
@@ -1694,6 +1746,8 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         metrics = await asyncio.to_thread(_do_backtest_and_persist)
         if metrics is None:
             return
+        cost_meter.record_write("backtest_results")
+        cost_meter.record_write("strategy_passports")
         await emit.emit(
             "backtest_done",
             strategy_id=strategy_id,

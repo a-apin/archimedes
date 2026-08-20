@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from archimedes.services.cost_meter import record_llm_call
 from archimedes.services.llm_backend import LLMBackend, make_llm_backend
 from archimedes.services.strategy_signal_evaluator import (
     GLOBAL_ASSETS,
@@ -363,6 +364,12 @@ class PortfolioAgent:
             served = getattr(resp, "model", None)
             if served:
                 final_response_model = str(served)
+
+            # Cost instrumentation (#1217). This tool-use loop calls the raw SDK
+            # directly, bypassing LLMBackend.complete() where every other call is
+            # metered — so without this line these turns would be invisible in the
+            # per-job token count, and the snapshot would under-report.
+            record_llm_call(model=final_response_model, response=resp)
 
             # Capture the assistant turn for the next iteration
             messages.append({"role": "assistant", "content": resp.content})

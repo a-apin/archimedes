@@ -79,6 +79,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`diagrams/strategy-passport-architecture.md`](diagrams/strategy-passport-architecture.md) | reference | Dan Browne | — | Passport architecture diagram + reference. |
 | [`bedrock-model-cost-comparison.md`](bedrock-model-cost-comparison.md) | reference | Dan Browne | — | Bedrock model costs, us-east-1 on-demand. LLM is `bedrock_converse` / `amazon.nova-micro-v1:0`. |
 | [`cost-estimates/generate-llm-costs.md`](cost-estimates/generate-llm-costs.md) | reference | Dan Browne | — | Per-generation LLM cost estimate. |
+| [`generation-cost-instrumentation.md`](generation-cost-instrumentation.md) | current | Dan Browne | 2026-08-20 | What one generation actually consumes: per-job token counts, per-stage wall/CPU seconds, peak RSS, row writes. Raw measurement only — the quote seam stays `flat_v1`. |
 
 ## On-chain and Arc
 

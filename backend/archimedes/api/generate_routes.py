@@ -33,6 +33,7 @@ from archimedes.api.generate_schemas import (
     GenerateBrief,
     GenerateStartRequest,
     GenerateStartResponse,
+    JobCostResponse,
     JobsListResponse,
     JobSummary,
 )
@@ -426,6 +427,10 @@ def _job_summary(job: dict, job_id: str | None = None) -> JobSummary:
         updated_at=job.get("updated_at", ""),
         n_candidates=int(payload.get("n_candidates") or 1),
         best_strategy_id=result.get("best_strategy_id"),
+        # Raw measurement for this job (#1217): token counts, per-stage
+        # seconds, write tallies. None until the job reaches a terminal
+        # state, and None for jobs generated before the meter existed.
+        cost=result.get("cost"),
     )
 
 
@@ -471,6 +476,39 @@ async def get_job(
         raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
     _require_job_access(job, user.id, job_id, get_linked_wallet_address(request))
     return _job_summary(job, job_id)
+
+
+@generate_router.get("/jobs/{job_id}/cost", response_model=JobCostResponse)
+async def get_job_cost(
+    job_id: str,
+    request: Request,
+    user: CurrentUser = Depends(require_current_user),
+) -> JobCostResponse:
+    """What this generation actually consumed (#1217).
+
+    Raw measurement only — Bedrock input/output token counts taken from the
+    provider's own ``usage`` block, wall + CPU seconds per pipeline stage, peak
+    RSS, and the rows the pipeline wrote. **No prices**: the paywall quote seam
+    (``GET /api/generate/quote``) stays ``flat_v1`` and is untouched by this
+    endpoint; converting these counts into dollars is done off-server, and this
+    is the input that lets it stop being an estimate.
+
+    Owner-scoped exactly like ``/candidates`` — a job you do not own 404s rather
+    than leaking its existence. ``cost`` is ``null`` for a job that has not
+    reached a terminal state yet, and for jobs older than the instrumentation.
+    """
+    store = get_job_store()
+    job = await store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
+    _require_job_access(job, user.id, job_id, get_linked_wallet_address(request))
+    result = job.get("result") or {}
+    cost = result.get("cost") if isinstance(result, dict) else None
+    return JobCostResponse(
+        job_id=job_id,
+        state=_normalize_state(job.get("status") or "queued"),
+        cost=cost if isinstance(cost, dict) else None,
+    )
 
 
 @generate_router.get("/jobs/{job_id}/candidates", response_model=CandidatesListResponse)
