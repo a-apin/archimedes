@@ -209,11 +209,17 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
   return (
     <div className="card" style={{ padding: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div>
+        {/* Generation runs for minutes and every terminal outcome landed in
+            plain <div>s: a screen-reader user who submitted a brief had no way
+            to know the run was progressing, had finished, or had errored
+            (4.1.3). role="status" for the running/done states, role="alert" for
+            the failure so it is announced even when the user is not on the log
+            below. */}
+        <div role={terminal === 'error' ? 'alert' : 'status'}>
           <div className="label">Generating — job {jobId.slice(0, 10)}…</div>
           {terminal === 'done' && (
             <div className="positive caption" style={{ marginTop: 4 }}>
-              <span className="i-lucide-check w-3.5 h-3.5 mr-1" /> Strategy persisted{strategyId ? ` as ${strategyId}` : ''}
+              <span aria-hidden="true" className="i-lucide-check w-3.5 h-3.5 mr-1" /> Strategy persisted{strategyId ? ` as ${strategyId}` : ''}
               {servedModel && servedModel !== 'fixture' && (
                 <span style={{ color: 'var(--text-3)' }}> · served by <strong>{servedModel}</strong></span>
               )}
@@ -221,7 +227,7 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
           )}
           {terminal === 'error' && (
             <div className="negative caption" style={{ marginTop: 4 }}>
-              <span className="i-lucide-x w-3.5 h-3.5 mr-1" /> {errorMsg}
+              <span aria-hidden="true" className="i-lucide-x w-3.5 h-3.5 mr-1" /> {errorMsg}
             </div>
           )}
           {!terminal && (
@@ -248,8 +254,15 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
         </div>
       </div>
 
+      {/* role="log" is the right role for an append-only feed: it keeps
+          announcements to newly added entries instead of re-reading the whole
+          scroller on every event. */}
       <div
         ref={scrollRef}
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-label="Generation events"
         style={{
           maxHeight: 320,
           overflowY: 'auto',
