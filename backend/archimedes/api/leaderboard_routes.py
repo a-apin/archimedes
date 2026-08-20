@@ -49,13 +49,18 @@ _SORT_FIELDS = (
 )
 
 
-def _curated_cohort_responses() -> list:
+def _curated_cohort_responses() -> tuple[list, bool, str]:
     """Curated library ∪ published-generated strategies — the pre-single-user
     board's exact cohort, unchanged, now served under ``scope=curated``.
 
     Fail-safe: if the strategy provider is unavailable, returns an empty
     board (with the scoring-engine metadata intact) rather than erroring —
-    this endpoint must never hard-fail.
+    this endpoint must never hard-fail. But "never hard-fail" and "never say
+    so" are different things (#1356): the empty board used to render on the
+    flagship public page as "No strategies match these filters yet." — the
+    same shape as a real, legitimately-empty result. Returns
+    ``(responses, degraded, degraded_reason)`` so the caller can put the
+    degradation on the wire instead of silently discarding it.
     """
     # Imported lazily to avoid import-time coupling with the heavy strategies
     # module (and any future cycle).
@@ -65,6 +70,8 @@ def _curated_cohort_responses() -> list:
         _verdict_from_result,
     )
 
+    degraded = False
+    degraded_reason = ""
     try:
         strategies = strategy_provider().list_strategies()
         # One batched live-gate run over the whole cohort (single DB session),
@@ -80,6 +87,8 @@ def _curated_cohort_responses() -> list:
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("leaderboard: strategy provider unavailable: %s", exc)
         responses = []
+        degraded = True
+        degraded_reason = f"strategy provider unavailable: {exc}"
 
     # Unify: add GENERATED strategies alongside curated (low-pri decouple).
     # Public/no-wallet criterion — is_published ONLY (never status: rigor
@@ -94,27 +103,53 @@ def _curated_cohort_responses() -> list:
             responses.extend(_public_generated_strategy_responses(session))
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("leaderboard: generated strategies unavailable: %s", exc)
+        degraded = True
+        degraded_reason = degraded_reason or f"generated strategies unavailable: {exc}"
 
-    return responses
+    # An empty result with no exception is still degraded if it's not what an
+    # empty cohort legitimately looks like — the most common real-world cause
+    # is the strategy corpus missing from the build (#1039), which count_
+    # strategy_files()'s own docstring already names for /health. Reuse that
+    # signal here so the board says the same thing /health does, rather than
+    # rendering the empty board as if zero curated strategies exist.
+    if not degraded and not responses:
+        try:
+            from archimedes.services.strategy_provider import count_strategy_files
+
+            if count_strategy_files() == 0:
+                degraded = True
+                degraded_reason = "strategy corpus not found in build"
+            else:
+                degraded = True
+                degraded_reason = "curated strategy cohort is empty"
+        except Exception:  # pragma: no cover - defensive
+            degraded = True
+            degraded_reason = "curated strategy cohort is empty"
+
+    return responses, degraded, degraded_reason
 
 
-def _own_cohort_responses(caller_wallet: str | None, caller_user_id: str | None) -> list:
+def _own_cohort_responses(caller_wallet: str | None, caller_user_id: str | None) -> tuple[list, bool, str]:
     """GENERATED strategies owned by the signed-in caller — ``scope=own``.
 
     Never includes curated rows (nobody owns the curated library) and never
     includes another user's strategies, published or not — see
     ``_owned_generated_strategy_responses``'s docstring for the ownership-only
-    predicate. Fail-safe, same contract as ``_curated_cohort_responses``.
+    predicate. Fail-safe, same contract as ``_curated_cohort_responses``. An
+    empty result is NOT treated as degraded here — a signed-in caller with
+    zero generated strategies is a legitimate, honest empty state (see
+    test_leaderboard_single_user_scope.py's poison test), unlike the curated
+    cohort where empty almost always means the corpus didn't ship.
     """
     try:
         from archimedes.api.strategies_routes import _owned_generated_strategy_responses
         from archimedes.db import get_session
 
         with get_session() as session:
-            return _owned_generated_strategy_responses(session, caller_wallet, caller_user_id)
+            return _owned_generated_strategy_responses(session, caller_wallet, caller_user_id), False, ""
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("leaderboard: owned strategies unavailable: %s", exc)
-        return []
+        return [], True, f"owned strategies unavailable: {exc}"
 
 
 @leaderboard_router.get("", response_model=LeaderboardResponse)
@@ -156,9 +191,11 @@ async def get_leaderboard(
         effective_scope = "curated"
 
     if effective_scope == "own":
-        responses = _own_cohort_responses(caller_wallet, user.id if user is not None else None)
+        responses, degraded, degraded_reason = _own_cohort_responses(
+            caller_wallet, user.id if user is not None else None
+        )
     else:
-        responses = _curated_cohort_responses()
+        responses, degraded, degraded_reason = _curated_cohort_responses()
 
     return build_leaderboard(
         responses,
@@ -168,4 +205,6 @@ async def get_leaderboard(
         min_rigor=min_rigor,
         limit=limit,
         scope=effective_scope,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
     )

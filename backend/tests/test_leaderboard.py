@@ -281,6 +281,28 @@ async def test_leaderboard_rejects_bad_sort_param():
     assert resp.status_code == 422
 
 
+async def test_leaderboard_reports_degraded_when_provider_raises():
+    """#1356: a curated-cohort failure must be visible on the wire, not
+    silently rendered as an empty board (which the frontend previously
+    could not tell apart from "the corpus genuinely has zero strategies")."""
+    from unittest.mock import MagicMock, patch
+
+    from archimedes.main import app
+    from httpx import ASGITransport, AsyncClient
+
+    with patch(
+        "archimedes.api.leaderboard_routes.strategy_provider",
+        MagicMock(side_effect=RuntimeError("provider down")),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/leaderboard?scope=curated")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded"] is True
+    assert body["degraded_reason"]
+
+
 async def test_leaderboard_batches_rigor_gate_once(monkeypatch):
     """Regression for #912: the public leaderboard must run the rigor gate ONCE
     over the whole cohort (batch), not recompute it per strategy. The per-

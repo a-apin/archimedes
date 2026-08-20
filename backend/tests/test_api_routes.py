@@ -330,6 +330,22 @@ class TestStrategyRoutes:
         assert mm["rigor_gate_status"] == "pending"
         assert mm["passes_rigor_gate"] is False, "fixture boolean must NOT drive the live badge (#821)"
 
+    def test_list_strategies_reports_degraded_when_provider_raises(self, client):
+        """#1356: a provider failure must be visible on the wire as
+        degraded=True with a reason, not silently rendered as
+        total=0/strategies=[] — indistinguishable from a real empty library."""
+        with patch(
+            "archimedes.api.strategies_routes.strategy_provider",
+            side_effect=RuntimeError("provider down"),
+        ):
+            resp = client.get("/api/strategies/")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["strategies"] == []
+        assert data["total"] == 0
+        assert data["degraded"] is True
+        assert data["degraded_reason"]
+
 
 class TestRiskRoutes:
     def test_risk_profiles(self, client):

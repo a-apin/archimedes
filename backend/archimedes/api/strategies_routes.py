@@ -524,7 +524,35 @@ async def list_strategies(
     # Bonus: the cache key (see cohort_key) is derived from the cohort's ids, so
     # grading the full library collapses the previous one-cohort-computation-per
     # -offset AND per-status-filter (~6s each) into a single shared entry.
-    library = strategy_provider().list_strategies()
+    #
+    # Provider failure must be visible on the wire, not a silent empty list
+    # (#1356: `total=len(strats)` used to render as a confident, honest-
+    # looking "0 strategies" whether the provider raised or the library was
+    # genuinely empty — the caller had no way to tell the two apart).
+    try:
+        library = strategy_provider().list_strategies()
+    except Exception as exc:
+        logger.warning("list_strategies: strategy provider unavailable: %s", exc)
+        return StrategyListResponse(
+            strategies=[],
+            total=0,
+            degraded=True,
+            degraded_reason=f"strategy provider unavailable: {exc}",
+        )
+
+    degraded = False
+    degraded_reason = ""
+    if not library:
+        # The dominant real cause is the strategy corpus missing from the
+        # build (#1039) — count_strategy_files()'s own docstring already
+        # names this for /health; reuse the same signal here instead of
+        # rendering "0 strategies" as if the library is legitimately empty.
+        from archimedes.services.strategy_provider import count_strategy_files
+
+        if count_strategy_files() == 0:
+            degraded = True
+            degraded_reason = "strategy corpus not found in build"
+
     rigor_results = _live_rigor_results_for_strategies(library)
 
     # Filter/paginate only AFTER grading. Delegated to the provider rather than
@@ -546,6 +574,8 @@ async def list_strategies(
     return StrategyListResponse(
         strategies=responses,
         total=total,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
     )
 
 
