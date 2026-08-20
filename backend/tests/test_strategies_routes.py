@@ -780,13 +780,80 @@ async def test_leaderboard_never_disagrees_with_selection_bias_gate_route(monkey
     assert checked >= 1, "no shared ids resolved between the two routes — fixture setup is broken"
 
 
+def test_to_strategy_response_serves_null_not_fixture_without_live_rigor_result():
+    """#1187 (claim-integrity): when the live rigor gate could not run
+    (``rigor_result is None`` — insufficient/no persisted returns, or a batch
+    failure), the four numeric rigor fields must serve ``None`` — the honest
+    "not run" — NEVER the strategy's stored ``s.<field>`` values. Those columns
+    trace back to a migrated test-fixture snapshot
+    (``backend/tests/fixtures/backtest_fixtures_snapshot.json``, PR #863) that
+    predates the current DSR convention and gate threshold (#901) and cannot be
+    reproduced by any single code version — presenting one as measured next to
+    a ``pending`` badge is exactly the defect #1187 tracks.
+
+    Direct unit call (no HTTP, no DB seeding needed): construct a ``Strategy``
+    carrying non-None values for all four fields — mirroring exactly what the
+    real migrated fixture rows look like — and confirm none of them leak
+    through when the live gate result is unavailable. Adversarial check: with
+    the pre-#1187 fallback chain restored (``s.<field> if s.<field> is not None
+    else (bt.<field> if bt else None)``), this test fails — it would observe
+    0.283312 / 0.611531 / 0.373116 / 0.930283 instead of ``None``.
+    """
+    from archimedes.api.strategies_routes import _to_strategy_response
+    from archimedes.models.strategy import Strategy
+    from archimedes.services.live_rigor_gate import RigorGateVerdict
+
+    # Values lifted from the real migrated fixture (faber_2007_sma200_timing in
+    # backend/tests/fixtures/backtest_fixtures_snapshot.json) so this test fails
+    # exactly the way the live #1187 bug did, not against an arbitrary sentinel.
+    s = Strategy(
+        id="test-1187-fixture-stub",
+        deflated_sharpe_ratio=0.283312,
+        dsr_p_value=0.611531,
+        pbo_score=0.373116,
+        out_of_sample_sharpe=0.930283,
+    )
+
+    resp = _to_strategy_response(s, verdict=RigorGateVerdict.pending(), rigor_result=None)
+
+    assert resp.rigor_gate_status == "pending"
+    assert resp.deflated_sharpe_ratio is None, (
+        f"deflated_sharpe_ratio must be None, not the fixture value; got {resp.deflated_sharpe_ratio}"
+    )
+    assert resp.dsr_p_value is None, f"dsr_p_value must be None, not the fixture value; got {resp.dsr_p_value}"
+    assert resp.pbo_score is None, f"pbo_score must be None, not the fixture value; got {resp.pbo_score}"
+    assert resp.out_of_sample_sharpe is None, (
+        f"out_of_sample_sharpe must be None, not the fixture value; got {resp.out_of_sample_sharpe}"
+    )
+
+
 @pytest.mark.asyncio
-async def test_leaderboard_falls_back_to_stale_fields_without_real_returns(monkeypatch):
-    """A strategy with NO persisted returns still serves numeric fields from the
-    pre-existing fallback chain (stub/None) — rigor_result is None in that case,
-    so _to_strategy_response's fallback branch (unchanged by #868) is exercised,
-    not a crash or a fabricated number."""
+async def test_leaderboard_serves_null_not_fixture_without_real_returns(monkeypatch):
+    """End-to-end companion to the unit test above, over the REAL curated
+    library with the REAL migrated fixture data seeded into the DB (#863's
+    ``strategy_backtest_fixtures`` table — the exact source the issue names) —
+    not a synthetic Strategy. With NO persisted daily returns for anyone,
+    ``GET /api/strategies/`` must still serve every strategy's numeric rigor
+    fields as ``None`` and its badge as ``pending``, never the seeded fixture
+    number. Seeding the fixture table (mirroring ``test_api_routes.py``'s
+    ``_use_tmp_db``) is what makes this a real regression guard rather than
+    a vacuous one: against pre-#1187 code every strategy here has a non-None
+    ``s.deflated_sharpe_ratio`` fixture value available to leak through."""
+    import json
+    from pathlib import Path
+
+    from archimedes.api._route_helpers import strategy_provider
+    from archimedes.db import get_session
     from archimedes.main import app
+    from archimedes.models.backtest_fixtures_store import FIXTURE_FIELDS, StrategyBacktestFixture
+
+    snapshot_path = Path(__file__).parent / "fixtures" / "backtest_fixtures_snapshot.json"
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    with get_session() as session:
+        for stem, rec in snapshot.items():
+            session.merge(StrategyBacktestFixture(stem=stem, **{field: rec[field] for field in FIXTURE_FIELDS}))
+        session.commit()
+    strategy_provider.cache_clear()
 
     monkeypatch.setattr(
         "archimedes.services.backtest_repository.get_all_daily_returns",
@@ -798,10 +865,26 @@ async def test_leaderboard_falls_back_to_stale_fields_without_real_returns(monke
     assert resp.status_code == 200
     served = resp.json()["strategies"]
     assert served
-    # No assertion on the specific fallback values (those come from whatever
-    # fixtures/stubs the curated library happens to carry) — the point is the
-    # route does not 500 and does not fabricate a rigor_result-sourced number
-    # when the live gate could not run.
+    # Sanity: the seeded fixture data actually landed on the in-memory Strategy
+    # objects (else this test would vacuously pass regardless of the fix, the
+    # exact trap CLAUDE.md's guard-adversarial-pass rule warns about).
+    strategies = strategy_provider().list_strategies()
+    assert any(s.deflated_sharpe_ratio is not None for s in strategies), (
+        "fixture seed did not reach strategy_provider() — this test would pass vacuously regardless of the #1187 fix"
+    )
+    for s in served:
+        assert s["rigor_gate_status"] == "pending", (
+            f"{s['id']}: expected pending badge with no persisted returns, got {s['rigor_gate_status']}"
+        )
+        assert s["deflated_sharpe_ratio"] is None, (
+            f"{s['id']}: deflated_sharpe_ratio must be None (not the seeded fixture number) when the "
+            f"live gate could not run; got {s['deflated_sharpe_ratio']}"
+        )
+        assert s["dsr_p_value"] is None, f"{s['id']}: dsr_p_value must be None; got {s['dsr_p_value']}"
+        assert s["pbo_score"] is None, f"{s['id']}: pbo_score must be None; got {s['pbo_score']}"
+        assert s["out_of_sample_sharpe"] is None, (
+            f"{s['id']}: out_of_sample_sharpe must be None; got {s['out_of_sample_sharpe']}"
+        )
 
 
 @pytest.mark.asyncio

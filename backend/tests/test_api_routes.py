@@ -315,7 +315,10 @@ class TestStrategyRoutes:
         the LIVE gate on persisted returns — NOT the fixture boolean. ``seeded_db``
         only seeds Buy-and-Hold's backtest, so Moreira-Muir has no live returns and
         the badge must be ``pending`` (False), even though its fixture row says True.
-        The fixture-derived display metric (dsr_p_value) still flows for rendering."""
+        #1187: the numeric rigor fields (dsr_p_value etc.) are None alongside the
+        pending badge — never the fixture-derived number (that was the claim-
+        integrity bug #1187 fixed; a concrete pending badge next to a concrete
+        fixture number was self-contradictory)."""
         strategies = _list_all_strategies(client)
         # Match Moreira-Muir specifically by its full title. A bare "Volatility"
         # substring also matches Ang-Hodrick's "The Cross-Section of Volatility
@@ -329,6 +332,16 @@ class TestStrategyRoutes:
         # No live returns for this strategy → pending, NOT a fixture True/False.
         assert mm["rigor_gate_status"] == "pending"
         assert mm["passes_rigor_gate"] is False, "fixture boolean must NOT drive the live badge (#821)"
+        # #1187: pending must mean pending — no fixture-sourced number rendered
+        # as if it were measured.
+        assert mm["dsr_p_value"] is None, f"dsr_p_value must be None when pending (#1187); got {mm['dsr_p_value']}"
+        assert mm["pbo_score"] is None, f"pbo_score must be None when pending (#1187); got {mm['pbo_score']}"
+        assert mm["deflated_sharpe_ratio"] is None, (
+            f"deflated_sharpe_ratio must be None when pending (#1187); got {mm['deflated_sharpe_ratio']}"
+        )
+        assert mm["out_of_sample_sharpe"] is None, (
+            f"out_of_sample_sharpe must be None when pending (#1187); got {mm['out_of_sample_sharpe']}"
+        )
 
 
 class TestRiskRoutes:
