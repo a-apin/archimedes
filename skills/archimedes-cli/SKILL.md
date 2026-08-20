@@ -178,7 +178,7 @@ Both are reported with an explicit `status: "not_evaluable"` + `reason` string
 (`_PBO_NOT_EVALUABLE_REASON` / `_LOOK_AHEAD_NOT_EVALUABLE_REASON`,
 rigor_verify_routes.py:64-76) — never silently passed, never defaulted, never
 scored as a `fail` for something that was structurally never run. This mirrors
-the CPCV-honesty pattern documented in `skills/verdict-api/SKILL.md` ("CPCV is
+the CPCV-honesty pattern documented in `skills/verdict-api/SKILL.md` (lands with PR #1260; "CPCV is
 honestly reported as `NOT_RUN`, not silently absent") — same principle, applied
 here to PBO and look-ahead.
 
@@ -200,7 +200,7 @@ verdict uses — no reimplementation, no new thresholds
 submitting a trial matrix to `POST /api/selection-bias/pbo` instead (the
 `_PBO_NOT_EVALUABLE_REASON` string points there directly) — out of scope for
 this CLI's `verify`, and out of scope for this skill; see
-`skills/verdict-api/SKILL.md` for that endpoint family.
+`skills/verdict-api/SKILL.md` (lands with PR #1260) for that endpoint family.
 
 ## Exit codes
 
@@ -266,17 +266,24 @@ cli.py:92-100) — a script never has to parse prose to learn what happened.
 
 - The `POST /api/rigor/verify` / `GET /api/account/usage` endpoints as raw HTTP
   surfaces for a *non-CLI* client (curl, another agent) — that's
-  `skills/verdict-api/SKILL.md`'s territory (it covers the sibling
+  `skills/verdict-api/SKILL.md`'s territory (lands with PR #1260; it covers the sibling
   `/api/generate/*` family in that style; a bare-series `/api/rigor/verify`
   entry could be added there or here later, but isn't duplicated in both).
 - Reading a full strategy passport's DSR/PBO/OOS fields once a strategy has
   gone through real generation with a trial matrix — see
-  `skills/strategy-passport/SKILL.md`. `verify`'s `not_evaluable` PBO is not
+  `skills/strategy-passport/SKILL.md` (lands with PR #1260). `verify`'s `not_evaluable` PBO is not
   the same code path as a passport's real (evaluable) PBO.
 - Wallet linking, on-chain vault actions, or anything payment-related — the
   CLI's `meter` only *reads* the price quote; it never pays.
 
 ## Verify (re-run these before trusting this document)
+
+```bash
+# The sibling skills this document points to exist (they land with PR #1260 —
+# if this grep fails, that PR has not merged yet and those pointers dangle):
+ls skills/verdict-api/SKILL.md skills/strategy-passport/SKILL.md
+```
+
 
 ```bash
 # The three working commands are still exactly these three:

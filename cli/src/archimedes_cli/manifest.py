@@ -49,7 +49,10 @@ MANIFEST: dict = {
             "implemented": True,
             "description": "Today's generation usage vs both daily caps, plus the live price quote.",
             "inputs": {
-                "--api-url": {"env": "ARCHIMEDES_API_URL", "default": "https://archimedes-arc.com"},
+                "--api-url": {
+                    "env": "ARCHIMEDES_API_URL",
+                    "default": "the cached session's URL, else https://archimedes-arc.com",
+                },
                 "--json": {"flag": True},
             },
             "output": {
@@ -67,7 +70,10 @@ MANIFEST: dict = {
                 "RETURNS_CSV": {"positional": True, "format": "two columns: date, daily_return; '-' reads stdin"},
                 "--trials": {"default": 1, "min": 1, "meaning": "self-attested trial count deflating the DSR"},
                 "--local": {"flag": True, "implemented": False},
-                "--api-url": {"env": "ARCHIMEDES_API_URL", "default": "https://archimedes-arc.com"},
+                "--api-url": {
+                    "env": "ARCHIMEDES_API_URL",
+                    "default": "the cached session's URL, else https://archimedes-arc.com",
+                },
                 "--json": {"flag": True},
             },
             "output": {

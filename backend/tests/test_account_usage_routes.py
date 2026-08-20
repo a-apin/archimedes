@@ -191,3 +191,24 @@ async def test_redis_outage_renders_null_used_not_a_fabricated_zero(app, monkeyp
     assert body["ip"]["error"] == "quota_backend_unavailable"
     # The would-be-naive failure mode this guards against:
     assert body["user"]["used"] != 0
+
+
+@pytest.mark.asyncio
+async def test_corrupt_stored_value_reads_as_unknown_not_500(app, monkeypatch):
+    """A non-numeric value in the quota key is the same "unknown" as an
+    unreachable Redis: peek() must return None (rendered used: null), never
+    let int() raise into a 500 on a display read (#1307 review finding —
+    pre-fix, int(val) sat outside the try and this request 500s)."""
+    _sign_in(monkeypatch)
+
+    r = MagicMock()
+    r.get = AsyncMock(return_value=b"not-a-number")
+    monkeypatch.setattr(GenerationQuota, "_get_redis", AsyncMock(return_value=r))
+    monkeypatch.setattr(account_usage_routes, "client_ip", lambda _r: "203.0.113.9")
+
+    async with _client(app) as client:
+        resp = await client.get("/api/account/usage")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["user"]["used"] is None
+    assert body["ip"]["used"] is None

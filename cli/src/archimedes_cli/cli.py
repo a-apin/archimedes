@@ -45,6 +45,24 @@ _api_url_option = click.option(
 )
 
 
+# Session-aware variant for commands that RUN AGAINST an existing session
+# (meter/verify): when --api-url/ARCHIMEDES_API_URL is absent, the URL the
+# session was logged into wins over the global default — otherwise a session
+# cached against a non-default server would silently send its cookie to the
+# wrong host and surface as a confusing 401.
+_api_url_session_option = click.option(
+    "--api-url",
+    envvar="ARCHIMEDES_API_URL",
+    default=None,
+    metavar="URL",
+    help=f"Base URL of the Archimedes API. Defaults to the cached session's URL, else {DEFAULT_API_URL}.",
+)
+
+
+def _resolve_api_url(explicit: str | None, session: dict | None) -> str:
+    return explicit or (session or {}).get("api_url") or DEFAULT_API_URL
+
+
 def _http_client(api_url: str, *, cookies: dict[str, str] | None = None) -> httpx.Client:
     """The one place an ``httpx.Client`` gets constructed.
 
@@ -53,7 +71,10 @@ def _http_client(api_url: str, *, cookies: dict[str, str] | None = None) -> http
     ``httpx.MockTransport`` instead of a real socket, rather than patching internals of
     each command.
     """
-    return httpx.Client(base_url=api_url, cookies=cookies, timeout=10.0, follow_redirects=True)
+    # follow_redirects=False, deliberately: the API never redirects, and a
+    # compromised/misconfigured endpoint must not be able to bounce a request
+    # carrying credentials (login body, session cookie) to another host.
+    return httpx.Client(base_url=api_url, cookies=cookies, timeout=10.0, follow_redirects=False)
 
 
 def _unavailable(command: str, *, as_json: bool, lands_in: str = "unscheduled") -> None:
@@ -273,9 +294,9 @@ def _render_usage(usage: dict) -> None:
 
 
 @main.command()
-@_api_url_option
+@_api_url_session_option
 @_json_option
-def meter(api_url: str, as_json: bool) -> None:
+def meter(api_url: str | None, as_json: bool) -> None:
     """Show what you have used today and what it costs.
 
     ``GET /api/account/usage`` — today's generation count against both the per-user and
@@ -292,6 +313,7 @@ def meter(api_url: str, as_json: bool) -> None:
             error="no_session",
             message="not logged in. Run `archimedes login` first.",
         )
+    api_url = _resolve_api_url(api_url, session)
 
     try:
         with _http_client(api_url, cookies=session["cookies"]) as client:
@@ -387,9 +409,9 @@ def _render_verify(body: dict) -> None:
     metavar="N",
     help="Self-attested trial/variant count the DSR deflation is computed against (>= 1).",
 )
-@_api_url_option
+@_api_url_session_option
 @_json_option
-def verify(returns_csv: str, run_local: bool, trials: int, api_url: str, as_json: bool) -> None:
+def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, as_json: bool) -> None:
     """Run the rigor gate over a returns series.
 
     RETURNS_CSV is a two-column CSV of date and daily return (a header row, if present,
@@ -440,6 +462,7 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str, as_json
             message="not logged in. Run `archimedes login` first.",
         )
 
+    api_url = _resolve_api_url(api_url, session)
     try:
         with _http_client(api_url, cookies=session["cookies"]) as client:
             response = client.post("/api/rigor/verify", json={"returns": returns, "trials": trials})

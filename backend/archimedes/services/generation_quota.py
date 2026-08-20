@@ -190,10 +190,13 @@ class GenerationQuota:
             day = datetime.now(UTC).strftime("%Y-%m-%d")
             key = f"archimedes:genquota:{scope}:{day}:{identity}"
             val = await r.get(key)
+            # int() stays INSIDE the try: a corrupt/non-numeric stored value is
+            # the same "unknown" as an unreachable Redis — the promised None,
+            # never a raised ValueError surfacing as a 500 on a display read.
+            return int(val) if val is not None else 0
         except Exception as exc:
             logger.warning("generation quota peek failed for %s=%s: %s", scope, identity, exc)
             return None
-        return int(val) if val is not None else 0
 
     async def close(self) -> None:
         if self._redis:
