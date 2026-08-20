@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from "react";
 import { apiGet } from "../api";
+import { fetchAgentStatus } from "../agentStatus";
 import { fetchHealth } from "../health";
 import flowDiagramSrc from "../assets/flow-diagram.svg";
 
@@ -26,6 +27,8 @@ function useArchStats() {
 	const [healthError, setHealthError] = useState(false);
 	const [leaderboard, setLeaderboard] = useState(null);
 	const [leaderboardError, setLeaderboardError] = useState(false);
+	const [agentStatus, setAgentStatus] = useState(null);
+	const [agentStatusError, setAgentStatusError] = useState(false);
 
 	useEffect(() => {
 		apiGet("/api/config/contracts")
@@ -46,6 +49,16 @@ function useArchStats() {
 		apiGet("/api/leaderboard?scope=curated")
 			.then(setLeaderboard)
 			.catch(() => setLeaderboardError(true));
+		// /api/agent/status.alive is the same Redis-heartbeat liveness check
+		// vault_monitor.py surfaces per-vault (`agent_alive = age < 600`) —
+		// the honesty ledger's rebalance-loop row reads it live rather than
+		// asserting a static claim, same anti-rot rule as every other number
+		// on this page (see the module docstring). TTL-cached the same way as
+		// /health (#1382 review) — the endpoint does four Redis reads plus an
+		// Arc RPC round-trip per call and carries no rate limit of its own.
+		fetchAgentStatus()
+			.then(setAgentStatus)
+			.catch(() => setAgentStatusError(true));
 	}, []);
 
 	return {
@@ -55,6 +68,8 @@ function useArchStats() {
 		healthError,
 		leaderboard,
 		leaderboardError,
+		agentStatus,
+		agentStatusError,
 	};
 }
 
@@ -952,7 +967,7 @@ const PROTOCOLS = [
 	},
 	{
 		name: "Hierarchy of Truth",
-		what: "Chain state outranks the LLM's narrative; V_check fails any rebalance where they disagree.",
+		what: "Chain state outranks the LLM's narrative — the rebalance loop reads vault holdings from chain, never from model output; V_check then caps any single position at 60% concentration and rejects a malformed weight set before the trade is committed.",
 	},
 	{
 		name: "Source Tracking",
@@ -1000,8 +1015,9 @@ function LedgerStatus({ children, tone }) {
 	);
 }
 
-function HonestyLedger({ health, healthError }) {
+function HonestyLedger({ health, healthError, agentStatus, agentStatusError }) {
 	const loading = !health && !healthError;
+	const agentLoading = !agentStatus && !agentStatusError;
 	return (
 		<div className="card p-5 mb-7">
 			<div className="label mb-3">The honest ledger</div>
@@ -1044,8 +1060,41 @@ function HonestyLedger({ health, healthError }) {
 						<tr>
 							<td>Autonomous rebalance loop</td>
 							<td>
-								Runs on a schedule against every deployed vault; evaluates,
-								commits, trades, and reveals each tick
+								{agentStatusError ? (
+									<span style={{ color: "var(--text-4)" }}>
+										— live value unavailable
+									</span>
+								) : agentLoading ? (
+									<span
+										style={{
+											color: "var(--text-4)",
+											animation: "pulse 1.4s infinite",
+										}}
+									>
+										···
+									</span>
+								) : agentStatus.alive ? (
+									<>
+										<LedgerStatus tone="live">Live</LedgerStatus>{" "}
+										— the runner loop is ticking: heartbeat confirmed
+										within the last 10 minutes on the dedicated runner
+										instance (relocated off the old detached EC2 box,
+										#1043/#1065). The heartbeat is written after every
+										tick, including a failed one, and independently of
+										dry-run — it confirms the loop is alive, not that a
+										given tick reached commit/trade/reveal
+									</>
+								) : (
+									<>
+										<LedgerStatus tone="pending">
+											No recent heartbeat
+										</LedgerStatus>{" "}
+										— the loop is defined to evaluate, then
+										commit/trade/reveal when not in dry-run; no
+										heartbeat in the last 10 minutes, so neither uptime
+										nor execution is confirmed
+									</>
+								)}
 							</td>
 						</tr>
 						<tr>
@@ -1184,6 +1233,8 @@ export default function Architecture({ onNavigate }) {
 		healthError,
 		leaderboard,
 		leaderboardError,
+		agentStatus,
+		agentStatusError,
 	} = useArchStats();
 
 	return (
@@ -1209,7 +1260,12 @@ export default function Architecture({ onNavigate }) {
 			<MarketplaceSection />
 			<CorpusSection health={health} healthError={healthError} />
 			<ProtocolsPanel />
-			<HonestyLedger health={health} healthError={healthError} />
+			<HonestyLedger
+				health={health}
+				healthError={healthError}
+				agentStatus={agentStatus}
+				agentStatusError={agentStatusError}
+			/>
 			<CallToAction onNavigate={onNavigate} />
 		</div>
 	);

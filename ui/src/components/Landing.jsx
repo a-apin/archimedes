@@ -30,7 +30,7 @@ const RIGOR_CRITERIA = [
 		code: "OOS",
 		name: "Walk-forward out-of-sample",
 		question: "Does the method survive data it did not fit on?",
-		method: "Moves the test window forward through time.",
+		method: "Tested on a 30% chronological held-out window it never trained on.",
 	},
 	{
 		code: "LEAK",
