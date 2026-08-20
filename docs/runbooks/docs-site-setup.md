@@ -8,13 +8,15 @@ mkdocs-material) and published by
 GitHub Pages. This is issue #1381, Dan's decision: **option B, GitHub
 Pages** — migrate to something else later only if we outgrow it.
 
-The workflow is **inert as merged** — see its own header comment. It runs on
-every push to `main` that touches `docs/**` or `mkdocs.yml`, and it **fails**
-at the final `actions/deploy-pages` step until the one-time setup below is
-done. That failure is harmless: no partial deploy, no site, nothing outside
-the workflow run's own red X.
+The workflow is **inert as merged** — see its own header comment. Both of
+its jobs are gated on the repo variable `DOCS_SITE_ENABLED == "true"` (the
+same pattern as `deploy-runners.yml`'s `RUNNER_DEPLOY_ENABLED`), so until
+step 3 below it simply **skips** (grey, not red) on every qualifying push.
+If the variable is flipped before Pages is enabled, the deploy job fails
+harmlessly at `actions/deploy-pages`: no partial deploy, no site, nothing
+outside the workflow run's own red X.
 
-## Dan's two manual steps to go live
+## Dan's three manual steps to go live
 
 Neither of these can be done by a workflow or from the CLI with the access
 this repo's automation has — both are one-time, human, console actions.
@@ -54,6 +56,15 @@ record on a subdomain, pointing at `<org>.github.io` (not at a per-repo
 config once the custom domain is set in step 1). No record creation was done
 as part of this scaffold — this table is instructions for Dan, not evidence
 of a change already made.
+
+### 3. Flip the workflow gate
+
+GitHub → `a-apin/archimedes` → **Settings → Secrets and variables → Actions
+→ Variables** → New repository variable: `DOCS_SITE_ENABLED` = `true`.
+Then run the workflow once (**Actions → Docs Site (GitHub Pages) → Run
+workflow**) rather than waiting for the next docs push. Until this variable
+exists and equals `true`, both workflow jobs skip — that's the safety that
+lets the scaffold merge before steps 1–2 are done.
 
 ### Why there's no `docs/CNAME` file
 
