@@ -84,7 +84,7 @@ class TestPaperRAGHealth:
         monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
         _reset_model_cache()
         with patch.object(rag_module, "_get_embedding_model", return_value=_fake_model()):
-            h = paper_rag_health()
+            h = paper_rag_health(probe=True)
         assert h.status == "live"
         assert "model=" in h.reason
 
@@ -93,7 +93,7 @@ class TestPaperRAGHealth:
         monkeypatch.setenv("MINILM_MODEL", "all-MiniLM-L6-v2")
         _reset_model_cache()
         with patch.object(rag_module, "_get_embedding_model", return_value=_fake_model()):
-            h = paper_rag_health()
+            h = paper_rag_health(probe=True)
         assert h.status == "live"
         assert "all-MiniLM-L6-v2" in h.reason
 
@@ -101,7 +101,7 @@ class TestPaperRAGHealth:
         monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
         _reset_model_cache()
         with patch.object(rag_module, "_get_embedding_model", return_value=None):
-            h = paper_rag_health()
+            h = paper_rag_health(probe=True)
         assert h.status == "degraded"
         assert "TF-IDF" in h.reason
 
@@ -113,7 +113,7 @@ class TestPaperRAGHealth:
         # Simulate ImportError by making _get_embedding_model return None
         # (which is what happens when sentence-transformers isn't installed).
         with patch.object(rag_module, "_get_embedding_model", return_value=None):
-            h = paper_rag_health()
+            h = paper_rag_health(probe=True)
         assert h.status == "degraded"
 
     def test_model_load_exception_leads_to_degraded(self, monkeypatch):
@@ -127,10 +127,83 @@ class TestPaperRAGHealth:
 
             st_mod = sys.modules["sentence_transformers"]
             st_mod.SentenceTransformer = MagicMock(side_effect=OSError("corrupted model files"))
-            h = paper_rag_health()
+            h = paper_rag_health(probe=True)
         # Reset after test
         _reset_model_cache()
         assert h.status == "degraded"
+
+
+# ── /health must never load the model (2026-08-19 OOM regression guard) ──────
+
+
+class TestHealthDoesNotLoadModel:
+    """The ALB polls /health every 30s. Loading all-MiniLM-L6-v2 there costs a
+    measured 521 MB of RSS and was a direct contributor to the 2026-08-19 OOM
+    crash loop. These tests exist to make that regression impossible to
+    reintroduce silently.
+    """
+
+    def setup_method(self):
+        _reset_model_cache()
+
+    def test_default_call_never_loads_the_model(self, monkeypatch):
+        """THE GUARD: probe=False must not call _get_embedding_model at all."""
+        monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
+        _reset_model_cache()
+        loader = MagicMock(return_value=_fake_model())
+        with patch.object(rag_module, "_get_embedding_model", loader):
+            paper_rag_health()
+        loader.assert_not_called()
+
+    def test_probe_true_does_load_the_model(self, monkeypatch):
+        """The dedicated /health/paper-rag endpoint still proves the load."""
+        monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
+        _reset_model_cache()
+        loader = MagicMock(return_value=_fake_model())
+        with patch.object(rag_module, "_get_embedding_model", loader):
+            h = paper_rag_health(probe=True)
+        loader.assert_called_once()
+        assert h.status == "live"
+
+    def test_ready_when_weights_present_but_unloaded(self, monkeypatch):
+        monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
+        _reset_model_cache()
+        with patch.object(rag_module, "_weights_present", return_value=True):
+            h = paper_rag_health()
+        assert h.status == "ready"
+        assert "not loaded" in h.reason
+
+    def test_degraded_when_weights_missing(self, monkeypatch):
+        """No weights on disk is a real problem and must not read as 'ready'."""
+        monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
+        _reset_model_cache()
+        with patch.object(rag_module, "_weights_present", return_value=False):
+            h = paper_rag_health()
+        assert h.status == "degraded"
+
+    def test_live_reported_free_once_already_loaded(self, monkeypatch):
+        """After a real retrieval loaded the model, /health reports live with
+        no further allocation and without calling the loader again."""
+        monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
+        _reset_model_cache()
+        rag_module._embedding_model = _fake_model()
+        loader = MagicMock()
+        try:
+            with patch.object(rag_module, "_get_embedding_model", loader):
+                h = paper_rag_health()
+        finally:
+            _reset_model_cache()
+        loader.assert_not_called()
+        assert h.status == "live"
+
+    def test_disabled_short_circuits_before_any_disk_check(self, monkeypatch):
+        monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "false")
+        _reset_model_cache()
+        probe = MagicMock(return_value=True)
+        with patch.object(rag_module, "_weights_present", probe):
+            h = paper_rag_health()
+        probe.assert_not_called()
+        assert h.status == "disabled"
 
 
 # ── _get_embedding_model caching ──────────────────────────────────────────────
