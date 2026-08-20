@@ -29,6 +29,14 @@ test("Architecture.jsx treats a null vaults read as failed, not loading and not 
 	assert.match(architecture, /failed=\{contractsError \|\| vaultsUnread\}/);
 });
 
+test("Architecture.jsx treats a degraded leaderboard as failed, not a measured zero", () => {
+	// leaderboard?.degraded is a 200 (the provider raised, or the curated
+	// cohort came back empty for a reason other than a legitimate filter —
+	// #1356), not a rejected fetch, so leaderboardError alone (set only by
+	// .catch()) never catches it. Mirrors the vaultsUnread line above.
+	assert.match(architecture, /failed=\{leaderboardError \|\| leaderboard\?\.degraded\}/);
+});
+
 test("Landing.jsx renders the error census state for a null pool read, not the waiting state", () => {
 	assert.match(
 		landing,
@@ -143,5 +151,17 @@ test("Leaderboard.jsx never renders the filters-empty message while the board is
 	assert.match(
 		leaderboard,
 		/!error && data && !data\.degraded && data\.entries\.length === 0 && !isOwn/,
+	);
+});
+
+test("Leaderboard.jsx never prints a measured total while the board is degraded", () => {
+	// A total outage still sets `total: 0` on the response (build_leaderboard
+	// derives it from the ranked list), so the header count must be gated on
+	// `data.degraded` the same way the two honest-empty prose branches above
+	// are — otherwise a degraded board reads "0 strategies" next to its own
+	// warning banner.
+	assert.match(
+		leaderboard,
+		/\{data\.degraded \? '—' : `\$\{data\.total\} strateg\$\{data\.total === 1 \? 'y' : 'ies'\}`\}/,
 	);
 });

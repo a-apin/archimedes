@@ -156,7 +156,7 @@ function HeroStrip({
 				label="Strategies on the public leaderboard"
 				value={leaderboard?.total}
 				loading={leaderboardLoading}
-				failed={leaderboardError}
+				failed={leaderboardError || leaderboard?.degraded}
 				caption="ranked by real backtest + live rigor gate"
 			/>
 			<StatTile

@@ -252,7 +252,11 @@ export default function Leaderboard() {
           style={{ background: 'var(--surface-3)', color: 'var(--text-2)', border: '1px solid var(--glass-border)', borderRadius: 6, padding: '4px 8px', fontSize: 12 }}>
           {REGIMES.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
         </select>
-        {data && <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 'auto' }}>{data.total} strateg{data.total === 1 ? 'y' : 'ies'}</span>}
+        {data && (
+          <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 'auto' }}>
+            {data.degraded ? '—' : `${data.total} strateg${data.total === 1 ? 'y' : 'ies'}`}
+          </span>
+        )}
       </div>
 
       {loading && <div className="body" style={{ color: 'var(--text-3)' }}>Loading the board…</div>}
