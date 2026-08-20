@@ -138,8 +138,14 @@ test('RiskAnalysis VaRPanel does not treat the zero-lookback CVaR response as li
 // its sample claim to the three panels returnsProp actually governs and
 // leave the correlation matrix to its own badge.
 test('RiskAnalysis backend-unavailable notice scopes its sample claim to VaR/drawdown/Sharpe, not an unqualified "the figures below"', () => {
+  // Whitespace-tolerant like the sibling assertions below: the JSX source
+  // line-wraps this sentence, so pinning literal single spaces here would be
+  // a no-op that never sees the forbidden wrapped wording (verified: the
+  // shipped-single-space form scores 0 matches on the pre-fix source too,
+  // while this \s+ form scores 2 pre-fix / 0 post-fix).
   assert.equal(
-    (riskAnalysis.match(/the figures below are (a synthetic sample|computed in-browser)/g) || []).length,
+    (riskAnalysis.match(/the\s+figures\s+below\s+are\s+(a\s+synthetic\s+sample|computed\s+in-browser)/g) || [])
+      .length,
     0,
     'the notice must not make a blanket "the figures below" claim — CorrelationHeatmap\'s sample-ness ' +
       'is independent (seriesProp, not returnsProp) and can contradict it',
@@ -153,5 +159,28 @@ test('RiskAnalysis backend-unavailable notice scopes its sample claim to VaR/dra
   assert.match(
     riskAnalysis,
     /VaR,\s+drawdown,\s+and\s+rolling-Sharpe\s+figures\s+below\s+are\s+computed\s+in-browser\s+from\s+this\s+strategy's\s+persisted\s+returns,\s+not\s+a\s+sample/,
+  )
+})
+
+// The correlation-matrix parenthetical asserted unconditionally that it
+// "draws on a different, independent set of strategies" — but when
+// seriesProp is null (the common FEATURE_QUANT-off case), CorrelationHeatmap
+// renders from buildDefaultData()'s four mock tickers (sSPY/sBTC/sGOLD/
+// sNVDA), not from any strategy at all. QuantLab.jsx's `correlation` memo
+// (withData.length < 2) can also fall back to mock while a real strategy is
+// selected. The parenthetical must stay state-neutral — provenance is what
+// CorrelationHeatmap's own badge decides, not a claim this notice can make.
+test('RiskAnalysis correlation-matrix parenthetical does not assert an unconditional "different set of strategies" provenance claim', () => {
+  assert.equal(
+    (riskAnalysis.match(/draws\s+on\s+a\s+different,?\s+independent\s+set\s+of\s+strategies/g) || []).length,
+    0,
+    'the correlation matrix can render from buildDefaultData()\'s mock assets (seriesProp == null) or from ' +
+      '<2 strategies (QuantLab.jsx correlation memo) — it does not always draw on "a different set of strategies"',
+  )
+  assert.equal(
+    (riskAnalysis.match(/correlation\s+matrix\s+is\s+decided\s+separately\s+from\s+this\s+strategy's\s+returns/g) || [])
+      .length,
+    2,
+    'both the returnsProp-null and returnsProp-present branches must carry the state-neutral parenthetical',
   )
 })
