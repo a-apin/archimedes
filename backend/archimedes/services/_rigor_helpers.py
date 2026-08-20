@@ -648,8 +648,21 @@ def _annualized_sharpe_arr(
     """Annualized Sharpe of a 1-D return array, or None if degenerate.
 
     #1409: ``dates`` optional, 1:1 with ``arr``. Omitted keeps the exact
-    pre-#1409 flat-rate code path (used as-is by ``compute_cpcv_oos_sharpe``,
-    which is out of this issue's scope and always calls this with no dates).
+    pre-#1409 flat-rate code path. **Two** callers always take that no-dates
+    path today (2026-08-21 review fix — the docstring previously named only
+    the first, live-irrelevant one):
+
+      - ``compute_cpcv_oos_sharpe`` — out of this issue's scope, and has
+        **no production caller today** (CPCV is reported ``NOT_RUN`` until a
+        real combinatorial OOS matrix is wired in).
+      - ``regime_conditional_sharpe`` (reached via ``regime_robustness_score``,
+        which ``run_rigor_gate`` DOES call, and DOES surface on every gate
+        result long enough to classify >1 regime — see
+        ``RigorGateResult.regime_robustness``) — this one IS live. A grade
+        that threads ``dates`` therefore mixes a T-bill-series DSR/OOS/IS
+        with flat-5% per-regime Sharpes; see ``docs/rigor-methods.md`` §1a
+        for the disclosed-holdout list this is documented alongside (Kelly,
+        the optimizer, and now regime-robustness).
     """
     if len(arr) < 2:
         return None
@@ -1063,7 +1076,11 @@ def classify_regimes(
     return labels
 
 
-# DEAD CODE — unwired from run_rigor_gate; see issue #621
+# NOTE: this WAS dead code (unwired from run_rigor_gate; see issue #621) but
+# is no longer — `run_rigor_gate` reaches it via `regime_robustness_score`
+# (2026-08-21 review fix: the banner below had gone stale and would mislead a
+# reader into skipping the one call site of `_annualized_sharpe_arr` that is
+# actually live in production; see that function's docstring).
 def regime_conditional_sharpe(
     strategy_returns: list[float] | np.ndarray,
     regime_labels: list[int] | np.ndarray,

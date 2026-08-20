@@ -23,6 +23,8 @@ Hermetic: no network, no DB — everything here runs against the vendored CSV
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import numpy as np
 import pytest
 from archimedes.services import rf_series
@@ -115,12 +117,29 @@ def test_2015_window_regresses_from_flat_5pct_with_hand_computed_excess_mean() -
     returns = _seeded_returns(len(dates))
     arr = np.asarray(returns, dtype=float)
 
+    # Independence check (2026-08-21 review fix): the conversion constant below
+    # is a LITERAL, not `_ANNUALIZATION` imported from the module under test —
+    # importing it would let a future change to `_ANNUALIZATION` silently move
+    # both sides of this "hand-computed" comparison together (mutation-proofed
+    # below: the assertion at :134 fails when `_ANNUALIZATION` diverges from
+    # this literal, see the PR body's round-3 transcript). `_RF_DAILY` is
+    # pinned explicitly too, since it is borrowed from production at several
+    # OTHER assertions in this file (:148/:156/:161/:216) — those are
+    # deliberately checking BYTE-IDENTITY of the untouched flat-rate path
+    # against production's own constant, not standing in for an independent
+    # hand-computation, so they are left as-is; this assertion is what makes
+    # that borrowing safe by pinning the constant itself.
+    assert _ANNUALIZATION == 252, "the literal 252 below assumes this; update both together if it ever changes"
+    assert pytest.approx(0.05 / 252.0, abs=1e-15) == _RF_DAILY
+
     # Hand-computed: the ACTUAL published DGS3MO rate for every date in the
     # window, independently re-derived from the vendored series (not by
     # calling any _rigor_helpers code), converted to a daily fraction the same
-    # way the decision record specifies: rate/100/252.
+    # way the decision record specifies: rate/100/252 (252 is a LITERAL here,
+    # not the imported `_ANNUALIZATION` — see the independence-check comment
+    # above).
     series = rf_series._load_csv()
-    hand_rf_daily = np.array([series[d] for d in dates], dtype=float) / 100.0 / _ANNUALIZATION
+    hand_rf_daily = np.array([series[d] for d in dates], dtype=float) / 100.0 / 252.0
     hand_excess_mean = float((arr - hand_rf_daily).mean())
 
     dates_inputs = _sharpe_dsr_inputs(returns, dates=dates)
@@ -171,12 +190,24 @@ def test_2015_window_regresses_from_flat_5pct_with_hand_computed_excess_mean() -
 def test_flat_5pct_vs_live_rate_delta_matches_decision_record_direction() -> None:
     """Sanity-checks the decision record's own headline number: the vendored
     series' most recent rate sits materially BELOW the flat 5% fallback (the
-    record cites ~3.79-3.87%, i.e. the flat rate over-subtracts ~110-120bps)."""
+    record cites ~3.79-3.87%, i.e. the flat rate over-subtracts ~110-120bps).
+
+    2026-08-21 review fix: this used to also assert a narrow `3.0 < rate <
+    4.5` band around the decision record's cited value. That couples CI to
+    wherever the 3M T-bill happens to trade after a future
+    `scripts/refresh_rf_series.py` run (over the vendored series' own
+    history, the rate has spent 35.8% of all 180-day windows moving by more
+    than the 64bp of headroom that band had left) — a market move, not a
+    code regression, would turn CI red. The load-bearing claim is just "still
+    materially below the flat fallback"; the wider sanity bound below
+    (already used in `test_rf_series.py::test_vendored_csv_loads_and_is_nonempty`)
+    is the right-sized guard for "this is a plausible T-bill rate, not a
+    parsing bug"."""
     series = rf_series._load_csv()
     latest_date = max(series)
     latest_rate_pct = series[latest_date]
     assert latest_rate_pct < 5.0
-    assert 3.0 < latest_rate_pct < 4.5  # sanity band around the decision record's cited 3.79-3.87%
+    assert 0.0 <= latest_rate_pct <= 25.0  # sane annualized-percent bound (historical range ~0-17%)
 
 
 def test_hac_dsr_uses_the_same_excess_series_for_influence_variance() -> None:
@@ -357,10 +388,25 @@ def test_grace_window_straddle_forces_fallback_for_every_metric() -> None:
     test would pass vacuously). Before the fix this made
     rf_convention=FALLBACK while in_sample_sharpe silently used the T-bill
     series anyway. Self-triggers as the vendored CSV ages — no mutation
-    needed to hit the underlying condition, only a stale-enough tail date."""
+    needed to hit the underlying condition, only a stale-enough tail date.
+
+    2026-08-21 review fix: the tail used to be a HARDCODED "2026-11-*" date
+    range, reasoned as "well past 2026-08-18 + 14d" against the vendored
+    series' date AT THE TIME THIS TEST WAS WRITTEN. That premise silently
+    inverts the moment someone runs `scripts/refresh_rf_series.py` (this PR's
+    own documented maintenance action) and the CSV's last published date
+    crosses 2026-11-14ish — CI goes red on a maintenance day, not a
+    regression. The tail is now derived from the vendored series' OWN max
+    published date, so this test stays a genuine straddle regardless of how
+    far the CSV has been refreshed."""
     n_head, n_tail = 70, 30
     head_dates = _2015_dates(n_head)
-    tail_dates = [f"2026-11-{1 + (i % 28):02d}" for i in range(n_tail)]  # well past 2026-08-18 + 14d
+    series = rf_series._load_csv()
+    last_published = date.fromisoformat(max(series))
+    # Comfortably past the forward-fill grace window (14 days) so every tail
+    # date is guaranteed unresolvable against whatever the series covers today.
+    stale_start = last_published + timedelta(days=rf_series.MAX_FORWARD_FILL_DAYS + 16)
+    tail_dates = [(stale_start + timedelta(days=i)).isoformat() for i in range(n_tail)]
     dates = head_dates + tail_dates
     returns = _seeded_returns(len(dates))
 
@@ -381,6 +427,70 @@ def test_grace_window_straddle_forces_fallback_for_every_metric() -> None:
     is_dates_only = dates[:split]
     _rates, is_only_convention = rf_series.resolve_annual_rf_for_dates(is_dates_only)
     assert is_only_convention == rf_series.RF_CONVENTION_SERIES
+
+
+def test_run_rigor_gate_dates_produces_measurably_different_values_from_flat() -> None:
+    """POSITIVE-direction regression guard for `run_rigor_gate`'s three
+    gate-level `dates` threadings (2026-08-21 review finding): every other
+    test in this file that exercises `run_rigor_gate` with in-coverage dates
+    asserts EQUALITY with the flat run (the fallback/mismatch/straddle
+    tests above) or only the `rf_convention` marker string
+    (`test_run_rigor_gate_rf_convention_series_vs_dates_none`) — none pins a
+    NUMBER on the dates-vs-flat DIFFERENCE for DSR, OOS, or in-sample Sharpe
+    at the gate level. That gap meant each of the three `dates=resolved_dates`
+    call sites inside `run_rigor_gate` (DSR at :1276-1278, OOS at :1320, the
+    inline in-sample block at :1365) could be reverted to the flat path
+    INDEPENDENTLY while `rf_convention` still reported
+    `excess_tbill_series` and the whole suite stayed green — i.e. the PR
+    body's round-2 claim "the marker and the arithmetic can never disagree,
+    by construction" was not enforced by any test.
+
+    Fix: pin the actual with-dates values (computed once against this
+    branch's head and asserted here, not merely `!=`) so each of the three
+    call sites is independently guarded. >=120 in-coverage dates are used
+    deliberately — at 60 (the length several sibling tests above use)
+    `oos_sharpe` is `None` on both runs, which would NOT catch the OOS
+    mutation.
+
+    Mutation-proof (transcript in the PR body, round 3): deleting
+    `dates=resolved_dates` from any ONE of the three call sites above makes
+    exactly the corresponding assertion below fail (the with-dates value
+    collapses to the flat one), while the other two + `rf_convention` keep
+    passing — proving each site is independently guarded, not just the
+    aggregate."""
+    dates = _2015_dates(120)
+    returns = _seeded_returns(len(dates))
+
+    with_dates = run_rigor_gate("s-gate-dates-value", returns, num_trials=1, dates=dates)
+    flat = run_rigor_gate("s-gate-dates-value-flat", returns, num_trials=1)
+
+    assert with_dates.rf_convention == rf_series.RF_CONVENTION_SERIES
+    assert with_dates.gate_details["rf_convention"] == rf_series.RF_CONVENTION_SERIES
+    assert flat.rf_convention == rf_series.RF_CONVENTION_FALLBACK
+
+    # Pinned with-dates values, computed once against this branch's head
+    # (seed=1409, mu=0.0006, sigma=0.010, the same 120 real 2015 DGS3MO dates
+    # `_2015_dates(120)` returns). Each is asserted against the FLAT run's
+    # actual value too, so a future edit that moves the flat path can't
+    # silently make this test meaningless by moving both sides together.
+    assert with_dates.deflated_sharpe == pytest.approx(2.075778, abs=1e-6)
+    assert flat.deflated_sharpe == pytest.approx(1.730572, abs=1e-6)
+    assert with_dates.deflated_sharpe != flat.deflated_sharpe
+    assert with_dates.deflated_sharpe - flat.deflated_sharpe == pytest.approx(0.345206, abs=1e-5)
+
+    assert with_dates.dsr_p_value == pytest.approx(0.918208, abs=1e-6)
+    assert flat.dsr_p_value == pytest.approx(0.876839, abs=1e-6)
+    assert with_dates.dsr_p_value != flat.dsr_p_value
+
+    assert with_dates.oos_sharpe is not None and flat.oos_sharpe is not None
+    assert with_dates.oos_sharpe == pytest.approx(0.297985, abs=1e-6)
+    assert flat.oos_sharpe == pytest.approx(-0.039113, abs=1e-6)
+    assert with_dates.oos_sharpe != flat.oos_sharpe
+
+    assert with_dates.in_sample_sharpe is not None and flat.in_sample_sharpe is not None
+    assert with_dates.in_sample_sharpe == pytest.approx(2.859112, abs=1e-5)
+    assert flat.in_sample_sharpe == pytest.approx(2.511074, abs=1e-5)
+    assert with_dates.in_sample_sharpe != flat.in_sample_sharpe
 
 
 # ─── 8. PBO's dates threading has a real, mutation-provable value effect ──

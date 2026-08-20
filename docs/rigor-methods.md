@@ -92,13 +92,28 @@ supports grading against the **actual historical 3-month U.S. Treasury bill rate
 series `DGS3MO`), aligned to each backtest's own per-bar dates — the universal
 convention for a USD Sharpe ratio (Sharpe 1994) and the rate Bailey & López de Prado
 (2014) implicitly assume when they define the Deflated Sharpe Ratio on excess returns.
-**It is not yet the *live* default**: `run_rigor_gate`'s `dates` parameter is optional,
-and as of this PR no production call site (`selection_bias_routes.py`,
-`strategies_routes.py`, `live_rigor_gate.py`) threads per-bar dates through yet — see
-"Why production callers still show `excess_flat_fallback` today" in the PR that shipped
-this section. Every live grade today still takes the flat-rate path and honestly
-discloses it via `rf_convention` below; wiring real per-bar dates into those callers is
-tracked follow-up work, not implied by "the mechanism exists."
+**It is not yet the *live default for `run_rigor_gate`***: `run_rigor_gate`'s `dates`
+parameter is optional, and as of this PR none of its four production call sites
+(`selection_bias_routes.py` ×2, `strategies_routes.py`, `live_rigor_gate.py`) threads
+per-bar dates through yet — see "Why production callers still show
+`excess_flat_fallback` today" in the PR that shipped this section. Every live **gate
+verdict** today still takes the flat-rate path and honestly discloses it via
+`rf_convention` below; wiring real per-bar dates into those four callers is tracked
+follow-up work, not implied by "the mechanism exists."
+
+**Two things already run on the real series today, disclosed via their own
+`rf_convention`, precisely because they already have real per-bar dates and did not
+need new plumbing (2026-08-21 correction — this section previously implied a blanket
+"nothing production-side threads dates yet," which was not true even at the time it was
+written):**
+- `compute_library_pbo` (the library-wide CSCV PBO, #546, *display-only* — it never
+  feeds a gate verdict) threads the joint date axis into `compute_pbo`
+  **unconditionally**, reachable live via `selection_bias_routes.py` ->
+  `_cached_library_pbo`. Disclosed via `LibraryPbo.rf_convention`.
+- `POST /api/rigor/verify` (the CLI's `archimedes verify` backend, #1305) — unlike
+  `run_rigor_gate`'s callers, this endpoint's request schema already carries real
+  per-bar dates on every call (the CLI builds them from the returns CSV), so no schema
+  change was needed to wire it. Disclosed via `RigorVerifyResponse.rf_convention`.
 
 **Why a flat constant was wrong.** The 3-month T-bill has ranged from roughly 0.00%
 (the 2008–2015 near-zero-rate era, mean 0.25% over the vendored series) to double

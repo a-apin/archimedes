@@ -148,6 +148,28 @@ def _to_iso(value: str | date | datetime) -> str:
         return value[:10]
     if isinstance(value, (datetime, date)):
         return value.isoformat()[:10]
+    # numpy.datetime64 (2026-08-21 review fix): duck-typed by class name, not
+    # `isinstance(value, np.datetime64)` -- this module stays stdlib-only by
+    # design (see the module docstring), so it cannot import numpy just to
+    # recognize this one type. `.values` / `.to_numpy()` on a pandas
+    # DatetimeIndex or Series (as opposed to iterating the index directly,
+    # which yields `pd.Timestamp` -- already handled above via the
+    # `datetime` branch, `Timestamp` being a `datetime` subclass) is exactly
+    # the "type a pandas/numpy backtest series is most likely to actually
+    # emit" this module's own docstring anticipates as a real caller. Every
+    # numpy.datetime64 precision (D/s/ms/us/ns/...) stringifies to an
+    # ISO-8601-prefixed form (`str(np.datetime64("2015-01-02")) ==
+    # "2015-01-02"`, `str(np.datetime64("2015-01-02T00:00:00.000000000")) ==
+    # "2015-01-02T00:00:00.000000000"`), so `[:10]` recovers the date the
+    # same way the `datetime`/`date` branch above does -- no numpy import
+    # needed to convert it, only to recognize it. A malformed value smuggled
+    # in this way (e.g. `numpy.datetime64("NaT")`, which stringifies to
+    # `"NaT"`) is NOT silently accepted here -- it falls through to the
+    # `date.fromisoformat` parse below, which raises `ValueError` and is
+    # caught by this function's caller the same way any other malformed
+    # string is (degrades the WHOLE grade to the flat fallback, loudly).
+    if type(value).__name__ == "datetime64":
+        return str(value)[:10]
     raise TypeError(f"rf_series: unsupported date type {type(value)!r} (expected str or datetime.date)")
 
 

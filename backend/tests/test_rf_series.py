@@ -171,6 +171,18 @@ def test_custom_flat_annual_pct_used_in_fallback() -> None:
 # "the mechanism is fully built, tested, and ready to wire the moment a
 # caller has real per-bar dates" — a caller's date format is exactly the kind
 # of input this function must not trust blindly.
+#
+# (2026-08-21 review fix.) `numpy.datetime64` moved OUT of "unsupported type"
+# and into a real parse (`_to_iso` now recognizes it by duck-typed class
+# name) — it was landing on the flat fallback despite being exactly the type
+# this module's own docstring names as "the type a pandas/numpy backtest
+# series is most likely to actually emit", which meant the mechanism this PR
+# advertises as "ready to wire" would have silently degraded the first real
+# caller that wired it via `.values`/`.to_numpy()`. `test_unsupported_date_type_
+# falls_back_instead_of_crashing` below now uses a genuinely-unsupported type
+# (a plain `int`) to keep exercising the crash-vs-fallback contract; the two
+# new tests after it cover the `numpy.datetime64` parse itself, including the
+# `NaT` malformed case, which must still fall back.
 
 
 def test_non_iso_date_string_falls_back_instead_of_crashing(caplog: pytest.LogCaptureFixture) -> None:
@@ -182,11 +194,57 @@ def test_non_iso_date_string_falls_back_instead_of_crashing(caplog: pytest.LogCa
 
 
 def test_unsupported_date_type_falls_back_instead_of_crashing(caplog: pytest.LogCaptureFixture) -> None:
-    """A numpy.datetime64 -- the type a pandas/numpy backtest series is most
-    likely to actually emit -- must degrade the same way, not raise."""
-    np = pytest.importorskip("numpy")
+    """A genuinely unsupported type (an int here -- not `str`/`date`/
+    `datetime`/`numpy.datetime64`, all of which `_to_iso` now parses -- see
+    `test_numpy_datetime64_resolves_the_same_as_the_equivalent_iso_string`
+    below) must degrade the same way, not raise."""
     with caplog.at_level("WARNING"):
-        rates, convention = rf_series.resolve_annual_rf_for_dates([np.datetime64("2015-01-02")], flat_annual_pct=6.0)
+        rates, convention = rf_series.resolve_annual_rf_for_dates([20150102], flat_annual_pct=6.0)  # type: ignore[list-item]
     assert convention == rf_series.RF_CONVENTION_FALLBACK
     assert rates == [6.0]
     assert any("unsupported date type" in rec.message.lower() for rec in caplog.records)
+
+
+def test_numpy_datetime64_resolves_the_same_as_the_equivalent_iso_string() -> None:
+    """2026-08-21 review fix: `numpy.datetime64` -- by this module's OWN
+    docstring, "the type a pandas/numpy backtest series is most likely to
+    actually emit" -- used to be treated as unsupported and degrade the
+    WHOLE grade to the flat fallback (see the PR body's round-3 mutation
+    transcript: this used to be the FALLBACK case above). It now parses,
+    resolving to the identical rate the equivalent ISO string resolves to --
+    proving the fix is a real parse, not merely a different fallback
+    reason."""
+    np = pytest.importorskip("numpy")
+
+    iso_rates, iso_convention = rf_series.resolve_annual_rf_for_dates(["2015-01-02", "2015-01-05"])
+    dt64_rates, dt64_convention = rf_series.resolve_annual_rf_for_dates(
+        [np.datetime64("2015-01-02"), np.datetime64("2015-01-05")]
+    )
+
+    assert iso_convention == rf_series.RF_CONVENTION_SERIES
+    assert dt64_convention == rf_series.RF_CONVENTION_SERIES
+    assert dt64_rates == iso_rates
+
+    # Also exercise the precision numpy actually emits from a pandas
+    # DatetimeIndex's `.values` / `.to_numpy()` (nanosecond, not day,
+    # precision) -- the real hazard the review finding named.
+    ns_rates, ns_convention = rf_series.resolve_annual_rf_for_dates(
+        [np.datetime64("2015-01-02T00:00:00.000000000"), np.datetime64("2015-01-05T00:00:00.000000000")]
+    )
+    assert ns_convention == rf_series.RF_CONVENTION_SERIES
+    assert ns_rates == iso_rates
+
+
+def test_numpy_datetime64_nat_still_falls_back_not_silently_accepted() -> None:
+    """The broadened `_to_iso` handling must not let a malformed
+    `numpy.datetime64("NaT")` slip through as a valid date -- it stringifies
+    to `"NaT"`, which is not ISO-8601, so it must still hit the existing
+    malformed-date fallback (`date.fromisoformat` raising `ValueError`), not
+    resolve to a bogus rate."""
+    np = pytest.importorskip("numpy")
+    # Explicit "s" unit: an un-unit'd `np.datetime64("NaT")` emits its own
+    # numpy DeprecationWarning unrelated to this module (numpy's "generic"
+    # unit is deprecated) — orthogonal to what this test is checking.
+    rates, convention = rf_series.resolve_annual_rf_for_dates([np.datetime64("NaT", "s")], flat_annual_pct=6.0)
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+    assert rates == [6.0]
