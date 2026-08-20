@@ -9,7 +9,7 @@ from archimedes.services.backtest_repository import (
     insert_backtest_if_missing,
     latest_backtests_by_strategy,
 )
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 
@@ -192,3 +192,105 @@ def test_replay_script_passes_explicit_none() -> None:
         assert isinstance(kw["source_git_sha"], ast.Constant) and kw["source_git_sha"].value is None, (
             "replay must pass source_git_sha=None (explicit unknown), not the running build's SHA"
         )
+
+
+# ── Bounded reader (2026-08-19 OOM regression guard) ─────────────────────────
+#
+# `latest_backtests_by_strategy` used to `.all()` every row for every strategy
+# and reduce in Python. Because `canonical_artifact_hash` includes `run_id` (a
+# timestamp), `insert_backtest_if_missing` never dedupes, so the table grows by
+# ~30 rows on every refresh cycle forever. Each row carries a ~489 KB
+# artifact_json, and the old read cost a measured 0.58 MB of peak RSS per
+# persisted row — the staircase that pushed the backend past its 3072 MB task
+# budget on 2026-08-19. These tests pin the "resolve in SQL, hydrate only the
+# winners" contract.
+
+
+def _seeded_session(n_strategies: int, n_cycles: int):
+    """A session over a DB holding n_strategies x n_cycles rows."""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    session = SessionLocal()
+    ids = [f"strat_{i:03d}" for i in range(n_strategies)]
+    for cycle in range(n_cycles):
+        for sid in ids:
+            # sharpe encodes the cycle so we can assert WHICH row came back.
+            insert_backtest_if_missing(
+                session,
+                strategy_id=sid,
+                content_hash=f"{sid}-cycle-{cycle}",
+                result=_sample_result(sid, float(cycle)),
+                source_pipeline="run_backtests",
+                run_id=f"run-{cycle}",
+            )
+    session.commit()
+    return session, ids
+
+
+def test_latest_backtests_returns_the_newest_row_per_strategy() -> None:
+    session, ids = _seeded_session(n_strategies=5, n_cycles=8)
+    try:
+        latest = latest_backtests_by_strategy(session, ids)
+        assert set(latest) == set(ids)
+        # Cycle 7 was inserted last, so it must be the one returned for each id.
+        for sid in ids:
+            assert latest[sid].sharpe_ratio == 7.0, sid
+    finally:
+        session.close()
+
+
+def test_latest_backtests_hydrates_only_one_row_per_strategy() -> None:
+    """THE GUARD: 34 strategies x 20 cycles = 680 rows on disk must still
+    hydrate exactly 34 ORM objects. The old `.all()` implementation loaded all
+    680 — this assertion is what makes that regression impossible to reintroduce.
+    """
+    n_strategies, n_cycles = 34, 20
+    session, ids = _seeded_session(n_strategies=n_strategies, n_cycles=n_cycles)
+    try:
+        total_rows = session.query(BacktestResultRecord).count()
+        assert total_rows == n_strategies * n_cycles, "seed did not produce duplicates"
+
+        session.expunge_all()
+
+        # Count hydration via the mapper "load" event, which fires once per row
+        # the ORM materialises from the DB. Counting session.identity_map instead
+        # does NOT work: the identity map holds WEAK references, so rows the old
+        # implementation loaded and then discarded are garbage-collected before
+        # the assertion runs and the test passes against the unfixed code.
+        loaded: list[str] = []
+
+        def _count(target, _context) -> None:
+            loaded.append(target.strategy_id)
+
+        event.listen(BacktestResultRecord, "load", _count)
+        try:
+            latest = latest_backtests_by_strategy(session, ids)
+        finally:
+            event.remove(BacktestResultRecord, "load", _count)
+
+        assert len(latest) == n_strategies
+        assert len(loaded) == n_strategies, (
+            f"hydrated {len(loaded)} BacktestResultRecord rows to return {n_strategies}; "
+            f"the reader is loading the whole table ({total_rows} rows on disk)"
+        )
+    finally:
+        session.close()
+
+
+def test_latest_backtests_ignores_unrequested_strategies() -> None:
+    session, ids = _seeded_session(n_strategies=6, n_cycles=3)
+    try:
+        subset = ids[:2]
+        latest = latest_backtests_by_strategy(session, subset)
+        assert set(latest) == set(subset)
+    finally:
+        session.close()
+
+
+def test_latest_backtests_empty_ids_short_circuits() -> None:
+    session, _ = _seeded_session(n_strategies=2, n_cycles=2)
+    try:
+        assert latest_backtests_by_strategy(session, []) == {}
+    finally:
+        session.close()
