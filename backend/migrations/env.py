@@ -53,6 +53,7 @@ from archimedes.models.backtest_store import BacktestResultRecord  # noqa: E402
 from archimedes.models.chat import Base  # noqa: E402
 from archimedes.models.corpus_store import CorpusMetaRecord, PaperRecord  # noqa: E402
 from archimedes.models.daily_returns_store import StrategyDailyReturn  # noqa: E402
+from archimedes.models.generation_cost import GenerationCostRecord  # noqa: E402
 from archimedes.models.identity import ControlledWallet, IdentityEvent, WalletIdentity  # noqa: E402
 from archimedes.models.kg import KGEntity, KGRelation  # noqa: E402
 from archimedes.models.marketplace import (  # noqa: E402
@@ -88,6 +89,7 @@ __all__ = [
     "Base",
     "ControlledWallet",
     "CorpusMetaRecord",
+    "GenerationCostRecord",
     "IdentityEvent",
     "KGEntity",
     "KGRelation",
