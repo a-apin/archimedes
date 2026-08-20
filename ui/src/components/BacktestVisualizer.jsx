@@ -391,8 +391,11 @@ export default function BacktestVisualizer({ result, strategyId, weights, realTr
       return
     }
     if (!strategyId) {
+      // No strategy selected (e.g. an empty library) is the same honest
+      // "nothing to chart" state as a persisted-but-empty series below —
+      // never a silently-absent card.
       setRealReturns(null)
-      setReturnsNoData(false)
+      setReturnsNoData(true)
       setReturnsLoading(false)
       return
     }
@@ -542,7 +545,9 @@ export default function BacktestVisualizer({ result, strategyId, weights, realTr
         <div className="card-elevated" style={{ padding: 24, marginBottom: 20 }}>
           <div className="label mb-2">Equity Curve &amp; Drawdown</div>
           <p className="body" style={{ color: 'var(--text-3)', fontStyle: 'italic' }}>
-            No real backtest returns persisted yet — this strategy has not completed a real-data backtest.
+            {strategyId
+              ? 'No real backtest returns persisted yet — this strategy has not completed a real-data backtest.'
+              : 'No strategy selected — the library has nothing to chart yet.'}
           </p>
         </div>
       )}
