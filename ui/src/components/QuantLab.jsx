@@ -227,8 +227,9 @@ export default function QuantLab() {
         <h2 className="serif text-[2rem] mb-2.5">Quant Lab</h2>
         <p className="body">
           Risk, optimization, and backtest diagnostics computed from the live library: persisted
-          backtest returns, vault allocations, and recorded rebalance traces. A section that has no
-          live source yet renders a synthetic sample and says so on its badge.
+          backtest returns are live today. Vault-allocation drift and the recorded-trade log activate
+          once a vault is deployed — vault deployment isn't available in this build, so those two
+          panels render a synthetic sample and say so on their badge.
         </p>
       </div>
 
@@ -239,13 +240,18 @@ export default function QuantLab() {
           <select
             value={selectedId}
             onChange={(e) => setSelectedId(e.target.value)}
+            disabled={strategies.length === 0}
             style={{ fontSize: '0.82rem', padding: '4px 8px', background: 'var(--glass)', border: '1px solid var(--glass-border)', borderRadius: 4, color: 'var(--text-1)' }}
           >
-            {strategies.map((s) => (
-              <option key={s.id} value={s.id}>
-                {(s.paper_title || s.name || s.id) + (missingIds.has(s.id) ? ' (no persisted returns)' : '')}
-              </option>
-            ))}
+            {strategies.length === 0 ? (
+              <option value="">No strategies in library</option>
+            ) : (
+              strategies.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {(s.paper_title || s.name || s.id) + (missingIds.has(s.id) ? ' (no persisted returns)' : '')}
+                </option>
+              ))
+            )}
           </select>
         </label>
         <span className="caption" style={{ color: 'var(--text-4)' }}>
