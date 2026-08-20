@@ -41,11 +41,20 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from archimedes.services import fusion_evaluator as fusion_evaluator_module
+from archimedes.services.fusion_evaluator import (
+    DEFAULT_SLIPPAGE_BPS as ENGINE_C_DEFAULT_SLIPPAGE_BPS,
+)
+from archimedes.services.fusion_evaluator import (
+    run_dsl_backtest,
+    run_dsl_backtest_variants,
+)
 from archimedes.services.portfolio_backtester import (
     DEFAULT_SLIPPAGE_BPS,
     DEFAULT_TX_COST_BPS,
     _simulate_portfolio,
 )
+from archimedes.services.strategy_dsl import FABER_2007_SPEC, validate_strategy_spec
 
 _COSTS_PY = (
     Path(__file__).resolve().parents[2] / "analytics-engine" / "src" / "archimedes_analytics_engine" / "costs.py"
@@ -120,6 +129,21 @@ class TestMirrorDoesNotDrift:
         ssot = _default_cost_model_literals()
         assert ssot["default_bps"] > 0
         assert ssot["slippage_bps"] > 0
+
+    def test_fusion_evaluator_constants_match_the_analytics_engine_ssot(self) -> None:
+        """fusion_evaluator (engine C) mirrors the constants too — same trade as
+        portfolio_backtester (engine B), same guard needed.
+
+        #1242 review: engine C's two cerebro.broker call sites charged commission
+        only (no slippage leg) even after this SSOT constant existed, because
+        nothing read it — DEFAULT_COST_MODEL had zero production callers. Retuning
+        DEFAULT_COST_MODEL without retuning this mirror would silently diverge
+        engine C from A and B again, exactly the failure mode the SSOT exists to
+        prevent.
+        """
+        ssot = _default_cost_model_literals()
+        assert pytest.approx(ssot["default_bps"]) == fusion_evaluator_module._DEFAULT_TX_BPS
+        assert pytest.approx(ssot["slippage_bps"]) == ENGINE_C_DEFAULT_SLIPPAGE_BPS
 
 
 class TestEngineBFloor:
@@ -218,6 +242,74 @@ class TestEngineBFloor:
         expected_floor = KNOWN_TURNOVER * ((DEFAULT_TX_COST_BPS + DEFAULT_SLIPPAGE_BPS) / 10_000.0)
         assert not np.isnan(defaulted[2])
         assert defaulted[2] == pytest.approx(PRE_COST_RETURN - expected_floor, abs=1e-12)
+
+
+class TestEngineCFloor:
+    """Engine C (fusion DSL, backtrader) charges the shared floor too.
+
+    #1242 review: the cost-SSOT work put engine B (portfolio_backtester) on the
+    floor but left engine C's two cerebro.broker call sites (run_dsl_backtest,
+    _run_variant_backtest) commission-only — the exact asymmetry the SSOT exists
+    to close, still live on the generated-strategy path that feeds the
+    leaderboard. Unlike engine B's linear numpy cost model, engine C is a full
+    backtrader simulation with discrete share lots and commission-adjusted order
+    sizing, so an exact-dollar round-trip assertion (as in TestEngineBFloor)
+    isn't available here — commission alone can even raise the terminal value
+    relative to zero-cost by shifting position sizing. What IS robust, and what
+    these tests pin: holding commission fixed and only toggling the slippage
+    leg must change the result. Before this fix it could not — slippage_bps was
+    accepted and silently had zero effect on either call site.
+    """
+
+    @staticmethod
+    def _spec():
+        return validate_strategy_spec(FABER_2007_SPEC)
+
+    def test_slippage_is_wired_on_the_base_backtest_call_site(self) -> None:
+        """run_dsl_backtest's cerebro.broker call site (the first the review
+        flagged). Manually replaying the pre-fix code path (setcommission only,
+        no set_slippage_perc call at all) against this same spec/seed reproduces
+        the comm_only figure below exactly — confirming this assertion actually
+        distinguishes fixed from unfixed code, not just "some number changed".
+        """
+        spec = self._spec()
+        tx_bps = fusion_evaluator_module._DEFAULT_TX_BPS
+        comm_only = run_dsl_backtest(spec, tx_cost_bps=tx_bps, slippage_bps=0)
+        floor = run_dsl_backtest(spec, tx_cost_bps=tx_bps, slippage_bps=ENGINE_C_DEFAULT_SLIPPAGE_BPS)
+
+        assert comm_only.total_trades > 0, "test needs a strategy that actually trades"
+        assert floor.equity_curve[-1] < comm_only.equity_curve[-1], (
+            "adding a slippage leg on top of identical commission must make the "
+            "result strictly worse — if it doesn't, slippage_bps is being "
+            "accepted and silently ignored, which is the exact pre-fix defect"
+        )
+
+    def test_slippage_is_wired_on_the_variant_backtest_call_site(self) -> None:
+        """_run_variant_backtest's cerebro.broker call site (the second the
+        review flagged), reached only via the parameter-variant grid — a spec
+        with no ``parameter_variants`` never exercises this function at all.
+        """
+        spec_dict = {**FABER_2007_SPEC, "parameter_variants": {"sma_200": [150, 250]}}
+        spec = validate_strategy_spec(spec_dict)
+        tx_bps = fusion_evaluator_module._DEFAULT_TX_BPS
+        comm_only = run_dsl_backtest_variants(spec, tx_cost_bps=tx_bps, slippage_bps=0)
+        floor = run_dsl_backtest_variants(spec, tx_cost_bps=tx_bps, slippage_bps=ENGINE_C_DEFAULT_SLIPPAGE_BPS)
+
+        assert comm_only and set(comm_only) == set(floor), "expected both variants to run"
+        for variant_id in comm_only:
+            assert comm_only[variant_id].total_trades > 0, f"variant {variant_id} never traded"
+            assert floor[variant_id].equity_curve[-1] < comm_only[variant_id].equity_curve[-1], (
+                f"variant {variant_id}: slippage leg had no effect on _run_variant_backtest"
+            )
+
+    def test_default_arguments_carry_the_floor(self) -> None:
+        """A caller passing no cost arguments still gets charged both legs — the
+        defaults are what the debate/generation pipeline actually runs with.
+        """
+        spec = self._spec()
+        defaulted = run_dsl_backtest(spec)
+        zero_slippage = run_dsl_backtest(spec, tx_cost_bps=fusion_evaluator_module._DEFAULT_TX_BPS, slippage_bps=0)
+        assert defaulted.equity_curve[-1] < zero_slippage.equity_curve[-1]
 
 
 class TestRowAttribution:
