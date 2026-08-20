@@ -72,7 +72,7 @@ correcting for multiple testing; on that path it does not.
 **Disclosure is not correction.** The product *discloses* the board-level selection bias a
 user incurs by choosing the best of N displayed strategies; it does not *correct* it.
 Benjamini–Hochberg helpers exist in
-[`_rigor_helpers.py:1199`](../backend/archimedes/services/_rigor_helpers.py) with **zero
+[`_rigor_helpers.py:1244`](../backend/archimedes/services/_rigor_helpers.py) with **zero
 non-test callers** — a written-down, unimplemented decision. Saying otherwise would claim
 a control the live path does not run.
 
@@ -80,6 +80,55 @@ a control the live path does not run.
 distributed, serially independent, and that you only ran one backtest. None of those is
 reliably true. DSR relaxes the first two always, and the third when a candidate pool
 exists (Bailey & López de Prado 2014).
+
+---
+
+## 1a. The risk-free rate behind "excess" (issue #1409)
+
+**What changed.** Every "excess Sharpe" above (DSR, walk-forward OOS, in-sample) is
+computed against a risk-free rate. Through 2026-08-20 that rate was a flat 5%/year
+constant for every strategy, every backtest window, forever. As of #1409 the gate's
+default convention is the **actual historical 3-month U.S. Treasury bill rate** (FRED
+series `DGS3MO`), aligned to each backtest's own per-bar dates — the universal
+convention for a USD Sharpe ratio (Sharpe 1994) and the rate Bailey & López de Prado
+(2014) implicitly assume when they define the Deflated Sharpe Ratio on excess returns.
+
+**Why a flat constant was wrong.** The 3-month T-bill has ranged from roughly 0.00%
+(the 2008–2015 near-zero-rate era) to double digits in the early 1980s. A single 5%
+constant over-subtracts by ~100–120bps against the ~3.8% environment this series was
+last vendored in, and mis-grades any older backtest window by an even larger margin —
+a strategy backtested through 2015 was having ~5% subtracted from its returns when the
+true opportunity cost of cash that year was closer to 0.05%. The gate got *stricter
+than the true excess return*, in both directions depending on the window.
+
+**Display Sharpe is unaffected.** This change touches the **gate's excess-return
+metrics only** (DSR, OOS Sharpe, in-sample Sharpe) — the passport's **display** Sharpe
+stays raw (`rf = 0`), per the gate-excess/display-raw split documented in §1 above
+(audit 2026-06-13 #8). Nothing about *what* is disclosed to a user changed, only the
+rf input the gate's own pass/fail arithmetic uses.
+
+**Alignment rule.** Per backtest bar date: an exact match uses that date's published
+rate; a weekend or market holiday forward-fills from the most recent prior published
+date (a Saturday resolves to the preceding Friday's rate); a date up to 14 calendar
+days past the vendored series' last published date also forward-fills the same way.
+Beyond that grace window the **whole grade** falls back to the flat convention — never
+a silent partial substitution.
+
+**Disclosure — `rf_convention`.** Every gate result carries an `rf_convention` field,
+riding the same payload path `dsr_convention` already does:
+- `excess_tbill_series` — the historical T-bill series was used, per-window aligned.
+- `excess_flat_fallback` — the flat rate was used (no date index was available for
+  that grade, or the window fell outside the vendored series' coverage). This is a
+  **disclosed** fallback state, not a silent one — it is always logged and always
+  visible on the result, per this repo's fail-soft principle
+  ([`architectural-principles.md`](architectural-principles.md) § fail-soft).
+
+**Where the series lives.** Vendored (not fetched at grade time — determinism is
+load-bearing for the same reason the commit-reveal provenance posture is):
+[`backend/archimedes/data/rf/DGS3MO.csv`](../backend/archimedes/data/rf/DGS3MO.csv).
+Refresh it with `python scripts/refresh_rf_series.py`; see
+[`rf_series.py`](../backend/archimedes/services/rf_series.py) for the loader and the
+forward-fill / fallback logic in full.
 
 ---
 
@@ -238,3 +287,6 @@ why. This is the design: rigor as transparency, not as a hidden score.
   Journal*, 35(4), 917–926.
 - McLean, R.D., Pontiff, J. (2016). "Does Academic Research Destroy Stock Return
   Predictability?" *Journal of Finance*, 71(1), 5–32.
+- Sharpe, W.F. (1994). "The Sharpe Ratio." *Journal of Portfolio Management*, 21(1),
+  49–58. *(Defines the ratio on excess returns over the risk-free rate — the basis for
+  the historical T-bill series in §1a.)*
