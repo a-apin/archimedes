@@ -556,8 +556,8 @@ absence — a `NOT_RUN`, an em-dash, a startup abort, a CloudWatch alarm — nev
 substitute. A fail-soft default converts an outage into a silence, and silence is
 indistinguishable from working. The fix is not "always crash": a function that loads secrets
 should know which parameters are load-bearing and be loud about *those* while genuinely
-optional ones stay quiet. The rigor gate already gets this right with its tri-state
-`pass`/`fail`/`pending`; three other subsystems did not — SSM credentials booted degraded by
+optional ones stay quiet. The rigor gate already gets this right with its four-state
+`pass`/`fail`/`pending`/`degenerate`; three other subsystems did not — SSM credentials booted degraded by
 design and marketplace publish never worked in production for 19 days with no alarm; the
 leaderboard fell back to migrated fixture columns and presented fabricated statistics as
 measured on the flagship public page; and a persisted return series bound to the wrong asset

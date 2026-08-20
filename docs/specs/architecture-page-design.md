@@ -2,7 +2,7 @@
 
 > **status:** implemented
 > **owner:** Dan Browne
-> **updated:** 2026-07-28
+> **updated:** 2026-08-20
 > **superseded-by:** —
 
 > **IMPLEMENTED 2026-07-28 in PR #1192.** This is no longer a proposal. The page described
@@ -59,7 +59,7 @@
 | 2 | The system, in one picture | **flow-diagram.svg** | — |
 | 3 | The spine (5 steps) | numbered gold rail (keep current pattern, new copy) | Generate |
 | 4 | Generation: the debate society | 4-stage mini-flow cards | Generate |
-| 5 | The rigor gate | 4 verdict cards + tri-state note | Library |
+| 5 | The rigor gate | 4 verdict cards + four-state note | Library |
 | 6 | On-chain: your vault, the agent's leash | authority table ("can / cannot") | Portfolio |
 | 7 | Provenance: commit → trade → reveal | 3-step loop graphic (inline SVG) | Reasoning |
 | 8 | The marketplace | payment-rail mini-flow | Marketplace |
@@ -161,8 +161,9 @@ chance. Every strategy's badge is derived from four tests run on its real persis
   in-sample/out-of-sample cliff.
 - **Look-ahead audit** — static analysis confirms no future data leaks into any decision.
 
-**Honesty card:** The verdict is tri-state: **pass**, **fail**, or **pending** (no real
-returns yet). A pending strategy is honestly unknown — it never silently wears a badge. Paper
+**Honesty card:** The verdict is four-state: **pass**, **fail**, **pending** (no real
+returns yet), or **degenerate** (a zero-variance persisted return series — broken data or a
+zero-trade backtest). A pending strategy is honestly unknown — it never silently wears a badge. Paper
 claims vs our replication are shown as deltas, not hidden behind a score. The gate is a bar,
 not a guarantee: passing reduces the odds of a curve-fit artifact; it does not promise alpha.
 
@@ -263,7 +264,7 @@ current state, kept current from the system's own health surface:
 
 | Surface | Status today |
 |---|---|
-| Generate → rigor gate → passport | **Live** — debate society, live tri-state gate |
+| Generate → rigor gate → passport | **Live** — debate society, live four-state gate |
 | Non-custodial vault deploy + deposits | **Live** — you sign everything; testnet USDC |
 | Commit → trade → reveal provenance | **Live** — contract-enforced ordering |
 | Autonomous rebalance loop | **Live path** — runs on a schedule; infrastructure relocation in progress *(driven by health flag)* |

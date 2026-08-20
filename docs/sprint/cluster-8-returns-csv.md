@@ -40,7 +40,7 @@ browser, CLI, and agents.**
 
 ## Reuse — do not rebuild
 
-`verdict_from_returns` (`live_rigor_gate.py:117` — bare list of floats → tri-state plus
+`verdict_from_returns` (`live_rigor_gate.py:117` — bare list of floats → four-state plus
 `min_passing_level` / `blocked_by_floor`) · `vol_plausibility` (`compute_vol_stats`,
 `assess_strategy`) · `return_diagnostics.diagnose` · `rigor_cache` (600s TTL + single-flight, so a
 resubmitted identical CSV is free).

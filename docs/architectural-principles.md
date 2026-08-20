@@ -189,9 +189,9 @@ each looked like defensive engineering, and each removed the signal that would h
 it. None of them threw. None of them alarmed. All three were found by reading code, not by
 being told.
 
-The rigor gate already gets this right. Its verdict is tri-state — `pass` / `fail` /
-`pending` — and `pending` is a first-class, rendered state meaning "no real returns yet, we
-honestly do not know." A strategy never silently wears a badge it did not earn. That is the
+The rigor gate already gets this right. Its verdict is four-state — `pass` / `fail` /
+`pending` / `degenerate` — and `pending` is a first-class, rendered state meaning "no real
+returns yet, we honestly do not know." A strategy never silently wears a badge it did not earn. That is the
 pattern the other three subsystems needed and did not have.
 
 **Applying it.** When reviewing a fallback, ask: if this path fires in production, what tells

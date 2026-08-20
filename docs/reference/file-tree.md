@@ -20,7 +20,7 @@ archimedes/                              the public repo — github.com/a-apin/a
 │  ├─ services/                          ~80 modules — the engine room; five that matter most:
 │  │  ├─ llm_backend.py                  Bedrock Converse seam — Nova Micro · BYOK · local Ollama
 │  │  ├─ paper_rag.py                    MiniLM semantic rerank (guardrails + TF-IDF fallback)
-│  │  ├─ live_rigor_gate.py              tri-state pass / fail / pending badge — live, never cached
+│  │  ├─ live_rigor_gate.py              four-state pass / fail / pending / degenerate badge — live, never cached
 │  │  ├─ strategy_dsl.py                 the persisted, executable strategy spec
 │  │  └─ runner_lease.py                 exactly-once Redis leases for funds-adjacent runners
 │  ├─ chain/                             on-chain integration
