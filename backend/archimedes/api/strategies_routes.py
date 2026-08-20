@@ -603,6 +603,16 @@ async def list_generated_strategies(
     caller = get_linked_wallet_address(request)  # None when anonymous — never an error
 
     rows: list[dict] = []
+    # Honest degradation signal (#1356 review round 2): this route used to
+    # swallow a DB/store exception into a 200 with a measured `total: 0`,
+    # indistinguishable on the wire from a genuinely-empty store. The Library's
+    # default tab then painted "No generated strategies yet" with a Generate
+    # CTA — the exact false-empty-state shape #1356 was filed to kill,
+    # unfixed on the one route the issue's own Summary names first. Mirrors
+    # the `degraded`/`degraded_reason` contract `StrategyListResponse` already
+    # carries for GET /api/strategies/ — see that route above.
+    degraded = False
+    degraded_reason = ""
     try:
         with get_session() as session:  # type: _Session
             query = session.query(StrategyRecord).filter(StrategyRecord.is_example.is_(False))
@@ -632,11 +642,16 @@ async def list_generated_strategies(
                 d["generation_cost"] = costs.get(r.id)
                 rows.append(_redact_owner_wallet(d, caller))
     except Exception as exc:
+        # Full exception detail is logged server-side only — never echoed to
+        # the client (DB/chain internals, per docs/api/*.md convention).
+        # `degraded_reason` stays a fixed, named category string.
         import logging as _logging
 
         _logging.getLogger(__name__).warning("list_generated_strategies failed: %s", exc)
         rows = []
-    return {"strategies": rows, "total": len(rows)}
+        degraded = True
+        degraded_reason = "strategy store unavailable"
+    return {"strategies": rows, "total": len(rows), "degraded": degraded, "degraded_reason": degraded_reason}
 
 
 @strategies_router.get("/signals", response_model=StrategySignalsResponse)

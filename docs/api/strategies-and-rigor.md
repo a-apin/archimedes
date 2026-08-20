@@ -44,8 +44,11 @@ private-until-published (visible when published, or owned by the caller). |
 **Auth**: account-session
 
 Request: query `limit: int(1..200)=50`.
-Response: `{strategies: [StrategyRecord.to_dict() + can_publish: bool + generation_cost], total: int}`.
-Errors: none explicit — a DB failure degrades to an empty list (logged warning), never a 500.
+Response: `{strategies: [StrategyRecord.to_dict() + can_publish: bool + generation_cost], total: int, degraded: bool=false, degraded_reason: str=""}`.
+`degraded` is `true` when the strategy store raised (`degraded_reason: "strategy store unavailable"`) — the same
+honest-degradation contract `GET /api/strategies/` carries (#1356 review round 2): a swallowed DB failure used to
+render as a measured `total: 0`, indistinguishable on the wire from a genuinely-empty store.
+Errors: none explicit — a DB failure degrades to an empty list plus `degraded: true` (logged warning), never a 500.
 
 ```bash
 curl -s -b /tmp/session.jar "https://archimedes-arc.com/api/strategies/generated?limit=50"

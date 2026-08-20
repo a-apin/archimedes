@@ -290,6 +290,45 @@ async def test_generated_list_owner_sees_own_unpublished():
     assert ids == {"pub00000000000002", "own00000000000002"}  # not the other user's private row
 
 
+async def test_generated_list_reports_degraded_when_store_raises():
+    """#1356 review round 2: a store failure in list_generated_strategies must
+    be visible on the wire as degraded=True with a fixed reason, not silently
+    rendered as total=0/strategies=[] — indistinguishable from a real empty
+    generated-strategies store. Mirrors test_list_strategies_reports_degraded_
+    when_provider_raises in test_api_routes.py for GET /api/strategies/,
+    applied to the sibling route #1356's own Summary bullet 1 names first."""
+    from archimedes.main import app
+
+    with patch("archimedes.db.get_session", side_effect=RuntimeError("db down")):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/strategies/generated", cookies=_siwe_cookies(_W_OWNER))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["strategies"] == []
+    assert data["total"] == 0
+    assert data["degraded"] is True
+    # `degraded_reason` is a fixed category string, never the raw exception
+    # (DB internals must not reach the client — CLAUDE.md / docs/api/*.md).
+    assert data["degraded_reason"] == "strategy store unavailable"
+    assert "db down" not in data["degraded_reason"]
+
+
+async def test_generated_list_not_degraded_when_store_populated():
+    """Negative case: a populated, non-raising store must NOT be marked
+    degraded — the except branch above must not fire when the query succeeds."""
+    _mk_strategy("pop00000000000001", owner=_W_OWNER, published=False)
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/strategies/generated", cookies=_siwe_cookies(_W_OWNER))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["degraded"] is False
+    assert data["degraded_reason"] == ""
+
+
 async def test_detail_unpublished_404_unless_owner():
     sid = "det00000000000001"
     _mk_strategy(sid, owner=_W_OWNER, published=False)

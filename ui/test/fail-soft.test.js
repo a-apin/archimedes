@@ -82,6 +82,27 @@ test("Strategies.jsx's Examples feed treats a fulfilled-but-degraded response as
 	assert.match(strategies, /setLoadError\(seedRes\.value\.degraded_reason/);
 });
 
+test("Strategies.jsx's generated feed treats a fulfilled-but-degraded response as a failure, not a real empty store", () => {
+	// /api/strategies/generated (review round 2 — #1356's own Summary bullet 1
+	// names this endpoint first) can now return HTTP 200 with
+	// `{strategies: [], degraded: true}` when the store raised — a fulfilled
+	// promise alone is not proof the fetch actually succeeded, mirroring the
+	// seedRes check above. Without this, genError stays '' and the default
+	// tab paints the false "No generated strategies yet" empty state.
+	assert.match(strategies, /if \(genRes\.value\.degraded\) \{/);
+	assert.match(strategies, /setGenError\(genRes\.value\.degraded_reason/);
+});
+
+test("Strategies.jsx's Examples panel is gated on !loadError so it never renders alongside the loadError banner", () => {
+	// loadError is set from the seed route's own `degraded` flag on a
+	// *fulfilled* response (see the seedRes test above). Without this gate a
+	// degraded fetch painted the loadError banner at :815 AND the false
+	// "No example strategies loaded." empty state simultaneously — the exact
+	// claim #1356 was filed against, unlike the Published branch one screen
+	// below which already gates on `!publishedError`.
+	assert.match(strategies, /\{!loading && !loadError && \(/);
+});
+
 test("Strategies.jsx's generated panel has the same loading guard Examples/Published already have", () => {
 	// Examples/Published: `{loading && <div className="caption mb-4">Loading…</div>}`
 	// then a separate `{!loading && (...)}` block. Generated now uses a

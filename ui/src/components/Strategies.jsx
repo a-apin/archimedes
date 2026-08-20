@@ -735,6 +735,13 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
       }
       if (genRes.status === 'fulfilled') {
         setGenerated((genRes.value.strategies || []).map(coerceGenerated))
+        // Same fulfilled-but-degraded shape as seedRes above (#1356 review
+        // round 2): the backend swallows a store exception into a 200 with
+        // `degraded: true` rather than a 500, so a fulfilled promise alone
+        // is not proof the fetch actually succeeded.
+        if (genRes.value.degraded) {
+          setGenError(genRes.value.degraded_reason || 'Failed to load generated strategies')
+        }
       } else {
         setGenError(genRes.reason?.message || 'Failed to load generated strategies')
       }
@@ -942,7 +949,13 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
             path of Generate picks and weights from.
           </div>
           {loading && <div className="caption mb-4">Loading…</div>}
-          {!loading && (
+          {/* Gated on !loadError, matching the Published branch below (#1356
+              review round 2): loadError is set from the seed route's own
+              `degraded` flag on a *fulfilled* response (see load() above), so
+              without this gate a degraded fetch painted the loadError banner
+              at :815 AND the false "No example strategies loaded." empty
+              state simultaneously — the exact claim #1356 was filed against. */}
+          {!loading && !loadError && (
             <StrategyTable
               strategies={examples}
               highlightStrategyId={highlightStrategyId}
