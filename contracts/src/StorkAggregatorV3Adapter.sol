@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import "./interfaces/IAggregatorV3.sol";
+
 /// @notice Minimal read interface for the Stork on-chain price contract (live on Arc
 ///         testnet at 0xacC0a0cF13571d30B4b8637996F5D6D774d4fd62, verified #794). Stork
 ///         stores a per-asset temporal numeric value keyed by a bytes32 feed id; the
@@ -14,23 +16,6 @@ interface IStorkTemporalNumericValueUnsafeGetter {
     }
 
     function getTemporalNumericValueUnsafeV1(bytes32 id) external view returns (TemporalNumericValue memory value);
-}
-
-/// @notice Chainlink AggregatorV3 signature — function selectors are byte-identical to the
-///         `AggregatorV3Interface` PriceOracle.sol declares locally, so this adapter is a
-///         drop-in `setPriceFeed` target. Named `IAggregatorV3` (not `AggregatorV3Interface`)
-///         only to avoid an identifier clash when a consumer imports both files.
-/// @dev    ⚠️ DUPLICATE (tracked): this restates PriceOracle.sol's local `AggregatorV3Interface`.
-///         The clean fix is one shared `src/interfaces/IAggregatorV3.sol` imported by BOTH —
-///         deferred to the #588 redeploy because it edits the deployed PriceOracle.sol
-///         (bytecode-neutral, but contract-review-grade). See the consolidation follow-up issue.
-interface IAggregatorV3 {
-    function decimals() external view returns (uint8);
-
-    function latestRoundData()
-        external
-        view
-        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
 }
 
 /// @title StorkAggregatorV3Adapter
@@ -48,7 +33,7 @@ interface IAggregatorV3 {
 ///
 ///         ⚠️ Funds-adjacent (feeds vault collateral math via PriceOracle). Contract work →
 ///         Dan owns + deploys; Bogdan reviews (#794).
-contract StorkAggregatorV3Adapter is IAggregatorV3 {
+contract StorkAggregatorV3Adapter is AggregatorV3Interface {
     /// @notice The Stork on-chain contract this adapter reads from.
     IStorkTemporalNumericValueUnsafeGetter public immutable stork;
 
@@ -68,12 +53,12 @@ contract StorkAggregatorV3Adapter is IAggregatorV3 {
         priceId = _priceId;
     }
 
-    /// @inheritdoc IAggregatorV3
+    /// @inheritdoc AggregatorV3Interface
     function decimals() external pure returns (uint8) {
         return STORK_DECIMALS;
     }
 
-    /// @inheritdoc IAggregatorV3
+    /// @inheritdoc AggregatorV3Interface
     /// @dev Maps Stork's (timestampNs, quantizedValue) → Chainlink round data:
     ///        answer              = quantizedValue (18-dec; PriceOracle rescales to 6)
     ///        updatedAt/startedAt = timestampNs / 1e9 (ns → s; PriceOracle's staleness key)
