@@ -170,11 +170,40 @@ export default function Leaderboard() {
             </button>
           </div>
         )}
-        {/* The provisional-data banner that lived here (routing defect #1203 +
-            backtest/live interpreter divergences) was removed 2026-08-19 after
-            its stated condition was verified against prod: the post-fix re-run
-            landed fresh rows for every curated strategy (backtest_results max
-            created_at 2026-08-20 03:28 UTC; zero curated strategies stale). */}
+        {/* The broad provisional-data banner that lived here named TWO defects.
+            The routing defect (#1203) is retired everywhere: the post-fix
+            re-run landed fresh rows for every curated strategy (verified
+            against prod 2026-08-19 — backtest_results max created_at
+            2026-08-20 03:28 UTC; zero curated strategies stale). The
+            backtest/live interpreter divergence is retired only in part:
+            F1/F4–F10 are fixed, but F2 (stateless entry-AND-NOT-exit live vs
+            the backtest's position FSM) and F3 (rebalance cadence never read
+            live) are prepared and HELD for the live-money go-ahead — and
+            exit + rebalance_frequency are REQUIRED DSL fields, so every
+            generated strategy carries them. Hence the narrower banner below,
+            scoped to the own view (generated strategies someone may actually
+            run live); curated rows are reference-only backtests, where the
+            remaining divergence makes no claim. */}
+        {isOwn && (
+          <div
+            role="status"
+            style={{
+              marginTop: 10,
+              padding: '10px 14px',
+              borderLeft: '3px solid var(--warning, #b45309)',
+              background: 'var(--warning-bg, rgba(180,83,9,0.10))',
+              borderRadius: 4,
+              fontSize: 13,
+              color: 'var(--text-2)',
+            }}
+          >
+            <strong style={{ color: 'var(--warning, #b45309)' }}>Backtest figures — live behaviour can differ.</strong>{' '}
+            These numbers are computed correctly by the backtest engine, but live execution currently
+            interprets entry/exit state and rebalance cadence differently than the backtest does — so a
+            strategy run live may not behave exactly as these figures describe. A fix is prepared and
+            awaiting live-trading sign-off.
+          </div>
+        )}
         {engine?.disclaimer && (
           <div style={{ marginTop: 10, padding: '8px 12px', borderLeft: '3px solid var(--accent)', background: 'var(--accent-muted)', borderRadius: 4, fontSize: 13, color: 'var(--text-2)' }}>
             <strong style={{ color: 'var(--accent)' }}>Testnet — paper/simulated.</strong> {engine.disclaimer}
