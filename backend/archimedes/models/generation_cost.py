@@ -209,8 +209,17 @@ def generation_costs_for_strategies(session: Session, strategy_ids: Iterable[str
     """Batch form of :func:`generation_cost_for_strategy` — one query for a page.
 
     Strategies with no record are simply absent from the mapping; the caller
-    renders that absence, it does not get a zeroed placeholder. Rows whose
-    measurement will not decode are absent too (see :meth:`to_payload`).
+    renders that absence, it does not get a zeroed placeholder. A strategy whose
+    NEWEST record will not decode is absent too — the same answer the
+    single-strategy reader gives, which is the point.
+
+    That equivalence is why this orders DESC and keeps a ``seen`` set rather
+    than ordering ASC and letting later rows overwrite earlier ones. The
+    overwrite form silently fell back to an older, stale row when only the
+    newest was corrupt, so the batch and single readers disagreed about the same
+    strategy: one served a superseded measurement, the other honestly served
+    nothing. Skipping every row after the first per strategy makes "newest wins,
+    and if the newest is unreadable we have nothing" true in both readers.
     """
     ids = [s for s in dict.fromkeys(strategy_ids) if s]
     if not ids:
@@ -218,13 +227,18 @@ def generation_costs_for_strategies(session: Session, strategy_ids: Iterable[str
     records = (
         session.query(GenerationCostRecord)
         .filter(GenerationCostRecord.strategy_id.in_(ids))
-        .order_by(GenerationCostRecord.recorded_at.asc(), GenerationCostRecord.id.asc())
+        .order_by(GenerationCostRecord.recorded_at.desc(), GenerationCostRecord.id.desc())
         .all()
     )
-    # Ascending order + overwrite ⇒ the newest row per strategy wins, matching
-    # the single-strategy reader's "most recently recorded" rule.
     out: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
     for record in records:
+        # First row per strategy IS the newest (DESC). Once seen, older rows are
+        # skipped whether or not the newest decoded — an older row is never a
+        # stand-in for a newer one we could not read.
+        if record.strategy_id in seen:
+            continue
+        seen.add(record.strategy_id)
         payload = record.to_payload()
         if payload is not None:
             out[record.strategy_id] = payload

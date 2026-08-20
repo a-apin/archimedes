@@ -313,6 +313,35 @@ class TestUnknownIsNeverZero:
         assert payload["measurement"]["llm"]["total_tokens"] == 0
         assert payload["measurement"]["llm"]["usage_complete"] is True
 
+    def test_the_batch_reader_does_not_fall_back_to_an_older_row_when_the_NEWEST_is_corrupt(self):
+        """The input that SHOULD fail the guard: two rows for one strategy where
+        only the NEWEST will not decode.
+
+        The ASC + overwrite form silently kept the older row, so the batch reader
+        served a superseded measurement while the single-strategy reader served
+        ``None`` for the same strategy — two surfaces disagreeing about what was
+        measured, with the stale one looking perfectly healthy. Both readers must
+        answer "the newest is unreadable, so we have nothing"."""
+        with get_session() as session:
+            record_generation_cost(
+                session, job_id="job-old", strategy_id="s", measurement={**_SNAPSHOT, "wall_seconds": 1.0}
+            )
+            record_generation_cost(
+                session, job_id="job-new", strategy_id="s", measurement={**_SNAPSHOT, "wall_seconds": 2.0}
+            )
+            session.commit()
+
+            newest = session.query(GenerationCostRecord).filter_by(strategy_id="s", job_id="job-new").first()
+            newest.measurement_json = "{not json"
+            session.commit()
+
+            batch = generation_costs_for_strategies(session, ["s"])
+            single = generation_cost_for_strategy(session, "s")
+
+        assert single is None, "the single reader already answers honestly"
+        assert "s" not in batch, "the batch reader must not substitute the older, superseded row"
+        assert batch == {}
+
     def test_the_batch_reader_returns_the_newest_row_per_strategy(self):
         with get_session() as session:
             record_generation_cost(session, job_id="job-old", strategy_id="s", measurement=_SNAPSHOT)
