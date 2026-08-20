@@ -63,7 +63,7 @@ INLINE_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'][^\"']*[\"'
 BADGE_LINK = re.compile(r"\[!\[[^\]]*\]\([^)]*\)\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'][^\"']*[\"'])?\s*\)")
 # Reference definitions: [label]: target. `[^n]:` is a *footnote* definition
 # whose body is prose, not a target — excluding `^` keeps citation-heavy docs
-# (docs/archive/agora_project_analysis.md has 40+) from reporting the first
+# (citation-heavy archived analyses carry 40+ footnotes) from reporting the first
 # word of each footnote as a broken link.
 REF_DEF = re.compile(r"^\s{0,3}\[(?!\^)[^\]]+\]:\s*<?([^\s>]+)>?", re.MULTILINE)
 

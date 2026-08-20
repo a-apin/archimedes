@@ -1,6 +1,6 @@
 # Archived design documents
 
-> **Nine business/competition documents were routed to the private docs repo on 2026-08-19**
+> **Ten business/competition documents were routed to the private docs repo on 2026-08-19**
 > (pitch deck outline, judging self-assessment, pitch talking points, Arc alignment strategy,
 > submission packets, RFB mapping, market-sizing analysis, launch GTM plan) — moved under the
 > content-routing policy in `docs/CONVENTIONS.md`; private copies live in the docs repo's
