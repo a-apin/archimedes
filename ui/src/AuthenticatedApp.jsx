@@ -286,7 +286,9 @@ export default function AuthenticatedApp({
 						</button>
 					</div>
 				)}
-				<ErrorBoundary key={`${route.page}:${route.strategyId ?? route.vaultAddress ?? ""}`}>
+				<ErrorBoundary
+					key={`${route.page}:${route.strategyId ?? ""}:${route.vaultAddress ?? ""}:${route.traceId ?? ""}:${route.highlight ?? ""}:${route.tab ?? ""}`}
+				>
 					{renderPage()}
 				</ErrorBoundary>
 			</Layout>

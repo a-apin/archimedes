@@ -53,20 +53,22 @@ test("main.jsx wraps <App in <ErrorBoundary", () => {
 	assert.match(main, /<ErrorBoundary>[\s\S]*?<App\s*\/>[\s\S]*?<\/ErrorBoundary>/);
 });
 
-test("AuthenticatedApp.jsx wraps {renderPage()} in an <ErrorBoundary keyed on the page and its parameterised sub-route", () => {
+test("AuthenticatedApp.jsx wraps {renderPage()} in an <ErrorBoundary keyed on the page and every parameterised sub-route", () => {
 	// key={route.page} alone doesn't change identity between two instances
 	// of the same parameterised page (e.g. /strategy/1 -> /strategy/2 are
 	// both route.page === "strategy"), so a crashed detail page would stay
 	// crashed after navigating to a sibling. The key folds in
-	// strategyId/vaultAddress so React remounts (and clears the boundary)
-	// on those sub-route changes too, not only on a page change.
+	// strategyId/vaultAddress/traceId/highlight/tab so React remounts (and
+	// clears the boundary) on ALL of those sub-route changes, not just a
+	// page change and not just strategy/vault-detail/market-strategy —
+	// reasoning's traceId and library's highlight/tab must remount too.
 	assert.match(
 		authenticatedApp,
 		/import ErrorBoundary from ["']\.\/components\/ErrorBoundary["']/,
 	);
 	assert.match(
 		authenticatedApp,
-		/<ErrorBoundary key=\{`\$\{route\.page\}:\$\{route\.strategyId \?\? route\.vaultAddress \?\? ""\}`\}>\s*\{renderPage\(\)\}\s*<\/ErrorBoundary>/,
+		/<ErrorBoundary\s*key=\{`\$\{route\.page\}:\$\{route\.strategyId \?\? ""\}:\$\{route\.vaultAddress \?\? ""\}:\$\{route\.traceId \?\? ""\}:\$\{route\.highlight \?\? ""\}:\$\{route\.tab \?\? ""\}`\}\s*>\s*\{renderPage\(\)\}\s*<\/ErrorBoundary>/,
 	);
 });
 
