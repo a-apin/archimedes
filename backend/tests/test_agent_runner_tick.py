@@ -119,6 +119,10 @@ def runner_env(monkeypatch):
         state.save_trace = AsyncMock()
         state.get_last_trace = AsyncMock(return_value=None)
         state.save_last_rebalance = AsyncMock()
+        # #1276: tick step 0 scans for dangling commitments to reconcile. Empty
+        # store => the pass is a no-op, so live-mode (DRY_RUN=False) cases below
+        # exercise exactly the same commit/trade/reveal flow they always did.
+        state.list_recent_traces = AsyncMock(return_value=[])
 
         from archimedes.chain.agent_runner import StrategyRunner
 

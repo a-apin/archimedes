@@ -448,6 +448,28 @@ class AgentStateStore:
         window = traces[offset : offset + limit]
         return window, total
 
+    async def list_recent_traces(self, limit: int = 200) -> list[dict]:
+        """Newest-first window of persisted traces, bounded AT THE INDEX.
+
+        Deliberately not ``list_traces(limit=…)``: that one loads every trace in
+        the index and only windows afterwards, which is acceptable for a
+        user-facing page but not for something the agent runs on every tick.
+        Here the ``zrevrange`` bound is applied first, so the cost is O(limit)
+        regardless of how much history has accumulated (#1276).
+        """
+        r = await self._get_redis()
+        hashes = await r.zrevrange(KEY_TRACE_INDEX, 0, max(int(limit), 1) - 1)
+
+        traces: list[dict] = []
+        for h in hashes:
+            raw = await r.get(f"{KEY_TRACE_PREFIX}{h}")
+            if not raw:
+                continue
+            data = safe_json_loads(raw, context="trace:recent")
+            if data is not None:
+                traces.append(data)
+        return traces
+
     async def get_last_trace(self, vault_address: str) -> dict | None:
         """Get the most recent trace for a specific vault."""
         traces, _ = await self.list_traces(vault_address=vault_address, limit=1)

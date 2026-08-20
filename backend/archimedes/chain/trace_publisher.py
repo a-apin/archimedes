@@ -338,6 +338,79 @@ class TracePublisher:
         trace.reveal_block_number = block_num
         return tx_hash, block_num
 
+    async def get_commitment(self, trace_id: int) -> dict | None:
+        """Read the registry's commitment record for ``trace_id``.
+
+        The authoritative answer to "did that reveal actually land?" — the
+        contract sets ``revealBlock`` inside ``reveal()`` itself, AFTER it has
+        re-hashed the submitted content and checked it against the committed
+        hash. A non-zero ``revealBlock`` is therefore proof that the content
+        was revealed AND verified on-chain, independent of whether our own
+        off-chain write of the reveal tx survived (#1276 reconciliation).
+
+        Returns None when the commitment cannot be read — either the registry
+        has no such id (``getCommitment`` reverts "No commitment" for an
+        unknown id, e.g. after a redeploy) or the RPC call failed. The caller
+        CANNOT distinguish those two from here, so an unreadable commitment
+        must be treated as "unknown, retry later", never as proof of absence.
+        """
+        if not self.supports_commit_reveal():
+            return None
+
+        registry = self.loader.trace_registry
+        try:
+            result = await registry.functions.getCommitment(int(trace_id)).call()
+        except Exception as e:
+            logger.warning(f"getCommitment({trace_id}) unreadable: {e}")
+            return None
+
+        reveal_block = int(result[6])
+        return {
+            "content_hash": result[0],
+            "committer": result[1],
+            "vault": result[2],
+            "commit_block": int(result[3]),
+            "claimed_execution_time": int(result[4]),
+            "revealed": bool(result[5]),
+            "reveal_block": reveal_block or None,
+            "storage_pointer": result[7],
+        }
+
+    async def find_reveal_tx(self, trace_id: int, reveal_block: int | None) -> str | None:
+        """Best-effort lookup of the tx hash that revealed ``trace_id``.
+
+        ``get_commitment`` proves a reveal happened and in which block, but not
+        which transaction carried it. The ``TraceRevealed`` event does, and it
+        indexes ``traceId`` — and because the block is already known the log
+        query is a single-block range, which no RPC provider rejects for size.
+
+        Returns None if the log can't be found or read. Callers must then record
+        the reveal WITHOUT a tx hash rather than inventing one: the on-chain
+        commitment is still honest proof, a fabricated hash never would be.
+        """
+        if reveal_block is None:
+            return None
+
+        registry = self.loader.trace_registry
+        try:
+            logs = await registry.events.TraceRevealed().get_logs(
+                from_block=int(reveal_block),
+                to_block=int(reveal_block),
+                argument_filters={"traceId": int(trace_id)},
+            )
+        except Exception as e:
+            logger.warning(f"TraceRevealed log lookup for trace {trace_id} @ block {reveal_block} failed: {e}")
+            return None
+
+        for entry in logs or []:
+            tx_hash = (
+                entry.get("transactionHash") if isinstance(entry, dict) else getattr(entry, "transactionHash", None)
+            )
+            if tx_hash is None:
+                continue
+            return tx_hash.hex() if isinstance(tx_hash, (bytes, bytearray)) else str(tx_hash)
+        return None
+
     async def verify(self, trace: ReasoningTrace) -> bool:
         """Verify a trace against its on-chain hash."""
         if not trace.trace_hash:

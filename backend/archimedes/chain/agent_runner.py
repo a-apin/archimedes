@@ -16,6 +16,10 @@ Env:
     AGENT_USDC_FLOOR        — minimum USDC allocation, 0.0–1.0 (default: 0.20)
     AGENT_LEASE_TTL_MS      — exactly-once lease TTL (default: 180000 = 3min)
     AGENT_LEASE_RENEW_S     — lease renewal interval (default: 50s, ~ttl/3)
+    REVEAL_RECONCILE_MAX_ATTEMPTS  — retries before a dangling commitment goes
+                              TERMINAL (default: 3)
+    REVEAL_RECONCILE_SCAN_LIMIT    — newest traces scanned per tick (default: 200)
+    REVEAL_RECONCILE_MAX_PER_TICK  — reveals retried per tick (default: 5)
 
 Exactly-once (#1043): this runner is a funds-adjacent singleton whose
 rebalance is NOT idempotent (it issues absolute swap amounts, not deltas) —
@@ -78,6 +82,41 @@ INTERVAL = int(os.getenv("AGENT_INTERVAL_SECONDS", "300"))
 DRY_RUN = os.getenv("AGENT_DRY_RUN", "false").lower() == "true"
 EXPLICIT_VAULTS = os.getenv("AGENT_VAULT_ADDRESSES", "")
 USDC_FLOOR = float(os.getenv("AGENT_USDC_FLOOR", "0.20"))
+
+# ─── Reveal reconciliation (#1276, audit G9) ─────────────────────────
+#
+# A tick that trades and commits but then FAILS to reveal (revert, RPC outage,
+# lease lost during the claimedExecutionTime wait) leaves a DANGLING COMMITMENT:
+# the money moved, the reasoning is persisted, the commit is anchored — but
+# nothing on-chain ever proves the reasoning preceded the trade. Pre-#1276 no
+# later tick ever came back for it, so that trade's reasoning was permanently
+# unverifiable.
+#
+# A later retry is legitimate — not a fabrication — because
+# ReasoningTraceRegistry.reveal() imposes NO upper window. Its five guards are:
+#   revealBlock == 0 (unrevealed) | msg.sender == committer |
+#   block.number > commitBlock | block.timestamp >= claimedExecutionTime |
+#   keccak256(fullTraceContent) == contentHash
+# Every one is monotone-satisfiable later: the block/timestamp bounds are LOWER
+# bounds only, and the content bound is over immutable persisted bytes. So the
+# same reveal that failed at T is still accepted at T+n — verified against
+# contracts/src/ReasoningTraceRegistry.sol, not assumed.
+#
+# The two guards that CANNOT be satisfied later are the reason "terminal" exists
+# as a state: a rotated signer key (msg.sender != committer) and canonical bytes
+# that no longer re-derive to the committed hash are permanent, and so is having
+# no on-chain commitment id at all (a pre-v1.5 publishTrace anchor). Those must
+# surface as a countable, alertable state — never as a silent retry loop.
+REVEAL_RECONCILE_MAX_ATTEMPTS = int(os.getenv("REVEAL_RECONCILE_MAX_ATTEMPTS", "3"))
+REVEAL_RECONCILE_SCAN_LIMIT = int(os.getenv("REVEAL_RECONCILE_SCAN_LIMIT", "200"))
+REVEAL_RECONCILE_MAX_PER_TICK = int(os.getenv("REVEAL_RECONCILE_MAX_PER_TICK", "5"))
+
+_RECONCILE_PENDING = "pending"  # retried, failed, eligible for another attempt
+_RECONCILE_TERMINAL = "terminal"  # given up on — LOUD, countable, never retried
+_RECONCILE_DONE = "reconciled"  # a retry landed the reveal on-chain
+_RECONCILE_FROM_CHAIN = "reconciled_from_chain"  # reveal was already on-chain; DB caught up
+# Any state other than "pending" (and absent) closes the record to further scans.
+_RECONCILE_CLOSED_STATES = frozenset({_RECONCILE_TERMINAL, _RECONCILE_DONE, _RECONCILE_FROM_CHAIN})
 
 # Exactly-once lease (#1043)
 RUNNER_NAME = "agent_runner"
@@ -176,6 +215,78 @@ def _paper_hashes_from_signals(all_signals: list[StrategySignals]) -> list[str]:
     return build_consulted_hashes(papers)
 
 
+def _needs_reveal_reconciliation(record: dict) -> bool:
+    """True iff a persisted trace is a dangling commitment awaiting a reveal retry.
+
+    The exact shape (#1276): ``commit_tx_hash IS NOT NULL AND reveal_tx_hash IS
+    NULL AND trade_tx_hash IS NOT NULL`` — a trade that really executed, whose
+    reasoning was really committed, whose reveal never landed.
+
+    Everything else must NOT match, and each exclusion is load-bearing:
+      - no ``trade_tx_hash``  → nothing executed (a SKIP trace, a lease-not-held
+        cycle, a dry run). There is no money-moved asymmetry to repair, and the
+        commitment is simply unused.
+      - ``reveal_tx_hash`` present → already revealed. Retrying would revert
+        "Already revealed" and burn gas for nothing.
+      - no ``commit_tx_hash`` → nothing was ever anchored, so there is no
+        commitment to reveal against.
+      - a CLOSED ``reveal_reconcile_state`` → already resolved or already given
+        up on. This is what makes "terminal" terminal: without it the bounded
+        retry counter would still be re-scanned forever.
+    """
+    if not isinstance(record, dict):
+        return False  # a corrupt store entry is not a reconciliation candidate
+    if record.get("reveal_reconcile_state") in _RECONCILE_CLOSED_STATES:
+        return False
+    return bool(record.get("commit_tx_hash")) and bool(record.get("trade_tx_hash")) and not record.get("reveal_tx_hash")
+
+
+def _rebuild_committed_trace(record: dict) -> ReasoningTrace:
+    """Re-derive the EXACT committed trace object from its persisted record.
+
+    Mirrors ``GET /traces/{id}/canonical``: every ``_HASH_FIELDS`` member is
+    restored from persistence and nothing else is, because ``canonical_json()``
+    is computed over exactly those fields and the contract recomputes
+    ``keccak256(fullTraceContent)`` against the committed hash.
+
+    ``timestamp`` is deliberately left as the persisted ISO STRING rather than
+    re-parsed to a datetime: ``canonical_json()`` only ``isoformat()``s
+    datetimes, so passing the string through reproduces the committed bytes
+    exactly and side-steps any parse/format round-trip difference — which would
+    surface as an on-chain "Hash mismatch" revert (#903).
+    """
+    return ReasoningTrace(
+        id=record["id"],
+        vault_address=record["vault_address"],
+        decision_type=DecisionType(record["decision_type"]),
+        trigger=record["trigger"],
+        timestamp=record["timestamp"],
+        market_context=record.get("market_context", {}),
+        portfolio_before=record.get("portfolio_before", {}),
+        portfolio_after=record.get("portfolio_after", {}),
+        reasoning=record.get("reasoning", ""),
+        confidence=record.get("confidence", 0.0),
+        trades_executed=record.get("trades_executed", []),
+        strategies_referenced=record.get("strategies_referenced", []),
+        consulted_paper_hashes=record.get("consulted_paper_hashes", []),
+    )
+
+
+def _norm_hash(value: str | None) -> str:
+    """Normalize a hex hash for comparison (0x-prefix and case are not content)."""
+    return (value or "").removeprefix("0x").lower()
+
+
+def _is_already_revealed_error(exc: Exception) -> bool:
+    """True when a reveal failure is the contract saying "Already revealed".
+
+    That revert is not a failure at all — it means the reveal DID land and only
+    our off-chain write of it was lost, so it routes to the reconcile-from-chain
+    backfill instead of consuming a retry attempt.
+    """
+    return "already revealed" in str(exc).lower()
+
+
 class StrategyRunner:
     """Paper-strategy-driven portfolio runner.
 
@@ -243,6 +354,18 @@ class StrategyRunner:
         logger.info("═══ Strategy tick %s ═══", tick_id)
 
         try:
+            # 0. Reveal reconciliation (#1276). Runs FIRST, under the same lease
+            # this tick holds, and strictly BEFORE any new commit work: a
+            # dangling commitment from an earlier tick is an already-executed
+            # trade whose reasoning is not yet provable, which outranks a trade
+            # that has not happened yet. Its own try/except is belt-and-braces
+            # on top of the pass's internal guards — repairing yesterday's trace
+            # must never be able to stop today's rebalance.
+            try:
+                await self._reconcile_dangling_reveals(tick_id)
+            except Exception:
+                logger.exception("[tick %s] Reveal reconciliation pass FAILED — continuing with the tick", tick_id)
+
             # 1. Load strategies
             strategies = self.provider.list_strategies()
             if not strategies:
@@ -1563,6 +1686,15 @@ class StrategyRunner:
                 "reveal_block_number": reveal_block,
                 "trade_tx_hash": tx_hashes[0] if tx_hashes else None,
                 "trade_block_number": trade_block,
+                # Reveal-reconciliation raw material (#1276). The registry's
+                # own trace id and the committed claimedExecutionTime are what a
+                # later tick needs to retry a failed reveal — without the id
+                # there is no reveal(traceId, …) to make, and the dangling
+                # commitment is unrecoverable. Persisted on EVERY reveal
+                # attempt, success or failure, precisely because the failure is
+                # the case that needs them.
+                "onchain_trace_id": trace_id,
+                "claimed_execution_time": claimed_execution_time,
                 "temporal_binding_source": "chain" if trace_id is not None else "none",
                 "temporal_binding_valid": (
                     trace_id is not None
@@ -1575,6 +1707,313 @@ class StrategyRunner:
             await self.state.save_trace(off_chain_data)
         except Exception as e:
             logger.error("[tick %s] REVEAL Redis save FAILED: %s", tick_id, e)
+
+    # ─── Reveal reconciliation (#1276, audit G9) ───────────────────
+
+    async def _reconcile_dangling_reveals(self, tick_id: str) -> None:
+        """Retry the reveal for commitments whose trade executed but never revealed.
+
+        The repair pass for the failure mode #1275 pins: ``_reveal_trace``
+        degrades honestly (loud ERROR, never-fabricated verification, dangling
+        commit preserved) but is per-tick terminal on its own. This is what
+        comes back for those records on a later tick.
+
+        Ordering and safety properties, all deliberate:
+          - runs at tick start, BEFORE new commit work, under the SAME lease
+            (``_lease_ok``) the tick already holds — and re-checks it between
+            records, because a lease lost mid-pass must stop the writes;
+          - honours ``AGENT_DRY_RUN`` exactly as ``_reveal_trace`` does: a dry
+            run performs NO chain interaction at all, so reconciliation can
+            never become a back door around it;
+          - checks the chain BEFORE transacting, so a reveal that landed but
+            whose DB write was lost is backfilled rather than re-sent;
+          - bounded: every real failure consumes one of
+            ``REVEAL_RECONCILE_MAX_ATTEMPTS``, after which the record goes
+            TERMINAL with a loud ERROR. Terminal is a state, not a deletion —
+            the honest unverified trace stays exactly as #1275 persisted it.
+        """
+        if DRY_RUN:
+            logger.debug("[tick %s] DRY RUN — skipping reveal reconciliation (no chain reads, no writes)", tick_id)
+            return
+
+        if not self._lease_ok:
+            logger.error(
+                "[tick %s] LEASE NOT HELD — skipping reveal reconciliation this cycle "
+                "(fail-closed; dangling commitments keep until the lease is re-acquired)",
+                tick_id,
+            )
+            return
+
+        try:
+            records = await self.state.list_recent_traces(REVEAL_RECONCILE_SCAN_LIMIT)
+        except Exception as e:
+            logger.error("[tick %s] Reveal reconciliation scan FAILED: %s", tick_id, e)
+            return
+
+        dangling = [r for r in (records or []) if _needs_reveal_reconciliation(r)]
+        if not dangling:
+            return
+
+        logger.warning(
+            "[tick %s] Reveal reconciliation: %d dangling commitment(s) with an executed trade — "
+            "retrying up to %d this tick",
+            tick_id,
+            len(dangling),
+            REVEAL_RECONCILE_MAX_PER_TICK,
+        )
+
+        for record in dangling[:REVEAL_RECONCILE_MAX_PER_TICK]:
+            if not self._lease_ok:
+                logger.error(
+                    "[tick %s] LEASE LOST mid-reconciliation — stopping (fail-closed)",
+                    tick_id,
+                )
+                return
+            try:
+                await self._reconcile_one_reveal(record, tick_id)
+            except Exception:
+                # One malformed record must never take the pass — or the tick — down.
+                logger.exception(
+                    "[tick %s] Reveal reconciliation errored for trace %s — continuing",
+                    tick_id,
+                    record.get("id"),
+                )
+
+    async def _reconcile_one_reveal(self, record: dict, tick_id: str) -> None:
+        """Reconcile a single dangling commitment (see ``_reconcile_dangling_reveals``)."""
+        trace_uuid = record.get("id")
+
+        # The registry is 1-indexed (trace 0 is the empty sentinel), so 0, a
+        # non-integer, or an absent id all mean the same thing: nothing to reveal.
+        try:
+            onchain_id = int(record["onchain_trace_id"])
+        except (KeyError, TypeError, ValueError):
+            onchain_id = 0
+
+        # ── Permanently unrevealable #1: no on-chain commitment to reveal ──
+        if onchain_id <= 0:
+            await self._reconcile_terminal(
+                record,
+                tick_id,
+                "no on-chain commitment id — the anchor was a publishTrace fallback "
+                "(pre-v1.5 registry, #588) or predates commit-reveal persistence, so "
+                "there is no commit() commitment for reveal() to consume",
+            )
+            return
+
+        # ── Permanently unrevealable #2: the bytes no longer re-derive ──
+        try:
+            trace = _rebuild_committed_trace(record)
+        except (KeyError, ValueError, TypeError) as e:
+            await self._reconcile_terminal(
+                record,
+                tick_id,
+                f"persisted record cannot be rebuilt into its committed trace ({e!r}) — "
+                "the canonical bytes reveal() must submit are unrecoverable",
+            )
+            return
+        rebuilt_hash = trace.compute_hash()
+        if _norm_hash(rebuilt_hash) != _norm_hash(record.get("trace_hash")):
+            await self._reconcile_terminal(
+                record,
+                tick_id,
+                f"canonical bytes no longer re-derive to the committed hash "
+                f"(rebuilt {_norm_hash(rebuilt_hash)[:16]} != committed "
+                f"{_norm_hash(record.get('trace_hash'))[:16]}) — reveal() would revert 'Hash mismatch'",
+            )
+            return
+
+        # ── Chain first: did the reveal actually land and only our write get lost? ──
+        commitment = await trace_publisher.get_commitment(onchain_id)
+        if commitment is not None and commitment.get("revealed"):
+            await self._backfill_reveal_from_chain(record, commitment, onchain_id, tick_id)
+            return
+        if commitment is None:
+            # Unreadable ≠ absent (see TracePublisher.get_commitment): treat as a
+            # retryable failure so the attempt cap still bounds it.
+            await self._reconcile_failure(
+                record, tick_id, "on-chain commitment unreadable (registry read failed, or no such commitment)"
+            )
+            return
+
+        # The contract's one LOWER bound we can predict: reveal before
+        # claimedExecutionTime reverts. Not a failed attempt — the window simply
+        # has not opened yet — so it must not consume a retry.
+        claimed = int(commitment.get("claimed_execution_time") or 0)
+        now_ts = int(datetime.now(UTC).timestamp())
+        if claimed > now_ts:
+            logger.info(
+                "[tick %s] Reveal reconciliation: trace %s still inside its claimedExecutionTime "
+                "window (%ds left) — leaving pending, no attempt consumed",
+                tick_id,
+                trace_uuid,
+                claimed - now_ts,
+            )
+            return
+
+        # ── The retry itself, from the persisted canonical bytes ──
+        # storage_pointer is NOT part of the hash binding, so a missing CID can
+        # never block verification: reuse the pinned one when we have it,
+        # otherwise reveal hash-only rather than failing the reconciliation.
+        storage_pointer = record.get("ipfs_cid") or ""
+        try:
+            reveal_tx, reveal_block = await trace_publisher.reveal(onchain_id, trace, storage_pointer=storage_pointer)
+        except Exception as e:
+            if _is_already_revealed_error(e):
+                fresh = await trace_publisher.get_commitment(onchain_id)
+                if fresh is not None and fresh.get("revealed"):
+                    await self._backfill_reveal_from_chain(record, fresh, onchain_id, tick_id)
+                    return
+            await self._reconcile_failure(record, tick_id, f"reveal raised: {e}")
+            return
+
+        if not reveal_tx:
+            await self._reconcile_failure(record, tick_id, "reveal returned no tx hash")
+            return
+
+        self._apply_verified_reveal(record, reveal_tx, reveal_block)
+        record["reveal_reconcile_state"] = _RECONCILE_DONE
+        record["reveal_reconcile_resolved_at"] = datetime.now(UTC).isoformat()
+        logger.info(
+            "[tick %s] REVEAL RECONCILED: trace %s (vault %s) revealed on retry %d — tx=%s block=%s, "
+            "temporal_binding_valid=%s",
+            tick_id,
+            trace_uuid,
+            (record.get("vault_address") or "")[:10],
+            int(record.get("reveal_reconcile_attempts") or 0) + 1,
+            reveal_tx[:16],
+            reveal_block,
+            record.get("temporal_binding_valid"),
+        )
+        await self._persist_reconciled(record, tick_id)
+
+    async def _backfill_reveal_from_chain(self, record: dict, commitment: dict, onchain_id: int, tick_id: str) -> None:
+        """Record a reveal that is already on-chain but missing from our store.
+
+        Restart-safety (#1276 constraint 5): the reveal tx can land and the
+        process die before persisting it. The registry's ``revealBlock`` is set
+        inside ``reveal()`` after its own hash check, so it is honest proof of
+        verification — stronger, not weaker, than the tx hash we normally key
+        ``is_verified`` off. The tx hash itself is recovered from the indexed
+        ``TraceRevealed`` log when the node still serves it; when it does not,
+        ``reveal_tx_hash`` stays None rather than being invented, and the
+        ``reveal_source`` field says where the claim came from.
+        """
+        reveal_block = commitment.get("reveal_block")
+        reveal_tx = await trace_publisher.find_reveal_tx(onchain_id, reveal_block)
+
+        self._apply_verified_reveal(record, reveal_tx, reveal_block)
+        record["reveal_reconcile_state"] = _RECONCILE_FROM_CHAIN
+        record["reveal_reconcile_resolved_at"] = datetime.now(UTC).isoformat()
+        record["reveal_source"] = "chain_commitment"
+        if commitment.get("storage_pointer"):
+            record["ipfs_cid"] = commitment["storage_pointer"]
+
+        logger.warning(
+            "[tick %s] REVEAL RECONCILED FROM CHAIN: trace %s (vault %s) was already revealed on-chain "
+            "at block %s (tx=%s) — no new transaction sent; the off-chain record had lost it",
+            tick_id,
+            record.get("id"),
+            (record.get("vault_address") or "")[:10],
+            reveal_block,
+            reveal_tx[:16] if reveal_tx else "unknown (log unavailable)",
+        )
+        await self._persist_reconciled(record, tick_id)
+
+    def _apply_verified_reveal(self, record: dict, reveal_tx: str | None, reveal_block: int | None) -> None:
+        """Write the reveal outcome onto the record, recomputing the binding honestly.
+
+        ``temporal_binding_valid`` is re-derived from the SAME rule
+        ``_reveal_trace`` uses — chain source, and commit < trade <= reveal —
+        never assumed from the fact that a retry succeeded.
+        """
+        record["reveal_tx_hash"] = reveal_tx
+        record["reveal_block_number"] = reveal_block
+        if reveal_tx:
+            record["arc_tx_hash"] = reveal_tx
+        record["is_verified"] = True
+
+        commit_block = record.get("commit_block_number")
+        trade_block = record.get("trade_block_number")
+        record["temporal_binding_valid"] = (
+            record.get("temporal_binding_source") == "chain"
+            and isinstance(commit_block, int)
+            and isinstance(trade_block, int)
+            and isinstance(reveal_block, int)
+            and commit_block < trade_block <= reveal_block
+        )
+
+    async def _reconcile_failure(self, record: dict, tick_id: str, reason: str) -> None:
+        """Count one failed retry; go terminal at the cap.
+
+        The verification fields are pointedly NOT touched here — a failed retry
+        leaves the #1275 honest-degradation contract exactly as it was
+        (``is_verified`` False, reveal fields None, binding invalid, dangling
+        commit preserved). Only the reconciliation bookkeeping moves.
+        """
+        attempts = int(record.get("reveal_reconcile_attempts") or 0) + 1
+        record["reveal_reconcile_attempts"] = attempts
+        record["reveal_reconcile_last_error"] = reason
+        record["reveal_reconcile_last_attempt_at"] = datetime.now(UTC).isoformat()
+
+        if attempts >= REVEAL_RECONCILE_MAX_ATTEMPTS:
+            await self._reconcile_terminal(record, tick_id, reason)
+            return
+
+        record["reveal_reconcile_state"] = _RECONCILE_PENDING
+        logger.warning(
+            "[tick %s] Reveal reconciliation attempt %d/%d FAILED for trace %s (vault %s): %s "
+            "— still unverified, will retry next tick",
+            tick_id,
+            attempts,
+            REVEAL_RECONCILE_MAX_ATTEMPTS,
+            record.get("id"),
+            (record.get("vault_address") or "")[:10],
+            reason,
+        )
+        await self._persist_reconciled(record, tick_id)
+
+    async def _reconcile_terminal(self, record: dict, tick_id: str, reason: str) -> None:
+        """Give up on a commitment — LOUDLY, and once and for all.
+
+        The failure mode this exists to prevent is an infinite silent retry
+        loop. Terminal is a STATE, not a deletion: the trace stays persisted
+        exactly as it was, honestly unverified, and becomes countable/alertable
+        via ``reveal_reconcile_state == "terminal"`` — which is also what stops
+        ``_needs_reveal_reconciliation`` from ever picking it up again.
+        """
+        record["reveal_reconcile_state"] = _RECONCILE_TERMINAL
+        record["reveal_reconcile_terminal_reason"] = reason
+        record["reveal_reconcile_terminal_at"] = datetime.now(UTC).isoformat()
+        record.setdefault("reveal_reconcile_attempts", 0)
+
+        logger.error(
+            "[tick %s] REVEAL RECONCILIATION TERMINAL — trace %s (hash %s, vault %s, commit %s) "
+            "can no longer be made on-chain-verifiable after %d attempt(s): %s. Its executed trade "
+            "%s stays honestly UNVERIFIED; this record is now countable as "
+            "reveal_reconcile_state=terminal and will not be retried again.",
+            tick_id,
+            record.get("id"),
+            _norm_hash(record.get("trace_hash"))[:16],
+            (record.get("vault_address") or "")[:10],
+            (record.get("commit_tx_hash") or "")[:16],
+            int(record.get("reveal_reconcile_attempts") or 0),
+            reason,
+            (record.get("trade_tx_hash") or "")[:16],
+        )
+        await self._persist_reconciled(record, tick_id)
+
+    async def _persist_reconciled(self, record: dict, tick_id: str) -> None:
+        """Persist a reconciliation outcome; a store failure is loud, never fatal."""
+        try:
+            await self.state.save_trace(record)
+        except Exception as e:
+            logger.error(
+                "[tick %s] Reveal reconciliation persist FAILED for trace %s: %s",
+                tick_id,
+                record.get("id"),
+                e,
+            )
 
     # ─── Reasoning trace (legacy) ──────────────────────────────────
 
