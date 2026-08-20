@@ -827,6 +827,60 @@ def test_to_strategy_response_serves_null_not_fixture_without_live_rigor_result(
     )
 
 
+def test_to_strategy_response_serves_null_not_bt_fixture_without_live_rigor_result(monkeypatch):
+    """#1187 adversarial gap (found in re-review): the sibling test above only
+    guards the ``s.<field>`` half of the removed fallback chain — ``bt`` is
+    always ``None`` there (a bare ``Strategy`` against an empty tmp DB), so a
+    partial revert that restored ONLY ``(bt.<field> if bt else None)`` would
+    pass every existing guard. This test persists the ``bt`` half: a
+    ``BacktestResult`` carrying non-None rigor numbers is what
+    ``strategy_provider().get_backtest_result`` returns for this strategy id,
+    while ``s.<field>`` stays ``None`` and ``rigor_result`` stays ``None``
+    (live gate could not run). Adversarial check: reintroducing
+    ``(bt.deflated_sharpe_ratio if bt else None)`` (etc.) on any of the four
+    keys makes this fail — it would observe 0.283312 / 0.611531 / 0.373116 /
+    0.930283 (the same real fixture values as the sibling test) instead of
+    ``None``.
+    """
+    from archimedes.api.strategies_routes import _to_strategy_response, strategy_provider
+    from archimedes.models.backtest import BacktestResult
+    from archimedes.models.strategy import Strategy
+    from archimedes.services.live_rigor_gate import RigorGateVerdict
+
+    s = Strategy(id="test-1187-bt-stub")  # s.<field> defaults None — bt half only
+    bt = BacktestResult(
+        strategy_id=s.id,
+        sharpe_ratio=1.0,
+        sortino_ratio=1.0,
+        max_drawdown=0.1,
+        cagr=0.1,
+        calmar_ratio=1.0,
+        win_rate=0.5,
+        profit_factor=1.5,
+        total_trades=10,
+        avg_holding_period_days=5.0,
+        correlation_to_spy=0.5,
+        correlation_to_btc=0.0,
+        deflated_sharpe_ratio=0.283312,
+        dsr_p_value=0.611531,
+        pbo_score=0.373116,
+        out_of_sample_sharpe=0.930283,
+    )
+    monkeypatch.setattr(strategy_provider(), "get_backtest_result", lambda strategy_id: bt)
+
+    resp = _to_strategy_response(s, verdict=RigorGateVerdict.pending(), rigor_result=None)
+
+    assert resp.rigor_gate_status == "pending"
+    assert resp.deflated_sharpe_ratio is None, (
+        f"deflated_sharpe_ratio must be None, not the bt fixture value; got {resp.deflated_sharpe_ratio}"
+    )
+    assert resp.dsr_p_value is None, f"dsr_p_value must be None, not the bt fixture value; got {resp.dsr_p_value}"
+    assert resp.pbo_score is None, f"pbo_score must be None, not the bt fixture value; got {resp.pbo_score}"
+    assert resp.out_of_sample_sharpe is None, (
+        f"out_of_sample_sharpe must be None, not the bt fixture value; got {resp.out_of_sample_sharpe}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_leaderboard_serves_null_not_fixture_without_real_returns(monkeypatch):
     """End-to-end companion to the unit test above, over the REAL curated
