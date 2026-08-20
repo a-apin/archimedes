@@ -132,6 +132,12 @@ variable "archimedes_treasury_wallet" {
   default     = ""
 }
 
+variable "generation_payment_recipient" {
+  description = "Platform wallet address that receives x402 generation payments (flip-list #834). Public address, not a secret. Empty keeps the paywall un-flippable: GENERATION_PAYMENT_REQUIRED=true with no recipient is a deliberate 503, never a free pass."
+  type        = string
+  default     = ""
+}
+
 # ── Runner relocation (issue #1065 / #1043) ─────────────────────────────────
 # Draft IaC — Dan applies POST-T3.2. See infra/runner_ec2.tf, infra/kb_runner.tf,
 # infra/efs.tf, and the PR body for the full architecture + caveats.
