@@ -16,25 +16,41 @@ import { driftTooltip, formatTotalReturn, paperErrorMessage } from "../src/paper
 // raw machine timestamp into English prose. ────────────────────────────────
 
 test("driftTooltip: never claims a freeze or a pending investigation", () => {
-	const tooltip = driftTooltip("2026-08-20T04:12:33.481207+00:00");
+	const tooltip = driftTooltip("2026-08-20T04:12:33.481207+00:00", "active");
 	assert.doesNotMatch(tooltip, /frozen|pending investigation/);
 });
 
 test("driftTooltip: states the true, honest consequence — append-only, not rewritten", () => {
-	const tooltip = driftTooltip("2026-08-20T04:12:33.481207+00:00");
+	const tooltip = driftTooltip("2026-08-20T04:12:33.481207+00:00", "active");
 	assert.match(tooltip, /append-only/);
 	assert.match(tooltip, /not rewritten/);
 });
 
 test("driftTooltip: never interpolates the raw ISO machine timestamp", () => {
-	const tooltip = driftTooltip("2026-08-20T04:12:33.481207+00:00");
+	const tooltip = driftTooltip("2026-08-20T04:12:33.481207+00:00", "active");
 	assert.doesNotMatch(tooltip, /T04:12:33/);
 	assert.doesNotMatch(tooltip, /\d{4}-\d{2}-\d{2}T/); // no raw ISO date at all
 });
 
 test("driftTooltip: a malformed timestamp degrades cleanly, never 'Invalid Date' or a crash", () => {
-	assert.doesNotThrow(() => driftTooltip("not-a-real-timestamp"));
-	assert.doesNotMatch(driftTooltip("not-a-real-timestamp"), /Invalid Date/);
+	assert.doesNotThrow(() => driftTooltip("not-a-real-timestamp", "active"));
+	assert.doesNotMatch(driftTooltip("not-a-real-timestamp", "active"), /Invalid Date/);
+});
+
+// A STOPPED deployment does not advance — advance_all (paper_trading.py)
+// filters on STATUS_ACTIVE, and drift_detected_at is never cleared, so the
+// same DRIFT chip can still be showing on a stopped row. "Keeps advancing"
+// must be conditioned on status, not asserted unconditionally — that is
+// just the false claim this issue exists to remove, on a different clause.
+test("driftTooltip: claims the track record keeps advancing only when active", () => {
+	assert.match(driftTooltip("2026-08-20T04:12:33.481207+00:00", "active"), /keeps advancing/);
+});
+
+test("driftTooltip: a stopped deployment never claims the record keeps advancing", () => {
+	const tooltip = driftTooltip("2026-08-20T04:12:33.481207+00:00", "stopped");
+	assert.doesNotMatch(tooltip, /keeps advancing/);
+	assert.doesNotMatch(tooltip, /frozen|pending investigation/);
+	assert.match(tooltip, /append-only/);
 });
 
 // ── formatTotalReturn: gate on `days`, never on the value. A day-0 ledger
@@ -61,7 +77,7 @@ test("formatTotalReturn: null/NaN also degrade to unmeasured regardless of days"
 
 // ── paperErrorMessage: api.js's raw "Backend returned NNN" must never
 // reach the role="alert" card. Mirrors StrategyPassport.jsx's
-// PaperDeployCard status mapping (:816-828). ───────────────────────────────
+// PaperDeployCard's start() catch block status mapping (:906-919). ─────────
 
 test("paperErrorMessage: a 401 never surfaces the raw 'Backend returned' string, and reads as a sign-in prompt", () => {
 	const err = { status: 401, message: "Backend returned 401" };
@@ -104,8 +120,8 @@ test("PaperTrading.jsx imports the shared copy/format helpers from ../paperCopy"
 	);
 });
 
-test("PaperTrading.jsx's DRIFT tooltip calls driftTooltip(driftAt), not an inline literal", () => {
-	assert.match(paperTrading, /title=\{driftTooltip\(driftAt\)\}/);
+test("PaperTrading.jsx's DRIFT tooltip calls driftTooltip(driftAt, status), not an inline literal", () => {
+	assert.match(paperTrading, /title=\{driftTooltip\(driftAt,\s*status\)\}/);
 });
 
 test("PaperTrading.jsx's headline figure calls formatTotalReturn(dep.total_return, dep.days) — days is part of the call", () => {

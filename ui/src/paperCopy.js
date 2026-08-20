@@ -6,11 +6,16 @@
 //
 // Every export here exists to fix a specific honesty bug (#1362):
 //   - driftTooltip: the old inline string promised a freeze/investigation
-//     that never happens — advance_all (paper_trading.py) never consults
-//     drift_detected_at, so a drifted ledger keeps appending. The DRIFT
-//     tooltip must never claim otherwise, and must never interpolate the
-//     raw machine timestamp paper_trading.py's deployment_summary emits
-//     (`drift_detected_at.isoformat()`) into English prose.
+//     that never happens while a deployment is ACTIVE — advance_all
+//     (paper_trading.py) filters on STATUS_ACTIVE and never consults
+//     drift_detected_at, so an active, drifted ledger keeps appending. But
+//     drift_detected_at is never cleared, so the same chip can still be
+//     showing on a STOPPED deployment, where the record genuinely IS
+//     frozen — the tooltip must not claim it "keeps advancing" there
+//     either. It gates its closing clause on `status` for that reason, and
+//     must never interpolate the raw machine timestamp paper_trading.py's
+//     deployment_summary emits (`drift_detected_at.isoformat()`) into
+//     English prose.
 //   - formatTotalReturn: deployment_summary's `total_return` is a real
 //     `0.0` (not null) at day 0 — the OLD `pct()` rendered that as a
 //     measured-looking "+0.00%". Day 0 is the normal state right after
@@ -39,19 +44,28 @@ function formatDriftDate(driftAtIso) {
  * The DRIFT chip's tooltip. States what actually happens when a fresh
  * replay disagrees with rows already written: the ledger is append-only and
  * was NOT rewritten (mirrors the backend's own warning in
- * `paper_trading.py:advance_deployment`), and it keeps advancing — never a
- * promise of a halt or an investigation, which only the Stop path
- * (PaperTrading.jsx's `stop()`) has actually earned. `drift_detected_at` is
- * overwritten on every recurrence (paper_trading.py:158), so this reads as
- * the MOST RECENT disagreement, not the first.
+ * `paper_trading.py:advance_deployment`) — never a promise of a halt or an
+ * investigation, which only the Stop path (PaperTrading.jsx's `stop()`) has
+ * actually earned. `drift_detected_at` is overwritten on every recurrence
+ * (paper_trading.py:158), so this reads as the MOST RECENT disagreement,
+ * not the first.
+ *
+ * `status` gates the closing clause, because "keeps advancing" is only true
+ * while the deployment is active: `advance_all` (paper_trading.py:173)
+ * filters on `STATUS_ACTIVE`, so a STOPPED deployment does not advance —
+ * Stop (paper_routes.py:142) is the one path that genuinely halts it, and
+ * `drift_detected_at` is never cleared, so the chip can still be showing on
+ * a stopped row. Pass the same `status` the STOPPED/ACTIVE pill renders
+ * from; anything other than `'active'` gets the stopped-true clause.
  */
-export function driftTooltip(driftAtIso) {
+export function driftTooltip(driftAtIso, status) {
   const when = formatDriftDate(driftAtIso)
-  return (
+  const base =
     `A fresh replay disagreed with rows already recorded, most recently on ${when}. ` +
-    'The ledger is append-only and was not rewritten — the discrepancy is surfaced, not hidden, ' +
-    'and the track record keeps advancing.'
-  )
+    'The ledger is append-only and was not rewritten — the discrepancy is surfaced, not hidden.'
+  return status === 'active'
+    ? `${base} The track record keeps advancing.`
+    : `${base} No further rows have been added since, and the recorded disagreement stands.`
 }
 
 /**

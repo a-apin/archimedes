@@ -39,7 +39,7 @@ function StatusChip({ status, driftAt }) {
       </span>
       {driftAt && (
         <span
-          title={driftTooltip(driftAt)}
+          title={driftTooltip(driftAt, status)}
           style={{
             padding: '2px 10px',
             borderRadius: 999,
