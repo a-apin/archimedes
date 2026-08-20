@@ -947,7 +947,7 @@ const PROTOCOLS = [
 	},
 	{
 		name: "Hierarchy of Truth",
-		what: "Chain state outranks the LLM's narrative; V_check fails any rebalance where they disagree.",
+		what: "Chain state outranks the LLM's narrative — the rebalance loop reads vault holdings from chain, never from model output; V_check then enforces weights-sum and max-concentration bounds on the resulting trade.",
 	},
 	{
 		name: "Source Tracking",
@@ -1039,8 +1039,14 @@ function HonestyLedger({ health, healthError }) {
 						<tr>
 							<td>Autonomous rebalance loop</td>
 							<td>
-								Runs on a schedule against every deployed vault; evaluates,
-								commits, trades, and reveals each tick
+								<LedgerStatus tone="pending">
+									Liveness unverified
+								</LedgerStatus>{" "}
+								— runs on a schedule against every deployed vault
+								(evaluate, commit, trade, reveal); the runner has been
+								stranded on a detached EC2 box with no deploy path since
+								the Fargate cutover, so uptime is not independently
+								confirmed
 							</td>
 						</tr>
 						<tr>
