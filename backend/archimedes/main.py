@@ -625,7 +625,8 @@ async def health():
     oracle_oldest_age_s: int | None = None
     oracle_probed_count = 0
     oracle_universe_count = 0
-    oracle_reason = "import failed"
+    # oracle_reason needs no initializer: the try body and the except handler
+    # both assign it unconditionally before any use.
     try:
         from archimedes.services.oracle_health import oracle_health as _oracle_health_probe
 
