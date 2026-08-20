@@ -201,7 +201,7 @@ const modelCostPanel = readFileSync(
 	new URL("../src/components/ModelCostPanel.jsx", import.meta.url),
 	"utf8",
 );
-// CorpusKG.jsx (#1368 second adversarial review): a fifth caller found
+// CorpusKG.jsx (#1368 second adversarial review): a fourth caller found
 // making the exact direct apiGet("/health") mistake this test exists to
 // forbid, on a branch that predated this file (it was 34 commits behind
 // `main` when the mistake was introduced, so this guard did not yet exist

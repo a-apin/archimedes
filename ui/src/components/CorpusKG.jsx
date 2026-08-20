@@ -377,6 +377,16 @@ export default function CorpusKG({ onOpenPaper }) {
         // over-claim the moment #1090 lands and a legitimate empty search
         // hits this same branch, so the copy below branches on the fetched
         // value instead of asserting either state.
+        //
+        // The `corpus_kg_built === false` copy itself must not assert "the
+        // pipeline hasn't run" as a world fact either (second-round adversarial
+        // review, #1392): main.py's kg-count read defaults to 0 — and so
+        // `corpus_kg_built` to false — both when genuinely zero entities exist
+        // AND when the /health DB read itself failed (`except Exception:
+        // logger.debug(...)`, no distinguishing signal returned today). Since
+        // this component cannot tell those two cases apart from the field
+        // alone, the copy below reports what `/health` said rather than
+        // asserting why it said it.
         <div style={{ padding: 40, textAlign: 'center' }} className="caption">
           {healthLoading ? (
             'Checking knowledge-graph pipeline status…'
@@ -386,10 +396,10 @@ export default function CorpusKG({ onOpenPaper }) {
             `No entities matched "${searchedTerm}".`
           ) : (
             <>
-              No knowledge-graph entities have been extracted yet (#1090 produces the KB
-              pipeline artifact; #1092 backfills kg_entities/kg_relations from it) — there's
-              nothing to search until that lands. See /health's corpus_kg_built field for the
-              live state; paper retrieval on the Catalog tab doesn't depend on it.
+              /health reports corpus_kg_built = false — no knowledge-graph entities are
+              visible right now (#1090 produces the KB pipeline artifact; #1092 backfills
+              kg_entities/kg_relations from it). Paper retrieval on the Catalog tab doesn't
+              depend on it.
             </>
           )}
         </div>
