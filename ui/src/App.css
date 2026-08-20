@@ -3703,15 +3703,13 @@ button:where(.tag) {
      4.70:1 — --surface-3 is the binding constraint of the three) and the
      glass card (6.31:1).
      It does NOT clear --surface-4 (#21434a, 3.82:1), and deliberately isn't
-     raised to cover it: every `background: var(--surface-4)` rule
-     (.token-pill-select .cs-trigger:hover, .info-box code, .chat-count,
-     .timeline::before, ...) belongs to app-shell-only components that
-     Landing.jsx / Architecture.jsx never render, so --text-4 painted on
-     --surface-4 inside .public-site cannot actually happen — grepped
-     clean. No current call site pairs --text-4 with --surface-1/2/3 either
-     — this raises the floor defensively for those three, the same
-     standard already applied to --chart-label, rather than fixing a
-     rendered defect. */
+     raised to cover it: the surface-4 backgrounds that can render inside
+     .public-site are chrome-only (::-webkit-scrollbar-thumb) and carry no
+     text; the shell's children are Landing, Architecture and the 404 page,
+     none of which pairs --text-4 with --surface-4. No current call site
+     pairs --text-4 with --surface-1/2/3 either — this raises the floor
+     defensively for those three, the same standard already applied to
+     --chart-label, rather than fixing a rendered defect. */
 	--text-4: #8b9f97;
 	--accent-rgb: 217, 168, 92;
 	--accent: var(--public-bronze);

@@ -260,9 +260,14 @@ test("sticky topbar cannot cover a focused control", () => {
 		nestedCssBlock(media560, "\\.public-header__inner"),
 		"min-height",
 	);
+	// `.public-header__inner`'s min-height is not the whole sticky bar: the
+	// outer `.public-header` adds its own border-bottom below it, which also
+	// occupies rendered height a scrolled-to control can hide under.
+	const publicHeaderBorder = numPx(cssBlock(css, "\\.public-header"), "border-bottom");
 	const publicFocus = cssBlock(css, "\\.public-site :focus-visible");
 	const publicRequired =
 		Math.max(publicHeaderHeight, publicHeaderHeight560) +
+		publicHeaderBorder +
 		numPx(publicFocus, "outline") +
 		numPx(publicFocus, "outline-offset");
 	const publicScrollPad = numPx(
