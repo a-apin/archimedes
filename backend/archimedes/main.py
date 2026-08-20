@@ -90,6 +90,85 @@ from archimedes.db import init_db
 
 logger = logging.getLogger(__name__)
 
+
+def _assert_marketplace_live_or_dry(marketplace_router_obj: object, payments_dry_run: bool) -> None:
+    """FATAL when circlekit failed to import while PAYMENTS_DRY_RUN=false (#1240).
+
+    The import above degrades on purpose (PR #958 prod incident) so a broken
+    circlekit install can never crash-loop the whole backend — correct when
+    PAYMENTS_DRY_RUN=true, since no real money is at stake and "marketplace
+    absent" (routes 404) is an honest, visible degraded state. It stops being
+    correct the moment an operator sets PAYMENTS_DRY_RUN=false: that is a
+    deliberate signal real charging is wanted, and "the process boots fine,
+    most routes 200, marketplace quietly 404s" is a silent trap for exactly
+    that operator, not a safe degrade — see architectural-principles.md's
+    fail-soft-is-wrong-for-anything-a-claim-depends-on rule. Pulled into its
+    own function so the assertion is unit-testable without importing the
+    whole app.
+    """
+    if marketplace_router_obj is None and not payments_dry_run:
+        raise RuntimeError(
+            "FATAL: circlekit failed to import (marketplace router unavailable, see "
+            "the error logged above) while PAYMENTS_DRY_RUN=false. Refusing to boot "
+            "with real-money charging intended but no charging capability available. "
+            "Fix the circlekit install, or set PAYMENTS_DRY_RUN=true if dry-run is "
+            "actually what's intended."
+        )
+
+
+_assert_marketplace_live_or_dry(
+    marketplace_router,
+    os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes"),
+)
+
+
+async def _assert_gateway_chain_matches_rpc(
+    chain_client_obj: object, gateway_chain: str, payments_dry_run: bool
+) -> None:
+    """FATAL when GATEWAY_CHAIN resolves to a chain_id the RPC we actually
+    talk to doesn't report — but only when PAYMENTS_DRY_RUN=false (#1240).
+
+    circlekit's ``CHAIN_ALIASES`` maps ``"mainnet"`` -> ``"ethereum"``, so a
+    fat-fingered ``GATEWAY_CHAIN`` can silently resolve to a real, DIFFERENT
+    chain than the one Arc RPC (and the vault reads/writes) actually target
+    — Gateway payments would settle on a chain trades don't execute on, and
+    ``GET /api/config/contracts``' "chain" field would be lying about which
+    chain we're on. Fatal only under PAYMENTS_DRY_RUN=false (same
+    conditioning as ``_assert_marketplace_live_or_dry`` above): a dry-run/
+    testnet boot with a stale or experimental GATEWAY_CHAIN value must not
+    crash-loop over it, just log loudly.
+
+    A connectivity failure (``chain_client_obj.get_chain_id()`` raising) is
+    the CALLER's problem, not this function's — chain_client owns its own
+    retry/backoff, and "the RPC was briefly unreachable at boot" is a
+    different failure mode than "we are pointed at the wrong chain". This
+    function only ever raises on a confirmed mismatch, or an unresolvable
+    GATEWAY_CHAIN name (also a real config bug worth being loud about).
+    """
+    from circlekit.constants import get_chain_config
+
+    try:
+        expected_chain_id = get_chain_config(gateway_chain).chain_id
+    except ValueError as exc:
+        message = f"GATEWAY_CHAIN={gateway_chain!r} is not a chain circlekit recognizes: {exc}"
+        if payments_dry_run:
+            logger.warning("%s (PAYMENTS_DRY_RUN=true — not fatal, but fix before flipping it)", message)
+            return
+        raise RuntimeError(f"FATAL: {message} Refusing to boot with PAYMENTS_DRY_RUN=false.") from exc
+
+    actual_chain_id = await chain_client_obj.get_chain_id()
+    if expected_chain_id != actual_chain_id:
+        message = (
+            f"GATEWAY_CHAIN={gateway_chain!r} resolves to chain_id={expected_chain_id}, but the "
+            f"configured RPC reports chain_id={actual_chain_id}. Gateway payments would settle "
+            "on a different chain than trades execute on."
+        )
+        if payments_dry_run:
+            logger.warning("%s (PAYMENTS_DRY_RUN=true — not fatal, but fix before flipping it)", message)
+            return
+        raise RuntimeError(f"FATAL: {message} Refusing to boot with PAYMENTS_DRY_RUN=false.")
+
+
 # ── Docs gate: disable /docs and /openapi.json in production ──────────
 # Default OFF when PUBLIC_DOMAIN is set (production). Override with
 # ENABLE_API_DOCS=1 to re-enable in any environment.
@@ -226,6 +305,29 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _app.state.market = None
         _logger.error("startup: marketplace engine failed to start — running WITHOUT it (non-fatal): %s", exc)
+
+    # 3y. Verify GATEWAY_CHAIN against the RPC we actually talk to (#1240).
+    # Gated on marketplace_router (circlekit importable), not `market`
+    # (MarketService construction) — generation_payment.py's paywall also
+    # resolves GATEWAY_CHAIN independently of the ticking engine, so this
+    # matters even when MarketService itself failed to start for some other
+    # reason. A connectivity failure (RPC briefly unreachable at boot) is
+    # logged and swallowed here — chain_client owns its own retry/backoff,
+    # and that is a different failure mode than "pointed at the wrong
+    # chain", which is the only thing _assert_gateway_chain_matches_rpc
+    # itself treats as fatal (and only when PAYMENTS_DRY_RUN=false).
+    if marketplace_router is not None:
+        try:
+            from archimedes.chain.client import chain_client
+            from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+
+            gateway_chain = os.getenv("GATEWAY_CHAIN", DEFAULT_GATEWAY_CHAIN).strip()
+            await _assert_gateway_chain_matches_rpc(chain_client, gateway_chain, payments_dry_run)
+            _logger.info("startup: GATEWAY_CHAIN=%s verified against RPC", gateway_chain)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            _logger.warning("startup: GATEWAY_CHAIN/RPC verification skipped (connectivity issue?): %s", exc)
 
     # 3z. Register the system/agent addresses in controlled_wallets (issue
     # #1028, D1a/D3). Idempotent upsert — safe to run on every boot.
