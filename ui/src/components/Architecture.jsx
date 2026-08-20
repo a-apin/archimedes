@@ -859,9 +859,14 @@ function MarketplaceSection() {
 }
 
 // ── §9 — The research corpus ───────────────────────────────────────────
-// Corrects the stale keyword/TF-IDF claim: MiniLM semantic retrieval IS
-// live (/health: paper_rag "live", corpus_embedded true). The honest gap is
-// the knowledge graph, which has not been built (corpus_kg_built false).
+// Every retrieval claim on this panel is driven off /health, never asserted
+// statically — see #778. Two things this panel must NOT imply. (1) That a
+// vector index sits behind the corpus: the papers schema carries text only,
+// and /health's corpus_embedded reports something narrower than its name
+// suggests — whether the MiniLM model loaded in *this* worker process.
+// (2) That a knowledge graph exists: corpus_kg_built is false and the
+// graph/KG endpoints 503. backend/tests/test_corpus_claim_integrity.py
+// scans this file for both claim-shapes.
 
 function CorpusSection({ health, healthError }) {
 	const loading = !health && !healthError;
@@ -885,11 +890,12 @@ function CorpusSection({ health, healthError }) {
 					{fmtNum(health.corpus_papers)}-paper arXiv manifest spanning
 					statistical finance, portfolio math, market microstructure, and
 					agentic AI. At generate time, retrieval runs in two stages: a
-					keyword/asset-class filter, then a semantic rerank with MiniLM
-					sentence embeddings against your brief (
+					keyword/asset-class filter, then a relevance rerank against your brief,
+					scored at request time over each candidate's title and abstract, with no
+					vector index behind it (
 					{health.paper_rag === "live"
-						? "semantic retrieval is live today"
-						: "semantic retrieval is currently degraded to a keyword-only fallback"}
+						? "/health reports paper_rag: live — the rerank is running MiniLM sentence embeddings right now"
+						: "/health reports paper_rag: degraded — the rerank is running the lexical TF-IDF fallback right now"}
 					). Retrieved papers are embargo-filtered — nothing published after a
 					decision point can inform it — and every citation carries its arXiv ID
 					and content hash.
@@ -928,8 +934,8 @@ function CorpusSection({ health, healthError }) {
 }
 
 // ── §10 — Reasoning protocols (Xia et al.) ─────────────────────────────
-// Kept panel shape; reworded the retrieval-mechanism line (MiniLM is the
-// live mechanism, not a "build target" caveat).
+// Kept panel shape. The retrieval-mechanism line must name the scorer from
+// /health.paper_rag rather than asserting one (#778).
 const PROTOCOLS = [
 	{
 		name: "Outcome Embargo",
@@ -1066,13 +1072,14 @@ function HonestyLedger({ health, healthError }) {
 								) : health.paper_rag === "live" ? (
 									<>
 										<LedgerStatus tone="live">Live</LedgerStatus> — keyword +
-										MiniLM; {fmtNum(health.corpus_db_count)} of{" "}
+										MiniLM rerank, scored per request;{" "}
+										{fmtNum(health.corpus_db_count)} of{" "}
 										{fmtNum(health.corpus_papers)} papers hydrated
 									</>
 								) : (
 									<>
 										<LedgerStatus tone="pending">Degraded</LedgerStatus> —
-										keyword-only fallback active
+										lexical TF-IDF fallback active
 									</>
 								)}
 							</td>

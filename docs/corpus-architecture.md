@@ -10,6 +10,16 @@
 > #95 (engine v2), #97 (10k corpus), #105 + #108 (rigor wedge), #106 (DB-backed
 > corpus), and #93 (Corpus Explorer UI).
 
+> **Claim-integrity note (verified against production 2026-08-19, issue #778).** Layer 1
+> is real: 10,000 rows with title + abstract are in Postgres. Layers 2 and 3 are **not**:
+> there is no embedding column anywhere in the schema, `corpus_meta` holds 0 rows, and
+> `kg_entities`/`kg_relations` are 0/0. Where this document describes embeddings, clusters,
+> or a knowledge graph as part of the substrate, read that as the **target design**, not the
+> deployed state — the "Scaffolded but not running yet" section below is the accurate part.
+> Retrieval in production ranks candidates at request time over title + abstract, using the
+> lexical TF-IDF path; `/health`'s `paper_rag` field is the authority on which scorer is
+> running in any given process.
+
 ## The substrate (3 layers)
 
 ```

@@ -103,7 +103,7 @@ the machine-readable claim-integrity surface the new page should read from.
 | Concern | Path | Role |
 |---|---|---|
 | LLM seam | [`services/llm_backend.py`](../backend/archimedes/services/llm_backend.py) | Multi-provider **Converse** backend: AWS Bedrock **Amazon Nova Micro** default; BYOK; local-Ollama single-user path. `response.model` is provenance-of-record |
-| Corpus retrieval | [`services/paper_rag.py`](../backend/archimedes/services/paper_rag.py) | Stage-2 **MiniLM** (`all-MiniLM-L6-v2`) semantic rerank over the keyword-filtered candidates; 150-candidate cap, bounded embedding cache, `torch.set_num_threads(1)` (the #885 outage guardrails); TF-IDF fallback reported as `paper_rag: degraded` |
+| Corpus retrieval | [`services/paper_rag.py`](../backend/archimedes/services/paper_rag.py) | Stage-2 **query-time** rerank over the keyword-filtered candidates — nothing is read from a stored embedding index (none exists). `all-MiniLM-L6-v2` when the model loads in-process (`paper_rag: live`), lexical TF-IDF cosine otherwise (`paper_rag: degraded` — the prod state, #778). 150-candidate cap, bounded embedding cache, `torch.set_num_threads(1)` (the #885 outage guardrails) |
 | Corpus ingest | [`services/corpus_service.py`](../backend/archimedes/services/corpus_service.py), [`services/arxiv_corpus.py`](../backend/archimedes/services/arxiv_corpus.py), [`services/arxiv_pipeline.py`](../backend/archimedes/services/arxiv_pipeline.py) | 10,000-paper JSONL manifest seed into Postgres |
 | KB pipeline | [`services/kb_runner.py`](../backend/archimedes/services/kb_runner.py), [`services/kb_artifacts.py`](../backend/archimedes/services/kb_artifacts.py) | Scheduled runner triggering SPECTER2 embeddings / HDBSCAN clusters / REBEL+SciSpacy KG builds (the "KB pipeline"); artifacts served by `corpus_routes` |
 | Rigor gate | [`services/live_rigor_gate.py`](../backend/archimedes/services/live_rigor_gate.py) | **Single source of truth** for `passes_rigor_gate`: tri-state pass/fail/**pending**, computed live from persisted real returns — never a cached boolean (issue #821, the #1 rule) |
@@ -197,7 +197,7 @@ Runbook: [`infra/runbooks/ecs-fargate-cutover.md`](../infra/runbooks/ecs-fargate
 
 1. **Auth**: Better Auth account session (email/password or OAuth) → canonical user id; a wallet may be LINKED later via a single-use EIP-4361 proof ([`api/wallet_routes.py`](../backend/archimedes/api/wallet_routes.py)) but never logs in. Passkey users get a Circle smart account ([`ui/src/circle-wallet.js`](../ui/src/circle-wallet.js)); headless agents use the same endpoints ([`docs/agent-api.md`](agent-api.md), [`scripts/agent_journey.py`](../scripts/agent_journey.py)).
 2. **Brief** → `POST /api/generate` ([`api/generate_routes.py`](../backend/archimedes/api/generate_routes.py)) → SSE job ([`agents/generation_pipeline.py`](../backend/archimedes/agents/generation_pipeline.py)), events persisted per-job in Redis.
-3. **Retrieval**: keyword/asset-class pre-filter (`agents/strategy_fusion.py::select_candidates`) → MiniLM cosine rerank ([`services/paper_rag.py`](../backend/archimedes/services/paper_rag.py)) → top-N papers, embargo-filtered ([`services/embargo_filter.py`](../backend/archimedes/services/embargo_filter.py)) and age-decayed ([`services/time_aware_retrieval.py`](../backend/archimedes/services/time_aware_retrieval.py)). **Precheck: ≥2 corpus papers or `GENERATION_UNAVAILABLE`** — prod corpus hydration is the honest gap (issue #778).
+3. **Retrieval**: keyword/asset-class pre-filter (`agents/strategy_fusion.py::select_candidates`) → query-time cosine rerank ([`services/paper_rag.py`](../backend/archimedes/services/paper_rag.py); MiniLM when the model loads, lexical TF-IDF in prod today) → top-N papers, embargo-filtered ([`services/embargo_filter.py`](../backend/archimedes/services/embargo_filter.py)) and age-decayed ([`services/time_aware_retrieval.py`](../backend/archimedes/services/time_aware_retrieval.py)). **Precheck: ≥2 corpus papers or `GENERATION_UNAVAILABLE`** — the absence of stored embeddings and of any KB artifact is the honest gap (issue #778).
 4. **Debate society** ([`agents/debate_engine.py`](../backend/archimedes/agents/debate_engine.py)): proposer pool fans LLM fusion calls (model = user's cost-picker choice via [`services/llm_backend.py`](../backend/archimedes/services/llm_backend.py)) across regime-biased evidence sets → dedup by canonical spec hash → adversarial bull/bear transcript (surface, non-gating) → **C-rigor** deterministic backtest of every survivor → **C-null** vs buy-and-hold → **K=1 winner + considered-rejects**, or first-class ABSTAIN.
 5. **Persist + hash**: winner and rejects content-hashed into `strategy_proposals` ([`models/strategy_proposal.py`](../backend/archimedes/models/strategy_proposal.py)); trace hashed; strategy record created ([`models/strategy_store.py`](../backend/archimedes/models/strategy_store.py)).
 6. **External rigor gate**: the badge the user sees is computed live from persisted real returns ([`services/live_rigor_gate.py`](../backend/archimedes/services/live_rigor_gate.py) — tri-state pass/fail/pending) and served by [`api/selection_bias_routes.py`](../backend/archimedes/api/selection_bias_routes.py); the Deploy button gates on it. The gate runs **outside** the generator (architectural primitive 5, `CLAUDE.md:1015`).
@@ -228,10 +228,10 @@ Runbook: [`infra/runbooks/ecs-fargate-cutover.md`](../infra/runbooks/ecs-fargate
 ## 5. Flow — Corpus (papers → retrievable knowledge)
 
 1. **Seed**: 10,000-paper JSONL manifest → Postgres (`services/corpus_service.py::seed_from_manifest`, boot-time in `main.py:139`).
-2. **Embed at ingest**: title+abstract embeddings are the query-time lookup key ([`docs/corpus-architecture.md`](corpus-architecture.md)).
-3. **KB pipeline** ([`services/kb_runner.py`](../backend/archimedes/services/kb_runner.py), own compose service / scheduled-Fargate target (PR #1071, merged; apply pending)): SPECTER2 embeddings, HDBSCAN clusters, REBEL+SciSpacy knowledge graph → artifacts → [`api/corpus_routes.py`](../backend/archimedes/api/corpus_routes.py) (503 until real artifacts exist; `corpus_kg_built` flag in `/health`).
-4. **Retrieval at generate time**: keyword filter → MiniLM rerank (§2.3).
-5. **Honest state**: prod corpus is **sparsely hydrated** — the 10k number is manifest-scale, not fully-ingested-paper count (issue #778). Build decision: **HYBRID** — custom KB spine (Postgres + MiniLM, live now) + optional Bedrock-KB retrieval bridge; Neptune ruled out; a MiniLM-only no-AWS local option exists.
+2. **Seed writes text, and stops there**: metadata + abstracts land in Postgres; the `papers` schema carries no vector column, so there is nothing stored for a query to look up. Ranking is computed per request instead (§2.3). The ingest-time vectorisation described in [`docs/corpus-architecture.md`](corpus-architecture.md) is the target design, not the deployed one.
+3. **KB pipeline** ([`services/kb_runner.py`](../backend/archimedes/services/kb_runner.py), own compose service / scheduled-Fargate target (PR #1071, merged; apply pending)): SPECTER2 embeddings, HDBSCAN clusters, REBEL+SciSpacy knowledge graph → artifacts → [`api/corpus_routes.py`](../backend/archimedes/api/corpus_routes.py). With no artifact, `/graph` raises **503 `kb_artifact_not_found`** and `/kg/*` returns **empty entity/relation sets** — neither synthesises from arXiv metadata (#201). `corpus_kg_built` flag in `/health`; both behaviours pinned by `backend/tests/test_corpus_claim_integrity.py`.
+4. **Retrieval at generate time**: keyword filter → query-time rerank (§2.3).
+5. **Honest state** (verified against prod 2026-08-19): all 10,000 rows are present with title + abstract, but there are **no embeddings** (no embedding column anywhere in the schema), `corpus_meta` = 0 rows, and `kg_entities`/`kg_relations` = 0/0 — so retrieval is **lexical**, and the KG/graph endpoints 503. What is missing is the artifact layer, not the papers (issue #778). Build decision: **HYBRID** — custom KB spine (Postgres + MiniLM) + optional Bedrock-KB retrieval bridge; Neptune ruled out; a MiniLM-only no-AWS local option exists.
 
 ## 6. Flow — Identity / accounts + linked wallets
 
@@ -291,7 +291,7 @@ kb → scheduled Fargate task; EFS for corpus artifacts.
 6. **[`docs/specs/ecosystem-design-spec.md`](specs/ecosystem-design-spec.md)** — `StrategyRegistry → AssetRegistry` replacement; in code both coexist intentionally (noted in `CLAUDE.md:404-406`).
 7. **`.env.example`** — `LLM_PROVIDER=anthropic_compatible` default vs live `bedrock_converse` (tracked as roadmap T3.10).
 8. **[`agents/strategy_fusion.py`](../backend/archimedes/agents/strategy_fusion.py) module docstring** — still describes fusion as "feature-flagged beside strategy_architect, default OFF" and GLM-backed; fusion proposals are now the heart of the sole (debate) pipeline and the architect was deleted (PR #1074, merged 2026-07-14). Docstring predates the pivot.
-9. **[`docs/corpus-architecture.md`](corpus-architecture.md)** — Day-9 fusion-path framing; retrieval reality is keyword → MiniLM ([`services/paper_rag.py`](../backend/archimedes/services/paper_rag.py)) with the KB pipeline as the artifact layer.
+9. **[`docs/corpus-architecture.md`](corpus-architecture.md)** — Day-9 fusion-path framing, and it describes embeddings/clusters/KG as if built; retrieval reality is keyword → query-time rerank ([`services/paper_rag.py`](../backend/archimedes/services/paper_rag.py), lexical in prod) with the KB pipeline as an artifact layer that has not yet run (#778).
 10. **[`ui/src/components/Architecture.jsx`](../ui/src/components/Architecture.jsx)** — the page being replaced; full staleness list in §10 and [`docs/handovers/2026-07-14-architecture-review.md`](handovers/2026-07-14-architecture-review.md).
 
 ## 10. What the pre-#1192 Architecture page got wrong (headline items)
@@ -305,7 +305,14 @@ Itemized with evidence in [`docs/handovers/2026-07-14-architecture-review.md`](h
 model (now: debate society + external rigor gate), "10 smart contracts" (now 12 Solidity
 sources compiling into 570 live protocol instances on the fresh chain-5042002
 deploy, per §1.7 and `GET /api/config/contracts`), "keyword/TF-IDF today"
-(MiniLM rerank is live), "60s tick" (default 300 s), "4 wallet signatures" (2+3 client-signed
+(see the note below — that entry was over-corrected), "60s tick" (default 300 s), "4 wallet signatures" (2+3 client-signed
 steps), publish-after trace anchoring (now commit-before-trade, contract-enforced), no
 marketplace/x402, no SIWE/agent-native story, no leaderboard, and stat-card numbers hardcoded
 in JSX where live endpoints exist (`/health`, `/api/config/contracts`, `/api/explore/assets`).
+
+One item on that staleness list was corrected in the *wrong direction*. The "keyword/TF-IDF
+today" entry was rewritten to present MiniLM reranking as a standing property of the corpus,
+on the strength of `/health`'s `corpus_embedded` field. That field describes the process, not
+the corpus: it is `paper_rag == "live"`, i.e. whether sentence-transformers loaded in *this*
+worker. The stored corpus is text either way, and prod serves the lexical path. #778 carries
+the correction; `backend/tests/test_corpus_claim_integrity.py` pins it.
