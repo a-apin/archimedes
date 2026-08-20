@@ -44,6 +44,18 @@ export function isAnonymousAppPage(page) {
   return ANON_APP_PAGES.has(page)
 }
 
+// Where the strategy passport's "Back to Library" control should resolve
+// (#1370). `library` is wallet-gated (not in ANON_APP_PAGES), so an
+// anonymous visitor — the passport is deliberately deep-link reachable
+// without a session (#1194 rev d) — hitting `onNavigate('library')`
+// unconditionally tripped App.jsx's anonymous-page redirect and bounced
+// them to /sign-in, signing out a visitor who was never signed in. Route
+// anonymous visitors to Explore (the anonymous-OK home) instead; signed-in
+// visitors keep going back to their Library.
+export function passportBackPage(user) {
+  return user == null ? 'explore' : 'library'
+}
+
 const PAGE_PATHS = Object.fromEntries(Object.entries(APP_PATHS).map(([path, page]) => [page, path]))
 const LEGACY_PATHS = Object.fromEntries(
   Object.entries(APP_PATHS)

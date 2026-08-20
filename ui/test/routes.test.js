@@ -4,7 +4,9 @@ import { readFileSync } from "node:fs";
 
 import { parseFeatures } from "../src/features.js";
 import {
+	isAnonymousAppPage,
 	pageToPath,
+	passportBackPage,
 	postAuthPath,
 	resolveRoute,
 	safeNextPath,
@@ -234,6 +236,18 @@ test("Library's in-page Published tab hides with the marketplace surface it lead
 		strategiesSrc,
 		/defaultTab === 'published' && !ROADMAP_SURFACES_ENABLED\) return 'generated'/,
 	);
+});
+
+test("the strategy passport's back control never signs out an anonymous visitor (#1370)", () => {
+	// The passport is deliberately deep-link reachable with no session
+	// (#1194 rev d), but 'library' is wallet-gated and not anonymous-OK —
+	// resolving the back button straight to onNavigate('library') tripped
+	// App.jsx's anonymous-page redirect and bounced a visitor who was never
+	// signed in out to /sign-in. The helper must resolve anonymous visitors
+	// to a page isAnonymousAppPage() actually allows.
+	assert.equal(isAnonymousAppPage(passportBackPage(null)), true);
+	// A signed-in visitor keeps going back to their own Library.
+	assert.equal(passportBackPage({ id: "u1" }), "library");
 });
 
 test("anonymous nav shows browse + the Generate conversion path, nothing stateful", () => {
