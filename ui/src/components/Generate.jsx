@@ -23,6 +23,14 @@ import {
 
 const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "");
 
+// Engine C (fusion) per-spec asset fan-out cap — mirrors `_MAX_ASSETS` in
+// backend/archimedes/services/fusion_market_data.py:53. Deeper selections are
+// truncated LOUDLY at generation time (logged + provenance-visible), never
+// silently. Not derived at build time (cross-language constant, JS can't
+// import it) — keep this in sync if the backend value changes; grep
+// `_MAX_ASSETS` there to re-verify.
+const ENGINE_C_ASSET_CAP = 6;
+
 // /generate spine page — redesigned per issue #872.
 //
 // Layout (top to bottom):
@@ -515,7 +523,9 @@ export default function Generate({ onNavigate, onStageChange }) {
 										style={{ color: "var(--text-3)" }}
 									>
 										Steer the universe. Leave empty to use the full supported
-										set.
+										set — {SUPPORTED_ASSETS.length} assets. Engine C caps each
+										spec at {ENGINE_C_ASSET_CAP} and grades them as independent
+										sleeves.
 									</p>
 									<input
 										type="text"
