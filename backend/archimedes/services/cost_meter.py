@@ -139,6 +139,42 @@ def _assert_no_pricing(label: str, kind: str) -> str:
     return text
 
 
+def assert_measurement_only(payload: Any, *, where: str = "snapshot") -> None:
+    """Refuse a payload whose KEYS carry pricing vocabulary, at any depth.
+
+    :func:`_assert_no_pricing` screens one caller-chosen label at write time,
+    which is what keeps a live meter's snapshot clean. This is the same screen
+    applied to a *whole assembled payload* — the check a persistence boundary
+    needs, because by the time a snapshot reaches storage the labels that built
+    it are long gone and the only thing left to inspect is the document.
+
+    It exists for the durable ``generation_costs`` row (#1326): that row stores
+    the measurement and the price quote in **two separate columns** precisely so
+    the two never share a namespace, and this is the guard that makes "separate"
+    enforced rather than merely intended. Merging the quote into the measurement
+    — the obvious future shortcut — raises here instead of silently shipping a
+    priced ``cost_v1`` record.
+
+    Values are deliberately not screened: a *quote* is a legitimately priced
+    document and stores fine in its own column, and a measurement's values are
+    numbers, not labels. Keys are the namespace; keys are what is policed.
+
+    Raises :class:`PricingLeakError` on the first offending key. ``where`` names
+    the boundary for the error message.
+    """
+
+    def _walk(node: Any, path: str) -> None:
+        if isinstance(node, Mapping):
+            for key, value in node.items():
+                _assert_no_pricing(f"{path}.{key}" if path else str(key), f"{where} key")
+                _walk(value, f"{path}.{key}" if path else str(key))
+        elif isinstance(node, (list, tuple)):
+            for index, value in enumerate(node):
+                _walk(value, f"{path}[{index}]")
+
+    _walk(payload, "")
+
+
 def _peak_rss_bytes() -> int | None:
     """Process peak resident set size in bytes, or ``None`` if unavailable.
 
