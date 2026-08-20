@@ -235,7 +235,7 @@ function SystemFlowDiagram() {
 const CORE_PIPELINE_STEPS = [
 	{
 		title: "Your brief",
-		sub: "plain English, optional asset classes, risk profile, and a model cost picker · sign in with any wallet or a passkey",
+		sub: "plain English, optional asset classes, risk profile, and a model cost picker · sign in or create a free account",
 	},
 	{
 		title: "Debate",
@@ -1256,7 +1256,7 @@ function CallToAction({ onNavigate }) {
 			>
 				{ROADMAP_SURFACES_ENABLED
 					? ROADMAP_COPY.ctaLede
-					: "Describe a strategy in plain English, then sign in with any wallet or a passkey to see it through the rigor gate."}
+					: "Describe a strategy in plain English, then sign in to see it through the rigor gate."}
 			</p>
 			<div className="flex justify-center gap-3 flex-wrap">
 				<button
