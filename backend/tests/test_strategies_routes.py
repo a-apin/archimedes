@@ -514,6 +514,10 @@ async def test_strategy_without_real_returns_is_pending(monkeypatch):
     for s in served:
         assert s["rigor_gate_status"] == PENDING, f"{s['id']} not pending: {s['rigor_gate_status']}"
         assert s["passes_rigor_gate"] is False, f"{s['id']} leaked a non-live pass badge"
+        # #1358 A4: the live gate never ran for this strategy, so there is no
+        # provenance to report — never a silently-assumed self-contained 1.
+        assert s["num_trials_in_selection"] is None, f"{s['id']} claimed a num_trials with no live gate run"
+        assert s["num_trials_scope"] == "unspecified", f"{s['id']} scope: {s['num_trials_scope']}"
 
 
 @pytest.mark.asyncio
@@ -983,6 +987,10 @@ async def test_single_strategy_endpoint_numeric_fields_equal_live_gate(monkeypat
     assert served["out_of_sample_sharpe"] == pytest.approx(expected.oos_sharpe, rel=1e-9)
     assert served["deflated_sharpe_ratio"] == pytest.approx(expected.deflated_sharpe, rel=1e-9)
     assert served["passes_rigor_gate"] == expected.passes_all
+    # #1358 A4: a curated strategy the live gate actually graded carries its
+    # provenance — self-contained N=1 (decouple #2), never a bare/absent number.
+    assert served["num_trials_in_selection"] == 1
+    assert served["num_trials_scope"] == "curated_self_contained"
 
 
 # ── Cohort invariance under the ?status= filter (#1172 review follow-up) ────

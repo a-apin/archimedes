@@ -27,6 +27,10 @@ from archimedes.api.schemas import (
     StrategySignalResponse,
     StrategySignalsResponse,
 )
+from archimedes.api.selection_bias_routes import (
+    _SCOPE_CURATED_SELF_CONTAINED,
+    _num_trials_for_generated_row,
+)
 from archimedes.api.wallet_routes import get_linked_wallet_address
 from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.services.live_rigor_gate import (
@@ -179,6 +183,14 @@ def _to_strategy_response(
         is_backtest_placeholder=not has_real,
         sharpe_ci_lower=s.sharpe_ci_lower,
         sharpe_ci_upper=s.sharpe_ci_upper,
+        # num_trials provenance (#1358): curated strategies are ALWAYS graded
+        # self-contained (num_trials=1, decouple #2 — never deflated by the
+        # library's size) whenever the live gate actually ran (rigor_result is
+        # the RigorGateResult that same run produced). No rigor_result means the
+        # gate never ran for this strategy (no/insufficient persisted returns) —
+        # the honest answer is "no provenance to report", not an assumed 1.
+        num_trials_in_selection=(rigor_result.num_trials if rigor_result is not None else None),
+        num_trials_scope=(_SCOPE_CURATED_SELF_CONTAINED if rigor_result is not None else "unspecified"),
         backtest_start=(
             s.real_backtest_start
             if s.real_backtest_start
@@ -1699,6 +1711,38 @@ def _generation_cost_for(strategy_id: str, session) -> dict | None:
         return None
 
 
+def _num_trials_for_passport(strategy_id: str, session) -> tuple[int | None, str]:
+    """``(num_trials_in_selection, num_trials_scope)`` for a generated/fusion
+    passport row (#1358).
+
+    No session, or no persisted ``BacktestResultRecord`` yet (the strategy has
+    not been graded), both mean the same thing to a reader: *no provenance to
+    report*. Returning ``(None, "unspecified")`` for those cases — rather than a
+    silently-assumed ``1`` — is the fix this issue asks for: the passport must
+    not claim a self-contained N=1 grading for a strategy the gate never ran.
+    When a backtest row exists, delegates to the SAME discriminator
+    ``selection_bias_routes.py``'s own per-strategy live gate uses
+    (``_num_trials_for_generated_row``, keyed on ``backtest_engine`` provenance,
+    not on whether the stored count happens to be populated — see that
+    function's docstring) so this can never disagree with what
+    ``GET /api/selection-bias/gate/{id}`` reports for the same strategy.
+    """
+    if session is None or not strategy_id:
+        return None, "unspecified"
+    try:
+        from archimedes.services.backtest_repository import latest_backtests_by_strategy
+
+        latest = latest_backtests_by_strategy(session, [strategy_id]).get(strategy_id)
+        if latest is None:
+            return None, "unspecified"
+        return _num_trials_for_generated_row(latest.backtest_engine, latest.num_trials_in_selection)
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning("num_trials provenance lookup failed for %s: %s", strategy_id, exc)
+        return None, "unspecified"
+
+
 def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     """Reshape a StrategyPassportRecord (fusion/architect output) into the
     StrategyResponse schema that StrategyPassport.jsx expects. Curated
@@ -1722,6 +1766,7 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     # is also the answer for every strategy generated before the meter existed.
     # Either way the UI renders "not measured"; nothing is zeroed or invented.
     generation_cost = _generation_cost_for(record.id, session)
+    num_trials_in_selection, num_trials_scope = _num_trials_for_passport(record.id, session)
 
     refs = list(record.paper_refs or [])
     first = refs[0] if refs else None
@@ -1825,6 +1870,8 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         is_backtest_placeholder=record.sharpe_ratio is None,
         sharpe_ci_lower=None,
         sharpe_ci_upper=None,
+        num_trials_in_selection=num_trials_in_selection,
+        num_trials_scope=num_trials_scope,
         backtest_start=record.backtest_start,
         backtest_end=record.backtest_end,
         regime_tag=record.regime_tag,

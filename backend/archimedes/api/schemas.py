@@ -229,6 +229,21 @@ class StrategyResponse(BaseModel):
     sharpe_ci_lower: float | None = None
     sharpe_ci_upper: float | None = None
 
+    # Selection-set size this verdict was graded at, plus its provenance (#1358).
+    # ``None``/``"unspecified"`` for a strategy the live gate has not graded yet
+    # (no persisted real returns) — the honest answer is "no number to report",
+    # never a silently-assumed 1. Once graded: "curated_self_contained" (a
+    # hand-implemented paper, graded on its own Sharpe, N=1 by design — decouple
+    # #2) | "generated_search_pool" (the generation pipeline's own tracked
+    # N-candidate search, N>1 possible) | "generated_untracked_default"
+    # (DB-persisted but the writing pipeline never proved it tracks its own
+    # search size, so forced to N=1 and said so explicitly). Mirrors
+    # ``selection_bias_routes.py``'s ``StrategyRigorResult.num_trials_scope`` —
+    # same discriminator, same labels, so this can never disagree with what
+    # ``GET /api/selection-bias/gate/{id}`` reports for the same strategy.
+    num_trials_in_selection: int | None = None
+    num_trials_scope: str = "unspecified"
+
     # Backtest period (ISO date strings; what window the metrics were computed over)
     backtest_start: str | None = None
     backtest_end: str | None = None
