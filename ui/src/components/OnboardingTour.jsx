@@ -1,5 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
+import { roadmapSurfaceHidden } from '../featureFlags.js'
 
 const STORAGE_KEY = 'archimedes.onboarding.v1'
 
@@ -9,7 +10,10 @@ const STORAGE_KEY = 'archimedes.onboarding.v1'
 //
 // `anchor` is a nav id (see Layout.jsx `data-tour`). When set, the step
 // spotlights that real nav button; when null the step is a centered card.
-const CARDS = [
+// Steps anchored to a hidden roadmap surface (#1266: the 'deploy' step's
+// anchor-navigation effect calls setPage('portfolio') on mount — a dead door
+// for every first-time visitor) are filtered out below.
+const ALL_CARDS = [
   {
     id: 'what',
     title: 'What is Archimedes?',
@@ -75,6 +79,8 @@ const CARDS = [
     illustration: 'reasoning',
   },
 ]
+
+const CARDS = ALL_CARDS.filter((card) => !roadmapSurfaceHidden(card.anchor))
 
 function Illustration({ name }) {
   // Simple geometric SVGs — no external dependencies, theme-aware via

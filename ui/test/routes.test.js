@@ -11,6 +11,11 @@ import {
 	visibleNavigation,
 } from "../src/routes.js";
 
+// Test-only override restoring the hidden roadmap surfaces (#1266): the
+// build-time VITE_ROADMAP_SURFACES flag is off under node, and
+// parseFeatures() never emits this key, so app code can't pass it.
+const ROADMAP_ON = { quant: true, roadmapSurfaces: true };
+
 test("landing and architecture remain public", () => {
 	assert.deepEqual(resolveRoute("/").kind, "public");
 	assert.deepEqual(resolveRoute("/architecture").kind, "public");
@@ -33,8 +38,10 @@ test("application routes use /app boundary", () => {
 });
 
 test("deep application routes retain identifiers", () => {
+	// vault-detail is a hidden roadmap surface (#1266) — its identifier
+	// extraction is pinned under the flag-on override.
 	assert.equal(
-		resolveRoute("/app/portfolio/vaults/0x123").vaultAddress,
+		resolveRoute("/app/portfolio/vaults/0x123", "", ROADMAP_ON).vaultAddress,
 		"0x123",
 	);
 	assert.equal(resolveRoute("/app/strategy/alpha").strategyId, "alpha");
@@ -127,14 +134,55 @@ test("auth-required pages stay auth-required", () => {
 	for (const path of [
 		"/app/generate",
 		"/app/library",
-		"/app/portfolio",
 		"/app/account",
-		"/app/portfolio/vaults/0x123",
 	]) {
 		const route = resolveRoute(path);
 		assert.equal(route.kind, "app", path);
 		assert.equal(route.anonymousOk, false, path);
 	}
+	// The hidden surfaces stay auth-required in flag-on builds too.
+	for (const path of ["/app/portfolio", "/app/portfolio/vaults/0x123"]) {
+		const route = resolveRoute(path, "", ROADMAP_ON);
+		assert.equal(route.kind, "app", path);
+		assert.equal(route.anonymousOk, false, path);
+	}
+});
+
+test("roadmap surfaces are hidden by default: flat routes, deep links, nav (#1266)", () => {
+	for (const path of [
+		"/app/portfolio",
+		"/app/marketplace",
+		"/app/publish",
+		"/app/subscriptions",
+	]) {
+		assert.equal(resolveRoute(path).kind, "not-found", path);
+	}
+	// The #1194 handoff case: a feature-disabled page must NOT stay reachable
+	// via its deep link — deepRoutes shares the same featureEnabled() gate.
+	assert.equal(
+		resolveRoute("/app/marketplace/strategy/alpha").kind,
+		"not-found",
+	);
+	assert.equal(resolveRoute("/app/portfolio/vaults/0x123").kind, "not-found");
+	// Nav: Portfolio drops and the Market group empties even for a signed-in
+	// user (Layout skips emptied groups, so no bare "Market" header remains).
+	const nav = [
+		{ id: "portfolio" },
+		{ id: "marketplace" },
+		{ id: "publish" },
+		{ id: "subscriptions" },
+		{ id: "library" },
+	];
+	assert.deepEqual(visibleNavigation(nav, { quant: true }, { id: "u1" }), [
+		{ id: "library" },
+	]);
+	// And the flag-on build restores all of it unchanged.
+	assert.equal(resolveRoute("/app/marketplace", "", ROADMAP_ON).page, "marketplace");
+	assert.equal(
+		resolveRoute("/app/marketplace/strategy/alpha", "", ROADMAP_ON).strategyId,
+		"alpha",
+	);
+	assert.equal(visibleNavigation(nav, ROADMAP_ON, { id: "u1" }).length, 5);
 });
 
 test("anonymous nav shows browse + the Generate conversion path, nothing stateful", () => {

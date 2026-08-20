@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import CreateVaultModal from "./CreateVaultModal";
+import { ROADMAP_SURFACES_ENABLED } from "../featureFlags.js";
 import RigorStrictnessControl, { levelLabel } from "./RigorStrictnessControl";
 import { useRigorStrictness, BADGE_LEVEL } from "../hooks/useRigorStrictness";
 
@@ -281,7 +282,9 @@ export default function StrategyPassport({
 
 			<div className="passport-workspace">
 				<aside className="passport-authority">
-					{/* Deploy CTA — top, gated on rigor-at-your-level + wallet */}
+					{/* Deploy CTA — top, gated on rigor-at-your-level + wallet. The card
+					    leads into the vault surface, so it hides with it (#1266). */}
+					{ROADMAP_SURFACES_ENABLED && (
 					<div className="card passport-deploy fade-up fade-up-2">
 						<div className="flex-1 min-w-[240px]">
 							<div className="label mb-1">Deploy as a vault</div>
@@ -354,6 +357,7 @@ export default function StrategyPassport({
 							)}
 						</div>
 					</div>
+					)}
 
 					{/* Per-user strictness slider — the deploy gate above reads from this. */}
 					<div className="passport-strictness fade-up fade-up-2">
@@ -734,7 +738,7 @@ export default function StrategyPassport({
 				</div>
 			</div>
 
-			{deployOpen && (
+			{ROADMAP_SURFACES_ENABLED && deployOpen && (
 				<CreateVaultModal
 					strategy={s}
 					walletAddr={walletAddr}
