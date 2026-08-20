@@ -242,7 +242,9 @@ def test_generation_cost_metrics_sums_tokens_and_skips_corrupt_rows(tmp_db):
         # round 2 fix. measured_count counts rows that actually contributed a
         # decoded llm block, not every row.query.count() regardless of
         # whether it decoded (that inflated measured_count relative to the
-        # rows the sum below it actually came from).
+        # rows the sum below it actually came from). It must ALSO increment
+        # calls_missing_usage_total (round 4 fix, see below) rather than
+        # silently contributing zero to the completeness flag.
         session.add(
             GenerationCostRecord(
                 job_id="job-corrupt",
@@ -260,12 +262,13 @@ def test_generation_cost_metrics_sums_tokens_and_skips_corrupt_rows(tmp_db):
     assert result["total_input_tokens"] == 300
     assert result["total_output_tokens"] == 125
     assert result["total_tokens"] == 425
-    # _cost_row's llm block carries no calls_missing_usage/usage_complete
-    # keys at all — the real cost_meter.py shape always does, but the
-    # aggregator must still default an absent key to "complete" rather than
-    # crash or silently mark everything incomplete.
-    assert result["calls_missing_usage"] == 0
-    assert result["usage_complete"] is True
+    # Round 4 fix: the corrupt row must NOT contribute zero to
+    # calls_missing_usage_total — it is the MOST incomplete case of all (its
+    # usage is entirely unreadable), so it counts as +1, and usage_complete
+    # must flip to False rather than reading "complete" while a whole row
+    # was silently discarded. Before this fix these were 0 / True.
+    assert result["calls_missing_usage"] == 1
+    assert result["usage_complete"] is False
 
 
 def test_generation_cost_metrics_partial_usage_row_is_not_banked_as_measured(tmp_db):
@@ -356,6 +359,82 @@ def test_generation_cost_metrics_dedupes_by_job_id_for_k_greater_than_one(tmp_db
     assert result["total_output_tokens"] == 200
 
 
+def test_generation_cost_metrics_corrupt_and_missing_llm_rows_count_as_missing_usage(tmp_db):
+    """Round 4 fix: a row whose JSON can't even be decoded, or that decodes
+    but carries no `llm` block, is the MOST incomplete case there is — it
+    must not contribute zero to calls_missing_usage_total (the old code
+    `continue`d past both cases with no increment, so usage_complete could
+    read True — "the totals below are a complete accounting" — while an
+    entire row's usage was silently unaccounted for).
+
+    Two distinct jobs here (one corrupt-JSON, one decodable-but-no-llm-block)
+    so the assertion can't be satisfied by a single incidental +1 — each
+    unreadable row must contribute its own increment.
+
+    Mutation-verified: reverting either `calls_missing_usage_total += 1`
+    (added in this fix) back to a bare `continue` makes this assertion fail
+    (`assert 1 == 2` / `assert False is True`).
+    """
+    with get_session() as session:
+        session.add(_cost_row("job-good", input_tokens=100, output_tokens=50))
+        session.add(
+            GenerationCostRecord(
+                job_id="job-corrupt",
+                strategy_id="strat-corrupt",
+                schema_version="cost_v1",
+                measurement_json="{not valid json",
+                recorded_at=_now(),
+            )
+        )
+        session.add(
+            GenerationCostRecord(
+                job_id="job-no-llm-block",
+                strategy_id="strat-no-llm",
+                schema_version="cost_v1",
+                measurement_json=json.dumps({"schema": "cost_v1", "job_id": "job-no-llm-block"}),
+                recorded_at=_now(),
+            )
+        )
+        session.commit()
+
+    result = engagement_metrics.get_generation_cost_metrics()
+    assert result["rows_total"] == 3
+    assert result["measured_count"] == 1  # only job-good
+    assert result["calls_missing_usage"] == 2  # +1 corrupt, +1 missing-llm-block
+    assert result["usage_complete"] is False
+    assert result["total_input_tokens"] == 100  # only job-good's tokens
+    assert result["total_output_tokens"] == 50
+    assert isinstance(result["note"], str) and "measured" in result["note"].lower()
+
+
+def test_generation_cost_metrics_dedupes_missing_usage_increment_by_job_id(tmp_db):
+    """A K>1 job whose measurement is corrupt/missing-llm on EVERY persisted
+    row must still only add +1 to calls_missing_usage_total, not once per
+    row — the same job_id dedup the measured branch already gets.
+
+    Mutation-verified: moving the `if job_id in seen_job_ids` check back to
+    after the JSON-decode branches (its round-3 position) makes
+    calls_missing_usage read 2 instead of 1.
+    """
+    with get_session() as session:
+        for strategy_id in ("strat-a", "strat-b"):
+            session.add(
+                GenerationCostRecord(
+                    job_id="job-k2-corrupt",
+                    strategy_id=strategy_id,
+                    schema_version="cost_v1",
+                    measurement_json="{not valid json",
+                    recorded_at=_now(),
+                )
+            )
+        session.commit()
+
+    result = engagement_metrics.get_generation_cost_metrics()
+    assert result["rows_total"] == 2
+    assert result["calls_missing_usage"] == 1  # banked once for job-k2-corrupt, not twice
+    assert result["usage_complete"] is False
+
+
 # ── Paper deployments ───────────────────────────────────────────────────
 
 
@@ -395,6 +474,36 @@ def test_repeat_generation_metrics_counts_distinct_days_per_owner(tmp_db):
 
 
 def test_repeat_generation_metrics_empty_db_is_honest_zero(tmp_db):
+    result = engagement_metrics.get_repeat_generation_metrics()
+    assert result["generating_users"] == 0
+    assert result["repeat_users"] == 0
+
+
+def test_repeat_generation_metrics_excludes_platform_seeded_example_rows(tmp_db):
+    """Round 4 fix: get_strategy_metrics excludes is_example rows
+    (main.py's curated seed set); this sibling function did not, so an
+    example row with a non-NULL owner_user_id (e.g. an admin wallet credited
+    as curator) could inflate that account's distinct-day count here even
+    though the SAME row is excluded from "Strategies generated" — the two
+    adjacent Insights.jsx tiles would silently disagree on population.
+
+    Mutation-verified: removing the `.filter(StrategyRecord.is_example.is_(False))`
+    line makes generating_users read 2 and repeat_users read 1 instead of
+    0 / 0 — confirmed by hand before this fix was pushed.
+    """
+    now = _now()
+    with get_session() as session:
+        session.add(_make_user("curator", created_at=now - timedelta(days=10)))
+        # Two example/seeded rows on two different days, credited to an
+        # account — would look like a "repeat generator" if not excluded.
+        session.add(
+            _make_strategy("seed-1", owner_user_id="curator", created_at=now - timedelta(days=3), is_example=True)
+        )
+        session.add(
+            _make_strategy("seed-2", owner_user_id="curator", created_at=now - timedelta(days=1), is_example=True)
+        )
+        session.commit()
+
     result = engagement_metrics.get_repeat_generation_metrics()
     assert result["generating_users"] == 0
     assert result["repeat_users"] == 0
@@ -520,6 +629,7 @@ def test_db_failure_degrades_to_none_not_zero(monkeypatch):
         "total_input_tokens": None,
         "total_output_tokens": None,
         "total_tokens": None,
+        "note": None,
         "unavailable": True,
     }
 

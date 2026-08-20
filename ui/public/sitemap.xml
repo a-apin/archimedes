@@ -14,6 +14,16 @@
       unique indexable content exists at these URLs without a session.
     - strategy, vault-detail, market-strategy — dynamic routes that require
       an id/address in the path; there is no single canonical URL to list.
+    - insights — ADMIN-ONLY (owner directive 2026-08-20, supersedes issue
+      #1028 D8 "public Insights page"). /app/insights is gated server-side by
+      GET /api/metrics/private/whoami and, on the frontend, renders the exact
+      same NotFound treatment an unknown route gets for anyone who is not an
+      admin (ui/src/App.jsx, ui/src/components/NotFound.jsx) — the whole
+      point being that the page "does not exist" for a non-admin visitor.
+      Listing it here would hand every crawler (and anyone who reads
+      /sitemap.xml) the one URL that treatment exists to keep undiscovered.
+      Round 4 review finding: this entry survived the admin-gate PR itself —
+      guarded now by ui/test/sitemap.test.js (must NOT contain "insights").
 
   URLs are the app's real client-side routes (window.history.pushState on
   ui/src/App.jsx's PAGE_TO_PATH, e.g. /explore, /architecture — NOT hash
@@ -48,10 +58,5 @@
     <loc>https://archimedes-arc.com/corpus</loc>
     <priority>0.7</priority>
     <changefreq>weekly</changefreq>
-  </url>
-  <url>
-    <loc>https://archimedes-arc.com/insights</loc>
-    <priority>0.5</priority>
-    <changefreq>daily</changefreq>
   </url>
 </urlset>

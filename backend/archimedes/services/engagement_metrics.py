@@ -94,6 +94,32 @@ content, not a generation count. That caveat was already disclosed for the
 repeat-generator proxy; it now ships as an explicit ``note`` on
 ``get_strategy_metrics``'s response too, rendered on the page rather than
 left implicit.
+
+**Round 4 corrections (2026-08-20, adversarial review):** three more gaps.
+(1) ``get_generation_cost_metrics``'s round-3 fix read
+``calls_missing_usage``/``usage_complete`` off rows that decoded fine, but a
+row whose JSON was corrupt or that decoded with no ``llm`` block at all
+still contributed ZERO to ``calls_missing_usage_total`` (the old code
+``continue``d straight past it) — so ``usage_complete`` could read ``True``
+while a whole row's usage was completely unknown, the single MOST
+incomplete case reported as if it were the least. Fixed: such a row now adds
+``+1`` (the conservative "at least one call's usage is unaccounted for"
+floor), deduplicated by ``job_id`` like every other branch. (2) "Total LLM
+tokens" was framed as an all-time total; ``agents/generation_pipeline.py``'s
+``_persist_generation_cost`` only writes a ``generation_costs`` row for a job
+that persisted at least one strategy, so a job that consumed tokens but
+errored/was cancelled/failed the rigor gate before producing a strategy
+leaves no row at all. The response now carries an explicit ``note`` stating
+this, and ``Insights.jsx``'s tile is relabelled "LLM tokens (measured jobs)"
+with the same caveat in its caption rather than presenting a partial
+instrumentation sum as a platform-wide total. (3)
+``get_repeat_generation_metrics`` had no ``is_example`` filter, unlike its
+sibling ``get_strategy_metrics`` — a platform-seeded curated row with a
+non-NULL ``owner_user_id`` (an admin wallet that also owns curated examples)
+could inflate that owner's distinct-day count on the "Repeat generators"
+tile even though the same row is excluded from "Strategies generated."
+Fixed by applying the identical ``StrategyRecord.is_example.is_(False)``
+filter so both tiles read the same population.
 """
 
 from __future__ import annotations
@@ -305,24 +331,50 @@ def get_generation_cost_metrics() -> dict[str, Any]:
     reported no usage — folding a ``usage_complete: false`` row into
     "measured" reintroduced, one level deeper, the exact fail-soft defect
     round 2 fix #5 closed for the COUNT(*)-vs-decoded-row case. The aggregate
-    ``calls_missing_usage`` (summed across every llm-bearing row) and
-    ``usage_complete`` (true iff that sum is zero) are reported alongside the
-    totals so a caller — ``Insights.jsx`` included — can tell "this total is
-    a complete accounting" from "some calls in here are invisibly
-    undercounted," mirroring how ``payments.settled_volume_usd`` already
-    distinguishes "not measured" from "measured at zero" instead of
-    presenting either as a plausible plain number.
+    ``calls_missing_usage`` and ``usage_complete`` (true iff that sum is
+    zero) are reported alongside the totals so a caller — ``Insights.jsx``
+    included — can tell "this total is a complete accounting" from "some
+    calls in here are invisibly undercounted," mirroring how
+    ``payments.settled_volume_usd`` already distinguishes "not measured" from
+    "measured at zero" instead of presenting either as a plausible plain
+    number.
+
+    **``calls_missing_usage``'s TRUE accumulator semantics (round 4 fix).**
+    It is the sum of two different kinds of "missing", not "every
+    llm-bearing row's self-reported count": (1) each qualifying row's own
+    ``llm.calls_missing_usage`` value, for rows that decoded AND carried an
+    ``llm`` block; PLUS (2) exactly ``+1`` for every row whose JSON failed to
+    decode, or that decoded but carried no ``llm`` block at all — a row this
+    incomplete cannot even report how many of ITS calls are missing, so it
+    is counted as *at least one*, the most conservative honest floor, rather
+    than as zero. Before this fix, a corrupt/undecodable row contributed
+    NOTHING to this total (the old code ``continue``d past it with no
+    increment), which meant ``usage_complete`` could read ``True`` — "the
+    totals below are a complete accounting" — while the function had just
+    silently discarded an entire row it could not read at all: the single
+    MOST incomplete case, reported as if it were the least. Both kinds are
+    deduplicated by ``job_id`` (see below) so a K>1 job's repeated
+    corrupt/missing-llm row cannot inflate this past ``+1`` per job either.
 
     ``rows_total`` is the separate, honest "how many generation_costs rows
     exist at all" figure for anyone who wants it (round 2 fix).
 
     Streams the query with ``yield_per`` (round 3 fix) instead of
     materializing every row into a Python list up front. This table has no
-    LIMIT/time-window — unlike ``get_strategy_metrics`` — because "Total LLM
-    tokens" is an honest all-time total, not a windowed one; a LIMIT would
-    silently under-report the total instead of bounding cost, which is worse.
-    Streaming bounds peak memory for that unavoidably-unbounded scan without
-    changing what gets counted.
+    LIMIT/time-window — unlike ``get_strategy_metrics``. That is deliberate,
+    but round 4 narrows exactly what it buys: **``total_tokens`` is an
+    honest, non-windowed sum over every row THIS TABLE HAS** — it is
+    emphatically NOT an all-time total of every LLM call the platform has
+    ever made. ``agents/generation_pipeline.py``'s ``_persist_generation_cost``
+    only writes a row when the job persisted at least one ``strategy_store``
+    row ("No strategy row ⇒ nothing to key a durable record to, so nothing
+    is written"); a job that consumed real LLM tokens but errored, was
+    cancelled, or failed the rigor gate before producing a strategy leaves
+    NO row here at all — not a corrupt one, not a zero one, simply absent. A
+    LIMIT would silently under-report the total this table CAN represent,
+    which is why there still isn't one; that is orthogonal to the coverage
+    gap above, which the response's ``note`` field states explicitly so
+    ``Insights.jsx`` never renders this as a platform-wide token count.
     """
     try:
         from archimedes.db import get_session
@@ -339,18 +391,36 @@ def get_generation_cost_metrics() -> dict[str, Any]:
             query = session.query(GenerationCostRecord.job_id, GenerationCostRecord.measurement_json).yield_per(500)
             for job_id, raw in query:
                 rows_total += 1
+                if job_id in seen_job_ids:
+                    # Same job's measurement (or lack of one) persisted again
+                    # for a second strategy row (K>1 — see docstring) —
+                    # already banked once, below, the first time this job_id
+                    # was seen, whether that banking was "measured" or
+                    # "missing". Checked BEFORE decoding (round 4) so a
+                    # repeat corrupt/missing-llm row for an already-seen job
+                    # can't inflate calls_missing_usage_total a second time.
+                    continue
                 try:
                     measurement = json.loads(raw) if raw else None
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("engagement_metrics: corrupt generation_costs.measurement_json — skipping row")
+                    # Round 4 fix: a row this broken cannot even report how
+                    # many of ITS calls are missing — it must not contribute
+                    # ZERO to calls_missing_usage_total (that let
+                    # usage_complete read True while a whole row's usage was
+                    # unknown, the exact undercounting this field exists to
+                    # flag). +1 is the conservative honest floor: "at least
+                    # one call's usage is entirely unaccounted for here."
+                    seen_job_ids.add(job_id)
+                    calls_missing_usage_total += 1
                     continue
                 llm = measurement.get("llm") if isinstance(measurement, dict) else None
                 if not isinstance(llm, dict):
-                    continue
-                if job_id in seen_job_ids:
-                    # Same job's measurement persisted again for a second
-                    # strategy row (K>1 — see docstring) — already banked
-                    # once, below, the first time this job_id was seen.
+                    # Same reasoning as the corrupt-JSON branch above: decoded
+                    # fine, but there is no llm block to read a real
+                    # calls_missing_usage value from.
+                    seen_job_ids.add(job_id)
+                    calls_missing_usage_total += 1
                     continue
                 seen_job_ids.add(job_id)
                 calls_missing_usage = int(llm.get("calls_missing_usage") or 0)
@@ -370,6 +440,14 @@ def get_generation_cost_metrics() -> dict[str, Any]:
             "total_input_tokens": input_tokens,
             "total_output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
+            "note": (
+                "total_tokens sums only generation_costs rows that exist — a job is only "
+                "recorded here if it persisted at least one strategy row, so a generation that "
+                "consumed tokens but errored, was cancelled, or failed the rigor gate before "
+                "producing a strategy is not represented at all (not counted as zero — simply "
+                "absent). This is LLM tokens for measured, strategy-producing jobs, not an "
+                "all-time platform total."
+            ),
         }
     except Exception as exc:
         logger.debug("engagement_metrics.get_generation_cost_metrics failed: %s", exc)
@@ -381,6 +459,7 @@ def get_generation_cost_metrics() -> dict[str, Any]:
             "total_input_tokens": None,
             "total_output_tokens": None,
             "total_tokens": None,
+            "note": None,
             "unavailable": True,
         }
 
@@ -444,6 +523,15 @@ def get_repeat_generation_metrics() -> dict[str, Any]:
     Streams the query with ``yield_per`` (round 3 fix, same rationale as
     ``get_generation_cost_metrics``) rather than materializing every
     ``strategy_store`` row into a Python list up front.
+
+    **Excludes ``is_example`` rows (round 4 fix)** — the same
+    ``StrategyRecord.is_example.is_(False)`` filter ``get_strategy_metrics``
+    already applies to this table. Without it, a platform-seeded curated row
+    (``main.py`` seeds these on every startup) whose ``owner_user_id`` happens
+    to be set — e.g. an admin wallet credited as the curator — could inflate
+    that account's distinct-generation-day count here even though the exact
+    same row is excluded from "Strategies generated," leaving the two
+    adjacent tiles reading different populations.
     """
     try:
         from archimedes.db import get_session
@@ -455,6 +543,7 @@ def get_repeat_generation_metrics() -> dict[str, Any]:
             query = (
                 session.query(StrategyRecord.owner_user_id, StrategyRecord.created_at)
                 .filter(StrategyRecord.owner_user_id.isnot(None))
+                .filter(StrategyRecord.is_example.is_(False))
                 .yield_per(500)
             )
             for owner_user_id, created_at in query:

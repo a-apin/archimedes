@@ -99,7 +99,7 @@ Live human-vs-agent traction counters, plus the honest user count. |
 **Auth**: anonymous
 
 Request: none.
-Response (`MetricsResponse`): `{human_count: int, agent_count: int, total_requests: int, real_users: int, epoch_started_at: str|null, epoch_resets: int|null, timestamp: str}`. `human_count`/`agent_count`/`total_requests` are **cumulative per-request tallies (site traffic, not users, not visitors)** since `epoch_started_at`; `real_users` is the canonical Better Auth account count, surfaced alongside so the two can never be conflated (issue #830). Counts are Postgres-snapshotted on every read so a Redis restart does not zero them; `epoch_resets` counts how many Redis resets have been absorbed into the durable total.
+Response (`MetricsResponse`): `{human_count: int, agent_count: int, total_requests: int, real_users: int|null, epoch_started_at: str|null, epoch_resets: int|null, timestamp: str}`. `human_count`/`agent_count`/`total_requests` are **cumulative per-request tallies (site traffic, not users, not visitors)** since `epoch_started_at`; `real_users` is the canonical Better Auth account count, surfaced alongside so the two can never be conflated (issue #830). `real_users` is `null` (round 4 fix), not a fabricated `0`, when the account-count query itself fails — `services/user_stats.py`'s `get_distinct_user_count_or_none`. Counts are Postgres-snapshotted on every read so a Redis restart does not zero them; `epoch_resets` counts how many Redis resets have been absorbed into the durable total.
 Errors: none — always 200. A Redis outage falls back to the last durable Postgres snapshot rather than reporting a false zero.
 
 ```bash

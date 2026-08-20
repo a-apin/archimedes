@@ -313,20 +313,43 @@ export default function Insights() {
                 display: 'flex',
                 gap: 28,
                 flexWrap: 'wrap',
-                marginBottom: engagement.generation_costs?.usage_complete === false ? 6 : 18,
+                marginBottom: 6,
               }}
             >
               <Stat label="Measured generations" value={engagement.generation_costs?.measured_count} accent="#3fb56b" />
-              <Stat label="Total LLM tokens" value={engagement.generation_costs?.total_tokens} accent="#5b9dff" />
+              {/* Round 4 fix: the old "Total" framing implied an all-time
+                  platform token total. generation_costs only carries a row
+                  for a job that
+                  persisted >=1 strategy — a generation that consumed tokens
+                  but errored/was cancelled/failed the rigor gate first
+                  leaves no row at all, not a zero one. Relabelled + the
+                  coverage caveat (engagement.generation_costs.note) rendered
+                  directly under the tile row so it can't be mistaken for a
+                  platform-wide count. */}
+              <Stat label="LLM tokens (measured jobs)" value={engagement.generation_costs?.total_tokens} accent="#5b9dff" />
               <Stat label="Paper trading — active" value={engagement.paper_deployments?.active} accent="#3fb56b" />
               <Stat label="Paper trading — stopped" value={engagement.paper_deployments?.stopped} accent="#8a8f9c" />
             </div>
+            {engagement.generation_costs?.note && (
+              <p
+                style={{
+                  fontSize: 11,
+                  color: 'var(--text-3)',
+                  marginTop: 0,
+                  marginBottom: engagement.generation_costs?.usage_complete === false ? 4 : 18,
+                }}
+              >
+                {engagement.generation_costs.note}
+              </p>
+            )}
             {/* usage_complete is false when some LLM calls in the summed rows
                 reported no usage data (services/cost_meter.py's calls_missing_usage) —
                 the totals above still add up their real reported tokens, but are an
                 honest UNDERCOUNT, not a complete measurement (claims-must-be-true:
                 round 3 fix — a partial measurement must not read as a plain,
-                trustworthy number with no qualifier). */}
+                trustworthy number with no qualifier). Round 4: a corrupt/undecodable
+                row now also counts toward calls_missing_usage (see the backend
+                docstring), so this qualifier now surfaces that case too. */}
             {engagement.generation_costs?.usage_complete === false && (
               <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 0, marginBottom: 18 }}>
                 ⚠ <strong>Partial measurement</strong> — {engagement.generation_costs?.calls_missing_usage ?? '—'} LLM

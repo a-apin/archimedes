@@ -12,6 +12,7 @@ import {
 	isInsightsPageBlocked,
 	resolveInsightsAdminState,
 } from "../src/insightsGate.js";
+import { NAV } from "../src/navConfig.js";
 
 // ── getCachedAdminProbe: shared TTL cache backing fetchAdminProbe()
 // (src/adminProbe.js) — same shape as healthCache.js's getCachedHealth
@@ -130,6 +131,37 @@ test("filterInsightsNavItem: drops the insights item unless isAdmin===true; ever
 		filterInsightsNavItem(items, "yes").map((i) => i.id),
 		["account"],
 	);
+});
+
+// Round 4 review finding: the test above proves filterInsightsNavItem() works
+// against SOME array shaped like Layout's "Ops" group — it does NOT prove it
+// works against the group Layout actually renders. If a future edit renamed
+// the group, changed the insights item's id, or reordered "Ops" so it were no
+// longer last, the hand-built array above would keep passing while the real
+// nav silently drifted out of the gate's reach. Importing NAV itself (now
+// extracted to ../src/navConfig.js for exactly this reason) closes that gap.
+test("filterInsightsNavItem: against Layout's REAL nav data, the Ops group's insights item is gated and account is not", () => {
+	const ops = NAV.find((group) => group.group === "Ops");
+	assert.ok(ops, "expected an 'Ops' group in the real NAV data");
+	assert.deepEqual(
+		filterInsightsNavItem(ops.items, true).map((i) => i.id),
+		["insights", "account"],
+	);
+	assert.deepEqual(
+		filterInsightsNavItem(ops.items, false).map((i) => i.id),
+		["account"],
+	);
+	// Every OTHER group's items must pass through filterInsightsNavItem
+	// completely unaffected — it must only ever touch the insights id,
+	// regardless of which group it happens to live in today.
+	for (const group of NAV) {
+		if (group.group === "Ops") continue;
+		assert.deepEqual(
+			filterInsightsNavItem(group.items, false).map((i) => i.id),
+			group.items.map((i) => i.id),
+			`group ${group.group ?? "(home)"} must be untouched by the insights gate`,
+		);
+	}
 });
 
 // ── adminProbe.js: classifies apiGet's thrown Error shape (err.status set
@@ -288,4 +320,17 @@ test("Insights.jsx loads the new admin-only engagement endpoint alongside the pu
 
 test("Insights.jsx never claims a settled payment volume outside the dry-run note (claims-must-be-true)", () => {
 	assert.match(insights, /engagement\.payments\?\.settled_volume_usd == null \? '—'/);
+});
+
+// Round 4 review finding: generation_costs rows only exist for jobs that
+// persisted >=1 strategy row (agents/generation_pipeline.py's
+// _persist_generation_cost) — a job that consumed tokens but errored, was
+// cancelled, or failed the rigor gate first leaves no row at all. "Total LLM
+// tokens" implied an all-time platform total; it must be relabelled and
+// carry the coverage caveat rather than present partial instrumentation as
+// a universe total (claims-must-be-true).
+test("Insights.jsx does not label the token tile as an all-time/total figure, and renders its coverage caveat", () => {
+	assert.doesNotMatch(insights, /Total LLM tokens/);
+	assert.match(insights, /LLM tokens \(measured jobs\)/);
+	assert.match(insights, /engagement\.generation_costs\?\.note/);
 });
