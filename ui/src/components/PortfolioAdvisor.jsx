@@ -269,7 +269,7 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
                   </div>
                 </div>
                 <div>
-                  <div className="caption">DSR p&lt;{data.rigor_summary.dsr_significant_threshold}</div>
+                  <div className="caption">DSR conf&lt;{data.rigor_summary.dsr_significant_threshold}</div>
                   <div style={{ fontWeight: 700, fontSize: '1.2rem' }}>
                     {data.rigor_summary.dsr_significant}/{data.rigor_summary.total_picks}
                   </div>
@@ -294,7 +294,7 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
                 pool (each library pick is otherwise graded on its own Sharpe — num_trials = 1,
                 undeflated); PBO (Bailey et al. 2014) estimates
                 backtest-overfitting probability; chronological OOS tests out-of-sample stability.
-                Mean DSR p-value: {fmt(data.rigor_summary.avg_dsr_p_value, 3)}, mean PBO:{' '}
+                Mean DSR confidence: {fmt(data.rigor_summary.avg_dsr_p_value, 3)}, mean PBO:{' '}
                 {fmt(data.rigor_summary.avg_pbo_score, 3)}.
               </p>
             </div>
@@ -426,7 +426,7 @@ export default function PortfolioAdvisor({ initialRiskProfile = 'moderate' } = {
                     <tr>
                       <th>Pick</th>
                       <th className="text-right">Weight</th>
-                      <th className="text-right">DSR p</th>
+                      <th className="text-right">DSR conf</th>
                       <th className="text-right">PBO</th>
                       <th className="text-right">OOS Sharpe</th>
                       <th className="text-right">Δ Sharpe vs paper</th>

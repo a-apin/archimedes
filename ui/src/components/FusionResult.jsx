@@ -109,7 +109,7 @@ export default function FusionResult({ result, onNavigate }) {
             </span>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Metric label="DSR" value={fmtNumber(rigor.dsr, 2)} hint={rigor.dsr_p_value != null ? `p = ${fmtNumber(rigor.dsr_p_value, 3)}` : null} />
+            <Metric label="DSR" value={fmtNumber(rigor.dsr, 2)} hint={rigor.dsr_p_value != null ? `confidence = ${fmtNumber(rigor.dsr_p_value, 3)}` : null} />
             <Metric label="PBO" value={fmtNumber(rigor.pbo_score, 2)} hint="lower = less overfit" />
             <Metric label="OOS Sharpe" value={fmtNumber(rigor.oos_sharpe, 2)} />
             <Metric label="Look-ahead" value={rigor.look_ahead_clean ? 'clean' : 'flagged'} />
