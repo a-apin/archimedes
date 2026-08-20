@@ -21,6 +21,38 @@ test("landing and architecture remain public", () => {
 	assert.deepEqual(resolveRoute("/architecture").kind, "public");
 });
 
+// Better Auth's account-linking guard (auth/auth.js disableImplicitLinking)
+// redirects a rejected OAuth sign-in to `/?error=account_not_linked` — the
+// bare landing route, which has no sign-in form. Landing must not swallow it:
+// resolveRoute bounces it to /sign-in, the actual sign-in surface, instead.
+test("landing OAuth error bounces to the sign-in surface instead of being swallowed (#1420)", () => {
+	const route = resolveRoute("/", "?error=account_not_linked");
+	assert.equal(route.kind, "redirect");
+	assert.equal(route.redirect, "/sign-in?error=account_not_linked");
+});
+
+test("landing with no error query param stays plain public landing", () => {
+	const route = resolveRoute("/", "");
+	assert.equal(route.kind, "public");
+	assert.equal(route.redirect, null);
+});
+
+test("an error query param reaching /sign-in directly is carried onto the route", () => {
+	const route = resolveRoute("/sign-in", "?error=account_not_linked");
+	assert.equal(route.kind, "auth");
+	assert.equal(route.error, "account_not_linked");
+});
+
+// Mutation-prove: this assertion is worthless if it also passes with the
+// `error` field never wired into the redirect target. Removing the
+// `?error=...` suffix from routes.js's redirect template (or dropping the
+// `pathname === '/' && query.error` guard entirely) makes this test fail —
+// confirmed by hand before this file was committed.
+test("the redirect target actually encodes the error value, not just any redirect", () => {
+	const route = resolveRoute("/", "?error=some_other_code");
+	assert.equal(route.redirect, "/sign-in?error=some_other_code");
+});
+
 test("account routes remain public", () => {
 	assert.equal(resolveRoute("/sign-in").kind, "auth");
 	assert.equal(resolveRoute("/sign-up").kind, "auth");
