@@ -258,7 +258,22 @@ export default function Leaderboard() {
       {loading && <div className="body" style={{ color: 'var(--text-3)' }}>Loading the board…</div>}
       {error && <div className="tag-warning" style={{ display: 'inline-block', padding: '6px 10px' }}>Couldn’t load the leaderboard: {error}</div>}
 
-      {!loading && !error && data && data.entries.length === 0 && isOwn && (
+      {/* A degraded board (#1356: the strategy provider raised, or the
+          curated cohort came back empty for a reason other than a
+          legitimate filter — e.g. the corpus missing from the build) is a
+          200 with intact scoring-engine metadata, not an `error` — so it
+          must be surfaced here, and it must pre-empt BOTH honest-empty
+          messages below, which claim something specific ("you haven't
+          generated any" / "no strategies match these filters") that is not
+          what actually happened. */}
+      {!loading && !error && data?.degraded && (
+        <div role="status" className="tag-warning" style={{ display: 'block', padding: '10px 14px', marginBottom: 14, borderRadius: 4 }}>
+          <strong>Board data is degraded.</strong>{' '}
+          {data.degraded_reason || 'Some strategies could not be loaded.'}
+        </div>
+      )}
+
+      {!loading && !error && data && !data.degraded && data.entries.length === 0 && isOwn && (
         <div className="body" style={{ color: 'var(--text-3)', padding: 20, textAlign: 'center', border: '1px dashed var(--glass-border)', borderRadius: 8 }}>
           You haven't generated any strategies yet.{' '}
           <a href="/app/generate" style={{ color: 'var(--accent)' }}>Generate one</a>, or{' '}
@@ -269,7 +284,7 @@ export default function Leaderboard() {
         </div>
       )}
 
-      {!loading && !error && data && data.entries.length === 0 && !isOwn && (
+      {!loading && !error && data && !data.degraded && data.entries.length === 0 && !isOwn && (
         <div className="body" style={{ color: 'var(--text-3)', padding: 20, textAlign: 'center', border: '1px dashed var(--glass-border)', borderRadius: 8 }}>
           No strategies match these filters yet.
         </div>
