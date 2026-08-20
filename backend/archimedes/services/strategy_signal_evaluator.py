@@ -1127,6 +1127,17 @@ def _compute_indicator_series(name: str, period: int, prices: pd.Series) -> pd.S
 # are identical, so the position is provably constant within a day. A stable
 # epoch anchor would fix the phase but would no longer match the backtest, and
 # the backtest FSM is the semantic contract.
+#
+# SECOND KNOWN LIMIT — position MEMBERSHIP, not just phase (adversarial review
+# of this change): the replay can only see entries inside the visible window.
+# A position whose true entry bar has aged out of the rolling fetch's left
+# edge (or sits inside the warm-up region) derives as FLAT here while the
+# backtest, which saw the true entry, says LONG. Unreachable today — every
+# live strategy is years younger than the fetch window — so the failure mode
+# is guarded LOUDLY instead of redesigned: ``evaluate_strategies`` warns when
+# a strategy's ``created_at`` predates its price window (see the guard there).
+# Before any strategy approaches the window's age, the fetch must be anchored
+# at strategy inception rather than rolling.
 
 
 @dataclass(frozen=True)
@@ -1492,6 +1503,39 @@ class StrategySignalEvaluator:
                     strategy.paper_title,
                     spec_dict.get("rebalance_frequency", "unknown"),
                 )
+                # F2 known-limit guard (see the SECOND KNOWN LIMIT note above
+                # _replay_position_state): a strategy older than its price
+                # window can hold a position whose entry bar the replay cannot
+                # see — it would read flat while the backtest reads long. No
+                # strategy is near the window's age today; if this ever fires,
+                # the fetch must be re-anchored at strategy inception before
+                # this strategy's live signals are trusted. (Warm-up adds a
+                # small extra blind margin beyond this comparison.)
+                created_at = getattr(strategy, "created_at", None)
+                window_start = min(
+                    (price_histories[s].index[0] for s in strategy_synths if len(price_histories[s]) > 0),
+                    default=None,
+                )
+                if created_at is not None and window_start is not None:
+                    try:
+                        created_ts = pd.Timestamp(created_at)
+                        if created_ts.tzinfo is not None:
+                            created_ts = created_ts.tz_localize(None)
+                        window_ts = pd.Timestamp(window_start)
+                        if window_ts.tzinfo is not None:
+                            window_ts = window_ts.tz_localize(None)
+                        if created_ts <= window_ts:
+                            logger.warning(
+                                "Strategy '%s' predates its price window (created %s <= window start %s): "
+                                "a position entered before the window is INVISIBLE to the position replay "
+                                "(F2 known limit) — re-anchor the price fetch at strategy inception before "
+                                "trusting this strategy's live signals",
+                                strategy.paper_title,
+                                created_ts.date(),
+                                window_ts.date(),
+                            )
+                    except (ValueError, TypeError):
+                        logger.debug("could not compare created_at %r to window start", created_at)
                 evaluator = lambda sid, asset, prices, _spec=spec_dict: _spec_signal(sid, asset, prices, _spec)  # noqa: E731
             else:
                 evaluator = _get_evaluator(strategy.paper_title, strategy.strategy_code_path)

@@ -356,3 +356,54 @@ def test_replay_decision_bars_match_the_declared_cadence(frequency):
     expected = ((_N - _WARMUP) + period - 1) // period
     assert replay.decision_count == expected
     assert replay.decision_index == _WARMUP + (expected - 1) * period
+
+
+class TestWindowAgeGuard:
+    """F2 SECOND KNOWN LIMIT (adversarial review): position MEMBERSHIP is
+    derived from the visible window only — an entry older than the rolling
+    fetch's left edge is invisible to the replay. Unreachable today (every
+    strategy is years younger than the window), so the contract is a LOUD
+    warning when a strategy's created_at predates its price window, never a
+    silent flat-vs-long divergence."""
+
+    @staticmethod
+    def _stub_strategy(created_at):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            id="window-age-probe",
+            paper_title="window-age probe",
+            paper_arxiv_id="0000.00000",
+            asset_universe=["SPY"],
+            strategy_spec=_band_spec("daily"),
+            strategy_code_path=None,
+            created_at=created_at,
+        )
+
+    # The prod window is a DatetimeIndex (yfinance); the module fixture is
+    # int-indexed, so re-index it onto fixed business days for this class.
+    _DATED = pd.Series(_PRICES.to_numpy(), index=pd.bdate_range(end="2026-08-03", periods=len(_PRICES)))
+
+    def _run(self, created_at, caplog):
+        import logging
+
+        from archimedes.services.strategy_signal_evaluator import StrategySignalEvaluator
+
+        with caplog.at_level(logging.WARNING, logger="archimedes.services.strategy_signal_evaluator"):
+            StrategySignalEvaluator().evaluate_strategies(
+                [self._stub_strategy(created_at)],
+                ["sSPY"],
+                price_histories={"sSPY": self._DATED},
+            )
+        return [r for r in caplog.records if "INVISIBLE to the position replay" in r.getMessage()]
+
+    def test_strategy_older_than_window_warns_loudly(self, caplog):
+        older_than_window = self._DATED.index[0] - pd.Timedelta(days=30)
+        assert len(self._run(older_than_window, caplog)) == 1
+
+    def test_young_strategy_does_not_warn(self, caplog):
+        younger_than_window = self._DATED.index[-1] - pd.Timedelta(days=5)
+        assert self._run(younger_than_window, caplog) == []
+
+    def test_missing_created_at_does_not_warn_or_crash(self, caplog):
+        assert self._run(None, caplog) == []

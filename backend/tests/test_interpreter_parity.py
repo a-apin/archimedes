@@ -39,6 +39,13 @@ SCOPE, stated exactly (the honest part):
     stdev capped at 1.0x. Both sides now agree on WHEN a vol-targeted strategy
     is in the market (the cases below cover that); how much they buy once in is
     a separate, still-open divergence and is not asserted here.
+  * DELIBERATELY OUT: window-age position membership — the live replay derives
+    position from the visible rolling window, so an entry older than the
+    window's left edge is invisible (backtest long, live flat). Unreachable
+    until a strategy approaches the fetch window's age; guarded LOUDLY by the
+    created_at-vs-window warning in evaluate_strategies (pinned in
+    test_live_position_fsm.py::TestWindowAgeGuard), and the fetch must be
+    re-anchored at strategy inception before it ever becomes reachable.
 
 Mechanics: the backtrader side runs a probe strategy that records each
 indicator's value at every bar; the live side recomputes on the price prefix
