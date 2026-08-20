@@ -1407,11 +1407,21 @@ class StrategyRunner:
                 trace_id, commit_tx, commit_block, reverted = await trace_publisher.commit(
                     trace, claimed_execution_time, trade_id, intent_summary
                 )
-                if commit_tx:
+                if commit_tx and not reverted:
                     logger.info(
                         "[tick %s] COMMIT anchored (commit-reveal): id=%s tx=%s block=%s",
                         tick_id,
                         trace_id,
+                        commit_tx[:16],
+                        commit_block,
+                    )
+                elif commit_tx and reverted:
+                    # A reverted commit carries a real tx hash but anchored
+                    # NOTHING — logging it as anchored is the telemetry
+                    # falsehood this path exists to kill (#1095).
+                    logger.warning(
+                        "[tick %s] COMMIT reverted on-chain (status=0): tx=%s block=%s",
+                        tick_id,
                         commit_tx[:16],
                         commit_block,
                     )

@@ -306,7 +306,7 @@ class TestCommitReveal:
             signer.execute_contract = AsyncMock(return_value="0xCOMMIT")
             client.to_checksum = lambda x: x
             client.settings = MagicMock(reasoning_trace_registry_address="0xreg")
-            client.w3.eth.get_transaction_receipt = AsyncMock(return_value=fake_receipt)
+            client.w3.eth.wait_for_transaction_receipt = AsyncMock(return_value=fake_receipt)
 
             trade_id = b"\xab" * 32
             trace_id, tx, block, reverted = await publisher.commit(
@@ -342,7 +342,7 @@ class TestCommitReveal:
             signer.execute_contract = AsyncMock(return_value="0xREVEAL")
             client.to_checksum = lambda x: x
             client.settings = MagicMock(reasoning_trace_registry_address="0xreg")
-            client.w3.eth.get_transaction_receipt = AsyncMock(return_value=fake_receipt)
+            client.w3.eth.wait_for_transaction_receipt = AsyncMock(return_value=fake_receipt)
 
             tx, block = await publisher.reveal(42, trace, storage_pointer="QmCID")
 

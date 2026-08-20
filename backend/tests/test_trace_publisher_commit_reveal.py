@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -60,7 +61,11 @@ def unsupported_loader():
 def _patch_chain(mock_client):
     mock_client.to_checksum = lambda x: x
     mock_client.settings = MagicMock(reasoning_trace_registry_address="0xregistry", chain_id=5042002)
-    mock_client.w3.eth.get_transaction_receipt = AsyncMock(return_value=MagicMock(blockNumber=100, logs=[MagicMock()]))
+    # The finalizers WAIT for the receipt (#1095) — a bare get_transaction_receipt
+    # raises TransactionNotFound on the raw-key path's immediate read.
+    mock_client.w3.eth.wait_for_transaction_receipt = AsyncMock(
+        return_value=MagicMock(blockNumber=100, status=1, logs=[MagicMock()])
+    )
 
 
 class TestCommit:
@@ -143,7 +148,7 @@ class TestFinalizeCommitRevertHandling:
             mock_signer.execute_contract = AsyncMock(return_value="0xREVERTED")
             mock_client.to_checksum = lambda x: x
             mock_client.settings = MagicMock(reasoning_trace_registry_address="0xregistry", chain_id=5042002)
-            mock_client.w3.eth.get_transaction_receipt = AsyncMock(
+            mock_client.w3.eth.wait_for_transaction_receipt = AsyncMock(
                 return_value=MagicMock(blockNumber=100, status=0, logs=[])
             )
             # If the buggy fallback fired, it would return this id — belonging to
@@ -184,7 +189,7 @@ class TestFinalizeCommitRevertHandling:
             mock_signer.execute_contract = AsyncMock(return_value="0xOK")
             mock_client.to_checksum = lambda x: x
             mock_client.settings = MagicMock(reasoning_trace_registry_address="0xregistry", chain_id=5042002)
-            mock_client.w3.eth.get_transaction_receipt = AsyncMock(
+            mock_client.w3.eth.wait_for_transaction_receipt = AsyncMock(
                 return_value=MagicMock(blockNumber=101, status=1, logs=[])  # no logs -> event decode finds nothing
             )
             supported_loader.trace_registry.functions.getTracesByVault.return_value.call = AsyncMock(
@@ -255,3 +260,95 @@ class TestReveal:
             trace = _make_trace()
             trace.compute_hash()
             assert asyncio.run(TracePublisher(loader=unsupported_loader).reveal(42, trace)) == (None, None)
+
+
+class TestFinalizeReceiptTiming:
+    """#1095 review: the finalizers must WAIT for the receipt (the raw-key path
+    finalizes immediately after send, where a plain get_transaction_receipt
+    raises TransactionNotFound and silently skips the revert check), and an
+    unknown receipt status must never default to success."""
+
+    def test_finalize_commit_catches_revert_when_receipt_not_yet_readable(self, supported_loader, caplog):
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            # The immediate read raises (tx not yet mined) — the pre-#1095 code
+            # swallowed this and fell back to the stale newest-id lookup.
+            mock_client.w3.eth.get_transaction_receipt = AsyncMock(side_effect=Exception("TransactionNotFound"))
+            mock_client.w3.eth.wait_for_transaction_receipt = AsyncMock(
+                return_value=MagicMock(blockNumber=77, status=0, logs=[])
+            )
+            supported_loader.trace_registry.functions.getTracesByVault.return_value.call = AsyncMock(
+                return_value=[999]  # the stale id the buggy fallback would return
+            )
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            trace = _make_trace()
+            trace.compute_hash()
+            with caplog.at_level(logging.ERROR, logger="archimedes.chain.trace_publisher"):
+                trace_id, tx, block, reverted = asyncio.run(
+                    TracePublisher(loader=supported_loader)._finalize_commit(trace, "0xRAWSEND", "0xvault")
+                )
+
+            assert reverted is True  # the revert is CAUGHT, not skipped
+            assert trace_id is None  # never the stale 999
+            assert (tx, block) == ("0xRAWSEND", 77)
+            supported_loader.trace_registry.functions.getTracesByVault.assert_not_called()
+            assert "reverted on-chain (status=0)" in caplog.text
+
+    def test_finalize_commit_unknown_status_warns_instead_of_assuming_success(self, supported_loader, caplog):
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            # A receipt with NO status field: unknown must be logged as unknown —
+            # the pre-#1095 code defaulted it to 1 (success) silently.
+            mock_client.w3.eth.wait_for_transaction_receipt = AsyncMock(
+                return_value=SimpleNamespace(blockNumber=88, logs=[])
+            )
+            supported_loader.trace_registry.functions.getTracesByVault.return_value.call = AsyncMock(return_value=[5])
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            trace = _make_trace()
+            trace.compute_hash()
+            with caplog.at_level(logging.WARNING, logger="archimedes.chain.trace_publisher"):
+                trace_id, tx, block, reverted = asyncio.run(
+                    TracePublisher(loader=supported_loader)._finalize_commit(trace, "0xNOSTATUS", "0xvault")
+                )
+
+            assert reverted is False  # documented choice: unknown does not newly block
+            assert "revert state unknown" in caplog.text
+
+    def test_finalize_reveal_reverted_returns_none_and_withholds_anchor(self, supported_loader, caplog):
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            mock_client.w3.eth.wait_for_transaction_receipt = AsyncMock(
+                return_value=MagicMock(blockNumber=200, status=0, logs=[])
+            )
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            trace = _make_trace()
+            trace.compute_hash()
+            with caplog.at_level(logging.ERROR, logger="archimedes.chain.trace_publisher"):
+                reveal_tx, block = asyncio.run(
+                    TracePublisher(loader=supported_loader)._finalize_reveal(trace, "0xREVREV")
+                )
+
+            # A reverted reveal must never drive is_verified / temporal binding:
+            assert (reveal_tx, block) == (None, None)
+            assert trace.reveal_tx_hash == "0xREVREV"  # diagnostic trail kept
+            assert trace.arc_tx_hash != "0xREVREV"  # canonical anchor withheld
+            assert "trace NOT revealed" in caplog.text
+
+    def test_finalize_reveal_success_sets_the_canonical_anchor(self, supported_loader):
+        with patch("archimedes.chain.trace_publisher.chain_client") as mock_client:
+            mock_client.to_checksum = lambda x: x
+            mock_client.w3.eth.wait_for_transaction_receipt = AsyncMock(
+                return_value=MagicMock(blockNumber=201, status=1, logs=[])
+            )
+            from archimedes.chain.trace_publisher import TracePublisher
+
+            trace = _make_trace()
+            trace.compute_hash()
+            reveal_tx, block = asyncio.run(TracePublisher(loader=supported_loader)._finalize_reveal(trace, "0xGOOD"))
+
+            assert (reveal_tx, block) == ("0xGOOD", 201)
+            assert trace.arc_tx_hash == "0xGOOD"
+            assert trace.reveal_block_number == 201

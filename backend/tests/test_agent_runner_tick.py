@@ -641,6 +641,31 @@ class TestCommitRevealGuardBlocksTradeOnFailedCommit:
         assert saved["decision_type"] == "skip"
         assert saved["trigger"] == "commit_failed"
 
+    async def test_confirmed_revert_logs_reverted_not_anchored(self, runner_env, monkeypatch, caplog):
+        """#1095 review: the tick log must not claim "COMMIT anchored" for a
+        commit whose tx CONFIRMED as reverted — a real tx hash that anchored
+        nothing is the exact falsehood the commit_reverted plumbing kills."""
+        import logging as _logging
+
+        runner, m = runner_env
+        monkeypatch.setattr("archimedes.chain.agent_runner.DRY_RUN", False)
+        m["executor"].get_all_vaults = AsyncMock(return_value=["0xVault"])
+        m["executor"].read_portfolio = AsyncMock(return_value=_portfolio())
+        m["executor"].set_token_oracles = AsyncMock()
+        m["executor"].set_target_allocations = AsyncMock()
+        m["executor"].build_trade_arrays = AsyncMock(return_value=(["0x" + "11" * 20], [600_000000], [], []))
+        m["executor"].execute_trades = AsyncMock(side_effect=AssertionError("execute_trades must not be called"))
+        m["publisher"].supports_commit_reveal = MagicMock(return_value=True)
+        m["publisher"].commit = AsyncMock(return_value=(None, "0xREVERTED", 100, True))
+        m["publisher"].publish = AsyncMock(return_value=None)
+        runner._get_vault_strategy_ids = MagicMock(return_value=None)
+
+        with caplog.at_level(_logging.INFO, logger="archimedes.chain.agent_runner"):
+            await runner.tick()
+
+        assert "COMMIT anchored" not in caplog.text
+        assert "COMMIT reverted on-chain" in caplog.text
+
     async def test_dry_run_unaffected_by_guard(self, runner_env):
         """DRY_RUN never reaches a real commit (trade_id/commit_tx are None by
         design) — the guard must not block the DRY_RUN simulate path."""

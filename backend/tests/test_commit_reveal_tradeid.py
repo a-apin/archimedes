@@ -197,7 +197,7 @@ def supported_loader():
 def _patch_chain(mock_client):
     mock_client.to_checksum = lambda x: x
     mock_client.settings = MagicMock(reasoning_trace_registry_address="0xregistry", chain_id=5042002)
-    mock_client.w3.eth.get_transaction_receipt = AsyncMock(return_value=MagicMock(blockNumber=100, logs=[MagicMock()]))
+    mock_client.w3.eth.wait_for_transaction_receipt = AsyncMock(return_value=MagicMock(blockNumber=100, status=1, logs=[MagicMock()]))
 
 
 class _Awaitable:

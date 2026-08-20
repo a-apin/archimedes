@@ -246,14 +246,15 @@ class TracePublisher:
         can't positively confirm a revert, so this deliberately doesn't newly
         block Phase 2 on transient receipt-read flakiness.
 
-        This method is the ONLY revert check, and it's chain-native: it always
-        re-fetches the receipt directly via ``chain_client.w3.eth.get_transaction_receipt``,
-        independent of how the tx was sent. Both the Circle-signer path and the
-        raw-key path funnel their tx_hash through here (``commit()``'s two
-        ``return await self._finalize_commit(...)`` call sites), so it doesn't
-        matter whether Circle's own "COMPLETE" terminal state distinguishes an
-        EVM revert from a successful call — a tx Circle reports COMPLETE (mined)
-        but that reverted on-chain is still caught here on the next line.
+        This method is the ONLY revert check, and it's chain-native: it WAITS
+        for the receipt via ``chain_client.w3.eth.wait_for_transaction_receipt``,
+        independent of how the tx was sent. The raw-key path lands here
+        immediately after ``send_raw_transaction`` — a plain
+        ``get_transaction_receipt`` there raises ``TransactionNotFound`` before
+        the tx mines and would silently skip this check (#1095 review) — while
+        Circle's ``_poll_transaction`` has usually mined the tx already, making
+        the wait a no-op. Either way, a tx that reverted on-chain (including one
+        Circle reports COMPLETE) is caught here.
         """
         trace.commit_tx_hash = tx_hash
         registry = self.loader.trace_registry
@@ -261,15 +262,20 @@ class TracePublisher:
         trace_id = None
         reverted = False
         try:
-            receipt = await chain_client.w3.eth.get_transaction_receipt(tx_hash)
+            receipt = await chain_client.w3.eth.wait_for_transaction_receipt(tx_hash)
             block_num = (
                 receipt.get("blockNumber") if isinstance(receipt, dict) else getattr(receipt, "blockNumber", None)
             )
             trace.commit_block_number = block_num
-            receipt_status = receipt.get("status") if isinstance(receipt, dict) else getattr(receipt, "status", 1)
+            receipt_status = receipt.get("status") if isinstance(receipt, dict) else getattr(receipt, "status", None)
             if receipt_status == 0:
                 logger.error(f"Commit tx {tx_hash} reverted on-chain (status=0)")
                 return None, tx_hash, block_num, True
+            if receipt_status is None:
+                # Unknown is unknown, never success: keep reverted=False (the
+                # documented no-new-blocking choice on receipt flakiness) but
+                # say so loudly instead of silently defaulting to success.
+                logger.warning(f"Commit receipt for {tx_hash} has no status field — revert state unknown")
 
             logs = receipt.get("logs", []) if isinstance(receipt, dict) else getattr(receipt, "logs", [])
             for log in logs:
@@ -360,18 +366,35 @@ class TracePublisher:
             logger.error(f"Failed to reveal trace on-chain: {e}")
             return None, None
 
-    async def _finalize_reveal(self, trace: ReasoningTrace, tx_hash: str) -> tuple[str, int | None]:
-        """Record reveal tx + block on the trace and return them."""
+    async def _finalize_reveal(self, trace: ReasoningTrace, tx_hash: str) -> tuple[str | None, int | None]:
+        """Record reveal tx + block on the trace and return them.
+
+        Mirrors ``_finalize_commit``'s revert check (#1095): waits for the
+        receipt and, on a CONFIRMED revert (status == 0), returns (None, None)
+        so callers never derive ``is_verified`` / temporal-binding claims from a
+        reveal that did not happen. The tx hash stays on ``trace.reveal_tx_hash``
+        for the diagnostic trail, but ``arc_tx_hash`` — the canonical anchor —
+        is only set on success. A receipt with no status field logs a warning
+        and does not block (unknown is unknown), matching the commit path's
+        documented choice not to newly block on receipt flakiness.
+        """
         trace.reveal_tx_hash = tx_hash
-        trace.arc_tx_hash = tx_hash  # reveal is the canonical anchor tx for this trace
         block_num = None
         try:
-            receipt = await chain_client.w3.eth.get_transaction_receipt(tx_hash)
+            receipt = await chain_client.w3.eth.wait_for_transaction_receipt(tx_hash)
             block_num = (
                 receipt.get("blockNumber") if isinstance(receipt, dict) else getattr(receipt, "blockNumber", None)
             )
+            status = receipt.get("status") if isinstance(receipt, dict) else getattr(receipt, "status", None)
+            if status == 0:
+                logger.error(f"Reveal tx {tx_hash} reverted on-chain (status=0) — trace NOT revealed")
+                trace.reveal_block_number = block_num
+                return None, None
+            if status is None:
+                logger.warning(f"Reveal receipt for {tx_hash} has no status field — revert state unknown")
         except Exception:
             logger.debug("reveal receipt block lookup failed", exc_info=True)
+        trace.arc_tx_hash = tx_hash  # reveal is the canonical anchor tx for this trace
         trace.reveal_block_number = block_num
         return tx_hash, block_num
 
