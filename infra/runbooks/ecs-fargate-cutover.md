@@ -580,34 +580,39 @@ deliberately, don't just assume the `deployment_minimum_healthy_percent =
 100` / `deployment_maximum_percent = 200` config (in `ecs.tf`) does the right
 thing — measure it.
 
+> **This did not hold in practice — see issue #1309.** A real deploy on
+> 2026-08-20 showed the old target deregistered ~9s after the new task
+> started, ~2.4 minutes before the new target registered healthy — a live
+> violation of this criterion, caught by the (manual, ad-hoc) version of the
+> probe below. `infra/ecs.tf` gained a Docker `healthCheck` on the `nginx`
+> container (previously the ONLY essential container without one, despite
+> being the actual ALB target) as a defensible hardening — see that file's
+> comment for the reasoning — but this was **not proven against a live
+> deploy** (no AWS credentials in the environment that made the change). Run
+> the script below across a real deploy to confirm the fix, and if it still
+> fails, the next things to check in order: (1) whether the LIVE service's
+> applied `deploymentConfiguration` / target group health-check settings
+> actually match this file's current `infra/ecs.tf` / `infra/alb.tf` (config
+> drift — `deploymentConfiguration` is not in the service's
+> `lifecycle.ignore_changes`, so it only takes effect on the next `terraform
+> apply`, which is a manual, Dan-only step per this runbook's own header);
+> (2) `desiredCount=2` as the acceptance-criteria's own named "blunt
+> alternative" (recurring Fargate cost — an infra spend commitment, Dan's
+> call per `CLAUDE.md` § "When to ask before acting").
+
 ```bash
-# Terminal 1 — continuous request loop against the ALB directly (bypasses
-# CloudFront caching so you're actually hitting the live target group), left
-# running for the whole rollout:
-while true; do
-  curl -o /dev/null -s -w "%{http_code} %{time_total}s\n" \
-    -H "Host: archimedes-arc.com" "https://$(terraform output -raw alb_dns_name)/health"
-  sleep 1
-done | tee /tmp/rollout-watch.log
-
-# Terminal 2 — trigger a rolling deployment (a force-new-deployment against
-# the current task definition is enough to exercise the rolling-replace path
-# without needing a new image):
-aws ecs update-service \
-  --cluster "$(terraform output -raw ecs_cluster_name)" \
-  --service "$(terraform output -raw ecs_service_name)" \
-  --force-new-deployment
-
-# Watch the deployment reach steady state:
-aws ecs wait services-stable \
-  --cluster "$(terraform output -raw ecs_cluster_name)" \
-  --services "$(terraform output -raw ecs_service_name)"
+cd infra   # requires the S3 backend already initialized, or pass --alb-dns/--cluster/--service explicitly
+./scripts/verify-zero-downtime-deploy.sh
 ```
 
-**Verify:** `grep -v '^200 ' /tmp/rollout-watch.log` returns nothing (every
-line was `200 ...`) for the whole rollout window. Any `5xx` or connection
-error in that log is a real regression against acceptance criterion #2 — do
-not treat it as flaky and move on.
+Runs a 1 req/s probe loop against the ALB directly (bypassing CloudFront, so
+it measures the target group, not the CDN cache) for the whole rollout
+window, triggers a `force-new-deployment`, waits for steady state, and exits
+non-zero with every offending log line if any request was not a `200` — see
+the script's own header comment for flags and what it does and does not
+prove. (This replaces the earlier copy/paste-bash version of this
+procedure — same acceptance check, now a committed, reusable artifact
+instead of prose that only exists if someone remembers to type it out.)
 
 ---
 
