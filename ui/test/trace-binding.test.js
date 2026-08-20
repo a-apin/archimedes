@@ -74,9 +74,11 @@ test("failed, unrecognised, and missing modes all degrade to failed", () => {
 // Same shape as ui/test/a11y.test.js: readFileSync + regex/substring pins
 // on the rendered source, confirming the claim-integrity fixes actually
 // landed in the component (not just in the pure helper). Every assertion
-// in this section was confirmed to FAIL against the pre-fix Reasoning.jsx
-// tree (it always rendered the off-chain / roadmap copy regardless of
-// source).
+// pinning Reasoning.jsx below was confirmed to FAIL against the pre-fix
+// Reasoning.jsx tree (it always rendered the off-chain / roadmap copy
+// regardless of source). The Architecture.jsx anti-goal check has its own
+// header further down — it reads a different, untouched file, so that
+// pre-fix-Reasoning.jsx-tree claim does not apply to it.
 
 const reasoningSrc = readFileSync(
 	new URL("../src/components/Reasoning.jsx", import.meta.url),
@@ -184,6 +186,15 @@ test("a chain-sourced trace with an invalid reveal renders the red invalid-bindi
 		"the dangling-reveal case must not map to the verified check-circle icon",
 	);
 });
+
+// ── Anti-goal pins ───────────────────────────────────────────────────────
+//
+// Architecture.jsx is not touched by this PR — the contract is the source
+// of truth for the block-order guarantee, and Architecture.jsx's own prose
+// already states that correctly. This pin is not a "confirmed to fail
+// against the pre-fix tree" claim like the Reasoning.jsx section above (a
+// file this PR never modifies can't regress against "pre-fix"); it exists
+// to catch a *future* PR accidentally weakening or removing that prose.
 
 test("Architecture.jsx's contract-enforced claims are untouched (anti-goal)", () => {
 	const architectureSrc = readFileSync(

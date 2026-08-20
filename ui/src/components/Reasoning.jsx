@@ -418,7 +418,8 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                         {t.reveal_block_number != null && <div>Reveal block: <strong>#{t.reveal_block_number}</strong></div>}
                         {isDanglingReveal && (
                           <div className="negative" style={{ marginTop: 4 }}>
-                            Commit is contract-enforced, but this trace's reveal never landed — binding incomplete.
+                            Commit is contract-enforced, but this trace's commit → trade → reveal blocks are
+                            incomplete or out of order — binding unproven.
                           </div>
                         )}
                         <div style={{ marginTop: 4, fontStyle: 'italic' }}>{copy.note}</div>

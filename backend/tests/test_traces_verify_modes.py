@@ -130,7 +130,12 @@ async def test_redis_down_returns_503_never_a_fabricated_pass():
     own try/except) before any assertion below runs — masking the mutation
     instead of rejecting it. With the mock in place, the mutated code
     reaches a real 200 response with verification_mode=anchored_only and
-    is_verified=True, and these assertions correctly reject it.
+    is_verified=True. The body assertions below are checked BEFORE the
+    status-code assertion specifically so that on the mutation, the
+    "anchored_only" body check is what fails first and rejects it — with the
+    status check last, `assert resp.status_code == 503` would otherwise be
+    the sole rejector (`assert 200 == 503`) and pytest would stop right
+    there, never executing the body assertions this test exists to pin.
     """
     from archimedes.main import app
     from archimedes.services.redis_state import AgentStateStore
@@ -152,11 +157,15 @@ async def test_redis_down_returns_503_never_a_fabricated_pass():
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/traces/1/verify")
 
-    assert resp.status_code == 503
+    # Body checks first: these are what actually reject the fabricated-pass
+    # mutation (see docstring above). FastAPI/Pydantic serialize compact
+    # JSON (no space after ':'), so only the compact form is a real pin —
+    # a spaced-JSON variant would never appear in either the fixed or the
+    # mutated response and would assert nothing.
     raw = resp.text
-    assert '"is_verified": true' not in raw
-    assert '"is_verified":true' not in raw
     assert "anchored_only" not in raw
+    assert '"is_verified":true' not in raw
+    assert resp.status_code == 503
 
 
 async def test_reachable_empty_store_with_onchain_trace_reports_anchored_only():
