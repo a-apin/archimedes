@@ -53,6 +53,39 @@ def _encrypt_entity_secret(entity_secret_hex: str, public_key_pem: str) -> str:
     return base64.b64encode(ciphertext).decode()
 
 
+async def _resolve_wallet_set_id(session: aiohttp.ClientSession, api_key: str) -> str:
+    """Resolve the Circle ``walletSetId`` new wallets are provisioned under.
+
+    ``WALLET_SET_ID`` env override takes precedence — when set, this returns
+    immediately and makes no network call at all. Otherwise it lists the
+    account's wallet sets via ``GET /v1/w3s/walletSets`` and uses the first
+    one. Never invents an ID: an account with zero wallet sets fails loudly
+    instead of silently provisioning against a made-up value.
+
+    Raises:
+        RuntimeError: If the listing call fails or the account has no
+            wallet sets.
+    """
+    env_override = os.getenv("WALLET_SET_ID", "")
+    if env_override:
+        return env_override
+
+    async with session.get(
+        f"{CIRCLE_API_BASE}/walletSets",
+        headers={"Authorization": f"Bearer {api_key}"},
+    ) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"Failed to list Circle wallet sets: {resp.status}")
+        body = await resp.json()
+        wallet_sets = body.get("data", {}).get("walletSets", [])
+        if not wallet_sets:
+            raise RuntimeError(
+                "No Circle wallet sets exist on this account — create one in "
+                "the Circle console or set WALLET_SET_ID to pin a specific one"
+            )
+        return wallet_sets[0]["id"]
+
+
 async def _create_circle_wallet(ref_value: str, ref_purpose: str) -> tuple[str, str]:
     """Shared Circle DCW creation flow used by both subscriber and publisher
     provisioning.  Fetches the RSA public key, encrypts the entity secret, and
@@ -89,12 +122,19 @@ async def _create_circle_wallet(ref_value: str, ref_purpose: str) -> tuple[str, 
 
         ciphertext = _encrypt_entity_secret(entity_secret, public_key)
 
-        # 2. Create the wallet with a deterministic idempotency key derived from the ref.
+        # 2. Resolve the walletSetId every wallet must be created under.
+        wallet_set_id = await _resolve_wallet_set_id(session, api_key)
+
+        # 3. Create the wallet with a deterministic idempotency key derived from the ref.
         #    Retries for the same ref_value reuse the same key → Circle returns the
         #    existing wallet (409) instead of provisioning a duplicate.
+        #    NOTE: Circle's current API requires `blockchains` as an ARRAY
+        #    (not a singular `blockchain` string) and a non-empty `walletSetId`
+        #    — both 400 otherwise (#1325).
         payload = {
             "idempotencyKey": str(uuid.uuid5(uuid.NAMESPACE_URL, f"archimedes-wallet:{ref_value}")),
-            "blockchain": CIRCLE_BLOCKCHAIN,
+            "blockchains": [CIRCLE_BLOCKCHAIN],
+            "walletSetId": wallet_set_id,
             "metadata": [
                 {"name": "ref", "value": ref_value},
                 {"name": "purpose", "value": ref_purpose},
@@ -112,8 +152,11 @@ async def _create_circle_wallet(ref_value: str, ref_purpose: str) -> tuple[str, 
         ) as resp:
             body = await resp.json()
             if resp.status == 201:
-                wallet_id: str = body["data"]["wallet"]["id"]
-                wallet_address: str = body["data"]["wallet"]["address"]
+                # The 201 body nests the created wallet(s) as a LIST under
+                # data.wallets, not a single object under data.wallet (#1325).
+                wallet = body["data"]["wallets"][0]
+                wallet_id: str = wallet["id"]
+                wallet_address: str = wallet["address"]
                 logger.info(
                     "Created Circle wallet %s for ref=%s (address=%s)",
                     wallet_id,

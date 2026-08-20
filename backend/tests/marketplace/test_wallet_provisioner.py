@@ -91,10 +91,17 @@ def _pubkey_route(pem: str):
     return ("GET", "config/entity/publicKey"), _FakeResp(200, {"data": {"publicKey": pem}})
 
 
+def _walletset_route(wallet_set_id="ws-default-1"):
+    """The GET /v1/w3s/walletSets route used when WALLET_SET_ID is unset."""
+    return ("GET", "walletSets"), _FakeResp(200, {"data": {"walletSets": [{"id": wallet_set_id}]}})
+
+
 def _created_route(wallet_id="w-created-1", address="0xWa11e70000000000000000000000000000000001"):
+    # The real 201 body nests the created wallet(s) as a LIST under
+    # data.wallets — not a single object under data.wallet.
     return (
         ("POST", "developer/wallets"),
-        _FakeResp(201, {"data": {"wallet": {"id": wallet_id, "address": address}}}),
+        _FakeResp(201, {"data": {"wallets": [{"id": wallet_id, "address": address}]}}),
     )
 
 
@@ -102,7 +109,7 @@ class TestCreateCircleWallet:
     @pytest.mark.asyncio
     async def test_happy_path_creates_wallet_and_really_encrypts_the_entity_secret(self, monkeypatch, rsa_keypair):
         key, pem = rsa_keypair
-        session = _FakeSession(dict([_pubkey_route(pem), _created_route()]))
+        session = _FakeSession(dict([_pubkey_route(pem), _walletset_route(), _created_route()]))
         _install(monkeypatch, session)
 
         wallet_id, address = await wp.provision_subscriber_wallet("0xsubid")
@@ -110,7 +117,8 @@ class TestCreateCircleWallet:
         assert (wallet_id, address) == ("w-created-1", "0xWa11e70000000000000000000000000000000001")
         assert len(session.posts) == 1
         payload = session.posts[0]
-        assert payload["blockchain"] == wp.CIRCLE_BLOCKCHAIN
+        assert payload["blockchains"] == [wp.CIRCLE_BLOCKCHAIN]
+        assert payload["walletSetId"] == "ws-default-1"
         assert {"name": "ref", "value": "sub:0xsubid"} in payload["metadata"]
         # THE load-bearing assertion: decrypt the posted ciphertext with the
         # test private key and require the original entity secret back. A
@@ -128,7 +136,7 @@ class TestCreateCircleWallet:
         reuse the SAME key (so Circle returns the existing wallet), and a
         different ref must get a different key (so wallets never collide)."""
         _, pem = rsa_keypair
-        session = _FakeSession(dict([_pubkey_route(pem), _created_route()]))
+        session = _FakeSession(dict([_pubkey_route(pem), _walletset_route(), _created_route()]))
         _install(monkeypatch, session)
 
         await wp.provision_subscriber_wallet("0xsame")
@@ -162,6 +170,7 @@ class TestCreateCircleWallet:
         session = _FakeSession(
             {
                 ("GET", "config/entity/publicKey"): _FakeResp(200, {"data": {"publicKey": pem}}),
+                ("GET", "walletSets"): _FakeResp(200, {"data": {"walletSets": [{"id": "ws-default-1"}]}}),
                 ("POST", "developer/wallets"): _FakeResp(409, {"code": "conflict"}),
                 ("GET", "developer/wallets"): listing,
             }
@@ -179,6 +188,7 @@ class TestCreateCircleWallet:
         session = _FakeSession(
             {
                 ("GET", "config/entity/publicKey"): _FakeResp(200, {"data": {"publicKey": pem}}),
+                ("GET", "walletSets"): _FakeResp(200, {"data": {"walletSets": [{"id": "ws-default-1"}]}}),
                 ("POST", "developer/wallets"): _FakeResp(409, {"code": "conflict"}),
                 ("GET", "developer/wallets"): _FakeResp(200, {"data": {"wallets": []}}),
             }
@@ -194,6 +204,7 @@ class TestCreateCircleWallet:
         session = _FakeSession(
             {
                 ("GET", "config/entity/publicKey"): _FakeResp(200, {"data": {"publicKey": pem}}),
+                ("GET", "walletSets"): _FakeResp(200, {"data": {"walletSets": [{"id": "ws-default-1"}]}}),
                 ("POST", "developer/wallets"): _FakeResp(500, {"error": "boom"}),
             }
         )
@@ -201,6 +212,54 @@ class TestCreateCircleWallet:
 
         with pytest.raises(RuntimeError, match="500"):
             await wp.provision_subscriber_wallet("0xerr")
+
+    @pytest.mark.asyncio
+    async def test_request_shape_is_blockchains_array_with_wallet_set_id(self, monkeypatch, rsa_keypair):
+        """Pins the #1325 request shape against a mocked transport. The
+        pre-fix payload (singular `blockchain`, no `walletSetId`) is exactly
+        what Circle 400s with 'blockchains field may not be empty' /
+        'walletSetId field may not be empty' — this assertion must fail
+        against that payload (verified by reverting the fix locally per the
+        house guard-demo rule) and pass against the fixed one."""
+        _, pem = rsa_keypair
+        session = _FakeSession(dict([_pubkey_route(pem), _walletset_route("ws-shape-check"), _created_route()]))
+        _install(monkeypatch, session)
+
+        await wp.provision_subscriber_wallet("0xshape")
+
+        payload = session.posts[0]
+        assert payload["blockchains"] == [wp.CIRCLE_BLOCKCHAIN]
+        assert isinstance(payload["blockchains"], list), "blockchains must be an array, not a bare string"
+        assert payload["walletSetId"] == "ws-shape-check"
+        assert payload["walletSetId"], "walletSetId must be non-empty"
+        assert "blockchain" not in payload, "the old singular `blockchain` key must be gone"
+
+    @pytest.mark.asyncio
+    async def test_response_parses_first_entry_of_data_wallets(self, monkeypatch, rsa_keypair):
+        """Pins response parsing at data.wallets[0] (a LIST), not data.wallet
+        (a single object). Two wallets in the list proves index [0] is used
+        deliberately, not just tolerated because len==1."""
+        _, pem = rsa_keypair
+        multi_wallet_route = (
+            ("POST", "developer/wallets"),
+            _FakeResp(
+                201,
+                {
+                    "data": {
+                        "wallets": [
+                            {"id": "w-first", "address": "0xFirst00000000000000000000000000000001"},
+                            {"id": "w-second", "address": "0xSecond0000000000000000000000000000002"},
+                        ]
+                    }
+                },
+            ),
+        )
+        session = _FakeSession(dict([_pubkey_route(pem), _walletset_route(), multi_wallet_route]))
+        _install(monkeypatch, session)
+
+        wallet_id, address = await wp.provision_subscriber_wallet("0xmulti")
+
+        assert (wallet_id, address) == ("w-first", "0xFirst00000000000000000000000000000001")
 
     @pytest.mark.asyncio
     async def test_missing_credentials_fail_before_any_network(self, monkeypatch):
@@ -213,6 +272,59 @@ class TestCreateCircleWallet:
 
         with pytest.raises(RuntimeError, match="credentials not configured"):
             await wp.provision_subscriber_wallet("0xnocreds")
+
+
+class TestWalletSetIdResolution:
+    @pytest.mark.asyncio
+    async def test_wallet_set_id_env_override_skips_the_walletsets_get(self, monkeypatch, rsa_keypair):
+        """WALLET_SET_ID takes precedence and must short-circuit before any
+        GET /v1/w3s/walletSets call — deliberately no walletSets route is
+        registered, so if the code fell through to the GET anyway the fake
+        session's unrouted-request assertion would fail this test."""
+        _, pem = rsa_keypair
+        session = _FakeSession(dict([_pubkey_route(pem), _created_route()]))
+        _install(monkeypatch, session)
+        monkeypatch.setenv("WALLET_SET_ID", "ws-from-env")
+
+        wallet_id, address = await wp.provision_subscriber_wallet("0xenvoverride")
+
+        assert (wallet_id, address) == ("w-created-1", "0xWa11e70000000000000000000000000000000001")
+        assert session.posts[0]["walletSetId"] == "ws-from-env"
+
+    @pytest.mark.asyncio
+    async def test_no_wallet_sets_on_account_raises_loudly_and_never_invents_one(self, monkeypatch, rsa_keypair):
+        """Zero wallet sets on the account, no env override: must raise
+        loudly and must NEVER fall back to inventing/guessing an ID by
+        attempting the POST anyway."""
+        _, pem = rsa_keypair
+        session = _FakeSession(
+            {
+                ("GET", "config/entity/publicKey"): _FakeResp(200, {"data": {"publicKey": pem}}),
+                ("GET", "walletSets"): _FakeResp(200, {"data": {"walletSets": []}}),
+            }
+        )
+        _install(monkeypatch, session)
+
+        with pytest.raises(RuntimeError, match="No Circle wallet sets"):
+            await wp.provision_subscriber_wallet("0xnowalletsets")
+
+        assert session.posts == [], "must never attempt wallet creation without a resolved walletSetId"
+
+    @pytest.mark.asyncio
+    async def test_no_wallet_sets_listing_failure_raises(self, monkeypatch, rsa_keypair):
+        _, pem = rsa_keypair
+        session = _FakeSession(
+            {
+                ("GET", "config/entity/publicKey"): _FakeResp(200, {"data": {"publicKey": pem}}),
+                ("GET", "walletSets"): _FakeResp(503, {"error": "unavailable"}),
+            }
+        )
+        _install(monkeypatch, session)
+
+        with pytest.raises(RuntimeError, match="Failed to list Circle wallet sets: 503"):
+            await wp.provision_subscriber_wallet("0xlistfail")
+
+        assert session.posts == []
 
 
 class TestFindWalletByRef:
