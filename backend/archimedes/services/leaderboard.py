@@ -57,8 +57,8 @@ STOCKBENCH_GLOBAL = StockBenchGlobalContext(
 _DISCLAIMER = (
     "Testnet — paper/simulated performance. Strategies are ranked on real, "
     "rigor-gated backtest results. Per-strategy StockBench and live paper-P&L "
-    "are the next inputs to this engine and render as 'pending' until that data "
-    "flows; no number here is fabricated."
+    "are the next inputs to this engine and are not scored per strategy yet; "
+    "no number here is fabricated."
 )
 
 # Sortable real fields → (StrategyResponse attribute, higher_is_better).
@@ -180,6 +180,8 @@ def build_leaderboard(
     min_rigor: bool = False,
     limit: int = 50,
     scope: str = "curated",
+    degraded: bool = False,
+    degraded_reason: str = "",
 ) -> LeaderboardResponse:
     """Rank strategies into a leaderboard. Pure — no I/O.
 
@@ -188,6 +190,11 @@ def build_leaderboard(
     caller's own strategies; 'curated': the curated seed library), so the UI
     can label the board honestly even when the caller's requested scope was
     silently coerced (e.g. an anonymous request for 'own').
+
+    ``degraded`` / ``degraded_reason`` are likewise echoed verbatim — the
+    caller (route layer) is the one that knows whether ``responses`` reflects
+    a real query or a swallowed failure (#1356); this function stays pure and
+    just carries the signal through onto the wire.
     """
     if sort_by not in _SORTABLE:
         sort_by = "conviction_score"
@@ -235,4 +242,6 @@ def build_leaderboard(
         order=order,
         scope=scope,
         scoring_engine=engine,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
     )

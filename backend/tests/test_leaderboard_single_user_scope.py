@@ -260,3 +260,7 @@ async def test_own_scope_empty_for_user_with_no_generated_strategies(monkeypatch
     # Scoring-engine metadata stays intact even for an empty board (existing
     # fail-safe contract — must survive the new scope branch too).
     assert abs(sum(body["scoring_engine"]["weights"].values()) - 1.0) < 1e-9
+    # A signed-in caller's empty "own" board is an honest result, not a
+    # failure (#1356) — must NOT be flagged degraded the way an empty
+    # curated cohort is.
+    assert body["degraded"] is False
