@@ -48,7 +48,16 @@ class PaperDeployment(Base):
     # transition (#1194): wallet for the SIWE model live today, user id for
     # Better Auth once it lands. Same pattern as strategy_store.
     owner_wallet: Mapped[str | None] = mapped_column(String(42), nullable=True)
-    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # CASCADE (issue #1367, D3): a paper deployment is a private per-user
+    # ledger — no other account reads or depends on someone else's paper
+    # trades (unlike strategy_store/strategy_passports, which can be public
+    # marketplace/audit artifacts other users rely on). Deleting the owning
+    # account should remove it outright, and PaperDailyReturn already
+    # cascades off `paper_deployments.id` (see below), so the whole ledger
+    # goes with it — no orphaned rows either direction.
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("auth_users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     # The deploy-time snapshot of the validated spec — the thing being graded.
     spec_json: Mapped[str] = mapped_column(Text, nullable=False)
     deployed_at: Mapped[date] = mapped_column(Date, nullable=False)
