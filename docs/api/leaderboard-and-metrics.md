@@ -36,7 +36,7 @@ reports what was actually served, which may differ from what was asked for),
 `sort_by: "conviction_score"|"sharpe_ratio"|"cagr"|"sortino_ratio"|"calmar_ratio"|"deflated_sharpe_ratio"|"dsr_p_value"|"out_of_sample_sharpe"|"pbo_score" = "conviction_score"`,
 `order: "asc"|"desc" = "desc"`, `regime_tag: "bull"|"bear"|"regime_neutral"|null`,
 `min_rigor: bool = false`, `limit: int(1..200) = 50`.
-Response (`LeaderboardResponse`): `{entries: [LeaderboardEntry], total: int, sort_by: str, order: str, scope: str, scoring_engine: LeaderboardScoringEngine}` — see [Response shape](#response-shape) below.
+Response (`LeaderboardResponse`): `{entries: [LeaderboardEntry], total: int, sort_by: str, order: str, scope: str, scoring_engine: LeaderboardScoringEngine, degraded: bool=false, degraded_reason: str=""}` — see [Response shape](#response-shape) below. `degraded` is `true` when the underlying strategy provider raised, or the curated cohort came back empty for a reason other than a legitimate filter (e.g. `"strategy corpus not found in build"`, `"curated strategy cohort is empty"`) — the UI must never render "No strategies match these filters yet." while `degraded` is `true` (#1356).
 Errors: none — a data-source failure degrades to an empty board with the
 scoring-engine metadata intact, never a 5xx (module docstring: "the page must
 never hard-fail, for either scope").

@@ -146,7 +146,7 @@ falling back to an on-chain-only listing when Redis is unavailable. |
 **Auth**: anonymous
 
 Request: query `vault_address: str|null, decision_type: "construction"|"rebalance"|"rotation"|"regime_change"|"skip"|null, limit: int(1..100)=20, offset: int(>=0)=0`.
-Response (`TraceListResponse`): `{traces: [TraceResponse], total: int}`. `TraceResponse` carries `id, vault_address, decision_type, trigger, timestamp, reasoning, confidence, trace_hash, arc_tx_hash: str|null, is_verified: bool, regime_at_decision, trades_executed, strategies_referenced, commit_tx_hash/commit_block_number, reveal_tx_hash/reveal_block_number, trade_tx_hash/trade_block_number, temporal_binding_valid: bool|null, temporal_binding_source: str="none"`.
+Response (`TraceListResponse`): `{traces: [TraceResponse], total: int}`. `TraceResponse` carries `id, vault_address, decision_type, trigger, timestamp, reasoning, confidence, trace_hash, arc_tx_hash: str|null, is_verified: bool, regime_at_decision, trades_executed, strategies_referenced, commit_tx_hash/commit_block_number, reveal_tx_hash/reveal_block_number, trade_tx_hash/trade_block_number, temporal_binding_valid: bool|null, temporal_binding_source: str="none"`. On the on-chain-only fallback path (Redis unavailable), a trace's off-chain-only `decision_type` cannot be recovered from the registry alone — the served value is the literal string `"unknown"` (#1356: never fabricate `"rebalance"` as a guess), outside the filterable enum above.
 Errors: none explicit — a Redis outage degrades to the on-chain-only path rather than erroring.
 
 ```bash
@@ -246,7 +246,7 @@ All deployed contract addresses — what the frontend (or any direct on-chain
 caller) needs to call the chain itself. | **Auth**: anonymous
 
 Request: none.
-Response (`ContractAddressesResponse`): `{usdc, synthetic_factory, amm_router, vault_factory, reasoning_trace_registry, asset_registry, price_oracle, synthetics: dict[str,str] (symbol -> address), pools: dict[str,str] (pair -> address)}`.
+Response (`ContractAddressesResponse`): `{usdc, synthetic_factory, amm_router, vault_factory, reasoning_trace_registry, asset_registry, price_oracle, synthetics: dict[str,str] (symbol -> address), pools: dict[str,str]|null (pair -> address), vaults: dict[str,str]|null (symbol -> address), chain_id: int, rpc_url: str}`. `pools`/`vaults` are `null` when the on-chain read failed (RPC error) — distinct from `{}`, which means the chain was read and genuinely reports zero. A `null` must render as a failed/unread state, never as a measured zero (#1356).
 Errors: none explicit.
 
 **Contract counts come from this endpoint, not from prose** — per
