@@ -83,16 +83,16 @@ class TestQuoteAnd402:
         decoded = json.loads(base64.b64decode(exc.headers["PAYMENT-REQUIRED"]))
         assert decoded  # non-empty requirements document
         # The human/agent path: the same quote the public endpoint serves.
-        assert exc.detail["quote"]["price"] == "$0.150000"
+        assert exc.detail["quote"]["price"] == "$2.000000"
         assert exc.detail["quote"] == gp.quote()
 
     def test_price_env_overrides_and_fails_safe(self, monkeypatch):
         monkeypatch.setenv("GENERATION_PRICE_USD", "0.42")
         assert gp.quote()["price"] == "$0.420000"
         monkeypatch.setenv("GENERATION_PRICE_USD", "not-a-number")
-        assert gp.quote()["price"] == "$0.150000"  # default, never free/absurd
+        assert gp.quote()["price"] == "$2.000000"  # default, never free/absurd
         monkeypatch.setenv("GENERATION_PRICE_USD", "-3")
-        assert gp.quote()["price"] == "$0.150000"
+        assert gp.quote()["price"] == "$2.000000"
 
 
 class TestDryRun:
