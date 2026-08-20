@@ -11,6 +11,7 @@ import os
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from archimedes.models.backtest import BacktestResult
@@ -251,19 +252,38 @@ def latest_backtests_by_strategy(
     if not ids:
         return {}
 
-    rows = (
-        session.query(BacktestResultRecord)
-        .filter(BacktestResultRecord.strategy_id.in_(ids))
-        .order_by(
-            BacktestResultRecord.strategy_id.asc(),
-            BacktestResultRecord.created_at.desc(),
-            BacktestResultRecord.id.desc(),
+    # Resolve "latest per strategy" IN THE DATABASE, then hydrate only those
+    # rows. The previous implementation `.all()`-ed every row for every id and
+    # reduced in Python, which meant fetching N_refreshes x N_strategies rows to
+    # return N_strategies. Each row carries a ~489 KB artifact_json plus a
+    # ~108 KB equity_curve_json, and nothing dedupes them (canonical_artifact_hash
+    # includes run_id, a timestamp, so content_hash is unique per run by
+    # construction), so the table grows ~30 rows per refresh cycle forever.
+    # Measured cost of the old path: 0.58 MB of peak RSS per persisted row,
+    # perfectly linear — 21 MB at 34 rows, 395 MB at 680 rows. That staircase is
+    # what pushed the 2026-08-19 backend past its 3072 MB task budget.
+    #
+    # The inner query deliberately selects ONLY the id column: the window
+    # function must not drag the JSON payloads through the client buffer. Window
+    # functions are available on Postgres and on SQLite >= 3.25 (the test path).
+    ranked = (
+        select(
+            BacktestResultRecord.id.label("id"),
+            func.row_number()
+            .over(
+                partition_by=BacktestResultRecord.strategy_id,
+                order_by=(
+                    BacktestResultRecord.created_at.desc(),
+                    BacktestResultRecord.id.desc(),
+                ),
+            )
+            .label("rank"),
         )
-        .all()
+        .where(BacktestResultRecord.strategy_id.in_(ids))
+        .subquery()
     )
+    latest_ids = select(ranked.c.id).where(ranked.c.rank == 1)
 
-    latest: dict[str, BacktestResultRecord] = {}
-    for row in rows:
-        if row.strategy_id not in latest:
-            latest[row.strategy_id] = row
-    return latest
+    rows = session.query(BacktestResultRecord).filter(BacktestResultRecord.id.in_(latest_ids)).all()
+
+    return {row.strategy_id: row for row in rows}
