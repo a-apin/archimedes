@@ -175,18 +175,17 @@ export default function Leaderboard() {
             re-run landed fresh rows for every curated strategy (verified
             against prod 2026-08-19 — backtest_results max created_at
             2026-08-20 03:28 UTC; zero curated strategies stale). The
-            backtest/live interpreter divergence is retired only in part:
-            F1/F4–F10 are fixed, but F2 (stateless entry-AND-NOT-exit live vs
-            the backtest's position FSM) and F3 (rebalance cadence never read
-            live) are prepared and HELD for the live-money go-ahead — and
-            exit + rebalance_frequency are REQUIRED DSL fields, so every
-            generated strategy carries them. The own view ALSO still holds
-            July-era rows for older generated strategies (21 ids at the time
-            of verification) that predate the corrections and refresh on
-            their next cycle. Hence the narrower banner below, scoped to the
-            own view and carrying BOTH residuals; curated rows are
-            reference-only backtests, all verified fresh, where neither
-            residual makes a claim. */}
+            backtest/live interpreter divergence is fully retired as of
+            2026-08-20: F1/F4–F10 landed earlier, and F2 (live position FSM)
+            + F3 (rebalance cadence) landed via PR #1320 — parity-pinned
+            per-bar in test_interpreter_parity.py — and were verified running
+            on the redeployed agent runner, so the old divergence clause here
+            was removed (its claim became false). The ONE remaining residual:
+            the own view still holds July-era rows for older generated
+            strategies that predate the corrections and refresh on their next
+            cycle — hence the single-caveat banner below, scoped to the own
+            view; curated rows are reference-only backtests, all verified
+            fresh. */}
         {isOwn && (
           <div
             role="status"
@@ -200,12 +199,9 @@ export default function Leaderboard() {
               color: 'var(--text-2)',
             }}
           >
-            <strong style={{ color: 'var(--warning, #b45309)' }}>Two caveats on your figures.</strong>{' '}
+            <strong style={{ color: 'var(--warning, #b45309)' }}>One caveat on your figures.</strong>{' '}
             Older strategies may still show numbers computed before the August engine corrections —
-            they refresh on their next backtest cycle. And live execution currently interprets
-            entry/exit state and rebalance cadence differently than the backtest does, so a strategy
-            run live may not behave exactly as its figures describe; a fix is prepared and awaiting
-            live-trading sign-off.
+            they refresh on their next backtest cycle.
           </div>
         )}
         {engine?.disclaimer && (

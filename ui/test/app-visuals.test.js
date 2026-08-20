@@ -143,16 +143,20 @@ const leaderboard = readFileSync(
 	"utf8",
 );
 
-test("leaderboard caveat banner is own-scope-gated and carries both residuals (#1306)", () => {
+test("leaderboard caveat banner is own-scope-gated with only the refresh residual (#1306, F2/F3 landed)", () => {
 	// The broad unconditional banner ("known to be incorrect") is retired for
 	// the curated view, whose freshness was verified against prod.
 	assert.doesNotMatch(leaderboard, /known to be incorrect/);
 	// The remaining banner renders ONLY under isOwn — the gate expression must
 	// immediately precede the banner's status div.
 	assert.match(leaderboard, /\{isOwn && \(\s*<div\s*\n?\s*role="status"/);
-	// Both residuals, by their load-bearing phrases: pre-correction rows that
-	// refresh later, and the held backtest/live interpreter divergence.
+	// The one remaining residual: pre-correction rows that refresh later.
 	assert.match(leaderboard, /before the August engine corrections/);
-	assert.match(leaderboard, /entry\/exit state and rebalance cadence/);
-	assert.match(leaderboard, /awaiting\s*\n?\s*live-trading sign-off/);
+	// The interpreter-divergence clause is RETIRED (F2/F3 landed via #1320,
+	// parity-pinned, verified on the redeployed runner) — its claim would now
+	// be false, so it must not reappear in the rendered banner text. (The
+	// comment block documenting the retirement legitimately mentions the
+	// fixes, so pin the banner's own load-bearing phrases, not the comment.)
+	assert.doesNotMatch(leaderboard, /live execution currently interprets/);
+	assert.doesNotMatch(leaderboard, /awaiting\s*\n?\s*live-trading sign-off/);
 });
