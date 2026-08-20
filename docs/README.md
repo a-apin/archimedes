@@ -45,6 +45,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`api/chat.md`](api/chat.md) | current | Dan Browne | 2026-08-20 | `/api/vaults/{address}/chat*` — per-vault chat: public reads, linked-wallet writes, internal-only system events. |
 | [`api/leaderboard-and-metrics.md`](api/leaderboard-and-metrics.md) | current | Dan Browne | 2026-08-20 | `/api/leaderboard` and the public, PII-free `/api/metrics/*` traction surface. |
 | [`api/admin-private.md`](api/admin-private.md) | current | Dan Browne | 2026-08-20 | `/api/metrics/private/*` — the platform-admin-gated cost/ops dashboard and per-wallet identity roster. |
+| [`api-surface-status.md`](api-surface-status.md) | current | Dan Browne | 2026-08-20 | Census of every router `backend/archimedes/main.py` registers: prefix, auth model, status, and whether a detailed doc above covers it (15/30 do). Backed by a completeness test that fails CI if a registered router has no row. |
 
 ## Product
 
