@@ -16,6 +16,7 @@ from archimedes.api.limiter import limiter
 from archimedes.services.rigor_evaluator import (
     assert_self_contained_cohort_correlation,
     compute_average_pairwise_correlation,
+    compute_board_level_fdr,
     compute_library_pbo,
     compute_pbo,
     load_daily_returns_store,
@@ -87,6 +88,31 @@ class LibraryPbo(BaseModel):
     source: str = "library_cscv"  # provenance label; "unavailable" when value is None
 
 
+class BoardLevelFdr(BaseModel):
+    """Board-level Benjamini-Hochberg FDR correction across the whole leaderboard
+    cohort (#1185).
+
+    Disclosing board-level selection bias ("the best of N strategies is a
+    stronger claim than one strategy graded on its own merits") is not the same
+    as CORRECTING for it — this is the correction. Distinct axis from
+    ``num_trials`` (#1075's PER-STRATEGY, self-contained multiple-testing
+    convention, unaffected by this): this is the multiple-testing correction
+    across the SIMULTANEOUS "true Sharpe > 0" claims made by every strategy
+    currently on the board.
+
+    ADVISORY — see ``compute_board_level_fdr``'s docstring for the full
+    scope-decision rationale: this does NOT gate ``passes_all`` at any
+    strictness level. ``value is None`` (fail-closed / store-absent shape) is
+    intentionally NOT a state this model carries — an empty cohort just yields
+    ``n_tested=0, n_significant=0``, which is honest (nothing to correct) rather
+    than fabricated.
+    """
+
+    fdr_level: float = 0.05
+    n_tested: int = 0  # cohort size m: strategies with a finite dsr_p_value
+    n_significant: int = 0  # count of board_fdr_significant == True after correction
+
+
 class StrategyRigorResult(BaseModel):
     """Rigor gate result for a single strategy.
 
@@ -124,6 +150,12 @@ class StrategyRigorResult(BaseModel):
     # got far enough to compute a num_trials at all — never silently implies a
     # trustworthy value.
     num_trials_scope: str = "unspecified"
+    # Board-level BH-FDR correction (#1185) — see BoardLevelFdr / compute_board_level_fdr
+    # for the scope decision. ADVISORY: never affects passes_all. None when this
+    # strategy had no finite dsr_p_value to correct (mirrors dsr_p_value's own
+    # None/MISSING convention above).
+    board_fdr_significant: bool | None = None
+    board_fdr_adjusted_p: float | None = None
 
 
 class RigorGateResponse(BaseModel):
@@ -137,6 +169,8 @@ class RigorGateResponse(BaseModel):
     # The strictness level the ``passing``/``failing`` counts + each
     # ``passes_all`` were evaluated at (1 = strictest/badge … 5 = loosest).
     strictness_level: int = 1
+    # Board-level BH-FDR correction across this response's cohort (#1185).
+    board_level_fdr: BoardLevelFdr = BoardLevelFdr()
 
 
 class StrictnessLevelInfo(BaseModel):
@@ -450,6 +484,28 @@ async def evaluate_rigor_gate(
     # per-strategy always agree, on both cache hits and misses.
     results = [r.model_copy(update={"library_pbo": library_pbo}) for r in results]
 
+    # Board-level BH-FDR correction (#1185) — computed fresh over THIS response's
+    # served cohort, same reconciliation pattern as library_pbo above and for the
+    # same reason: on a rigor_cache HIT, recomputing here (cheap — pure numpy over
+    # <= a few hundred p-values) guarantees the correction always matches the
+    # exact strategy set actually being returned, never a stale cache-write-time
+    # cohort. ADVISORY only — see BoardLevelFdr / compute_board_level_fdr for the
+    # explicit scope decision; this never changes passes_all.
+    board_fdr = compute_board_level_fdr({r.strategy_id: r.dsr_p_value for r in results})
+    results = [
+        r.model_copy(
+            update={
+                "board_fdr_significant": board_fdr.get(r.strategy_id, {}).get("board_fdr_significant"),
+                "board_fdr_adjusted_p": board_fdr.get(r.strategy_id, {}).get("board_fdr_adjusted_p"),
+            }
+        )
+        for r in results
+    ]
+    board_level_fdr = BoardLevelFdr(
+        n_tested=len(board_fdr),
+        n_significant=sum(1 for v in board_fdr.values() if v["board_fdr_significant"]),
+    )
+
     passing = sum(1 for r in results if r.passes_all)
     return RigorGateResponse(
         strategies=results,
@@ -458,6 +514,7 @@ async def evaluate_rigor_gate(
         failing=len(results) - passing,
         library_pbo=library_pbo,
         strictness_level=strictness,
+        board_level_fdr=board_level_fdr,
     )
 
 
