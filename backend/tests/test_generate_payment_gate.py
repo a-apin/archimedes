@@ -159,3 +159,97 @@ def test_quote_endpoint_is_public_and_reports_the_flag(monkeypatch) -> None:
     assert body["payment_required"] is False
     assert body["price"] == "$0.150000"
     assert body["pricing_model"] == "flat_v1"
+
+
+# ── G8: the paywall × entitlement matrix (test-audit Tranche 4) ──────────────
+# The two 402s on /start are distinguishable by SHAPE: the paywall's carries
+# the PAYMENT-REQUIRED header and a dict detail (reason="payment_required");
+# the entitlement's is a plain-string detail with no payment header. That
+# shape difference is what makes the gate ORDER testable end to end:
+# quota → wallet link → payment → entitlement → enqueue.
+
+_PREMIUM_MODEL = "us.anthropic.claude-sonnet-4-6"  # mirrors test_model_gating
+
+
+def _paywalled(monkeypatch, *, dry_run: bool) -> None:
+    monkeypatch.setenv("GENERATION_PAYMENT_REQUIRED", "true")
+    monkeypatch.setenv("GENERATION_PAYMENT_RECIPIENT", RECIPIENT)
+    monkeypatch.setenv("PAYMENTS_DRY_RUN", "true" if dry_run else "false")
+
+
+def test_unpaid_entitled_premium_still_gets_the_paywall_402(monkeypatch) -> None:
+    """Entitlement does not buy past payment: an ENTITLED premium request with
+    no payment is refused by the PAYWALL (dict detail + PAYMENT-REQUIRED
+    header), never the entitlement 402."""
+    _paywalled(monkeypatch, dry_run=False)
+    monkeypatch.setenv("PREMIUM_MODELS_ENABLED", "true")
+    store = _mock_store()
+    p1, p2 = _harness(store)
+    with p1, p2:
+        resp = _client().post("/api/generate/start", json={**_BODY, "model": _PREMIUM_MODEL}, cookies=auth_cookies())
+    assert resp.status_code == 402
+    assert "PAYMENT-REQUIRED" in resp.headers
+    assert resp.json()["detail"]["reason"] == "payment_required"
+    store.enqueue.assert_not_called()
+
+
+def test_unpaid_non_entitled_premium_gets_the_paywall_402_not_entitlements(monkeypatch) -> None:
+    """Same request minus the entitlement: STILL the paywall's 402. This is the
+    ordering detector — if entitlement ran before payment, this response would
+    be the plain-string entitlement 402 with no PAYMENT-REQUIRED header."""
+    _paywalled(monkeypatch, dry_run=False)
+    monkeypatch.delenv("PREMIUM_MODELS_ENABLED", raising=False)
+    store = _mock_store()
+    p1, p2 = _harness(store)
+    with p1, p2:
+        resp = _client().post("/api/generate/start", json={**_BODY, "model": _PREMIUM_MODEL}, cookies=auth_cookies())
+    assert resp.status_code == 402
+    assert "PAYMENT-REQUIRED" in resp.headers
+    assert resp.json()["detail"]["reason"] == "payment_required"
+    store.enqueue.assert_not_called()
+
+
+def test_paid_non_entitled_premium_is_refused_by_the_entitlement_gate(monkeypatch) -> None:
+    """Payment satisfied, entitlement absent: the ENTITLEMENT 402 — plain-string
+    detail, NO payment header, explicit no-downgrade wording. Paying does not
+    buy a premium model, and the request is not silently downgraded."""
+    _paywalled(monkeypatch, dry_run=True)
+    monkeypatch.delenv("PREMIUM_MODELS_ENABLED", raising=False)
+    store = _mock_store()
+    p1, p2 = _harness(store)
+    with p1, p2:
+        resp = _client().post(
+            "/api/generate/start",
+            json={**_BODY, "model": _PREMIUM_MODEL},
+            cookies=auth_cookies(),
+            headers={"Payment-Signature": _payment_header("0x" + "ab" * 20)},
+        )
+    assert resp.status_code == 402
+    assert "PAYMENT-REQUIRED" not in resp.headers
+    detail = resp.json()["detail"]
+    assert isinstance(detail, str)
+    assert "entitlement" in detail
+    assert "not downgraded" in detail
+    store.enqueue.assert_not_called()
+
+
+def test_paid_entitled_premium_runs_the_full_gauntlet_to_enqueue(monkeypatch) -> None:
+    """The entitled-payer SUCCESS case: payment + entitlement + premium model →
+    202, enqueued — and the payload's model provenance is HONEST: premium ids
+    are not in the free-tier allowlist, so the recorded model is None (env
+    default) until Bedrock activation can actually serve them (B5). A silent
+    claim that premium ran would be a false provenance record."""
+    _paywalled(monkeypatch, dry_run=True)
+    monkeypatch.setenv("PREMIUM_MODELS_ENABLED", "true")
+    store = _mock_store()
+    p1, p2 = _harness(store)
+    with p1, p2:
+        resp = _client().post(
+            "/api/generate/start",
+            json={**_BODY, "model": _PREMIUM_MODEL},
+            cookies=auth_cookies(),
+            headers={"Payment-Signature": _payment_header("0x" + "ab" * 20)},
+        )
+    assert resp.status_code == 202
+    store.enqueue.assert_awaited_once()
+    assert store.enqueue.await_args.kwargs["payload"]["model"] is None
