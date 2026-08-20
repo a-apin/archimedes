@@ -127,7 +127,14 @@ class RigorGateVerdict:
         circuits straight to the ``degenerate()`` verdict — ``result.passes_all``
         would already be ``False`` for it (via ``blocked_by_floor``), but folding
         it into the ordinary PASS/FAIL branch would misreport "the data is
-        broken" as "the strategy was graded and lost."
+        broken" as "the strategy was graded and lost." Reads the plain
+        ``is_degenerate`` attribute rather than ``result.tri_state_status``
+        (rigor_evaluator.py) so this stays constructible from any object
+        exposing ``is_degenerate``/``passes_all``/``min_passing_level``/
+        ``blocked_by_floor`` — including the ``MagicMock`` doubles the chat/
+        portfolio-agent test suites build (see test_chat_service.py
+        ``TestCuratedRigorStatuses``) — without also having to stub a
+        ``tri_state_status`` property on every one of them.
         """
         if getattr(result, "is_degenerate", False):
             return cls.degenerate()
