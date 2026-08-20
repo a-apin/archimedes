@@ -170,37 +170,44 @@ export default function Leaderboard() {
             </button>
           </div>
         )}
-        {/* PROVISIONAL-DATA BANNER — remove this whole block once the backtest
-            re-run completes and the figures below are trustworthy again.
-            A routing defect (fixed in #1203) meant most library strategies were
-            backtested against a hardcoded SPY default instead of their own
-            declared ASSET_UNIVERSE. Cross-sectional strategies fared worst:
-            given a single feed they had nothing to rank, so they emitted zero
-            trades and a flat 0% return, which the rigor gate then graded as
-            though it were a result.
-            Saying so out loud is the only option consistent with the product's
-            own thesis: taking the page down would hide the demonstration, and
-            leaving it silently wrong is the exact failure this product exists
-            to oppose. */}
-        <div
-          role="status"
-          style={{
-            marginTop: 10,
-            padding: '10px 14px',
-            borderLeft: '3px solid var(--warning, #b45309)',
-            background: 'var(--warning-bg, rgba(180,83,9,0.10))',
-            borderRadius: 4,
-            fontSize: 13,
-            color: 'var(--text-2)',
-          }}
-        >
-          <strong style={{ color: 'var(--warning, #b45309)' }}>Provisional — figures are being re-computed.</strong>{' '}
-          Two defects are being corrected. A routing defect meant most strategies were backtested against the
-          wrong asset universe. Separately, the backtest and live-trading engines were found to interpret the
-          same strategy differently — so for some strategies these figures describe behaviour that differs
-          from what the strategy would actually do. Figures shown are known to be incorrect and will change.
-        </div>
-
+        {/* The broad provisional-data banner that lived here named TWO defects.
+            The routing defect (#1203) is retired everywhere: the post-fix
+            re-run landed fresh rows for every curated strategy (verified
+            against prod 2026-08-19 — backtest_results max created_at
+            2026-08-20 03:28 UTC; zero curated strategies stale). The
+            backtest/live interpreter divergence is retired only in part:
+            F1/F4–F10 are fixed, but F2 (stateless entry-AND-NOT-exit live vs
+            the backtest's position FSM) and F3 (rebalance cadence never read
+            live) are prepared and HELD for the live-money go-ahead — and
+            exit + rebalance_frequency are REQUIRED DSL fields, so every
+            generated strategy carries them. The own view ALSO still holds
+            July-era rows for older generated strategies (21 ids at the time
+            of verification) that predate the corrections and refresh on
+            their next cycle. Hence the narrower banner below, scoped to the
+            own view and carrying BOTH residuals; curated rows are
+            reference-only backtests, all verified fresh, where neither
+            residual makes a claim. */}
+        {isOwn && (
+          <div
+            role="status"
+            style={{
+              marginTop: 10,
+              padding: '10px 14px',
+              borderLeft: '3px solid var(--warning, #b45309)',
+              background: 'var(--warning-bg, rgba(180,83,9,0.10))',
+              borderRadius: 4,
+              fontSize: 13,
+              color: 'var(--text-2)',
+            }}
+          >
+            <strong style={{ color: 'var(--warning, #b45309)' }}>Two caveats on your figures.</strong>{' '}
+            Older strategies may still show numbers computed before the August engine corrections —
+            they refresh on their next backtest cycle. And live execution currently interprets
+            entry/exit state and rebalance cadence differently than the backtest does, so a strategy
+            run live may not behave exactly as its figures describe; a fix is prepared and awaiting
+            live-trading sign-off.
+          </div>
+        )}
         {engine?.disclaimer && (
           <div style={{ marginTop: 10, padding: '8px 12px', borderLeft: '3px solid var(--accent)', background: 'var(--accent-muted)', borderRadius: 4, fontSize: 13, color: 'var(--text-2)' }}>
             <strong style={{ color: 'var(--accent)' }}>Testnet — paper/simulated.</strong> {engine.disclaimer}
