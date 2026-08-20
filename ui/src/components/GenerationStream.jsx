@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import RejectedCandidates from './RejectedCandidates'
+import { apiPost } from '../api'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -113,6 +114,8 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
   const [showRejected, setShowRejected] = useState(false)
   const [draftedCandidates, setDraftedCandidates] = useState([])  // {candidate_id, strategy_name, regime, strategy_id}
   const [failedRegimes, setFailedRegimes] = useState([])  // {regime, message}
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState('')
   const esRef = useRef(null)
   const scrollRef = useRef(null)
   // Mirror of `terminal` so the EventSource `onerror` handler reads the current
@@ -129,6 +132,8 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
     setStrategyId(null)
     setServedModel(null)
     setErrorMsg('')
+    setCancelling(false)
+    setCancelError('')
 
     const url = `${API_BASE}/api/generate/stream/${encodeURIComponent(jobId)}`
     const es = new EventSource(url)
@@ -206,6 +211,28 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
 
   const consideredCount = events.find(e => e.name === 'best_selected')?.data?.considered_count || 0
 
+  // The actual Cancel action (#1355) — POST /api/generate/jobs/{id}/cancel.
+  // Distinct from `onReset`/`hideReset` above: those control ONLY whether
+  // this component renders its own "back to table" affordance (the page
+  // that mounts us may already provide one, as Generate.jsx's drill-in
+  // view does) and never called this endpoint. Best-effort: the SSE stream
+  // is the source of truth for whether the job actually stopped — once the
+  // server flips the job to `cancelled` it pushes a CANCELLED error event on
+  // this same stream, which the existing `error` handler above already
+  // renders as the terminal outcome.
+  const handleCancel = async () => {
+    if (cancelling || terminal) return
+    setCancelling(true)
+    setCancelError('')
+    try {
+      await apiPost(`/api/generate/jobs/${encodeURIComponent(jobId)}/cancel`, {})
+    } catch (e) {
+      setCancelError(e.message || 'Cancel request failed — the job may still be running.')
+    } finally {
+      setCancelling(false)
+    }
+  }
+
   return (
     <div className="card" style={{ padding: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -262,13 +289,30 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
               Considered {consideredCount} candidates
             </button>
           )}
-          {!hideReset && (
+          {/* Reachable for any running/queued job regardless of `hideReset` —
+              the `hideReset` gate below only concerns this component's OWN
+              "back to table" affordance, which is unrelated to actually
+              stopping the job (#1355: the previous single button was labeled
+              "Cancel" but its handler was `onReset`, which cancels nothing;
+              it was also unreachable because the only mount always passes
+              `hideReset`). */}
+          {!terminal && (
+            <button className="btn btn-outline btn-sm" onClick={handleCancel} disabled={cancelling}>
+              {cancelling ? 'Cancelling…' : 'Cancel'}
+            </button>
+          )}
+          {terminal && !hideReset && (
             <button className="btn btn-outline btn-sm" onClick={onReset}>
-              {terminal ? 'New generation' : 'Cancel'}
+              New generation
             </button>
           )}
         </div>
       </div>
+      {cancelError && (
+        <div className="negative caption" style={{ marginTop: -6, marginBottom: 12 }}>
+          {cancelError}
+        </div>
+      )}
 
       {/* role="log" is the right role for an append-only feed: it keeps
           announcements to newly added entries instead of re-reading the whole

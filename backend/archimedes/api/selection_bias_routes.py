@@ -7,11 +7,10 @@ page (shows full gate breakdown).
 
 from __future__ import annotations
 
-from functools import lru_cache
-
 import numpy as np
 from fastapi import APIRouter, Query, Request, Response
 
+from archimedes.api._route_helpers import strategy_provider as _provider
 from archimedes.api.limiter import limiter
 from archimedes.services.rigor_evaluator import (
     DEFAULT_BOARD_FDR_LEVEL,
@@ -32,16 +31,16 @@ from archimedes.services.rigor_profiles import (
     STRICTEST_LEVEL,
     all_profiles,
 )
-from archimedes.services.strategy_provider import LocalStrategyProvider, default_provider
 
 selection_bias_router = APIRouter(prefix="/api/selection-bias", tags=["selection-bias"])
 
-
-@lru_cache(maxsize=1)
-def _provider() -> LocalStrategyProvider:
-    """Lazily-constructed, cached strategy provider (see _route_helpers.py's
-    strategy_provider() for the full rationale). Call sites: ``_provider().foo()``."""
-    return default_provider()
+# `_provider` used to be this module's own lazily-cached strategy-provider
+# accessor. Three route modules each held a separate cache over the same
+# on-disk corpus, constructed at their own first-call time (#1356) — a
+# fixtures backfill landing between two first-calls left them permanently
+# disagreeing with each other and with the five route modules that already
+# shared `_route_helpers.strategy_provider()`. Now an alias for the same
+# shared singleton; call sites (`_provider().foo()`) are unchanged.
 
 
 # ── Schemas ──────────────────────────────────────────────────

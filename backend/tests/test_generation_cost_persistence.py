@@ -440,6 +440,7 @@ class _FakeStore:
     def __init__(self) -> None:
         self.events: list[dict] = []
         self.status: list[tuple] = []
+        self.current_status: str | None = None
 
     async def push_event(self, job_id, payload):
         self.events.append(payload)
@@ -447,6 +448,15 @@ class _FakeStore:
 
     async def update_status(self, job_id, status, *, result=None, error=""):
         self.status.append((status, result, error))
+        self.current_status = status
+
+    async def update_terminal_status(self, job_id, status, *, result=None, error=""):
+        """Mirrors ``JobStore.update_terminal_status`` (#1355): a no-op once
+        ``cancelled`` has already been recorded."""
+        if self.current_status == "cancelled":
+            return False
+        await self.update_status(job_id, status, result=result, error=error)
+        return True
 
     async def merge_result(self, job_id, patch):
         return True

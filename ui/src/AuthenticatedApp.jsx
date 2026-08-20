@@ -4,6 +4,7 @@ import { disconnectWallet, reconnectWallet } from "./config";
 import { checkLegacyWallet, listLinkedWallets } from "./linked-wallets";
 import AccountSettings from "./components/AccountSettings";
 import CorpusExplorer from "./components/CorpusExplorer";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Explore from "./components/Explore";
 import Generate from "./components/Generate";
 import Insights from "./components/Insights";
@@ -36,10 +37,14 @@ export default function AuthenticatedApp({
 	user,
 }) {
 	const [walletAddr, setWalletAddr] = useState(null);
-	// No auto-tour for anonymous visitors (#1194 revision d): its cards
-	// spotlight Generate and Library, which would bounce a logged-out browser
-	// straight to /sign-in — a modal ad for a door that's locked. The manual
-	// help-icon path still works for everyone.
+	// No AUTO-open for anonymous visitors: it would announce itself as a
+	// modal the instant an anonymous session mounts, before the visitor has
+	// done anything. The manual help-icon path (Layout's "?" button, always
+	// rendered — see onOpenTour below) does work for everyone: OnboardingTour
+	// is passed `user` and gates its own anchor-navigation on
+	// canNavigateTo(anchor, user) (#1364), so an anonymous viewer who opens
+	// the tour and reaches the library/reasoning cards gets a centered card
+	// with no anchor instead of being bounced to /sign-in.
 	const [tourOpen, setTourOpen] = useState(() => (user ? !hasCompletedOnboarding() : false));
 	const [journeyStage, setJourneyStage] = useState(null);
 	// A detected-but-unlinked browser wallet that backs pre-account (SIWE-era)
@@ -285,7 +290,11 @@ export default function AuthenticatedApp({
 						</button>
 					</div>
 				)}
-				{renderPage()}
+				<ErrorBoundary
+					key={`${route.page}:${route.strategyId ?? ""}:${route.vaultAddress ?? ""}:${route.traceId ?? ""}:${route.highlight ?? ""}:${route.tab ?? ""}`}
+				>
+					{renderPage()}
+				</ErrorBoundary>
 			</Layout>
 			<OnboardingTour
 				open={tourOpen}
@@ -298,6 +307,7 @@ export default function AuthenticatedApp({
 					}
 				}}
 				setPage={navigateToPage}
+				user={user}
 			/>
 		</>
 	);

@@ -4,11 +4,14 @@ import 'virtual:uno.css'
 import './App.css'
 import App from './App.jsx'
 import { AuthProvider } from './AuthContext.jsx'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <AuthProvider>
-      <App />
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
     </AuthProvider>
   </StrictMode>,
 )

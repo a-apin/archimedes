@@ -282,6 +282,13 @@ class StrategyResponse(BaseModel):
 class StrategyListResponse(BaseModel):
     strategies: list[StrategyResponse]
     total: int
+    # Honest degradation signal (#1356): True when the strategy provider
+    # raised or the library came back empty for a reason other than a
+    # legitimate filter (e.g. the corpus is missing from the build).
+    # `degraded_reason` names which, so the UI can show a loud, specific
+    # unavailable state instead of rendering the false claim "no strategies".
+    degraded: bool = False
+    degraded_reason: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -386,6 +393,24 @@ class TraceVerifyResponse(BaseModel):
     trace_id: int  # On-chain trace ID
     trace_hash: str
     is_verified: bool
+    # Tri-state verification outcome (#1359). No default — every code path
+    # that returns a TraceVerifyResponse must say which of these actually
+    # happened, so a future branch can't silently omit it and fall back to
+    # a value that reads as a pass:
+    #   hash_matched  — off-chain trace_hash re-fetched from the on-chain
+    #                   receipt and compared byte-for-byte; they matched.
+    #   anchored_only — no off-chain record to compare against (the store
+    #                   was reachable and simply had no entry), so only the
+    #                   on-chain anchor itself was confirmed. Zero hashes
+    #                   were compared — this is NOT a hash match and must
+    #                   not render with the same affordance as one.
+    #   failed        — off-chain record exists but was never anchored, the
+    #                   on-chain receipt is missing, or the hashes disagree.
+    # A Redis outage is deliberately NOT one of these states: it raises a
+    # 503 (see verify_trace) rather than falling through to anchored_only,
+    # because "the store is unreachable" and "the store is empty" are
+    # different facts and only the second one is a real anchored_only.
+    verification_mode: Literal["hash_matched", "anchored_only", "failed"]
     agent: str = ""
     vault: str = ""
     on_chain_timestamp: int = 0
@@ -544,11 +569,14 @@ class ContractAddressesResponse(BaseModel):
     # Individual synthetic token addresses
     synthetics: dict[str, str]  # symbol → address, e.g. {"sTSLA": "0x..."}
 
-    # AMM pool addresses
-    pools: dict[str, str]  # pair → address, e.g. {"USDC/sTSLA": "0x..."}
+    # AMM pool addresses. None means the on-chain read failed (RPC error) —
+    # distinct from {}, which means the chain was read and genuinely reports
+    # zero pools. Collapsing these into one falsy value is exactly the #1356
+    # defect: a failed read must never render as a measured zero.
+    pools: dict[str, str] | None  # pair → address, e.g. {"USDC/sTSLA": "0x..."}
 
-    # Vault addresses
-    vaults: dict[str, str]  # symbol → address, e.g. {"vMOMENTUM": "0x..."}
+    # Vault addresses. Same None-vs-{} distinction as `pools`.
+    vaults: dict[str, str] | None  # symbol → address, e.g. {"vMOMENTUM": "0x..."}
 
     # Chain info
     chain_id: int
