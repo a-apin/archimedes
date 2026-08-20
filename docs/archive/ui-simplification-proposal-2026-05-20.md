@@ -279,7 +279,7 @@ standup).
 ## See also
 
 - [`user-stories.md`](../user-stories.md) — the user stories this proposal serves
-- [`claude-design-prompts.md`](agora-2026-05/claude-design-prompts.md) — Prompts 3 (UI refinement
+- ``claude-design-prompts.md`` (routed to the private docs repo, 2026-08-19) — Prompts 3 (UI refinement
   toward this page tree) and 12 (current-vs-proposed page-map diagram)
 - [`corpus-architecture.md`](../corpus-architecture.md) — what the Library Papers tab
   is actually serving

@@ -163,7 +163,7 @@ result card (strategy spec, citations, rigor verdict, deploy CTA) + the
 Kelly + risk-parity allocation, DSR/PBO/walk-forward OOS rigor counters, six-scenario
 stress matrix, variance decomposition, correlation pairs, and the keccak reasoning-trace
 hash for the proposed portfolio — all *before* the user commits any funds). See
-Prompt 3 in [`claude-design-prompts.md`](archive/agora-2026-05/claude-design-prompts.md) for the screen
+Prompt 3 in ``claude-design-prompts.md`` (routed to the private docs repo, 2026-08-19) for the screen
 design.
 
 ### `/portfolio` My Portfolio (consolidates current Trade + Vaults + personalized Risk view)
@@ -193,7 +193,7 @@ Generate. Each strategy card links to its passport (see below).
 > verification — so I can decide whether to trust this with my USDC."*
 
 **Surfaces:** the Day-9 passport per Prompt 4 in
-[`claude-design-prompts.md`](archive/agora-2026-05/claude-design-prompts.md) — strategy name + Tier badge,
+``claude-design-prompts.md`` (routed to the private docs repo, 2026-08-19) — strategy name + Tier badge,
 academic-style paper citation, real backtest numbers with paper-claim deltas, the
 4-gate rigor panel (DSR + PBO + OOS Sharpe + look-ahead) with plain-English explainers,
 equity-curve chart, on-chain trace anchor with Verify button, source-papers section.
@@ -220,7 +220,7 @@ themselves. **This is the surface that proves we don't hide losses.**
 **Surfaces:** market context, source-signals papers, prose reasoning (with inline
 acronym definitions), action taken (before/after weights + trades + tx hashes), tool
 calls (collapsible), verification footer with hash + Verify button. See Prompt 5 in
-[`claude-design-prompts.md`](archive/agora-2026-05/claude-design-prompts.md).
+``claude-design-prompts.md`` (routed to the private docs repo, 2026-08-19).
 
 ## The jargon problem — in-line definitions, not a glossary page
 
