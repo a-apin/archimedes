@@ -9,7 +9,6 @@
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](LICENSE)
 [![Hackathon: Agora](https://img.shields.io/badge/hackathon-Agora%20Agents-violet.svg)](https://luma.com/7i50p2r9)
 [![Settled on: Arc](https://img.shields.io/badge/settled%20on-Arc-2A4DD1.svg)](https://www.arc.network/)
-[![Arc OSS Showcase](https://img.shields.io/badge/Arc%20OSS-showcase-7B2CBF.svg)](docs/archive/agora-2026-05/ARC-OSS-SHOWCASE.md)
 
 ## TL;DR
 
