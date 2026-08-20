@@ -24,7 +24,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from archimedes.api.funnel_middleware import record_funnel
 from archimedes.api.visitor_insights import record_visitor_insight
@@ -40,6 +40,7 @@ from archimedes.models.telemetry import (
     WalletIdentityOut,
     WalletsResponse,
 )
+from archimedes.api.metrics_private_routes import require_platform_admin
 from archimedes.services.funnel_store import CLIENT_EMITTABLE_STAGES, STAGES, FunnelStore
 from archimedes.services.identity_metrics import (
     count_human_wallets,
@@ -162,9 +163,21 @@ async def get_metrics() -> MetricsResponse:
     )
 
 
-@metrics_router.get("/metrics/wallets", response_model=WalletsResponse)
+@metrics_router.get(
+    "/metrics/wallets",
+    response_model=WalletsResponse,
+    dependencies=[Depends(require_platform_admin)],
+)
 async def get_wallets() -> WalletsResponse:
     """Enumerate legacy verified human wallets, separate from account count.
+
+    ADMIN-ONLY (#1366): this returns the full per-wallet roster — wallet
+    addresses are pseudonymous but permanently linkable to on-chain activity,
+    so an open enumeration endpoint let anyone list every user of the platform
+    and trace their chain history. The public metrics surface is aggregate and
+    PII-free BY DESIGN (see metrics_private_routes' module docstring); a
+    per-identity roster belongs behind the same admin gate as the ops
+    dashboard. Anonymous → 401; verified non-admin wallet → 403.
 
     ``real_users`` field is retained for response compatibility but means wallet
     count on this endpoint only. Fail-safe: empty list / zero on DB error.
@@ -176,9 +189,16 @@ async def get_wallets() -> WalletsResponse:
     )
 
 
-@metrics_router.get("/metrics/wallets/connections", response_model=WalletConnectionsResponse)
+@metrics_router.get(
+    "/metrics/wallets/connections",
+    response_model=WalletConnectionsResponse,
+    dependencies=[Depends(require_platform_admin)],
+)
 async def get_wallet_connections() -> WalletConnectionsResponse:
     """ "Which wallets connected, and when" — issue #1028 AC2.
+
+    ADMIN-ONLY (#1366) for the same reason as ``/metrics/wallets`` above: a
+    per-wallet first-connection ledger is identity data, not aggregate traction.
 
     ``SELECT wallet, min(occurred_at) FROM identity_events WHERE event_type =
     'auth_verified' GROUP BY wallet`` — a query that was impossible before the
