@@ -1180,3 +1180,145 @@ class TestCacheKeyReactsToStrategyCodeChange:
             # across the whole test session) — restore the mutated attribute so
             # this test can't leak state into any other test.
             target.strategy_code_hash = original_hash
+
+
+class TestBoardLevelFdrWiring:
+    """#1185: GET /api/selection-bias/gate wires benjamini_hochberg_fdr in via
+    compute_board_level_fdr — end-to-end through the real HTTP route, real
+    run_rigor_gate DSR computation, and the response schema. Distinct from the
+    pure-math unit tests (TestBenjaminiHochbergFDR / TestComputeBoardLevelFdr in
+    test_rigor_evaluator.py): this exercises the actual wiring this issue's
+    acceptance criteria requires — a real call site outside backend/tests."""
+
+    @staticmethod
+    def _strong_series(seed: int, n: int = 756) -> list[float]:
+        # Long, low-vol, solidly positive drift → dsr_p_value should land close
+        # to 1.0 (confident evidence of a real positive Sharpe).
+        return np.random.default_rng(seed).normal(0.002, 0.008, n).tolist()
+
+    @staticmethod
+    def _weak_series(seed: int, n: int = 300) -> list[float]:
+        # Near-zero drift → weak/borderline DSR evidence, individually
+        # insignificant even before any board-level correction.
+        return np.random.default_rng(seed).normal(0.0001, 0.01, n).tolist()
+
+    def _patch_returns(self, monkeypatch, returns_by_strategy: dict[str, list[float]]):
+        monkeypatch.setattr(
+            "archimedes.services.backtest_repository.get_all_daily_returns",
+            lambda session, ids: dict(returns_by_strategy),
+        )
+
+    @pytest.mark.asyncio
+    async def test_board_level_fdr_field_present_and_matches_pure_function(self, monkeypatch):
+        """The response's board_level_fdr + per-strategy board_fdr_* fields must
+        reflect an ACTUAL benjamini_hochberg_fdr call over the served cohort's
+        real dsr_p_value outputs — not a placeholder. Cross-checks by feeding
+        the response's own dsr_p_value list back through
+        rigor_evaluator.compute_board_level_fdr directly and asserting the
+        route's numbers match exactly."""
+        from archimedes.api import selection_bias_routes as routes
+        from archimedes.main import app
+        from archimedes.services.rigor_evaluator import compute_board_level_fdr
+
+        strategies = routes._provider().list_strategies()
+        assert len(strategies) >= 6, "need >=6 curated strategies to build this cohort"
+        ids = [s.id for s in strategies[:6]]
+
+        returns = {
+            ids[0]: self._strong_series(0),
+            ids[1]: self._weak_series(1),
+            ids[2]: self._weak_series(2),
+            ids[3]: self._weak_series(3),
+            ids[4]: self._weak_series(4),
+            ids[5]: [0.001] * 5,  # too short (<10) → MISSING, must be excluded
+        }
+        self._patch_returns(monkeypatch, returns)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/selection-bias/gate")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        by_id = {r["strategy_id"]: r for r in data["strategies"]}
+
+        # The MISSING (too-short) row must not be assigned a fabricated verdict.
+        assert by_id[ids[5]]["dsr_p_value"] is None
+        assert by_id[ids[5]]["board_fdr_significant"] is None
+        assert by_id[ids[5]]["board_fdr_adjusted_p"] is None
+
+        tested_ids = ids[:5]
+        for sid in tested_ids:
+            assert by_id[sid]["dsr_p_value"] is not None, f"{sid} should have a finite DSR p-value"
+            assert by_id[sid]["board_fdr_significant"] is not None
+            assert by_id[sid]["board_fdr_adjusted_p"] is not None
+
+        assert data["board_level_fdr"]["n_tested"] == len(tested_ids)
+        assert data["board_level_fdr"]["fdr_level"] == pytest.approx(0.05)
+        assert 0 <= data["board_level_fdr"]["n_significant"] <= data["board_level_fdr"]["n_tested"]
+
+        # Rebuild the correction independently from the SAME served dsr_p_values
+        # and require an exact match — proves this is a real computation over
+        # the real cohort, not a stub.
+        expected = compute_board_level_fdr({sid: by_id[sid]["dsr_p_value"] for sid in tested_ids})
+        for sid in tested_ids:
+            assert by_id[sid]["board_fdr_significant"] == expected[sid]["board_fdr_significant"]
+            assert by_id[sid]["board_fdr_adjusted_p"] == pytest.approx(expected[sid]["board_fdr_adjusted_p"])
+        assert data["board_level_fdr"]["n_significant"] == sum(
+            1 for v in expected.values() if v["board_fdr_significant"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_board_fdr_is_advisory_never_gates_passes_all(self, monkeypatch):
+        """Forcing compute_board_level_fdr to report every strategy as
+        board-FDR-NON-significant must not flip a single passes_all verdict —
+        the scope decision (compute_board_level_fdr's docstring) is annotation
+        only. This is the adversarial check: an implementation bug that
+        accidentally threaded board_fdr_significant into passes_all would be
+        caught here by the verdicts changing when the forced value flips."""
+        from archimedes.api import selection_bias_routes as routes
+        from archimedes.main import app
+
+        strategies = routes._provider().list_strategies()
+        assert len(strategies) >= 3
+        ids = [s.id for s in strategies[:3]]
+        returns = {
+            ids[0]: self._strong_series(10),
+            ids[1]: self._strong_series(11),
+            ids[2]: self._strong_series(12),
+        }
+        self._patch_returns(monkeypatch, returns)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp_baseline = await client.get("/api/selection-bias/gate")
+        assert resp_baseline.status_code == 200
+        baseline_passes = {r["strategy_id"]: r["passes_all"] for r in resp_baseline.json()["strategies"]}
+        baseline_min_level = {r["strategy_id"]: r["min_passing_level"] for r in resp_baseline.json()["strategies"]}
+
+        # Force every strategy to be board-FDR non-significant (the maximally
+        # adversarial forced value — real corrections would rarely reject 100%).
+        monkeypatch.setattr(
+            routes,
+            "compute_board_level_fdr",
+            lambda dsr_p_values, fdr_level=0.05: {
+                sid: {"board_fdr_significant": False, "board_fdr_adjusted_p": 1.0}
+                for sid, p in dsr_p_values.items()
+                if p is not None
+            },
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp_forced = await client.get("/api/selection-bias/gate")
+        assert resp_forced.status_code == 200
+        forced_by_id = {r["strategy_id"]: r for r in resp_forced.json()["strategies"]}
+
+        # The forced patch DID take effect (sanity check the patch is live)...
+        for sid in ids:
+            assert forced_by_id[sid]["board_fdr_significant"] is False
+            assert forced_by_id[sid]["board_fdr_adjusted_p"] == pytest.approx(1.0)
+        # ...yet every passes_all / min_passing_level verdict is byte-identical
+        # to the baseline where the real correction ran.
+        for sid in ids:
+            assert forced_by_id[sid]["passes_all"] == baseline_passes[sid], (
+                f"board_fdr_significant must never gate passes_all (strategy {sid})"
+            )
+            assert forced_by_id[sid]["min_passing_level"] == baseline_min_level[sid]
