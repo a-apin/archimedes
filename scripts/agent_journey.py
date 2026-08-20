@@ -650,6 +650,18 @@ def main() -> int:
         print(f"\nRESULT: journey {'completed' if ok else 'partial (no verdict read)'} — job_id={job_id}")
 
         paper_id = step_paper(client, readback.get("winner")) if args.paper else None
+        if paper_id and args.ephemeral:
+            # A disposable account is unreachable after this run, so its paper
+            # deployment would accumulate as an orphan on --base forever. Stop
+            # it (freezes the ledger honestly); real-account runs deliberately
+            # leave the deployment ACTIVE — the running ledger is the point.
+            try:
+                stop = client.post(f"/api/paper/deployments/{paper_id}/stop")
+                print(
+                    f"  · ephemeral run: paper deployment {'stopped' if stop.is_success else f'stop failed (HTTP {stop.status_code})'}"
+                )
+            except httpx.HTTPError as exc:
+                print(f"  · ephemeral run: paper deployment stop failed ({exc})")
 
         vault_address = step_deploy(
             client,
