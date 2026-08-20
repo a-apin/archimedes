@@ -941,17 +941,18 @@ class TestAdvisorRoutes:
         assert summary["dsr_significant"] == expected
 
     def test_build_rigor_summary_empty_branch_carries_same_keys_as_populated_branch(self):
-        """#1358 round-2 review: ``_build_rigor_summary``'s ``n == 0`` early
+        """#1358 round-2/3 review: ``_build_rigor_summary``'s ``n == 0`` early
         return must carry the SAME key set as its populated-case return, so
         every consumer that reads ``dsr_significant_threshold`` /
-        ``pbo_acceptable_threshold`` unconditionally (``rigor_summary`` is
-        built unconditionally at both call sites in this route; the one
-        current UI consumer, ``PortfolioAdvisor.jsx``, happens to guard on
-        ``total_picks > 0`` today, but the API contract itself must not
-        depend on that guard existing) gets the honest floor value rather
-        than ``undefined``/a ``KeyError``.
+        ``pbo_acceptable_threshold`` / ``avg_dsr_p_value`` / ``avg_pbo_score``
+        unconditionally (``rigor_summary`` is built unconditionally at both
+        call sites in this route; the one current UI consumer,
+        ``PortfolioAdvisor.jsx``, happens to guard on ``total_picks > 0``
+        today, but the API contract itself must not depend on that guard
+        existing) gets the honest floor value rather than ``undefined``/a
+        ``KeyError``.
 
-        Source-text assertion (not a live route call): every reachable path
+        AST-based assertion (not a live route call): every reachable path
         through ``get_portfolio_advisor`` short-circuits to a *different*,
         ``rigor_summary``-free error shape (``if not scored: return
         {"error": ..., "allocations": []}``) before ``_build_rigor_summary``
@@ -960,23 +961,42 @@ class TestAdvisorRoutes:
         function's internal key-symmetry contract directly, the same way
         ``ui/test/rigor-tristate.test.js`` guards JSX branches via source
         text rather than a full render.
+
+        The two ``return {...}`` dict literals are located and diffed via
+        ``ast`` (not brace-counting/string search), so the guard survives a
+        nested dict, an f-string value, or reordered keys being added to
+        either branch later.
         """
+        import ast
         import inspect
 
         from archimedes.api import strategies_routes as sr
 
         src = inspect.getsource(sr)
-        fn_start = src.index("def _build_rigor_summary(")
-        n0_start = src.index("if n == 0:", fn_start)
-        n0_body_start = src.index("return {", n0_start)
-        n0_body_end = src.index("}", n0_body_start)
-        n0_body = src[n0_body_start : n0_body_end + 1]
+        tree = ast.parse(src)
 
-        assert '"dsr_significant_threshold"' in n0_body, (
-            f"n==0 branch is missing dsr_significant_threshold — got: {n0_body}"
+        func_node = next(
+            node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "_build_rigor_summary"
         )
-        assert '"pbo_acceptable_threshold"' in n0_body, (
-            f"n==0 branch is missing pbo_acceptable_threshold — got: {n0_body}"
+        if_node = next(node for node in ast.walk(func_node) if isinstance(node, ast.If))
+        n0_return = next(node for node in ast.walk(if_node) if isinstance(node, ast.Return))
+        populated_return = func_node.body[-1]
+        assert isinstance(populated_return, ast.Return), (
+            "expected _build_rigor_summary's final statement to be its "
+            f"populated-case return, got {ast.dump(populated_return)}"
+        )
+
+        def _dict_keys(return_node: ast.Return) -> set[str]:
+            assert isinstance(return_node.value, ast.Dict), (
+                f"expected a dict literal, got {ast.dump(return_node.value)}"
+            )
+            return {key.value for key in return_node.value.keys if isinstance(key, ast.Constant)}
+
+        n0_keys = _dict_keys(n0_return)
+        populated_keys = _dict_keys(populated_return)
+
+        assert n0_keys == populated_keys, (
+            f"n==0 branch keys {sorted(n0_keys)} != populated branch keys {sorted(populated_keys)}"
         )
 
 

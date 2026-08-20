@@ -1010,6 +1010,8 @@ async def get_portfolio_advisor(
                 "pbo_acceptable": 0,
                 "pbo_acceptable_threshold": 0.50,
                 "oos_positive": 0,
+                "avg_dsr_p_value": None,
+                "avg_pbo_score": None,
             }
         passes = sum(1 for r in active_rows if r.get("passes_rigor_gate"))
         dsr_sig = sum(
