@@ -31,6 +31,17 @@ to be conditional (artifacts present ⇒ 200) and to reject a synthesising route
 possible over-claim. Prose that describes the mechanism without asserting its state — "a
 semantic rerank with MiniLM sentence embeddings" — passes this guard and still needs a
 human read. The patterns are the floor, not the ceiling.
+
+**Point-in-time documents are deliberately NOT in ``PUBLIC_SURFACES``.** ``docs/audits/``,
+``docs/handovers/``, and ``docs/archive/`` are dated records of what was believed on a given
+day; a historical document that contains a claim later found false is not a defect, it is
+the evidence of how the error propagated. Scanning them would force a rewrite of history to
+make a test pass, which is the wrong repair. They are corrected by **annotation** instead —
+a dated claim-integrity banner at the top naming what was adjudicated false and pointing at
+the live authority, as done on ``docs/handovers/2026-07-14-architecture-review.md`` (whose
+corpus-panel and memory-layer-E bullets asserted a live stored-embedding layer) and on
+``docs/corpus-architecture.md``. If a point-in-time doc is ever rewritten into a live
+reference, it belongs in ``PUBLIC_SURFACES`` at that point and not before.
 """
 
 from __future__ import annotations
