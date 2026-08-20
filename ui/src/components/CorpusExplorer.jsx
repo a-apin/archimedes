@@ -83,7 +83,16 @@ export default function CorpusExplorer() {
     <div className="corpus-explorer">
       <div className="corpus-header">
         <h2>Research Corpus Explorer</h2>
-        {overview && (
+        {/* An overview fetch failure must stay visible on every tab, not just
+            the Overview tab — this header renders regardless of which tab is
+            active (default 'catalog'), so silently falling through to
+            `overview && (...)` here would make the outage invisible on the
+            tab a visitor lands on first (#1356). */}
+        {overviewError ? (
+          <div className="corpus-stats">
+            <span className="stat-chip">corpus stats unavailable</span>
+          </div>
+        ) : overview && (
           <div className="corpus-stats">
             <span className="stat-chip">{overview.total_papers?.toLocaleString()} papers</span>
             <span className="stat-chip">{overview.categories?.length} categories</span>

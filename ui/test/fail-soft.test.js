@@ -61,6 +61,19 @@ test("Strategies.jsx tracks genRes / gateRes / publishedRes failures separately"
 	assert.doesNotMatch(strategies, /empty state is the honest fallback/);
 });
 
+test("Strategies.jsx's Examples feed treats a fulfilled-but-degraded response as a failure, not a real empty library", () => {
+	// /api/strategies/ (the seed/Examples feed) can now return HTTP 200 with
+	// `{strategies: [], degraded: true}` when the provider raised — a 2xx is
+	// not proof the fetch actually succeeded, so a fulfilled promise alone
+	// must not be trusted to mean "the library is genuinely empty" (#1356
+	// re-occurring on the very PR meant to close it — a fulfilled seedRes
+	// with degraded:true used to fall straight through to setExamples([])
+	// with loadError never set, painting the false "No example strategies
+	// loaded." instead of the loud loadError banner).
+	assert.match(strategies, /if \(seedRes\.value\.degraded\) \{/);
+	assert.match(strategies, /setLoadError\(seedRes\.value\.degraded_reason/);
+});
+
 test("Strategies.jsx's generated panel has the same loading guard Examples/Published already have", () => {
 	// Examples/Published: `{loading && <div className="caption mb-4">Loading…</div>}`
 	// then a separate `{!loading && (...)}` block. Generated now uses a
@@ -104,6 +117,16 @@ test("CorpusExplorer.jsx's catalog tab suppresses the papers-found count on a fa
 	assert.match(corpusExplorer, /setCatalogError\(true\)/);
 	assert.match(corpusExplorer, /catalogError \? \(/);
 	assert.match(corpusExplorer, /Catalog unavailable/);
+});
+
+test("CorpusExplorer.jsx's header stat chips stay visible on an overview failure, on every tab", () => {
+	// The header (papers/categories/source chips) renders once, above the
+	// per-tab content, so `tab === 'catalog'` (the default) must not hide an
+	// overview outage behind a tab the visitor never opens. Must not fall
+	// straight through to the bare `overview && (...)` — that silently
+	// renders nothing, indistinguishable from "still loading".
+	assert.match(corpusExplorer, /overviewError \? \(/);
+	assert.match(corpusExplorer, /corpus stats unavailable/);
 });
 
 // ── Item 5-6: degraded leaderboard must not fall through to a false claim ─

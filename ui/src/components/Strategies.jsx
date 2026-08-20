@@ -722,6 +722,14 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
           (a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status)
         )
         setExamples(sorted)
+        // A 2xx response can still mean the fetch failed: the backend swallows a
+        // provider exception into `degraded: true` with an empty list rather than
+        // a 500 (#1356's own fix, applied to this same route) so a fulfilled
+        // promise is not proof of a real empty library — check the flag before
+        // trusting the empty state.
+        if (seedRes.value.degraded) {
+          setLoadError(seedRes.value.degraded_reason || 'Failed to load examples')
+        }
       } else {
         setLoadError(seedRes.reason?.message || 'Failed to load examples')
       }
