@@ -968,7 +968,19 @@ class ChainExecutor:
                 # would permanently foreclose the vault's returns with no retry.
                 # A failed/unknown token therefore aborts the WRITE (leaving no
                 # key), and the next tick gets a fresh chance at a complete one.
-                expected = {normalize_token(t) for t, w in zip(tokens, weights_bps, strict=False) if w > 0}
+                #
+                # KNOWN LIMITATION (documented, #1201 review): the baseline is
+                # one-shot — a vault that later rebalances into a token absent
+                # from its first-tick baseline reads back as returns-unavailable
+                # permanently (honest, never fabricated, but not self-healing).
+                # Extending an existing baseline when NEW tokens enter the
+                # allocation set is a deliberate follow-up, not a drive-by edit:
+                # the extension price is read at extension time, which is a
+                # different epoch than the original baseline.
+                # strict=True: both callers build tokens/weights in lockstep today, but a
+                # future desync must fail loudly here rather than silently truncate the
+                # completeness check's view (#1201 review).
+                expected = {normalize_token(t) for t, w in zip(tokens, weights_bps, strict=True) if w > 0}
                 prices: dict[str, float] = {}
                 for token_lower in expected:
                     try:
