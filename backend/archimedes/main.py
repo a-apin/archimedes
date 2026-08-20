@@ -755,6 +755,27 @@ async def health():
     except Exception:
         logger.debug("kb artifact probe failed", exc_info=True)
 
+    # Reveal-reconciliation observability (issue #1353, hardening #1352's
+    # audit-G9 pass). Both counts come off the durable index (SCARD is O(1),
+    # not a scan). "terminal" is the alertable state — should sit at/near
+    # zero in steady state; a sustained rise means dangling reveals are
+    # accumulating faster than the pass resolves them. Fail-safe like every
+    # other Redis-backed field on this endpoint: a Redis outage reports 0
+    # rather than 500ing the whole health check.
+    reveal_reconcile_pending = 0
+    reveal_reconcile_terminal = 0
+    try:
+        from archimedes.services.redis_state import AgentStateStore
+
+        _reconcile_store = AgentStateStore()
+        try:
+            reveal_reconcile_pending = await _reconcile_store.get_reveal_reconcile_pending_count()
+            reveal_reconcile_terminal = await _reconcile_store.get_reveal_reconcile_terminal_count()
+        finally:
+            await _reconcile_store.close()
+    except Exception:
+        logger.debug("reveal reconciliation counts read failed", exc_info=True)
+
     return {
         "status": "ok" if connected else "degraded",
         "service": "archimedes-backend",
@@ -809,6 +830,11 @@ async def health():
         # Strategy-library presence (issue #1039) — 0 means the image is missing
         # analytics-engine/strategies (the Fargate-cutover regression). CI gates on > 0.
         "strategy_count": strategy_count,
+        # Reveal-reconciliation gauges (issue #1353). "pending" = currently
+        # dangling commitments awaiting a retry; "terminal" = permanently
+        # gave up (countable/alertable — should stay near zero).
+        "reveal_reconcile_pending": reveal_reconcile_pending,
+        "reveal_reconcile_terminal": reveal_reconcile_terminal,
     }
 
 
