@@ -63,7 +63,11 @@ export async function apiPost(path, body) {
  * response the thrown Error also carries `err.detail` — the parsed body's
  * `detail` field (FastAPI's error-body convention) — so callers can read a
  * structured `{reason, message, ...}` instead of only the status code
- * apiPost's Error already carries via `err.status`.
+ * apiPost's Error already carries via `err.status` — AND `err.headers`, the
+ * raw response `Headers` (e.g. the paywall's PAYMENT-REQUIRED header on a
+ * 402, read via generateQuote.js's extractPaymentRequiredHeader), since a
+ * non-2xx response still carries response headers that a caller may need
+ * even though the call is throwing.
  * @param {string} path — API path
  * @param {object} body — JSON-serializable body
  * @param {object} [extraHeaders] — additional request headers (e.g. Payment-Signature)
@@ -81,6 +85,7 @@ export async function apiPostWithMeta(path, body, extraHeaders = {}) {
     const err = new Error(`Backend returned ${res.status}`)
     err.status = res.status
     err.detail = data?.detail ?? null
+    err.headers = res.headers
     throw err
   }
   return { data, headers: res.headers }
