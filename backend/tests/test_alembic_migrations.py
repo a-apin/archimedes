@@ -611,3 +611,423 @@ def test_dedupe_backtest_results_migration_upgrade_is_idempotent(tmp_path):
 
     rows_after_second = [dict(r) for r in _fetch_backtest_rows(db_path)]
     assert rows_after_second == rows_after_first, "re-running the dedupe migration changed already-deduped data"
+
+
+# ── schema-relations Phase 1 (fb8d0bae8112): indices + gated FKs ────────────
+#
+# Three things this section proves, in order:
+#  1. The raw orphan-count SQL each gated FK uses is CORRECT against a
+#     realistic mixed fixture (some rows satisfy the invariant, some don't) —
+#     tested directly against the queries the revision module itself defines,
+#     independent of which dialect branch runs them.
+#  2. `alembic upgrade head` SUCCEEDS against that same fixture with the
+#     orphans still in place — the whole point of NOT VALID: a migration
+#     that can't proceed past unmeasured historical data is not "minimal
+#     blast radius", it's a fresh outage.
+#  3. On SQLite specifically, the Postgres-only VALIDATE CONSTRAINT branch
+#     never fires (there's nothing to validate) — proven from subprocess
+#     stdout, not by reaching into the migration's internals.
+
+_PHASE1_REVISION = "fb8d0bae8112"  # migrations/versions/fb8d0bae8112_schema_relations_phase1.py
+
+_ORPHAN_WALLET = "0x" + "c" * 40  # never anchored in wallet_identities
+_ORPHAN_STRATEGY = "strat-does-not-exist"  # never a row in strategy_store
+_REAL_WALLET = "0x" + "a" * 40
+_REAL_STRATEGY = "strat-real"
+
+
+def _phase1_module():
+    """The revision module itself — gives direct access to `_GATED_FKS` /
+    `_INDICES` so the orphan-count SQL can be exercised without duplicating
+    it here (duplicating it would test a copy, not the real thing)."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    return script.get_revision(_PHASE1_REVISION).module
+
+
+def _phase1_down_revision() -> str:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision(_PHASE1_REVISION).down_revision
+    assert isinstance(target, str), f"expected a single down_revision, got {target!r}"
+    return target
+
+
+def _seed_phase1_fixture(db_path: Path) -> None:
+    """Seed the schema AS IT STANDS immediately before fb8d0bae8112 runs
+    (i.e. at its own down_revision) with a REALISTIC mix for every gated FK:
+
+      - one wallet_identities anchor + a linked_wallets row that correctly
+        points at it (fk_linked_wallets_address_wallet_identity: 0 orphans —
+        this is the invariant `_link_verified_wallet` already enforces in
+        app code, per the migration's own docstring).
+      - one auth_users + one strategy_store row.
+      - one paper_deployments row that points at REAL strategy_store /
+        wallet_identities / auth_users rows (0 orphans on all three of its
+        gated FKs).
+      - one paper_deployments row whose strategy_id and owner_wallet point
+        at NOTHING (a genuine pre-migration orphan on
+        fk_paper_deployments_strategy_id and fk_paper_deployments_owner_wallet)
+        but whose owner_user_id is real (0 orphans on
+        fk_paper_deployments_owner_user_id) — exactly the mixed shape the
+        audit's own pre-flight queries anticipate: some FKs clean, one not.
+
+    Uses the real ORM model classes against the pre-migration schema (same
+    technique as `_seed_pre_dedupe_rows` above) rather than hand-rolled SQL,
+    so seeding tracks real column nullability/defaults instead of
+    hand-enumerating them.
+    """
+    from datetime import UTC, date, datetime
+
+    import sqlalchemy as sa
+    from archimedes.models.account import AuthUser, LinkedWallet
+    from archimedes.models.identity import WalletIdentity
+    from archimedes.models.paper_store import PaperDeployment
+    from archimedes.models.strategy_store import StrategyRecord
+    from sqlalchemy.orm import sessionmaker
+
+    engine = sa.create_engine(f"sqlite:///{db_path}")
+    SessionLocal = sessionmaker(bind=engine)
+    now = datetime.now(UTC)
+
+    with SessionLocal() as session:
+        session.add(
+            AuthUser(
+                id="user-1", name="Ada", email="ada@example.com", email_verified=True, created_at=now, updated_at=now
+            )
+        )
+        session.add(WalletIdentity(wallet_address=_REAL_WALLET, actor_class="human", first_seen_at=now))
+        session.add(
+            StrategyRecord(
+                id=_REAL_STRATEGY,
+                content_hash="0x" + "b" * 64,
+                generation_method="curated",
+                strategy_name="real strategy",
+                thesis="",
+                source_papers="[]",
+                asset_universe="[]",
+                is_example=True,
+            )
+        )
+        session.flush()
+
+        session.add(
+            LinkedWallet(
+                id="lw-healthy",
+                user_id="user-1",
+                normalized_identity=f"1:{_REAL_WALLET}",
+                address=_REAL_WALLET,
+                display_address=_REAL_WALLET,
+                chain_id=1,
+                provider="siwe",
+                is_primary=True,
+                verified_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            PaperDeployment(
+                id="pd-healthy",
+                strategy_id=_REAL_STRATEGY,
+                owner_wallet=_REAL_WALLET,
+                owner_user_id="user-1",
+                spec_json="{}",
+                deployed_at=date(2026, 1, 1),
+                status="active",
+                created_at=now,
+            )
+        )
+        session.add(
+            PaperDeployment(
+                id="pd-orphan",
+                strategy_id=_ORPHAN_STRATEGY,
+                owner_wallet=_ORPHAN_WALLET,
+                owner_user_id="user-1",
+                spec_json="{}",
+                deployed_at=date(2026, 1, 1),
+                status="active",
+                created_at=now,
+            )
+        )
+        session.commit()
+    engine.dispose()
+
+
+def test_phase1_orphan_queries_match_expected_counts(tmp_path):
+    """The exact `orphan_sql` strings the migration defines for each gated
+    FK, run directly against the realistic mixed fixture — proving the SQL
+    itself is correct independent of which dialect branch would run it (the
+    Postgres VALIDATE branch can't be exercised in this hermetic SQLite-only
+    suite; this is the SQL-correctness half of the same guarantee)."""
+    import sqlalchemy as sa
+
+    db_path = tmp_path / "phase1_orphan_queries.db"
+    database_url = f"sqlite:///{db_path}"
+
+    pre = _run_alembic("upgrade", _phase1_down_revision(), database_url=database_url)
+    assert pre.returncode == 0, pre.stderr
+    _seed_phase1_fixture(db_path)
+
+    module = _phase1_module()
+    expected_orphans = {
+        "fk_linked_wallets_address_wallet_identity": 0,
+        "fk_paper_deployments_owner_user_id": 0,
+        "fk_paper_deployments_strategy_id": 1,
+        "fk_paper_deployments_owner_wallet": 1,
+    }
+    assert {name for name, *_ in module._GATED_FKS} == set(expected_orphans), (
+        "test fixture is out of sync with the migration's own _GATED_FKS list"
+    )
+
+    engine = sa.create_engine(database_url)
+    with engine.connect() as conn:
+        for constraint_name, _table, _local, _ref_table, _remote, _ondelete, orphan_sql in module._GATED_FKS:
+            count = conn.execute(sa.text(orphan_sql)).scalar_one()
+            assert count == expected_orphans[constraint_name], (
+                f"{constraint_name}: expected {expected_orphans[constraint_name]} orphans, got {count}"
+            )
+    engine.dispose()
+
+
+def test_phase1_migration_upgrade_head_survives_realistic_orphans(tmp_path):
+    """`alembic upgrade head` must SUCCEED against the mixed fixture above,
+    leave the orphan row's data untouched (NOT VALID enforces future writes
+    only — it never mutates or rejects existing rows), and still create every
+    constraint. This is acceptance criterion for the whole NOT VALID design:
+    a migration that can't proceed past unmeasured historical orphans is not
+    the "minimal blast radius" change the audit asked for."""
+    db_path = tmp_path / "phase1_orphans.db"
+    database_url = f"sqlite:///{db_path}"
+
+    pre = _run_alembic("upgrade", _phase1_down_revision(), database_url=database_url)
+    assert pre.returncode == 0, pre.stderr
+    _seed_phase1_fixture(db_path)
+
+    result = _run_alembic("upgrade", "head", database_url=database_url)
+    assert result.returncode == 0, (
+        f"upgrade head failed against orphaned data:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    )
+
+    con = sqlite3.connect(str(db_path))
+    try:
+        cur = con.cursor()
+
+        # The orphan row survived, byte-for-byte — NOT VALID never touches
+        # existing data, only future writes.
+        cur.execute("SELECT strategy_id, owner_wallet, owner_user_id FROM paper_deployments WHERE id = 'pd-orphan'")
+        assert cur.fetchone() == (_ORPHAN_STRATEGY, _ORPHAN_WALLET, "user-1")
+
+        # The healthy row survived too.
+        cur.execute("SELECT strategy_id, owner_wallet, owner_user_id FROM paper_deployments WHERE id = 'pd-healthy'")
+        assert cur.fetchone() == (_REAL_STRATEGY, _REAL_WALLET, "user-1")
+
+        # Every constraint exists on the table regardless of the orphan —
+        # this is the schema-level guarantee for all FUTURE writes.
+        cur.execute("PRAGMA foreign_key_list(paper_deployments)")
+        pd_fk_columns = {row[3] for row in cur.fetchall()}
+        assert pd_fk_columns == {"strategy_id", "owner_wallet", "owner_user_id"}
+
+        cur.execute("PRAGMA foreign_key_list(linked_wallets)")
+        lw_fk_columns = {row[3] for row in cur.fetchall()}
+        assert "address" in lw_fk_columns
+    finally:
+        con.close()
+
+    # Idempotent: running head->head again on the now-migrated, still-orphaned
+    # database is a no-op, not an error (the redeploy runbook re-runs this).
+    again = _run_alembic("upgrade", "head", database_url=database_url)
+    assert again.returncode == 0, again.stderr
+
+
+def test_phase1_sqlite_never_reaches_the_postgres_only_validate_branch(tmp_path):
+    """Black-box proof of the dialect gate: on SQLite, `_add_gated_fk`'s
+    `if not is_postgres: return` fires before either of the two
+    Postgres-only print statements (`... validated` / `... orphan row(s)`),
+    so NEITHER string reaches stdout — regardless of whether the fixture's
+    data would count as zero orphans or several. Checked via the real
+    subprocess's captured output, not by importing and calling the
+    migration's internals directly."""
+    db_path = tmp_path / "phase1_dialect_gate.db"
+    database_url = f"sqlite:///{db_path}"
+
+    pre = _run_alembic("upgrade", _phase1_down_revision(), database_url=database_url)
+    assert pre.returncode == 0, pre.stderr
+    _seed_phase1_fixture(db_path)  # mixed: some FKs clean, one with real orphans
+
+    result = _run_alembic("upgrade", "head", database_url=database_url)
+    assert result.returncode == 0, result.stderr
+    assert "orphan row(s)" not in result.stdout
+    assert "validated" not in result.stdout
+
+
+#: The 10 indices the audit's §1.2 table specifies, hardcoded here (NOT
+#: derived from the migration module's own `_INDICES`, unlike the SQL-level
+#: tests above) — a regression that silently drops an entry from `_INDICES`
+#: must still fail this test, not evade it by shrinking the thing being
+#: compared against right along with the bug.
+_PHASE1_REQUIRED_INDICES = frozenset(
+    {
+        "ix_linked_wallets_address",
+        "ix_paper_deployments_owner_user_id",
+        "ix_identity_events_wallet_time",
+        "ix_subscriber_liabilities_sub",
+        "ix_subscriber_liabilities_strategy_created",
+        "ix_settlement_intents_sub",
+        "ix_settlement_intents_status_created",
+        "ix_marketplace_agents_subscriber_wallet",
+        "ix_marketplace_agents_creator_wallet",
+        "ix_generation_costs_recorded_at",
+    }
+)
+
+
+def test_phase1_indices_fks_and_column_width_added_and_removed(tmp_path):
+    """Per-migration up/down/idempotent contract, exercised directly (same
+    pattern as `test_alembic_strategy_spec_column_added_and_removed` /
+    `test_alembic_generation_costs_table_added_and_removed` above): every
+    index and FK lands on upgrade, is gone on downgrade, and comes back on
+    re-upgrade — including the `paper_deployments.strategy_id` width step."""
+    db_path = tmp_path / "phase1_updown.db"
+    database_url = f"sqlite:///{db_path}"
+
+    def _state(db_path: Path) -> dict:
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute("PRAGMA table_info(paper_deployments)")
+            strategy_col = next(row for row in cur.fetchall() if row[1] == "strategy_id")
+            cur.execute("PRAGMA foreign_key_list(paper_deployments)")
+            pd_fks = {row[3] for row in cur.fetchall()}
+            cur.execute("PRAGMA foreign_key_list(linked_wallets)")
+            lw_fks = {row[3] for row in cur.fetchall()}
+            cur.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+            index_names = {row[0] for row in cur.fetchall()}
+            return {
+                "strategy_id_type": strategy_col[2],
+                "pd_fk_columns": pd_fks,
+                "lw_fk_columns": lw_fks,
+                "index_names": index_names,
+            }
+        finally:
+            con.close()
+
+    down_revision = _phase1_down_revision()
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    up_state = _state(db_path)
+    assert up_state["strategy_id_type"] == "VARCHAR(128)"
+    assert up_state["pd_fk_columns"] == {"strategy_id", "owner_wallet", "owner_user_id"}
+    assert "address" in up_state["lw_fk_columns"]
+    assert up_state["index_names"] >= _PHASE1_REQUIRED_INDICES, (
+        f"missing after upgrade: {_PHASE1_REQUIRED_INDICES - up_state['index_names']}"
+    )
+
+    downgrade = _run_alembic("downgrade", down_revision, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    down_state = _state(db_path)
+    assert down_state["strategy_id_type"] == "VARCHAR(64)"
+    assert down_state["pd_fk_columns"] == set()
+    assert "address" not in down_state["lw_fk_columns"]
+    assert not (_PHASE1_REQUIRED_INDICES & down_state["index_names"]), (
+        f"survived downgrade: {_PHASE1_REQUIRED_INDICES & down_state['index_names']}"
+    )
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert _state(db_path) == up_state
+
+    reupgrade_again = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade_again.returncode == 0, reupgrade_again.stderr
+    assert _state(db_path) == up_state
+
+
+def test_phase1_linked_wallets_matches_a_fresh_create_all_schema(tmp_path):
+    """Column parity between the two schema-management paths for the one
+    Phase-1-touched table on the `account.py` side: `create_all()`
+    (`LinkedWallet.address`'s new FK/index) vs this migration's
+    `batch_alter_table`. Same rationale as the existing generation_costs /
+    strategy_store parity tests above."""
+    create_all_db = tmp_path / "create_all_linked_wallets.db"
+    script = (
+        "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthUser, LinkedWallet\n"
+        "from archimedes.models.chat import Base\n"
+        "from archimedes.models.identity import WalletIdentity\n"
+        f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
+        "Base.metadata.create_all(bind=engine)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(_BACKEND_DIR),
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    alembic_db = tmp_path / "alembic_built_linked_wallets.db"
+    upgrade = _run_alembic("upgrade", "head", database_url=f"sqlite:///{alembic_db}")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    def _columns(db_path: Path, table: str) -> set[str]:
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    create_all_cols = _columns(create_all_db, "linked_wallets")
+    alembic_cols = _columns(alembic_db, "linked_wallets")
+    assert create_all_cols == alembic_cols
+
+
+def test_phase1_paper_deployments_matches_a_fresh_create_all_schema(tmp_path):
+    """Same column-parity contract, for `paper_deployments` — the table this
+    revision widens `strategy_id` on and adds two FKs to."""
+    create_all_db = tmp_path / "create_all_paper_deployments.db"
+    script = (
+        "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthUser\n"
+        "from archimedes.models.chat import Base\n"
+        "from archimedes.models.identity import WalletIdentity\n"
+        "from archimedes.models.paper_store import PaperDeployment\n"
+        "from archimedes.models.strategy_store import StrategyRecord\n"
+        f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
+        "Base.metadata.create_all(bind=engine)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(_BACKEND_DIR),
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    alembic_db = tmp_path / "alembic_built_paper_deployments.db"
+    upgrade = _run_alembic("upgrade", "head", database_url=f"sqlite:///{alembic_db}")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    def _columns(db_path: Path, table: str) -> set[str]:
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    create_all_cols = _columns(create_all_db, "paper_deployments")
+    alembic_cols = _columns(alembic_db, "paper_deployments")
+    assert "strategy_id" in create_all_cols
+    assert create_all_cols == alembic_cols
