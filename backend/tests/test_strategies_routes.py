@@ -423,11 +423,68 @@ async def test_library_badge_equals_live_gate_verdict_on_persisted_returns(monke
         assert served["passes_rigor_gate"] == expected.passes_all, (
             f"served badge for {sid} ({served['passes_rigor_gate']}) != live gate verdict ({expected.passes_all})"
         )
-        assert served["rigor_gate_status"] == (PASS if expected.passes_all else FAIL)
+        # Four-state comparison (#1184): degenerate is neither PASS nor FAIL, so
+        # comparing only against passes_all would misclassify a degenerate series
+        # as FAIL. Use the same tri_state_status the route's badge is built from.
+        assert served["rigor_gate_status"] == expected.tri_state_status
 
     # The engineered pass strategy passes; the noise strategy fails — on the LIVE path.
     assert by_id[s_pass.id]["passes_rigor_gate"] is True
     assert by_id[s_fail.id]["passes_rigor_gate"] is False
+
+
+@pytest.mark.asyncio
+async def test_degenerate_persisted_series_serves_degenerate_badge_via_route(monkeypatch):
+    """ACCEPTANCE #4 (#1184): a zero-variance persisted return series is served
+    as the DEGENERATE badge by the REAL ``GET /api/strategies/`` route.
+
+    The unit tests in ``TestDegenerateSeriesCategory`` (test_rigor_evaluator.py)
+    and ``TestVerdictFromResultDegenerate`` above already cover
+    ``run_rigor_gate`` / ``_verdict_from_result`` in isolation; this exercises
+    the same category end-to-end through the ASGI transport, the way
+    Acceptance #1 exercises the non-degenerate case above — otherwise the enum
+    assertions elsewhere in this file (e.g.
+    ``test_list_endpoint_returns_200_and_status_field``) could silently start
+    rejecting a real degenerate strategy without any route-level test catching
+    it.
+    """
+    from archimedes.api import strategies_routes as sr
+    from archimedes.main import app
+
+    strategies = sr.strategy_provider().list_strategies()
+    assert strategies, "need at least 1 curated strategy"
+    target = strategies[0]
+
+    # A constant (all-zero) 5,659-observation series — the exact shape #1184
+    # names (mathematically constant, most plausibly all-zero).
+    degenerate_series = [0.0] * 5659
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: {target.id: degenerate_series},
+    )
+    # The route's badge reads its OWN local code loader (#868) — patch both so
+    # this test doesn't depend on the real strategy source files (mirrors the
+    # pattern in test_library_badge_equals_live_gate_verdict_on_persisted_returns
+    # above). Not load-bearing for the DEGENERATE verdict itself — is_degenerate
+    # short-circuits tri_state_status before the look-ahead leg is consulted —
+    # but keeps this test deterministic and independent of on-disk source.
+    monkeypatch.setattr(
+        "archimedes.services.live_rigor_gate._load_strategy_code_safe",
+        lambda strategy: _CLEAN_CODE,
+    )
+    monkeypatch.setattr(
+        "archimedes.api.strategies_routes._load_strategy_code_safe_local",
+        lambda strategy: _CLEAN_CODE,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/strategies/?limit=100")
+    assert resp.status_code == 200
+    by_id = {s["id"]: s for s in resp.json()["strategies"]}
+
+    served = by_id[target.id]
+    assert served["rigor_gate_status"] == DEGENERATE
+    assert served["passes_rigor_gate"] is False
 
 
 # ── Acceptance #2: no real returns → pending, not a fixture boolean ─────
@@ -560,7 +617,7 @@ async def test_list_endpoint_returns_200_and_status_field():
     data = resp.json()
     assert "strategies" in data and "total" in data
     for s in data["strategies"]:
-        assert s["rigor_gate_status"] in (PASS, FAIL, PENDING)
+        assert s["rigor_gate_status"] in (PASS, FAIL, PENDING, DEGENERATE)
         assert isinstance(s["passes_rigor_gate"], bool)
 
 
