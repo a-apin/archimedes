@@ -87,9 +87,15 @@ export default function App() {
       paper: 'Paper Trading · Archimedes',
       'sign-in': 'Sign in · Archimedes',
       'sign-up': 'Create account · Archimedes',
+      // resolveRoute() returns page === null for not-found, so this branch used
+      // to fall through to the bare 'Archimedes' title — byte-identical to the
+      // landing page, leaving a screen-reader or many-tabs user unable to tell
+      // a failed deep link from home (2.4.2 Page Titled).
+      'not-found': 'Page not found · Archimedes',
     }
-    document.title = titles[route.page] ?? 'Archimedes'
-  }, [route.page])
+    const key = route.kind === 'not-found' ? 'not-found' : route.page
+    document.title = titles[key] ?? 'Archimedes'
+  }, [route.kind, route.page])
 
   const navigateToPage = useCallback((page, options = {}) => {
     const path = pageToPath(page, options)

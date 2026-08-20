@@ -186,6 +186,14 @@ export default function Layout({
 		<div
 			className={`shell app-site${sidebarCollapsed ? " shell-sidebar-collapsed" : ""}`}
 		>
+			{/* Bypass Blocks (2.4.1). The public shell has always shipped one; the
+			    authenticated shell made every /app page start with the same ~18
+			    stops (sidebar close, up to 12 nav buttons, collapse, hamburger,
+			    theme, tour, account chip, wallet) before any content. */}
+			<a className="app-skip-link" href="#app-content">
+				Skip to content
+			</a>
+
 			{/* Mobile overlay — uses UnoCSS `fixed inset-0` + App.css `.sidebar-overlay` */}
 			{menuOpen && (
 				<div
@@ -219,7 +227,7 @@ export default function Layout({
 					</div>
 				</div>
 
-				<nav>
+				<nav aria-label="Main">
 					{NAV.map((group) => ({
 						...group,
 						// Anonymous visitors see only the browsable pages plus
@@ -235,14 +243,26 @@ export default function Layout({
 							{group.group && (
 								<div className="nav-group-label">{group.group}</div>
 							)}
-							{group.items.map((item) => (
+							{group.items.map((item) => {
+								const isCurrent =
+									page === item.id ||
+									(item.id === "portfolio" && page === "vault-detail");
+								return (
 								<button
 									key={item.id}
 									type="button"
 									data-tour={item.id}
-									className={`nav-link${page === item.id || (item.id === "portfolio" && page === "vault-detail") ? " active" : ""}`}
+									className={`nav-link${isCurrent ? " active" : ""}`}
 									onClick={() => handleNav(item.id)}
-									aria-label={item.label}
+									// This is a client-routed SPA, so the `.active` class was the
+									// ONLY "you are here" signal — every item read identically to
+									// a screen reader. aria-label is kept only for the collapsed
+									// rail, where .nav-label is display:none (App.css:501) and the
+									// button would otherwise have no accessible name; leaving it
+									// on the expanded state silently overrides the visible label
+									// if the two ever drift (2.5.3).
+									aria-current={isCurrent ? "page" : undefined}
+									aria-label={sidebarCollapsed ? item.label : undefined}
 									title={sidebarCollapsed ? item.label : undefined}
 								>
 									<span
@@ -251,7 +271,8 @@ export default function Layout({
 									/>
 									<span className="nav-label">{item.label}</span>
 								</button>
-							))}
+								);
+							})}
 						</div>
 					))}
 				</nav>
@@ -377,7 +398,13 @@ export default function Layout({
 						)}
 					</div>
 				</div>
-				<main className={`page-content page-${page}`}>
+				{/* tabIndex={-1} so the skip link above actually lands focus here
+				    rather than only moving the scroll position. */}
+				<main
+					id="app-content"
+					tabIndex={-1}
+					className={`page-content page-${page}`}
+				>
 					{proofStage && (
 						<ol className="app-proof-rail" aria-label="Core strategy journey">
 							{PROOF_STAGES.map((stage) => {
