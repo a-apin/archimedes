@@ -209,16 +209,30 @@ test("Library's in-page Published tab hides with the marketplace surface it lead
 		strategiesSrc,
 		/ROADMAP_SURFACES_ENABLED \? apiGet\('\/api\/marketplace\/my-published'\) : Promise\.resolve\(\[\]\)/,
 	);
-	// 2. The tab button must not render unconditionally.
+	// 2. The tab button must not render unconditionally. Anchored directly to
+	// the Published button's own attributes (no `[\s\S]*?` gap) — a lazy gap
+	// here previously let an unrelated gated button elsewhere in the file
+	// satisfy the assertion while the real Published tab stayed ungated.
+	// Demonstrated: inserting `{ROADMAP_SURFACES_ENABLED && (<button ...>Publish
+	// to marketplace</button>)}` above the tab row while removing the Published
+	// tab's own gate passed the old regex and fails this one.
 	assert.match(
 		strategiesSrc,
-		/\{ROADMAP_SURFACES_ENABLED && \(\s*<button[\s\S]*?Published \(\{published\.length\}\)/,
+		/\{ROADMAP_SURFACES_ENABLED && \(\s*<button\s+type="button"\s+className=\{`tag \$\{activeTab === 'published'/,
 	);
 	// 3. The tab panel must not render either — belt-and-suspenders against
 	// a stale ?tab=published deep link coercing activeTab directly.
 	assert.match(
 		strategiesSrc,
 		/activeTab === 'published' && ROADMAP_SURFACES_ENABLED && \(/,
+	);
+	// 4. The activeTab deep-link fallback: with the flag off, a stale
+	// ?tab=published link must not leave activeTab pinned to 'published' —
+	// every panel (generated/examples/now-gated published) would then
+	// evaluate false and Library would render an empty content area.
+	assert.match(
+		strategiesSrc,
+		/defaultTab === 'published' && !ROADMAP_SURFACES_ENABLED/,
 	);
 });
 
