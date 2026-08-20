@@ -212,9 +212,10 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
         {/* Generation runs for minutes and every terminal outcome landed in
             plain <div>s: a screen-reader user who submitted a brief had no way
             to know the run was progressing, had finished, or had errored
-            (4.1.3). role="status" for the running/done states, role="alert" for
-            the failure so it is announced even when the user is not on the log
-            below. */}
+            (4.1.3). role="status" with aria-live toggled to "assertive" on failure
+ (and "polite" otherwise) — the explicit aria-live overrides the role's
+ implicit politeness, so an error is announced even when the user is not
+ on the log below. */}
         <div>
           <div className="label">Generating — job {jobId.slice(0, 10)}…</div>
           {/* The live region holds ONLY the terminal outcome, and is mounted
