@@ -44,11 +44,23 @@ async def test_agent_manifest_endpoint_groups_present():
         resp = await client.get("/api/agent/manifest")
 
     endpoints = resp.json()["endpoints"]
-    expected_groups = {"read", "auth", "generate", "paper", "deploy", "marketplace", "monitor"}
+    expected_groups = {
+        "read",
+        "auth",
+        "walletLink",
+        "generate",
+        "account",
+        "rigor",
+        "paper",
+        "deploy",
+        "marketplace",
+        "monitor",
+    }
     assert set(endpoints.keys()) == expected_groups
     for group in expected_groups:
         assert "status" in endpoints[group]
         assert "routes" in endpoints[group]
+        assert "auth_required" in endpoints[group], f"{group} must state whether a session is needed"
         assert endpoints[group]["routes"], f"{group} routes must be non-empty"
 
 
@@ -64,9 +76,9 @@ async def test_agent_manifest_deploy_and_marketplace_marked_pending():
     for group in ("deploy", "marketplace", "monitor"):
         assert "#588" in endpoints[group]["status"]
 
-    # READ / AUTH / GENERATE / PAPER are live, not pending. Paper deployments are
-    # simulated, so they do not wait on the contract redeploy.
-    for group in ("read", "auth", "generate", "paper"):
+    # READ / AUTH / WALLETLINK / GENERATE / ACCOUNT / RIGOR / PAPER are live, not
+    # pending. Paper deployments are simulated, so they do not wait on the redeploy.
+    for group in ("read", "auth", "walletLink", "generate", "account", "rigor", "paper"):
         assert endpoints[group]["status"] == "live"
 
 

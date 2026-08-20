@@ -35,6 +35,17 @@ operations. Circle wallet passkeys control Circle wallets; they do not log in to
 6. **Wallet operations** — first link wallet using proof flow below. Deploy/publish/
    subscribe remain subject to live contract status advertised by agent manifest.
 
+## Account + rigor utilities (account session required)
+
+- `GET /api/account/usage` — today's generation usage against both daily caps (`user`
+  and `ip`) plus live `quote`. `used` is `null`, never a fabricated `0`, when quota
+  backend is unreachable. Read it before `POST /api/generate/start` to avoid a 429.
+- `POST /api/rigor/verify` — run gate's admission checks over bare returns series you
+  submit: `{ "returns": [{ "date": "...", "daily_return": ... }], "trials": N }`. Rate
+  limited `5/minute`. DSR and walk-forward OOS are evaluable; PBO and look-ahead audit
+  always report `not_evaluable` — bare series carries no selection set and no code.
+  `passes` is true only when at least one check was evaluable and none failed.
+
 ## Optional wallet link (EIP-4361)
 
 Account session must already exist.

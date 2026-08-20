@@ -76,6 +76,22 @@
       },
       "note": "quote is public — price the run before holding a session."
     },
+    "account": {
+      "status": "live",
+      "authRequired": true,
+      "routes": {
+        "usage": "GET /api/account/usage"
+      },
+      "note": "Today's generation usage against both daily caps, plus the live price quote. Backs the CLI's `meter`."
+    },
+    "rigor": {
+      "status": "live",
+      "authRequired": true,
+      "routes": {
+        "verify": "POST /api/rigor/verify"
+      },
+      "note": "Runs the gate's admission checks over a bare returns series you submit. DSR and walk-forward OOS are evaluable; PBO and the look-ahead audit report not_evaluable rather than a silent pass. Backs the CLI's `verify`. Rate limited 5/minute."
+    },
     "paper": {
       "status": "live",
       "authRequired": true,
