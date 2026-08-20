@@ -198,7 +198,9 @@ export default function OnboardingTour({ open, onClose, setPage, user }) {
   // Measure the current step's anchor element. Falls back to `null` (centered
   // card) when there's no anchor, the element is absent, or it's not on
   // screen — mobile drawer closed → a full-size rect translated to
-  // left ≈ -260 (non-zero, off-viewport), collapsed sidebar → zero-size.
+  // left ≈ -260 (non-zero, off-viewport). A zero-size rect (e.g. a
+  // `display:none` ancestor) is rejected too. The collapsed rail (72px)
+  // still measures a normal on-screen box and spotlights as usual.
   // See rectOnScreen in ../tourGeometry.js.
   const measure = useCallback(() => {
     const c = CARDS[cardIndex]
