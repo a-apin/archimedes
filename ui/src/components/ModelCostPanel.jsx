@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { apiGet } from '../api'
+import { fetchHealth } from '../health'
 import pricing from '../data/modelPricing.json'
 
 // Cost-comparison + model picker for the Generate page. Surfaces the Bedrock
@@ -25,7 +25,11 @@ export default function ModelCostPanel({ selectedModel = null, onSelectModel }) 
 
   useEffect(() => {
     let cancelled = false
-    apiGet('/health')
+    // Shared TTL-cached call (#1333 review) — Layout.jsx's footer pill and
+    // Architecture.jsx also read /health; fetchHealth() (../health.js) lets
+    // this reuse whichever of those just fetched it instead of firing a
+    // third independent Arc RPC round-trip + DB reads.
+    fetchHealth()
       .then((d) => { if (!cancelled) setActiveModel(d?.llm_model || null) })
       .catch(() => {})
     return () => { cancelled = true }

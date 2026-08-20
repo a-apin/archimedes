@@ -10,6 +10,11 @@
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://archimedes-arc.com/" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta name="theme-color" content="#0a0a0b" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
@@ -18,6 +23,14 @@
         try {
           var stored = localStorage.getItem('archimedes.theme');
           document.documentElement.setAttribute('data-theme', stored === 'light' ? 'light' : 'dark');
+          // Keep the browser chrome (address bar / task switcher) in sync with
+          // the resolved theme -- the static #0a0a0b in <head> above is the
+          // dark-theme default; on a stored light preference, repaint it to
+          // App.css's light --canvas (#fafaf7) before first paint.
+          if (stored === 'light') {
+            var meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) meta.setAttribute('content', '#fafaf7');
+          }
         } catch (e) {}
       })();
     </script>

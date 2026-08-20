@@ -233,30 +233,57 @@ async def _verify_wallet_proof(address: str, message: str, signature: str, chain
     return await verify_smart_wallet_signature(address, message, signature, rpc_url)
 
 
-def _claim_legacy_wallet_data(session, user_id: str, address: str) -> None:
+def claim_legacy_wallet_data(
+    session,
+    user_id: str,
+    address: str,
+    *,
+    models: tuple[tuple[type, object], ...] | None = None,
+    include_profile: bool = True,
+) -> None:
+    """Stamp ``owner_user_id`` onto every unclaimed pre-account row for
+    ``address`` — the effect linking (or re-verifying) a wallet has, and the
+    reclaim `rename_strategy`'s legacy-wallet fallback also triggers on write
+    so pre-account rows migrate onto canonical ownership as they're touched
+    (#1283). Public (not `_`-prefixed) because `rename_strategy` calls it
+    from `strategies_routes`; the wallet-link path calls it in-module.
+
+    ``models``/``include_profile`` narrow which tables get stamped. The
+    default (both None/True) is the full claim a verified wallet link
+    performs: strategy tables + ``vault_metadata`` + ``user_profiles``.
+    ``rename_strategy``'s relaxed, non-fresh-signature lookup passes the
+    strategy-only trio and ``include_profile=False`` — it must not move
+    vault ownership (that gates a separate 409 whose ``None`` case exists
+    specifically to admit a legitimately transferred on-chain owner; a
+    stale reclaim from a rename would wrongly slam that door shut with no
+    un-claim path) or adopt a PII-bearing profile on a caller who has only
+    proven a stale wallet link, not fresh signature control.
+    """
     from archimedes.models.chat import VaultMetadata
     from archimedes.models.strategy_passport_record import StrategyPassportRecord
     from archimedes.models.strategy_proposal import StrategyProposal
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.models.user_profile import UserProfile
 
-    for model, wallet_column in (
+    default_models = (
         (StrategyRecord, StrategyRecord.owner_wallet),
         (StrategyPassportRecord, StrategyPassportRecord.owner_wallet),
         (StrategyProposal, StrategyProposal.owner_wallet),
         (VaultMetadata, VaultMetadata.creator_address),
-    ):
+    )
+    for model, wallet_column in models if models is not None else default_models:
         session.query(model).filter(
             wallet_column == address,
             model.owner_user_id.is_(None),
         ).update({model.owner_user_id: user_id}, synchronize_session=False)
 
-    existing_profile = session.query(UserProfile).filter(UserProfile.owner_user_id == user_id).first()
-    if existing_profile is None:
-        session.query(UserProfile).filter(
-            UserProfile.wallet_address == address,
-            UserProfile.owner_user_id.is_(None),
-        ).update({UserProfile.owner_user_id: user_id}, synchronize_session=False)
+    if include_profile:
+        existing_profile = session.query(UserProfile).filter(UserProfile.owner_user_id == user_id).first()
+        if existing_profile is None:
+            session.query(UserProfile).filter(
+                UserProfile.wallet_address == address,
+                UserProfile.owner_user_id.is_(None),
+            ).update({UserProfile.owner_user_id: user_id}, synchronize_session=False)
 
 
 def _link_verified_wallet(session, user: CurrentUser, challenge: WalletLinkChallenge, now: datetime) -> LinkedWallet:
@@ -267,7 +294,7 @@ def _link_verified_wallet(session, user: CurrentUser, challenge: WalletLinkChall
     if existing:
         if existing.user_id != user.id:
             raise HTTPException(status_code=409, detail="Wallet is already linked to another account")
-        _claim_legacy_wallet_data(session, user.id, challenge.address)
+        claim_legacy_wallet_data(session, user.id, challenge.address)
         session.commit()
         session.refresh(existing)
         return existing
@@ -301,7 +328,7 @@ def _link_verified_wallet(session, user: CurrentUser, challenge: WalletLinkChall
     )
     session.add(linked)
     session.flush()
-    _claim_legacy_wallet_data(session, user.id, challenge.address)
+    claim_legacy_wallet_data(session, user.id, challenge.address)
     session.commit()
     session.refresh(linked)
     return linked
@@ -405,7 +432,7 @@ def _wallet_has_owned_data(session, address: str) -> bool:
 
 
 def _wallet_has_unclaimed_legacy_data(session, user_id: str, address: str) -> bool:
-    """Would ``_claim_legacy_wallet_data(user_id, address)`` claim anything?
+    """Would ``claim_legacy_wallet_data(user_id, address)`` claim anything?
 
     DELIBERATELY a separate function from ``_wallet_has_owned_data`` above,
     which asks the OPPOSITE question ("does this wallet back any data at all",
