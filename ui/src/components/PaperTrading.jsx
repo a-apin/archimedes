@@ -104,14 +104,18 @@ export default function PaperTrading({ onNavigate }) {
     }
     // Name join is best-effort decoration — the list renders with ids if the
     // library calls fail, so these settle independently of the load above.
+    // limit=200 is /generated's max (default 50 could miss names for older
+    // strategies; a deployment beyond even 200 falls back to its id honestly).
     const [seed, generated] = await Promise.allSettled([
       apiGet('/api/strategies/'),
-      apiGet('/api/strategies/generated'),
+      apiGet('/api/strategies/generated?limit=200'),
     ])
     const map = {}
     for (const res of [seed, generated]) {
       if (res.status !== 'fulfilled') continue
       for (const row of res.value.strategies || []) {
+        // id-before-strategy_id matches both list shapes today; keep this
+        // order if a third list source is ever added (contract review, #1302).
         const id = row.id ?? row.strategy_id
         const label = nameOf(row)
         if (id && label) map[id] = label
