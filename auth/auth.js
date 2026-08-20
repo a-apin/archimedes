@@ -161,9 +161,66 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
     account: {
       modelName: 'auth_accounts',
       encryptOAuthTokens: true,
+      // #1420 follow-up (account linking). Semantics below verified against
+      // the INSTALLED better-auth@1.6.25 source
+      // (node_modules/better-auth/dist/oauth2/link-account.mjs +
+      // node_modules/better-auth/dist/api/routes/{account,callback}.mjs) —
+      // not the changelog, not memory. Two independent link paths exist and
+      // this config affects them differently:
+      //
+      // 1. IMPLICIT auto-link (plain "Continue with Google/GitHub" on the
+      //    sign-in screen, no prior session — link-account.mjs
+      //    handleOAuthUserInfo). Gate, verbatim:
+      //      (!isTrustedProvider && !userInfo.emailVerified)
+      //      || (requireLocalEmailVerified && !dbUser.user.emailVerified)
+      //      || accountLinking.enabled === false
+      //      || accountLinking.disableImplicitLinking === true
+      //    trustedProviders below makes isTrustedProvider true for google/
+      //    github, which only skips re-checking the PROVIDER's emailVerified
+      //    claim (both providers attest verified emails, which is the whole
+      //    point of trusting them). It does NOT touch the second clause:
+      //    requireLocalEmailVerified defaults to true (deliberately left
+      //    unset here, NOT overridden to false) and independently requires
+      //    the EXISTING password account already have emailVerified: true.
+      //    Consequence, stated honestly: while EMAIL_VERIFICATION_ENFORCED
+      //    is off (SES sandbox — see emailVerificationEnforced above) most
+      //    password accounts, quite possibly including the operator's own,
+      //    sit at emailVerified: false and this auto-link path stays
+      //    REFUSED (account_not_linked) for them regardless of
+      //    trustedProviders. That is correct, not a bug: it is the exact
+      //    guard (added upstream in better-auth/better-auth#9578) against an
+      //    attacker pre-registering a victim's email with a password account
+      //    the attacker controls, then having the victim's later real OAuth
+      //    sign-in silently linked into the attacker's row. Do not set
+      //    requireLocalEmailVerified: false to "fix" the refusal — that
+      //    removes the guard. The working path for an unverified base
+      //    account is the EXPLICIT flow below.
+      //
+      // 2. EXPLICIT link (signed-in user clicks "Link Google/GitHub" in
+      //    Account Settings — api/routes/account.mjs linkSocialAccount +
+      //    api/routes/callback.mjs's `if (link)` branch). This path does NOT
+      //    check the base account's emailVerified at all — proof of account
+      //    ownership comes from the live session state binds to at call
+      //    time, not from any verification flag — so it works today
+      //    regardless of the operator's own emailVerified value. It DOES
+      //    still enforce, unconditionally: (a) isTrustedProvider-or-
+      //    providerEmailVerified (same trustedProviders effect as above) and
+      //    (b) allowDifferentEmails — the provider's OAuth email must equal
+      //    the signed-in user's account email, or the callback redirects
+      //    with ?error=email_doesn't_match. Kept false here (unchanged): the
+      //    owner's Google/GitHub email is expected to match their password
+      //    account's email, and this is not weakened to let them differ.
+      //
+      // allowUnlinkingAll stays false: /unlink-account (api/routes/
+      // account.mjs) throws FAILED_TO_UNLINK_LAST_ACCOUNT when it is the
+      // account's only remaining credential. ui/src/components/
+      // AccountSettings.jsx additionally disables the Unlink control in that
+      // state — belt and suspenders, not a substitute for this flag staying
+      // false.
       accountLinking: {
         enabled: true,
-        disableImplicitLinking: true,
+        disableImplicitLinking: false,
+        trustedProviders: ['google', 'github'],
         allowDifferentEmails: false,
         allowUnlinkingAll: false,
       },

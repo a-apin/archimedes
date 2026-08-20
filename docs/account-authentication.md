@@ -105,6 +105,66 @@ points at the public `/reset-password` route, which reads `?token=` and calls
 verification email" action calling the existing `send-verification-email` endpoint
 (`resendVerificationEmail`) — closing the matching lockout for a lost verification mail.
 
+### Account linking (#1420 follow-up)
+
+The owner has one email/password account and wants Google and GitHub to reach the SAME
+account, so any of the three signs in as one identity. `auth/auth.js`'s `account.
+accountLinking` config (verified against the **installed** `better-auth@1.6.25` source —
+see the long comment on that config block for exact file/line pointers) drives two
+independent paths that behave differently and are both live:
+
+**1. Implicit auto-link** — a plain "Continue with Google/GitHub" click on the sign-in
+screen for an email that already owns a password account. `trustedProviders: ['google',
+'github']` makes both providers trusted, which lets the gate skip re-checking the
+*provider's* `emailVerified` claim (both attest verified emails to their own users, which
+is the whole point of trusting them). It does **not** bypass a second, independent check:
+`requireLocalEmailVerified` (the library's default, `true` — left unset here, deliberately
+not overridden to `false`) requires the **existing password account's own**
+`emailVerified` already be `true`. Honest consequence: while
+`EMAIL_VERIFICATION_ENFORCED` is off (SES sandbox — see above), most password accounts —
+plausibly including the operator's own — sit at `emailVerified: false`, and this path
+stays refused (`?error=account_not_linked`) for them. That refusal is correct, not a
+regression: it is the guard (`better-auth/better-auth#9578`) against an attacker
+pre-registering a victim's email with a password account the attacker controls, then
+having the victim's later, real OAuth sign-in silently linked into the attacker's row. It
+is not weakened here to make the refusal go away.
+
+**2. Explicit link** — signed-in "Link Google" / "Link GitHub" in Account Settings →
+Connected accounts (`ui/src/components/AccountSettings.jsx`, `linkSocial`/`listAccounts`/
+`unlinkAccount` in `ui/src/auth-client.js`, calling Better Auth's own `/link-social`,
+`/list-accounts`, `/unlink-account`). This is the path that works **today**, regardless of
+the base account's verification state: proof of ownership comes from the live session
+`/link-social` was called with, not from `emailVerified`. It still enforces, unconditionally:
+the same provider-trust check as above, and `allowDifferentEmails` (kept `false`) — the
+OAuth account's email must equal the signed-in account's email, or the callback redirects
+with `?error=email_doesn't_match`. The state/PKCE/CSRF handshake for the OAuth round trip
+(the `state` param plus its double-submit `better-auth.state` cookie) is entirely
+library-managed on both ends; nothing here hand-rolls any part of it.
+
+Unlinking: `/unlink-account` refuses to remove an account's last remaining credential
+(`allowUnlinkingAll` stays `false` → `FAILED_TO_UNLINK_LAST_ACCOUNT`, HTTP 400) —
+server-enforced regardless of the UI. `AccountSettings.jsx` additionally disables the
+Unlink control in that state client-side (`canUnlink()` in `ui/src/account-linking.js`) so
+the control is never even clickable, not just rejected after a round trip.
+
+The `?error=account_not_linked` message on `/sign-in` (routed there from `/`'s bare
+redirect — see routing note above) now points at this: sign in with the password, then
+link the provider under Account Settings → Connected accounts so it signs in directly next
+time (`ui/src/auth-errors.js` `oauthErrorMessage`). A second, separate map in the same
+file, `linkErrorMessage`, covers the explicit flow's own error codes
+(`email_doesn't_match`, `account_already_linked_to_different_user`, `access_denied`, and a
+generic fallback) and is rendered on Account Settings via the `error` query param the
+`/link-social` → `/callback/:id` round trip redirects back with — the same generic
+`route.error` plumbing `routes.js` already parses for every route, not a new mechanism.
+
+Both paths, and the unlink guard, are covered by real behavioral tests in
+`auth/test/auth.test.js` that drive the actual Better Auth endpoints (`auth.api.
+signInSocial`/`linkSocialAccount`/`unlinkAccount`/`listUserAccounts`) against an in-memory
+sqlite adapter, faking only the network boundary (Google's token endpoint) via a `fetch`
+mock — the authorization-URL construction, CSRF state, and linking decisions are the real
+library code. UI wiring and the `canUnlink` guard are covered in `ui/test/auth-client.test.js`,
+`ui/test/auth-errors.test.js`, and `ui/test/account-settings.test.js`.
+
 ## Wallet linking
 
 1. Authenticated user requests `POST /api/wallets/challenge` with address, chain ID,

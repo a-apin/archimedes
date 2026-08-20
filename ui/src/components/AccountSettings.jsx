@@ -1,18 +1,86 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import { canUnlink, connectedProviderLabel } from '../account-linking'
+import { linkErrorMessage } from '../auth-errors'
+import { getProviders, linkSocial, listAccounts, unlinkAccount } from '../auth-client'
 import { useAuth } from '../AuthContext'
 import { listLinkedWallets, makePrimaryWallet, removeLinkedWallet } from '../linked-wallets'
 import { providerLabel } from '../wallet-providers'
 
-export default function AccountSettings({ walletAddr, onDisconnect }) {
+export default function AccountSettings({ walletAddr, onDisconnect, linkError }) {
   const { user, signOut } = useAuth()
   const [wallets, setWallets] = useState([])
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(null)
 
+  const [connectedAccounts, setConnectedAccounts] = useState([])
+  const [connectedProviders, setConnectedProviders] = useState({ google: false, github: false })
+  const [connectedError, setConnectedError] = useState('')
+  const [connectedNotice, setConnectedNotice] = useState('')
+  const [connectedBusy, setConnectedBusy] = useState(null)
+
   const load = useCallback(() => listLinkedWallets().then(setWallets).catch((err) => setError(err.message)), [])
   useEffect(() => { load() }, [load])
+
+  const loadConnected = useCallback(
+    () => listAccounts().then(setConnectedAccounts).catch((err) => setConnectedError(err.message)),
+    [],
+  )
+  useEffect(() => { loadConnected() }, [loadConnected])
+  useEffect(() => {
+    getProviders().then((providers) => setConnectedProviders({ google: !!providers.google, github: !!providers.github })).catch(() => {})
+  }, [])
+
+  // Read the explicit-link round trip's success marker off the URL once on
+  // mount — same local, one-shot pattern AuthPage.jsx uses for its
+  // reset-password token. The account already appearing in connectedAccounts
+  // is the actual proof it worked; this is just the confirmation toast.
+  useEffect(() => {
+    const linked = new URLSearchParams(window.location.search).get('linked')
+    if (linked) setConnectedNotice(`Linked ${connectedProviderLabel(linked)}.`)
+  }, [])
+
+  const linkErrorNotice = linkErrorMessage(linkError)
+
+  const link = async (provider) => {
+    setConnectedBusy(provider)
+    setConnectedError('')
+    setConnectedNotice('')
+    try {
+      const origin = window.location.origin
+      // Both callbacks land back on THIS page — the /callback/:id endpoint
+      // (library-managed CSRF state, not this code) is what actually
+      // decides success/failure before either is reached.
+      await linkSocial(provider, `${origin}/app/account?linked=${provider}`, `${origin}/app/account`)
+    } catch (err) {
+      setConnectedError(err.message)
+      setConnectedBusy(null)
+    }
+  }
+
+  // Guarded twice on purpose: canUnlink() keeps the button disabled/inert in
+  // the last-credential state (see the export above), and the confirm below
+  // still runs before the network call for any account, mirroring the
+  // wallet-unlink confirm pattern above (3.3.4 — no single unconfirmed click
+  // for a destructive, no-undo action).
+  const unlinkConnected = async (account) => {
+    if (!canUnlink(connectedAccounts.length)) return
+    const label = connectedProviderLabel(account.providerId)
+    if (!window.confirm(`Unlink ${label}? You will no longer be able to sign in with ${label}.`)) return
+    setConnectedBusy(account.id)
+    setConnectedError('')
+    setConnectedNotice('')
+    try {
+      await unlinkAccount(account.providerId, account.accountId)
+      await loadConnected()
+      setConnectedNotice(`Unlinked ${label}.`)
+    } catch (err) {
+      setConnectedError(err.message)
+    } finally {
+      setConnectedBusy(null)
+    }
+  }
 
   const primary = async (id) => {
     setBusy(id)
@@ -71,6 +139,60 @@ export default function AccountSettings({ walletAddr, onDisconnect }) {
           <dt className="caption">Email</dt><dd>{user?.email || '—'}</dd>
           <dt className="caption">User ID</dt><dd className="mono break-all">{user?.id}</dd>
         </dl>
+      </section>
+
+      <section className="card-flat p-5 mb-5">
+        <h2 className="serif text-xl mb-3">Connected accounts</h2>
+        <p className="caption mb-3">
+          Sign in with any of these — they all reach this one account. Google and GitHub link only after you
+          authorize them from here, signed in as you are now.
+        </p>
+
+        {linkErrorNotice && <div className="status mb-3" role="alert">{linkErrorNotice}</div>}
+
+        {connectedAccounts.length === 0 ? (
+          <p className="body">Loading…</p>
+        ) : (
+          <ul className="flex flex-col gap-3">
+            {connectedAccounts.map((account) => {
+              const label = connectedProviderLabel(account.providerId)
+              const disabled = connectedBusy === account.id || !canUnlink(connectedAccounts.length)
+              return (
+                <li key={account.id} className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--glass-border)] pt-3">
+                  <div className="mono text-sm">{label}</div>
+                  <button
+                    className="btn-secondary"
+                    disabled={disabled}
+                    title={!canUnlink(connectedAccounts.length) ? 'This is your only sign-in method — link another before unlinking it.' : undefined}
+                    onClick={() => unlinkConnected(account)}
+                  >
+                    Unlink
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+
+        {(connectedProviders.google || connectedProviders.github) && (
+          <div className="mt-4 flex gap-2">
+            {connectedProviders.google && !connectedAccounts.some((a) => a.providerId === 'google') && (
+              <button className="btn-secondary" disabled={connectedBusy === 'google'} onClick={() => link('google')}>
+                Link Google
+              </button>
+            )}
+            {connectedProviders.github && !connectedAccounts.some((a) => a.providerId === 'github') && (
+              <button className="btn-secondary" disabled={connectedBusy === 'github'} onClick={() => link('github')}>
+                Link GitHub
+              </button>
+            )}
+          </div>
+        )}
+
+        <div role="status" aria-live="polite" className={connectedNotice ? 'caption mt-3' : 'sr-only'}>
+          {connectedNotice}
+        </div>
+        {connectedError && <div className="status mt-3" role="alert">{connectedError}</div>}
       </section>
 
       <section className="card-flat p-5 mb-5">

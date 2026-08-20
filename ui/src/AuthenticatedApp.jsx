@@ -214,6 +214,7 @@ export default function AuthenticatedApp({
 					<AccountSettings
 						walletAddr={walletAddr}
 						onDisconnect={handleDisconnect}
+						linkError={route.error}
 					/>
 				);
 			default:

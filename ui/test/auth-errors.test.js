@@ -2,24 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 
-import { oauthErrorMessage } from "../src/auth-errors.js";
+import { linkErrorMessage, oauthErrorMessage } from "../src/auth-errors.js";
 
 // ── #1420: OAuth account-not-linked error goes silent ───────────────────
-// auth/auth.js sets accountLinking.disableImplicitLinking: true (a deliberate
-// security posture — do not weaken it to "fix" this). Its consequence: an
-// existing email/password user who clicks "Continue with Google/GitHub" gets
-// 302'd back with `?error=account_not_linked` and the UI previously rendered
-// nothing. These tests pin the error->message mapping and its wiring into
-// the actual sign-in surface.
+// auth/auth.js's implicit auto-link path refuses to attach a Google/GitHub
+// identity to an existing password account whose emailVerified isn't
+// already true (requireLocalEmailVerified — see the long comment on
+// accountLinking in auth/auth.js; never weakened to "fix" this). Its
+// consequence: an existing, plausibly-unverified email/password user who
+// clicks "Continue with Google/GitHub" gets 302'd back with
+// `?error=account_not_linked` and the UI previously rendered nothing. These
+// tests pin the error->message mapping and its wiring into the actual
+// sign-in surface.
 
-test("account_not_linked maps to honest copy that does not promise a linking flow", () => {
+test("account_not_linked maps to honest copy that now points at the account-linking follow-up (#1420 follow-up shipped)", () => {
 	const message = oauthErrorMessage("account_not_linked");
 	assert.match(message, /password account/);
 	assert.match(message, /sign in with your email and password/i);
-	// No account-linking UI exists in this app (verified: no `linkSocial`
-	// call site in auth/ or ui/) — the message must not promise one.
-	assert.doesNotMatch(message, /link your accounts?/i);
-	assert.doesNotMatch(message, /account settings/i);
+	// The explicit link flow now exists (AccountSettings.jsx "Connected
+	// accounts") — the message must point at it, not stay silent about it.
+	assert.match(message, /account settings.*connected accounts/i);
 });
 
 test("an unrecognized error value gets a generic, still-honest message rather than nothing", () => {
@@ -75,4 +77,50 @@ test("AuthPage.jsx renders the mapped message via oauthErrorMessage, gated to an
 	// role="alert" so assistive tech announces it the moment the sign-in
 	// screen mounts with an error in the URL — not just a silent paragraph.
 	assert.match(src, /\{oauthNotice && \(\s*<div className="status mb-4" role="alert" id="oauth-error">/);
+});
+
+// ── #1420 follow-up: explicit link/unlink (Account Settings → Connected
+// accounts) ────────────────────────────────────────────────────────────
+
+test("linkErrorMessage maps the explicit link callback's error codes to honest, distinct copy", () => {
+	assert.match(linkErrorMessage("email_doesn't_match"), /different email/i);
+	assert.match(linkErrorMessage("account_already_linked_to_different_user"), /already linked/i);
+	assert.match(linkErrorMessage("access_denied"), /canceled/i);
+});
+
+test("linkErrorMessage falls back to a generic honest message for unmapped codes, and to null for none", () => {
+	assert.equal(linkErrorMessage(null), null);
+	assert.equal(linkErrorMessage(undefined), null);
+	assert.equal(linkErrorMessage(""), null);
+	const generic = linkErrorMessage("some_future_code");
+	assert.equal(typeof generic, "string");
+	assert.ok(generic.length > 0);
+});
+
+// Mutation-prove: delete the "email_doesn't_match" entry from
+// LINK_ERROR_MESSAGES and this fails, because the specific and generic
+// messages collapse to the same string. Confirmed by hand before commit.
+test("email_doesn't_match gets a MORE SPECIFIC message than the generic link-error fallback", () => {
+	const specific = linkErrorMessage("email_doesn't_match");
+	const generic = linkErrorMessage("totally_unmapped_code");
+	assert.notEqual(specific, generic);
+});
+
+test("linkErrorMessage and oauthErrorMessage are independent maps — a link-flow code never falls into the sign-in map by accident", () => {
+	// email_doesn't_match only means something on the explicit-link surface;
+	// the sign-in map (account_not_linked's home) must not also define it,
+	// or the two code spaces have silently merged.
+	assert.equal(oauthErrorMessage("email_doesn't_match"), oauthErrorMessage("totally_unknown_code"));
+});
+
+test("AuthenticatedApp.jsx threads the resolved route's error through to AccountSettings as linkError", () => {
+	const src = readFileSync(new URL("../src/AuthenticatedApp.jsx", import.meta.url), "utf8");
+	assert.match(src, /<AccountSettings[\s\S]*?linkError=\{route\.error\}[\s\S]*?\/>/);
+});
+
+test("AccountSettings.jsx renders linkErrorMessage(linkError) gated to an alert role", () => {
+	const src = readFileSync(new URL("../src/components/AccountSettings.jsx", import.meta.url), "utf8");
+	assert.match(src, /import \{ linkErrorMessage \} from '\.\.\/auth-errors'/);
+	assert.match(src, /const linkErrorNotice = linkErrorMessage\(linkError\)/);
+	assert.match(src, /\{linkErrorNotice && <div className="status mb-3" role="alert">\{linkErrorNotice\}<\/div>\}/);
 });
