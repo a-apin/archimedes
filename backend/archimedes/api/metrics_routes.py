@@ -7,10 +7,13 @@ instrument; the write side is ``api/telemetry_middleware.py`` +
 ``services/telemetry_store.py`` (live Redis counters) plus
 ``services/request_snapshot_store.py`` (the durable Postgres floor).
 
-``real_users`` now reads canonical Better Auth accounts. Legacy identity-ledger
-views remain available to enumerate verified wallets and connection events,
-and a ``source=identity`` mode on the funnel that recomputes distinct-wallet
-conversion from ``identity_events`` alone (AC3) — see
+``real_users`` now reads canonical Better Auth accounts. The identity-ledger
+roster views (per-wallet enumeration + connection events) live on the ADMIN
+router in ``metrics_private_routes.py`` (#1366 — this public router is
+aggregate and PII-free by design; no route here may carry a wallet-bearing
+response model, and a test walks the router to enforce that). The funnel keeps
+its ``source=identity`` mode, which recomputes distinct-wallet conversion from
+``identity_events`` alone (AC3) as an aggregate — see
 ``services/identity_metrics.py`` for the queries themselves.
 
 # TODO(T-observability): Phase 2 — Prometheus ``/metrics`` exposition endpoint
@@ -24,7 +27,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Query, Request
 
 from archimedes.api.funnel_middleware import record_funnel
 from archimedes.api.visitor_insights import record_visitor_insight
@@ -35,19 +38,9 @@ from archimedes.models.telemetry import (
     FunnelStageCount,
     MetricsResponse,
     VisitorInsightsResponse,
-    WalletConnectionOut,
-    WalletConnectionsResponse,
-    WalletIdentityOut,
-    WalletsResponse,
 )
-from archimedes.api.metrics_private_routes import require_platform_admin
 from archimedes.services.funnel_store import CLIENT_EMITTABLE_STAGES, STAGES, FunnelStore
-from archimedes.services.identity_metrics import (
-    count_human_wallets,
-    get_identity_funnel,
-    list_human_wallets,
-    list_wallet_connections,
-)
+from archimedes.services.identity_metrics import get_identity_funnel
 from archimedes.services.request_snapshot_store import get_last_snapshot_totals, record_and_get_totals
 from archimedes.services.telemetry_store import TelemetryStore
 from archimedes.services.user_stats import get_distinct_user_count
@@ -159,56 +152,6 @@ async def get_metrics() -> MetricsResponse:
         real_users=real_users,
         epoch_started_at=totals["epoch_started_at"],
         epoch_resets=(totals["epoch_count"] - 1) if totals["epoch_count"] else None,
-        timestamp=datetime.now(UTC).isoformat(),
-    )
-
-
-@metrics_router.get(
-    "/metrics/wallets",
-    response_model=WalletsResponse,
-    dependencies=[Depends(require_platform_admin)],
-)
-async def get_wallets() -> WalletsResponse:
-    """Enumerate legacy verified human wallets, separate from account count.
-
-    ADMIN-ONLY (#1366): this returns the full per-wallet roster — wallet
-    addresses are pseudonymous but permanently linkable to on-chain activity,
-    so an open enumeration endpoint let anyone list every user of the platform
-    and trace their chain history. The public metrics surface is aggregate and
-    PII-free BY DESIGN (see metrics_private_routes' module docstring); a
-    per-identity roster belongs behind the same admin gate as the ops
-    dashboard. Anonymous → 401; verified non-admin wallet → 403.
-
-    ``real_users`` field is retained for response compatibility but means wallet
-    count on this endpoint only. Fail-safe: empty list / zero on DB error.
-    """
-    return WalletsResponse(
-        real_users=count_human_wallets(),
-        wallets=[WalletIdentityOut(**row) for row in list_human_wallets()],
-        timestamp=datetime.now(UTC).isoformat(),
-    )
-
-
-@metrics_router.get(
-    "/metrics/wallets/connections",
-    response_model=WalletConnectionsResponse,
-    dependencies=[Depends(require_platform_admin)],
-)
-async def get_wallet_connections() -> WalletConnectionsResponse:
-    """ "Which wallets connected, and when" — issue #1028 AC2.
-
-    ADMIN-ONLY (#1366) for the same reason as ``/metrics/wallets`` above: a
-    per-wallet first-connection ledger is identity data, not aggregate traction.
-
-    ``SELECT wallet, min(occurred_at) FROM identity_events WHERE event_type =
-    'auth_verified' GROUP BY wallet`` — a query that was impossible before the
-    ledger (the SIWE-verify path used to discard the wallet into a stateless
-    cookie with no durable write). Fail-safe: an empty list on any DB error.
-    """
-    connections = list_wallet_connections()
-    return WalletConnectionsResponse(
-        count=len(connections),
-        connections=[WalletConnectionOut(**row) for row in connections],
         timestamp=datetime.now(UTC).isoformat(),
     )
 

@@ -145,68 +145,101 @@ async def test_metrics_survives_a_redis_reset_without_regressing():
 
 
 @pytest.mark.asyncio
-async def test_get_wallets_unauthenticated_is_401_never_a_roster():
-    """#1366 guard demo: the wallet roster must NOT be publicly enumerable.
-
-    This endpoint served the complete per-wallet user roster (addresses +
-    first/last-seen) to anonymous callers in production. The guard is shown
-    rejecting the exact request that leaked: unauthenticated GET → 401, and the
-    body must not contain a wallets list.
-    """
+async def test_old_public_wallet_roster_paths_are_gone():
+    """#1366 guard demo, part 1: the roster endpoints served the complete
+    per-wallet user list (addresses + first/last-seen) to anonymous callers in
+    production. They are not merely gated — they are OFF the public surface
+    entirely (moved to the admin router). The exact requests that leaked now
+    404 with no roster in the body."""
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/metrics/wallets")
-
-    assert resp.status_code == 401
-    assert "wallets" not in resp.json()
+        for path in ("/api/metrics/wallets", "/api/metrics/wallets/connections"):
+            resp = await client.get(path)
+            assert resp.status_code == 404, path
+            body = resp.json()
+            assert "wallets" not in body and "connections" not in body
 
 
 @pytest.mark.asyncio
-async def test_get_wallet_connections_unauthenticated_is_401():
-    """#1366 guard demo: the per-wallet connection ledger is identity data."""
+async def test_no_public_metrics_route_carries_a_wallet_response_model():
+    """#1366 AC2 regression guard: no route on the public ``metrics_router`` may
+    declare a response model with a wallet-bearing field. Walks the router so
+    the SAME drift (mounting an identity roster on the anonymous traction
+    instrument) cannot recur silently."""
+    from archimedes.api.metrics_routes import metrics_router
+
+    offending: list[str] = []
+    for route in metrics_router.routes:
+        model = getattr(route, "response_model", None)
+        if model is None:
+            continue
+        for field_name in getattr(model, "model_fields", {}):
+            if "wallet" in field_name.lower():
+                offending.append(f"{route.path} -> {model.__name__}.{field_name}")
+    assert offending == [], f"public metrics routes expose wallet fields: {offending}"
+
+
+# ── The roster endpoints on their new ADMIN paths (#1366 six-case minimum:
+# both endpoints x {401 anonymous, 403 non-admin, 200 admin-shape}) ──────
+
+_ADMIN = "0xadmin000000000000000000000000000000000001"
+_NON_ADMIN = "0xnotadmin0000000000000000000000000000000002"
+
+
+def _override_linked_wallet(app, wallet):
+    from archimedes.api.wallet_routes import require_linked_wallet
+
+    app.dependency_overrides[require_linked_wallet] = lambda: wallet
+    return require_linked_wallet
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/metrics/private/wallets", "/api/metrics/private/wallets/connections"])
+async def test_private_roster_unauthenticated_is_401(path):
+    """#1366 guard demo, part 2: anonymous requests to the moved endpoints are
+    rejected by the router-level admin dependency before any query runs."""
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/metrics/wallets/connections")
+        resp = await client.get(path)
 
     assert resp.status_code == 401
-    assert "connections" not in resp.json()
+    body = resp.json()
+    assert "wallets" not in body and "connections" not in body
 
 
 @pytest.mark.asyncio
-async def test_get_wallets_verified_non_admin_is_403(monkeypatch):
+@pytest.mark.parametrize("path", ["/api/metrics/private/wallets", "/api/metrics/private/wallets/connections"])
+async def test_private_roster_verified_non_admin_is_403(path, monkeypatch):
     """A verified linked wallet that is not a platform admin gets 403 — any
     authenticated user being able to enumerate every other user would still be
     the leak, just behind a signup."""
-    from archimedes.api.wallet_routes import require_linked_wallet
     from archimedes.main import app
 
-    monkeypatch.setenv("PLATFORM_ADMIN_WALLETS", "0xadmin000000000000000000000000000000000001")
-    app.dependency_overrides[require_linked_wallet] = lambda: "0xnotadmin0000000000000000000000000000000002"
+    monkeypatch.setenv("PLATFORM_ADMIN_WALLETS", _ADMIN)
+    dep = _override_linked_wallet(app, _NON_ADMIN)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get("/api/metrics/wallets")
+            resp = await client.get(path)
     finally:
-        app.dependency_overrides.pop(require_linked_wallet, None)
+        app.dependency_overrides.pop(dep, None)
 
     assert resp.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_get_wallets_admin_shape_and_boundary(monkeypatch):
+async def test_private_wallets_admin_shape_and_boundary(monkeypatch):
     """The admin path keeps issue #1028 AC1's response shape unchanged.
 
     Mocks the identity-ledger boundary (consistent with how this file already
     mocks the Redis/user-count boundaries) so the assertion is deterministic
     regardless of what other tests have written into the shared DB.
     """
-    from archimedes.api.wallet_routes import require_linked_wallet
     from archimedes.main import app
 
-    admin = "0xadmin000000000000000000000000000000000001"
-    monkeypatch.setenv("PLATFORM_ADMIN_WALLETS", admin)
-    app.dependency_overrides[require_linked_wallet] = lambda: admin
+    monkeypatch.setenv("PLATFORM_ADMIN_WALLETS", _ADMIN)
+    dep = _override_linked_wallet(app, _ADMIN)
 
     fake_wallets = [
         {
@@ -218,13 +251,13 @@ async def test_get_wallets_admin_shape_and_boundary(monkeypatch):
     ]
     try:
         with (
-            patch("archimedes.api.metrics_routes.count_human_wallets", return_value=1),
-            patch("archimedes.api.metrics_routes.list_human_wallets", return_value=fake_wallets),
+            patch("archimedes.api.metrics_private_routes.count_human_wallets", return_value=1),
+            patch("archimedes.api.metrics_private_routes.list_human_wallets", return_value=fake_wallets),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.get("/api/metrics/wallets")
+                resp = await client.get("/api/metrics/private/wallets")
     finally:
-        app.dependency_overrides.pop(require_linked_wallet, None)
+        app.dependency_overrides.pop(dep, None)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -234,24 +267,22 @@ async def test_get_wallets_admin_shape_and_boundary(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_wallet_connections_admin_shape(monkeypatch):
+async def test_private_wallet_connections_admin_shape(monkeypatch):
     """Admin path keeps issue #1028 AC2's response shape unchanged."""
-    from archimedes.api.wallet_routes import require_linked_wallet
     from archimedes.main import app
 
-    admin = "0xadmin000000000000000000000000000000000001"
-    monkeypatch.setenv("PLATFORM_ADMIN_WALLETS", admin)
-    app.dependency_overrides[require_linked_wallet] = lambda: admin
+    monkeypatch.setenv("PLATFORM_ADMIN_WALLETS", _ADMIN)
+    dep = _override_linked_wallet(app, _ADMIN)
 
     fake_connections = [
         {"wallet": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "connected_at": "2026-07-01T00:00:00+00:00"},
     ]
     try:
-        with patch("archimedes.api.metrics_routes.list_wallet_connections", return_value=fake_connections):
+        with patch("archimedes.api.metrics_private_routes.list_wallet_connections", return_value=fake_connections):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.get("/api/metrics/wallets/connections")
+                resp = await client.get("/api/metrics/private/wallets/connections")
     finally:
-        app.dependency_overrides.pop(require_linked_wallet, None)
+        app.dependency_overrides.pop(dep, None)
 
     assert resp.status_code == 200
     data = resp.json()
