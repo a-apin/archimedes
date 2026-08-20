@@ -213,6 +213,7 @@ class _FakeStore:
     def __init__(self) -> None:
         self.events: list[dict] = []
         self.status: list[tuple[str, dict | None, str]] = []
+        self.current_status: str | None = None
 
     async def push_event(self, job_id, payload):
         self.events.append(payload)
@@ -220,6 +221,15 @@ class _FakeStore:
 
     async def update_status(self, job_id, status, *, result=None, error=""):
         self.status.append((status, result, error))
+        self.current_status = status
+
+    async def update_terminal_status(self, job_id, status, *, result=None, error=""):
+        """Mirrors ``JobStore.update_terminal_status`` (#1355): a no-op once
+        ``cancelled`` has already been recorded."""
+        if self.current_status == "cancelled":
+            return False
+        await self.update_status(job_id, status, result=result, error=error)
+        return True
 
 
 async def test_run_generation_threads_owner_wallet_to_store_and_passport(monkeypatch):
@@ -342,6 +352,107 @@ async def test_rename_owner_only():
 
     with db.get_session() as session:
         assert session.query(StrategyRecord).filter_by(id=sid).first().strategy_name == "After"
+
+
+async def test_rename_legacy_wallet_fallback_reclaims_row_onto_canonical_owner():
+    """#1283: renaming a pre-account row via the legacy-wallet fallback must
+    migrate it onto canonical account ownership in the same request, not just
+    permit the rename and leave ``owner_user_id`` NULL forever."""
+    sid = "ren00000000000004"
+    _mk_strategy(sid, owner=_W_OWNER, published=False, name="Before")  # owner_user_id NULL
+
+    from archimedes.main import app
+    from archimedes.models.strategy_store import StrategyRecord
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.patch(f"/api/strategies/{sid}", json={"name": "After"}, cookies=_siwe_cookies(_W_OWNER))
+    assert resp.status_code == 200
+
+    expected_owner_user_id = f"legacy-test:{_W_OWNER.lower()}"
+    with db.get_session() as session:
+        row = session.query(StrategyRecord).filter_by(id=sid).first()
+        assert row.strategy_name == "After"
+        assert row.owner_user_id == expected_owner_user_id  # reclaimed, no longer NULL
+        assert row.owner_wallet == _W_OWNER.lower()  # wallet provenance untouched
+
+
+async def test_rename_legacy_wallet_fallback_reclaims_sibling_rows_but_not_other_wallets():
+    """The reclaim triggered by a legacy-wallet rename is the SAME bulk claim
+    wallet-linking performs (`claim_legacy_wallet_data`): every unclaimed row
+    for that wallet migrates, not just the one row touched by the request —
+    and a different wallet's unclaimed rows must be left alone."""
+    renamed_sid = "sib00000000000001"
+    _mk_strategy(renamed_sid, owner=_W_OWNER, published=False, name="Before")
+    sibling_sid = "sib00000000000002"
+    _mk_strategy(sibling_sid, owner=_W_OWNER, published=False, name="Sibling")  # same wallet, untouched by request
+    other_wallet_sid = "sib00000000000003"
+    _mk_strategy(other_wallet_sid, owner=_W_OTHER, published=False, name="Other")  # different wallet
+
+    from archimedes.main import app
+    from archimedes.models.strategy_store import StrategyRecord
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.patch(
+            f"/api/strategies/{renamed_sid}", json={"name": "After"}, cookies=_siwe_cookies(_W_OWNER)
+        )
+    assert resp.status_code == 200
+
+    expected_owner_user_id = f"legacy-test:{_W_OWNER.lower()}"
+    with db.get_session() as session:
+        renamed = session.query(StrategyRecord).filter_by(id=renamed_sid).first()
+        sibling = session.query(StrategyRecord).filter_by(id=sibling_sid).first()
+        other = session.query(StrategyRecord).filter_by(id=other_wallet_sid).first()
+        assert renamed.owner_user_id == expected_owner_user_id
+        assert sibling.owner_user_id == expected_owner_user_id  # reclaimed as a side effect
+        assert other.owner_user_id is None  # a different wallet's data is never touched
+
+
+async def test_rename_legacy_wallet_fallback_does_not_touch_vault_metadata_or_profile():
+    """The rename-triggered reclaim is scoped to strategy tables only: it must
+    NOT stamp `vault_metadata.owner_user_id` (that gates a separate 409 whose
+    None case exists so a legitimately transferred on-chain owner can still
+    write it — see vaults_routes.py) and must NOT adopt a PII-bearing
+    `user_profiles` row on a lookup that never proved fresh signature control.
+    Both legs stay behind the signature-verified wallet-link flow."""
+    from archimedes.models.chat import VaultMetadata
+    from archimedes.models.strategy_store import StrategyRecord
+    from archimedes.models.user_profile import UserProfile
+
+    sid = "vmt00000000000001"
+    _mk_strategy(sid, owner=_W_OWNER, published=False, name="Before")  # owner_user_id NULL
+
+    with db.get_session() as session:
+        session.add(
+            VaultMetadata(
+                vault_address="0x" + "9" * 40,
+                creator_address=_W_OWNER.lower(),
+                owner_user_id=None,  # unclaimed, pre-#1028 style
+            )
+        )
+        session.add(
+            UserProfile(
+                wallet_address=_W_OWNER.lower(),
+                display_name="legacy display name",
+                owner_user_id=None,  # unclaimed
+            )
+        )
+        session.commit()
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.patch(f"/api/strategies/{sid}", json={"name": "After"}, cookies=_siwe_cookies(_W_OWNER))
+    assert resp.status_code == 200
+
+    with db.get_session() as session:
+        row = session.query(StrategyRecord).filter_by(id=sid).first()
+        assert row.owner_user_id is not None  # the strategy-side reclaim still happens
+
+        meta = session.query(VaultMetadata).filter_by(vault_address="0x" + "9" * 40).first()
+        assert meta.owner_user_id is None  # untouched — vault ownership is not a rename's business
+
+        profile = session.query(UserProfile).filter_by(wallet_address=_W_OWNER.lower()).first()
+        assert profile.owner_user_id is None  # untouched — no PII adoption on a non-fresh-signature lookup
 
 
 async def test_rename_published_non_owner_403():

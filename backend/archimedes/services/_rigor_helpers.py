@@ -7,8 +7,7 @@ Extracted from rigor_evaluator.py to reduce module complexity. Contains:
   - Kelly Criterion position sizing
   - Sharpe confidence intervals
   - Regime classification and conditional analysis
-  - Monte Carlo DSR significance testing via circular block bootstrap
-  - Multiple-testing corrections (Benjamini-Hochberg, Bonferroni)
+  - Board-level multiple-testing correction (Benjamini-Hochberg FDR, #1185)
 
 All functions are pure computation: no I/O, no web framework, no on-chain
 dependencies. They consume daily return arrays and produce rigor-gate metrics.
@@ -21,6 +20,7 @@ from __future__ import annotations
 
 import math
 from itertools import combinations
+from typing import Any
 
 import numpy as np
 from scipy.stats import kurtosis as sp_kurtosis
@@ -1073,3 +1073,104 @@ def regime_conditional_dsr(
             "n_days": int(sub.size),
         }
     return out
+
+
+# ─── 8. Board-Level Multiple-testing Correction ──────────────────────
+#
+# Restored (#1185, 2026-08-20) after Tranche-1's dead-code excision (PR #1259 /
+# commit c02d5fad) deleted this function on 2026-08-18 for having zero
+# non-test callers — accurate at the time, but issue #1185 (open since
+# 2026-07-28, three weeks BEFORE that deletion) had already asked for exactly
+# this to be wired in. See rigor_evaluator.compute_board_level_fdr for the one
+# real call site this issue requires; the pure BH-FDR math below is unchanged
+# from the pre-deletion version (restored verbatim from git history).
+
+
+def benjamini_hochberg_fdr(
+    pvalues: list[float],
+    fdr_level: float = 0.05,
+) -> dict[str, Any]:
+    """Benjamini-Hochberg False Discovery Rate correction.
+
+    Controls the expected proportion of false discoveries among the rejected
+    hypotheses at level *fdr_level*. BH is uniformly more powerful than
+    Bonferroni for independent or positively dependent tests, which makes it
+    the preferred correction when evaluating a library of strategies (where
+    strategies sharing the same universe tend to have positive return
+    correlations).
+
+    Algorithm (Benjamini & Hochberg 1995, Theorem 1):
+      1. Sort p-values ascending: p_(1) ≤ p_(2) ≤ … ≤ p_(m).
+      2. BH critical value for rank k: q_k = (k / m) × α.
+      3. Find the largest k* such that p_(k*) ≤ q_(k*).
+      4. Reject all hypotheses with rank ≤ k* (i.e. all p ≤ p_(k*)).
+      5. BH-adjusted p-values: p̃_k = min(1, p_k × m / k), enforced to be
+         monotone non-decreasing in rank order (step-down adjustment).
+
+    Reference: Benjamini, Y. & Hochberg, Y. (1995). "Controlling the false
+    discovery rate: a practical and powerful approach to multiple testing."
+    *Journal of the Royal Statistical Society. Series B*, 57(1), 289-300.
+
+    Application to backtesting: Bailey, D.H., Borwein, J., López de Prado, M.,
+    & Zhu, Q. (2014). "The Probability of Backtest Overfitting." *Journal of
+    Computational Finance*, 20(4), 39-70.
+
+    Args:
+        pvalues: List of m p-values (one per strategy / hypothesis). These are
+            CLASSICAL p-values — a SMALL value is evidence against the null
+            (rejected). Note this is the opposite convention from
+            ``RigorGateResult.dsr_p_value`` (P(true SR > 0), where a LARGE
+            value is confident evidence): a caller feeding DSR p-values in
+            here must convert first (``1 - dsr_p_value``). See
+            ``rigor_evaluator.compute_board_level_fdr`` for that conversion.
+        fdr_level: Target FDR (α). Default 0.05.
+
+    Returns:
+        Dict with keys:
+          ``rejected``         — list[bool] of length m in the original input order.
+          ``bh_critical_values`` — list[float] of BH thresholds q_k in original order.
+          ``n_rejected``       — number of hypotheses rejected.
+          ``adjusted_pvalues`` — BH-adjusted p-values in the original input order.
+    """
+    m = len(pvalues)
+    if m == 0:
+        return {"rejected": [], "bh_critical_values": [], "n_rejected": 0, "adjusted_pvalues": []}
+
+    arr = np.asarray(pvalues, dtype=float)
+    # Sort ascending, track original positions
+    sort_order = np.argsort(arr)
+    sorted_p = arr[sort_order]
+
+    ranks = np.arange(1, m + 1, dtype=float)
+    bh_crit = (ranks / m) * fdr_level
+
+    # Largest k where sorted_p[k-1] <= bh_crit[k-1]
+    below_threshold = sorted_p <= bh_crit
+    # 0-based index of the last True (largest rejected k); -1 if nothing rejected.
+    k_star = int(np.where(below_threshold)[0][-1]) if np.any(below_threshold) else -1
+
+    reject_sorted = np.zeros(m, dtype=bool)
+    if k_star >= 0:
+        reject_sorted[: k_star + 1] = True
+
+    # BH-adjusted p-values in sorted order: p̃_k = min(1, p_k × m / k)
+    # Enforce monotone non-decreasing via cummin from the last rank
+    adjusted_sorted = np.minimum(1.0, sorted_p * (m / ranks))
+    # Step-down monotonicity: p̃_k ≤ p̃_{k+1} in sorted order (adjust from top)
+    for i in range(m - 2, -1, -1):
+        adjusted_sorted[i] = min(adjusted_sorted[i], adjusted_sorted[i + 1])
+
+    # Map back to original input order
+    inv_order = np.empty(m, dtype=int)
+    inv_order[sort_order] = np.arange(m)
+
+    rejected_orig = reject_sorted[inv_order].tolist()
+    bh_crit_orig = bh_crit[inv_order].tolist()
+    adjusted_orig = adjusted_sorted[inv_order].tolist()
+
+    return {
+        "rejected": rejected_orig,
+        "bh_critical_values": [round(v, 8) for v in bh_crit_orig],
+        "n_rejected": int(np.sum(reject_sorted)),
+        "adjusted_pvalues": [round(v, 8) for v in adjusted_orig],
+    }

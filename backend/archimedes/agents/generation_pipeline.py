@@ -1273,7 +1273,13 @@ async def run_generation(
             pass  # Non-blocking per spec
 
         # Stash the full candidate list on the job for /candidates retrieval.
-        await store.update_status(
+        # update_terminal_status (not update_status): a Cancel request can flip
+        # Redis's status to "cancelled" while this coroutine is still mid-flight
+        # (asyncio.Task.cancel() cannot interrupt a to_thread LLM call already
+        # running — the awaiter only unblocks once that thread finishes on its
+        # own), so this write must not clobber a cancellation that already
+        # landed (#1355).
+        await store.update_terminal_status(
             job_id,
             "done",
             result={

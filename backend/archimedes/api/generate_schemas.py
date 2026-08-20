@@ -16,6 +16,19 @@ from pydantic import BaseModel, Field, field_validator
 
 # ── Request side ──────────────────────────────────────────────────────────
 
+# NOTE: max_papers below is bounded to [_MAX_PAPERS_FLOOR, _MAX_PAPERS_CEILING]
+# rather than importing archimedes.agents.strategy_fusion.MIN_PAPERS /
+# FUSION_MAX_PAPERS directly — a top-level import here creates a real
+# circular import (strategy_fusion -> generation_json -> llm_backend ->
+# archimedes.services.__init__ [re-exports generation_pipeline for
+# backwards compat] -> generation_pipeline -> back to this module, which is
+# still mid-definition). The values are kept in lockstep by a drift-guard
+# test (test_generate_schemas_depth_drift.py) that imports both modules
+# independently and asserts equality — raising the cap on one side without
+# the other fails that test.
+_MAX_PAPERS_FLOOR = 2  # == archimedes.agents.strategy_fusion.MIN_PAPERS
+_MAX_PAPERS_CEILING = 6  # == archimedes.agents.strategy_fusion.FUSION_MAX_PAPERS
+
 # User-chosen strategy name limits. Whitespace is collapsed BEFORE these
 # checks, so \t/\n arriving in a paste are normalized rather than rejected;
 # any control character that survives collapsing (NUL, ESC, DEL, …) is a
@@ -31,7 +44,18 @@ class GenerateBrief(BaseModel):
     risk_appetite: Literal["fixed_income", "conservative", "moderate", "aggressive", "hyper_risky"] = "moderate"
     asset_classes: list[str] | None = None
     capital_usdc: float | None = None
-    max_papers: int = Field(default=5, ge=1, le=20)
+    max_papers: int = Field(
+        default=5,
+        ge=_MAX_PAPERS_FLOOR,
+        le=_MAX_PAPERS_CEILING,
+        description=(
+            f"How many papers the fusion pipeline considers. Bounded to "
+            f"[{_MAX_PAPERS_FLOOR}, {_MAX_PAPERS_CEILING}] — "
+            "strategy_fusion.py's MIN_PAPERS/FUSION_MAX_PAPERS, the range the "
+            "pipeline actually enforces (a token + cross-paper-coherence "
+            "budget), not a wider nominal cap it would silently clamp anyway."
+        ),
+    )
     name: str | None = Field(
         default=None,
         description=(
@@ -143,7 +167,11 @@ JobCost = dict[str, Any]
 
 class JobSummary(BaseModel):
     job_id: str
-    state: Literal["queued", "running", "done", "error", "cancelled"]
+    # "stalled" (#1355) is a READ-TIME derived state, never a value stored in
+    # Redis: a "running" job whose heartbeat_at has gone stale is normalized
+    # to it in generate_routes._normalize_state — see that function's
+    # docstring. Not written by anything, only produced on output.
+    state: Literal["queued", "running", "stalled", "done", "error", "cancelled"]
     brief_intent: str
     created_at: str
     updated_at: str
@@ -165,7 +193,12 @@ class JobCostResponse(BaseModel):
     """
 
     job_id: str
-    state: Literal["queued", "running", "done", "error", "cancelled"]
+    # Widened to include "stalled" alongside JobSummary.state (#1355 review
+    # follow-up) — this endpoint routes `heartbeat_at` through the same
+    # `_normalize_state` as `/jobs` and `/jobs/{id}`, so all three surfaces
+    # must accept the same derived state or a stale job would 500 here
+    # instead of reporting `stalled` like its siblings.
+    state: Literal["queued", "running", "stalled", "done", "error", "cancelled"]
     cost: JobCost | None = None
 
 

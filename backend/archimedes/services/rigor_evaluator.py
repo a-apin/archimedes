@@ -30,6 +30,7 @@ from archimedes.services._rigor_helpers import (
     _ANNUALIZATION,
     _RF_DAILY,
     assert_self_contained_cohort_correlation,  # noqa: F401 - re-exported for the 3 cohort call sites (V4 guard)
+    benjamini_hochberg_fdr,  # used by compute_board_level_fdr below (#1185)
     classify_regimes,  # used by run_rigor_gate (regime-robustness) + re-exported for test_rigor_regime
     compute_average_pairwise_correlation,  # noqa: F401 - re-exported for fusion_evaluator/selection_bias_routes
     compute_cpcv_oos_sharpe,
@@ -380,6 +381,117 @@ def compute_library_pbo(
     if pbo is None or not math.isfinite(pbo):
         return None
     return float(pbo)
+
+
+# Default board-level FDR α (#1185 code review, 2026-08-20). A module constant
+# instead of two independent `= 0.05` defaults (one here, one on
+# selection_bias_routes.BoardLevelFdr.fdr_level): the route reports
+# BoardLevelFdr.fdr_level to the caller but was never passing it into either
+# default, so the two literals could silently diverge if one were edited
+# without the other. selection_bias_routes imports this constant and passes it
+# explicitly to both compute_board_level_fdr() and BoardLevelFdr(...), so the
+# reported α is always sourced from the value the correction actually used.
+DEFAULT_BOARD_FDR_LEVEL = 0.05
+
+# Floor for the DSR->classical p-value conversion below (#1185 code review,
+# 2026-08-20). compute_dsr's dsr_p_value saturates at exactly 1.0 for a long,
+# low-vol, confidently-positive series (rounded via `round(dsr_p_value, 6)` in
+# _dsr_from_stats) — converting that via `1.0 - 1.0` yields classical_p == 0.0,
+# an impossible p-value. Flooring at this resolution reports "as significant as
+# the DSR rounding can actually distinguish" instead of a false certainty.
+_CLASSICAL_P_FLOOR = 1e-6
+
+
+def compute_board_level_fdr(
+    dsr_p_values: dict[str, float | None],
+    fdr_level: float = DEFAULT_BOARD_FDR_LEVEL,
+) -> dict[str, dict[str, float | bool]]:
+    """Board-level Benjamini-Hochberg FDR correction across a leaderboard cohort (#1185).
+
+    **The scope decision this issue asked for, stated explicitly.** A user who
+    browses the leaderboard and deploys the top-ranked strategy has, statistically,
+    run an N-way search over the board — distinct from, and layered on top of, the
+    PER-STRATEGY ``num_trials`` convention (#1075: ``num_trials = 1`` on the curated
+    path, unaffected by this function). This function performs the board-level
+    correction the strictness ladder / PBO / DSR disclosures do NOT: it actually
+    computes a BH-FDR-adjusted significance figure across the cohort's simultaneous
+    "this strategy's true Sharpe is positive" claims.
+
+    **Chosen scope: ADVISORY / annotation, NOT an admission-gate criterion.** The
+    output is surfaced (leaderboard/gate response field) but is deliberately NOT
+    wired into ``RigorGateResult.passes_all`` / ``blocked_by_floor`` at any
+    strictness level. Rationale, matching the precedent already set for this
+    module's other cohort-shaped advisories (IID diagnostics #621, regime
+    robustness — see ``run_rigor_gate``'s own comments): (1) promoting a NEW
+    statistic to a hard gate is an admission-policy call for the rigor lane
+    (Dan/Önder), not a default an issue implementation should make unilaterally;
+    (2) gating on it would make a strategy's deploy status move as *unrelated*
+    strategies are added to or removed from the board — the exact "library-coupled
+    verdict" problem #1075's ADR (docs/adr/num-trials-self-containment.md) already
+    rejected for num_trials, so silently reintroducing that coupling as a gate
+    here would cut against a decision this codebase already made deliberately;
+    (3) the existing quant sign-off gap on #1075 (recorded Accepted-pending-
+    quant-sign-off) means a second unreviewed statistical gate change stacked on
+    top is exactly the kind of prose claim CLAUDE.md's guard-adversarial-pass rule
+    warns against ("a PR description asserting a property the code does not
+    enforce") — annotate-only makes no such claim. Promoting this to a gate is a
+    legitimate follow-up; it needs its own explicit product/quant decision, not an
+    implicit one buried in this issue.
+
+    **Direction of the p-value.** ``benjamini_hochberg_fdr`` expects CLASSICAL
+    p-values (small = significant / reject the null). ``RigorGateResult.dsr_p_value``
+    is P(true SR > 0) — the OPPOSITE convention (large = confident). This function
+    converts via ``classical_p = 1 - dsr_p_value`` before calling BH-FDR, then
+    reports back in the ``dsr_p_value`` convention (``board_fdr_confidence = 1 -
+    adjusted_p``) so the two numbers read the same way side by side.
+
+    **Saturation floor.** ``dsr_p_value`` can round to exactly 1.0 (a long,
+    confidently-positive series — see ``compute_dsr``'s own rounding), which
+    would convert to ``classical_p == 0.0``: an impossible p-value asserting
+    zero-probability certainty. ``classical_p`` is floored at
+    ``_CLASSICAL_P_FLOOR`` (1e-6) before BH-FDR runs, so the saturated case
+    reports "significant to the resolution the DSR rounding can distinguish"
+    rather than a false exact certainty — ``board_fdr_adjusted_p`` and
+    ``board_fdr_confidence`` are bounded away from 0.0 / 1.0 accordingly.
+
+    Args:
+        dsr_p_values: ``{strategy_id: dsr_p_value | None}`` for the current
+            leaderboard cohort — one entry per strategy, in any order. Entries
+            with ``None`` or non-finite values (no backtest data, degenerate
+            series) are excluded from the correction (they cannot be assigned a
+            p-value) and are ABSENT from the returned dict — the caller's own
+            per-strategy MISSING handling covers them, same convention as every
+            other rigor-gate field.
+        fdr_level: Target board-level FDR (α). Default ``DEFAULT_BOARD_FDR_LEVEL``
+            (0.05), matching ``benjamini_hochberg_fdr``'s own default and the
+            conventional BH significance level. NOT derived from the DSR
+            badge's ``dsr_p_min`` (0.90 at strictest level, PR #901 — complement
+            0.10, not 0.05): the two are deliberately different axes (per-
+            strategy admission bar vs. board-level multiple-testing rate) and
+            the board-level α is intentionally stricter than the badge's
+            implied 0.10, not derived from it.
+
+    Returns:
+        ``{strategy_id: {"board_fdr_significant": bool, "board_fdr_adjusted_p":
+        float, "board_fdr_confidence": float}}`` for every strategy with a finite
+        input p-value. Empty dict when fewer than 1 strategy qualifies.
+    """
+    ids = [sid for sid, p in dsr_p_values.items() if p is not None and math.isfinite(p)]
+    if not ids:
+        return {}
+
+    classical_pvalues = [max(_CLASSICAL_P_FLOOR, 1.0 - dsr_p_values[sid]) for sid in ids]
+    bh = benjamini_hochberg_fdr(classical_pvalues, fdr_level=fdr_level)
+
+    out: dict[str, dict[str, float | bool]] = {}
+    for i, sid in enumerate(ids):
+        adjusted_p = bh["adjusted_pvalues"][i]
+        out[sid] = {
+            "board_fdr_significant": bool(bh["rejected"][i]),
+            "board_fdr_adjusted_p": adjusted_p,
+            "board_fdr_confidence": round(1.0 - adjusted_p, 8),
+        }
+    return out
 
 
 def load_daily_returns_store(

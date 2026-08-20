@@ -57,6 +57,15 @@ infra/.terraform.lock.hcl
 infra/terraform.tfstate
 infra/terraform.tfstate.backup
 
+# Terraform variable files — operator-specific config (wallet addresses,
+# feature-flag values, and, transiently, the Aurora master password if ever
+# piped through a local file instead of TF_VAR_*). Most of it isn't secret,
+# but it's per-deploy operational state, not something to commit — see
+# infra/README.md "Operational variables". The maintained example stays
+# tracked so the real file has something to be copied from.
+infra/*.tfvars
+!infra/*.tfvars.example
+
 # Secrets / credentials — global patterns (never commit these)
 *.pem
 *.key
