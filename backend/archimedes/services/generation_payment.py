@@ -22,6 +22,13 @@ still quotes (402 without a payment header — so the approval UX is exercised
 end to end) but accepts a presented payment WITHOUT verify/settle, loudly.
 No real value can move while the custody migration (#975) is pending.
 
+``PAYMENTS_HALT`` (#1240 kill switch) is NOT the same shape as dry-run here,
+unlike on the marketplace tick-charging rail: this is a metered pay-per-call
+API with no pre-existing subscriber relationship, so a halted charge REFUSES
+service (503) instead of accepting an unverified header for free — comping
+the paid product (and dropping the payer-binding check with it) is not what
+an operator flipping a kill switch wants.
+
 Pricing is flat (``GENERATION_PRICE_USD``, default $0.15 testnet USDC) behind
 ``quote()`` — the single seam #1217's measured per-generation budget replaces
 later without touching the paywall flow.
@@ -170,14 +177,25 @@ async def enforce_generation_payment(request: Request, linked_wallet: str):
         return None
 
     if _payments_halted():
-        # #1240 kill switch — same no-redeploy stop lever as the marketplace
-        # tick-charging rail (marketplace.service._charge_one). Read fresh on
-        # every call, unlike PAYMENTS_DRY_RUN's own boot-time env read here —
-        # both are re-read per call already, so PAYMENTS_HALT adds a distinct,
-        # separately-labelled reason an operator can flip without touching the
-        # money-scope PAYMENTS_DRY_RUN switch itself.
-        logger.warning("PAYMENTS_HALT active — generation payment header accepted UNVERIFIED and UNSETTLED")
-        return None
+        # #1240 kill switch — but on THIS surface (unlike the marketplace
+        # tick-charging rail) halting must REFUSE service, not give the paid
+        # product away. This is a metered pay-per-call API with no pre-existing
+        # subscription relationship, so "no real charge" here doesn't mean
+        # "let the tick continue as if it had paid" — it means "we cannot take
+        # payment right now." Accepting ANY Payment-Signature value unverified
+        # (the marketplace rail's own "treated as no-op" shape) would have
+        # served the paid product for free AND dropped the payer-binding check
+        # above's guarantee for the whole halt window — the honest reading of
+        # a kill switch on a paid surface is to refuse, not to comp it.
+        logger.warning("PAYMENTS_HALT active — refusing generation payment (service unavailable, not free)")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "reason": "payments_halted",
+                "message": "Generation payments are temporarily halted by an operator kill switch. "
+                "Please try again later.",
+            },
+        )
 
     from circlekit.x402 import decode_payment_header
 

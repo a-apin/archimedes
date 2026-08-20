@@ -214,10 +214,17 @@ class TestPaymentsHalt:
     allows PAYMENTS_DRY_RUN=false on, so it is the surface that most needs a
     stop lever that doesn't require a redeploy. Distinct from PAYMENTS_DRY_RUN
     (a separate switch, re-read fresh here too) so an operator can flip it
-    without touching the money-scope decision recorded in PAYMENTS_DRY_RUN."""
+    without touching the money-scope decision recorded in PAYMENTS_DRY_RUN.
+
+    Unlike the marketplace tick-charging rail, a halt here REFUSES service
+    (503) rather than accepting the header unverified — this is a metered
+    pay-per-call API with no pre-existing subscriber relationship, so
+    "no real charge" must not mean "serve it anyway" (review finding on the
+    original PR: the prior shape gave the paid product away for free AND
+    dropped the payer-binding check for the whole halt window)."""
 
     @pytest.mark.asyncio
-    async def test_halt_accepts_header_without_verify_or_settle(self, monkeypatch, caplog):
+    async def test_halt_refuses_service_without_verify_or_settle(self, monkeypatch, caplog):
         _arm(monkeypatch, dry_run=False)
         monkeypatch.setenv("PAYMENTS_HALT", "true")
         middleware = MagicMock()
@@ -228,11 +235,26 @@ class TestPaymentsHalt:
             patch("archimedes.marketplace.payments.get_gateway_middleware", return_value=middleware),
             caplog.at_level("WARNING"),
         ):
-            result = await gp.enforce_generation_payment(_request_with(_payment_header()), WALLET)
-        assert result is None
+            with pytest.raises(Exception) as excinfo:
+                await gp.enforce_generation_payment(_request_with(_payment_header()), WALLET)
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.detail["reason"] == "payments_halted"
         assert "PAYMENTS_HALT" in caplog.text
         middleware.verify.assert_not_called()
         middleware.settle.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_halt_true_rejects_even_a_malformed_or_foreign_header(self, monkeypatch, caplog):
+        """The finding's exact concern: while halted, ANY Payment-Signature
+        value must be rejected, not accepted as a free pass — including one
+        that would otherwise fail payer-binding or decode entirely."""
+        _arm(monkeypatch, dry_run=False)
+        monkeypatch.setenv("PAYMENTS_HALT", "true")
+        with caplog.at_level("WARNING"):
+            with pytest.raises(Exception) as excinfo:
+                await gp.enforce_generation_payment(_request_with("not-valid-base64-json!!!"), WALLET)
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.detail["reason"] == "payments_halted"
 
     @pytest.mark.asyncio
     async def test_halt_false_reaches_the_facilitator(self, monkeypatch):
