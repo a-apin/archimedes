@@ -151,7 +151,15 @@ class TestLocalSetupContract(unittest.TestCase):
         override = "types { application/manifest+json webmanifest; }"
         self.assertIn(override, nginx)
         override_index = nginx.index(override)
-        server_block_index = nginx.index("server {\n    listen 8080;")
+        server_block_anchor = "server {\n    listen 8080;"
+        server_block_index = nginx.find(server_block_anchor)
+        self.assertNotEqual(
+            server_block_index,
+            -1,
+            f"anchor {server_block_anchor!r} not found in nginx.conf — this "
+            "test's anchor has drifted from the real file and needs updating, "
+            "not a ValueError from nginx.index() with no context",
+        )
         self.assertLess(
             override_index,
             server_block_index,
@@ -159,6 +167,22 @@ class TestLocalSetupContract(unittest.TestCase):
             "context) — nested inside it, `types {}` replaces rather than "
             "extends the inherited MIME map, breaking every other static "
             "asset's content type",
+        )
+        # The above only pins the POSITION of this one override line — it
+        # says nothing about any OTHER `types {}` block. A second `types {}`
+        # declared inside `server {}` (this override left untouched at http
+        # level) still replaces the inherited MIME map for every other
+        # static asset that block serves — verified live against the pinned
+        # image (nginxinc/nginx-unprivileged:1.31.2-alpine): with any
+        # `types {}` inside `server {}`, /style.css, /bundle.js, and / all
+        # degrade to application/octet-stream. Guard the whole hazard class,
+        # not just this one line's position.
+        self.assertNotIn(
+            "types {",
+            nginx[server_block_index:],
+            "no `types {}` block may appear inside `server {}` — it "
+            "replaces rather than extends the inherited MIME map for every "
+            "static asset that block serves",
         )
 
 
