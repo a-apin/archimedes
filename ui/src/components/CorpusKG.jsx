@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { apiGet } from '../api'
+import { fetchHealth } from '../health'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -28,9 +28,12 @@ const MIN_QUERY_LENGTH = 2
 /**
  * Topic Clusters viewer. (Currently renders BERTopic-derived topic clusters
  * across the KB-processed paper subset. Promoted to a real Knowledge Graph
- * once the KB pipeline produces its first artifact — Issue #1090. The prior
- * pointer here, #293, closed 2026-05-25 with kg_entities/kg_relations still
- * at 0/0 in prod — see #1368.)
+ * once #1090 produces the KB pipeline's first artifact AND #1092 backfills
+ * kg_entities/kg_relations from it — /health's corpus_kg_built reflects the
+ * latter (entities actually present), not artifact presence alone; see
+ * corpus_artifact_present for that separate fact. The prior pointer here,
+ * #293, closed 2026-05-25 with kg_entities/kg_relations still at 0/0 in
+ * prod — see #1368.)
  *
  * Fetches from ``/api/corpus/kg/entities?q=<q>`` and renders entities
  * + relations as an SVG graph. Entity search filters the KG. Falls back
@@ -49,13 +52,19 @@ export default function CorpusKG({ onOpenPaper }) {
   // hasn't run" for a search that simply matched nothing once the pipeline
   // HAS run (#1368) — /health's corpus_kg_built is the live authority for
   // which of those two states we're in, so it's fetched here rather than
-  // asserted. Tri-state (loading / error / value) mirrors Architecture.jsx's
-  // useArchStats — a failed fetch must render an honest "can't tell right
-  // now", never a guessed corpus_kg_built value.
+  // asserted. Tri-state (loading / error / value) — a failed fetch must
+  // render an honest "can't tell right now", never a guessed corpus_kg_built
+  // value. Fetched via the shared fetchHealth() TTL cache (../health.js),
+  // deliberately NOT a raw direct call to the /health endpoint — Layout.jsx
+  // already fetches /health on every in-app navigation (main's #1333 line;
+  // not yet on this branch), so an uncached second read here would fire a
+  // second Arc RPC round-trip + DB reads in the same render pass the moment
+  // this branch reconciles with main. See ui/test/health-cache.test.js for
+  // the guard against reintroducing the direct call.
   const [health, setHealth] = useState(null)
   const [healthError, setHealthError] = useState(false)
   useEffect(() => {
-    apiGet('/health')
+    fetchHealth()
       .then(setHealth)
       .catch(() => setHealthError(true))
   }, [])
@@ -378,9 +387,10 @@ export default function CorpusKG({ onOpenPaper }) {
             `No entities matched "${searchedTerm}".`
           ) : (
             <>
-              The KB pipeline hasn't produced its first artifact yet (#1090) — there's nothing to search
-              until it does. See /health's corpus_kg_built field for the live state; paper retrieval on the
-              Catalog tab doesn't depend on it.
+              No knowledge-graph entities have been extracted yet (#1090 produces the KB
+              pipeline artifact; #1092 backfills kg_entities/kg_relations from it) — there's
+              nothing to search until that lands. See /health's corpus_kg_built field for the
+              live state; paper retrieval on the Catalog tab doesn't depend on it.
             </>
           )}
         </div>
