@@ -1,0 +1,102 @@
+# Archimedes docs site — build + publish docs/ (via mkdocs-material) to
+# GitHub Pages. Issue #1381, Dan's decision: option B (GitHub Pages),
+# migrate to something else later only if we outgrow it.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# INERT UNTIL DAN ENABLES GITHUB PAGES. This workflow WILL RUN (the `push`
+# trigger below is live, not commented out) and it WILL FAIL, harmlessly, on
+# every qualifying push until two one-time manual steps are done:
+#   1. Repo Settings → Pages → Source: "GitHub Actions" (custom domain +
+#      HTTPS enforcement are part of the same step).
+#   2. A Pages *environment* has to exist for `actions/deploy-pages` to
+#      publish into — step 1 creates it.
+# Until then, the `deploy` job's `actions/deploy-pages` step errors with
+# something like "Get Pages site failed... Please verify that the repository
+# has Pages enabled" and the run shows red. That failure touches nothing —
+# no partial deploy, no site, no side effect outside this workflow run — so
+# merging this file is safe before Dan does the settings change. Full manual
+# steps (including the Route 53 CNAME) and local-preview instructions:
+# docs/runbooks/docs-site-setup.md.
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Docs Site (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs-site.yml"
+  workflow_dispatch: {}
+
+# Pages deploys should never race each other — a slow run publishing after a
+# faster, newer one would put a stale site live. Don't cancel an in-flight
+# deploy though (cancel-in-progress: false is the actions/deploy-pages
+# convention): let it finish, then run the next one.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (mkdocs build)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # mkdocs-material==9.7.7 — pinned per docs/CLAUDE.md's dep policy ("no
+      # new dep without a sentence on what it does and why"): it's the
+      # latest release on PyPI as of this workflow's authorship
+      # (2026-08-20) and the same version verified locally with
+      # `mkdocs build --strict`/`mkdocs build` (see
+      # docs/runbooks/docs-site-setup.md). Pinned rather than left open so a
+      # future mkdocs-material release can't silently change the built site
+      # (or its validation warnings) on an unrelated docs PR; bump
+      # deliberately, in its own commit, re-running the local build check
+      # from that runbook.
+      - name: Install mkdocs-material
+        run: pip install --quiet mkdocs-material==9.7.7
+
+      # Not --strict — see mkdocs.yml's own comment and
+      # docs/runbooks/docs-site-setup.md § "mkdocs --strict findings" for
+      # why: ~300 pre-existing, correct links from docs/*.md out to files
+      # outside docs_dir (../CLAUDE.md, backend/..., contracts/..., etc.,
+      # per this repo's own "every claim is a link to a file" convention)
+      # register as unresolved to mkdocs, which only ever sees docs_dir.
+      # Those links are already the blocking check in docs-gate.yml
+      # (docs_links.py), which validates them against the real repo tree,
+      # not this site's.
+      - name: mkdocs build
+        run: mkdocs build --site-dir _site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # to deploy to Pages
+      id-token: write # to verify the deployment originated from this workflow run
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # This is the step that fails harmlessly until Dan does Settings →
+      # Pages → Source: GitHub Actions. See the file header.
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
