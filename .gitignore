@@ -125,3 +125,8 @@ htmlcov/
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 graft/
+
+# mkdocs build output (docs/runbooks/docs-site-setup.md) — regenerable via
+# `mkdocs build`; CI (.github/workflows/docs-site.yml) writes to _site/.
+site/
+_site/
