@@ -81,6 +81,14 @@ async def list_traces(
         from archimedes.chain.trace_publisher import trace_publisher
 
         traces: list[TraceResponse] = []
+        # Real registry size (#1356): read once up front so it survives even
+        # if a later per-trace fetch in the loop fails partway through. The
+        # old code returned `total=len(traces)` here, which is the CURRENT
+        # PAGE size (capped at `limit`), not the registry size — pagination
+        # reported a smaller universe than actually exists. `total_count` is
+        # the value this route promises callers via `start`/`end` below; it
+        # must be the same value in the response.
+        total_count = 0
         try:
             total_count = await trace_publisher.get_total_trace_count()
             start = max(1, total_count - offset - limit + 1)
@@ -100,7 +108,13 @@ async def list_traces(
                     TraceResponse(
                         id=str(trace_id),
                         vault_address=detail["vault"],
-                        decision_type="rebalance",
+                        # "unknown", not "rebalance" (#1356): the on-chain
+                        # anchor does not record which decision type
+                        # produced it, so asserting "rebalance" for every
+                        # trace on this path is an invented fact. "unknown"
+                        # is the same default the off-chain path already
+                        # uses when its own data lacks the field.
+                        decision_type="unknown",
                         trigger="on-chain",
                         timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
                         reasoning="On-chain trace (off-chain metadata not available)",
@@ -112,7 +126,7 @@ async def list_traces(
         except Exception:
             logger.debug("on-chain trace listing failed", exc_info=True)
 
-        return TraceListResponse(traces=traces, total=len(traces))
+        return TraceListResponse(traces=traces, total=total_count)
     finally:
         await state.close()
 
@@ -171,7 +185,10 @@ async def get_trace(trace_id: str):
         return TraceResponse(
             id=trace_id,
             vault_address=detail["vault"],
-            decision_type="rebalance",
+            # "unknown", not "rebalance" — see the identical note on the list
+            # route above (#1356). The on-chain anchor doesn't record which
+            # decision type produced it.
+            decision_type="unknown",
             trigger="on-chain",
             timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
             reasoning="On-chain trace (off-chain metadata not available)",

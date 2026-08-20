@@ -15,8 +15,26 @@ Phase 3c contract:
   GET /api/corpus/kg/paper/{id}   — all triples for one paper
 
 This skeleton implements the runner-state + overview endpoints (read from
-the artifact volume + DB) and returns explicit "pipeline not yet run" 503s
-for graph/kg endpoints until the KB pipeline lands its first artifact.
+the artifact volume + DB). Until the KB pipeline lands its first artifact,
+/api/corpus/graph returns an explicit "pipeline not yet run" 503
+(kb_artifact_not_found). The three kg/* endpoints do NOT all share that
+503-on-empty shape — each has its own contract:
+
+  - /api/corpus/kg/entities     — with kg_entities at 0 rows, returns 200
+    with empty entity/relation sets rather than a 503, because overstating
+    "not yet run" for a search endpoint would be the same over-claim
+    pointing the other way. Pinned by
+    test_kg_search_returns_empty_sets_not_synthesised_entities in
+    backend/tests/test_corpus_claim_integrity.py.
+  - /api/corpus/kg/entity/{id}  — 404s for any id that doesn't resolve to a
+    row, which is every id while kg_entities is empty; 503 with "KG store
+    unavailable" only if the store itself is unreachable.
+  - /api/corpus/kg/paper/{id}   — 503 with "KG store unavailable" only if
+    the store itself is unreachable; with an empty-but-reachable store it
+    returns 200 with an empty triples list.
+
+Only the /kg/entities empty-sets behaviour and the /graph 503 are pinned by
+a test today; the /kg/entity and /kg/paper contracts above are not.
 """
 
 from __future__ import annotations
