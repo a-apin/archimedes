@@ -160,6 +160,38 @@ jobs:
           # finishes.
           exec 200>/var/lock/archimedes-runner-deploy.lock
           flock -n 200 || { echo "another runner deploy is already in progress on this instance — aborting" >&2; exit 1; }
+          # ── Host-prep (#1402, idempotent, re-checked every deploy) ─────────
+          # The box has wedged 3x on OS memory exhaustion: two uncapped
+          # containers on a 2GB t3.small with no swap starve the kernel until
+          # the instance status check AND the SSM agent die — recoverable only
+          # by a console reboot. The live instance ignores user-data edits
+          # (lifecycle.ignore_changes), so the durable fix ships through THIS
+          # script: (a) a 1GiB swapfile so a spike degrades instead of
+          # wedging; (b) per-container --memory caps so a leaking container is
+          # OOM-killed and restarted by systemd (Restart=always) instead of
+          # taking the host down. Caps: oracle 512m (light price feeder),
+          # agent 900m (observed steady RSS 654MB + headroom); worst-case sum
+          # 1412m leaves ~600m for OS+docker+SSM on the 2GB box.
+          if [ ! -f /swapfile ]; then
+            fallocate -l 1G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=1024
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+            sysctl -w vm.swappiness=10
+            grep -q '^vm.swappiness' /etc/sysctl.conf || echo 'vm.swappiness=10' >> /etc/sysctl.conf
+          fi
+          if [ -f /etc/systemd/system/archimedes-oracle.service ] && ! grep -q -e '--memory=' /etc/systemd/system/archimedes-oracle.service; then
+            sed -i 's|--env-file /opt/archimedes-runners/runner.env|--memory=512m --memory-swap=768m --env-file /opt/archimedes-runners/runner.env|' /etc/systemd/system/archimedes-oracle.service
+          fi
+          if [ -f /etc/systemd/system/archimedes-agent.service ] && ! grep -q -e '--memory=' /etc/systemd/system/archimedes-agent.service; then
+            sed -i 's|--env-file /opt/archimedes-runners/runner.env|--memory=900m --memory-swap=1152m --env-file /opt/archimedes-runners/runner.env|' /etc/systemd/system/archimedes-agent.service
+          fi
+          # Loud verification — a sed pattern mismatch must FAIL the deploy,
+          # not silently leave the box one leak away from its 4th wedge.
+          grep -q -e '--memory=' /etc/systemd/system/archimedes-oracle.service || { echo "FATAL: host-prep left oracle unit uncapped (ExecStart pattern mismatch)" >&2; exit 5; }
+          grep -q -e '--memory=' /etc/systemd/system/archimedes-agent.service || { echo "FATAL: host-prep left agent unit uncapped (ExecStart pattern mismatch)" >&2; exit 5; }
+          systemctl daemon-reload
           aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
           docker pull ${ECR_REGISTRY}/${BACKEND_ECR_REPO}:${IMAGE_TAG}
           docker tag ${ECR_REGISTRY}/${BACKEND_ECR_REPO}:${IMAGE_TAG} ${ECR_REGISTRY}/${BACKEND_ECR_REPO}:latest
