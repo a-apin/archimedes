@@ -22,7 +22,9 @@ import { useCallback, useEffect, useRef } from 'react'
 // Usage: attach the returned ref to the element that should contain focus
 // (the dialog panel, not the overlay), and pass `open`. The element needs
 // tabIndex={-1} so it can receive focus when it holds no focusable children
-// yet.
+// yet. Pass `refocusKey` when the dialog replaces its whole panel while
+// staying open, so focus follows the new panel instead of being left on
+// <body> (see the focus-move effect).
 const FOCUSABLE = [
   'a[href]',
   'button:not([disabled])',
@@ -32,7 +34,7 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
-export default function useDialogFocus(open, { onEscape } = {}) {
+export default function useDialogFocus(open, { onEscape, refocusKey } = {}) {
   const containerRef = useRef(null)
   const openerRef = useRef(null)
   // Kept in a ref so a caller passing an inline arrow doesn't re-run the
@@ -47,19 +49,52 @@ export default function useDialogFocus(open, { onEscape } = {}) {
     )
   }, [])
 
+  // Opener capture and restore, keyed on `open` ALONE. Kept separate from the
+  // focus-move effect below so that re-running that effect (a `refocusKey`
+  // change, while the dialog is still open) can never overwrite the element we
+  // have to hand focus back to on close.
   useEffect(() => {
     if (!open) return undefined
     const opener = document.activeElement
     openerRef.current = opener instanceof HTMLElement ? opener : null
+    return () => {
+      // Only take focus back if it is still inside (or was dropped by) the
+      // dialog — never yank it from somewhere the user deliberately moved to.
+      const active = document.activeElement
+      if (active === document.body || active == null) {
+        openerRef.current?.focus?.()
+      }
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return undefined
 
     // Move focus in on the next frame: the panel's children mount with it, and
     // for the spotlight tour the panel is repositioned after measurement.
+    //
+    // `refocusKey` re-runs this for a dialog that swaps its whole panel while
+    // staying open. The tour is the live case: card 0 has no anchor and renders
+    // the centered-card branch, card 1 anchors to a nav button and renders the
+    // spotlight branch. React reconciles those two portals position-by-position,
+    // so the first "Continue" press destroys the subtree the button lives in and
+    // drops focus to <body> — the exact stranding this hook exists to prevent.
+    // Guarded on containment, so a panel that re-renders in place (card 1 → 2,
+    // both anchored) leaves the user's place alone instead of yanking them back
+    // to the first control on every press.
     const raf = requestAnimationFrame(() => {
       const node = containerRef.current
       if (!node) return
+      if (node.contains(document.activeElement)) return
       const first = focusablesIn(node)[0]
       ;(first ?? node).focus?.()
     })
+
+    return () => cancelAnimationFrame(raf)
+  }, [open, refocusKey, focusablesIn])
+
+  useEffect(() => {
+    if (!open) return undefined
 
     const onKeyDown = (e) => {
       if (e.key === 'Escape' && escapeRef.current) {
@@ -93,16 +128,7 @@ export default function useDialogFocus(open, { onEscape } = {}) {
     }
 
     document.addEventListener('keydown', onKeyDown, true)
-    return () => {
-      cancelAnimationFrame(raf)
-      document.removeEventListener('keydown', onKeyDown, true)
-      // Only take focus back if it is still inside (or was dropped by) the
-      // dialog — never yank it from somewhere the user deliberately moved to.
-      const active = document.activeElement
-      if (active === document.body || active == null) {
-        openerRef.current?.focus?.()
-      }
-    }
+    return () => document.removeEventListener('keydown', onKeyDown, true)
   }, [open, focusablesIn])
 
   return containerRef

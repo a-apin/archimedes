@@ -53,8 +53,18 @@
      lands on the BASE palette (the auth screen renders outside both
      .app-site and .public-site, so it gets these values verbatim). It is
      therefore pinned at ≥4.5:1 on --surface-2 for WCAG 2.2 AA 1.4.3:
-     #8a8a93 on #16161a = 5.27:1 (was #71717a = 3.73:1). --text-4 stays a
-     border/decoration token — never use it as a text colour on this palette. */
+     #8a8a93 on #16161a = 5.27:1 (was #71717a = 3.73:1).
+
+     --text-4 (#3f3f46) is a border/decoration token here and must not be used
+     as a text colour on this palette — 1.73:1 on --surface-2. KNOWN OPEN
+     ISSUE, not a claim that the tree is clean: AssetModal.jsx and
+     AssetGroupModal.jsx portal to document.body, i.e. OUTSIDE .app-site, so
+     their "Current price" / "24h change" / "24h high" / "24h low" captions
+     resolve this base token and render at 1.73–1.83:1. Same portal mechanism
+     that forced the --chart-label fix below; the --text-4 half is unfixed
+     because raising the base token would also brighten every hairline that
+     legitimately uses it as decoration. It needs the call sites moved to
+     --text-3, not a token bump. */
 	--text-1: #fafafa;
 	--text-2: #a1a1aa;
 	--text-3: #8a8a93;
@@ -3775,6 +3785,14 @@ button:where(.tag) {
 .app-skip-link {
 	background: var(--text-1);
 	color: var(--canvas);
+	/* The shared block's z-index: 100 ties with `.sidebar` (App.css:325), which
+     is `position: fixed; inset: 0 auto 0 0`, opaque, and comes LATER in the
+     DOM — so at an equal z-index the sidebar won the paint order and covered
+     the link's whole focused box (top 10px, left 12px, inside the 232px
+     rail). The link was reachable but never visible, which is the classic
+     dead skip link: 2.4.1's mechanism existed while 2.4.7's indicator did
+     not. Above the sidebar (100) and topbar (50), below the modals (1000). */
+	z-index: 200;
 }
 
 .public-skip-link:focus,

@@ -252,7 +252,10 @@ export default function OnboardingTour({ open, onClose, setPage }) {
   // accessibility tree — but focus was never moved in, never trapped and never
   // restored, so the tour was announced as nothing while a sighted keyboard
   // user tabbed straight through the four dim panels into the app behind them.
-  const panelRef = useDialogFocus(open)
+  // refocusKey: the centered-card branch and the spotlight branch are two
+  // different portal trees, so advancing off card 0 (the only unanchored card)
+  // destroys the panel the user's focus is in and strands it on <body>.
+  const panelRef = useDialogFocus(open, { refocusKey: cardIndex })
 
   // Keyboard support — Esc closes, ArrowRight advances, ArrowLeft goes back.
   useEffect(() => {

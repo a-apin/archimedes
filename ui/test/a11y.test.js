@@ -158,6 +158,29 @@ test("the authenticated shell ships a skip link with a focusable target", () => 
 	// It cannot borrow .public-skip-link's colours — --public-paper /
 	// --public-abyss are undefined inside .app-site.
 	assert.match(css, /\.app-skip-link \{\n\tbackground: var\(--text-1\);/);
+	// ...and it must out-stack the sidebar. `.sidebar` is position: fixed,
+	// inset: 0 auto 0 0, opaque, z-index: 100, and comes LATER in the DOM than
+	// the link, so at the shared block's z-index: 100 the sidebar won the paint
+	// order and covered the link's entire focused box (top 10px / left 12px,
+	// inside the 232px rail). Verified in a browser against the built CSS:
+	// elementFromPoint at all three corners returned DIV.sidebar-brand.
+	// `.app-skip-link` is declared twice — once in the shared geometry block
+	// alongside `.public-skip-link`, once on its own — at equal specificity, so
+	// the EFFECTIVE z-index is the last one declared. Read it that way rather
+	// than matching the first rule that mentions the class.
+	const zDecls = [
+		...css.matchAll(/([^{}]*\.app-skip-link[^{}]*)\{([^}]*)\}/g),
+	].flatMap((rule) =>
+		[...rule[2].matchAll(/z-index:\s*(\d+);/g)].map((m) => Number(m[1])),
+	);
+	assert.ok(zDecls.length > 0, ".app-skip-link declares no z-index");
+	const effectiveZ = zDecls[zDecls.length - 1];
+	const sidebar = css.match(/^\.sidebar \{[^}]*\}/m);
+	const sidebarZ = Number(sidebar[0].match(/z-index:\s*(\d+);/)[1]);
+	assert.ok(
+		effectiveZ > sidebarZ,
+		`skip link z-index ${effectiveZ} must beat .sidebar's ${sidebarZ}`,
+	);
 });
 
 test("a failed deep link does not share the landing page's title", () => {
@@ -347,7 +370,19 @@ test("generation outcomes are announced, not just painted", () => {
 		generationStream,
 		/role="log"\n\s+aria-live="polite"\n\s+aria-relevant="additions text"\n\s+aria-label="Generation events"/,
 	);
-	assert.match(generationStream, /role=\{terminal === 'error' \? 'alert' : 'status'\}/);
+	// The live region must hold ONLY the terminal outcome. `events.length`
+	// increments on every SSE frame, so while the running-state counter sat
+	// inside the region a screen reader re-read the job id and the whole block
+	// once per event for the length of the run.
+	assert.match(
+		generationStream,
+		/role="status"\n\s+aria-live=\{terminal === 'error' \? 'assertive' : 'polite'\}/,
+	);
+	const liveRegion = generationStream.match(
+		/<div\n\s+role="status"\n\s+aria-live=\{terminal[\s\S]*?\n {10}<\/div>/,
+	);
+	assert.ok(liveRegion, "GenerationStream live region not found");
+	assert.doesNotMatch(liveRegion[0], /events\.length/);
 });
 
 test("stopping a paper deployment says so", () => {
