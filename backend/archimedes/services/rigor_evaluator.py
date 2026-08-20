@@ -544,6 +544,8 @@ class RigorGateResult:
         pbo_library_size: int | None = None,
         profile: RigorProfile | None = None,
         is_degenerate: bool = False,
+        is_full_series_degenerate: bool = False,
+        is_oos_degenerate: bool = False,
     ) -> None:
         self.strategy_id = strategy_id
         # #1184: True when the persisted return series itself is zero-variance —
@@ -555,7 +557,31 @@ class RigorGateResult:
         # (that's `pending`, decided upstream before this result exists) nor
         # "graded and statistically weak" (a real `fail`). Consumers must check
         # this BEFORE treating a None DSR as either of those two.
+        #
+        # This is the OR of ``is_full_series_degenerate`` / ``is_oos_degenerate``
+        # below — the single boolean ``tri_state_status`` and
+        # ``live_rigor_gate.RigorGateVerdict.from_result`` read, since either
+        # kind of flatness earns the same "degenerate" badge category. The two
+        # components are carried separately (not just folded into this OR)
+        # because they are NOT interchangeable for per-criterion messaging: a
+        # full-series-flat input makes ``compute_dsr`` mathematically undefined
+        # (it runs over the whole series), but an OOS-only-flat input does not —
+        # ``compute_dsr`` still ran over the (non-constant) full series and may
+        # have produced a legitimate, even passing, DSR. ``gate_details["dsr"]``
+        # must branch on ``is_full_series_degenerate`` specifically, not this OR,
+        # or it wrongly claims "not a legitimate DSR" for a DSR that is legitimate
+        # (#1184 round-2 finding).
         self.is_degenerate = is_degenerate
+        # True iff the FULL persisted series is zero-variance (``is_zero_variance_series``)
+        # — the case where ``compute_dsr`` itself is mathematically undefined, since
+        # it guards on ``np.ptp`` over the whole series. Use this (not ``is_degenerate``)
+        # to decide whether the DSR itself is illegitimate.
+        self.is_full_series_degenerate = is_full_series_degenerate
+        # True iff only the chronological OOS slice ``compute_oos_sharpe`` grades is
+        # zero-variance (``is_oos_zero_variance_series``) — the series can be non-constant
+        # overall (a legitimate DSR) while still flat inside the OOS window (e.g. a
+        # strategy that stops trading partway through the backtest).
+        self.is_oos_degenerate = is_oos_degenerate
         # The strictness profile whose thresholds ``passes_all`` / ``gate_details``
         # report against. Defaults to the strictest level (the badge bar), so an
         # unspecified profile is fail-safe. The strictness-adjustable thresholds
@@ -750,7 +776,16 @@ class RigorGateResult:
         # the generic "MISSING" a short series or an ordinary gate loss would
         # also produce. The remaining criteria (PBO, look-ahead, CPCV, IID,
         # regime-robustness) are computed identically either way below.
-        if self.is_degenerate:
+        #
+        # NOTE (round-2 finding): this branches on ``is_full_series_degenerate``
+        # specifically, NOT ``is_degenerate`` (the OR with ``is_oos_degenerate``).
+        # ``compute_dsr`` runs over the FULL series, so it is undefined only when
+        # the FULL series is flat. An OOS-only-flat series (full series
+        # non-constant) leaves ``compute_dsr`` unaffected — it may have produced a
+        # legitimate, even passing, DSR — so that case must fall through to the
+        # ordinary PASS/FAIL/MISSING branches below, not claim "not a legitimate
+        # DSR" for a DSR that is legitimate.
+        if self.is_full_series_degenerate:
             details["dsr"] = (
                 "DEGENERATE (zero-variance persisted return series — broken data or a zero-trade backtest, "
                 "not a legitimate DSR)"
@@ -979,7 +1014,15 @@ def run_rigor_gate(
     # (e.g. a strategy that stops trading partway through). Each predicate
     # mirrors its corresponding helper's own guard, so this agrees with BOTH
     # by construction rather than re-deriving either condition.
-    is_degenerate = is_zero_variance_series(daily_returns) or is_oos_zero_variance_series(daily_returns)
+    #
+    # The two predicates are also carried onto the result SEPARATELY (not just
+    # via their OR): ``gate_details["dsr"]`` must know whether the FULL series
+    # was flat (DSR undefined) specifically, since an OOS-only-flat series
+    # leaves the full-series DSR computation — and therefore its legitimacy —
+    # untouched (#1184 round-2 finding).
+    is_full_series_degenerate = is_zero_variance_series(daily_returns)
+    is_oos_degenerate = is_oos_zero_variance_series(daily_returns)
+    is_degenerate = is_full_series_degenerate or is_oos_degenerate
 
     # 2. PBO (criterion 4 in the gate ordering) — prefer the full-library CSCV
     #    PBO when supplied (#546). PBO is a property of the selection set, not of
@@ -1069,6 +1112,8 @@ def run_rigor_gate(
         regime_robustness=regime_robustness,
         pbo_library_size=effective_pbo_library_size,
         is_degenerate=is_degenerate,
+        is_full_series_degenerate=is_full_series_degenerate,
+        is_oos_degenerate=is_oos_degenerate,
         profile=get_profile(strictness_level),
     )
 

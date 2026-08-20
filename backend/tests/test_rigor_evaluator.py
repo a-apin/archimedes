@@ -1061,6 +1061,37 @@ class TestDegenerateSeriesCategory:
         assert "DEGENERATE" in result.gate_details["oos_sharpe"]
         assert result.oos_sharpe is None  # the underlying math is still untouched
 
+    def test_oos_only_degenerate_series_reports_a_legitimate_dsr_not_illegitimate(self) -> None:
+        """#1184 round-2 finding: run_rigor_gate previously stored only the OR of
+        the two degeneracy predicates on the result, so gate_details["dsr"]
+        (gated on that OR) claimed "not a legitimate DSR" even when the FULL
+        series was NOT flat and compute_dsr had run over it and produced a real,
+        passing p-value. Only the OOS *slice* was flat here — that makes
+        compute_oos_sharpe undefined, but it says nothing about compute_dsr,
+        which grades the full series. gate_details["dsr"] must report the DSR's
+        actual PASS/FAIL, never claim illegitimacy, unless the FULL series itself
+        is degenerate (is_full_series_degenerate)."""
+        rng = np.random.default_rng(11)
+        series = rng.normal(0.001, 0.01, 3900).tolist() + [0.0] * 1759
+        result = run_rigor_gate(strategy_id="oos-only-flat-dsr-legit", daily_returns=series, num_trials=1)
+
+        # Preconditions: this is the OOS-only-degenerate case, not full-series.
+        assert result.is_degenerate is True
+        assert result.is_oos_degenerate is True
+        assert result.is_full_series_degenerate is False
+        # The DSR itself was computed over the (non-constant) full series and
+        # passed the strictest profile's bar (p >= 0.90) — it is legitimate.
+        assert result.dsr_p_value is not None
+        assert result.dsr_p_value >= result.profile.dsr_p_min
+
+        dsr_detail = result.gate_details["dsr"]
+        assert "not a legitimate DSR" not in dsr_detail
+        assert "DEGENERATE" not in dsr_detail
+        assert dsr_detail.startswith("PASS")
+        # The OOS half is still honestly reported as degenerate — this test is
+        # about the DSR detail specifically, not about hiding the OOS problem.
+        assert "DEGENERATE" in result.gate_details["oos_sharpe"]
+
 
 # ─── Additional coverage: gate_details branches + run_rigor_gate paths ──────
 
