@@ -133,9 +133,9 @@ variable "archimedes_treasury_wallet" {
 }
 
 variable "generation_payment_recipient" {
-  description = "Platform wallet address that receives x402 generation payments (flip-list #834). Public address, not a secret. Empty keeps the paywall un-flippable: GENERATION_PAYMENT_REQUIRED=true with no recipient is a deliberate 503, never a free pass."
+  description = "Platform wallet address that receives x402 generation payments (flip-list #834). Public address, not a secret. Defaults to the platform generation-revenue DCW (Circle Console, wallet ID af3e1cf6-76a3-55db-911a-b356860058e4) so a terraform apply without the TF_VAR cannot silently un-configure the paywall; override via TF_VAR_generation_payment_recipient only to rotate the wallet."
   type        = string
-  default     = ""
+  default     = "0xffa7abba5f17cb8471ebf150bf808bd6fb8856c1"
 }
 
 # ── Runner relocation (issue #1065 / #1043) ─────────────────────────────────
