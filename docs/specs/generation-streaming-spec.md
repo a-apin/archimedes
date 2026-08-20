@@ -80,11 +80,11 @@ Each SSE event is `id: <monotonic_int>\nevent: <name>\ndata: <json>\n\n`.
 |---|---|---|
 | `job_queued` | `{ job_id, brief, ts }` | Immediately after `POST /api/generate/jobs`. |
 | `brief_validated` | `{ job_id, asset_classes, risk_appetite, time_horizon, ts }` | After LLM extracts structured intent from free-text brief. |
-| `candidates_selected` | `{ job_id, candidate_count, source_arxiv_ids: [...], ts }` | After agent selects candidate papers from corpus (typically 3-5). |
+| `candidates_selected` | `{ job_id, candidate_count, regimes, ts }` | Before per-candidate work begins. Carries **no papers claim** — paper selection happens inside each candidate's debate run, so no honest count exists at this point (the field previously here sliced the curated library to `max_papers`, a constant from the wrong population). |
 | `agent_iteration` | `{ job_id, iteration_n, max_iterations, ts }` | At the top of every `PortfolioAgent.recommend()` loop iteration. |
 | `tool_called` | `{ job_id, tool_name, args_summary, ts }` | When the agent invokes a tool (`get_asset_stats`, `get_correlation`, `stress_test`). |
 | `tool_result` | `{ job_id, tool_name, result_summary, ts }` | After the tool returns. `result_summary` is a 1-line human-readable summary, not the full payload. |
-| `candidate_drafted` | `{ job_id, candidate_id, strategy_name, weights_preview, ts }` | When the agent produces a candidate portfolio. Multiple may fire per job (per the locked decision, agent considers N internally). |
+| `candidate_drafted` | `{ job_id, candidate_id, strategy_name, weights_preview, regime, source_arxiv_ids: [...], ts }` | When the agent produces a candidate portfolio. Multiple may fire per job (per the locked decision, agent considers N internally). `source_arxiv_ids` are the papers the accepted proposal **actually cites**, provenance-checked against the corpus surface by the debate critics — never the `max_papers` depth knob. |
 | `candidate_evaluated` | `{ job_id, candidate_id, rigor_verdict: { dsr, pbo, oos_sharpe, lookahead_audit_passed, passes }, ts }` | After rigor gate runs on each candidate. |
 | `best_selected` | `{ job_id, best_candidate_id, considered_count, ts }` | When the agent picks the surfaced candidate from the considered set. |
 | `trace_hashed` | `{ job_id, trace_hash, ts }` | After the reasoning trace is committed to `AgentStateStore` and its keccak256 computed. |
