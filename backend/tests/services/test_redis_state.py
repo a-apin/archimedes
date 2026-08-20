@@ -561,6 +561,73 @@ class TestRevealReconcileIndex:
         assert await store.get_reveal_reconcile_first_seen("") is None
         fake.hget.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_mark_reveal_reconcile_terminal_closes_all_three_structures(self) -> None:
+        """#1403 review round 2: agent_runner._reconcile_terminal and
+        _reconcile_failure both call this method with the assumption that it
+        durably closes the record — independent of the trace blob's own save
+        succeeding. Only a real AgentStateStore call proves the three ops
+        (SADD terminal / SREM pending / HDEL first_seen) actually fire against
+        the right keys; a MagicMock with these attributes hand-attached would
+        pass even if the method were renamed or its body deleted."""
+        store, fake = await _store_with_fake_redis()
+        await store.mark_reveal_reconcile_terminal("0xh")
+
+        fake.sadd.assert_awaited_once_with(KEY_TRACE_RECONCILE_TERMINAL, "0xh")
+        fake.srem.assert_awaited_once_with(KEY_TRACE_RECONCILE_PENDING, "0xh")
+        fake.hdel.assert_awaited_once_with(KEY_TRACE_RECONCILE_FIRST_SEEN, "0xh")
+
+    @pytest.mark.asyncio
+    async def test_mark_reveal_reconcile_terminal_empty_hash_short_circuits(self) -> None:
+        """No Redis round-trip for a falsy trace_hash — nothing to close."""
+        store, fake = await _store_with_fake_redis()
+        await store.mark_reveal_reconcile_terminal("")
+
+        fake.sadd.assert_not_awaited()
+        fake.srem.assert_not_awaited()
+        fake.hdel.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_list_reveal_reconcile_terminal_hashes_reads_the_terminal_set(self) -> None:
+        """_reconcile_dangling_reveals cross-checks every scan/index candidate
+        against this set so a record closed via mark_reveal_reconcile_terminal
+        can never re-enter the retry loop even while its own JSON blob still
+        reads 'pending' (#1403 review round 2). Confirms the real method reads
+        SMEMBERS on the terminal key and returns a `set`, not a list — the
+        caller does set membership checks (`in`) against the result."""
+        store, fake = await _store_with_fake_redis()
+        fake.smembers.return_value = ["h1", "h2"]
+
+        result = await store.list_reveal_reconcile_terminal_hashes()
+
+        fake.smembers.assert_awaited_once_with(KEY_TRACE_RECONCILE_TERMINAL)
+        assert result == {"h1", "h2"}
+        assert isinstance(result, set)
+
+    @pytest.mark.asyncio
+    async def test_seed_reveal_reconcile_first_seen_uses_hsetnx_not_hset(self) -> None:
+        """#1403 review round 3: this method exists specifically so a
+        migration-era dangling record (no marker yet, because it predates the
+        index) can acquire a first-seen clock even when the blob write path
+        that normally seeds it is broken. It must use HSETNX (set-once) — a
+        plain HSET here would let every reconciliation pass reset the clock,
+        permanently disabling the max-age circuit breaker it exists to
+        support."""
+        store, fake = await _store_with_fake_redis()
+        await store.seed_reveal_reconcile_first_seen("0xh")
+
+        fake.hsetnx.assert_awaited_once()
+        key, field, _value = fake.hsetnx.await_args.args
+        assert (key, field) == (KEY_TRACE_RECONCILE_FIRST_SEEN, "0xh")
+        fake.hset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_seed_reveal_reconcile_first_seen_empty_hash_short_circuits(self) -> None:
+        """No Redis round-trip for a falsy trace_hash — nothing to seed."""
+        store, fake = await _store_with_fake_redis()
+        await store.seed_reveal_reconcile_first_seen("")
+        fake.hsetnx.assert_not_awaited()
+
 
 class TestReconcileClosedStatesStaySynced:
     """redis_state._RECONCILE_CLOSED_STATES duplicates agent_runner's set
