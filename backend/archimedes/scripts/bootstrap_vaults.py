@@ -187,20 +187,42 @@ async def mint_synthetic_tokens() -> dict[str, float]:
             factory = get_contract_loader().synthetic_factory
             vault_addr = await factory.functions.tokenVault(chain_client.to_checksum(token_addr)).call()
         except Exception:
+            # Loud, not silent (CLAUDE.md fail-soft rule): a swallowed
+            # exception here used to fall through to the hardcoded legacy
+            # dict below with no trace of why the live lookup was skipped.
+            logger.warning("tokenVault lookup failed for %s", symbol, exc_info=True)
             vault_addr = None
 
         if not vault_addr or vault_addr == "0x0000000000000000000000000000000000000000":
-            # Fallback for offline/test environments
-            legacy_fallback = {
-                "sTSLA": "0xf0356600e26c6c403ec4f5b36b0e3380bb0609ab",
-                "sNVDA": "0x4c3cdc2bf44195ad8a4d201c8afbd453949a8781",
-                "sSPY": "0xd8d7855f76c384638cf1dfc3575ecff3538764b4",
-                "sBTC": "0x92990ed6f5c8cd72752ca9aeafad422269225c43",
-                "sGOLD": "0x124b5c5da57d209b28d4997aaf6d4e96711efd5a",
-                "sOIL": "0xfa942399e36959c8060c3a82a610d680a7ac6d22",
-                "sNKY": "0xb26029ca37c09400ca921f00fc541cd42143b508",
-            }
-            vault_addr = legacy_fallback.get(symbol)
+            # #1102 follow-up: do NOT silently substitute a hardcoded address
+            # from a prior deploy — that risks broadcasting a real USDC
+            # approve/mint against an orphaned SyntheticVault. The 7-address
+            # dict below is only ever consulted with an explicit opt-in, for
+            # offline/test fixtures that deliberately want it; it must never
+            # engage on a real box (which would only reach here if
+            # ARC_SYNTHETIC_FACTORY_ADDRESS is unset or the lookup reverted).
+            vault_addr = None
+            if os.getenv("BOOTSTRAP_ALLOW_LEGACY_VAULTS") == "1":
+                legacy_fallback = {
+                    "sTSLA": "0xf0356600e26c6c403ec4f5b36b0e3380bb0609ab",
+                    "sNVDA": "0x4c3cdc2bf44195ad8a4d201c8afbd453949a8781",
+                    "sSPY": "0xd8d7855f76c384638cf1dfc3575ecff3538764b4",
+                    "sBTC": "0x92990ed6f5c8cd72752ca9aeafad422269225c43",
+                    "sGOLD": "0x124b5c5da57d209b28d4997aaf6d4e96711efd5a",
+                    "sOIL": "0xfa942399e36959c8060c3a82a610d680a7ac6d22",
+                    "sNKY": "0xb26029ca37c09400ca921f00fc541cd42143b508",
+                }
+                vault_addr = legacy_fallback.get(symbol)
+
+            if not vault_addr:
+                print(
+                    f"  ❌ {symbol}: no live SyntheticVault address (tokenVault() lookup "
+                    f"failed or returned zero) — skipping rather than guessing an address. "
+                    f"Set BOOTSTRAP_ALLOW_LEGACY_VAULTS=1 to opt into the legacy fallback "
+                    f"addresses for offline/test use only."
+                )
+                minted[symbol] = 0.0
+                continue
 
         usdc_int = int(usdc_amount * 1e6)  # USDC has 6 decimals
 
