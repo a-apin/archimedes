@@ -26,14 +26,26 @@ import { readFileSync } from "node:fs";
 const sitemapPath = new URL("../public/sitemap.xml", import.meta.url);
 const sitemapSrc = readFileSync(sitemapPath, "utf8");
 
-// Deliberately scoped to the <loc> values, not the raw file text: the header
-// comment (explaining WHY insights is excluded) legitimately says the word
-// "insights" several times, so a whole-file substring check would either
-// false-positive on the comment or have to special-case it — checking only
-// the actual URLs is both the real property that matters and immune to that.
+// The whole FILE is the property, not just the <loc> URLs: sitemap.xml is
+// publicly served byte-for-byte, so an XML comment naming the page, its
+// path, or its gate mechanism discloses exactly what the NotFound treatment
+// exists to hide — to any human who reads /sitemap.xml, which is precisely
+// the audience a crawler-only check ignores. (An earlier revision kept an
+// explanatory comment in the sitemap and scoped this test to <loc> values
+// to accommodate it; that inverted the priority. The rationale lives HERE,
+// in a file that is never served.)
 const locs = [...sitemapSrc.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
 
-test("sitemap.xml never advertises the admin-only /app/insights page", () => {
+test("sitemap.xml never advertises the admin-only page — anywhere in the file", () => {
+	assert.doesNotMatch(
+		sitemapSrc,
+		/insights/i,
+		"the publicly served sitemap must not name the admin-only page, in a URL, comment, or otherwise",
+	);
+});
+
+test("sitemap <loc> URLs contain no gated route", () => {
+	assert.ok(locs.length > 0, "sitemap parsed to zero <loc> entries — parser or file is broken");
 	for (const loc of locs) {
 		assert.doesNotMatch(loc, /insights/i, `unexpected gated URL in sitemap: ${loc}`);
 	}
