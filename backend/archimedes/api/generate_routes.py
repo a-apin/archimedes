@@ -6,6 +6,7 @@ Endpoints (per ``docs/specs/generation-streaming-spec.md``):
   GET  /api/generate/stream/{job_id}          — SSE event stream
   POST /api/generate/jobs/{job_id}/cancel     — best-effort cancel
   GET  /api/generate/jobs                     — list recent jobs (status table)
+  GET  /api/generate/jobs/{job_id}            — one job's status (poll fallback)
   GET  /api/generate/jobs/{job_id}/candidates — N candidates incl. rejected
 
 This router lives in its own file per the Spine+ v2 plan's cross-cutting
@@ -403,26 +404,73 @@ async def list_jobs(
             continue
         if not owner_user_id and owner_wallet and owner_wallet.lower() != (linked_wallet or "").lower():
             continue
-        brief = payload.get("brief") or {}
-        result = j.get("result") or {}
-        summaries.append(
-            JobSummary(
-                job_id=j["id"],
-                state=_normalize_state(j.get("status") or "queued"),
-                brief_intent=brief.get("intent", ""),
-                created_at=j.get("created_at", ""),
-                updated_at=j.get("updated_at", ""),
-                n_candidates=int(payload.get("n_candidates") or 1),
-                best_strategy_id=result.get("best_strategy_id"),
-            )
-        )
+        summaries.append(_job_summary(j))
     return JobsListResponse(jobs=summaries)
+
+
+def _job_summary(job: dict, job_id: str | None = None) -> JobSummary:
+    """Project one job-store record onto the wire shape.
+
+    Shared by the listing and the single-job read so the two surfaces can never
+    disagree about a job's state — an agent that switches from ``GET /jobs`` to
+    ``GET /jobs/{job_id}`` reads the identical record.
+    """
+    payload = job.get("payload") or {}
+    brief = payload.get("brief") or {}
+    result = job.get("result") or {}
+    return JobSummary(
+        job_id=job.get("id") or job_id or "",
+        state=_normalize_state(job.get("status") or "queued"),
+        brief_intent=brief.get("intent", ""),
+        created_at=job.get("created_at", ""),
+        updated_at=job.get("updated_at", ""),
+        n_candidates=int(payload.get("n_candidates") or 1),
+        best_strategy_id=result.get("best_strategy_id"),
+    )
 
 
 def _normalize_state(s: str) -> str:
     if s in ("queued", "running", "done", "error", "cancelled"):
         return s
     return "queued"
+
+
+@generate_router.get("/jobs/{job_id}", response_model=JobSummary)
+async def get_job(
+    job_id: str,
+    request: Request,
+    user: CurrentUser = Depends(require_current_user),
+) -> JobSummary:
+    """One job's current state — the poll fallback for a client with no live stream (#1292).
+
+    An agent that never opened the SSE stream, or whose connection dropped past
+    the 15-minute event-log TTL, previously had to pull ``GET /jobs`` and scan
+    the whole listing to learn whether its single job had finished. This returns
+    the same ``JobSummary`` record for one job.
+
+    Three refusals, all rendered as the byte-identical 404 the other per-job
+    reads use, so none of them is an existence oracle:
+
+    * unknown / expired ``job_id``;
+    * a job whose ``type`` is not ``generate`` — this endpoint is the generate
+      surface, not a general job reader. The filter mirrors ``list_jobs`` and is
+      load-bearing rather than cosmetic: sibling job types use states outside
+      this router's vocabulary (``strategies_routes`` writes ``failed``), which
+      ``_normalize_state`` would coerce to ``queued`` — reporting a crashed job
+      as still-waiting;
+    * a job owned by another account, or a legacy wallet-owned job whose owner
+      is not the caller's linked wallet (``_require_job_access``).
+
+    The stored ``error`` string is deliberately not surfaced: the pipeline
+    writes raw ``str(exc)`` into it, which is unscrubbed internal detail. The
+    ``error`` state plus the SSE ``error`` event remain the reporting path.
+    """
+    store = get_job_store()
+    job = await store.get(job_id)
+    if not job or job.get("type") != "generate":
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
+    _require_job_access(job, user.id, job_id, get_linked_wallet_address(request))
+    return _job_summary(job, job_id)
 
 
 @generate_router.get("/jobs/{job_id}/candidates", response_model=CandidatesListResponse)
