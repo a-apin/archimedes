@@ -386,6 +386,24 @@ class TraceVerifyResponse(BaseModel):
     trace_id: int  # On-chain trace ID
     trace_hash: str
     is_verified: bool
+    # Tri-state verification outcome (#1359). No default — every code path
+    # that returns a TraceVerifyResponse must say which of these actually
+    # happened, so a future branch can't silently omit it and fall back to
+    # a value that reads as a pass:
+    #   hash_matched  — off-chain trace_hash re-fetched from the on-chain
+    #                   receipt and compared byte-for-byte; they matched.
+    #   anchored_only — no off-chain record to compare against (the store
+    #                   was reachable and simply had no entry), so only the
+    #                   on-chain anchor itself was confirmed. Zero hashes
+    #                   were compared — this is NOT a hash match and must
+    #                   not render with the same affordance as one.
+    #   failed        — off-chain record exists but was never anchored, the
+    #                   on-chain receipt is missing, or the hashes disagree.
+    # A Redis outage is deliberately NOT one of these states: it raises a
+    # 503 (see verify_trace) rather than falling through to anchored_only,
+    # because "the store is unreachable" and "the store is empty" are
+    # different facts and only the second one is a real anchored_only.
+    verification_mode: Literal["hash_matched", "anchored_only", "failed"]
     agent: str = ""
     vault: str = ""
     on_chain_timestamp: int = 0
