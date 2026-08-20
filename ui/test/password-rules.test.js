@@ -91,3 +91,28 @@ test("sign-up form wires the shared rules module, confirm field, and gate", () =
 	// confirm/rules machinery.
 	assert.match(authPage, /const canSubmit = !creating \|\|/);
 });
+
+// ── #1323: forgot-password + resend-verification wiring ─────────────────
+
+test("sign-in view offers a Forgot password control wired to the reset request", () => {
+	assert.match(authPage, /Forgot password\?/);
+	assert.match(authPage, /requestPasswordReset/);
+	// No account-enumeration: the same confirmation copy must be shown
+	// regardless of whether the address has an account (mirrors the server's
+	// identical response — auth/auth.js sendResetPassword).
+	assert.match(authPage, /RESET_REQUESTED_MESSAGE/);
+});
+
+test("an unverified sign-in (403) offers Resend verification email, wired to the resend endpoint", () => {
+	assert.match(authPage, /err\.status === 403/);
+	assert.match(authPage, /Resend verification email/);
+	assert.match(authPage, /resendVerificationEmail/);
+});
+
+test("reset-password mode reads the token from the URL and gates submit on the shared rules", () => {
+	assert.match(authPage, /mode === 'reset-password'/);
+	assert.match(authPage, /URLSearchParams\(window\.location\.search\)\.get\('token'\)/);
+	assert.match(authPage, /disabled=\{busy \|\| !rulesMet \|\| !match\}/);
+	// A missing/expired token must not silently render a submittable form.
+	assert.match(authPage, /invalid or has expired/);
+});
