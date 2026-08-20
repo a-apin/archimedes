@@ -159,6 +159,50 @@ GET /api/strategies/{strategy_id}
 > fusion/debate winner reads `pass`/`fail` like any other strategy. **Never weaken
 > the gate to force a `pass` — `pending`/`fail` are honest, deployable-only-on-`pass`.**
 
+### 5. METER + VERIFY — quota readback and standalone rigor (account session required)
+
+Two utility endpoints an agent can call outside the generation journey. Both are
+`require_current_user`-gated and both are advertised at `GET /api/agent/manifest`
+(groups `account` and `rigor`) and in `/.well-known/agent.json`.
+
+```http
+GET /api/account/usage
+```
+```json
+{
+  "date": "2026-08-20",
+  "user_id": "…",
+  "user": { "used": 3, "cap": 10, "unlimited": false, "remaining": 7, "error": null },
+  "ip":   { "used": 3, "cap": 25, "unlimited": false, "remaining": 22, "error": null },
+  "quote": { "…": "the SAME generation_payment.quote() the enforcement path reads" }
+}
+```
+Read this before `POST /api/generate/start` to avoid spending a request on a 429. It
+reads the same two Redis buckets `enforce_generation_quota` enforces (a peek, never a
+write), and the same `quote()` the enforcement path prices from, so the displayed number
+and the enforced number cannot drift. `used` is honestly `null` — never a fabricated
+`0` — when the quota backend is unreachable.
+
+```http
+POST /api/rigor/verify        # rate limited 5/minute
+{ "returns": [{ "date": "2026-01-02", "daily_return": 0.0012 }, …], "trials": 40 }
+```
+Runs the gate's admission checks over a **bare returns series** you submit — no strategy
+code, no trial matrix — reusing the identical functions and threshold constants the
+strategy-passport verdict uses. A bare series can only support two of the four checks:
+
+| Check | From a bare series |
+| --- | --- |
+| DSR | evaluable — deflated by the **self-attested** `trials` count, gated on `DSR_P_FLOOR` |
+| walk-forward OOS | evaluable — single chronological 70/30 holdout, gated on `OOS_ABS_FLOOR` |
+| PBO | always `not_evaluable` — overfitting probability is a property of a *selection set* |
+| look-ahead audit | always `not_evaluable` — AST analysis of code, and this endpoint takes only numbers |
+
+`passes` is `true` **iff** no evaluable check failed *and* at least one check was
+evaluable: an all-`not_evaluable` request (e.g. a too-short series) must never report
+`passes: true` by vacuous truth. `self_attested: true` is returned to keep the caller's
+declared `trials` count visible as the unverified input it is.
+
 ## Account authentication and optional wallet proof
 
 ### Better Auth recipe
@@ -183,10 +227,17 @@ account for smoke testing.
 Wallet is needed only for wallet/on-chain operations. Account session must exist first.
 
 1. `POST /api/wallets/challenge` with
-   `{ "address": "0x...", "chain_id": 5042002, "provider": "browser" }`.
+   `{ "address": "0x...", "chain_id": 5042002, "provider": "headless" }`.
 2. Sign exact returned `message`; do not reconstruct it.
 3. `POST /api/wallets/verify` with returned message and signature.
 4. `GET /api/wallets` confirms link.
+
+`provider` is provenance only — it never widens or narrows what the link may do. Accepted
+values are `metamask`, `browser`, `circle`, and `headless`. **An API client sends
+`headless`**: the other three name browser wallet software a script does not have, and
+recording one of them logs a fact that is not true. `circle_wallet_id` may accompany
+`circle` only. The live set is advertised at `GET /api/agent/manifest` under
+`auth.wallet_link_providers`.
 
 Challenge is bound to account, normalized address, chain, domain, URI, issue time, and
 five-minute expiry. It is consumed atomically and cannot replay. A wallet already linked
