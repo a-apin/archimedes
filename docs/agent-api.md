@@ -16,7 +16,7 @@ Two reasons this matters:
    `generation_started` is attributed in the conversion funnel ([#787](https://github.com/a-apin/archimedes/issues/787)).
 
 **READ** needs no authentication. **GENERATE requires Better Auth session**:
-anonymous `POST /api/generate/start` returns 401, and per-job stream/jobs/candidates
+anonymous `POST /api/generate/start` returns 401, and per-job stream/status/jobs/candidates
 reads are scoped by canonical user ID. Wallet connection alone never authenticates.
 
 ## Quick start
@@ -78,6 +78,30 @@ Events (`event:` name + `data:` JSON), in rough order:
 `job_queued → brief_validated → pipeline_selected → candidates_selected →
 agent_iteration → tool_called → tool_result → candidate_drafted →
 candidate_evaluated → best_selected → trace_hashed → persisted → done` (or `error`).
+
+**Poll fallback** — for a client that never opened the stream, or whose connection dropped
+past the event-log TTL:
+```http
+GET /api/generate/jobs/{job_id}
+```
+```json
+{
+  "job_id": "…",
+  "state": "queued",            // queued | running | done | error | cancelled
+  "brief_intent": "…",
+  "created_at": "…",             // ISO-8601 UTC
+  "updated_at": "…",
+  "n_candidates": 1,
+  "best_strategy_id": null       // set once a winner is persisted
+}
+```
+Identical record to the matching entry in `GET /api/generate/jobs`, so a client can switch
+between the listing and the single-job read without the two disagreeing. `state == "done"`
+with a non-null `best_strategy_id` is the signal to move on to the candidates read below;
+`error` and `cancelled` are terminal. The stored failure string is not exposed — it holds
+raw unscrubbed exception text; the `error` state and the SSE `error` event (which carries
+`message` / `code` / `recoverable`) are the reporting path. Only `generate` jobs are
+readable here; any other job id returns the same 404 as an unknown one.
 
 ### 3. RIGOR — the externalized verdict + considered alternatives
 
@@ -177,6 +201,7 @@ Jobs are tagged with creator `owner_user_id`:
 | --- | --- |
 | `GET /api/generate/stream/{job_id}` | account required (401); user mismatch → **404** (no existence oracle) |
 | `GET /api/generate/jobs` | account required; listing filtered to caller |
+| `GET /api/generate/jobs/{job_id}` | same owner rule as stream; non-`generate` job types → **404** |
 | `GET /api/generate/jobs/{job_id}/candidates` | same owner rule as stream |
 | `POST /api/generate/jobs/{job_id}/cancel` | same owner rule as stream |
 
