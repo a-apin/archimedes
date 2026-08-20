@@ -163,9 +163,61 @@ def test_engagement_401_without_session(client):
     assert res.status_code == 401
 
 
+def test_engagement_401_with_bad_cookie(client):
+    """A forged/garbage session cookie must not authenticate → 401."""
+    res = client.get("/api/metrics/private/engagement", cookies={_COOKIE_NAME: "not-a-valid-token"})
+    assert res.status_code == 401
+
+
 def test_engagement_403_for_non_admin_wallet(client):
     res = client.get("/api/metrics/private/engagement", cookies=_siwe_cookies(_NON_ADMIN_WALLET))
     assert res.status_code == 403
+
+
+def test_engagement_admin_wallets_parsed_case_insensitively(client, monkeypatch):
+    """Admin match is case-insensitive, mirroring wallet_can_publish's parsing."""
+    monkeypatch.setenv("PLATFORM_ADMIN_WALLETS", _ADMIN_WALLET.upper())
+    with patch(
+        "archimedes.api.metrics_private_routes.get_engagement_snapshot",
+        return_value={"accounts": {"total": 0, "new_7d": 0, "new_30d": 0}},
+    ):
+        res = client.get("/api/metrics/private/engagement", cookies=_siwe_cookies(_ADMIN_WALLET))
+    assert res.status_code == 200
+
+
+def test_engagement_shape_keys_present(client):
+    """Shape guard: every documented tile key is present on a 200 response."""
+    fake_snapshot = {
+        "accounts": {"total": 5, "new_7d": 1, "new_30d": 3},
+        "linked_wallets": {"total": 2},
+        "strategies": {"total": 10, "new_7d": 4, "daily_new": []},
+        "generation_costs": {
+            "measured_count": 3,
+            "total_input_tokens": 100,
+            "total_output_tokens": 50,
+            "total_tokens": 150,
+        },
+        "paper_deployments": {"active": 1, "stopped": 0},
+        "repeat_generation_users": {"generating_users": 2, "repeat_users": 1, "note": "x"},
+        "payments": {"dry_run": True, "settled_volume_usd": None, "note": "dry-run"},
+        "timestamp": "2026-08-20T00:00:00+00:00",
+    }
+    with patch("archimedes.api.metrics_private_routes.get_engagement_snapshot", return_value=fake_snapshot):
+        res = client.get("/api/metrics/private/engagement", cookies=_siwe_cookies(_ADMIN_WALLET))
+    assert res.status_code == 200
+    body = res.json()
+    for key in (
+        "accounts",
+        "linked_wallets",
+        "strategies",
+        "generation_costs",
+        "paper_deployments",
+        "repeat_generation_users",
+        "payments",
+        "authenticated_wallet",
+        "timestamp",
+    ):
+        assert key in body, f"missing {key} in {list(body.keys())}"
 
 
 def test_engagement_200_with_valid_admin_siwe_session(client):
