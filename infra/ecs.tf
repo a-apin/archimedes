@@ -538,6 +538,13 @@ resource "aws_ecs_task_definition" "backend" {
         # caller-signed metered-API path, never the DCW browser subscribe flow,
         # which stays blocked on #975). Do not flip either one in a drive-by PR.
         { name = "PAYMENTS_DRY_RUN", value = "true" },
+        # Generation-scoped dry-run split (2026-08-20, Dan's testnet-paywall
+        # decision): the generation rail settles for real (caller-signed
+        # metered-API path — exactly the scope the block above permits) while
+        # the global stays dry, keeping marketplace sweeps/withdraws blocked
+        # on #975. Reads in services/generation_payment.py; unset inherits
+        # PAYMENTS_DRY_RUN.
+        { name = "GENERATION_PAYMENTS_DRY_RUN", value = "false" },
         { name = "PAPER_TRADING", value = "true" },
         # Daily generation caps (services/generation_quota.py, #1194 rev a).
         # Plumbed here EXPLICITLY: a cap that silently falls back to its
@@ -553,7 +560,7 @@ resource "aws_ecs_task_definition" "backend" {
         # The recipient is a TF_VAR (same pattern as PLATFORM_ADMIN_WALLETS
         # below): supplied at apply time once the platform DCW exists, so the
         # flip needs no code change.
-        { name = "GENERATION_PAYMENT_REQUIRED", value = "false" },
+        { name = "GENERATION_PAYMENT_REQUIRED", value = "true" },
         # $2.00/generation (Dan, 2026-08-20): the testnet faucet drips $20
         # per 2h cooldown, so one drip = a clean 10 generations — and $2 sits
         # inside the 10x-margin-over-measured-cost pricing direction (private
