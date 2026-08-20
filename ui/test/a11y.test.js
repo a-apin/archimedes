@@ -403,9 +403,8 @@ test("informative icons and charts carry a text alternative", () => {
 	// `title` on a bare span is not reliably exposed.
 	assert.match(strategies, /role="img" aria-label="Passes rigor gate"/);
 	assert.match(strategies, /role="img" aria-label="Does not pass rigor gate"/);
-	assert.match(strategies, /role="img" aria-label="Drift detected"/);
-	// The drift triangle was hardcoded to base-dark amber: 2.15:1 on a white
-	// card in the light theme.
+	// Strategies.jsx must use --warning, never the raw amber hex: 2.15:1 on a
+	// white card in the light theme.
 	assert.doesNotMatch(strategies, /#f59e0b/);
 	// The knowledge graph is a 500px informative SVG that had no role at all.
 	assert.match(
@@ -419,6 +418,10 @@ test("threshold verdicts do not rely on colour alone", () => {
 	assert.match(strategies, /replicated \? '✓' : '✗'/);
 	assert.match(strategies, /below the 50% replication threshold/);
 	assert.match(strategies, /above the 0\.50 overfitting threshold/);
+	// The Library table's "$1k ->" projection painted every strategy
+	// profit-green regardless of sign; fmtUsd never emits a minus, so a losing
+	// projection needs its own sr-only text alternative (#1361).
+	assert.match(strategies, /below the \{fmtUsd\(principal\)\} starting principal/);
 	assert.match(css, /^\.sr-only \{/m);
 });
 

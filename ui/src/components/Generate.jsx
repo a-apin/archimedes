@@ -9,6 +9,7 @@ import { getAddress } from "../config";
 import { listLinkedWallets } from "../linked-wallets";
 import { GENERATION_QUOTE_ENABLED } from "../featureFlags";
 import {
+	DEPTH_OPTIONS,
 	PAYMENT_STATUS,
 	buildDryRunPaymentHeader,
 	deriveQuoteView,
@@ -17,6 +18,7 @@ import {
 	extractReceipt,
 	paymentErrorMessage,
 	resolveDryRunPayer,
+	startErrorMessage,
 } from "../generateQuote";
 
 const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "");
@@ -227,7 +229,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 				setPaymentStatus(state);
 				setPaymentMessage(paymentErrorMessage(e));
 			} else {
-				setStartError(e.message || "Failed to start generation");
+				setStartError(startErrorMessage(e, "Failed to start generation"));
 			}
 		} finally {
 			setStarting(false);
@@ -472,9 +474,9 @@ export default function Generate({ onNavigate, onStageChange }) {
 											onChange={(e) => setDepth(Number(e.target.value))}
 											className="chat-input w-auto px-2 py-1"
 											disabled={starting}
-											title="How many papers / strategies the engine considers"
+											title="How many papers the engine considers"
 										>
-											{[2, 3, 4, 5, 6, 8, 10].map((n) => (
+											{DEPTH_OPTIONS.map((n) => (
 												<option key={n} value={n}>
 													{n}
 												</option>

@@ -14,6 +14,12 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 const STATE_TAGS = {
   queued:    { label: 'queued',    cls: 'tag-muted' },
   running:   { label: 'running',   cls: 'tag-accent' },
+  // Read-time derived state (#1355): a "running" job whose backend heartbeat
+  // has gone stale for over 5 minutes — the process most likely died mid-run
+  // (routine trigger: build-on-deploy rolling the Fargate task). Never
+  // written to Redis; the server computes it on every read so this table and
+  // the drill-in stream can't disagree about a dead job's state.
+  stalled:   { label: 'stalled',   cls: 'tag-warning' },
   done:      { label: 'done',      cls: 'tag-positive' },
   error:     { label: 'error',     cls: 'tag-negative' },
   cancelled: { label: 'cancelled', cls: 'tag-muted' },
@@ -206,6 +212,11 @@ export default function GenerationStatus({ activeJobId, onDrillIn }) {
                           whiteSpace: 'nowrap',
                         }}
                       >
+                        {/* "stalled" intentionally falls through to "view →"
+                            (#1355) — it is a "running" row the server has
+                            already determined is dead; offering "resume →"
+                            would repeat the exact false liveness claim this
+                            state exists to correct. */}
                         {j.state === 'running' || j.state === 'queued' ? 'resume →' : 'view →'}
                       </button>
                     </td>
