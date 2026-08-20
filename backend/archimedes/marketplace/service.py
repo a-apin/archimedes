@@ -1061,14 +1061,19 @@ class MarketService:
         tick_id,
         step: TickStep,
         reason: str,
-        charge_suppressed_ids: set[str] | None = None,
+        charge_suppressed_ids: set[str],
     ):
         """charge_suppressed_ids: sub_ids whose charge for *this* step was a
         PAYMENTS_HALT no-op rather than a real/dry-run charge (from
         _charge_step). Those survivors must NOT be recorded charged=True here
         just because the publisher pipeline halted on a later step — that
         would resurrect the exact tick-ledger lie #1240's charge_suppressed
-        fix closed on the happy path (see _charge_one's docstring)."""
+        fix closed on the happy path (see _charge_one's docstring).
+
+        Required, no default: a future caller that forgets to pass this gets
+        a loud TypeError at call time instead of silently re-persisting
+        charged=True for every survivor (the exact failure this parameter
+        exists to prevent)."""
         suppressed = charge_suppressed_ids or set()
         for sub in active:
             await self.record_subscriber_tick(

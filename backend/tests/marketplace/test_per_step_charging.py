@@ -385,6 +385,20 @@ async def test_payments_halt_publisher_halt_never_persists_charged_true(market: 
 
 
 @pytest.mark.asyncio
+async def test_halt_publisher_requires_charge_suppressed_ids(market: MarketService):
+    """#1240 third round: ``charge_suppressed_ids`` has no default — a caller
+    that forgets it fails loudly with a TypeError at call time instead of
+    silently falling back to an empty set (which would re-persist
+    charged=True for every survivor, the exact tick-ledger lie this
+    parameter exists to prevent). Both real call sites in ``tick()`` already
+    pass it positionally; this proves a future caller can't omit it."""
+    with pytest.raises(TypeError):
+        await market._halt_publisher(  # noqa: SLF001 — deliberately testing the missing-arg case
+            [], "strat_a", "tick-1", TickStep.NO_DRIFT_DEDUP, "test halt reason"
+        )
+
+
+@pytest.mark.asyncio
 async def test_mirror_failure(market: MarketService):
     """_apply_to_subscriber → (False, exc) → EXECUTION record + liability."""
     market.paper_trading = False

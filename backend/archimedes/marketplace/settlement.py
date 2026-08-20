@@ -217,6 +217,18 @@ class SettlementSweeper:
                 amount_raw,
             )
             return None
+        if payments_halted():
+            # #1240 kill switch: this is Stage C, reachable directly from the
+            # authenticated Withdraw button (marketplace_routes.py) with no
+            # dependency on sweep_publisher — gating the sweep alone left this
+            # real PaymentSplitter.withdraw call unprotected. Same "gate in the
+            # callee, not just the caller" posture as payments_dry_run above.
+            logger.warning(
+                "[%s] withdraw_publisher: PAYMENTS_HALT active — skipping real withdraw of %d raw",
+                getattr(pub, "strategy_id", "?"),
+                amount_raw,
+            )
+            return None
         try:
             executor = self._get_executor(pub.agent_wallet_id, pub.gateway_seller_address)
             splitter = self._settings.payment_splitter_address
@@ -253,6 +265,13 @@ class SettlementSweeper:
         """
         if self._payments_dry_run:
             logger.info("withdraw_subscriber: PAYMENTS_DRY_RUN — skipping real return for sub %s", sub_id)
+            return None
+        if payments_halted():
+            # #1240 kill switch: this is the unsubscribe-refund transfer,
+            # reachable directly from the authenticated unsubscribe endpoint
+            # with no dependency on sweep_publisher — same reasoning as
+            # withdraw_publisher above.
+            logger.warning("withdraw_subscriber: PAYMENTS_HALT active — skipping real return for sub %s", sub_id)
             return None
         if not circle_wallet_id or not dcw_address or not to_wallet:
             return None
