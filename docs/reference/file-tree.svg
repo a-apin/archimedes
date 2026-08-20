@@ -51,7 +51,7 @@
 <text x="64" y="534" class="mono" font-size="12" fill="#3F3F46">│  │  ├─ <tspan fill="#FAFAFA">paper_rag.py</tspan></text>
 <text x="480" y="534" font-size="10.5" fill="#A1A1AA">MiniLM semantic rerank (guardrails + TF-IDF fallback)</text>
 <text x="64" y="558" class="mono" font-size="12" fill="#3F3F46">│  │  ├─ <tspan fill="#FAFAFA">live_rigor_gate.py</tspan></text>
-<text x="480" y="558" font-size="10.5" fill="#A1A1AA">tri-state pass / fail / pending badge — live, never cached</text>
+<text x="480" y="558" font-size="10.5" fill="#A1A1AA">four-state pass / fail / pending / degenerate badge — live, never cached</text>
 <text x="64" y="582" class="mono" font-size="12" fill="#3F3F46">│  │  ├─ <tspan fill="#FAFAFA">strategy_dsl.py</tspan></text>
 <text x="480" y="582" font-size="10.5" fill="#A1A1AA">the persisted, executable strategy spec</text>
 <text x="64" y="606" class="mono" font-size="12" fill="#3F3F46">│  │  └─ <tspan fill="#FAFAFA">runner_lease.py</tspan></text>

@@ -26,8 +26,10 @@ operations. Circle wallet passkeys control Circle wallets; they do not log in to
    `POST /api/generate/start` with `brief.intent` and
    `brief.risk_appetite`; tail `GET /api/generate/stream/{job_id}` as SSE.
 4. **Rigor** — `GET /api/generate/jobs/{job_id}/candidates`, then
-   `GET /api/strategies/{strategy_id}`. `rigor_gate_status` is `pass`, `fail`, or
-   `pending`; never infer admission from headline Sharpe alone.
+   `GET /api/strategies/{strategy_id}`. `rigor_gate_status` is `pass`, `fail`,
+   `pending`, or `degenerate` (real returns exist but are a mathematically
+   constant zero-variance series — broken data or a zero-trade backtest, never
+   deployable); never infer admission from headline Sharpe alone.
 5. **Paper trade** — live today, simulated (no chain, no funds):
    `POST /api/paper/deployments` with `{ "strategy_id": "..." }`, then
    `GET /api/paper/deployments/{deployment_id}` to read performance and

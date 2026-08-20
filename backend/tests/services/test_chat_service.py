@@ -387,6 +387,15 @@ class TestVaultContextLiveRigor:
         ctx = self._context_with({"sid1": "pending"})
         assert "Rigor gate: pending — no live backtest verdict yet" in ctx
 
+    def test_degenerate_is_stated_honestly_not_omitted(self) -> None:
+        """#1184: a zero-variance persisted series must render its own label —
+        without a "degenerate" entry in rigor_labels this status wouldn't match
+        any key and the line would be silently omitted, hiding that the
+        strategy's data is broken rather than merely unmeasured."""
+        ctx = self._context_with({"sid1": "degenerate"})
+        assert "Rigor gate: DEGENERATE" in ctx
+        assert "Rigor gate: pending" not in ctx
+
     def test_no_live_status_omits_the_line_never_invents_it(self) -> None:
         # Batch failure → {}: pre-fix code invented "Rigor gate: not passed"
         # from the poisoned sentinel; the fixed builder omits the line.
@@ -425,12 +434,26 @@ class TestCuratedRigorStatuses:
     def test_passing_result_maps_to_pass(self) -> None:
         result = MagicMock()
         result.passes_all = True
+        # #1184: is_degenerate must be explicit on the double — MagicMock auto-vivifies
+        # unset attributes as truthy Mocks, which would otherwise make _verdict_from_result
+        # (which now checks is_degenerate first) misread this RigorGateResult stand-in as
+        # a broken/zero-variance series.
+        result.is_degenerate = False
         assert self._statuses({"sid1": result}) == {"sid1": "pass"}
 
     def test_failing_result_maps_to_fail(self) -> None:
         result = MagicMock()
         result.passes_all = False
+        result.is_degenerate = False
         assert self._statuses({"sid1": result}) == {"sid1": "fail"}
+
+    def test_degenerate_result_maps_to_degenerate(self) -> None:
+        """#1184: a zero-variance persisted series reports its own category here
+        too — chat context must not fold it into 'fail' or 'pending'."""
+        result = MagicMock()
+        result.passes_all = False
+        result.is_degenerate = True
+        assert self._statuses({"sid1": result}) == {"sid1": "degenerate"}
 
     def test_absent_result_maps_to_pending(self) -> None:
         assert self._statuses({}) == {"sid1": "pending"}

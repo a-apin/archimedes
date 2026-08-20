@@ -50,14 +50,15 @@ CHAT_MODEL = os.getenv("CHAT_MODEL", "").strip() or None
 
 
 def _curated_rigor_statuses(strategies: list) -> dict[str, str]:
-    """LIVE tri-state rigor statuses ("pass"|"fail"|"pending") for chat context.
+    """LIVE four-state rigor statuses ("pass"|"fail"|"pending"|"degenerate", #1184)
+    for chat context.
 
     ``Strategy.passes_rigor_gate`` on the in-memory provider object is a
     fail-closed sentinel (always ``False``, #821) — presenting it as a verdict
     told the vault-chat LLM that every curated strategy had failed the gate.
     This reuses the library list's memoized live-gate batch over the full
     library cohort (same cohort context, same cache entry, so a warm library
-    page makes this free) and reduces each requested strategy to its tri-state
+    page makes this free) and reduces each requested strategy to its four-state
     status. Any failure returns ``{}`` and the caller omits the rigor line
     entirely — this context builder's law is "missing data is omitted, never
     invented".
@@ -377,7 +378,7 @@ class ChatService:
 
                         provider = default_provider()
                         found = [(sid, provider.get_strategy(sid)) for sid in strategy_ids[:3]]
-                        # LIVE tri-state verdicts, batched once (M2 fix). The
+                        # LIVE four-state verdicts, batched once (M2 fix). The
                         # in-memory passes_rigor_gate is a fail-closed sentinel,
                         # not a verdict — the old line told the LLM every curated
                         # strategy was "not passed".
@@ -386,6 +387,12 @@ class ChatService:
                             "pass": "passed (live gate)",
                             "fail": "failed (live gate)",
                             "pending": "pending — no live backtest verdict yet",
+                            # #1184: without this entry a degenerate (zero-variance)
+                            # strategy's status wouldn't match any key, so the whole
+                            # "Rigor gate:" line would be silently omitted — not a lie,
+                            # but a missed chance to tell the LLM the data is broken
+                            # rather than merely unmeasured.
+                            "degenerate": "DEGENERATE — persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation",
                         }
                         for sid, s in found:
                             if s:
