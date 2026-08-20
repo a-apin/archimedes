@@ -71,6 +71,14 @@ class JobStore:
             "error": "",
             "created_at": now,
             "updated_at": now,
+            # Liveness signal (#1355): distinct from `updated_at`, which only
+            # moves on a STATUS transition. `heartbeat_at` also moves on every
+            # `touch()` call from the run's independent heartbeat task, so it
+            # keeps advancing through a long silent compute stretch (a debate
+            # turn, a fan-out backtest gather) that produces no status write at
+            # all. That gap between "the process is alive" and "the status
+            # changed" is exactly what let a dead job read as `running` forever.
+            "heartbeat_at": now,
         }
         r = await self._get_redis()
         key = f"{KEY_PREFIX}{job_id}"
@@ -95,6 +103,10 @@ class JobStore:
             "error": raw.get("error", ""),
             "created_at": raw.get("created_at", ""),
             "updated_at": raw.get("updated_at", ""),
+            # "" (not None) for a pre-#1355 job that predates this field — an
+            # honest absence read-time normalisation treats as "no signal",
+            # never as "assume stale" or "assume fresh".
+            "heartbeat_at": raw.get("heartbeat_at", ""),
         }
 
     async def update_status(
@@ -105,20 +117,86 @@ class JobStore:
         result: dict[str, Any] | None = None,
         error: str = "",
     ) -> None:
-        """Transition a job to a new status with optional result/error."""
+        """Transition a job to a new status with optional result/error.
+
+        Also refreshes `heartbeat_at` and re-`expire`s the hash to the full
+        `JOB_TTL` (#1355). Before this, `hset` alone left Redis's original TTL
+        counting down from `enqueue` untouched — an hour-long job's own record
+        could disappear mid-run no matter how active it was, because `HSET`
+        preserves an existing key's TTL rather than resetting it.
+        """
         r = await self._get_redis()
         key = f"{KEY_PREFIX}{job_id}"
         now = datetime.now(UTC).isoformat()
         updates: dict[str, str] = {
             "status": status,
             "updated_at": now,
+            "heartbeat_at": now,
         }
         if result is not None:
             updates["result"] = json.dumps(result, default=str)
         if error:
             updates["error"] = error
         await r.hset(key, mapping=updates)
+        await r.expire(key, JOB_TTL)
         logger.info("job: %s → %s", sanitize_log_value(job_id), status)
+
+    async def touch(self, job_id: str) -> bool:
+        """Refresh `heartbeat_at` + the job's TTL only — no status change.
+
+        Called by the run's independent heartbeat task (`generate_routes.py`)
+        every `_JOB_HEARTBEAT_INTERVAL_SECONDS` for the life of the run, on its
+        own clock — NOT gated on pipeline progress, so a long silent compute
+        stretch (a debate turn, a fan-out backtest gather) still proves the
+        process is alive even though it emits no job-store event.
+
+        Returns `False` (no-op) when the job no longer exists: a heartbeat
+        racing its own task's cancellation/cleanup must never resurrect an
+        expired or already-deleted hash.
+        """
+        r = await self._get_redis()
+        key = f"{KEY_PREFIX}{job_id}"
+        if not await r.exists(key):
+            return False
+        now = datetime.now(UTC).isoformat()
+        await r.hset(key, "heartbeat_at", now)
+        await r.expire(key, JOB_TTL)
+        return True
+
+    async def update_terminal_status(
+        self,
+        job_id: str,
+        status: str,
+        *,
+        result: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> bool:
+        """Terminal-state write that never clobbers an already-`cancelled` job.
+
+        A user's Cancel and the pipeline's own terminal write can race
+        (#1355): `asyncio.Task.cancel()` cannot interrupt code that is mid
+        `asyncio.to_thread(llm_call)` — the awaiter only unblocks once that
+        thread finishes on its own, so the pipeline can still reach its
+        terminal write well after `cancel_job` already flipped Redis's status
+        to `cancelled`. Read-before-write here makes `cancelled` sticky
+        against a same-run terminal write landing after it — this is what
+        makes the Cancel button's guarantee honest rather than cosmetic.
+
+        Returns `True` when the write landed, `False` when it was skipped
+        because the job was already `cancelled`.
+        """
+        r = await self._get_redis()
+        key = f"{KEY_PREFIX}{job_id}"
+        current = await r.hget(key, "status")
+        if current == "cancelled":
+            logger.info(
+                "job: terminal write (%s) suppressed for %s — already cancelled",
+                status,
+                sanitize_log_value(job_id),
+            )
+            return False
+        await self.update_status(job_id, status, result=result, error=error)
+        return True
 
     async def merge_result(self, job_id: str, patch: dict[str, Any]) -> bool:
         """Merge top-level keys into an EXISTING job's persisted ``result``.
@@ -227,6 +305,7 @@ class JobStore:
                     "error": raw.get("error", ""),
                     "created_at": raw.get("created_at", ""),
                     "updated_at": raw.get("updated_at", ""),
+                    "heartbeat_at": raw.get("heartbeat_at", ""),
                 }
             )
         jobs.sort(key=lambda j: j.get("updated_at", ""), reverse=True)

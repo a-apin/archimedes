@@ -143,7 +143,11 @@ JobCost = dict[str, Any]
 
 class JobSummary(BaseModel):
     job_id: str
-    state: Literal["queued", "running", "done", "error", "cancelled"]
+    # "stalled" (#1355) is a READ-TIME derived state, never a value stored in
+    # Redis: a "running" job whose heartbeat_at has gone stale is normalized
+    # to it in generate_routes._normalize_state — see that function's
+    # docstring. Not written by anything, only produced on output.
+    state: Literal["queued", "running", "stalled", "done", "error", "cancelled"]
     brief_intent: str
     created_at: str
     updated_at: str
@@ -165,7 +169,12 @@ class JobCostResponse(BaseModel):
     """
 
     job_id: str
-    state: Literal["queued", "running", "done", "error", "cancelled"]
+    # Widened to include "stalled" alongside JobSummary.state (#1355 review
+    # follow-up) — this endpoint routes `heartbeat_at` through the same
+    # `_normalize_state` as `/jobs` and `/jobs/{id}`, so all three surfaces
+    # must accept the same derived state or a stale job would 500 here
+    # instead of reporting `stalled` like its siblings.
+    state: Literal["queued", "running", "stalled", "done", "error", "cancelled"]
     cost: JobCost | None = None
 
 

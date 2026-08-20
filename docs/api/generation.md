@@ -90,7 +90,7 @@ linked-wallet fallback for legacy (pre-account) jobs. | **Auth**:
 account-session
 
 Request: query `limit: int(1..100)=20`.
-Response (`JobsListResponse`): `{jobs: [JobSummary{job_id, state: "queued"|"running"|"done"|"error"|"cancelled", brief_intent, created_at, updated_at, n_candidates, best_strategy_id: str|null, cost: dict|null}]}`.
+Response (`JobsListResponse`): `{jobs: [JobSummary{job_id, state: "queued"|"running"|"stalled"|"done"|"error"|"cancelled", brief_intent, created_at, updated_at, n_candidates, best_strategy_id: str|null, cost: dict|null}]}`. `"stalled"` (#1355) is a READ-TIME derived state — a `"running"` job whose `heartbeat_at` has gone stale for over 5 minutes — never written to Redis.
 Errors: none beyond the global 401.
 
 ```bash
@@ -115,7 +115,7 @@ counts, wall/CPU seconds, peak RSS, write tallies), no prices. | **Auth**:
 account-session
 
 Request: path `job_id`.
-Response (`JobCostResponse`): `{job_id, state: "queued"|"running"|"done"|"error"|"cancelled", cost: dict|null}` — `cost` is `null` until the job reaches a terminal state, and for jobs older than the cost meter.
+Response (`JobCostResponse`): `{job_id, state: "queued"|"running"|"stalled"|"done"|"error"|"cancelled", cost: dict|null}` — `state` is derived identically to `JobSummary.state` (#1355) so this endpoint can't disagree with `/jobs`/`/jobs/{id}` about a stalled job; `cost` is `null` until the job reaches a terminal state, and for jobs older than the cost meter.
 Errors: 404 `job {job_id} not found or expired` (unknown, or not owned).
 
 ```bash
