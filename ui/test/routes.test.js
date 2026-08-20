@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 import { parseFeatures } from "../src/features.js";
 import {
+	canNavigateTo,
 	pageToPath,
 	postAuthPath,
 	resolveRoute,
@@ -200,4 +201,26 @@ test("anonymous nav shows browse + the Generate conversion path, nothing statefu
 		{ id: "explore" },
 		{ id: "generate" },
 	]);
+});
+
+test("canNavigateTo gates on ANON_APP_PAGES for a null user, always true when signed in (#1364)", () => {
+	// The onboarding tour's card 3 ('library') and card 4 ('reasoning') are
+	// app pages an anonymous visitor may not open (routes.js ANON_APP_PAGES).
+	// Before this predicate existed, the tour navigated to them unconditionally
+	// and App.jsx's anonymous-app-page guard replaced the whole page with
+	// /sign-in — this is the pure check that now gates that navigation.
+	assert.equal(canNavigateTo("library", null), false);
+	assert.equal(canNavigateTo("reasoning", null), false);
+	// 'generate' is in ANON_NAV_IDS (visible in the anon nav, so it measures
+	// fine on desktop) but NOT in ANON_APP_PAGES — the exact trap the issue's
+	// anti-goal warns against gating on an id allowlist instead of this.
+	assert.equal(canNavigateTo("generate", null), false);
+	assert.equal(canNavigateTo("explore", null), true);
+	assert.equal(canNavigateTo("leaderboard", null), true);
+	assert.equal(canNavigateTo("corpus", null), true);
+	// Any page is navigable once a user is present — canNavigateTo does not
+	// re-derive ANON_APP_PAGES for the signed-in branch.
+	assert.equal(canNavigateTo("library", { id: "u1" }), true);
+	assert.equal(canNavigateTo("reasoning", { id: "u1" }), true);
+	assert.equal(canNavigateTo("generate", { id: "u1" }), true);
 });
