@@ -11,9 +11,10 @@ import { blockOrderCopy, verificationTone } from "../src/trace-binding.js";
 // (schemas.py) coerces `temporal_binding_valid` to None whenever source
 // isn't "chain", so a bare-boolean check can never distinguish "the
 // contract's commit-reveal path actually ran" from "off-chain record
-// only". Every assertion below was confirmed to FAIL against the pre-fix
-// Reasoning.jsx tree (it always rendered the off-chain / roadmap copy
-// regardless of source).
+// only". These assertions pin the exact strings criterion A specifies for
+// this brand-new pure helper (it has no pre-fix tree of its own to fail
+// against); the component-level demonstration against the pre-fix
+// Reasoning.jsx source is in the "Source-regex pins" section below.
 
 test("chain source renders the contract-enforced heading, note, and tone", () => {
 	const copy = blockOrderCopy({ source: "chain", valid: true });
@@ -73,7 +74,9 @@ test("failed, unrecognised, and missing modes all degrade to failed", () => {
 // Same shape as ui/test/a11y.test.js: readFileSync + regex/substring pins
 // on the rendered source, confirming the claim-integrity fixes actually
 // landed in the component (not just in the pure helper). Every assertion
-// in this section was confirmed to FAIL against the pre-fix tree.
+// in this section was confirmed to FAIL against the pre-fix Reasoning.jsx
+// tree (it always rendered the off-chain / roadmap copy regardless of
+// source).
 
 const reasoningSrc = readFileSync(
 	new URL("../src/components/Reasoning.jsx", import.meta.url),
@@ -140,6 +143,45 @@ test("the anchored tone's button branch never reuses the verified check icon or 
 	assert.ok(
 		!anchoredBranch.includes("positive"),
 		"the anchored_only branch must not reuse the verified/positive styling class",
+	);
+});
+
+test("the block-order affordance requires an actual valid reveal, not just a chain source", () => {
+	// A source==="chain" trace can still have temporal_binding_valid===false
+	// — a dangling commit whose reveal never landed (the #1275
+	// honest-degradation contract; see agent_runner.py's
+	// _reconcile_failure). blockOrderCopy's `tone` is deliberately keyed on
+	// source alone (see the tests above), so the component must NOT derive
+	// its green/red affordance from `copy.tone` by itself — it must also
+	// check the real `temporal_binding_valid` flag. Confirmed to FAIL
+	// against the tree this PR round shipped (`const isChainEnforced =
+	// copy.tone === 'verified'`), which rendered a green check-circle for
+	// this exact dangling-reveal state.
+	assert.ok(
+		reasoningSrc.includes("t.temporal_binding_valid === true"),
+		"isChainEnforced must require temporal_binding_valid === true, not just copy.tone === 'verified'",
+	);
+});
+
+test("a chain-sourced trace with an invalid reveal renders the red invalid-binding state, never the green check-circle", () => {
+	const danglingIdx = reasoningSrc.indexOf(
+		"temporal_binding_source === 'chain' && t.temporal_binding_valid === false",
+	);
+	assert.ok(danglingIdx !== -1, "no explicit dangling-reveal (source===chain, valid===false) detection found");
+
+	// Extract the block-order panel body (from the dangling-reveal check to
+	// the panel's closing IIFE) and confirm the affordance branches use the
+	// negative/x-circle treatment for this state, not the positive one.
+	const panelEnd = reasoningSrc.indexOf("})()}", danglingIdx);
+	const panel = reasoningSrc.slice(danglingIdx, panelEnd);
+
+	assert.ok(
+		panel.includes("i-lucide-x-circle") && panel.includes("text-[var(--negative)]"),
+		"the dangling-reveal case must render the red x-circle / negative styling",
+	);
+	assert.ok(
+		!/isDanglingReveal\s*\?\s*'i-lucide-check-circle/.test(panel),
+		"the dangling-reveal case must not map to the verified check-circle icon",
 	);
 });
 

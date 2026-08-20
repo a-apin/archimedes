@@ -379,8 +379,8 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                   )
                 })()}
 
-                {/* Block-order panel — keys off temporal_binding_source, the
-                    field TraceResponse's claim-integrity validator
+                {/* Block-order panel — the COPY keys off temporal_binding_source,
+                    the field TraceResponse's claim-integrity validator
                     (schemas.py) guarantees can never carry a True binding
                     without the real on-chain commit()/reveal()/executeTrade()
                     path having run. Previously this keyed off
@@ -390,20 +390,37 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                     because that copy only rendered when valid was truthy,
                     and truthy requires source === "chain" (#1359). See
                     docs/specs/commit-reveal-trace-spec.md (v1.5) and
-                    src/trace-binding.js for the pinned copy. */}
+                    src/trace-binding.js for the pinned copy.
+
+                    The AFFORDANCE (icon/background) is a separate decision
+                    from the copy: source === "chain" alone is not enough,
+                    because temporal_binding_valid can legitimately be False
+                    for a chain-sourced trace — a minted commit whose reveal
+                    never landed (dangling commit; see agent_runner.py
+                    _reconcile_failure and the #1275 honest-degradation
+                    contract). That state must keep rendering as unresolved
+                    (red x-circle + caveat line), never as a false green
+                    pass, even though the heading text still correctly says
+                    the commit step is contract-enforced. */}
                 {!isSkip && t.temporal_binding_valid != null && (() => {
                   const copy = blockOrderCopy({ source: t.temporal_binding_source, valid: t.temporal_binding_valid })
-                  const isChainEnforced = copy.tone === 'verified'
+                  const isChainEnforced = copy.tone === 'verified' && t.temporal_binding_valid === true
+                  const isDanglingReveal = t.temporal_binding_source === 'chain' && t.temporal_binding_valid === false
                   return (
-                    <div className="mt-2 rounded-md px-3 py-2" style={{ background: isChainEnforced ? 'rgba(34,197,94,0.1)' : 'rgba(148,163,184,0.12)' }}>
+                    <div className="mt-2 rounded-md px-3 py-2" style={{ background: isChainEnforced ? 'rgba(34,197,94,0.1)' : isDanglingReveal ? 'rgba(239,68,68,0.1)' : 'rgba(148,163,184,0.12)' }}>
                       <div className="flex items-center gap-1.5 mb-1">
-                        <span className={`w-4 h-4 flex-shrink-0 ${isChainEnforced ? 'i-lucide-check-circle text-[var(--positive)]' : 'i-lucide-info text-[var(--text-3)]'}`} />
+                        <span className={`w-4 h-4 flex-shrink-0 ${isChainEnforced ? 'i-lucide-check-circle text-[var(--positive)]' : isDanglingReveal ? 'i-lucide-x-circle text-[var(--negative)]' : 'i-lucide-info text-[var(--text-3)]'}`} />
                         <strong className="text-[0.85rem]">{copy.heading}</strong>
                       </div>
                       <div className="text-xs text-[var(--text-3)] leading-relaxed">
                         {t.commit_block_number != null && <div>Commit block: <strong>#{t.commit_block_number}</strong></div>}
                         {t.trade_block_number != null && <div>Trade block: <strong>#{t.trade_block_number}</strong></div>}
                         {t.reveal_block_number != null && <div>Reveal block: <strong>#{t.reveal_block_number}</strong></div>}
+                        {isDanglingReveal && (
+                          <div className="negative" style={{ marginTop: 4 }}>
+                            Commit is contract-enforced, but this trace's reveal never landed — binding incomplete.
+                          </div>
+                        )}
                         <div style={{ marginTop: 4, fontStyle: 'italic' }}>{copy.note}</div>
                       </div>
                     </div>

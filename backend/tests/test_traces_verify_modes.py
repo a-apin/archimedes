@@ -117,6 +117,20 @@ async def test_redis_down_returns_503_never_a_fabricated_pass():
     is_verified=True with zero hashes compared. That is the exact defect
     this test pins: neither `"is_verified": true` nor `anchored_only` may
     appear anywhere in the response body when the store is down.
+
+    `trace_publisher` is mocked here too (same shape as
+    test_reachable_empty_store_with_onchain_trace_reports_anchored_only)
+    even though the fixed code never reaches it — get_trace raises before
+    verify_trace falls into the `if not off_chain:` branch that calls
+    trace_publisher.get_trace_by_id. Without this mock, reverting the fix
+    (dropping the except-and-503 handling so the Redis exception falls
+    through to that branch) hits an unrelated hermetic-env ValueError
+    (`Contract address not configured for ReasoningTraceRegistry` from
+    trace_publisher.loader.trace_registry, which sits outside that method's
+    own try/except) before any assertion below runs — masking the mutation
+    instead of rejecting it. With the mock in place, the mutated code
+    reaches a real 200 response with verification_mode=anchored_only and
+    is_verified=True, and these assertions correctly reject it.
     """
     from archimedes.main import app
     from archimedes.services.redis_state import AgentStateStore
@@ -124,7 +138,17 @@ async def test_redis_down_returns_503_never_a_fabricated_pass():
     with (
         patch.object(AgentStateStore, "get_trace", AsyncMock(side_effect=ConnectionError("redis down"))),
         patch.object(AgentStateStore, "close", AsyncMock()),
+        patch("archimedes.chain.trace_publisher.trace_publisher") as mock_pub,
     ):
+        mock_pub.get_trace_by_id = AsyncMock(
+            return_value={
+                "agent": "0xAgent",
+                "vault": "0xVault",
+                "trace_hash": "0xaabbccdd",
+                "timestamp": 12345,
+                "metadata": None,
+            }
+        )
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/traces/1/verify")
 
