@@ -65,6 +65,10 @@ class RigorGateDetail(BaseModel):
     look_ahead: str = "MISSING"
     cpcv: str = "MISSING"
     dsr_convention: str = "MISSING"
+    # #1409: rides the same payload path as dsr_convention -- "excess_tbill_series"
+    # (historical 3-month T-bill, per-window aligned) or "excess_flat_fallback" (the
+    # disclosed flat-5% fallback). See RigorGateResult.rf_convention.
+    rf_convention: str = "MISSING"
     iid: str = "MISSING"
     regime_robustness: str = "MISSING"
 
@@ -469,6 +473,7 @@ async def evaluate_rigor_gate(
                         look_ahead=details.get("look_ahead", "MISSING"),
                         cpcv=details.get("cpcv", "MISSING"),
                         dsr_convention=details.get("dsr_convention", "MISSING"),
+                        rf_convention=details.get("rf_convention", "MISSING"),
                         iid=details.get("iid", "MISSING"),
                         regime_robustness=details.get("regime_robustness", "MISSING"),
                     ),
@@ -751,6 +756,7 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
             look_ahead=details.get("look_ahead", "MISSING"),
             cpcv=details.get("cpcv", "MISSING"),
             dsr_convention=details.get("dsr_convention", "MISSING"),
+            rf_convention=details.get("rf_convention", "MISSING"),
             iid=details.get("iid", "MISSING"),
             regime_robustness=details.get("regime_robustness", "MISSING"),
         ),

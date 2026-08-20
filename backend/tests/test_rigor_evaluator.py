@@ -1445,12 +1445,14 @@ class TestGateDetailsBranches:
 
     def test_gate_details_returns_all_four_keys(self):
         """gate_details must contain the four gate keys + DSR convention (#547) +
-        the DSR SE model (#621 follow-up) + the IID advisory (#621)."""
+        the DSR SE model (#621 follow-up) + the IID advisory (#621) + the rf
+        convention disclosure (#1409)."""
         r = RigorGateResult("s")
         keys = set(r.gate_details.keys())
         assert keys == {
             "dsr",
             "dsr_convention",
+            "rf_convention",
             "dsr_se",
             "pbo",
             "oos_sharpe",
@@ -1549,11 +1551,13 @@ class TestRunRigorGatePaths:
 
     def test_gate_details_populated_by_run_rigor_gate(self):
         """gate_details on the returned result must have the four gate keys + DSR
-        convention (#547) + DSR SE model (#621 follow-up) + IID (#621)."""
+        convention (#547) + DSR SE model (#621 follow-up) + IID (#621) + rf
+        convention (#1409)."""
         result = run_rigor_gate("s", _RETURNS_80)
         assert set(result.gate_details.keys()) == {
             "dsr",
             "dsr_convention",
+            "rf_convention",
             "dsr_se",
             "pbo",
             "oos_sharpe",
