@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 
-import { canUnlink, connectedProviderLabel, isKnownConnectedProvider } from "../src/account-linking.js";
+import { canUnlink, connectedProviderLabel, isKnownConnectedProvider, isLinkableProvider } from "../src/account-linking.js";
 
 // ── #1420 follow-up: explicit link/unlink (Account Settings → Connected
 // accounts) ────────────────────────────────────────────────────────────
@@ -49,6 +49,26 @@ test("isKnownConnectedProvider: true only for the three real provider ids", () =
 	assert.equal(isKnownConnectedProvider("toString"), false);
 });
 
+// Round-3 review (minor): isKnownConnectedProvider is true for 'credential'
+// — present in connectedAccounts for every password user, but never
+// something the Link buttons in AccountSettings.jsx can produce. Using it
+// to gate the `?linked=` toast let `?linked=credential` pass. isLinkableProvider
+// is the narrower, correct gate: only the providers this UI can actually
+// initiate a link for.
+test("isLinkableProvider: true only for google/github, false for credential and anything else", () => {
+	assert.equal(isLinkableProvider("google"), true);
+	assert.equal(isLinkableProvider("github"), true);
+	assert.equal(isLinkableProvider("credential"), false);
+	assert.equal(isLinkableProvider("some-future-provider"), false);
+	assert.equal(isLinkableProvider(""), false);
+});
+
+// Mutation-prove: change LINKABLE_PROVIDERS in src/account-linking.js to
+// include 'credential' and this fails. Confirmed by hand before commit.
+test("isLinkableProvider actually excludes credential, not just an incomplete allowlist", () => {
+	assert.notEqual(isLinkableProvider("credential"), isLinkableProvider("google"));
+});
+
 // ── Wiring: prove the guard, the fetch calls, and the error surface are
 // actually reachable from the rendered component, not just defined and
 // unused. No DOM/renderer in this suite (see routes.test.js/auth-errors.
@@ -81,19 +101,44 @@ test("AccountSettings.jsx imports listAccounts/linkSocial/unlinkAccount from aut
 	assert.match(src, /import \{ getProviders, linkSocial, listAccounts, unlinkAccount \} from '\.\.\/auth-client'/);
 });
 
-test("AccountSettings.jsx uses the shared canUnlink/connectedProviderLabel/isKnownConnectedProvider module — not a locally re-defined copy", () => {
+test("AccountSettings.jsx uses the shared canUnlink/connectedProviderLabel/isLinkableProvider module — not a locally re-defined copy", () => {
 	const src = readFileSync(new URL("../src/components/AccountSettings.jsx", import.meta.url), "utf8");
-	assert.match(src, /import \{ canUnlink, connectedProviderLabel, isKnownConnectedProvider \} from '\.\.\/account-linking'/);
+	assert.match(src, /import \{ canUnlink, connectedProviderLabel, isLinkableProvider \} from '\.\.\/account-linking'/);
 	assert.doesNotMatch(src, /function canUnlink\(/);
 });
 
 // Round-2 review (minor): the `?linked=` success notice used to render
-// straight off the URL with no check at all — isKnownConnectedProvider's own
-// unit tests are above, alongside canUnlink/connectedProviderLabel.
-test("AccountSettings.jsx's linked-notice checks isKnownConnectedProvider AND presence in the reloaded connectedAccounts list, not the URL alone", () => {
+// straight off the URL with no check at all.
+// Round-3 review (minor): isKnownConnectedProvider (round-2's fix) still let
+// `?linked=credential` and a stale/replayed `?linked=google` through — see
+// isLinkableProvider's own unit tests above, and the pending-link-marker
+// test below for the recency half of this fix.
+test("AccountSettings.jsx's linked-notice checks isLinkableProvider AND presence in the reloaded connectedAccounts list, not the URL alone", () => {
 	const src = readFileSync(new URL("../src/components/AccountSettings.jsx", import.meta.url), "utf8");
-	assert.match(src, /if \(!linked \|\| !isKnownConnectedProvider\(linked\)\) return/);
+	assert.match(src, /if \(!linked \|\| !isLinkableProvider\(linked\) \|\| linked !== pendingLink\) return/);
 	assert.match(src, /connectedAccounts\.some\(\(account\) => account\.providerId === linked\)/);
+});
+
+// Round-3 review (minor): the recency half of the `?linked=` fix — a
+// one-shot marker set immediately before link()'s own redirect, read (and
+// cleared) exactly once by the notice effect, so the toast can only ever
+// fire for a link this tab itself just initiated.
+test("AccountSettings.jsx sets a one-shot pending-link marker before redirecting, and the notice effect consumes it", () => {
+	const src = readFileSync(new URL("../src/components/AccountSettings.jsx", import.meta.url), "utf8");
+	assert.match(src, /sessionStorage\.setItem\(PENDING_LINK_KEY, provider\)/);
+	assert.match(src, /const pendingLink = sessionStorage\.getItem\(PENDING_LINK_KEY\)/);
+	assert.match(src, /sessionStorage\.removeItem\(PENDING_LINK_KEY\)/);
+});
+
+// Round-3 review (minor): a rejected getProviders() used to be swallowed by
+// an empty `.catch(() => {})`, indistinguishable from "no OAuth providers
+// configured" — so a real fetch failure silently hid the Link controls
+// with no explanation, while the section's own copy kept promising them.
+test("AccountSettings.jsx surfaces a failed provider-discovery fetch instead of silently swallowing it", () => {
+	const src = readFileSync(new URL("../src/components/AccountSettings.jsx", import.meta.url), "utf8");
+	assert.doesNotMatch(src, /\.catch\(\(\) => \{\}\)/);
+	assert.match(src, /\.catch\(\(\) => setConnectedProvidersError\(true\)\)/);
+	assert.match(src, /\{connectedProvidersError && \(/);
 });
 
 // Round-2 review (minor): a rejected listAccounts() used to leave

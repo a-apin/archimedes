@@ -60,13 +60,39 @@ const CONNECTED_ACCOUNT_LABELS = { credential: 'Email & password', google: 'Goog
 // awaited step is inside the try/catch for exactly that reason.
 async function notifyAccountChange(mailer, endpointContext, account, action) {
   try {
-    // 'credential' fires on every signup (the password account itself) —
-    // that already gets its own "verify your email" mail, and a second
-    // "new sign-in method added" mail for the same event would just be
-    // noise, not a signal. Removing a 'credential' account (unlinking the
-    // password while Google/GitHub remain) is a real, later, distinct
-    // event and still notifies.
-    if (action === 'added' && account.providerId === 'credential') return
+    // Round-3 review finding (blocker): this used to special-case only
+    // `providerId === 'credential'` — the row EMAIL/PASSWORD signup
+    // creates — on the theory that signup already gets its own "verify
+    // your email" mail. But `databaseHooks.account.create.after` (this
+    // function) fires from OAuth SIGNUP too: when a "Continue with
+    // Google/GitHub" click is for an email that owns no account at all,
+    // link-account.mjs's handleOAuthUserInfo takes its `else` branch
+    // (`dbUser` undefined -> `isRegister = true`) and calls
+    // `internalAdapter.createOAuthUser`, which writes exactly the same
+    // kind of account row a link does — provider 'google'/'github', not
+    // 'credential'. The old check let that through, so a brand-new OAuth
+    // signup got "A sign-in method was added... remove it and reset your
+    // password" as its first email, which is impossible to act on: it is
+    // the account's ONLY sign-in method (canUnlink() below refuses to even
+    // render an Unlink control for it) and there is no password to reset.
+    //
+    // The test that actually distinguishes "this is registration" from
+    // "this is a link onto an existing account" is not the new row's
+    // provider — it's whether the user has any OTHER account row. A genuine
+    // link (the account-takeover-relevant event this mail exists for)
+    // always lands with at least one pre-existing account on the user;
+    // either signup shape (credential or OAuth) always lands with exactly
+    // one. databaseHooks' create.after is queued to run only after the
+    // triggering write has committed (@better-auth/core/dist/context/
+    // transaction.mjs: `for (const hook of pendingHooks) await hook()` runs
+    // after `als.run(...)` resolves), so the just-created row is already
+    // visible to this query and counts toward the total.
+    if (action === 'added') {
+      const accounts = await endpointContext?.context?.internalAdapter?.findAccounts(account.userId)
+      // ?? 1: if the adapter is unavailable for some reason, fail toward
+      // NOT sending rather than toward a false alert.
+      if ((accounts?.length ?? 1) <= 1) return
+    }
     const user = await endpointContext?.context?.internalAdapter?.findUserById(account.userId)
     if (!user?.email) return
     const label = CONNECTED_ACCOUNT_LABELS[account.providerId] || account.providerId
@@ -241,38 +267,60 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
       //
       //    Round-2 review finding (major): an earlier revision of this PR
       //    flipped this to false and added trustedProviders: ['google',
-      //    'github'] to enable it. That was reverted here before merge —
-      //    trustedProviders is consulted in exactly ONE place in the
-      //    installed library (link-account.mjs's isTrustedProvider check)
-      //    and only skips re-checking the PROVIDER's own emailVerified
-      //    claim; it does nothing for the EXPLICIT flow below, which never
-      //    reads disableImplicitLinking or trustedProviders at all and is
-      //    the half of this PR that actually ships. Enabling implicit
-      //    auto-link is a real security decision — the moment
-      //    EMAIL_VERIFICATION_ENFORCED flips on (emailVerificationEnforced
-      //    above), dbUser.user.emailVerified stops being the guard that was
-      //    blocking it in practice, and an anonymous "Continue with
-      //    GitHub/Google" click could silently attach to an existing user's
-      //    account with only the provider's own emailVerified claim
-      //    standing between an attacker and a takeover. It is not
-      //    reintroduced here without that decision being made and reviewed
-      //    on its own, with EMAIL_VERIFICATION_ENFORCED actually on.
+      //    'github'] to enable it. That was reverted here before merge.
+      //
+      //    Round-3 review finding (major) — CORRECTION to round-2's own
+      //    reasoning above: trustedProviders is NOT consulted in exactly
+      //    one place. `grep -rn trustedProviders node_modules/better-auth/
+      //    dist/` finds three call sites:
+      //      - oauth2/link-account.mjs:21 (this implicit path)
+      //      - api/routes/callback.mjs:98 — the EXPLICIT `if (link)` branch
+      //        in path 2 below, i.e. the actual code the "Link Google/
+      //        GitHub" buttons drive
+      //      - api/routes/account.mjs:176 — the explicit `idToken` link
+      //        branch (unused by this UI today, same endpoint)
+      //    At BOTH explicit-path call sites trustedProviders is the same
+      //    switch as here: it turns OFF the requirement that the
+      //    PROVIDER's own emailVerified claim be true. Today that
+      //    requirement holds on the explicit path (guard (a) in path 2
+      //    below) only because trustedProviders is absent — the guard
+      //    `!trustedProviders.includes(id) && !userInfo.emailVerified`
+      //    reduces to plain `!userInfo.emailVerified` against an empty
+      //    list. Reintroducing trustedProviders: ['google', 'github'] to
+      //    arm implicit auto-link would ALSO silently drop that
+      //    requirement from the explicit link flow that actually ships —
+      //    not an isolated change to the implicit path alone. See
+      //    auth/test/auth.test.js's source-pinned tests on both
+      //    link-account.mjs and callback.mjs for the exact lines this
+      //    depends on. Enabling implicit auto-link is a real security
+      //    decision — the moment EMAIL_VERIFICATION_ENFORCED flips on
+      //    (emailVerificationEnforced above), dbUser.user.emailVerified
+      //    stops being the guard that was blocking it in practice, and an
+      //    anonymous "Continue with GitHub/Google" click could silently
+      //    attach to an existing user's account with only the provider's
+      //    own emailVerified claim standing between an attacker and a
+      //    takeover. It is not reintroduced here without that decision
+      //    being made and reviewed on its own, with
+      //    EMAIL_VERIFICATION_ENFORCED actually on — and with the
+      //    explicit-path consequence above accounted for, not just the
+      //    implicit one.
       //
       // 2. EXPLICIT link (signed-in user clicks "Link Google/GitHub" in
       //    Account Settings — api/routes/account.mjs linkSocialAccount +
       //    api/routes/callback.mjs's `if (link)` branch). This path does NOT
-      //    consult disableImplicitLinking or trustedProviders, and does NOT
-      //    check the base account's emailVerified at all — proof of account
-      //    ownership comes from the live session state binds to at call
-      //    time, not from any verification flag — so it works today
-      //    regardless of the operator's own emailVerified value. It DOES
-      //    still enforce, unconditionally: (a) the provider's own
-      //    emailVerified claim (Google/GitHub both attest verified emails
-      //    for their own OAuth users — no trustedProviders needed for that)
-      //    and (b) allowDifferentEmails — the provider's OAuth email must
-      //    equal the signed-in user's account email, or the callback
-      //    redirects with ?error=email_doesn't_match. Kept false here
-      //    (unchanged): the owner's Google/GitHub email is expected to
+      //    consult disableImplicitLinking, and does NOT check the base
+      //    account's emailVerified at all — proof of account ownership
+      //    comes from the live session state binds to at call time, not
+      //    from any verification flag — so it works today regardless of the
+      //    operator's own emailVerified value. It DOES still enforce: (a)
+      //    the provider's own emailVerified claim — TODAY, because
+      //    trustedProviders is absent (see the round-3 correction above;
+      //    this is literally the same `trustedProviders` list as the
+      //    implicit path, read at callback.mjs:98, not a separate
+      //    guarantee) and (b) allowDifferentEmails — the provider's OAuth
+      //    email must equal the signed-in user's account email, or the
+      //    callback redirects with ?error=email_doesn't_match. Kept false
+      //    here (unchanged): the owner's Google/GitHub email is expected to
       //    match their password account's email, and this is not weakened
       //    to let them differ.
       //
@@ -313,6 +361,20 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
     // freshAge and asserts BOTH endpoints 403 identically; mutation-proof —
     // commenting this hook out (done by hand before this commit) makes that
     // test fail with AGED link-social returning 200.
+    //
+    // Round-3 review finding (minor) — scope of what this actually gates:
+    // this hook only guards the /link-social path === '/link-social' check
+    // below, i.e. INITIATING a link. The step that attaches the credential
+    // — callback.mjs's `if (link)` branch, reached at /callback/:id after
+    // the OAuth round trip — performs no session check of its own; it acts
+    // purely on the `link` payload out of the signed state (parseState),
+    // so a session that goes stale (or is signed out) between initiate and
+    // callback can still complete an attach that was validly initiated
+    // while fresh. That window is bounded by the state TTL (oauth2/
+    // state.mjs: 600s), not by session freshness — plus the double-submit
+    // state cookie and the allowDifferentEmails email match at
+    // callback.mjs, which is why this is a documented bound, not a second
+    // hole to close.
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
         if (ctx.path !== '/link-social') return

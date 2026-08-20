@@ -1,11 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { canUnlink, connectedProviderLabel, isKnownConnectedProvider } from '../account-linking'
+import { canUnlink, connectedProviderLabel, isLinkableProvider } from '../account-linking'
 import { linkErrorMessage } from '../auth-errors'
 import { getProviders, linkSocial, listAccounts, unlinkAccount } from '../auth-client'
 import { useAuth } from '../AuthContext'
 import { listLinkedWallets, makePrimaryWallet, removeLinkedWallet } from '../linked-wallets'
 import { providerLabel } from '../wallet-providers'
+
+// Round-3 review finding (minor): a one-shot, client-set marker naming
+// which provider `link()` below is ABOUT to redirect for. The `?linked=`
+// notice effect only fires when this matches the URL's `linked` value, and
+// clears it on the very first read (success or not) — so neither a bare
+// `?linked=<provider>` a user is handed nor an old link's callback URL
+// bookmarked/replayed later can trigger the toast; only a redirect this tab
+// itself just initiated through the Link button can.
+const PENDING_LINK_KEY = 'archimedes:pending-link'
 
 export default function AccountSettings({ walletAddr, onDisconnect, linkError }) {
   const { user, signOut } = useAuth()
@@ -17,6 +26,7 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
   const [connectedAccounts, setConnectedAccounts] = useState([])
   const [connectedLoaded, setConnectedLoaded] = useState(false)
   const [connectedProviders, setConnectedProviders] = useState({ google: false, github: false })
+  const [connectedProvidersError, setConnectedProvidersError] = useState(false)
   const [connectedError, setConnectedError] = useState('')
   const [connectedNotice, setConnectedNotice] = useState('')
   const [connectedBusy, setConnectedBusy] = useState(null)
@@ -47,8 +57,18 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
     [],
   )
   useEffect(() => { loadConnected() }, [loadConnected])
+  // Round-3 review finding (minor): a rejected getProviders() used to be
+  // swallowed with an empty no-op catch handler — indistinguishable from the
+  // legitimate "no OAuth providers configured" state, so a real fetch
+  // failure silently hid the Link controls while the section's own copy
+  // ("Google and GitHub link only after you authorize them from here...")
+  // kept promising an affordance that had quietly gone missing. Now
+  // surfaced through the same connectedError alert a link/unlink failure
+  // uses, instead of a bare empty catch.
   useEffect(() => {
-    getProviders().then((providers) => setConnectedProviders({ google: !!providers.google, github: !!providers.github })).catch(() => {})
+    getProviders()
+      .then((providers) => setConnectedProviders({ google: !!providers.google, github: !!providers.github }))
+      .catch(() => setConnectedProvidersError(true))
   }, [])
 
   // Read the explicit-link round trip's success marker off the URL, once,
@@ -57,17 +77,26 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
   // this used to fire straight off the URL with no check at all, so it
   // could assert a link that never happened (any `?linked=` value rendered
   // verbatim) instead of being the confirmation toast its own comment
-  // claimed it was. Now it only fires once connectedAccounts has actually
-  // loaded, and only for a value that both names a real provider AND is
-  // present in that freshly reloaded list — the account appearing in
-  // connectedAccounts is the real proof; this becomes strictly a toast on
-  // top of it, never a substitute for it.
+  // claimed it was. Fixed to require both a recognized provider AND
+  // presence in the freshly reloaded connectedAccounts list — but round-3
+  // review found `isKnownConnectedProvider` still let `?linked=credential`
+  // through (present in connectedAccounts for every password user, never
+  // something these Link buttons produce) and let a stale/shared
+  // `?linked=google` re-assert a link from the past. Now gated on THREE
+  // things: isLinkableProvider (only google/github — the providers this UI
+  // can actually initiate), presence in connectedAccounts (the real proof
+  // something is linked), AND the one-shot PENDING_LINK_KEY marker `link()`
+  // sets immediately before its own redirect — so the toast can only ever
+  // fire for a link this tab itself just initiated, not an arbitrary or
+  // replayed URL.
   const linkedNoticeChecked = useRef(false)
   useEffect(() => {
     if (!connectedLoaded || linkedNoticeChecked.current) return
     linkedNoticeChecked.current = true
     const linked = new URLSearchParams(window.location.search).get('linked')
-    if (!linked || !isKnownConnectedProvider(linked)) return
+    const pendingLink = sessionStorage.getItem(PENDING_LINK_KEY)
+    sessionStorage.removeItem(PENDING_LINK_KEY)
+    if (!linked || !isLinkableProvider(linked) || linked !== pendingLink) return
     if (connectedAccounts.some((account) => account.providerId === linked)) {
       setConnectedNotice(`Linked ${connectedProviderLabel(linked)}.`)
     }
@@ -81,11 +110,17 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
     setConnectedNotice('')
     try {
       const origin = window.location.origin
-      // Both callbacks land back on THIS page — the /callback/:id endpoint
-      // (library-managed CSRF state, not this code) is what actually
-      // decides success/failure before either is reached.
+      // Set the one-shot pending-link marker right before the redirect — see
+      // PENDING_LINK_KEY above. Both callbacks land back on THIS page — the
+      // /callback/:id endpoint (library-managed CSRF state, not this code)
+      // is what actually decides success/failure before either is reached.
+      sessionStorage.setItem(PENDING_LINK_KEY, provider)
       await linkSocial(provider, `${origin}/app/account?linked=${provider}`, `${origin}/app/account`)
     } catch (err) {
+      // The redirect never happened — clear the marker so a later, unrelated
+      // `?linked=${provider}` (e.g. the same URL pasted back in) can't be
+      // mistaken for the outcome of this failed attempt.
+      sessionStorage.removeItem(PENDING_LINK_KEY)
       if (err.code === 'SESSION_NOT_FRESH') setConnectedSessionStale(true)
       setConnectedError(err.code === 'SESSION_NOT_FRESH' ? linkErrorMessage('SESSION_NOT_FRESH') : err.message)
       setConnectedBusy(null)
@@ -228,6 +263,12 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
               </button>
             )}
           </div>
+        )}
+
+        {connectedProvidersError && (
+          <p className="status mt-3" role="alert">
+            Could not check which sign-in providers are available — Link buttons may be missing below. Reload to try again.
+          </p>
         )}
 
         <div role="status" aria-live="polite" className={connectedNotice ? 'caption mt-3' : 'sr-only'}>

@@ -371,20 +371,28 @@ test('the shipped placeholder still satisfies the 32-char floor', () => {
 //      for an email that already owns a password account. Stays OFF
 //      (disableImplicitLinking: true, unchanged from before #1420) — round-2
 //      review (major finding) reverted an earlier revision that flipped this
-//      on with trustedProviders: ['google', 'github']. trustedProviders only
-//      ever skipped re-checking the PROVIDER's own emailVerified claim; it
-//      did nothing for the explicit flow below (the half that actually
-//      ships), and arming implicit auto-link is its own security decision —
-//      see the long comment on accountLinking in ../auth.js for why. Tests
-//      below prove the refusal holds unconditionally, including once the
-//      base account IS verified (the one case that used to succeed) — with
-//      a real signed OAuth callback round trip, not a mock of Better Auth's
+//      on with trustedProviders: ['google', 'github']. Round-3 review
+//      (major finding) corrected round-2's own writeup here: trustedProviders
+//      is read in THREE places in the installed library, not one — the
+//      implicit path's own check plus TWO call sites on the explicit flow
+//      below (callback.mjs:98, account.mjs:176) — and on both of those it
+//      is the same switch that waives the requirement that the PROVIDER's
+//      own emailVerified claim be true. So arming implicit auto-link would
+//      also silently weaken the explicit flow (the half that actually
+//      ships), not just enable the implicit one — see the long comment on
+//      accountLinking in ../auth.js, and the source-pinned tests below on
+//      both link-account.mjs and callback.mjs, for exactly why. Tests below
+//      prove the refusal holds unconditionally, including once the base
+//      account IS verified (the one case that used to succeed) — with a
+//      real signed OAuth callback round trip, not a mock of Better Auth's
 //      own internals.
 //   2. EXPLICIT link — POST /link-social from a live session, i.e. the
 //      "Link Google/GitHub" buttons in Account Settings. Does not check the
 //      base account's emailVerified at all (ownership comes from the live
 //      session), but DOES still enforce allowDifferentEmails: the OAuth
-//      email must equal the session account's email.
+//      email must equal the session account's email — and, per the
+//      trustedProviders correction above, the provider's own emailVerified
+//      claim too, today, only because trustedProviders is absent.
 //
 // Every OAuth round trip below fakes ONLY the network boundary (Google's
 // token endpoint) via a fetch mock — the authorization-URL construction,
@@ -472,6 +480,26 @@ test("the installed library's implicit-link gate still reads requireLocalEmailVe
   // instead of the claim silently going stale.
   assert.match(src, /requireLocalEmailVerified && !dbUser\.user\.emailVerified/)
   assert.match(src, /accountLinking\?\.disableImplicitLinking === true/)
+})
+
+// Round-3 review finding (major): a prior revision of this PR's own review
+// commentary claimed trustedProviders is consulted in exactly ONE place
+// (the implicit path above). It is not — pin the EXPLICIT path's call site
+// too, so a future trustedProviders reintroduction has to confront this
+// consequence, not just the implicit-path one already pinned above.
+test("the installed library's EXPLICIT link callback also reads trustedProviders — reintroducing it would waive the provider's own emailVerified check here too (source-pinned)", async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(
+    new URL('../node_modules/better-auth/dist/api/routes/callback.mjs', import.meta.url),
+    'utf8',
+  )
+  // This is the `if (link)` branch's own gate — the code path the "Link
+  // Google/GitHub" buttons in Account Settings actually drive. Today,
+  // absent trustedProviders (see the config-shape test above), this
+  // reduces to requiring the provider's own emailVerified claim. If a
+  // future better-auth bump changes this line, this test fails loudly
+  // instead of the accountLinking comment's claim silently going stale.
+  assert.match(src, /!c\.context\.trustedProviders\.includes\(provider\.id\) && !userInfo\.emailVerified/)
 })
 
 test('implicit auto-link is refused when the existing password account is unverified', async (t) => {
@@ -815,6 +843,57 @@ test('signup sends only the verification mail — no redundant "sign-in method a
     asResponse: true,
   })
   assert.deepEqual(mailer.sent.map(m => m.subject), ['Verify your Archimedes account'])
+})
+
+// Round-3 review finding (blocker): the check above ('credential' rows
+// only) covers email/password signup but not OAuth signup. A plain
+// "Continue with Google/GitHub" for an email that owns NO account at all
+// takes link-account.mjs's createOAuthUser (registration) branch — it
+// never even reaches the accountLinking gate, since that only runs when
+// `dbUser` (a pre-existing user with that email) exists — and writes an
+// account row with provider 'google'/'github', not 'credential'. The old
+// `providerId === 'credential'` special case let that row's create.after
+// fire the "sign-in method added... remove it and reset your password"
+// alert anyway, on someone's very first interaction with the product.
+test('a brand-new Google signup never sends the "sign-in method added" account-takeover alert', async (t) => {
+  const mailer = capturingMailer()
+  const { auth } = await googleEnabledAuth({}, mailer)
+  const email = 'brand-new-google@example.com'
+
+  const initiate = await auth.api.signInSocial({
+    body: { provider: 'google', callbackURL: 'http://localhost:3000/app', disableRedirect: true },
+    asResponse: true,
+  })
+  const { url } = await initiate.json()
+  const state = new URL(url).searchParams.get('state')
+  const cookie = forwardedCookies(initiate)
+
+  mockGoogleTokenExchange(t, { email, emailVerified: true })
+
+  const callback = await auth.handler(new Request(
+    `http://localhost:3000/api/auth/callback/google?code=fake-code&state=${encodeURIComponent(state)}`,
+    { headers: { cookie } },
+  ))
+  assert.equal(callback.status, 302)
+  assert.equal(new URL(callback.headers.get('location')).searchParams.get('error'), null)
+
+  // databaseHooks.account.create.after runs after the write commits, not
+  // necessarily before the response headers are constructed — same tick
+  // reasoning as the link-notification tests below.
+  await new Promise(resolve => setImmediate(resolve))
+
+  // emailVerified: true on the mocked Google token also means no
+  // verification mail fires (link-account.mjs only sends one when the
+  // provider's claim is unverified) — so a clean pass here is zero mail,
+  // full stop, not "one mail, just not this one".
+  //
+  // Mutation-proof (done by hand before this commit): reverting
+  // notifyAccountChange's `if (action === 'added') { ... }` block back to
+  // the old `account.providerId === 'credential'` check makes this fail —
+  // mailer.sent gains exactly the "A sign-in method was added..." mail,
+  // addressed to brand-new-google@example.com, telling them to reset a
+  // password that does not exist.
+  assert.deepEqual(mailer.sent, [])
 })
 
 test('linking a Google account emails the account owner (account-takeover signal, round-2 review)', async () => {

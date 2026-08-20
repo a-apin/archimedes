@@ -111,7 +111,7 @@ The owner has one email/password account and wants Google and GitHub to reach th
 account, so any of the three signs in as one identity. `auth/auth.js`'s `account.
 accountLinking` config (verified against the **installed** `better-auth@1.6.25` source —
 see the long comment on that config block for exact file/line pointers) drives two
-independent paths that behave differently and are both live:
+independent paths that behave differently, one of which is deliberately disabled today:
 
 **1. Implicit auto-link** — a plain "Continue with Google/GitHub" click on the sign-in
 screen for an email that already owns a password account. Stays **off**
@@ -120,35 +120,50 @@ unconditionally (`?error=account_not_linked`), regardless of either side's
 `emailVerified`. **Round-2 review finding (major):** an earlier revision of this PR
 flipped `disableImplicitLinking` to `false` and added `trustedProviders: ['google',
 'github']` to enable this path once the base account was verified. That was reverted
-before merge — `trustedProviders` is consulted in exactly one place in the installed
-library (skipping the re-check of the *provider's* own `emailVerified` claim) and does
-nothing for the explicit flow below, which is the half that actually ships; arming
-implicit auto-link is its own security decision, deferred to a future change made and
-reviewed on its own once `EMAIL_VERIFICATION_ENFORCED` is genuinely on (until then,
-`requireLocalEmailVerified` — the library's still-unset default `true` — would have kept
-this refused for most accounts anyway, but not once real accounts start verifying). See
-the long comment on `accountLinking` in `auth/auth.js` for the exact gate lines.
+before merge. **Round-3 review finding (major) — correction to the round-2 writeup
+above:** `trustedProviders` is not consulted in only one place. The installed library
+reads it in three: `oauth2/link-account.mjs:21` (this implicit path), and — importantly —
+`api/routes/callback.mjs:98` and `api/routes/account.mjs:176`, both on the **explicit**
+path below. In both of those it is the same switch: it turns off the requirement that the
+*provider's* own `emailVerified` claim be true. Reintroducing `trustedProviders` to arm
+implicit auto-link would therefore also silently waive that requirement on the explicit
+flow that actually ships, not just enable the implicit one. Arming implicit auto-link
+remains its own security decision, deferred to a future change made and reviewed on its
+own once `EMAIL_VERIFICATION_ENFORCED` is genuinely on (until then, `requireLocalEmailVerified`
+— the library's still-unset default `true` — would have kept this refused for most
+accounts anyway, but not once real accounts start verifying) **and** with the explicit-path
+consequence above accounted for. See the long comment on `accountLinking` in
+`auth/auth.js` for the exact gate lines and both source-pinned tests.
 
 **2. Explicit link** — signed-in "Link Google" / "Link GitHub" in Account Settings →
 Connected accounts (`ui/src/components/AccountSettings.jsx`, `linkSocial`/`listAccounts`/
 `unlinkAccount` in `ui/src/auth-client.js`, calling Better Auth's own `/link-social`,
 `/list-accounts`, `/unlink-account`). This is the path that works **today**, regardless of
 the base account's verification state: proof of ownership comes from the live session
-`/link-social` was called with, not from `emailVerified`. It still enforces, unconditionally:
-the provider's own `emailVerified` claim (no `trustedProviders` needed — Google/GitHub
-both attest verified emails for their OAuth users), and `allowDifferentEmails` (kept
-`false`) — the OAuth account's email must equal the signed-in account's email, or the
-callback redirects with `?error=email_doesn't_match`. The state/PKCE/CSRF handshake for
-the OAuth round trip (the `state` param plus its double-submit `better-auth.state`
-cookie) is entirely library-managed on both ends; nothing here hand-rolls any part of it.
+`/link-social` was called with, not from `emailVerified`. It still enforces: the
+provider's own `emailVerified` claim — today, because `trustedProviders` is absent (see
+the round-3 correction above; this is the *same* list read at `callback.mjs:98`, not an
+independent guarantee) — and `allowDifferentEmails` (kept `false`) — the OAuth account's
+email must equal the signed-in account's email, or the callback redirects with
+`?error=email_doesn't_match`. The state/PKCE/CSRF handshake for the OAuth round trip (the
+`state` param plus its double-submit `better-auth.state` cookie) is entirely
+library-managed on both ends; nothing here hand-rolls any part of it.
 
-Both `/link-social` and `/unlink-account` also now require a **session younger than
+`/link-social` and `/unlink-account` both now require a **session younger than
 `session.freshAge`** (pinned explicitly in `auth/auth.js`, 24h) — a round-2 review
 blocker finding: the library gates `/unlink-account` behind its own
 `freshSessionMiddleware` but left `/link-social` ungated, so a session stale enough to
 have lost the ability to *remove* a credential could still *add* one. `auth/auth.js`'s
-`hooks.before` mirrors the library's own check onto `/link-social` so both directions move
-together.
+`hooks.before` mirrors the library's own check onto `/link-social`'s **initiation**, so
+both directions require an equally fresh session to *start*. **Round-3 review finding
+(minor) — this is not full symmetry:** the step that actually attaches the credential
+(`callback.mjs`'s `if (link)` branch, reached at `/callback/:id` after the OAuth round
+trip) performs no session check of its own — it acts on the signed `link` payload carried
+in OAuth `state`, independent of whether the original session is still fresh (or even
+still signed in) by the time the provider redirects back. That window is bounded by the
+state TTL (`oauth2/state.mjs`, 600 seconds) plus the double-submit state cookie and the
+`allowDifferentEmails` email match above, not by a second session-freshness check — which
+is why this is a documented bound, not an unclosed gap.
 
 Unlinking: `/unlink-account` refuses to remove an account's last remaining credential
 (`allowUnlinkingAll` stays `false` → `FAILED_TO_UNLINK_LAST_ACCOUNT`, HTTP 400) —
