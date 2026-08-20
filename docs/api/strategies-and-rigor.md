@@ -31,7 +31,7 @@ and every numeric rigor field come from a single live-gate run over the FULL
 library, before pagination. | **Auth**: anonymous
 
 Request: query `status: "candidate"|"validated"|"live"|"retired"|null, limit: int(1..100)=20, offset: int(>=0)=0`.
-Response (`StrategyListResponse`): `{strategies: [StrategyResponse], total: int}`. `StrategyResponse` carries `id, papers[], methodology_summary, asset_universe, universe_source, position_sizing, rebalance_frequency, status, sharpe_ratio, sortino_ratio, cagr, max_drawdown, win_rate, calmar_ratio, correlation_to_spy, deflated_sharpe_ratio, dsr_p_value, pbo_score, out_of_sample_sharpe, kelly_fraction, passes_rigor_gate: bool, rigor_gate_status: "pass"|"fail"|"pending"|"degenerate", is_backtest_placeholder: bool, sharpe_ci_lower/upper, backtest_start/end, regime_tag, return_source: "risk_premium"|"mispricing"|"productive_growth"|"noise", return_source_note, generation_cost, can_publish`.
+Response (`StrategyListResponse`): `{strategies: [StrategyResponse], total: int, degraded: bool=false, degraded_reason: str=""}`. `degraded` is `true` when the strategy provider raised or the library came back empty for a reason other than a legitimate filter (e.g. `"strategy corpus not found in build"`) — a loud, specific unavailable state instead of the false claim "no strategies" (#1356). `StrategyResponse` carries `id, papers[], methodology_summary, asset_universe, universe_source, position_sizing, rebalance_frequency, status, sharpe_ratio, sortino_ratio, cagr, max_drawdown, win_rate, calmar_ratio, correlation_to_spy, deflated_sharpe_ratio, dsr_p_value, pbo_score, out_of_sample_sharpe, kelly_fraction, passes_rigor_gate: bool, rigor_gate_status: "pass"|"fail"|"pending"|"degenerate", is_backtest_placeholder: bool, sharpe_ci_lower/upper, backtest_start/end, regime_tag, return_source: "risk_premium"|"mispricing"|"productive_growth"|"noise", return_source_note, generation_cost, can_publish`.
 Errors: 422 on invalid `status`/`limit`/`offset`.
 
 ```bash
@@ -44,8 +44,11 @@ private-until-published (visible when published, or owned by the caller). |
 **Auth**: account-session
 
 Request: query `limit: int(1..200)=50`.
-Response: `{strategies: [StrategyRecord.to_dict() + can_publish: bool + generation_cost], total: int}`.
-Errors: none explicit — a DB failure degrades to an empty list (logged warning), never a 500.
+Response: `{strategies: [StrategyRecord.to_dict() + can_publish: bool + generation_cost], total: int, degraded: bool=false, degraded_reason: str=""}`.
+`degraded` is `true` when the strategy store raised (`degraded_reason: "strategy store unavailable"`) — the same
+honest-degradation contract `GET /api/strategies/` carries (#1356 review round 2): a swallowed DB failure used to
+render as a measured `total: 0`, indistinguishable on the wire from a genuinely-empty store.
+Errors: none explicit — a DB failure degrades to an empty list plus `degraded: true` (logged warning), never a 500.
 
 ```bash
 curl -s -b /tmp/session.jar "https://archimedes-arc.com/api/strategies/generated?limit=50"
