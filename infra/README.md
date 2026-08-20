@@ -96,9 +96,12 @@ export TF_VAR_aurora_master_password="$(aws ssm get-parameter \
 ```bash
 cd infra/                # the LIVE stack (NOT infra/terraform/ — that's a separate, unwired module)
 terraform init           # downloads providers, connects to the S3 backend
-terraform plan           # ALWAYS preview first — scrutinize for `destroy` / route deletions
-terraform apply          # type `yes` to confirm
+./apply.sh               # ALWAYS preview first — see "Operational variables" below
+./apply.sh --apply       # applies after the same guarded preflight; prompts for confirmation
 ```
+
+`terraform plan` / `terraform apply` still work directly, but `./apply.sh` is the
+recommended entry point — see the next section for what it checks and why.
 
 **If a plan/apply was interrupted (Ctrl-C), the S3 state lock can go stale** —
 you'll see `Error acquiring the state lock … PreconditionFailed`. Clear it (only
@@ -155,6 +158,21 @@ needed — so once it's maintained, a bare `terraform apply` stops being a trap.
 `TF_VAR_aurora_master_password=$(aws ssm get-parameter ...)` export documented above — it's
 a true secret (`sensitive = true`, no default) and belongs in SSM, not a local file, even a
 gitignored one.
+
+**`./apply.sh` is the entry point that enforces this rule** — run it instead of a bare
+`terraform plan` / `terraform apply`. It always operates on `infra/` regardless of the
+caller's cwd, and before touching Terraform it: (1) requires `terraform.tfvars` to exist,
+pointing here if it doesn't; (2) re-derives the operational-variable list from
+`terraform.tfvars.example` at runtime (so a newly added variable can't silently drift out
+of the check) and warns loudly, by name, on anything missing or an empty string — pass
+`--allow-empty <var>` (repeatable) to proceed with a specific one intentionally unset, or
+it refuses; (3) refuses if any `TF_VAR_*` env var is currently set that would shadow a
+`terraform.tfvars` entry — the exact landmine this section describes; (4) confirms `aws sts
+get-caller-identity` succeeds and resolves to account `037613907429`, guarding against an
+apply run under the wrong `AWS_PROFILE`. It then runs `terraform plan` by default;
+`--apply` runs `terraform apply` (still prompting for confirmation unless `--yes` is also
+given); any other args pass through to terraform. See the script's own header comment for
+full usage.
 
 Known operationally-set variables as of 2026-08-20 — re-grep `variables.tf` for new
 `var.*` conditionals in `ecs.tf` any time a new operational flag is added:
