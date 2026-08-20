@@ -950,7 +950,7 @@ async def get_portfolio_advisor(
         # on the in-memory object are frozen values the live gate never wrote, so
         # serving them next to a live badge let the advisor's numbers disagree
         # with GET /api/selection-bias/gate. SOLELY the live result (honesty fix
-        # #1187, same scope as _to_strategy_response): these four fields render
+        # #1187, same scope as _to_strategy_response): these five fields render
         # None — never st.<field> — when the live gate could not run for this
         # strategy. Do not reintroduce the st.<field> fallback here; that is
         # precisely the defect #1187 tracks, now closed for both response paths.
@@ -960,7 +960,7 @@ async def get_portfolio_advisor(
             "rigor_gate_status": _verdict.status if _verdict else "pending",
             "deflated_sharpe_ratio": _live.deflated_sharpe if _live else None,
             "dsr_p_value": _live.dsr_p_value if _live else None,
-            "num_trials_in_selection": _live.num_trials if _live else st.num_trials_in_selection,
+            "num_trials_in_selection": _live.num_trials if _live else None,
             "pbo_score": _live.pbo_score if _live else None,
             "out_of_sample_sharpe": _live.oos_sharpe if _live else None,
             "paper_claimed_sharpe": st.paper_claimed_sharpe,

@@ -346,12 +346,12 @@ class TestStrategyRoutes:
     def test_advisor_serves_null_not_fixture_when_live_gate_empty(self, client, seeded_db):
         """#1187 (``_rigor_fields``, the advisor's own copy of the leaderboard's
         fixed-then-fixed-again fallback): when the live-gate batch returns no
-        result for a strategy, the four numeric rigor fields on its advisor
+        result for any strategy, the four numeric rigor fields on EVERY advisor
         allocation must render ``None`` — never the migrated fixture value on
         the in-memory ``Strategy`` object. Not vacuous: reverting just this
         fallback (restoring ``else st.<field>`` on the four keys) makes this
-        fail — George Hwang's allocation then serves the exact fixture
-        constants (0.277212 / 0.339938 / 0.910213) from
+        fail — an allocation then serves the exact fixture constants
+        (0.277212 / 0.339938 / 0.910213) from
         ``backend/tests/fixtures/backtest_fixtures_snapshot.json``, confirmed
         by hand against the pre-fix code."""
         from archimedes.api import strategies_routes as sr
@@ -361,24 +361,26 @@ class TestStrategyRoutes:
         assert resp.status_code == 200
         allocations = resp.json()["allocations"]
         assert allocations, "advisor returned no allocations to check"
-        gh = next(
-            (a for a in allocations if "52-Week High" in a.get("title", "")),
-            None,
-        )
-        if gh is None:
-            pytest.skip("George Hwang allocation not present in this advisor run")
-        # The rule-based aggregate row (id "agg_<symbol>") does not carry
-        # rigor_gate_status forward (_RIGOR_KEYS omits it) — passes_rigor_gate
-        # is the field available here, and must stay the fail-closed default.
-        assert gh["passes_rigor_gate"] is False
-        assert gh["deflated_sharpe_ratio"] is None, (
-            f"deflated_sharpe_ratio must be None, not the fixture value; got {gh['deflated_sharpe_ratio']}"
-        )
-        assert gh["dsr_p_value"] is None, f"dsr_p_value must be None, not the fixture value; got {gh['dsr_p_value']}"
-        assert gh["pbo_score"] is None, f"pbo_score must be None, not the fixture value; got {gh['pbo_score']}"
-        assert gh["out_of_sample_sharpe"] is None, (
-            f"out_of_sample_sharpe must be None, not the fixture value; got {gh['out_of_sample_sharpe']}"
-        )
+        for a in allocations:
+            # The rule-based aggregate row (id "agg_<symbol>") does not carry
+            # rigor_gate_status forward (_RIGOR_KEYS omits it) — passes_rigor_gate
+            # is the field available on every row, and must stay the fail-closed
+            # default.
+            assert a["passes_rigor_gate"] is False, f"{a.get('id')}: passes_rigor_gate must be fail-closed False"
+            assert a["deflated_sharpe_ratio"] is None, (
+                f"{a.get('id')}: deflated_sharpe_ratio must be None, not the fixture value; "
+                f"got {a['deflated_sharpe_ratio']}"
+            )
+            assert a["dsr_p_value"] is None, (
+                f"{a.get('id')}: dsr_p_value must be None, not the fixture value; got {a['dsr_p_value']}"
+            )
+            assert a["pbo_score"] is None, (
+                f"{a.get('id')}: pbo_score must be None, not the fixture value; got {a['pbo_score']}"
+            )
+            assert a["out_of_sample_sharpe"] is None, (
+                f"{a.get('id')}: out_of_sample_sharpe must be None, not the fixture value; "
+                f"got {a['out_of_sample_sharpe']}"
+            )
 
 
 class TestRiskRoutes:
