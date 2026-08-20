@@ -110,17 +110,19 @@ export default function Leaderboard() {
   const isOwn = servedScope === 'own'
 
   // Selectivity headline (WP-7, docs/sprint/a6-rerun.md's rejection-rate item):
-  // "of N candidates evaluated, only K clear the rigor bar" — derived at
-  // render time from the SAME `data.entries` array the table below renders,
-  // never a hard-coded count (CLAUDE.md: "Don't quote a curated-library
-  // strategy pass count — anywhere"). evaluatedCount is every row currently
-  // fetched under the active scope/filters (including any is_backtest_placeholder
-  // rows without a real backtest yet — counting those in the denominator can
-  // only make the reported pass rate look MORE conservative, never inflate
-  // it). Both stay `null` until `data` arrives, so the loading/empty states
-  // below never render a zero-over-zero claim.
-  const evaluatedCount = data ? data.entries.length : null
-  const passingCount = data ? data.entries.filter((e) => e.passes_rigor_gate).length : null
+  // "of N strategies graded, K clear the bar" — derived at render time from
+  // the SAME `data.entries` array the table below renders, never a hard-coded
+  // count (CLAUDE.md: "Don't quote a curated-library strategy pass count —
+  // anywhere"; live-derived is the one permitted source). Counts stay `null`
+  // until `data` arrives, so the loading/empty states below never render a
+  // zero-over-zero claim.
+  // Placeholder rows (generated, no backtest yet) have NOT been graded — a
+  // row the gate never saw cannot appear in a "graded" count in either
+  // direction. "Claims must be true" is about literal truth, not about which
+  // way an error would lean.
+  const gradedEntries = data ? data.entries.filter((e) => !e.is_backtest_placeholder) : null
+  const evaluatedCount = gradedEntries ? gradedEntries.length : null
+  const passingCount = gradedEntries ? gradedEntries.filter((e) => e.passes_rigor_gate).length : null
 
   return (
     <div className="leaderboard-page" style={{ maxWidth: 1100 }}>
@@ -157,13 +159,13 @@ export default function Leaderboard() {
           >
             {isOwn ? (
               <>
-                Of your <strong>{evaluatedCount}</strong> strateg{evaluatedCount === 1 ? 'y' : 'ies'} evaluated,
-                only <strong>{passingCount}</strong> clear{passingCount === 1 ? 's' : ''} the rigor bar.
+                Of your <strong>{evaluatedCount}</strong> strateg{evaluatedCount === 1 ? 'y' : 'ies'} graded by
+                the rigor gate, <strong>{passingCount}</strong> clear{passingCount === 1 ? 's' : ''} the bar.
               </>
             ) : (
               <>
-                Of <strong>{evaluatedCount}</strong> candidate{evaluatedCount === 1 ? '' : 's'} evaluated,
-                only <strong>{passingCount}</strong> clear{passingCount === 1 ? 's' : ''} the rigor bar.
+                Of <strong>{evaluatedCount}</strong> library strateg{evaluatedCount === 1 ? 'y' : 'ies'} graded by
+                the rigor gate, <strong>{passingCount}</strong> clear{passingCount === 1 ? 's' : ''} the bar.
               </>
             )}
           </div>
