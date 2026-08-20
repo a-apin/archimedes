@@ -311,6 +311,30 @@ class TestTraces:
         assert window[0]["decision_type"] == "rebalance"
 
     @pytest.mark.asyncio
+    async def test_list_recent_traces_bounds_the_range_at_the_index(self) -> None:
+        """#1276: the tick's reconciliation scan must be O(limit), not O(history)
+        — the zrevrange itself carries the bound, unlike list_traces."""
+        store, fake = await _store_with_fake_redis()
+        fake.zrevrange.return_value = ["h1", "h2"]
+        fake.get = AsyncMock(side_effect=[json.dumps({"id": "t1"}), json.dumps({"id": "t2"})])
+
+        traces = await store.list_recent_traces(limit=2)
+
+        assert [t["id"] for t in traces] == ["t1", "t2"]
+        key, start, stop = fake.zrevrange.await_args.args
+        assert (key, start, stop) == (KEY_TRACE_INDEX, 0, 1)  # inclusive stop => exactly 2
+
+    @pytest.mark.asyncio
+    async def test_list_recent_traces_skips_missing_and_malformed_entries(self) -> None:
+        store, fake = await _store_with_fake_redis()
+        fake.zrevrange.return_value = ["h1", "h2", "h3"]
+        fake.get = AsyncMock(side_effect=[None, "{not json", json.dumps({"id": "t3"})])
+
+        traces = await store.list_recent_traces(limit=3)
+
+        assert [t["id"] for t in traces] == ["t3"]  # a corrupt entry never breaks the scan
+
+    @pytest.mark.asyncio
     async def test_get_last_trace_returns_first(self) -> None:
         store, fake = await _store_with_fake_redis()
         fake.zrevrange.return_value = ["h1"]
