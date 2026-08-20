@@ -11,11 +11,23 @@ change.
 
 Every function is fail-safe by construction, matching every other read
 instrument in this codebase (``user_stats.py``, ``identity_metrics.py``,
-``funnel_store.py``): a DB error is logged and degrades to an honest empty/zero
-shape, never a raised exception that would 5xx the dashboard. A subsystem
-failing to read must not blank the tiles that DID read successfully — each
-metric group is queried, and fails, independently (mirrors
-``Insights.jsx``'s per-endpoint resilience for the same reason).
+``funnel_store.py``): a DB error is logged and never raises out to 5xx the
+dashboard. A subsystem failing to read must not blank the tiles that DID read
+successfully — each metric group is queried, and fails, independently
+(mirrors ``Insights.jsx``'s per-endpoint resilience for the same reason).
+
+**The degraded shape on failure is ``None`` per numeric field, never ``0``**
+(round 2 correction — CLAUDE.md's fail-soft principle: "for measured values,
+the correct degraded state is a loud, visible absence... never a plausible
+substitute"). A count of zero is a CLAIM ("the query ran and found nothing"),
+not an absence, and is indistinguishable on the page from a real zero once
+the route still returns 200 — ``Insights.jsx``'s ``Stat`` component already
+renders ``None`` as an honest "—" and only a real number as a number, so
+returning ``0`` here converted a database outage into a plausible-looking
+"zero users generated anything today" instead of a visible gap. Every
+``except`` branch below returns ``None`` for each numeric/list field plus
+``unavailable: True`` so a caller can distinguish "queried, got zero" from
+"could not query" even where a field's own value alone would be ambiguous.
 
 **What is and is not joinable today (verified against the ORM models, not
 assumed):**
@@ -34,12 +46,21 @@ assumed):**
   (SIWE-era, wallet-only) generations have no account to attribute to and are
   excluded, which the response says explicitly rather than silently rounding
   them into either bucket.
-- Money paid / settled volume has **no query at all** — ``PAYMENTS_DRY_RUN``
-  gates every settlement path today (``services/generation_payment.py``,
-  ``marketplace/settlement.py``), so there is no durable settled-volume
-  record for any query to read. The response says ``dry_run`` and leaves
-  ``settled_volume_usd`` as ``None`` rather than reporting a $0 that would
-  read as "measured and zero" instead of "not yet metered".
+- Money paid / settled volume has **no query at all** — not because no
+  settlement record exists (round 2 correction: it does — ``settlement_intents``
+  is a real, durable table with a ``status`` column that reaches
+  ``"settled"``/``"failed"`` via ``marketplace/service.py``'s
+  ``_finalize_settlement_intent``), but because its ``amount_usdc`` column is
+  declared and **never written** anywhere in this codebase (verified:
+  ``grep -rn amount_usdc backend/archimedes/`` returns only the column
+  declaration itself) — so ``sum(amount_usdc) WHERE status='settled'`` would
+  be a real query returning a meaningless ``NULL`` even against live rows,
+  not a "no table to query" gap. ``PAYMENTS_DRY_RUN`` gates every settlement
+  path before an intent is even claimed (``services/generation_payment.py``),
+  which is a second, independent reason no volume exists yet — either one
+  alone would already block this metric. The response says ``dry_run`` and
+  leaves ``settled_volume_usd`` as ``None`` rather than reporting a $0 that
+  would read as "measured and zero" instead of "not yet metered".
 
 See the PR body for the Phase 2 list of metrics this module does NOT attempt
 (the schema-relations work that would make them possible is in flight
@@ -66,6 +87,26 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _to_naive_utc(dt: datetime) -> datetime:
+    """Coerce a tz-aware or naive datetime to naive-UTC wall-clock time.
+
+    ``strategy_store.created_at`` is a bare, timezone-NAIVE ``DateTime``
+    column always written via ``datetime.now(UTC)`` (models/strategy_store.py)
+    — i.e. naive-UTC BY CONVENTION, not by the column type. ``auth_users
+    .createdAt``, by contrast, is a genuine ``DateTime(timezone=True)``
+    column (models/account.py). Binding a tz-aware Python value straight
+    against the naive column pushes the aware/naive cast onto the DB
+    session's ``TimeZone`` setting on Postgres — a non-UTC session would
+    silently shift both the trend window boundary in ``get_strategy_metrics``
+    and the day a row buckets into below. Converting to UTC first (a no-op
+    for an already-UTC value) before stripping ``tzinfo`` keeps this file's
+    own bucketing correct regardless of session timezone.
+    """
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(UTC)
+    return dt.replace(tzinfo=None)
+
+
 def _daily_buckets(timestamps: list[datetime | None], *, days: int) -> list[dict[str, Any]]:
     """Zero-filled UTC daily counts for the last ``days`` days, oldest first.
 
@@ -74,14 +115,16 @@ def _daily_buckets(timestamps: list[datetime | None], *, days: int) -> list[dict
     ``get_strategy_metrics``), and bucketing client-side keeps this file
     portable across the sqlite-in-test / Postgres-in-prod split without
     leaning on a SQL date-truncation function neither test suite exercises
-    today.
+    today. Every timestamp is coerced through ``_to_naive_utc`` before
+    ``.date()`` so bucketing is stable regardless of whether a caller's rows
+    happen to come back tz-aware or naive.
     """
-    today = _now().date()
+    today = _to_naive_utc(_now()).date()
     counts: Counter[date] = Counter()
     for ts in timestamps:
         if ts is None:
             continue
-        counts[ts.date()] += 1
+        counts[_to_naive_utc(ts).date()] += 1
     return [
         {"date": (today - timedelta(days=offset)).isoformat(), "count": counts.get(today - timedelta(days=offset), 0)}
         for offset in range(days - 1, -1, -1)
@@ -89,7 +132,20 @@ def _daily_buckets(timestamps: list[datetime | None], *, days: int) -> list[dict
 
 
 def get_account_metrics() -> dict[str, Any]:
-    """Canonical Better Auth accounts: total, new in the last 7d / 30d."""
+    """Canonical Better Auth accounts: total, new in the last 7d / 30d.
+
+    ``new_7d`` uses the SAME calendar-day-anchored window as
+    ``get_strategy_metrics``'s ``new_7d`` — i.e. midnight UTC, ``_TREND_DAYS``
+    days ago, through now (round 2 fix: this used to be a plain rolling
+    168-hour window while strategies used calendar days, so the two "(7d)"
+    tiles ``Insights.jsx`` renders side by side — "New accounts (7d)" and
+    "Generated (7d)" — covered spans that differed by up to a day, for
+    reasons unrelated to actual activity, even though nothing about their
+    presentation suggested the two windows meant different things).
+    ``new_30d`` keeps a simple rolling 720-hour window — it has no adjacent
+    "(30d)" metric it's implicitly compared against, so there is no
+    definitional drift to fix there.
+    """
     try:
         from sqlalchemy import func
 
@@ -97,12 +153,12 @@ def get_account_metrics() -> dict[str, Any]:
         from archimedes.models.account import AuthUser
 
         now = _now()
+        window_7d_start = (now - timedelta(days=_TREND_DAYS - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
         session = get_session()
         try:
             total = int(session.query(func.count(AuthUser.id)).scalar() or 0)
             new_7d = int(
-                session.query(func.count(AuthUser.id)).filter(AuthUser.created_at >= now - timedelta(days=7)).scalar()
-                or 0
+                session.query(func.count(AuthUser.id)).filter(AuthUser.created_at >= window_7d_start).scalar() or 0
             )
             new_30d = int(
                 session.query(func.count(AuthUser.id)).filter(AuthUser.created_at >= now - timedelta(days=30)).scalar()
@@ -113,7 +169,7 @@ def get_account_metrics() -> dict[str, Any]:
         return {"total": total, "new_7d": new_7d, "new_30d": new_30d}
     except Exception as exc:
         logger.debug("engagement_metrics.get_account_metrics failed: %s", exc)
-        return {"total": 0, "new_7d": 0, "new_30d": 0}
+        return {"total": None, "new_7d": None, "new_30d": None, "unavailable": True}
 
 
 def get_linked_wallet_metrics() -> dict[str, Any]:
@@ -132,11 +188,25 @@ def get_linked_wallet_metrics() -> dict[str, Any]:
         return {"total": total}
     except Exception as exc:
         logger.debug("engagement_metrics.get_linked_wallet_metrics failed: %s", exc)
-        return {"total": 0}
+        return {"total": None, "unavailable": True}
 
 
 def get_strategy_metrics() -> dict[str, Any]:
-    """Strategies generated: all-time total + a zero-filled 7-day daily trend."""
+    """Strategies generated: all-time total + a zero-filled 7-day daily trend.
+
+    Excludes ``is_example`` rows (the hand-curated set ``main.py`` seeds into
+    ``strategy_store`` on every startup, ``generation_method="curated"``) —
+    same exclusion ``strategies_routes.py``'s library listing already applies
+    (``StrategyRecord.is_example.is_(False)``). Without it, "strategies
+    generated" counted platform-seeded rows no user ever generated, inflating
+    both the total and every day's entry in the trend that happens to fall on
+    or after a seed run.
+
+    The window-start bind is coerced through ``_to_naive_utc`` before the
+    query (see that function) — ``StrategyRecord.created_at`` is a naive
+    column; binding a tz-aware value against it directly would push the
+    aware/naive cast onto the DB session's timezone setting.
+    """
     try:
         from sqlalchemy import func
 
@@ -144,12 +214,15 @@ def get_strategy_metrics() -> dict[str, Any]:
         from archimedes.models.strategy_store import StrategyRecord
 
         now = _now()
-        window_start = now - timedelta(days=_TREND_DAYS - 1)
+        window_start = _to_naive_utc(now - timedelta(days=_TREND_DAYS - 1))
         session = get_session()
         try:
-            total = int(session.query(func.count(StrategyRecord.id)).scalar() or 0)
+            total = int(
+                session.query(func.count(StrategyRecord.id)).filter(StrategyRecord.is_example.is_(False)).scalar() or 0
+            )
             recent = (
                 session.query(StrategyRecord.created_at)
+                .filter(StrategyRecord.is_example.is_(False))
                 .filter(StrategyRecord.created_at >= window_start.replace(hour=0, minute=0, second=0, microsecond=0))
                 .all()
             )
@@ -163,7 +236,7 @@ def get_strategy_metrics() -> dict[str, Any]:
         }
     except Exception as exc:
         logger.debug("engagement_metrics.get_strategy_metrics failed: %s", exc)
-        return {"total": 0, "new_7d": 0, "daily_new": []}
+        return {"total": None, "new_7d": None, "daily_new": None, "unavailable": True}
 
 
 def get_generation_cost_metrics() -> dict[str, Any]:
@@ -173,22 +246,31 @@ def get_generation_cost_metrics() -> dict[str, Any]:
     (``services/cost_meter.py``'s ``cost_v1`` shape) — money never lives in
     this table (``assert_measurement_only`` enforces that at write time), so
     there is nothing to convert here, only to add up. A row whose JSON fails
-    to decode is skipped (logged, not counted) rather than crashing the sum —
-    the same "corrupt row is an absence, not a zero baked into the total"
-    posture ``GenerationCostRecord.to_payload`` already uses.
+    to decode, or decodes but carries no ``llm`` block, is skipped rather than
+    crashing the sum — the same "corrupt row is an absence, not a zero baked
+    into the total" posture ``GenerationCostRecord.to_payload`` already uses.
+
+    ``measured_count`` counts ROWS THAT ACTUALLY CONTRIBUTED to the token
+    sums below it — i.e. it is incremented in the SAME pass that decodes and
+    sums, not taken as a separate ``COUNT(*)`` up front (round 2 fix: a
+    ``COUNT(*)`` counts every row regardless of whether its JSON decodes,
+    which made a corrupt row both "skipped from the sum" and "counted as
+    measured" at once — a reader computing total_tokens / measured_count as
+    an average would silently understate it whenever any row was corrupt).
+    ``rows_total`` is the separate, honest "how many generation_costs rows
+    exist at all" figure for anyone who wants it.
     """
     try:
-        from sqlalchemy import func
-
         from archimedes.db import get_session
         from archimedes.models.generation_cost import GenerationCostRecord
 
         session = get_session()
         try:
-            measured_count = int(session.query(func.count(GenerationCostRecord.id)).scalar() or 0)
             rows = session.query(GenerationCostRecord.measurement_json).all()
         finally:
             session.close()
+        rows_total = len(rows)
+        measured_count = 0
         input_tokens = 0
         output_tokens = 0
         for (raw,) in rows:
@@ -200,17 +282,26 @@ def get_generation_cost_metrics() -> dict[str, Any]:
             llm = measurement.get("llm") if isinstance(measurement, dict) else None
             if not isinstance(llm, dict):
                 continue
+            measured_count += 1
             input_tokens += int(llm.get("input_tokens") or 0)
             output_tokens += int(llm.get("output_tokens") or 0)
         return {
             "measured_count": measured_count,
+            "rows_total": rows_total,
             "total_input_tokens": input_tokens,
             "total_output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
         }
     except Exception as exc:
         logger.debug("engagement_metrics.get_generation_cost_metrics failed: %s", exc)
-        return {"measured_count": 0, "total_input_tokens": 0, "total_output_tokens": 0, "total_tokens": 0}
+        return {
+            "measured_count": None,
+            "rows_total": None,
+            "total_input_tokens": None,
+            "total_output_tokens": None,
+            "total_tokens": None,
+            "unavailable": True,
+        }
 
 
 def get_paper_deployment_metrics() -> dict[str, Any]:
@@ -236,11 +327,11 @@ def get_paper_deployment_metrics() -> dict[str, Any]:
         return {"active": active, "stopped": stopped}
     except Exception as exc:
         logger.debug("engagement_metrics.get_paper_deployment_metrics failed: %s", exc)
-        return {"active": 0, "stopped": 0}
+        return {"active": None, "stopped": None, "unavailable": True}
 
 
 def get_repeat_generation_metrics() -> dict[str, Any]:
-    """Accounts with generations on more than one distinct calendar day.
+    """Accounts owning content-hash-distinct strategy rows spanning >1 day.
 
     Scoped to ``strategy_store`` rows with a non-NULL ``owner_user_id`` — the
     real FK to ``auth_users.id`` (#1028 D1). Pre-account, wallet-only
@@ -248,6 +339,20 @@ def get_repeat_generation_metrics() -> dict[str, Any]:
     the numerator and denominator, which is why ``generating_users`` (the
     denominator) is reported alongside ``repeat_users`` rather than leaving a
     bare percentage that would silently imply full population coverage.
+
+    This is a PROXY for "generated on more than one calendar day", not an
+    exact measure, because ``created_at`` tracks row creation, not per-user
+    activity, and ``upsert_strategy``'s content-hash dedup can attach an
+    account to a row it did not create on the day it was created:
+    regenerating byte-identical content returns the EXISTING row (no new
+    ``created_at``, so a second real day of activity is silently not
+    counted), and an ownerless legacy row that gets backfilled with
+    ``owner_user_id`` keeps its original (pre-account) ``created_at`` (so a
+    day that predates the account can count toward that account's span). Both
+    directions of drift are accepted as the cost of a single-table proxy
+    rather than an activity-log join that does not exist yet — the ``note``
+    below states the proxy's actual definition rather than the informal
+    "days a user generated" framing the field name suggests.
     """
     try:
         from archimedes.db import get_session
@@ -273,24 +378,35 @@ def get_repeat_generation_metrics() -> dict[str, Any]:
             "generating_users": generating_users,
             "repeat_users": repeat_users,
             "note": (
-                "Accounts with strategy generations on more than one distinct calendar day. "
-                "Scoped to strategy_store rows with a linked account (owner_user_id); "
-                "pre-account wallet-only generations are excluded from both counts."
+                "Accounts owning content-hash-distinct strategy rows whose creation dates span "
+                "more than one calendar day. Scoped to strategy_store rows with a linked account "
+                "(owner_user_id); pre-account wallet-only generations are excluded from both "
+                "counts. Content-identical regenerations dedupe to the original row and are not "
+                "counted as a second day, and a legacy row backfilled with an owner keeps its "
+                "original creation date — this is a proxy for multi-day usage, not an exact count."
             ),
         }
     except Exception as exc:
         logger.debug("engagement_metrics.get_repeat_generation_metrics failed: %s", exc)
-        return {"generating_users": 0, "repeat_users": 0, "note": "unavailable"}
+        return {"generating_users": None, "repeat_users": None, "note": "unavailable", "unavailable": True}
 
 
 def get_payments_snapshot() -> dict[str, Any]:
-    """Money-paid tile — DRY-RUN only today; no settled-volume query exists.
+    """Money-paid tile — no summable settled-volume figure exists today.
 
     Mirrors ``main.py`` / ``services/generation_payment.py``'s exact
     ``PAYMENTS_DRY_RUN`` parse (the two must never disagree). This is the real
     field name settlement wiring will populate — ``settled_volume_usd`` stays
     ``None`` rather than ``0`` so a reader can't mistake "not yet metered" for
     "metered at zero".
+
+    Round 2 correction: when ``PAYMENTS_DRY_RUN`` is off, ``settlement_intents``
+    (``models/marketplace.py``) IS a durable, real table that reaches
+    ``status="settled"`` on the live path (``marketplace/service.py``'s
+    ``_finalize_settlement_intent``) — the record exists. What is missing is
+    narrower: its ``amount_usdc`` column is declared but never written by any
+    code path, so there is no per-settlement amount to sum even though the
+    settlement event itself is durably recorded.
     """
     import os
 
@@ -300,10 +416,14 @@ def get_payments_snapshot() -> dict[str, Any]:
         "settled_volume_usd": None,
         "note": (
             "Payments are DRY-RUN — no real value has moved, so there is no settled volume to "
-            "report. This is the real slot for it: when PAYMENTS_DRY_RUN=false and settlement "
-            "is durably recorded, this field reads from that record instead of staying null."
+            "report. This is the real slot for it: when PAYMENTS_DRY_RUN=false and a settled "
+            "amount is durably recorded, this field reads from that record instead of staying null."
             if dry_run
-            else "PAYMENTS_DRY_RUN is off, but no durable settled-volume record exists yet to read from."
+            else (
+                "PAYMENTS_DRY_RUN is off and settlement_intents durably records that charges "
+                "settled, but its amount_usdc column is never populated by any code path today, "
+                "so there is no amount to sum yet."
+            )
         ),
     }
 
@@ -311,10 +431,11 @@ def get_payments_snapshot() -> dict[str, Any]:
 def get_engagement_snapshot() -> dict[str, Any]:
     """Compose every engagement/adoption tile for the admin dashboard.
 
-    Each sub-metric already fails soft to its own zero shape (see the
-    functions above), so one subsystem's DB error degrades that tile without
-    blanking the rest — the dashboard-level analogue of ``Insights.jsx``'s
-    existing per-endpoint resilience.
+    Each sub-metric already fails soft to its own ``None``-per-field shape
+    with ``unavailable: True`` (see the functions above), so one subsystem's
+    DB error degrades that tile to an honest "—" without blanking the rest
+    or reading as a measured zero — the dashboard-level analogue of
+    ``Insights.jsx``'s existing per-endpoint resilience.
     """
     return {
         "accounts": get_account_metrics(),

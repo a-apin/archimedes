@@ -198,13 +198,26 @@ export default function Layout({
 		};
 	}, [page]);
 
-	// Ops nav item admin-gate probe. Keyed on the account id (not `[]`, not
-	// `page`): re-probes on a real sign-in/sign-out transition, shares the
-	// cached result with App.jsx's own page-level probe within the TTL
-	// window (adminProbeCache.js) — so landing on /app/insights does not
-	// double-fire the request — and does NOT re-probe on every in-app
-	// navigation the way the /health effect above does, since admin
-	// membership does not change mid-session under normal use.
+	// Ops nav item admin-gate probe. Keyed on the account id AND the linked
+	// wallet address (not `[]`, not `page`): re-probes on a real
+	// sign-in/sign-out transition, shares the cached result with App.jsx's
+	// own page-level probe within the TTL window (adminProbeCache.js) — so
+	// landing on /app/insights does not double-fire the request — and does
+	// NOT re-probe on every in-app navigation the way the /health effect
+	// above does, since admin membership does not change mid-session under
+	// normal use FOR A FIXED WALLET. It does change on a wallet swap,
+	// though: require_platform_admin (backend/archimedes/api/
+	// metrics_private_routes.py) checks PLATFORM_ADMIN_WALLETS membership
+	// against THIS wallet, read from the X-Wallet-Address header — so an
+	// account with more than one linked wallet, only one of them an admin
+	// wallet, gets a genuinely different whoami answer per wallet. A
+	// `[userId]`-only dependency left the Ops nav item's admin state (and
+	// the earlier-computed insights `isInsightsAdmin`) pinned to whatever
+	// the FIRST wallet on this account resolved to for the rest of the
+	// session, surviving a swap to a non-admin wallet even though
+	// AuthenticatedApp's wallet-changed handler correctly clears the shared
+	// probe cache — the cache clear only helps a FUTURE caller, and without
+	// this dependency there wasn't one (round-2 finding).
 	const userId = user?.id ?? null;
 	useEffect(() => {
 		if (!userId) {
@@ -218,7 +231,7 @@ export default function Layout({
 		return () => {
 			cancelled = true;
 		};
-	}, [userId]);
+	}, [userId, walletAddr]);
 
 	// Lock body scroll while the mobile nav drawer is open — otherwise the
 	// page content underneath can still scroll behind the fixed overlay/drawer,

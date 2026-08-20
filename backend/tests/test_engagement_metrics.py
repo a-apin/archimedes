@@ -48,14 +48,21 @@ def _make_user(user_id: str, *, created_at: datetime) -> AuthUser:
     )
 
 
-def _make_strategy(strategy_id: str, *, owner_user_id: str | None, created_at: datetime) -> StrategyRecord:
+def _make_strategy(
+    strategy_id: str,
+    *,
+    owner_user_id: str | None,
+    created_at: datetime,
+    is_example: bool = False,
+) -> StrategyRecord:
     return StrategyRecord(
         id=strategy_id,
         content_hash=f"0x{uuid.uuid4().hex}{uuid.uuid4().hex}"[:66],
-        generation_method="fusion",
+        generation_method="curated" if is_example else "fusion",
         owner_user_id=owner_user_id,
         created_at=created_at,
         updated_at=created_at,
+        is_example=is_example,
     )
 
 
@@ -79,6 +86,29 @@ def test_account_metrics_totals_and_windows(tmp_db):
 
 def test_account_metrics_empty_db_is_honest_zero(tmp_db):
     assert engagement_metrics.get_account_metrics() == {"total": 0, "new_7d": 0, "new_30d": 0}
+
+
+def test_account_new_7d_uses_same_calendar_day_window_as_strategies(tmp_db, monkeypatch):
+    """Round 2 fix: accounts' `new_7d` used to be a plain rolling 168-hour
+    window while strategies' `new_7d` was always calendar-day-anchored
+    (midnight UTC, _TREND_DAYS days ago) — Insights.jsx renders "New accounts
+    (7d)" and "Generated (7d)" side by side as if they meant the same span.
+    """
+    fixed_now = datetime(2026, 8, 20, 2, 0, 0, tzinfo=UTC)
+    monkeypatch.setattr(engagement_metrics, "_now", lambda: fixed_now)
+
+    # 2026-08-13 10:00 UTC sits INSIDE a naive rolling-168h window (>=
+    # fixed_now - 7d == 2026-08-13 02:00) but OUTSIDE the calendar-day window
+    # strategies use (>= midnight on 2026-08-14, i.e. fixed_now - 6d floored
+    # to 00:00) — exactly the gap that used to make the two "(7d)" tiles
+    # measure different spans.
+    edge_created = datetime(2026, 8, 13, 10, 0, 0, tzinfo=UTC)
+    with get_session() as session:
+        session.add(_make_user("edge-user", created_at=edge_created))
+        session.commit()
+
+    result = engagement_metrics.get_account_metrics()
+    assert result["new_7d"] == 0  # excluded: before the calendar-day window start
 
 
 # ── Linked wallets ──────────────────────────────────────────────────────
@@ -115,6 +145,30 @@ def test_linked_wallet_metrics_counts_rows(tmp_db):
     assert engagement_metrics.get_linked_wallet_metrics() == {"total": 2}
 
 
+# ── Timezone normalization helper ────────────────────────────────────────
+
+
+def test_to_naive_utc_normalizes_aware_and_naive_datetimes():
+    """Round 2 fix: strategy_store.created_at is a naive-UTC-by-convention
+    column; auth_users.createdAt is genuinely tz-aware. Binding a tz-aware
+    Python value straight against the naive column pushes the aware/naive
+    cast onto the DB session's TimeZone setting on Postgres, which can shift
+    both the trend window boundary and day-bucketing on a non-UTC session.
+    """
+    from datetime import timezone as tz
+
+    est = tz(timedelta(hours=-5))
+    aware_est = datetime(2026, 8, 20, 10, 0, 0, tzinfo=est)  # == 15:00 UTC
+    normalized = engagement_metrics._to_naive_utc(aware_est)
+    assert normalized.tzinfo is None
+    assert normalized == datetime(2026, 8, 20, 15, 0, 0)
+
+    already_naive = datetime(2026, 8, 20, 15, 0, 0)
+    result = engagement_metrics._to_naive_utc(already_naive)
+    assert result == already_naive
+    assert result.tzinfo is None
+
+
 # ── Strategies generated ────────────────────────────────────────────────
 
 
@@ -138,6 +192,24 @@ def test_strategy_metrics_total_and_daily_trend(tmp_db):
     assert result["daily_new"][-2] == {"date": (today - timedelta(days=1)).isoformat(), "count": 1}
     # Zero-filled, not sparse.
     assert result["daily_new"][0]["count"] == 0
+
+
+def test_strategy_metrics_excludes_platform_seeded_example_rows(tmp_db):
+    """Round 2 fix: main.py seeds `is_example=True` curated rows into
+    strategy_store on every startup — no user generated them, so they must
+    not inflate "strategies generated" (matches strategies_routes.py:568's
+    existing `is_example.is_(False)` precedent for the same table)."""
+    now = _now()
+    with get_session() as session:
+        session.add(_make_strategy("real-1", owner_user_id=None, created_at=now))
+        session.add(_make_strategy("seed-1", owner_user_id=None, created_at=now, is_example=True))
+        session.add(_make_strategy("seed-2", owner_user_id=None, created_at=now, is_example=True))
+        session.commit()
+
+    result = engagement_metrics.get_strategy_metrics()
+    assert result["total"] == 1
+    assert result["new_7d"] == 1
+    assert result["daily_new"][-1]["count"] == 1
 
 
 # ── Generation costs ────────────────────────────────────────────────────
@@ -166,7 +238,11 @@ def test_generation_cost_metrics_sums_tokens_and_skips_corrupt_rows(tmp_db):
     with get_session() as session:
         session.add(_cost_row("job-1", input_tokens=100, output_tokens=50))
         session.add(_cost_row("job-2", input_tokens=200, output_tokens=75))
-        # Corrupt row: must be skipped, not crash the sum or inflate the count.
+        # Corrupt row: must be skipped from BOTH the sum and measured_count —
+        # round 2 fix. measured_count counts rows that actually contributed a
+        # decoded llm block, not every row.query.count() regardless of
+        # whether it decoded (that inflated measured_count relative to the
+        # rows the sum below it actually came from).
         session.add(
             GenerationCostRecord(
                 job_id="job-corrupt",
@@ -179,7 +255,8 @@ def test_generation_cost_metrics_sums_tokens_and_skips_corrupt_rows(tmp_db):
         session.commit()
 
     result = engagement_metrics.get_generation_cost_metrics()
-    assert result["measured_count"] == 3  # the corrupt row still exists as a row
+    assert result["measured_count"] == 2  # the corrupt row contributed nothing to the sum
+    assert result["rows_total"] == 3  # ...but it still exists as a row
     assert result["total_input_tokens"] == 300
     assert result["total_output_tokens"] == 125
     assert result["total_tokens"] == 425
@@ -241,13 +318,65 @@ def test_payments_snapshot_is_dry_run_with_no_settled_volume(monkeypatch):
 
 
 def test_payments_snapshot_never_claims_a_settled_number_when_dry_run_flips_off(monkeypatch):
-    """Negative control: even with PAYMENTS_DRY_RUN=false, there is still no
-    durable settlement query wired — settled_volume_usd must NOT silently
+    """Negative control: even with PAYMENTS_DRY_RUN=false, settlement_intents'
+    amount_usdc column is still never populated by any code path, so there is
+    still no summable settled amount — settled_volume_usd must NOT silently
     become 0 (a measured zero) just because the flag flipped. It stays None."""
     monkeypatch.setenv("PAYMENTS_DRY_RUN", "false")
     result = engagement_metrics.get_payments_snapshot()
     assert result["dry_run"] is False
     assert result["settled_volume_usd"] is None
+
+
+# ── Fail-soft: a DB error degrades to None, never a measured-looking 0 ──
+
+
+def test_db_failure_degrades_to_none_not_zero(monkeypatch):
+    """Round 2 fix (CLAUDE.md fail-soft principle): a DB error must render as
+    an honest absence, not a plausible zero indistinguishable from "queried,
+    found nothing". Insights.jsx's Stat component renders None as "—" and a
+    number (including 0) as a number, so returning 0 here would have made an
+    outage look exactly like real, measured zero activity.
+
+    Mutation check: reverting any one of these fields back to 0 makes this
+    assertion fail (verified by hand before this fix was pushed — see the PR
+    round-2 notes).
+    """
+
+    def _broken_get_session():
+        raise RuntimeError("DB unavailable (simulated)")
+
+    monkeypatch.setattr("archimedes.db.get_session", _broken_get_session)
+
+    account = engagement_metrics.get_account_metrics()
+    assert account == {"total": None, "new_7d": None, "new_30d": None, "unavailable": True}
+
+    wallets = engagement_metrics.get_linked_wallet_metrics()
+    assert wallets == {"total": None, "unavailable": True}
+
+    strategies = engagement_metrics.get_strategy_metrics()
+    assert strategies == {"total": None, "new_7d": None, "daily_new": None, "unavailable": True}
+
+    costs = engagement_metrics.get_generation_cost_metrics()
+    assert costs == {
+        "measured_count": None,
+        "rows_total": None,
+        "total_input_tokens": None,
+        "total_output_tokens": None,
+        "total_tokens": None,
+        "unavailable": True,
+    }
+
+    paper = engagement_metrics.get_paper_deployment_metrics()
+    assert paper == {"active": None, "stopped": None, "unavailable": True}
+
+    repeat = engagement_metrics.get_repeat_generation_metrics()
+    assert repeat == {
+        "generating_users": None,
+        "repeat_users": None,
+        "note": "unavailable",
+        "unavailable": True,
+    }
 
 
 # ── Composed snapshot ────────────────────────────────────────────────────

@@ -326,9 +326,15 @@ export default function Insights() {
               </p>
             </div>
 
+            {/* `?? '—'`, not `?? 0` (round 2 fix): repeat_users/generating_users
+                are None (not 0) when engagement_metrics.get_repeat_generation_metrics
+                fails, same honest-absence rule Stat applies below — this line
+                renders the numbers directly instead of through <Stat>, so it
+                needs its own fallback to avoid the exact "outage reads as a
+                measured zero" bug the backend fix closed. */}
             <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 14, marginBottom: 0 }}>
-              <strong>Repeat generators</strong> ({engagement.repeat_generation_users?.repeat_users ?? 0} of{' '}
-              {engagement.repeat_generation_users?.generating_users ?? 0} generating accounts) —{' '}
+              <strong>Repeat generators</strong> ({engagement.repeat_generation_users?.repeat_users ?? '—'} of{' '}
+              {engagement.repeat_generation_users?.generating_users ?? '—'} generating accounts) —{' '}
               {engagement.repeat_generation_users?.note}
             </p>
           </>

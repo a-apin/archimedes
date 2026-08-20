@@ -169,8 +169,11 @@ curl -sS -b /tmp/session.jar http://localhost:8080/api/metrics/private/wallets/c
 ---
 
 **Admin UI (2026-08-20).** `ui/src/components/Insights.jsx` is now the admin-only
-`/app/insights` page: it probes `GET /whoami` on entry and renders `GET /engagement`'s
-tiles. `GET /api/metrics/private/cost` is still deliberately NOT rendered anywhere in that
+`/app/insights` page's content — but the gate itself lives one level up, in
+`ui/src/App.jsx`: it probes `GET /whoami` before Insights.jsx ever mounts, and only
+renders the component once that probe resolves `admin === true`. Insights.jsx itself never
+imports the probe; once mounted it renders `GET /engagement`'s tiles.
+`GET /api/metrics/private/cost` is still deliberately NOT rendered anywhere in that
 component — its own header comment explains why: every field is a draft placeholder
 pending the live AWS Cost Explorer + Bedrock token-metering wiring (roadmap), not something
 this page should present as a real number. `/wallets` and `/wallets/connections` also have

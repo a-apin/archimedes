@@ -8,6 +8,10 @@ import PublicLayout from './PublicLayout'
 // that /app/insights exists and is worth probing further. Any change here
 // changes both the true 404 and the admin gate's denial screen identically
 // — that is intentional, not a risk to route around with a second copy.
+// This closes ONLY the denial-screen-wording vector, not concealment in
+// general — see ui/src/adminProbe.js's "Scope of 'does not advertise the
+// page exists'" note for what still leaks (the probe itself, the bundled
+// route/component).
 export default function NotFound({ user }) {
   return (
     <PublicLayout user={user}>

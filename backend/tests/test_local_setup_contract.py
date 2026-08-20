@@ -128,6 +128,39 @@ class TestLocalSetupContract(unittest.TestCase):
         self.assertIn("location = /openapi.json", nginx)
         self.assertIn("proxy_pass http://backend_api/openapi.json;", nginx)
 
+    def test_nginx_serves_insights_shell_without_auth_request_gate(self) -> None:
+        """PR #1437 round 2: the admin-only `/app/insights` dashboard must
+        never bounce an anonymous or non-admin visitor to `/sign-in` at the
+        nginx layer — that would itself confirm a privileged page exists at
+        that path, before App.jsx's real `whoami` probe ever runs. Without a
+        dedicated `^~ /app/insights` carve-out, `/app/insights` fell through
+        to the auth_request-gated `^~ /app` block below and 302'd every
+        anonymous GET to `/sign-in?next=/app/insights`, making App.jsx's
+        `route.page === 'insights'` bypass dead code the deployed edge never
+        reached (round-2 finding). This is NOT an anonymous-browse carve-out
+        like Explore/Leaderboard/Corpus/strategy — `insights` must stay OUT
+        of `ANON_APP_PAGES` in ui/src/routes.js; the real authorization is
+        still the server-side `require_platform_admin` check inside
+        `/api/metrics/private/whoami`, which this block does not touch.
+        """
+        nginx = (ROOT / "nginx/nginx.conf").read_text()
+        insights_index = nginx.index("location ^~ /app/insights")
+        gated_app_index = nginx.index("location ^~ /app {")
+        self.assertLess(
+            insights_index,
+            gated_app_index,
+            "the /app/insights carve-out must be declared (and read, for anyone auditing "
+            "this file top-to-bottom) before the catch-all gated ^~ /app block",
+        )
+        insights_block = nginx[insights_index : nginx.index("}", insights_index) + 1]
+        self.assertNotIn(
+            "auth_request",
+            insights_block,
+            "the insights carve-out must NOT auth_request-gate the shell — gating "
+            "belongs to the client-side whoami probe, not nginx",
+        )
+        self.assertIn("try_files $uri $uri/ /index.html;", insights_block)
+
     def test_nginx_webmanifest_mime_override_is_additive_not_nested_in_server(self) -> None:
         """#1380: stock nginx `mime.types` has no `.webmanifest` entry, so a
         served `site.webmanifest` fell back to `default_type`

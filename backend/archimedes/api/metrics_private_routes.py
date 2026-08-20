@@ -34,6 +34,11 @@ the frontend calls it before rendering anything Insights-shaped so a
 non-admin/anonymous visitor gets the exact "page does not exist" treatment
 (``ui/src/routes.js``'s not-found handling), not a page that discloses "you
 need admin access" — which would itself advertise the page's existence.
+This closes only that one disclosure vector (the denial screen's wording),
+not concealment of the endpoint or route in general — a non-admin's browser
+still calls this probe on every app page and still ships the gated route
+and component in its main JS bundle; see ``ui/src/adminProbe.js``'s "Scope
+of 'does not advertise the page exists'" note (round 2, 2026-08-20).
 """
 
 from __future__ import annotations

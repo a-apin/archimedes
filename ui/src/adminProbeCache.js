@@ -6,13 +6,15 @@
 // Why this needs its own shared cache at all: the admin-gate probe
 // (GET /api/metrics/private/whoami) is called from TWO independent mount
 // points — Layout.jsx (to decide whether the Ops nav item renders) and
-// Insights.jsx (to decide whether to render the dashboard or the not-found
-// treatment) — and both can be on-screen from the same navigation. Without
-// sharing one cached promise, every /app/insights load fires the probe
-// twice for no reason.
+// App.jsx (to decide whether /app/insights renders the dashboard or the
+// not-found treatment; NOT Insights.jsx — it has no page-gate role, App.jsx
+// only ever mounts it once the probe has already resolved `admin === true`)
+// — and both can be on-screen from the same navigation. Without sharing one
+// cached promise, every /app/insights load fires the probe twice for no
+// reason.
 //
 // A failed fetch is NOT cached — cachedAt/cachedPromise are cleared
-// immediately on rejection, so the next call (e.g. Insights.jsx's own probe
+// immediately on rejection, so the next call (e.g. App.jsx's own probe
 // right after Layout's) gets a fresh attempt instead of being stuck reusing
 // a rejected promise for the rest of the TTL window. ./adminProbe.js's
 // fetcher turns the AUTHORITATIVE denials (401 anonymous / 403 non-admin)

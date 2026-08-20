@@ -7,8 +7,27 @@
 // server can check.
 //
 // Two independent mount points share this probe within one TTL window
-// (Layout.jsx's Ops nav item, Insights.jsx's page gate) via
+// (Layout.jsx's Ops nav item, App.jsx's /app/insights page gate — NOT
+// Insights.jsx, which never imports this module: by the time Insights.jsx
+// mounts, App.jsx has already resolved `admin === true`) via
 // ./adminProbeCache.js — see that file for why.
+//
+// Scope of "does not advertise the page exists" (round 2 correction): that
+// property holds for the two specific vectors it was built to close — the
+// denial screen (identical NotFound, never an "admin access required"
+// message) and the anonymous-visitor redirect (never bounced to
+// /sign-in?next=/app/insights). It does NOT hide this endpoint's existence
+// from someone reading network traffic or the shipped bundle: Layout.jsx
+// calls this probe for every signed-in user on every page (so a non-admin's
+// devtools Network tab shows a 403 on `/api/metrics/private/whoami` on
+// first render of any app page), and `/app/insights` plus the `Insights`
+// component ship in the same statically-imported main chunk as every other
+// app page (ui/src/routes.js, ui/src/AuthenticatedApp.jsx) rather than
+// behind a lazy import gated on a successful probe. Closing those two would
+// need probing only once the Ops nav is opened (or only on the insights
+// route) and `lazy(() => import('./components/Insights'))` — not done here;
+// what ships today is "consistent denial UX", not "the page cannot be
+// discovered by an attentive visitor."
 import { apiGet } from "./api";
 import { getCachedAdminProbe, _resetAdminProbeCache } from "./adminProbeCache.js";
 

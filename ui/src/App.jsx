@@ -27,6 +27,26 @@ export default function App() {
   // has answered. Server truth only — never derived from `user`/wallet
   // local state, which cannot know PLATFORM_ADMIN_WALLETS membership.
   const [insightsAdmin, setInsightsAdmin] = useState(null)
+  // Bumped on every 'wallet-changed' event (config.js — fired on a raw
+  // account swap in the injected/EIP-6963 wallet, independent of sign-in
+  // state) so the insights-admin-probe effect below re-runs even while
+  // already sitting on /app/insights. A [route.page]-only dependency left
+  // a stale `insightsAdmin === true` (and the live dashboard it gates)
+  // rendering after switching from an admin-linked wallet to a
+  // non-admin one on the same account, because route.page never changes on
+  // an in-place wallet swap (round-2 finding: the cache-reset in
+  // AuthenticatedApp's wallet-changed handler only helps a FUTURE probe
+  // caller — this effect is the one that has to actually become that
+  // caller). App.jsx has no other reason to track the connected wallet
+  // (that's AuthenticatedApp's walletAddr, the LINKED-and-verified
+  // subset), so a plain counter is used rather than duplicating that state.
+  const [walletChangeSeq, setWalletChangeSeq] = useState(0)
+
+  useEffect(() => {
+    const onWalletChanged = () => setWalletChangeSeq((n) => n + 1)
+    window.addEventListener('wallet-changed', onWalletChanged)
+    return () => window.removeEventListener('wallet-changed', onWalletChanged)
+  }, [])
 
   useEffect(() => {
     fetchFeatures()
@@ -85,7 +105,9 @@ export default function App() {
     // Re-probe every time navigation LANDS on insights (not on every
     // render while already there) — reset to "checking" first so a stale
     // true/false from a previous visit this session can't flash before the
-    // fresh answer arrives.
+    // fresh answer arrives. Also re-probes on a wallet swap that happens
+    // WHILE already sitting on insights (walletChangeSeq dep, see above) —
+    // route.page alone would miss that transition entirely.
     if (route.page !== 'insights') {
       setInsightsAdmin(null)
       return
@@ -98,7 +120,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [route.page])
+  }, [route.page, walletChangeSeq])
 
   useEffect(() => {
     const titles = {

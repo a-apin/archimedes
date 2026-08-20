@@ -171,6 +171,33 @@ test("Layout.jsx: an anonymous visitor (no user) never even attempts the admin p
 	assert.match(layout, /if \(!userId\) \{\n\t\t\tsetIsInsightsAdmin\(false\);\n\t\t\treturn;\n\t\t\}/);
 });
 
+// ── Round 2: a wallet swap must re-run BOTH admin probes, not just clear the
+// shared cache. AuthenticatedApp's wallet-changed handler already resets the
+// cache; that alone only helps a FUTURE caller — App.jsx's page gate and
+// Layout.jsx's nav gate each need their own trigger to actually become that
+// caller again. ──────────────────────────────────────────────────────────
+
+test("App.jsx: the insights admin probe re-runs on a wallet swap, not just on navigation (round 2)", () => {
+	assert.match(
+		app,
+		/window\.addEventListener\('wallet-changed', onWalletChanged\)/,
+		"App.jsx must listen for wallet-changed directly — it has no other way to learn the connected wallet changed",
+	);
+	assert.match(
+		app,
+		/\}, \[route\.page, walletChangeSeq\]\)/,
+		"the insights-probe effect must depend on the wallet-change signal, not just route.page",
+	);
+});
+
+test("Layout.jsx: the Ops nav admin probe re-runs on a wallet swap, keyed on walletAddr (round 2)", () => {
+	assert.match(
+		layout,
+		/\}, \[userId, walletAddr\]\);/,
+		"the admin-probe effect must depend on walletAddr — require_platform_admin checks THIS wallet, not just the account",
+	);
+});
+
 test("NotFound.jsx exists and is the single source of the 'does not exist' treatment", () => {
 	assert.match(notFoundSrc, /Page not found/);
 	assert.match(notFoundSrc, /export default function NotFound/);
