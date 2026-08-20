@@ -70,6 +70,25 @@ _ORACLE_TOTAL_BUDGET_SECONDS = 12.0
 _HISTORY_CHUNK_SIZE = 60
 _HISTORY_FETCH_BUDGET_SECONDS = 45.0
 
+# Plausibility bound for computed pct changes (#1322). A bad tick / decimal-
+# placement error in the upstream feed (a tiny prior close) can turn into an
+# explosive ratio that passes every other check — e.g. sJUP's prior close of
+# 0.0003166165 produced a reported "+1483.08% 24h" move. 100%/day is already
+# an extremely generous bound (no major asset has ever moved >100% in a
+# single day without a corporate-action-style event); it scales with
+# sqrt(n) for multi-day windows so legitimate large cumulative moves in
+# volatile assets over a week/month aren't rejected.
+_MAX_PLAUSIBLE_DAILY_PCT = 100.0
+
+# Trading-day conventions differ by asset class (#1322). Equities/ETFs/FX
+# only print a yfinance daily bar on trading days (weekends + holidays are
+# gaps), so ~5 bars ≈ 1 calendar week and ~21 bars ≈ 1 calendar month, and
+# annualizing realized vol uses the standard 252 trading days/year. Crypto
+# trades every calendar day with no gaps, so 1 bar == 1 calendar day: 7
+# bars == 1 week, 30 bars == 1 month, and annualizing must use 365.
+_EQUITY_TRADING_DAYS_PER_YEAR = 252
+_CRYPTO_TRADING_DAYS_PER_YEAR = 365
+
 # Range param → (yfinance period, yfinance interval). Daily intervals work
 # for week / month / year ranges; 1D uses 5-minute intraday data; the longer
 # ranges (5Y / 10Y / MAX) downsample to weekly / monthly bars to keep the
@@ -94,8 +113,8 @@ _EXPLANATIONS_TEMPLATES = {
         "Percentage move in the last trading day. Positive = up. "
         "Daily moves bigger than {vol_daily_pct:.1f}% are unusual for this asset."
     ),
-    "change_7d_pct": "Percentage move over the past week (5 trading days).",
-    "change_30d_pct": "Percentage move over the past month (≈21 trading days).",
+    "change_7d_pct": "Percentage move over the past week ({week_label}).",
+    "change_30d_pct": "Percentage move over the past month ({month_label}).",
     "realized_vol_30d": (
         "How much the price wobbles. Higher = bigger swings. {vol:.2f} annualized "
         "means daily moves of ~{vol_daily_pct:.1f}% are typical."
@@ -103,15 +122,28 @@ _EXPLANATIONS_TEMPLATES = {
 }
 
 
-def _explanations_for(item: dict[str, Any]) -> dict[str, str]:
+def _explanations_for(item: dict[str, Any], is_247: bool = False) -> dict[str, str]:
+    """Plain-English copy for each metric. ``is_247`` (#1322) selects the
+    asset-class-correct trading-day convention so the copy never asserts a
+    convention the computation didn't actually use — crypto is 7/30 calendar
+    days annualized with sqrt(365); everything else is 5/21 trading days
+    annualized with sqrt(252)."""
     vol = item.get("realized_vol_30d") or 0.0
-    vol_daily_pct = (vol / math.sqrt(252)) * 100.0 if vol else 0.0
+    trading_days_per_year = _CRYPTO_TRADING_DAYS_PER_YEAR if is_247 else _EQUITY_TRADING_DAYS_PER_YEAR
+    vol_daily_pct = (vol / math.sqrt(trading_days_per_year)) * 100.0 if vol else 0.0
+    week_label = "7 calendar days" if is_247 else "5 trading days"
+    month_label = "30 calendar days" if is_247 else "≈21 trading days"
     fields = {}
     for key, template in _EXPLANATIONS_TEMPLATES.items():
         if item.get(key) is None:
             continue
         try:
-            fields[key] = template.format(vol=vol, vol_daily_pct=vol_daily_pct)
+            fields[key] = template.format(
+                vol=vol,
+                vol_daily_pct=vol_daily_pct,
+                week_label=week_label,
+                month_label=month_label,
+            )
         except (KeyError, IndexError):
             fields[key] = template
     return fields
@@ -121,17 +153,48 @@ def _explanations_for(item: dict[str, Any]) -> dict[str, str]:
 
 
 def _pct_change(prices: list[float], n: int) -> float | None:
-    """Pct change between prices[-1] and prices[-1-n]. None if not enough data."""
+    """Pct change between prices[-1] and prices[-1-n]. None if not enough data,
+    or if the result exceeds a plausible bound for a window this size (#1322):
+    a bad tick / decimal-placement error in the upstream feed can turn a tiny
+    prior close into an explosive ratio that passes every other check. An
+    honest absence beats shipping an arithmetically-impossible number — see
+    docs/architectural-principles.md § fail-soft.
+    """
     if not prices or len(prices) < n + 1:
         return None
     end, start = prices[-1], prices[-1 - n]
     if not start:
         return None
-    return (end - start) / start * 100.0
+    pct = (end - start) / start * 100.0
+    # sqrt(n) scaling (vol scales with sqrt of time) so a legitimate large
+    # cumulative move over a week/month isn't rejected by a bound sized for
+    # a single day.
+    bound = _MAX_PLAUSIBLE_DAILY_PCT * math.sqrt(max(n, 1))
+    if abs(pct) > bound:
+        logger.warning(
+            "explore: rejecting implausible %.1f%% change over %d bar(s) (bound ±%.1f%%) — "
+            "treating as a bad tick, not a real move",
+            pct,
+            n,
+            bound,
+        )
+        return None
+    return pct
 
 
-def _realized_vol_annual(prices: list[float], window: int = 30) -> float | None:
-    """Annualized realized vol over the most recent ``window`` trading days."""
+def _realized_vol_annual(
+    prices: list[float],
+    window: int = 30,
+    trading_days_per_year: int = _EQUITY_TRADING_DAYS_PER_YEAR,
+) -> float | None:
+    """Annualized realized vol over the most recent ``window`` bars.
+
+    ``trading_days_per_year`` is the annualization factor (#1322): 252 for
+    equities/ETFs/FX (yfinance bars only on trading days), 365 for crypto
+    (yfinance bars every calendar day, no weekend/holiday gaps) — applying
+    the equity constant to a 24/7 asset understates its vol by
+    sqrt(365/252) ≈ 1.20, about 17%.
+    """
     if not prices or len(prices) < window + 1:
         return None
     tail = prices[-(window + 1) :]
@@ -145,7 +208,7 @@ def _realized_vol_annual(prices: list[float], window: int = 30) -> float | None:
         return None
     mean = sum(rets) / len(rets)
     var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
-    return math.sqrt(var) * math.sqrt(252)
+    return math.sqrt(var) * math.sqrt(trading_days_per_year)
 
 
 # ── Direct yfinance fetch (used by /assets/{symbol}/history) ─────────────
@@ -218,6 +281,18 @@ def _explore_universe() -> list[str]:
     except Exception as exc:  # pragma: no cover — SSOT loader logs its own errors
         logger.warning("explore: universe SSOT import failed: %s", exc)
         return []
+
+
+def _is_24_7_asset_class(asset_class: str) -> bool:
+    """True for asset classes that trade every calendar day, no gaps (#1322).
+
+    Crypto is the only such class in the current universe: a yfinance daily
+    bar for e.g. BTC-USD prints every calendar day (weekends included), so
+    1 bar == 1 calendar day. Equities/ETFs/FX/bonds/commodities only trade
+    (and only get a bar) on trading days — the same string-membership test
+    the existing group-sort already uses (see ``items.sort`` below).
+    """
+    return "crypto" in (asset_class or "")
 
 
 def _ssot_display_name(synth: str, fallback: str) -> str:
@@ -559,21 +634,30 @@ class AssetMarketService:
             high_24h = None
             low_24h = None
 
+            entry = GLOBAL_ASSETS.get(synth)
+            asset_class = entry[2] if entry else "unknown"
+            real_ticker = entry[0] if entry else synth.lstrip("s")
+            # Trading-day convention is asset-class aware (#1322): crypto
+            # bars are 1-per-calendar-day (24/7 markets), everything else is
+            # 1-per-trading-day (weekends/holidays are gaps in the feed).
+            is_247 = _is_24_7_asset_class(asset_class)
+            week_n = 7 if is_247 else 5
+            month_n = 30 if is_247 else 21
+            trading_days_per_year = _CRYPTO_TRADING_DAYS_PER_YEAR if is_247 else _EQUITY_TRADING_DAYS_PER_YEAR
+
             # Change / vol from yfinance daily history (independent of where
             # the spot came from — both source paths benefit from these).
             stat_dict: dict[str, Any] = {
                 "current_price": current_price,
                 "change_24h_pct": _pct_change(hist_prices, 1) if hist_prices else None,
-                "change_7d_pct": _pct_change(hist_prices, 5) if hist_prices else None,
-                "change_30d_pct": _pct_change(hist_prices, 21) if hist_prices else None,
+                "change_7d_pct": _pct_change(hist_prices, week_n) if hist_prices else None,
+                "change_30d_pct": _pct_change(hist_prices, month_n) if hist_prices else None,
                 "high_24h": high_24h,
                 "low_24h": low_24h,
-                "realized_vol_30d": _realized_vol_annual(hist_prices, 30) if hist_prices else None,
+                "realized_vol_30d": _realized_vol_annual(hist_prices, 30, trading_days_per_year)
+                if hist_prices
+                else None,
             }
-
-            entry = GLOBAL_ASSETS.get(synth)
-            asset_class = entry[2] if entry else "unknown"
-            real_ticker = entry[0] if entry else synth.lstrip("s")
 
             # oracle_address is a capability marker — populated from settings
             # regardless of whether the oracle read succeeded (Issue #346).
@@ -595,7 +679,7 @@ class AssetMarketService:
                     last_updated=last_updated,
                     is_stale=displayed_is_stale,
                     price_source=price_source,
-                    explanations=_explanations_for(stat_dict),
+                    explanations=_explanations_for(stat_dict, is_247=is_247),
                     **stat_dict,
                 )
             )

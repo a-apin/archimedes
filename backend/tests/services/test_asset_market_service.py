@@ -16,6 +16,8 @@ timeout. All tests are hermetic — yfinance / chain boundaries are mocked.
 from __future__ import annotations
 
 import asyncio
+import math
+import random
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,8 +25,12 @@ import pytest
 from archimedes.api.explore_schemas import ExploreAssetsResponse
 from archimedes.services.asset_market_service import (
     _CACHE_TTL_SECONDS,
+    _CRYPTO_TRADING_DAYS_PER_YEAR,
+    _EQUITY_TRADING_DAYS_PER_YEAR,
     AssetMarketService,
+    _explanations_for,
     _explore_universe,
+    _is_24_7_asset_class,
     _pct_change,
     _realized_vol_annual,
     _ssot_display_name,
@@ -50,6 +56,125 @@ class TestStatMath:
 
     def test_realized_vol_insufficient(self):
         assert _realized_vol_annual([100, 101], 30) is None
+
+
+# ── Plausibility guard (#1322 — sJUP's +1483.08% "24h" move) ───────────────
+
+
+class TestPctChangePlausibilityGuard:
+    """An arithmetically-impossible pct change must come back None, not a
+    fabricated number — honest absence per docs/architectural-principles.md
+    § fail-soft, not a clamp/winsorize (the issue's anti-goal)."""
+
+    def test_pct_change_rejects_implausible_24h_move(self):
+        """The exact defect class from the issue: a tiny prior close (a bad
+        tick / decimal-placement error) implies a >100%/day move. This
+        mirrors sJUP's real prior close of 0.0003166165."""
+        prices = [0.0003166165, 0.005]
+        implied_pct = (0.005 - 0.0003166165) / 0.0003166165 * 100.0
+        assert implied_pct > 100.0  # sanity: this genuinely trips the bound
+        assert _pct_change(prices, 1) is None
+
+    def test_pct_change_accepts_plausible_large_move(self):
+        """A legitimate outsized daily move — well inside the bound — is NOT
+        rejected. The guard targets impossible values, not merely large
+        ones; the anti-goal forbids hiding real moves behind the guard."""
+        assert _pct_change([100.0, 180.0], 1) == pytest.approx(80.0)
+
+    def test_pct_change_exactly_at_the_bound_is_kept(self):
+        """Exactly doubling in one bar (100% for n=1) sits ON the bound and
+        is kept, not rejected — the guard is a strict '>' check."""
+        assert _pct_change([100.0, 200.0], 1) == pytest.approx(100.0)
+
+    def test_pct_change_multiday_window_tolerates_a_wider_move(self):
+        """A 21-bar window's bound is wider than a 1-bar window's (vol scales
+        with sqrt(time)) — the same cumulative move that would be rejected
+        over 1 bar is plausible compounded over 21."""
+        prices = [10.0] * 21 + [30.0]  # +200% over 21 bars
+        assert _pct_change(prices, 21) == pytest.approx(200.0)
+        # But the 1-bar version of the same magnitude is still rejected.
+        assert _pct_change([10.0, 30.0], 1) is None
+
+
+# ── Asset-class-aware trading-day convention (#1322) ────────────────────────
+
+
+class TestIs247AssetClass:
+    def test_crypto_is_24_7(self):
+        assert _is_24_7_asset_class("crypto") is True
+
+    def test_equity_etf_is_not_24_7(self):
+        assert _is_24_7_asset_class("us_equity_etf") is False
+
+    def test_empty_or_none_asset_class_is_not_24_7(self):
+        assert _is_24_7_asset_class("") is False
+        assert _is_24_7_asset_class(None) is False
+
+
+class TestAssetClassAwareAnnualization:
+    """Crypto trades 365 days/year with no weekend/holiday gaps; equities
+    trade ~252. Annualizing crypto's realized vol with the equity constant
+    understates it by sqrt(365/252) ≈ 1.20 — about 17% too low."""
+
+    def _series(self, seed: int) -> list[float]:
+        rng = random.Random(seed)
+        prices = [100.0]
+        for _ in range(31):
+            prices.append(prices[-1] * (1 + rng.uniform(-0.02, 0.02)))
+        return prices
+
+    def test_identical_daily_returns_annualize_differently_by_asset_class(self):
+        prices = self._series(1322)
+        equity_vol = _realized_vol_annual(prices, 30, _EQUITY_TRADING_DAYS_PER_YEAR)
+        crypto_vol = _realized_vol_annual(prices, 30, _CRYPTO_TRADING_DAYS_PER_YEAR)
+
+        assert equity_vol is not None
+        assert crypto_vol is not None
+        assert crypto_vol != equity_vol
+        assert crypto_vol > equity_vol
+        assert crypto_vol / equity_vol == pytest.approx(math.sqrt(365 / 252), rel=1e-9)
+
+    def test_realized_vol_annual_defaults_to_equity_252_unspecified(self):
+        """Backward-compatible default: a caller that omits
+        trading_days_per_year keeps the pre-#1322 (equity) behavior."""
+        prices = self._series(7)
+        assert _realized_vol_annual(prices, 30) == _realized_vol_annual(prices, 30, 252)
+
+
+class TestExplanationsAssetClassAware:
+    def test_period_labels_match_asset_class(self):
+        stat_dict = {
+            "current_price": 100.0,
+            "change_24h_pct": 1.0,
+            "change_7d_pct": 2.0,
+            "change_30d_pct": 3.0,
+            "realized_vol_30d": 0.4,
+        }
+        equity_expl = _explanations_for(stat_dict, is_247=False)
+        crypto_expl = _explanations_for(stat_dict, is_247=True)
+
+        assert "5 trading days" in equity_expl["change_7d_pct"]
+        assert "≈21 trading days" in equity_expl["change_30d_pct"]
+        assert "7 calendar days" in crypto_expl["change_7d_pct"]
+        assert "30 calendar days" in crypto_expl["change_30d_pct"]
+
+    def test_daily_vol_copy_uses_the_matching_annualization_factor(self):
+        """The de-annualized 'typical daily move' figure in the copy must be
+        computed with the SAME trading-day count the vol was actually
+        annualized with — otherwise the copy asserts a number the
+        computation didn't produce (#1322 honesty requirement: a hard-coded
+        wrong-convention explanation is the same defect class as a fabricated
+        statistic)."""
+        rng = random.Random(7)
+        prices = [100.0]
+        for _ in range(31):
+            prices.append(prices[-1] * (1 + rng.uniform(-0.03, 0.03)))
+        crypto_vol = _realized_vol_annual(prices, 30, _CRYPTO_TRADING_DAYS_PER_YEAR)
+        assert crypto_vol is not None
+
+        expl = _explanations_for({"realized_vol_30d": crypto_vol}, is_247=True)
+        expected_daily_pct = (crypto_vol / math.sqrt(365)) * 100.0
+        assert f"{expected_daily_pct:.1f}%" in expl["realized_vol_30d"]
 
 
 # ── Oracle read tests (mocked chain_client) ────────────────────────────────
@@ -385,6 +510,77 @@ class TestListAssets:
             assert refreshed is stale_resp
 
         assert call_count == 1  # deduplicated, not 5 separate rebuilds
+
+
+# ── End-to-end #1322 repro: impossible values never reach the API ──────────
+
+
+class TestExploreAssetsPlausibilityAndAssetClassAwareness:
+    @pytest.mark.asyncio
+    async def test_list_assets_change_24h_pct_none_for_impossible_move(self):
+        """Full repro of the issue: a corrupted history (tiny prior close,
+        mirroring sJUP's real 0.0003166165) must surface as
+        change_24h_pct=None on the served AssetExploreItem — never as a
+        fabricated triple-digit percentage. The price itself still shows."""
+        service = AssetMarketService()
+        mock_histories = {
+            "sJUP": {
+                "close": [0.0003166165, 0.005],
+                "dates": ["2026-08-19", "2026-08-20"],
+            }
+        }
+
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sJUP"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sJUP": ("JUP-USD", "JUP", "crypto", "Coinbase")},
+            ),
+        ):
+            resp = await service.list_assets()
+
+        jup = next(a for a in resp.assets if a.symbol == "sJUP")
+        assert jup.change_24h_pct is None  # honest absence, not +1479%
+        assert jup.current_price == pytest.approx(0.005)  # price still shown
+
+    @pytest.mark.asyncio
+    async def test_list_assets_period_offsets_are_asset_class_aware(self):
+        """Same input series for a crypto symbol and an equity symbol must
+        produce DIFFERENT change_7d_pct / change_30d_pct: crypto indexes 7
+        and 30 bars back (24/7, one bar per calendar day); equity indexes 5
+        and 21 (trading days only)."""
+        service = AssetMarketService()
+        closes = [100.0 + i for i in range(35)]  # monotonic → offsets diverge
+        mock_histories = {
+            "sBTC": {"close": closes, "dates": [f"d{i}" for i in range(35)]},
+            "sSPY": {"close": closes, "dates": [f"d{i}" for i in range(35)]},
+        }
+
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sBTC", "sSPY"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {
+                    "sBTC": ("BTC-USD", "BTC", "crypto", "Coinbase"),
+                    "sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE"),
+                },
+            ),
+        ):
+            resp = await service.list_assets()
+
+        btc = next(a for a in resp.assets if a.symbol == "sBTC")
+        spy = next(a for a in resp.assets if a.symbol == "sSPY")
+        assert btc.change_7d_pct != spy.change_7d_pct
+        assert btc.change_30d_pct != spy.change_30d_pct
+        # Exact expected values pin the offsets down (7/30 vs 5/21 bars back).
+        assert btc.change_7d_pct == pytest.approx((closes[-1] - closes[-1 - 7]) / closes[-1 - 7] * 100.0)
+        assert spy.change_7d_pct == pytest.approx((closes[-1] - closes[-1 - 5]) / closes[-1 - 5] * 100.0)
+        assert btc.change_30d_pct == pytest.approx((closes[-1] - closes[-1 - 30]) / closes[-1 - 30] * 100.0)
+        assert spy.change_30d_pct == pytest.approx((closes[-1] - closes[-1 - 21]) / closes[-1 - 21] * 100.0)
 
 
 # ── Universe alignment (#759 follow-up to #842) ────────────────────────────
