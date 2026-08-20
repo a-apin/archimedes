@@ -90,14 +90,24 @@ export default function RigorStrictnessControl({ level, onChange }) {
         value={level}
         onChange={(e) => onChange(parseInt(e.target.value, 10))}
         aria-label="Rigor strictness level"
+        // The whole meaning of this control is the named rung, not the ordinal:
+        // without aria-valuetext a screen-reader user dragging 1 → 4 hears
+        // "4 of 5" and is never told they have moved below the Verified bar.
+        aria-valuetext={`${level} — ${current?.label ?? `Level ${level}`}`}
         style={{ width: '100%', accentColor: color, cursor: 'pointer' }}
       />
       <div className="flex justify-between mt-1" style={{ fontSize: '0.68rem', color: 'var(--text-4)' }}>
         {(ladder.levels || []).map((l) => (
-          <span
+          <button
             key={l.level}
+            type="button"
             onClick={() => onChange(l.level)}
+            aria-pressed={l.level === level}
             style={{
+              background: 'none',
+              border: 'none',
+              padding: 0,
+              font: 'inherit',
               cursor: 'pointer',
               fontWeight: l.level === level ? 700 : 400,
               color: l.level === level ? color : 'var(--text-4)',
@@ -105,7 +115,7 @@ export default function RigorStrictnessControl({ level, onChange }) {
             title={l.description || l.label}
           >
             {l.label}
-          </span>
+          </button>
         ))}
       </div>
 
@@ -121,7 +131,11 @@ export default function RigorStrictnessControl({ level, onChange }) {
       )}
 
       {aboveBadge && (
-        <div className="info-box warning mt-4" style={{ fontSize: '0.82rem' }}>
+        <div
+          className="info-box warning mt-4"
+          role="status"
+          style={{ fontSize: '0.82rem' }}
+        >
           <strong>You're below the Archimedes Verified bar.</strong> At{' '}
           <strong>{current?.label}</strong> you accept strategies whose edge is less statistically
           certain than the Conservative standard. Size positions accordingly.
