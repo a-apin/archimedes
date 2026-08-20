@@ -17,7 +17,10 @@ never touched. Tests cover:
 
 from __future__ import annotations
 
+import contextlib
+import tempfile
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import archimedes.services.paper_rag as rag_module
@@ -39,6 +42,7 @@ def _reset_model_cache() -> None:
     """Reset module-level model singleton so each test starts clean."""
     rag_module._embedding_model = None
     rag_module._embedding_load_attempted = False
+    rag_module._weights_present_cache = None
 
 
 def _fake_model(embeddings: dict[str, list[float]] | None = None):
@@ -168,7 +172,8 @@ class TestHealthDoesNotLoadModel:
     def test_ready_when_weights_present_but_unloaded(self, monkeypatch):
         monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
         _reset_model_cache()
-        with patch.object(rag_module, "_weights_present", return_value=True):
+        with _baked_hf_cache() as hf_home:
+            monkeypatch.setenv("HF_HOME", hf_home)
             h = paper_rag_health()
         assert h.status == "ready"
         assert "not loaded" in h.reason
@@ -177,7 +182,8 @@ class TestHealthDoesNotLoadModel:
         """No weights on disk is a real problem and must not read as 'ready'."""
         monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
         _reset_model_cache()
-        with patch.object(rag_module, "_weights_present", return_value=False):
+        with tempfile.TemporaryDirectory() as empty:
+            monkeypatch.setenv("HF_HOME", empty)
             h = paper_rag_health()
         assert h.status == "degraded"
 
@@ -200,7 +206,7 @@ class TestHealthDoesNotLoadModel:
         monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "false")
         _reset_model_cache()
         probe = MagicMock(return_value=True)
-        with patch.object(rag_module, "_weights_present", probe):
+        with patch.object(rag_module, "_scan_for_weights", probe):
             h = paper_rag_health()
         probe.assert_not_called()
         assert h.status == "disabled"
@@ -473,3 +479,74 @@ class TestAugmentCandidateScores:
         by_title = {c.title: s for c, s in results}
         assert by_title["Paper One about momentum"] == 0.9  # not collapsed to 0.2
         assert by_title["Paper Two about value"] == 0.2
+
+
+# ── _weights_present must understand the REAL huggingface_hub layout ─────────
+#
+# The first version of this scanned one level with iterdir(). huggingface_hub
+# nests the cache as $HF_HOME/hub/models--<org>--<name>/snapshots/<sha>/..., so
+# the top level of HF_HOME holds only "hub" and "xet" — neither matched, and
+# production reported paper_rag="degraded" (and corpus_embedded=false on a
+# public surface) on a container where /health/paper-rag proved the model loads.
+#
+# It shipped because the tests mocked _weights_present itself instead of
+# exercising it — CLAUDE.md's "mock at boundaries, not internals". These build a
+# real directory tree.
+
+
+@contextlib.contextmanager
+def _baked_hf_cache(model: str = "all-MiniLM-L6-v2", weight: str = "model.safetensors"):
+    """A tmp HF_HOME laid out exactly as the Docker image bakes it."""
+    with tempfile.TemporaryDirectory() as root:
+        snap = (
+            Path(root)
+            / "hub"
+            / f"models--sentence-transformers--{model}"
+            / "snapshots"
+            / "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+        )
+        snap.mkdir(parents=True)
+        (snap / weight).write_bytes(b"\x00")
+        (Path(root) / "xet").mkdir()
+        yield root
+
+
+class TestWeightsPresent:
+    def setup_method(self):
+        _reset_model_cache()
+
+    def test_finds_weights_in_the_real_nested_hf_layout(self, monkeypatch):
+        """THE REGRESSION: weights nested under hub/ must be found."""
+        monkeypatch.setenv("MINILM_MODEL", "all-MiniLM-L6-v2")
+        with _baked_hf_cache() as hf_home:
+            monkeypatch.setenv("HF_HOME", hf_home)
+            assert rag_module._weights_present() is True
+
+    def test_finds_pytorch_bin_layout_too(self, monkeypatch):
+        monkeypatch.setenv("MINILM_MODEL", "all-MiniLM-L6-v2")
+        with _baked_hf_cache(weight="pytorch_model.bin") as hf_home:
+            monkeypatch.setenv("HF_HOME", hf_home)
+            assert rag_module._weights_present() is True
+
+    def test_false_when_model_dir_exists_but_holds_no_weights(self, monkeypatch):
+        monkeypatch.setenv("MINILM_MODEL", "all-MiniLM-L6-v2")
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2").mkdir(parents=True)
+            monkeypatch.setenv("HF_HOME", root)
+            assert rag_module._weights_present() is False
+
+    def test_false_when_hf_home_unset(self, monkeypatch):
+        monkeypatch.delenv("HF_HOME", raising=False)
+        assert rag_module._weights_present() is False
+
+    def test_result_is_memoised(self, monkeypatch):
+        """/health is polled every 30s; the tree must be walked once."""
+        monkeypatch.setenv("MINILM_MODEL", "all-MiniLM-L6-v2")
+        with _baked_hf_cache() as hf_home:
+            monkeypatch.setenv("HF_HOME", hf_home)
+            spy = MagicMock(return_value=True)
+            with patch.object(rag_module, "_scan_for_weights", spy):
+                rag_module._weights_present()
+                rag_module._weights_present()
+                rag_module._weights_present()
+            assert spy.call_count == 1
