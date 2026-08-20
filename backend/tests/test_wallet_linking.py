@@ -14,7 +14,7 @@ from archimedes.api.wallet_routes import (
     unlink_wallet,
     verify_wallet_challenge,
 )
-from archimedes.models.account import AuthUser, LinkedWallet
+from archimedes.models.account import AuthUser, LinkedWallet, WalletLinkChallenge
 from archimedes.models.chat import Base
 from archimedes.models.identity import ControlledWallet, WalletIdentity
 from archimedes.models.strategy_passport_record import StrategyPassportRecord
@@ -22,6 +22,7 @@ from archimedes.models.strategy_proposal import StrategyProposal
 from archimedes.models.strategy_store import upsert_strategy
 from archimedes.models.user_profile import UserProfile
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -388,3 +389,63 @@ def test_legacy_profile_only_counts_when_account_has_no_profile():
         # user-1 now HAS a profile: the claim loop would skip the legacy one,
         # so the prompt must not fire on profile evidence alone.
         assert _wallet_has_unclaimed_legacy_data(session, "user-1", ADDRESS) is False
+
+
+# ── provider provenance (#1293) ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_headless_provider_links_and_is_stored_verbatim():
+    """An API client is not MetaMask, a browser, or a Circle passkey.
+
+    The value must survive challenge -> verify -> LinkedWallet unaltered: it is
+    the provenance a later reader (account settings, support) sees, and silently
+    normalising it back to a browser value would re-introduce the untruth.
+    """
+    with _session() as session:
+        challenge = issue_wallet_challenge(
+            session,
+            _user("user-1"),
+            _challenge(provider="headless"),
+            site_url="https://archimedes-arc.com",
+            now=NOW,
+        )
+        stored = session.query(WalletLinkChallenge).one()
+        assert stored.provider == "headless"
+
+        linked = await verify_wallet_challenge(
+            session,
+            _user("user-1"),
+            _verify(challenge.message),
+            verifier=AsyncMock(return_value=True),
+            now=NOW,
+        )
+        assert linked.provider == "headless"
+        assert linked.address == ADDRESS
+
+
+def test_headless_is_the_only_value_added_to_the_accepted_set():
+    """Pin the enum: the manifest and the agent card both mirror this tuple."""
+    from archimedes.api.wallet_routes import WALLET_PROVIDERS
+
+    assert WALLET_PROVIDERS == ("metamask", "browser", "circle", "headless")
+
+
+@pytest.mark.parametrize("provider", ["agent", "external", "headless-agent", "Headless", "", "browser "])
+def test_unlisted_provider_values_are_rejected(provider):
+    """Guard demonstration: widening the enum by one value must not turn it into
+    a free-text field. Case and whitespace variants are rejected too -- a stored
+    "Headless" would not match the label map the UI renders from."""
+    with pytest.raises(ValidationError):
+        WalletChallengeRequest(address=ADDRESS, chain_id=5042002, provider=provider)
+
+
+def test_circle_wallet_id_still_requires_the_circle_provider():
+    """The new value must not become a side door around the circle_wallet_id rule."""
+    with pytest.raises(ValidationError):
+        WalletChallengeRequest(
+            address=ADDRESS,
+            chain_id=5042002,
+            provider="headless",
+            circle_wallet_id="circle-wallet-1",
+        )

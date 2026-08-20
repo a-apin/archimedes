@@ -22,13 +22,105 @@
     "schemes": ["Better Auth session"],
     "methods": ["emailPassword", "google", "github"],
     "description": "Use /api/auth/* and retain session cookie. Optional EIP-4361 wallet proof uses /api/wallets/* and never creates a session.",
-    "walletLinkChainId": 5042002
+    "walletLinkChainId": 5042002,
+    "walletLinkProviders": ["metamask", "browser", "circle", "headless"],
+    "walletLinkProviderForAgents": "headless"
+  },
+  "endpoints": {
+    "_note": "Paths are relative to service.endpoint's origin. The /api/auth/* group is served by the Better Auth service behind the same origin, not by the REST API, so it does not appear in /openapi.json. Every other path here is asserted against the API's OpenAPI document in CI.",
+    "read": {
+      "status": "live",
+      "authRequired": false,
+      "routes": {
+        "strategies": "GET /api/strategies/",
+        "strategy": "GET /api/strategies/{strategy_id}",
+        "assets": "GET /api/explore/assets",
+        "health": "GET /api/health",
+        "manifest": "GET /api/agent/manifest"
+      }
+    },
+    "auth": {
+      "status": "live",
+      "authRequired": false,
+      "routes": {
+        "providers": "GET /api/auth/providers",
+        "signUp": "POST /api/auth/sign-up/email",
+        "signIn": "POST /api/auth/sign-in/email",
+        "session": "GET /api/auth/get-session",
+        "signOut": "POST /api/auth/sign-out"
+      }
+    },
+    "walletLink": {
+      "status": "live",
+      "authRequired": true,
+      "spec": "EIP-4361",
+      "routes": {
+        "challenge": "POST /api/wallets/challenge",
+        "verify": "POST /api/wallets/verify",
+        "list": "GET /api/wallets"
+      },
+      "challengeBody": {
+        "address": "0x...",
+        "chain_id": 5042002,
+        "provider": "headless"
+      }
+    },
+    "generate": {
+      "status": "live",
+      "authRequired": true,
+      "routes": {
+        "quote": "GET /api/generate/quote",
+        "start": "POST /api/generate/start",
+        "stream": "GET /api/generate/stream/{job_id}",
+        "candidates": "GET /api/generate/jobs/{job_id}/candidates"
+      },
+      "note": "quote is public — price the run before holding a session."
+    },
+    "paper": {
+      "status": "live",
+      "authRequired": true,
+      "routes": {
+        "deploy": "POST /api/paper/deployments",
+        "list": "GET /api/paper/deployments",
+        "read": "GET /api/paper/deployments/{deployment_id}",
+        "stop": "POST /api/paper/deployments/{deployment_id}/stop"
+      },
+      "note": "Simulated: no chain, no funds. The only deployment path that is live today."
+    },
+    "deploy": {
+      "status": "landing with the T3.2 redeploy (#588)",
+      "authRequired": true,
+      "routes": {
+        "createVault": "POST /api/vaults/create"
+      }
+    },
+    "marketplace": {
+      "status": "landing with the T3.2 redeploy (#588)",
+      "authRequired": true,
+      "routes": {
+        "publish": "POST /api/marketplace/publish",
+        "subscribe": "POST /api/marketplace/subscribe"
+      }
+    },
+    "monitor": {
+      "status": "landing with the T3.2 redeploy (#588)",
+      "authRequired": false,
+      "routes": {
+        "vaultHealth": "GET /api/vaults/{address}/health"
+      }
+    }
   },
   "skills": [
     {
       "id": "generate-strategy",
       "name": "Generate strategy",
       "description": "Turn a natural-language investment intent into a rigor-gated portfolio strategy (DSR / PBO / walk-forward OOS), grounded in the quantitative-finance research corpus.",
+      "status": "live"
+    },
+    {
+      "id": "paper-trade",
+      "name": "Paper trade",
+      "description": "Deploy a rigor-passing strategy to a simulated paper portfolio and read its running performance. No chain, no funds.",
       "status": "live"
     },
     {

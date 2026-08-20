@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { useAuth } from '../AuthContext'
 import { listLinkedWallets, makePrimaryWallet, removeLinkedWallet } from '../linked-wallets'
+import { providerLabel } from '../wallet-providers'
 
 export default function AccountSettings({ walletAddr, onDisconnect }) {
   const { user, signOut } = useAuth()
@@ -74,7 +75,7 @@ export default function AccountSettings({ walletAddr, onDisconnect }) {
               <li key={wallet.id} className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--glass-border)] pt-3">
                 <div>
                   <div className="mono text-sm">{wallet.display_address}</div>
-                  <div className="caption">{wallet.provider} · chain {wallet.chain_id}{wallet.is_primary ? ' · primary' : ''}</div>
+                  <div className="caption">{providerLabel(wallet.provider)} · chain {wallet.chain_id}{wallet.is_primary ? ' · primary' : ''}</div>
                 </div>
                 <div className="flex gap-2">
                   {!wallet.is_primary && (

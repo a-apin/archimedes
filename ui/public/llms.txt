@@ -22,12 +22,17 @@ operations. Circle wallet passkeys control Circle wallets; they do not log in to
    - new account: `POST /api/auth/sign-up/email` with
      `{ "name": "...", "email": "...", "password": "..." }`, then sign in
    - confirm: `GET /api/auth/get-session`
-3. **Generate** — `POST /api/generate/start` with `brief.intent` and
+3. **Generate** — price it first with public `GET /api/generate/quote`, then
+   `POST /api/generate/start` with `brief.intent` and
    `brief.risk_appetite`; tail `GET /api/generate/stream/{job_id}` as SSE.
 4. **Rigor** — `GET /api/generate/jobs/{job_id}/candidates`, then
    `GET /api/strategies/{strategy_id}`. `rigor_gate_status` is `pass`, `fail`, or
    `pending`; never infer admission from headline Sharpe alone.
-5. **Wallet operations** — first link wallet using proof flow below. Deploy/publish/
+5. **Paper trade** — live today, simulated (no chain, no funds):
+   `POST /api/paper/deployments` with `{ "strategy_id": "..." }`, then
+   `GET /api/paper/deployments/{deployment_id}` to read performance and
+   `POST /api/paper/deployments/{deployment_id}/stop` to end it.
+6. **Wallet operations** — first link wallet using proof flow below. Deploy/publish/
    subscribe remain subject to live contract status advertised by agent manifest.
 
 ## Optional wallet link (EIP-4361)
@@ -35,7 +40,9 @@ operations. Circle wallet passkeys control Circle wallets; they do not log in to
 Account session must already exist.
 
 1. `POST /api/wallets/challenge` with
-   `{ "address": "0x...", "chain_id": 5042002, "provider": "browser" }`.
+   `{ "address": "0x...", "chain_id": 5042002, "provider": "headless" }`.
+   `provider` is provenance only: `metamask` | `browser` | `circle` | `headless`. An API
+   client sends `headless` — the other three name browser wallet software it lacks.
 2. Sign exact returned `message` with wallet. Do not rebuild it client-side.
 3. `POST /api/wallets/verify` with returned message and signature.
 4. `GET /api/wallets` confirms verified link.

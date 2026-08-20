@@ -7,7 +7,7 @@ import os
 import re
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Literal, get_args
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -23,11 +23,22 @@ _CHALLENGE_TTL = timedelta(minutes=5)
 _SUPPORTED_CHAIN_ID = int(os.getenv("ARC_CHAIN_ID", "5042002"))
 _NONCE_RE = re.compile(r"^[A-Za-z0-9]{8,}$")
 
+# How the caller's key is held, recorded as PROVENANCE only — it never widens or
+# narrows what a linked wallet may do (that is `is_primary` + the proof itself).
+#
+# ``headless`` exists because the first three are browser-UI concepts and an
+# autonomous API client is none of them (#1293): a script holding a raw key has
+# no MetaMask, no injected EIP-1193 provider, and no Circle passkey. Before it
+# existed the reference journey sent ``browser``, which recorded a fact that was
+# simply untrue. Callers outside the browser should send ``headless``.
+WalletProvider = Literal["metamask", "browser", "circle", "headless"]
+WALLET_PROVIDERS: tuple[str, ...] = get_args(WalletProvider)
+
 
 class WalletChallengeRequest(BaseModel):
     address: str = Field(pattern=r"^0x[a-fA-F0-9]{40}$")
     chain_id: int = Field(gt=0)
-    provider: Literal["metamask", "browser", "circle"]
+    provider: WalletProvider
     circle_wallet_id: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")

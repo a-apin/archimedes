@@ -159,10 +159,17 @@ account for smoke testing.
 Wallet is needed only for wallet/on-chain operations. Account session must exist first.
 
 1. `POST /api/wallets/challenge` with
-   `{ "address": "0x...", "chain_id": 5042002, "provider": "browser" }`.
+   `{ "address": "0x...", "chain_id": 5042002, "provider": "headless" }`.
 2. Sign exact returned `message`; do not reconstruct it.
 3. `POST /api/wallets/verify` with returned message and signature.
 4. `GET /api/wallets` confirms link.
+
+`provider` is provenance only — it never widens or narrows what the link may do. Accepted
+values are `metamask`, `browser`, `circle`, and `headless`. **An API client sends
+`headless`**: the other three name browser wallet software a script does not have, and
+recording one of them logs a fact that is not true. `circle_wallet_id` may accompany
+`circle` only. The live set is advertised at `GET /api/agent/manifest` under
+`auth.wallet_link_providers`.
 
 Challenge is bound to account, normalized address, chain, domain, URI, issue time, and
 five-minute expiry. It is consumed atomically and cannot replay. A wallet already linked

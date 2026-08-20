@@ -108,7 +108,9 @@ def step_wallet_link(client: httpx.Client, *, ephemeral: bool) -> str | None:
     try:
         challenge = client.post(
             "/api/wallets/challenge",
-            json={"address": account.address, "chain_id": ARC_CHAIN_ID, "provider": "browser"},
+            # "headless", not "browser": this client holds a raw key and has no
+            # MetaMask, no injected provider, and no Circle passkey (#1293).
+            json={"address": account.address, "chain_id": ARC_CHAIN_ID, "provider": "headless"},
         )
     except httpx.HTTPError as exc:
         print(f"  ✗ wallet challenge transport error: {exc}")
