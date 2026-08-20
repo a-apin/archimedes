@@ -8,9 +8,11 @@ supplier:
 
 - resolves a spec's ``asset_universe`` to yfinance tickers via the
   Chainlink-only universe SSOT (``GLOBAL_ASSETS``, PR #842),
-- fetches real daily OHLCV through the analytics-engine's ``fetch_ohlcv``
-  (the single owner of the fetch+normalize contract — same reuse rationale as
-  ``portfolio_backtester``),
+- fetches real daily OHLCV through the market-data provider seam
+  (``archimedes.services.market_data_provider.get_provider().get_daily_ohlcv``,
+  #1218/#1282) — vendor-swappable via ``MARKET_DATA_PROVIDER`` and
+  cache-backed by ``asset_daily_bars``, same seam the request-path call sites
+  use; same reuse rationale as ``portfolio_backtester``,
 - strictly inner-joins the panel across assets (missing data is a lookahead /
   survivorship vector — same rule as ``portfolio_backtester._fetch_price_panel``),
 - hands back per-asset **feed factories**: a backtrader feed object is consumed
@@ -94,11 +96,16 @@ def _ensure_analytics_import() -> None:
 
 
 def _fetch_one(yf_ticker: str, start: str, end: str) -> Any:
-    """Fetch one symbol's normalized OHLCV DataFrame. Test seam — monkeypatch me."""
-    _ensure_analytics_import()
-    from archimedes_analytics_engine.data import fetch_ohlcv
+    """Fetch one symbol's normalized OHLCV DataFrame via the cached
+    market-data provider seam (#1218/#1282 —
+    ``archimedes.services.market_data_provider``), so this fetch honors
+    ``MARKET_DATA_PROVIDER`` and reads/writes the ``asset_daily_bars``
+    Postgres cache the same way the request-path call sites do — a
+    generation-path re-run of the same universe hits the cache, not the
+    vendor, after the first fetch. Test seam — monkeypatch me."""
+    from archimedes.services.market_data_provider import get_provider
 
-    return fetch_ohlcv(yf_ticker, start, end)
+    return get_provider().get_daily_ohlcv(yf_ticker, start, end)
 
 
 def resolve_universe(asset_universe: list[str]) -> dict[str, str]:
