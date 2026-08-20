@@ -231,8 +231,10 @@ class StrategyResponse(BaseModel):
 
     # Selection-set size this verdict was graded at, plus its provenance (#1358).
     # ``None``/``"unspecified"`` for a strategy the live gate has not graded yet
-    # (no persisted real returns) — the honest answer is "no number to report",
-    # never a silently-assumed 1. Once graded: "curated_self_contained" (a
+    # — either no/insufficient persisted returns, OR a batch/DB-read failure
+    # (both collapse to the same "no number to report" shape; a reader must not
+    # infer which one from this field alone) — never a silently-assumed 1.
+    # Once graded: "curated_self_contained" (a
     # hand-implemented paper, graded on its own Sharpe, N=1 by design — decouple
     # #2) | "generated_search_pool" (the generation pipeline's own tracked
     # N-candidate search, N>1 possible) | "generated_untracked_default"

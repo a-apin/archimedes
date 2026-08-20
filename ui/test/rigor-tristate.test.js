@@ -104,7 +104,7 @@ test("StrategyPassport renders a third pending state for the rigor badge, not ta
 	);
 });
 
-// ── (d) StrategyPassport.jsx: three-branch num_trials_in_selection ternary,
+// ── (d) StrategyPassport.jsx: four-branch num_trials_in_selection ternary,
 //        the null/unspecified-scope branch renders neither sentence ──────
 
 test("StrategyPassport num_trials_in_selection ternary has a null/unspecified branch that asserts nothing", () => {
@@ -119,7 +119,7 @@ test("StrategyPassport num_trials_in_selection ternary has a null/unspecified br
 
 	// Isolate that first branch's rendered content and confirm it contains
 	// NEITHER the num_trials=1 sentence NOR the multi-candidate-correction
-	// sentence — the whole point of a third branch.
+	// sentence — the whole point of a dedicated branch.
 	const ternaryStart = passport.indexOf(
 		's.num_trials_in_selection == null ||',
 	);
@@ -132,8 +132,20 @@ test("StrategyPassport num_trials_in_selection ternary has a null/unspecified br
 	assert.doesNotMatch(firstBranch, /num_trials = 1/);
 	assert.doesNotMatch(firstBranch, /corrects the realized Sharpe/);
 
-	// It must still be a THREE-armed ternary overall (null/unspecified →
-	// N>1 real correction → N=1 self-contained), not collapsed back to two.
+	// #1358 round-2 review: this branch is reached on a batch/DB-failure
+	// pending case too (schemas.py's num_trials_scope == "unspecified" covers
+	// both), so it must not assert the data fact "no persisted backtest
+	// returns" — that claim is false on the DB-failure path, where stored
+	// DSR/PBO/OOS numbers render right next to this sentence.
+	assert.doesNotMatch(firstBranch, /no persisted backtest returns/);
+
+	// It must still be a FOUR-armed ternary overall (null/unspecified →
+	// generated_untracked_default → N>1 real correction → N=1
+	// self-contained), not collapsed back to two or three.
+	assert.match(
+		passport,
+		/s\.num_trials_scope === "generated_untracked_default" \? \(/,
+	);
 	assert.match(
 		passport,
 		/s\.num_trials_in_selection > 1 \? \(\s*<>[\s\S]{0,50}corrects the realized Sharpe/,
@@ -142,6 +154,30 @@ test("StrategyPassport num_trials_in_selection ternary has a null/unspecified br
 		passport,
 		/graded on its own Sharpe \(num_trials = 1/,
 	);
+});
+
+test("StrategyPassport's generated_untracked_default branch is distinct from both the ungraded and self-contained sentences", () => {
+	// A row that DID get graded (issue A2(d)) but whose generation pipeline
+	// never proved it tracks its own selection-pool size (backend/archimedes/
+	// api/selection_bias_routes.py's _SCOPE_GENERATED_UNTRACKED_DEFAULT) must
+	// neither claim "not graded yet" (it was) nor silently reuse the
+	// true-self-contained N=1 sentence (it isn't self-contained — it's
+	// forced/untrusted).
+	const branchStart = passport.indexOf(
+		's.num_trials_scope === "generated_untracked_default"',
+	);
+	assert.notEqual(branchStart, -1, "generated_untracked_default branch not found");
+	const branchMatch = passport
+		.slice(branchStart)
+		.match(/\? \(\s*<>([\s\S]*?)<\/>\s*\) : /);
+	assert.ok(branchMatch, "could not isolate the generated_untracked_default branch body");
+	const branch = branchMatch[1];
+	assert.doesNotMatch(branch, /not been graded/);
+	assert.doesNotMatch(branch, /corrects the realized Sharpe/);
+	// Must still surface the honest num_trials=1 fact, just with its own
+	// "why" (untracked pool, not true self-containment).
+	assert.match(branch, /num_trials = 1/);
+	assert.match(branch, /did not record its own\s+selection-pool size/);
 });
 
 // ── A1: rigor_gate_status is actually read (mirrors the issue's grep -c) ──

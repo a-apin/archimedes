@@ -692,17 +692,30 @@ export default function StrategyPassport({
 							/>
 						</div>
 						<p className="caption mt-3 leading-relaxed text-[var(--text-3)]">
-							{/* #1358: a strategy the live gate hasn't graded yet (no
-							    num_trials_in_selection / an "unspecified" provenance — see
-							    schemas.py) must not claim EITHER a self-contained N=1 grading
-							    OR a real multi-candidate correction; both would assert a
-							    statistic nothing computed. Neither sentence below renders for
-							    that case — a THIRD branch, not a fallback into the N=1 one. */}
+							{/* #1358 round-2 review: a strategy the live gate hasn't graded
+							    yet (no num_trials_in_selection / an "unspecified" provenance
+							    — see schemas.py, which covers BOTH "no persisted returns" and
+							    a batch/DB-failure pending case, so this sentence must not
+							    assert a specific data fact) must not claim EITHER a
+							    self-contained N=1 grading OR a real multi-candidate
+							    correction; both would assert a statistic nothing computed.
+							    "generated_untracked_default" (schemas.py) is a DISTINCT
+							    third case: the strategy WAS graded, but its generation
+							    pipeline never proved it tracks its own selection-pool size,
+							    so num_trials was forced to 1 and the scope says so
+							    explicitly — that is not "ungraded" and must not reuse either
+							    the "not graded yet" sentence or the true-self-contained N=1
+							    sentence below. Four branches total, not a fallback chain. */}
 							{s.num_trials_in_selection == null ||
 							s.num_trials_scope === "unspecified" ? (
+								<>This strategy has not been graded by the rigor gate yet.</>
+							) : s.num_trials_scope === "generated_untracked_default" ? (
 								<>
-									This strategy has not been graded by the rigor gate yet — no
-									persisted backtest returns to measure Sharpe stability from.
+									This strategy's generation pipeline did not record its own
+									selection-pool size, so it is graded at num_trials = 1 (no
+									multiple-testing correction applied) — the same treatment as
+									a self-contained strategy, but here because the pool size is
+									unknown, not because there was only one candidate.
 								</>
 							) : s.num_trials_in_selection > 1 ? (
 								<>
