@@ -4121,7 +4121,11 @@ button:where(.tag) {
 
 .proof-spiral__legend {
 	display: grid;
-	grid-template-columns: repeat(4, minmax(0, 1fr));
+	/* auto-fit, not a hardcoded stage count (#1396 review): the legend renders
+	   3 items with ROADMAP_SURFACES_ENABLED off and 4 with it on
+	   (Landing.jsx) — a fixed repeat(4, …) left an empty bordered column when
+	   only 3 <li> exist. Same fix already applied to .app-proof-rail. */
+	grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
 	list-style: none;
 	border-top: 1px solid var(--glass-border);
 	border-bottom: 1px solid var(--glass-border);

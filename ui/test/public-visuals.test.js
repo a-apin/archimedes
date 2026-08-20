@@ -68,6 +68,20 @@ test("landing hero makes proof flow the signature element", () => {
 	);
 });
 
+test("proof-spiral legend grid tracks item count, not a fixed stage count", () => {
+	// PR #1396 review (major finding): a fixed repeat(4, …) left an empty
+	// bordered column when ROADMAP_SURFACES_ENABLED is off and the legend
+	// renders only 3 <li>. Mirrors the .app-proof-rail auto-fit fix.
+	assert.match(
+		css,
+		/\.proof-spiral__legend\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,/s,
+	);
+	assert.doesNotMatch(
+		css,
+		/\.proof-spiral__legend\s*\{[^}]*grid-template-columns:\s*repeat\(\d+,/s,
+	);
+});
+
 test("landing presents evidence as criteria, not decorative steps", () => {
 	assert.match(landing, /EvidenceLedger/);
 	assert.match(landing, /RigorMatrix/);

@@ -65,8 +65,13 @@ const SURFACE_FILES = [
 //: that must trip the pattern; test_every_pattern_rejects_its_canonical_example
 //: runs it, so a pattern that stops matching anything fails loudly instead of
 //: silently guarding nothing. The first eight mirror issue #1354's
-//: acceptance criterion 1 dist-grep list verbatim; the last two are its
-//: criterion 3 additions.
+//: acceptance criterion 1 dist-grep list verbatim; the next two are its
+//: criterion 3 additions; the last (deploy_as_vault_cta) is a PR #1396
+//: review fix — deploy_as_vault is case-sensitive on a lowercase "vault"
+//: and does not reject FusionResult.jsx's actual literal,
+//: roadmapCopyApp.js's `deployAsVaultLabel: "Deploy as Vault — coming in
+//: Phase 4"` (capital V). Both patterns are kept: deploy_as_vault still
+//: guards the lowercase phrasing used elsewhere.
 const OVERCLAIM_PATTERNS = [
 	["deploy_as_vault", new RegExp(escapeRegExp("Deploy as vault")), "Deploy as vault"],
 	[
@@ -106,6 +111,11 @@ const OVERCLAIM_PATTERNS = [
 		"Research <span>→</span> rigor <span>→</span> vault",
 	],
 	["legend_is_user_vault", /is-user">Vault</, '<li className="is-user">Vault</li>'],
+	[
+		"deploy_as_vault_cta",
+		/Deploy as [Vv]ault/,
+		"Deploy as Vault",
+	],
 ];
 
 function findOverclaims(text) {
