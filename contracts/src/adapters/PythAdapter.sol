@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "../interfaces/IAggregatorV3.sol";
+import "../interfaces/AggregatorV3Interface.sol";
 
 interface IPyth {
     struct Price {

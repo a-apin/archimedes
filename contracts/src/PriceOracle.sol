@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "./interfaces/IAggregatorV3.sol";
+import "./interfaces/AggregatorV3Interface.sol";
 
 /// @title PriceOracle
 /// @notice Per-asset price oracle for any asset on Arc testnet. Prefers a Chainlink

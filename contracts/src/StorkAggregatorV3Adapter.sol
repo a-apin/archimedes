@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "./interfaces/IAggregatorV3.sol";
+import "./interfaces/AggregatorV3Interface.sol";
 
 /// @notice Minimal read interface for the Stork on-chain price contract (live on Arc
 ///         testnet at 0xacC0a0cF13571d30B4b8637996F5D6D774d4fd62, verified #794). Stork
