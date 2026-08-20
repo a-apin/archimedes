@@ -181,30 +181,17 @@ async def mint_synthetic_tokens() -> dict[str, float]:
             continue
 
         token_addr = synth_addresses[symbol]
-        # Query SyntheticFactory on-chain for the vault address (#1102 SSOT)
-        vault_addr = None
-        try:
-            factory = get_contract_loader().synthetic_factory
-            vault_addr = await factory.functions.tokenVault(chain_client.to_checksum(token_addr)).call()
-        except Exception:
-            vault_addr = None
 
-        if not vault_addr or vault_addr == "0x0000000000000000000000000000000000000000":
-            # Fallback for offline/test environments
-            legacy_fallback = {
-                "sTSLA": "0xf0356600e26c6c403ec4f5b36b0e3380bb0609ab",
-                "sNVDA": "0x4c3cdc2bf44195ad8a4d201c8afbd453949a8781",
-                "sSPY": "0xd8d7855f76c384638cf1dfc3575ecff3538764b4",
-                "sBTC": "0x92990ed6f5c8cd72752ca9aeafad422269225c43",
-                "sGOLD": "0x124b5c5da57d209b28d4997aaf6d4e96711efd5a",
-                "sOIL": "0xfa942399e36959c8060c3a82a610d680a7ac6d22",
-                "sNKY": "0xb26029ca37c09400ca921f00fc541cd42143b508",
-            }
-            vault_addr = legacy_fallback.get(symbol)
-
-        usdc_int = int(usdc_amount * 1e6)  # USDC has 6 decimals
-
-        # Check existing balance first
+        # Check existing balance FIRST — this only needs token_addr + wallet,
+        # never vault_addr, so it must run before any vault_addr resolution
+        # or hard-skip decision below. Rerun semantics (#1377 round 2): if
+        # the wallet already holds tokens from a prior successful run, a
+        # transient tokenVault() lookup failure (or a briefly-unset
+        # ARC_SYNTHETIC_FACTORY_ADDRESS) must NOT record minted[symbol]=0.0
+        # over a real balance — that would silently zero-fund this symbol
+        # into every vault created below with no diagnostic. Only fall
+        # through to the "no live vault, skipping" path when there is no
+        # usable existing balance either.
         try:
             token = get_contract_loader().token(token_addr)
             existing = await token.functions.balanceOf(chain_client.to_checksum(wallet)).call()
@@ -215,6 +202,56 @@ async def mint_synthetic_tokens() -> dict[str, float]:
                 continue
         except Exception:
             logger.debug("existing synth balance check failed", exc_info=True)
+
+        # Query SyntheticFactory on-chain for the vault address (#1102 SSOT)
+        vault_addr = None
+        try:
+            factory = get_contract_loader().synthetic_factory
+            vault_addr = await factory.functions.tokenVault(chain_client.to_checksum(token_addr)).call()
+        except Exception:
+            # Loud, not silent (CLAUDE.md fail-soft rule): a swallowed
+            # exception here used to fall through to the hardcoded legacy
+            # dict below with no trace of why the live lookup was skipped.
+            logger.warning("tokenVault lookup failed for %s", symbol, exc_info=True)
+            vault_addr = None
+
+        if not vault_addr or vault_addr == "0x0000000000000000000000000000000000000000":
+            # #1102 follow-up: do NOT silently substitute a hardcoded address
+            # from a prior deploy — that risks broadcasting a real USDC
+            # approve/mint against an orphaned SyntheticVault. The 7-address
+            # dict below is only ever consulted with an explicit opt-in, for
+            # offline/test fixtures that deliberately want it; it must never
+            # engage on a real box (which would only reach here if
+            # ARC_SYNTHETIC_FACTORY_ADDRESS is unset or the lookup reverted).
+            # Note: we only reach here when the existing-balance check above
+            # found nothing usable — never mint/approve/broadcast against a
+            # guessed or unresolved vault address either way.
+            vault_addr = None
+            if os.getenv("BOOTSTRAP_ALLOW_LEGACY_VAULTS") == "1":
+                legacy_fallback = {
+                    "sTSLA": "0xf0356600e26c6c403ec4f5b36b0e3380bb0609ab",
+                    "sNVDA": "0x4c3cdc2bf44195ad8a4d201c8afbd453949a8781",
+                    "sSPY": "0xd8d7855f76c384638cf1dfc3575ecff3538764b4",
+                    "sBTC": "0x92990ed6f5c8cd72752ca9aeafad422269225c43",
+                    "sGOLD": "0x124b5c5da57d209b28d4997aaf6d4e96711efd5a",
+                    "sOIL": "0xfa942399e36959c8060c3a82a610d680a7ac6d22",
+                    "sNKY": "0xb26029ca37c09400ca921f00fc541cd42143b508",
+                }
+                vault_addr = legacy_fallback.get(symbol)
+
+            if not vault_addr:
+                print(
+                    f"  ❌ {symbol}: no live SyntheticVault address (tokenVault() lookup "
+                    f"failed or returned zero) — skipping rather than guessing an address. "
+                    f"Set BOOTSTRAP_ALLOW_LEGACY_VAULTS=1 to opt into the legacy fallback "
+                    f"addresses for offline/test use only. No usable existing balance was "
+                    f"found for {symbol} either, so minted[{symbol!r}]=0.0 — downstream "
+                    f"vault funding for this symbol will be silently skipped unless corrected."
+                )
+                minted[symbol] = 0.0
+                continue
+
+        usdc_int = int(usdc_amount * 1e6)  # USDC has 6 decimals
 
         try:
             # Approve USDC for the synth vault
@@ -353,6 +390,13 @@ async def fund_and_allocate_vaults(vaults: list[dict], minted: dict[str, float])
 
             token_addr = synth_addresses.get(symbol)
             if not token_addr or minted.get(symbol, 0) <= 0:
+                # Loud, not silent: this symbol will end up unfunded in this
+                # vault with no trace of why (missing SSOT address vs. a
+                # zero/failed mint upstream) unless we say so here.
+                print(
+                    f"  ⚠️  {vault_info['symbol']}: no {symbol} to fund (token_addr="
+                    f"{token_addr!r}, minted={minted.get(symbol, 0)}) — leaving allocation unfunded"
+                )
                 continue
 
             # Transfer 1/n of minted tokens to this vault
