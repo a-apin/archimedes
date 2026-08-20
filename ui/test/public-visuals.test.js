@@ -149,3 +149,36 @@ test("honesty ledger gives every row an explicit LedgerStatus verdict", () => {
 	assert.match(rebalanceRow, /tone="live"/);
 	assert.match(rebalanceRow, /tone="pending"/);
 });
+
+test("honesty ledger's rebalance row does not tie the full commit/trade/reveal mechanism claim to the heartbeat-only 'Live' verdict — PR #1382 round-2 review", () => {
+	// The heartbeat (`agentStatus.alive`) is written unconditionally after
+	// every tick — including one that failed entirely (agent_runner.py's
+	// outer try/except swallows a failed tick() and logs "will retry" — the
+	// heartbeat save sits after that, unguarded) — and it is orthogonal to
+	// AGENT_DRY_RUN, under which no commit/trade/reveal happens at all
+	// (agent_runner.py gates each phase separately on `if not DRY_RUN`).
+	// The heartbeat alone cannot back a claim that evaluate/commit/trade/
+	// reveal actually ran; the live-verdict clause must say only what the
+	// heartbeat proves (the loop is ticking).
+	const ledger = architecture.slice(
+		architecture.indexOf("function HonestyLedger"),
+	);
+	const tbody = ledger.slice(
+		ledger.indexOf("<tbody>"),
+		ledger.indexOf("</tbody>"),
+	);
+	const rebalanceRow = tbody
+		.split("<tr>")
+		.slice(1)
+		.find((row) => row.includes("Autonomous rebalance loop"));
+	const liveBranch = rebalanceRow.slice(
+		rebalanceRow.indexOf("agentStatus.alive ? ("),
+		rebalanceRow.indexOf(") : ("),
+	);
+	assert.doesNotMatch(
+		liveBranch,
+		/evaluate, commit, trade, reveal/,
+		"the live-verdict clause claims the full commit/trade/reveal mechanism ran off a signal (heartbeat) that doesn't measure it — same defect class this PR exists to police",
+	);
+	assert.match(liveBranch, /heartbeat/i);
+});

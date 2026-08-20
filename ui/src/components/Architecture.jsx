@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from "react";
 import { apiGet } from "../api";
+import { fetchAgentStatus } from "../agentStatus";
 import { fetchHealth } from "../health";
 import flowDiagramSrc from "../assets/flow-diagram.svg";
 
@@ -52,8 +53,10 @@ function useArchStats() {
 		// vault_monitor.py surfaces per-vault (`agent_alive = age < 600`) —
 		// the honesty ledger's rebalance-loop row reads it live rather than
 		// asserting a static claim, same anti-rot rule as every other number
-		// on this page (see the module docstring).
-		apiGet("/api/agent/status")
+		// on this page (see the module docstring). TTL-cached the same way as
+		// /health (#1382 review) — the endpoint does four Redis reads plus an
+		// Arc RPC round-trip per call and carries no rate limit of its own.
+		fetchAgentStatus()
 			.then(setAgentStatus)
 			.catch(() => setAgentStatusError(true));
 	}, []);
@@ -1073,11 +1076,13 @@ function HonestyLedger({ health, healthError, agentStatus, agentStatusError }) {
 								) : agentStatus.alive ? (
 									<>
 										<LedgerStatus tone="live">Live</LedgerStatus>{" "}
-										— runs on a schedule against every deployed vault
-										(evaluate, commit, trade, reveal); runner heartbeat
-										confirmed within the last 10 minutes on the
-										dedicated runner instance (relocated off the old
-										detached EC2 box, #1043/#1065)
+										— the runner loop is ticking: heartbeat confirmed
+										within the last 10 minutes on the dedicated runner
+										instance (relocated off the old detached EC2 box,
+										#1043/#1065). The heartbeat is written after every
+										tick, including a failed one, and independently of
+										dry-run — it confirms the loop is alive, not that a
+										given tick reached commit/trade/reveal
 									</>
 								) : (
 									<>

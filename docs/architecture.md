@@ -263,7 +263,7 @@ RunCommand pulls the fresh image + restarts the EC2 pair's systemd units; regist
 `archimedes-kb-runner` task-definition revision for kb).
 ```
 
-- Web tier cut over to Fargate 2026-07-09 (#1056–#1059) — decision and consequences in [`adr/ec2-to-ecs-fargate-cutover.md`](adr/ec2-to-ecs-fargate-cutover.md); the old web-tier EC2 box was stopped and snapshotted 2026-08-19 (`snap-02edf9e4a9ac7f201`) and its terraform removed (PR #1265, merged 2026-08-19) — Phase-8 decommission complete. **Note:** [`CLAUDE.md`](../CLAUDE.md) § Deployment still describes EC2/docker-compose as the live picture — superseded (§9).
+- Web tier cut over to Fargate 2026-07-09 (#1056–#1059) — decision and consequences in [`adr/ec2-to-ecs-fargate-cutover.md`](adr/ec2-to-ecs-fargate-cutover.md); the old web-tier EC2 box was stopped and snapshotted 2026-08-19 (`snap-02edf9e4a9ac7f201`) and its terraform removed (PR #1265, merged 2026-08-19) — Phase-8 decommission complete.
 - Contract-address SSOT: Foundry broadcast → [`infra/ecs.tf`](../infra/ecs.tf) env (merged PR #1079) → `GET /api/config/contracts`; [`ui/src/config.js`](../ui/src/config.js) carries the matching hand-synced set (runtime fetch is the durable fix, not yet landed).
 - Local dev parity: one [`docker-compose.yml`](../docker-compose.yml) with `localdb` + `runners` profiles mirrors prod.
 - LLM: Bedrock in-region; BYOK and Ollama keep the single-user/local path AWS-optional.
@@ -285,7 +285,7 @@ RunCommand pulls the fresh image + restarts the EC2 pair's systemd units; regist
 
 ## 9. Doc-vs-code disagreements found (flag for cleanup)
 
-1. **[`CLAUDE.md`](../CLAUDE.md) § Tech Stack / Deployment** — ~~said the EC2/docker-compose stack "remains the accurate live picture"~~ **fixed 2026-07-14** (same branch as this map): Fargate/ALB/Aurora/ElastiCache is the live picture, EC2 detached-but-running; "11 contracts deployed" corrected to 12 sources / 570 live instances (T3.2 census above).
+1. **[`CLAUDE.md`](../CLAUDE.md) § Tech Stack / Deployment** — ~~said the EC2/docker-compose stack "remains the accurate live picture"~~ **fixed 2026-07-14** (same branch as this map): Fargate/ALB/Aurora/ElastiCache is the live picture; the web-tier EC2 box itself was stopped, snapshotted, and its terraform removed 2026-08-19 (Phase-8 decommission complete, §7 above) — "11 contracts deployed" corrected to 12 sources / 570 live instances (T3.2 census above).
 2. **[`docs/architectural-principles.md`](architectural-principles.md)** — "three top-level agents" mermaid + `services/portfolio_agent.py` path. Generation is debate-only now ([`agents/generation_pipeline.py`](../backend/archimedes/agents/generation_pipeline.py)); the file actually lives at [`agents/portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py). The three-agent framing survived only as UI copy on the pre-#1192 Architecture page, and went away when that page was rebuilt (PR #1192, 2026-07-28).
 3. **[`docs/specs/commit-reveal-trace-spec.md`](specs/commit-reveal-trace-spec.md)** — cites `backend/archimedes/services/trace_publisher.py`; actual: [`backend/archimedes/chain/trace_publisher.py`](../backend/archimedes/chain/trace_publisher.py). Spec status says "proposal / v1.5 hop"; commit-reveal is implemented and contract-enforced (`Vault.sol:422`).
 4. **[`docs/user-stories.md`](user-stories.md)** — "GLM-backed" MVP framing; live LLM is Bedrock/Nova Micro via the Converse seam. Also predates marketplace/leaderboard surfaces.
