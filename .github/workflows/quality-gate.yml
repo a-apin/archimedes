@@ -9,8 +9,9 @@
 #   ruff linter    — full `ruff check` (broader rule set; not blocking yet)
 #   eslint         — npm run lint
 #   coverage       — unit coverage vs 60% floor (agent PRs only)
-#   supply-chain   — pip-audit + npm audit + detect-secrets (non-blocking; see
-#                    the supply-chain job below for the promote-to-hard-block note)
+#   supply-chain   — pip-audit + npm audit (ui prod, ui dev, wallet-setup) +
+#                    detect-secrets (non-blocking; see the supply-chain job
+#                    below for the promote-to-hard-block note)
 
 name: Quality Gate
 
@@ -315,9 +316,17 @@ jobs:
 
   supply-chain:
     # INFORMATIONAL ONLY — every step runs with continue-on-error and the job
-    # never blocks merge. It surfaces dependency CVEs (pip-audit + npm audit)
-    # and leaked-secret regressions (detect-secrets) as a PR-comment table so
-    # the signal is visible without gating the build.
+    # never blocks merge. It surfaces dependency CVEs (pip-audit + npm audit
+    # across BOTH npm projects, ui/ and wallet-setup/) and leaked-secret
+    # regressions (detect-secrets) as a PR-comment table so the signal is
+    # visible without gating the build.
+    #
+    # Coverage note (#1198): this job used to be blind to wallet-setup/'s
+    # dependencies entirely, and to ui/'s devDependencies (--omit=dev on the
+    # only npm audit step). Both are now separate rows in the report table —
+    # a reader should never infer "clean" for a scope this job doesn't
+    # actually measure. wallet-setup/ has no devDependencies today, so one
+    # audit covers it; ui/ gets a prod row and a dev-only-delta row.
     #
     # Informational first; promote dependency audits to hard-block once known
     # CVE backlog is cleared. Until then, a red row is a triage nudge, not a wall.
@@ -336,7 +345,9 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: |
+            ui/package-lock.json
+            wallet-setup/package-lock.json
 
       - name: pip-audit
         id: pip_audit
@@ -359,22 +370,105 @@ jobs:
           out.write(f"count={count}\n")
           EOF
 
-      - name: npm audit
-        id: npm_audit
+      - name: npm audit (ui, prod)
+        id: npm_audit_ui_prod
         continue-on-error: true
         run: |
           cd ui
           # --omit=dev mirrors the prod-only audit we run locally (see CLAUDE.md
           # supply-chain conventions). --json emits the structured report.
-          npm audit --omit=dev --json > /tmp/npm_audit.json 2>/dev/null || true
+          npm audit --omit=dev --json > /tmp/npm_audit_ui_prod.json 2>/dev/null || true
           python3 - <<'EOF'
           import json, os
           # npm audit --json shape: {"metadata": {"vulnerabilities": {"total": N, ...}}}.
-          data = json.load(open("/tmp/npm_audit.json"))
-          count = data.get("metadata", {}).get("vulnerabilities", {}).get("total", 0)
+          # On failure (no lockfile, registry/network error) npm still emits
+          # valid JSON, but as {"error": {"code": ..., ...}} with no "metadata"
+          # key. #1198 was filed because a scope this job never measured still
+          # rendered green; falling through .get("metadata", {}) to count=0
+          # reintroduces that exact defect for the audit's own error path. Treat
+          # a missing report as a distinct, visibly-not-clean outcome instead.
+          try:
+              data = json.load(open("/tmp/npm_audit_ui_prod.json"))
+          except Exception:
+              data = {}
           out = open(os.environ["GITHUB_OUTPUT"], "a")
-          out.write(f"result={'passed' if count == 0 else 'not passed'}\n")
-          out.write(f"count={count}\n")
+          if "metadata" not in data:
+              out.write("result=error\n")
+              out.write(f"count={data.get('error', {}).get('code', 'unknown')}\n")
+          else:
+              count = data["metadata"].get("vulnerabilities", {}).get("total", 0)
+              out.write(f"result={'passed' if count == 0 else 'not passed'}\n")
+              out.write(f"count={count}\n")
+          EOF
+
+      - name: npm audit (ui, dev)
+        id: npm_audit_ui_dev
+        continue-on-error: true
+        # #1198: --omit=dev on the step above structurally excludes
+        # devDependencies (4 of the 14 alerts that accumulated silently pre-
+        # #1155 were exactly this). Run the unrestricted audit and report the
+        # dev-only delta as its own row, rather than folding it into "prod"
+        # silently or dropping --omit=dev and losing the prod-only signal.
+        run: |
+          cd ui
+          npm audit --json > /tmp/npm_audit_ui_full.json 2>/dev/null || true
+          python3 - <<'EOF'
+          import json, os
+          # Same missing-report guard as the prod step above. Also: the delta
+          # below is only meaningful if the prod baseline is itself trustworthy
+          # — if that step's report was unparsable, "full - prod" would quietly
+          # compute a wrong delta against an implied prod count of 0. Propagate
+          # the upstream error instead of manufacturing a number from it.
+          try:
+              full = json.load(open("/tmp/npm_audit_ui_full.json"))
+          except Exception:
+              full = {}
+          prod_result = "${{ steps.npm_audit_ui_prod.outputs.result }}"
+          prod_count_raw = "${{ steps.npm_audit_ui_prod.outputs.count }}"
+          out = open(os.environ["GITHUB_OUTPUT"], "a")
+          if "metadata" not in full:
+              out.write("result=error\n")
+              out.write(f"count={full.get('error', {}).get('code', 'unknown')}\n")
+          elif prod_result == "error":
+              out.write("result=error\n")
+              out.write(f"count=prod-audit-{prod_count_raw or 'unknown'}\n")
+          else:
+              full_count = full["metadata"].get("vulnerabilities", {}).get("total", 0)
+              prod_count = int(prod_count_raw or "0")
+              count = max(full_count - prod_count, 0)
+              out.write(f"result={'passed' if count == 0 else 'not passed'}\n")
+              out.write(f"count={count}\n")
+          EOF
+
+      - name: npm audit (wallet-setup)
+        id: npm_audit_wallet
+        continue-on-error: true
+        # #1198: wallet-setup/ was never audited by any CI job. It is a real
+        # npm project with runtime (not dev) deps used by ops scripts
+        # (create-wallet.mjs, deploy.mjs, rotate-secret.mjs, setvault.mjs) —
+        # production-risk surface, not tooling noise. No --omit=dev: the
+        # project has no devDependencies today, so the unrestricted audit is
+        # already the runtime-only scope.
+        run: |
+          cd wallet-setup
+          npm audit --json > /tmp/npm_audit_wallet.json 2>/dev/null || true
+          python3 - <<'EOF'
+          import json, os
+          # Same missing-report guard as the ui audit steps above — see the
+          # comment there for why a missing "metadata" key must not read as
+          # count=0.
+          try:
+              data = json.load(open("/tmp/npm_audit_wallet.json"))
+          except Exception:
+              data = {}
+          out = open(os.environ["GITHUB_OUTPUT"], "a")
+          if "metadata" not in data:
+              out.write("result=error\n")
+              out.write(f"count={data.get('error', {}).get('code', 'unknown')}\n")
+          else:
+              count = data["metadata"].get("vulnerabilities", {}).get("total", 0)
+              out.write(f"result={'passed' if count == 0 else 'not passed'}\n")
+              out.write(f"count={count}\n")
           EOF
 
       - name: detect-secrets
@@ -415,26 +509,44 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const fmt = r => r === 'passed' ? '✅ passed' : '❌ not passed';
-            const pipResult   = fmt('${{ steps.pip_audit.outputs.result }}');
-            const pipCount    = '${{ steps.pip_audit.outputs.count }}' || '0';
-            const npmResult   = fmt('${{ steps.npm_audit.outputs.result }}');
-            const npmCount    = '${{ steps.npm_audit.outputs.count }}' || '0';
+            // 'error' is a distinct third outcome (audit didn't run — no
+            // lockfile, registry failure, etc.) and must render as neither
+            // ✅ nor ❌: a reader should never infer "clean" OR "vulnerable"
+            // for a scope this job structurally failed to measure.
+            const fmt = r => r === 'passed' ? '✅ passed' : r === 'error' ? '⚠️ audit did not run' : '❌ not passed';
+            const pipResult      = fmt('${{ steps.pip_audit.outputs.result }}');
+            const pipCount       = '${{ steps.pip_audit.outputs.count }}' || '0';
+            const npmUiProdResult = fmt('${{ steps.npm_audit_ui_prod.outputs.result }}');
+            const npmUiProdCount  = '${{ steps.npm_audit_ui_prod.outputs.count }}' || '0';
+            const npmUiDevResult  = fmt('${{ steps.npm_audit_ui_dev.outputs.result }}');
+            const npmUiDevCount   = '${{ steps.npm_audit_ui_dev.outputs.count }}' || '0';
+            const npmWalletResult = fmt('${{ steps.npm_audit_wallet.outputs.result }}');
+            const npmWalletCount  = '${{ steps.npm_audit_wallet.outputs.count }}' || '0';
             const secResult   = fmt('${{ steps.detect_secrets.outputs.result }}');
             const secCount    = '${{ steps.detect_secrets.outputs.count }}' || '0';
 
-            const marker = '<!-- supply-chain-v1 -->';
+            // Match on the version-agnostic prefix, not the exact v2 string, so
+            // bumping the marker updates an existing v1 comment in place rather
+            // than orphaning it — leaving both the stale, scope-silent v1 table
+            // AND the new v2 table visible on every PR that had a v1 comment
+            // before this change (verified live on #1095 and #1271).
+            const markerPrefix = '<!-- supply-chain-v';
+            const marker = '<!-- supply-chain-v2 -->';
             const body = [
               marker,
               '## Supply Chain (informational)',
               '',
               'Non-blocking. Promote dependency audits to hard-block once known',
-              'CVE backlog is cleared.',
+              'CVE backlog is cleared. Scope per row is explicit — a row not',
+              'listed here is not covered by this job (see GitHub\'s native',
+              'Dependabot tab for the full picture).',
               '',
               '| Check | Status | Count |',
               '|---|---|---|',
-              `| pip-audit (python deps) | ${pipResult} | ${pipCount} |`,
-              `| npm audit (frontend prod deps) | ${npmResult} | ${npmCount} |`,
+              `| pip-audit (backend, python deps) | ${pipResult} | ${pipCount} |`,
+              `| npm audit (ui, **prod-only**) | ${npmUiProdResult} | ${npmUiProdCount} |`,
+              `| npm audit (ui, **dev-only**) | ${npmUiDevResult} | ${npmUiDevCount} |`,
+              `| npm audit (wallet-setup, runtime deps) | ${npmWalletResult} | ${npmWalletCount} |`,
               `| detect-secrets (changed files) | ${secResult} | ${secCount} |`,
             ].join('\n');
 
@@ -444,7 +556,7 @@ jobs:
               issue_number: context.issue.number,
             });
 
-            const existing = comments.find(c => c.body.includes(marker));
+            const existing = comments.find(c => c.body.includes(markerPrefix));
             if (existing) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
