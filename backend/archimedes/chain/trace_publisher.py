@@ -156,7 +156,8 @@ class TracePublisher:
 
         Returns:
             (trace_id, tx_hash, commit_block, reverted) — trace_id is the on-chain id
-            needed to reveal; trace_id/tx_hash/commit_block are None on failure.
+            needed to reveal; trace_id/tx_hash/commit_block are None when no tx was
+            sent at all (missing commit(), send failure) — NOT on a revert.
             ``reverted`` is True only on a CONFIRMED on-chain revert (status=0) — a
             reverted commit still has a real tx_hash (kept for the diagnostic
             trail), so callers gating further on-chain action MUST check
