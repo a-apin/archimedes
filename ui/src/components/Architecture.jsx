@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from "react";
 import { apiGet } from "../api";
+import { fetchHealth } from "../health";
 import flowDiagramSrc from "../assets/flow-diagram.svg";
 
 function fmtNum(n) {
@@ -30,7 +31,11 @@ function useArchStats() {
 		apiGet("/api/config/contracts")
 			.then(setContracts)
 			.catch(() => setContractsError(true));
-		apiGet("/health")
+		// Shared TTL-cached call (#1333 review) — Layout.jsx's footer pill and
+		// ModelCostPanel.jsx also read /health; fetchHealth() (../health.js)
+		// lets a nav that lands here reuse Layout's just-fetched response
+		// instead of firing a second Arc RPC round-trip + DB reads.
+		fetchHealth()
 			.then(setHealth)
 			.catch(() => setHealthError(true));
 		// scope=curated pinned deliberately: this stat is labeled "the public

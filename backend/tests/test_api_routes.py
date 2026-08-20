@@ -315,7 +315,10 @@ class TestStrategyRoutes:
         the LIVE gate on persisted returns — NOT the fixture boolean. ``seeded_db``
         only seeds Buy-and-Hold's backtest, so Moreira-Muir has no live returns and
         the badge must be ``pending`` (False), even though its fixture row says True.
-        The fixture-derived display metric (dsr_p_value) still flows for rendering."""
+        #1187: the numeric rigor fields (dsr_p_value etc.) are None alongside the
+        pending badge — never the fixture-derived number (that was the claim-
+        integrity bug #1187 fixed; a concrete pending badge next to a concrete
+        fixture number was self-contradictory)."""
         strategies = _list_all_strategies(client)
         # Match Moreira-Muir specifically by its full title. A bare "Volatility"
         # substring also matches Ang-Hodrick's "The Cross-Section of Volatility
@@ -329,6 +332,55 @@ class TestStrategyRoutes:
         # No live returns for this strategy → pending, NOT a fixture True/False.
         assert mm["rigor_gate_status"] == "pending"
         assert mm["passes_rigor_gate"] is False, "fixture boolean must NOT drive the live badge (#821)"
+        # #1187: pending must mean pending — no fixture-sourced number rendered
+        # as if it were measured.
+        assert mm["dsr_p_value"] is None, f"dsr_p_value must be None when pending (#1187); got {mm['dsr_p_value']}"
+        assert mm["pbo_score"] is None, f"pbo_score must be None when pending (#1187); got {mm['pbo_score']}"
+        assert mm["deflated_sharpe_ratio"] is None, (
+            f"deflated_sharpe_ratio must be None when pending (#1187); got {mm['deflated_sharpe_ratio']}"
+        )
+        assert mm["out_of_sample_sharpe"] is None, (
+            f"out_of_sample_sharpe must be None when pending (#1187); got {mm['out_of_sample_sharpe']}"
+        )
+
+    def test_advisor_serves_null_not_fixture_when_live_gate_empty(self, client, seeded_db):
+        """#1187 (``_rigor_fields``, the advisor's own copy of the leaderboard's
+        fixed-then-fixed-again fallback): when the live-gate batch returns no
+        result for any strategy, the four numeric rigor fields on EVERY advisor
+        allocation must render ``None`` — never the migrated fixture value on
+        the in-memory ``Strategy`` object. Not vacuous: reverting just this
+        fallback (restoring ``else st.<field>`` on the four keys) makes this
+        fail — an allocation then serves the exact fixture constants
+        (0.277212 / 0.339938 / 0.910213) from
+        ``backend/tests/fixtures/backtest_fixtures_snapshot.json``, confirmed
+        by hand against the pre-fix code."""
+        from archimedes.api import strategies_routes as sr
+
+        with patch.object(sr, "_live_rigor_results_for_strategies", return_value={}):
+            resp = client.get("/api/strategies/advisor?risk_profile=moderate")
+        assert resp.status_code == 200
+        allocations = resp.json()["allocations"]
+        assert allocations, "advisor returned no allocations to check"
+        for a in allocations:
+            # The rule-based aggregate row (id "agg_<symbol>") does not carry
+            # rigor_gate_status forward (_RIGOR_KEYS omits it) — passes_rigor_gate
+            # is the field available on every row, and must stay the fail-closed
+            # default.
+            assert a["passes_rigor_gate"] is False, f"{a.get('id')}: passes_rigor_gate must be fail-closed False"
+            assert a["deflated_sharpe_ratio"] is None, (
+                f"{a.get('id')}: deflated_sharpe_ratio must be None, not the fixture value; "
+                f"got {a['deflated_sharpe_ratio']}"
+            )
+            assert a["dsr_p_value"] is None, (
+                f"{a.get('id')}: dsr_p_value must be None, not the fixture value; got {a['dsr_p_value']}"
+            )
+            assert a["pbo_score"] is None, (
+                f"{a.get('id')}: pbo_score must be None, not the fixture value; got {a['pbo_score']}"
+            )
+            assert a["out_of_sample_sharpe"] is None, (
+                f"{a.get('id')}: out_of_sample_sharpe must be None, not the fixture value; "
+                f"got {a['out_of_sample_sharpe']}"
+            )
 
     def test_list_strategies_reports_degraded_when_provider_raises(self, client):
         """#1356: a provider failure must be visible on the wire as

@@ -31,6 +31,21 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`architectural-principles.md`](architectural-principles.md) | current | Dan Browne | 2026-07-28 | The four primitives the product is built to defend. |
 | [`anti-features.md`](anti-features.md) | current | Dan Browne | 2026-07-28 | What Archimedes deliberately does not build. |
 
+## API reference
+
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`api/README.md`](api/README.md) | current | Dan Browne | 2026-08-20 | Index of the API reference: per-surface docs, the auth-model overview table, and the `/docs` (Swagger) production-gate note. |
+| [`api/auth-and-accounts.md`](api/auth-and-accounts.md) | current | Dan Browne | 2026-08-20 | The Better Auth sidecar (`/api/auth/*`): email/password + OAuth, session lookup, email verification. |
+| [`api/wallets.md`](api/wallets.md) | current | Dan Browne | 2026-08-20 | `/api/wallets/*` — EIP-4361 wallet-link challenge/verify. |
+| [`api/generation.md`](api/generation.md) | current | Dan Browne | 2026-08-20 | `/api/generate/*` — the debate-society generation pipeline, its x402 payment gate, and daily quotas. |
+| [`api/strategies-and-rigor.md`](api/strategies-and-rigor.md) | current | Dan Browne | 2026-08-20 | `/api/strategies/*` and `/api/selection-bias/*` — the strategy library, portfolio advisor, stress testing, and the rigor gate. |
+| [`api/paper-trading.md`](api/paper-trading.md) | current | Dan Browne | 2026-08-20 | `/api/paper/*` — deploy a strategy to an append-only, never-rewritten forward-return ledger. |
+| [`api/vaults-and-chain.md`](api/vaults-and-chain.md) | current | Dan Browne | 2026-08-20 | `/api/vaults/*`, `/api/traces/*`, `/api/swap/*`, `/api/config/contracts`, and the health/root endpoints. |
+| [`api/chat.md`](api/chat.md) | current | Dan Browne | 2026-08-20 | `/api/vaults/{address}/chat*` — per-vault chat: public reads, linked-wallet writes, internal-only system events. |
+| [`api/leaderboard-and-metrics.md`](api/leaderboard-and-metrics.md) | current | Dan Browne | 2026-08-20 | `/api/leaderboard` and the public, PII-free `/api/metrics/*` traction surface. |
+| [`api/admin-private.md`](api/admin-private.md) | current | Dan Browne | 2026-08-20 | `/api/metrics/private/*` — the platform-admin-gated cost/ops dashboard and per-wallet identity roster. |
+
 ## Product
 
 | Doc | Status | Owner | Last verified | What it is |

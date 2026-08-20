@@ -61,9 +61,14 @@ def _to_strategy_response(
     ``out_of_sample_sharpe``) so the leaderboard can never disagree with
     ``GET /api/selection-bias/gate`` for a given strategy id. ``None`` means the
     live gate could not run for this strategy (no/insufficient persisted returns,
-    or a batch/DB failure); the numeric fields then fall back to the stale
-    ``s.<field>``/``bt.<field>`` fixture values exactly as before — the fallback
-    is unchanged, only the preferred source is new. When ``verdict is None``
+    or a batch/DB failure); the numeric fields then render as ``None`` — the API's
+    honest "not run" — rather than falling back to ``s.<field>``/``bt.<field>``
+    (#1187: those columns trace back to a migrated test-fixture snapshot
+    (``backend/tests/fixtures/backtest_fixtures_snapshot.json``, PR #863) that
+    predates the current DSR convention (raw vs. excess returns) and gate
+    threshold (#901, 0.95 → 0.90) and cannot be reproduced by any single code
+    version — presenting it as a measured number next to a ``pending`` badge is a
+    claim-integrity defect, not a display nicety). When ``verdict is None``
     (single-strategy fetch) ``rigor_result`` is also computed on demand here.
     """
     from archimedes.api.schemas import PaperRefResponse
@@ -144,40 +149,24 @@ def _to_strategy_response(
         if s.real_corr_spy is not None
         else (bt.correlation_to_spy if bt else s.stub_corr_spy),
         total_trades=s.real_total_trades if s.real_total_trades is not None else (bt.total_trades if bt else None),
-        # Numeric rigor fields (#868): prefer the LIVE gate result — the SAME
-        # run_rigor_gate call that produced `verdict` above — so the leaderboard
-        # can never disagree with GET /api/selection-bias/gate for this id.
-        # rigor_result is None when the live gate could not run (no/insufficient
-        # persisted returns, or a batch failure); fall back to the best stored
-        # value (s.<field> fixture first, then bt.<field> from the backtest row).
-        deflated_sharpe_ratio=(
-            rigor_result.deflated_sharpe
-            if rigor_result is not None
-            else (
-                s.deflated_sharpe_ratio
-                if s.deflated_sharpe_ratio is not None
-                else (bt.deflated_sharpe_ratio if bt else None)
-            )
-        ),
-        dsr_p_value=(
-            rigor_result.dsr_p_value
-            if rigor_result is not None
-            else (s.dsr_p_value if s.dsr_p_value is not None else (bt.dsr_p_value if bt else None))
-        ),
-        pbo_score=(
-            rigor_result.pbo_score
-            if rigor_result is not None
-            else (s.pbo_score if s.pbo_score is not None else (bt.pbo_score if bt else None))
-        ),
-        out_of_sample_sharpe=(
-            rigor_result.oos_sharpe
-            if rigor_result is not None
-            else (
-                s.out_of_sample_sharpe
-                if s.out_of_sample_sharpe is not None
-                else (bt.out_of_sample_sharpe if bt else None)
-            )
-        ),
+        # Numeric rigor fields (#868, honesty fix #1187): SOLELY the LIVE gate
+        # result — the SAME run_rigor_gate call that produced `verdict` above —
+        # so the leaderboard can never disagree with GET /api/selection-bias/gate
+        # for this id. rigor_result is None when the live gate could not run
+        # (no/insufficient persisted returns, or a batch failure); the field then
+        # renders None (served as the API's honest "not run"), NEVER the stale
+        # s.<field> / bt.<field> values. Those trace back to a migrated
+        # test-fixture snapshot (#1187) that predates the current DSR convention
+        # and gate threshold and cannot be reproduced by any single code version —
+        # falling back to it silently re-labels a `pending` verdict's numbers as
+        # measured. Do not reintroduce the s.<field>/bt.<field> fallback here;
+        # that is precisely the defect #1187 tracks. The basic display metrics
+        # below (sharpe_ratio, cagr, etc.) are a DIFFERENT, out-of-scope concern —
+        # they are descriptive backtest stats, not a rigor-gate pass/fail claim.
+        deflated_sharpe_ratio=(rigor_result.deflated_sharpe if rigor_result is not None else None),
+        dsr_p_value=(rigor_result.dsr_p_value if rigor_result is not None else None),
+        pbo_score=(rigor_result.pbo_score if rigor_result is not None else None),
+        out_of_sample_sharpe=(rigor_result.oos_sharpe if rigor_result is not None else None),
         kelly_fraction=s.kelly_fraction,
         # Badge from the LIVE gate verdict (#821) — never the fixture boolean.
         # passes_rigor_gate is the fail-closed boolean (True only when status=="pass");
@@ -258,14 +247,14 @@ def _live_rigor_result_for_one(s: Strategy) -> RigorGateResult | None:
     fetch carries the same cohort PBO + avg correlation context as the list.
     ``num_trials`` is self-contained (1, decouple #2) — it does NOT come from
     the library size. Returns ``None`` on no/insufficient persisted returns or
-    any failure — the caller must fall back to the stale fixture fields rather
-    than fabricate a number, matching the fail-closed badge contract.
+    any failure — the caller (#1187) renders that as the numeric fields being
+    ``None``, never a fabricated number, matching the fail-closed badge contract.
     """
     try:
         cohort = _library_cohort_including(s)
         return _live_rigor_results_for_strategies(cohort).get(s.id)
     except Exception as exc:
-        logger.warning("live rigor gate failed for %s (numbers → stale fallback): %s", s.id, exc)
+        logger.warning("live rigor gate failed for %s (numbers → None): %s", s.id, exc)
         return None
 
 
@@ -284,14 +273,16 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
     strategy. ``num_trials`` is self-contained (1 per strategy, decouple #2) —
     it is NOT derived from this cohort. Strategies with no/insufficient
     persisted returns are simply absent from the returned dict — the caller
-    falls back to the stale fixture fields for those ids (fail-closed: no
-    fabricated number for a strategy the live gate cannot evaluate). A
-    degenerate (zero-variance) series IS graded and included here — it just
-    runs with self-contained cohort context (see the ``gate_kwargs`` branch
-    below) so it can't dilute ``avg_correlation`` for the rest of the cohort.
+    (#1187) serves ``None`` for those ids' numeric rigor fields (fail-closed:
+    no fabricated number for a strategy the live gate cannot evaluate; the
+    pre-#1187 fixture-field fallback is gone). A degenerate (zero-variance)
+    series IS graded and included here — it just runs with self-contained
+    cohort context (see the ``gate_kwargs`` branch below) so it can't dilute
+    ``avg_correlation`` for the rest of the cohort.
 
-    Any DB or cohort-compute failure degrades to ``{}`` (every id falls back to
-    the stale fields) rather than raising into the library-list response.
+    Any DB or cohort-compute failure degrades to ``{}`` (every id's numeric
+    rigor fields render ``None``) rather than raising into the library-list
+    response.
 
     **Perf (Library page load latency):** the batch cohort compute below (PBO,
     average correlation, per-strategy look-ahead code load, one ``run_rigor_gate``
@@ -309,8 +300,8 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
     open (any cache-layer error falls back to calling the compute closure
     directly), so a cache bug can only make a request slow, never wrong. It also
     never caches the ``{}`` failure sentinel (``cache_if=bool``) so
-    a transient cohort-compute failure can't strand every strategy on stale
-    fallback fields for the full TTL.
+    a transient cohort-compute failure can't strand every strategy on ``None``
+    numeric rigor fields for the full TTL.
     """
     if not strategies:
         return {}
@@ -325,7 +316,7 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
         with get_session() as session:
             returns_by_strategy = get_all_daily_returns(session, strategy_ids)
     except Exception as exc:
-        logger.warning("live rigor result batch: DB read failed (all → stale fallback): %s", exc)
+        logger.warning("live rigor result batch: DB read failed (all → None): %s", exc)
         return {}
 
     from archimedes.services.rigor_cache import cohort_key, get_or_compute
@@ -374,7 +365,7 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
             # same fail-closed contract as the rest of this cohort-context block).
             assert_self_contained_cohort_correlation(num_trials, avg_correlation)
         except Exception as exc:
-            logger.warning("live rigor result batch: cohort-context compute failed (all → stale fallback): %s", exc)
+            logger.warning("live rigor result batch: cohort-context compute failed (all → None): %s", exc)
             return {}
 
         # Load code for every strategy that has >= 10 returns — degenerate series
@@ -388,7 +379,7 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
         for s in strategies:
             daily_returns = returns_by_strategy.get(s.id, [])
             if len(daily_returns) < 10:
-                continue  # No sufficient returns — caller falls back to stale fields
+                continue  # No sufficient returns — caller (#1187) serves None, never a fixture number
             if s.id in valid_returns:
                 # Non-degenerate series: num_trials is self-contained (1, decouple
                 # #2); pbo_scores / avg_correlation still come from the cohort so
@@ -415,14 +406,14 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
                     **gate_kwargs,
                 )
             except Exception as exc:
-                logger.warning("live rigor gate failed for %s in batch (numbers → stale fallback): %s", s.id, exc)
+                logger.warning("live rigor gate failed for %s in batch (numbers → None): %s", s.id, exc)
         return computed
 
     # cache_if=bool: `_compute()` returns `{}` on a transient
     # cohort-context compute failure (see the `except Exception` above), and an
     # empty dict must never be memoized — caching it would make that transient
-    # failure "sticky" for the full TTL, serving every strategy's stale
-    # fallback fields long after the underlying failure has passed (Copilot
+    # failure "sticky" for the full TTL, serving every strategy's numeric rigor
+    # fields as None long after the underlying failure has passed (Copilot
     # review, PR #1040). The live `{}` is still returned to THIS caller either
     # way; only whether it's written to the store for the NEXT caller changes.
     return get_or_compute(cache_key, _compute, cache_if=bool)
@@ -988,18 +979,20 @@ async def get_portfolio_advisor(
         # (#868 contract, mirrored from _to_strategy_response): the fixture fields
         # on the in-memory object are frozen values the live gate never wrote, so
         # serving them next to a live badge let the advisor's numbers disagree
-        # with GET /api/selection-bias/gate. Fall back to the stored fixture value
-        # only when the live gate could not run for this strategy — the fallback
-        # is the documented #868 behavior, only the preferred source changes.
+        # with GET /api/selection-bias/gate. SOLELY the live result (honesty fix
+        # #1187, same scope as _to_strategy_response): these five fields render
+        # None — never st.<field> — when the live gate could not run for this
+        # strategy. Do not reintroduce the st.<field> fallback here; that is
+        # precisely the defect #1187 tracks, now closed for both response paths.
         _live = advisor_results.get(st.id)
         return {
             "passes_rigor_gate": _verdict.passes if _verdict else False,
             "rigor_gate_status": _verdict.status if _verdict else "pending",
-            "deflated_sharpe_ratio": _live.deflated_sharpe if _live else st.deflated_sharpe_ratio,
-            "dsr_p_value": _live.dsr_p_value if _live else st.dsr_p_value,
-            "num_trials_in_selection": _live.num_trials if _live else st.num_trials_in_selection,
-            "pbo_score": _live.pbo_score if _live else st.pbo_score,
-            "out_of_sample_sharpe": _live.oos_sharpe if _live else st.out_of_sample_sharpe,
+            "deflated_sharpe_ratio": _live.deflated_sharpe if _live else None,
+            "dsr_p_value": _live.dsr_p_value if _live else None,
+            "num_trials_in_selection": _live.num_trials if _live else None,
+            "pbo_score": _live.pbo_score if _live else None,
+            "out_of_sample_sharpe": _live.oos_sharpe if _live else None,
             "paper_claimed_sharpe": st.paper_claimed_sharpe,
             "paper_claimed_cagr": st.paper_claimed_cagr,
             "paper_claimed_max_dd": st.paper_claimed_max_dd,
@@ -2104,12 +2097,38 @@ async def rename_strategy(
     NOT recomputed — they are provenance of the original generation, not of the
     display name. The strategy_passports table carries no display-name column,
     so only strategy_store is updated.
+
+    Legacy-wallet fallback (#1283): a pre-account row (``owner_user_id`` NULL)
+    matched via the caller's linked wallet is reclaimed onto canonical account
+    ownership in the same transaction as the rename, using the same bulk claim
+    (``claim_legacy_wallet_data``) a verified wallet link performs — but
+    scoped to the strategy-side tables only (``StrategyRecord`` /
+    ``StrategyPassportRecord`` / ``StrategyProposal``), with
+    ``include_profile=False``. The write is irreversible (no un-claim path)
+    and reaches every unclaimed strategy row for this wallet, not just the
+    one being renamed — that is judged acceptable here because it can only
+    ever touch rows already tied to a wallet ``get_linked_wallet_address``
+    resolves for *this* account (a wallet linked elsewhere 409s at link time;
+    see ``_link_verified_wallet``), the same reach a real wallet re-link would
+    have. ``vault_metadata`` and ``user_profiles`` are deliberately excluded:
+    a rename has no business moving vault ownership — that 409-gates on
+    ``owner_user_id`` being ``None`` specifically so a legitimately
+    transferred on-chain owner can still write it, and a stale reclaim here
+    would slam that door shut with no way back — or adopting a PII-bearing
+    profile on a lookup that never asked for a fresh signature. Full
+    reclaim of those two legs stays behind the signature-verified wallet-link
+    flow. This migrates pre-account strategy rows toward zero over time;
+    deleting the fallback branch entirely is a follow-up gated on verifying
+    no unclaimed rows remain.
     """
     from datetime import datetime
 
     from fastapi import HTTPException
 
+    from archimedes.api.wallet_routes import claim_legacy_wallet_data
     from archimedes.db import get_session
+    from archimedes.models.strategy_passport_record import StrategyPassportRecord
+    from archimedes.models.strategy_proposal import StrategyProposal
     from archimedes.models.strategy_store import StrategyRecord
 
     name = payload.get("name")
@@ -2125,9 +2144,26 @@ async def rename_strategy(
             # Curated examples are not user-owned — same 404 as a missing row.
             raise HTTPException(status_code=404, detail="Strategy not found")
         caller = get_linked_wallet_address(request)
-        is_owner = row.owner_user_id == user.id or (
-            row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower()
-        )
+        is_owner = row.owner_user_id == user.id
+        if not is_owner and row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower():
+            # Proven via linked-wallet match on a still-unclaimed row: reclaim
+            # every pre-account STRATEGY row tied to this wallet (not just
+            # this one), matching what re-verifying the wallet link would do
+            # for those tables. vault_metadata/user_profiles are excluded —
+            # see the docstring above.
+            claim_legacy_wallet_data(
+                session,
+                user.id,
+                caller,
+                models=(
+                    (StrategyRecord, StrategyRecord.owner_wallet),
+                    (StrategyPassportRecord, StrategyPassportRecord.owner_wallet),
+                    (StrategyProposal, StrategyProposal.owner_wallet),
+                ),
+                include_profile=False,
+            )
+            row.owner_user_id = user.id
+            is_owner = True
         if not is_owner:
             # Hide unpublished rows from non-owners (404); published rows are
             # visible, so an honest 403 is returned instead.
