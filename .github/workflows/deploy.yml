@@ -131,6 +131,12 @@ concurrency:
   # split into a cancellable build phase + queued deploy phase: separate
   # concurrency groups would let run B's migrate interleave into run A's
   # migrate→deploy window, deploying older code against a newer schema.
+  #
+  # Caveat for incident response: a MANUAL workflow_dispatch (e.g. a rollback)
+  # shares this group, so during a merge burst it queues behind the in-flight
+  # run and may replace a pending one. If a rollback must jump the line,
+  # cancel the in-progress/pending runs in the Actions UI first, then
+  # dispatch.
   cancel-in-progress: false
 
 permissions:
