@@ -1007,6 +1007,211 @@ def _compute_indicator_value(name: str, period: int, prices: pd.Series) -> float
     raise DSLError(f"unsupported indicator: {name}")
 
 
+def _rsi_wilder_series(prices: pd.Series, period: int) -> pd.Series:
+    """Per-bar Wilder RSI — the whole-series twin of ``_compute_indicator_value``.
+
+    Same seed (plain mean of the first ``period`` moves) and same recursion
+    (``avg = (avg*(period-1) + current) / period``), just carried forward once
+    instead of re-derived per prefix, so value[i] == the scalar the prefix
+    ``prices.iloc[:i+1]`` would produce. NaN before the seed is complete.
+    """
+    n = len(prices)
+    out = np.full(n, np.nan, dtype=float)
+    if period < 1 or n < 2:
+        return pd.Series(out, index=prices.index)
+
+    raw = prices.to_numpy(dtype=float)
+    diff = np.diff(raw)  # diff[k] is the move INTO price position k + 1
+    # ``_compute_indicator_value`` drops NaN moves before seeding; mirror that
+    # by carrying the kept moves' positions so a gap in the series shifts both
+    # implementations identically instead of only one of them.
+    kept = np.flatnonzero(~np.isnan(diff))
+    if len(kept) < period:
+        return pd.Series(out, index=prices.index)
+
+    gains = np.where(diff > 0, diff, 0.0)[kept]
+    losses = np.where(diff < 0, -diff, 0.0)[kept]
+    avg_gain = float(gains[:period].mean())
+    avg_loss = float(losses[:period].mean())
+
+    def _rsi(ag: float, al: float) -> float:
+        if al == 0:
+            return 100.0
+        return float(100.0 - (100.0 / (1.0 + ag / al)))
+
+    out[kept[period - 1] + 1] = _rsi(avg_gain, avg_loss)
+    for j in range(period, len(kept)):
+        avg_gain = (avg_gain * (period - 1) + gains[j]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[j]) / period
+        out[kept[j] + 1] = _rsi(avg_gain, avg_loss)
+    return pd.Series(out, index=prices.index)
+
+
+def _compute_indicator_series(name: str, period: int, prices: pd.Series) -> pd.Series:
+    """Per-bar values of one indicator over the WHOLE series.
+
+    The vectorised twin of ``_compute_indicator_value``: element *i* equals
+    ``_compute_indicator_value(name, period, prices.iloc[: i + 1])`` for every
+    bar the scalar form can compute, pinned per-bar by
+    ``test_interpreter_parity.test_indicator_series_matches_per_prefix_value``.
+    Existing to make the position-state replay (audit F2) O(bars) instead of
+    O(bars²) — a per-prefix rescan of Wilder RSI on a 2-year window is ~125k
+    Python iterations per (strategy, asset) per tick.
+
+    NaN in the warm-up region is deliberate and load-bearing: the backtest reads
+    an unready indicator as NaN too (``DSLStrategy._bar_values``'s IndexError
+    guard), and NaN comparisons are False in ``_eval_condition`` — so a warm-up
+    bar decides "no entry / no exit" on BOTH sides rather than diverging.
+    """
+    if name == "sma":
+        return prices.rolling(period).mean().astype(float)
+    if name == "ema":
+        return prices.ewm(span=period, adjust=False).mean().astype(float)
+    if name == "rsi":
+        return _rsi_wilder_series(prices, period)
+    if name == "momentum":
+        return (prices / prices.shift(period) - 1.0).astype(float)
+    if name == "realized_vol":
+        # rolling().std() is NaN until a full window of returns exists, where the
+        # scalar form's .tail(period).std() silently computes on a short window.
+        # The replay only ever reads bars at/after max_period, so the two agree
+        # everywhere the replay looks; the difference is confined to the warm-up
+        # region the insufficient-data guard already refuses to trade on.
+        return (prices.pct_change().rolling(period).std() * np.sqrt(252)).astype(float)
+    raise DSLError(f"unsupported indicator: {name}")
+
+
+# ─── Position-state replay — the live FSM (audit F2 + F3) ─────────
+#
+# THE DIVERGENCE THIS EXISTS FOR. The backtest is a position FSM
+# (dsl_to_backtrader.DSLStrategy.next): entry is only tested while FLAT, exit is
+# only tested while IN POSITION, and a bar where neither branch fires is an
+# implicit HOLD. The live evaluator used to be stateless — ``entry AND NOT
+# exit``, recomputed from scratch each tick with no memory — so an RSI 30/70
+# band strategy was long in the backtest and in cash live on the very same bar
+# (audit F2): the whole dead zone between the bands (30 <= rsi <= 70), where
+# entry is false AND exit is false, collapsed to FLAT live.
+#
+# On top of that the live path never read ``rebalance_frequency`` at all (audit
+# F3), so a spec declaring monthly cadence was re-decided on every one of the
+# ~288 ticks a day, gated only by the runner's flat 15% drift threshold.
+#
+# STATE APPROACH: REPLAY-DERIVED, not persisted. The position is recomputed by
+# replaying the spec's own FSM over the same price window the signal is computed
+# from, every tick. Rationale:
+#   * Deterministic and restart-safe — a redeploy, a crash, a Redis flush or a
+#     second runner process all derive the SAME state from the same prices.
+#     Persisted per-strategy state would silently reset to "flat" on restart,
+#     which the FSM cannot tell from a genuine first entry.
+#   * Exactly-once by construction. Signals are produced ONCE per tick per
+#     (strategy, asset) but consumed by N vaults; a mutable persisted state
+#     advanced in the per-vault loop would tick 2+ times per tick for a strategy
+#     bound to 2+ vaults and corrupt its transitions. A pure function of the
+#     price window cannot be double-advanced.
+#   * No new persistence, no migration, no backfill, and nothing to reconcile
+#     when a strategy is re-bound to a different vault.
+#   * A missing-bars tick degrades honestly: the replay simply runs over the
+#     bars that exist and the insufficient-data guard still refuses to trade —
+#     it can never mistake a vendor gap for an exit, because there is no stored
+#     "last position" for a gap to contradict.
+# It matches how paper trading already derives position state (paper_trading.
+# replay_spec re-runs the full backtest on every advance rather than
+# checkpointing), so all three surfaces now agree by construction.
+#
+# KNOWN LIMIT, stated plainly: the cadence grid is anchored to the first
+# post-warm-up bar of the window handed to the evaluator, exactly as the
+# backtest anchors it (``_rebal_counter = period - 1``). Live, that window is a
+# rolling 2-year fetch, so the grid's phase shifts by one bar per new trading
+# day — a monthly strategy re-decides roughly every 21 bars, but not on a fixed
+# calendar date. Intraday (the ~288-ticks-a-day case F3 is about) the daily bars
+# are identical, so the position is provably constant within a day. A stable
+# epoch anchor would fix the phase but would no longer match the backtest, and
+# the backtest FSM is the semantic contract.
+
+
+@dataclass(frozen=True)
+class PositionReplay:
+    """Position state derived by replaying a spec's FSM over a price window."""
+
+    in_market: bool
+    decision_index: int | None  # 0-based bar of the LAST cadence-eligible decision
+    decision_count: int  # cadence-eligible bars the FSM actually evaluated
+    entered_index: int | None  # bar the currently-open position was entered on
+
+
+def _replay_position_state(
+    spec: StrategySpec,
+    prices: pd.Series,
+    max_period: int,
+) -> PositionReplay:
+    """Replay the spec's position FSM over ``prices`` → state at the last bar.
+
+    Bar-for-bar equivalent of ``DSLStrategy.next()``:
+      * bars at index < ``max_period`` are warm-up and never decide anything
+        (backtrader's ``len(self) <= self._warmup`` gate — the first bar the
+        backtest can act on is 0-based index ``max_period``, for every
+        indicator this DSL supports);
+      * the cadence gate runs BEFORE the entry/exit branches, so an off-cadence
+        bar is never even exit-tested (a held position stays held through it);
+      * entry is only evaluated while flat, exit only while in position, and a
+        bar where the active branch is false is a HOLD.
+
+    Raises DSLError if the spec references an indicator this module cannot
+    compute — the caller turns that into a loud FLAT, never a silent long.
+    """
+    from archimedes.services.dsl_to_backtrader import _eval_condition, rebalance_period_bars
+
+    period_bars = rebalance_period_bars(spec.rebalance_frequency)
+    closes = prices.to_numpy(dtype=float)
+    n = len(closes)
+
+    indicator_cols: dict[str, np.ndarray] = {
+        alias: _compute_indicator_series(name, period, prices).to_numpy(dtype=float)
+        for alias, (name, period) in _indicator_periods(spec).items()
+    }
+
+    in_market = False
+    entered_index: int | None = None
+    decision_index: int | None = None
+    decision_count = 0
+
+    for t in range(max_period, n):
+        # Cadence gate FIRST — mirrors DSLStrategy._should_rebalance, whose
+        # counter is seeded to period-1 so the first post-warm-up bar always
+        # rebalances (offsets 0, period, 2*period, … from that bar).
+        if period_bars > 1 and (t - max_period) % period_bars != 0:
+            continue
+
+        px = float(closes[t])
+        bar_values: dict[str, float] = {
+            "close": px,
+            "open": px,
+            "high": px,
+            "low": px,
+            "volume": 0.0,
+        }
+        for alias, col in indicator_cols.items():
+            bar_values[alias] = float(col[t])
+
+        decision_index = t
+        decision_count += 1
+
+        if not in_market:
+            if _eval_condition(spec.entry, bar_values):
+                in_market = True
+                entered_index = t
+        elif _eval_condition(spec.exit, bar_values):
+            in_market = False
+            entered_index = None
+
+    return PositionReplay(
+        in_market=in_market,
+        decision_index=decision_index,
+        decision_count=decision_count,
+        entered_index=entered_index,
+    )
+
+
 def _spec_signal(
     strategy_id: str,
     asset: str,
@@ -1016,10 +1221,18 @@ def _spec_signal(
     """Evaluate a validated DSL spec against live prices → AssetSignal.
 
     Pure Python — NO backtrader.Strategy / Cerebro / full backtest in the tick
-    path. Validates the spec (cached), guards insufficient data, computes each
-    referenced indicator from the price Series, evaluates the entry/exit
-    condition tree via the shared ``_eval_condition``, and sizes the position by
+    path. Validates the spec (cached), guards insufficient data, then REPLAYS the
+    spec's position FSM over the price window (``_replay_position_state``) to get
+    the state at the current bar, and sizes the position by
     ``position_sizing.type``.
+
+    The replay is what makes this agree with the backtest (audit F2/F3): the
+    position is HELD through the dead zone where entry and exit are both false,
+    and entry/exit are only re-decided on bars the declared
+    ``rebalance_frequency`` makes eligible. Sizing is evaluated as of that last
+    decision bar, not the current one — otherwise an off-cadence bar could still
+    move the target weight and re-open the hole F3 is about (for daily specs the
+    two are the same bar, so daily behaviour is unchanged).
 
     On a DSLError (invalid spec) it logs loudly and returns a FLAT signal with an
     explicit reason — it NEVER silently buys-and-holds.
@@ -1058,18 +1271,12 @@ def _spec_signal(
             reason=f"insufficient data ({len(prices)} bars, need {max_period + 1})",
         )
 
-    # Compute bar_values for the condition tree: raw price operands + each
-    # indicator alias the spec references.
-    bar_values: dict[str, float] = {
-        "close": float(prices.iloc[-1]),
-        "open": float(prices.iloc[-1]),
-        "high": float(prices.iloc[-1]),
-        "low": float(prices.iloc[-1]),
-        "volume": 0.0,
-    }
+    # Replay the spec's position FSM over the window (audit F2 + F3). The
+    # condition tree is evaluated inside the replay via the SAME
+    # ``_eval_condition`` the backtest uses; ``_replay_position_state`` imports it
+    # lazily so backtrader stays out of the API/runner module-load chain.
     try:
-        for alias, (name, period) in periods.items():
-            bar_values[alias] = _compute_indicator_value(name, period, prices)
+        replay = _replay_position_state(spec, prices, max_period)
     except DSLError as exc:
         logger.error(
             "DSL indicator compute failed for strategy %s asset %s: %s — returning FLAT",
@@ -1086,34 +1293,46 @@ def _spec_signal(
             reason=f"spec invalid: {exc}",
         )
 
-    # Evaluate entry/exit via the SAME condition tree the backtest uses. Lazy
-    # import keeps backtrader out of the module-load import chain (dsl_to_backtrader
-    # imports backtrader at top level; _eval_condition itself is pure Python).
-    from archimedes.services.dsl_to_backtrader import _eval_condition
+    close = float(prices.iloc[-1])
+    cadence = spec.rebalance_frequency
 
-    # The runner is stateless across ticks here (no position memory), so we treat
-    # "in market" as: entry true AND NOT exit. This is the live snapshot of the
-    # spec's market-membership predicate.
-    in_market = _eval_condition(spec.entry, bar_values) and not _eval_condition(spec.exit, bar_values)
-
-    if not in_market:
+    if replay.decision_index is None:
+        # Unreachable given the insufficient-data guard above (bar max_period is
+        # always cadence-eligible), but never imply a position that was never
+        # derived — say so instead of falling through to a weight.
         return AssetSignal(
             strategy_id=strategy_id,
             strategy_name=strategy_name,
             asset=asset,
             signal=Signal.FLAT,
             weight=0.0,
-            reason=f"entry/exit conditions → out of market (close={bar_values['close']:.2f})",
+            reason=f"no {cadence} decision bar in window ({len(prices)} bars)",
         )
 
-    # Position sizing → weight.
+    decision_index = replay.decision_index
+    held_bars = len(prices) - 1 - decision_index
+    cadence_note = f"{cadence} cadence, {replay.decision_count} decision bar(s), held {held_bars} bar(s) since"
+
+    if not replay.in_market:
+        return AssetSignal(
+            strategy_id=strategy_id,
+            strategy_name=strategy_name,
+            asset=asset,
+            signal=Signal.FLAT,
+            weight=0.0,
+            reason=f"position FSM → out of market ({cadence_note}; close={close:.2f})",
+        )
+
+    # Position sizing → weight, evaluated AS OF the last decision bar so an
+    # off-cadence bar cannot move the target weight (see the docstring).
+    decision_prices = prices.iloc[: decision_index + 1]
     ps = spec.position_sizing or {}
     ps_type = ps.get("type", "full_invested_when_in_market")
 
     if ps_type == "volatility_target":
         annual_pct = ps.get("annual_pct")
         # 22-day realized-vol window matches _vol_managed_signal's vol_window.
-        realized_vol = _compute_indicator_value("realized_vol", 22, prices)
+        realized_vol = _compute_indicator_value("realized_vol", 22, decision_prices)
         weight = 1.0 if not annual_pct or realized_vol <= 0 else min(float(annual_pct) / realized_vol, 1.0)
         signal_type = Signal.LONG if weight >= 0.95 else Signal.SCALED
         return AssetSignal(
@@ -1122,7 +1341,10 @@ def _spec_signal(
             asset=asset,
             signal=signal_type,
             weight=round(weight, 4),
-            reason=(f"in market; vol-target {annual_pct} / realized {realized_vol:.1%} → weight {weight:.0%}"),
+            reason=(
+                f"in market since bar {replay.entered_index}; vol-target {annual_pct} / "
+                f"realized {realized_vol:.1%} → weight {weight:.0%} ({cadence_note})"
+            ),
         )
 
     # full_invested_when_in_market / equal_weight / inverse_vol → full exposure
@@ -1133,7 +1355,7 @@ def _spec_signal(
         asset=asset,
         signal=Signal.LONG,
         weight=1.0,
-        reason=f"in market (close={bar_values['close']:.2f}) → long",
+        reason=f"in market since bar {replay.entered_index} ({cadence_note}; close={close:.2f}) → long",
     )
 
 
@@ -1266,8 +1488,9 @@ class StrategySignalEvaluator:
 
             if use_spec:
                 logger.info(
-                    "Strategy '%s' → DSL-spec path (interpreting validated spec)",
+                    "Strategy '%s' → DSL-spec path (interpreting validated spec, %s cadence)",
                     strategy.paper_title,
+                    spec_dict.get("rebalance_frequency", "unknown"),
                 )
                 evaluator = lambda sid, asset, prices, _spec=spec_dict: _spec_signal(sid, asset, prices, _spec)  # noqa: E731
             else:

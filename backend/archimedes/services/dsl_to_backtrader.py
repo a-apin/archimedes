@@ -88,6 +88,26 @@ def _make_indicator(
     raise DSLError(f"unsupported indicator: {name}")
 
 
+# ── Rebalance cadence ─────────────────────────────────────────────────
+
+# Trading-day proxy for each cadence in strategy_dsl.REBALANCE_FREQUENCIES.
+# Deliberately module-level rather than a closure method: the LIVE evaluator
+# replays this exact gate (strategy_signal_evaluator._replay_position_state,
+# divergence audit F3), so cadence has ONE definition and the two interpreters
+# of the DSL cannot drift apart on it the way they drifted on momentum (F1) and
+# RSI (F5). test_interpreter_parity.py pins the pair per-bar.
+_REBALANCE_PERIOD_BARS: dict[str, int] = {"daily": 1, "weekly": 5, "monthly": 21}
+
+
+def rebalance_period_bars(frequency: str) -> int:
+    """Bars between rebalances for a declared cadence.
+
+    Unknown/daily → 1 (every bar). Trading-day proxies, NOT calendar months:
+    weekly = 5 bars, monthly = 21 bars.
+    """
+    return _REBALANCE_PERIOD_BARS.get(frequency, 1)
+
+
 # ── Strategy factory ──────────────────────────────────────────────────
 
 
@@ -150,12 +170,12 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
 
         @staticmethod
         def _rebalance_period() -> int:
-            """Bars between rebalances for the spec's rebalance frequency."""
-            if spec.rebalance_frequency == "weekly":
-                return 5
-            if spec.rebalance_frequency == "monthly":
-                return 21
-            return 1
+            """Bars between rebalances for the spec's rebalance frequency.
+
+            Delegates to the module-level ``rebalance_period_bars`` so the live
+            evaluator's cadence replay reads the SAME table (audit F3).
+            """
+            return rebalance_period_bars(spec.rebalance_frequency)
 
         def _should_rebalance(self) -> bool:
             if spec.rebalance_frequency == "daily":
