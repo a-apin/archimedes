@@ -143,6 +143,27 @@ class AnalyticsArtifactModel(BaseModel):
 #   other top-level key (`strategy`, `assumptions`, `integrity_flags`,
 #   `operations`) — these describe what was measured and how, which is
 #   exactly the content two "identical" runs must agree on to collapse.
+#
+# Writer-call-site coverage — every place that mints a `content_hash` for
+# `backtest_results`, checked individually rather than assumed from "the two
+# producers that build run_id/timestamp_utc-bearing artifacts":
+# - `scripts/run_backtests.py` — calls `canonical_artifact_hash` on the
+#   analytics-engine `cli.py` artifact directly. Covered from day one.
+# - `scripts/seed_backtests_from_artifacts.py` — calls
+#   `canonical_artifact_hash` on the same `cli.py`-shaped artifact, replayed
+#   from disk. Covered from day one.
+# - `agents/generation_pipeline.py`'s `SOURCE_PIPELINE_PORTFOLIO_BACKTESTER`
+#   writer — builds its `artifact` via `portfolio_backtester.backtest_portfolio`
+#   (same run_id/timestamp_utc shape as `cli.py`) but used to hash it with an
+#   ad hoc `hashlib.sha256(artifact_json)` that never excluded those keys, so
+#   this ONE writer stayed unfixed even after this function was. Now routed
+#   through `canonical_artifact_hash` too (issue #1347 follow-up review).
+# - `agents/generation_pipeline.py`'s `SOURCE_PIPELINE_DSL_FUSION` writer —
+#   still its own ad hoc `hashlib.sha256(artifact_json)`, left AS IS. Its
+#   artifact (`{"results": ..., "source": ..., "data_source": ...}`) never
+#   included `run_id`/`timestamp_utc` in the first place, so it never had
+#   this bug and doesn't need this function — noted here so "every writer
+#   enumerated" doesn't silently mean "the two that were convenient to check."
 _VOLATILE_HASH_KEYS: frozenset[str] = frozenset({"run_id", "timestamp_utc"})
 
 
