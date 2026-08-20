@@ -74,13 +74,32 @@ test("Layout.jsx: the footer pill no longer derives from NEW_CONTRACTS (acceptan
 	assert.doesNotMatch(layout, /NEW_CONTRACTS/);
 });
 
-test("Layout.jsx: the pill is driven by deriveChainStatus off a single /health fetch, not a new polling loop", () => {
+test("Layout.jsx: the pill is driven by deriveChainStatus off a bounded /health re-fetch, not a new polling loop", () => {
 	assert.match(layout, /from ["']\.\.\/chainStatus["']/);
 	assert.match(layout, /deriveChainStatus\(health, healthError\)/);
 	assert.match(layout, /apiGet\(["']\/health["']\)/);
-	// Anti-goal: no new polling loop — a single effect-on-mount fetch only.
+	// Anti-goal: no new polling loop — the effect only re-runs on an actual
+	// in-app navigation (dep: `page`), never on a timer.
 	assert.doesNotMatch(layout, /setInterval/);
-	assert.match(layout, /\}, \[\]\);/); // the health-fetch effect has an empty dep array
+	// #1333 review: an empty dep array here meant Layout — reconciled, not
+	// remounted, across route changes (AuthenticatedApp.jsx renders it with
+	// no `key`) — fetched /health exactly once per session, so an outage
+	// beginning after mount stayed invisible for the rest of the session.
+	// The effect must re-run per navigation instead.
+	assert.match(layout, /\}, \[page\]\);/);
+});
+
+test("Layout.jsx: a successful re-fetch clears a prior healthError, so recovery after an outage is reachable", () => {
+	// #1333 review follow-up: re-fetching on navigation is pointless if a
+	// single earlier failure pins healthError=true for the rest of the
+	// session — deriveChainStatus treats healthError as sticky-unknown
+	// regardless of what a later successful fetch reports.
+	const successBlock = layout.match(
+		/apiGet\(["']\/health["']\)\s*\.then\(\(d\) => \{([\s\S]*?)\}\)\s*\.catch/,
+	);
+	assert.ok(successBlock, "apiGet('/health').then(...) block not found");
+	assert.match(successBlock[1], /setHealth\(d\)/);
+	assert.match(successBlock[1], /setHealthError\(false\)/);
 });
 
 test("Layout.jsx: the dot and label both carry the derived tone, so unknown/disconnected are visually distinct from live", () => {

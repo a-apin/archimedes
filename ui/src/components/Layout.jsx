@@ -145,16 +145,34 @@ export default function Layout({
 	const proofStage =
 		(page === "generate" ? journeyStage : null) ?? CORE_PAGE_STAGE[page];
 
-	// Chain-status pill (#1321): a single fetch on mount, not a polling loop —
-	// the shell doesn't need a live-updating dot, it needs an HONEST one. The
-	// "unknown" tone (deriveChainStatus, ../chainStatus.js) covers both the
-	// pre-resolution window and a failed fetch, so a backend outage can never
-	// silently render as "Arc · Testnet live".
+	// Chain-status pill (#1321): re-fetches /health on mount and on every
+	// in-app navigation (dep: `page`) — not a polling loop, a bounded
+	// re-derivation. Layout sits at a stable position in the tree
+	// (AuthenticatedApp.jsx renders it with no `key`, so React reconciles
+	// rather than remounts across route changes), so an empty dep array here
+	// would mean an outage that begins mid-session stays invisible until the
+	// tab is reloaded — the same fail-soft failure #1321 was filed for, just
+	// time-bounded instead of permanent. The "unknown" tone (deriveChainStatus,
+	// ../chainStatus.js) covers both the pre-resolution window and a failed
+	// fetch, so a backend outage in progress at mount OR surfaced by the next
+	// navigation never silently renders as "Arc · Testnet live". A tab left
+	// idle on a single page for the whole session still won't repaint until
+	// the user navigates — that gap is accepted, not solved, by design: it
+	// stays bounded by the next click rather than growing unbounded, without
+	// adding the polling loop this issue explicitly ruled out.
 	useEffect(() => {
 		let cancelled = false;
 		apiGet("/health")
 			.then((d) => {
-				if (!cancelled) setHealth(d);
+				if (!cancelled) {
+					setHealth(d);
+					// Clear a prior failure so a fetch on a later navigation can
+					// report recovery — without this, one failed /health call
+					// pins the pill on "unknown" for the rest of the session even
+					// after the backend comes back, defeating the re-fetch this
+					// effect now does on every `page` change.
+					setHealthError(false);
+				}
 			})
 			.catch(() => {
 				if (!cancelled) setHealthError(true);
@@ -162,7 +180,7 @@ export default function Layout({
 		return () => {
 			cancelled = true;
 		};
-	}, []);
+	}, [page]);
 
 	// Lock body scroll while the mobile nav drawer is open — otherwise the
 	// page content underneath can still scroll behind the fixed overlay/drawer,
