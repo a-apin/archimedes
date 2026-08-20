@@ -192,12 +192,23 @@ test("startErrorMessage: plain-string detail (401, account_auth.py) renders verb
 });
 
 test("startErrorMessage: falls back honestly, never crashes, on a missing/malformed detail", () => {
-	assert.equal(startErrorMessage({ status: 500 }, "fallback text"), "fallback text");
+	// No `err.status` (e.g. a network TypeError) → the bare fallback, nothing to name.
 	assert.equal(startErrorMessage(null, "fallback text"), "fallback text");
 	assert.equal(startErrorMessage({}), "Failed to start generation");
 	// A detail object with no usable `message` string must not crash or leak
 	// [object Object] — falls back same as an absent detail.
 	assert.equal(startErrorMessage({ detail: { reason: "something" } }, "fallback"), "fallback");
+});
+
+test("startErrorMessage: fallback NAMES the HTTP status when known, never the bare status-echo issue #1363 fixed", () => {
+	// This is the property the function's own JSDoc claims: a detail-less
+	// failure (nginx 502 HTML body, a bare 500) must still be more diagnostic
+	// than the old `e.message` echo, not strictly less. A build that just
+	// returns the caller's literal fallback (dropping the status) fails this.
+	assert.equal(startErrorMessage({ status: 500 }, "fallback text"), "fallback text (HTTP 500)");
+	const msg = startErrorMessage({ status: 502 }, "Failed to start generation");
+	assert.match(msg, /502/);
+	assert.doesNotMatch(msg, /^Backend returned /);
 });
 
 // ── DEPTH_OPTIONS: must equal the pipeline's actually enforced range,

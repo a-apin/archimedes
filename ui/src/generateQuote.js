@@ -123,11 +123,13 @@ export function paymentErrorMessage(err, fallback) {
  *   - a plain string — the slowapi burst-limit 429 and the 401's
  *     "Authentication required", both FastAPI/slowapi convention.
  * Either shape renders VERBATIM — same rule paymentErrorMessage's docstring
- * states for the faucet caveat, never re-worded. Falls back to `fallback`
- * (a short, honest sentence naming the status — never the bare `Backend
- * returned <status>` echo api.js's Error.message carries) when detail is
- * absent or malformed, so this never crashes and never regresses to the
- * status-echo issue #1363 fixed.
+ * states for the faucet caveat, never re-worded. When detail is absent or
+ * malformed, falls back to `fallback` (default "Failed to start
+ * generation") — appending the HTTP status when `err.status` is known, so
+ * the fallback is itself a short, honest sentence naming the status, never
+ * the bare `Backend returned <status>` echo api.js's Error.message carries.
+ * This never crashes and never regresses to the status-echo issue #1363
+ * fixed.
  */
 export function startErrorMessage(err, fallback) {
 	const detail = err?.detail;
@@ -135,7 +137,8 @@ export function startErrorMessage(err, fallback) {
 	if (detail && typeof detail === "object" && typeof detail.message === "string" && detail.message.trim()) {
 		return detail.message;
 	}
-	return fallback || "Failed to start generation";
+	const base = fallback || "Failed to start generation";
+	return err?.status ? `${base} (HTTP ${err.status})` : base;
 }
 
 /**
