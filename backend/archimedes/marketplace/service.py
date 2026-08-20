@@ -377,15 +377,17 @@ class MarketService:
 
             for step in PIPELINE_STEPS:
                 # charge everyone still active for reaching this step
-                active = await self._charge_step(pub, active, strategy_id, tick_id, step)
+                active, charge_suppressed_ids = await self._charge_step(pub, active, strategy_id, tick_id, step)
                 # execute the step; publisher work runs regardless of subscriber count
                 try:
                     result = await step_runners[step]()
                 except Exception as exc:
-                    await self._halt_publisher(active, strategy_id, tick_id, step, str(exc))
+                    await self._halt_publisher(active, strategy_id, tick_id, step, str(exc), charge_suppressed_ids)
                     return
                 if result.halted:
-                    await self._halt_publisher(active, strategy_id, tick_id, step, result.reason or step.value)
+                    await self._halt_publisher(
+                        active, strategy_id, tick_id, step, result.reason or step.value, charge_suppressed_ids
+                    )
                     return
 
             trades = ctx.trades
@@ -423,7 +425,10 @@ class MarketService:
 
             # Settlement sweep (P5) — Gateway → wallet → depositToPool.
             # Runs inside its own try/except so a sweep failure never fails the tick.
-            # Gated on payments_dry_run — sweep disburses real collected fees.
+            # Gated on payments_dry_run here; SettlementSweeper.sweep_publisher
+            # ALSO checks the #1240 PAYMENTS_HALT kill switch internally (not
+            # only here) — sweep disburses real collected fees, so both gates
+            # matter regardless of which callers exist today.
             if not self.payments_dry_run:
                 try:
                     await self._sweeper.sweep_publisher(pub)
@@ -649,12 +654,23 @@ class MarketService:
                 # (non-custodial) trade mirror — the switch stops money moving,
                 # not service. `charged` must reflect the suppressed fee, not
                 # the fictional charged=True the pre-#1240 shape produced.
-                if charge_suppressed:
-                    halt_source = HaltSource.PAYMENTS_HALT
-                    halt_reason = "PAYMENTS_HALT active — no real charge; rebalance still applied"
-                elif not mirrored:
+                #
+                # These two conditions are independent and must be composed,
+                # not treated as if/elif alternatives: a real execution
+                # failure while halted is still a real execution failure — the
+                # underlying vault error (`trades_or_exc`) must not be dropped
+                # from the ledger just because the fee charge was also
+                # suppressed. `not mirrored` takes the halt_source/halt_reason
+                # (the execution failure is the operative fact for this
+                # record); the PAYMENTS_HALT note is appended, not swapped in.
+                if not mirrored:
                     halt_source = HaltSource.EXECUTION
                     halt_reason = str(trades_or_exc)
+                    if charge_suppressed:
+                        halt_reason += " (PAYMENTS_HALT also active — no real charge was attempted)"
+                elif charge_suppressed:
+                    halt_source = HaltSource.PAYMENTS_HALT
+                    halt_reason = "PAYMENTS_HALT active — no real charge; rebalance still applied"
                 else:
                     halt_source = None
                     halt_reason = None
@@ -950,8 +966,19 @@ class MarketService:
 
     # F6.6 — charge all active subscribers for one pipeline step
     # Batched into groups of CHARGE_BATCH_SIZE for concurrent Circle signing.
-    async def _charge_step(self, pub, active, strategy_id, tick_id, step: TickStep):
+    async def _charge_step(self, pub, active, strategy_id, tick_id, step: TickStep) -> tuple[list, set[str]]:
+        """Returns (survivors, charge_suppressed_ids).
+
+        charge_suppressed_ids is the sub_id set of survivors whose charge for
+        *this* step was suppressed by PAYMENTS_HALT rather than actually paid
+        (or dry-run). Callers that later halt the publisher pipeline for these
+        same survivors (_halt_publisher) MUST persist charged=False for them —
+        the whole point of #1240's tick-ledger fix (see _charge_one's
+        docstring); the fix does not hold if a later publisher-halt on the
+        same step re-hardcodes charged=True.
+        """
         survivors = []
+        charge_suppressed_ids: set[str] = set()
         for i in range(0, len(active), CHARGE_BATCH_SIZE):
             chunk = active[i : i + CHARGE_BATCH_SIZE]
             results = await asyncio.gather(
@@ -983,6 +1010,7 @@ class MarketService:
                         )
                     )
                     survivors.append(sub)
+                    charge_suppressed_ids.add(sub.sub_id)
                 elif paid:
                     await self.record_subscriber_tick(
                         SubscriberTickRecord(
@@ -1023,10 +1051,25 @@ class MarketService:
                             "tick_id": tick_id,
                         },
                     )
-        return survivors
+        return survivors, charge_suppressed_ids
 
     # F6.7 — halt all still-active subscribers due to publisher pipeline halt
-    async def _halt_publisher(self, active, strategy_id, tick_id, step: TickStep, reason: str):
+    async def _halt_publisher(
+        self,
+        active,
+        strategy_id,
+        tick_id,
+        step: TickStep,
+        reason: str,
+        charge_suppressed_ids: set[str] | None = None,
+    ):
+        """charge_suppressed_ids: sub_ids whose charge for *this* step was a
+        PAYMENTS_HALT no-op rather than a real/dry-run charge (from
+        _charge_step). Those survivors must NOT be recorded charged=True here
+        just because the publisher pipeline halted on a later step — that
+        would resurrect the exact tick-ledger lie #1240's charge_suppressed
+        fix closed on the happy path (see _charge_one's docstring)."""
+        suppressed = charge_suppressed_ids or set()
         for sub in active:
             await self.record_subscriber_tick(
                 SubscriberTickRecord(
@@ -1038,7 +1081,7 @@ class MarketService:
                     halted=True,
                     halt_source=HaltSource.PUBLISHER,
                     halt_reason=reason,
-                    charged=True,
+                    charged=sub.sub_id not in suppressed,
                     action_count=1,
                 )
             )

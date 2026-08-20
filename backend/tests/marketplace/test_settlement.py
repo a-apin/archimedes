@@ -89,6 +89,42 @@ def test_sweeper_defaults_to_live_mode(settings):
     assert SettlementSweeper(settings, payments_dry_run=True)._payments_dry_run is True
 
 
+# ── PAYMENTS_HALT guard (#1240 kill switch, second round): the automatic
+# per-tick sweep moves real USDC with no human approval step and was
+# previously gated only on payments_dry_run — an operator flipping
+# PAYMENTS_HALT=true did not stop it. Same fail-safe posture as the
+# PAYMENTS_DRY_RUN guard above, read fresh per call (never cached).
+
+
+@pytest.mark.asyncio
+async def test_payments_halt_sweep_publisher_is_noop(settings, pub, monkeypatch):
+    """PAYMENTS_HALT=true stops sweep_publisher from moving real value — no
+    signer/executor touched — even though payments_dry_run is False (live)."""
+    monkeypatch.setenv("PAYMENTS_HALT", "true")
+    sweeper = SettlementSweeper(settings, payments_dry_run=False)
+    sweeper._get_signer = MagicMock(side_effect=AssertionError("signer must not run while PAYMENTS_HALT"))
+    sweeper._get_executor = MagicMock(side_effect=AssertionError("executor must not run while PAYMENTS_HALT"))
+    result = await sweeper.sweep_publisher(pub)
+    assert result is None
+    sweeper._get_signer.assert_not_called()
+    sweeper._get_executor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_payments_halt_false_sweep_publisher_still_runs(sweeper, pub, monkeypatch):
+    """Adversarial companion: PAYMENTS_HALT=false (the default) must NOT
+    block the sweep — proves the guard above isn't a tautology that always
+    skips regardless of the flag's value."""
+    monkeypatch.setenv("PAYMENTS_HALT", "false")
+    with (
+        patch.object(sweeper, "_stage_a_gateway_to_wallet") as mock_a,
+        patch.object(sweeper, "_stage_b_wallet_to_pool") as mock_b,
+    ):
+        await sweeper.sweep_publisher(pub)
+        mock_a.assert_awaited_once_with(pub)
+        mock_b.assert_awaited_once_with(pub)
+
+
 # ── Stage A: Gateway balance below threshold → no withdraw ──────────────
 
 

@@ -21,7 +21,7 @@ from decimal import Decimal
 from circlekit.client import GatewayClient
 from circlekit.wallets import CircleTxExecutor, CircleWalletSigner
 
-from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN, payments_halted
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,20 @@ class SettlementSweeper:
         if self._payments_dry_run:
             logger.info(
                 "[%s] sweep_publisher: PAYMENTS_DRY_RUN — skipping real settlement", getattr(pub, "strategy_id", "?")
+            )
+            return
+        if payments_halted():
+            # #1240 kill switch: read fresh every call (never cached), unlike
+            # payments_dry_run above. This sweep runs automatically every tick
+            # with no human approval step and moves real USDC (Gateway
+            # withdraw -> on-chain gatewayMint -> depositToPool) — exactly the
+            # "real money moving without a deploy" class of transfer the
+            # switch exists to stop. Gating lives HERE (not only at the
+            # tick() call site) for the same reason payments_dry_run is
+            # gated here: a future caller can't forget it.
+            logger.warning(
+                "[%s] sweep_publisher: PAYMENTS_HALT active — skipping real settlement",
+                getattr(pub, "strategy_id", "?"),
             )
             return
         if not pub.agent_wallet_id or not pub.gateway_seller_address:
