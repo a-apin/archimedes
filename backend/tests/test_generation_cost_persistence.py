@@ -215,6 +215,21 @@ class TestRecordGenerationCost:
         assert payload["measurement"]["wall_seconds"] == 99.0
         assert payload["quote"] is not None
 
+    def test_a_value_json_cannot_encode_is_stringified_like_the_job_record_does(self):
+        """The two stores must not disagree about whether a snapshot is
+        writable. ``JobStore`` encodes with ``default=str``; if this one did not,
+        a stray non-JSON meta value would land on the expiring copy and be lost
+        from the durable one — the failure mode hardest to notice, because it
+        looks fine for an hour."""
+        from datetime import datetime as _dt
+
+        exotic = {**_SNAPSHOT, "meta": {"outcome": "done", "stamped_at": _dt(2026, 8, 20, 9, 16)}}
+        with get_session() as session:
+            record_generation_cost(session, job_id="j", strategy_id="s", measurement=exotic)
+            session.commit()
+            payload = generation_cost_for_strategy(session, "s")
+        assert payload["measurement"]["meta"]["stamped_at"] == "2026-08-20 09:16:00"
+
     def test_a_missing_key_is_refused_rather_than_written_unreadable(self):
         with get_session() as session:
             with pytest.raises(ValueError, match="job_id"):

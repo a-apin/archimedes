@@ -156,8 +156,14 @@ def record_generation_cost(
     assert_measurement_only(measurement, where="generation_costs.measurement_json")
 
     schema_version = str(measurement.get("schema") or UNKNOWN_SCHEMA)[:32]
-    measurement_json = json.dumps(measurement, sort_keys=True, ensure_ascii=False)
-    quote_json = json.dumps(dict(quote), sort_keys=True, ensure_ascii=False) if isinstance(quote, Mapping) else None
+    # ``default=str`` mirrors ``JobStore.update_status``/``merge_result``: the
+    # same snapshot is written to both stores, so a value one of them can encode
+    # and the other cannot would silently give the two copies different fates —
+    # the durable row failing while the (expiring) job record succeeds.
+    measurement_json = json.dumps(measurement, sort_keys=True, ensure_ascii=False, default=str)
+    quote_json = (
+        json.dumps(dict(quote), sort_keys=True, ensure_ascii=False, default=str) if isinstance(quote, Mapping) else None
+    )
     now = datetime.now(UTC)
 
     existing = session.query(GenerationCostRecord).filter_by(job_id=job_id, strategy_id=strategy_id).first()
