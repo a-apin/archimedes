@@ -1876,6 +1876,24 @@ class TestComputeBoardLevelFdr:
         assert compute_board_level_fdr({}) == {}
         assert compute_board_level_fdr({"only": None}) == {}
 
+    def test_saturated_dsr_p_value_is_floored_not_zero(self):
+        """dsr_p_value == 1.0 (DSR rounding saturation — e.g. compute_dsr on a
+        long, low-vol, confidently-positive series rounds to exactly 1.0) must
+        NOT convert to a classical p-value of exactly 0.0: an impossible
+        zero-probability certainty claim. It is floored at
+        ``_CLASSICAL_P_FLOOR`` (1e-6) before BH-FDR runs (#1185 code review,
+        2026-08-20), so ``board_fdr_adjusted_p`` / ``board_fdr_confidence``
+        stay strictly inside (0.0, 1.0) rather than snapping to the endpoint.
+        This is not hypothetical: TestBoardLevelFdrWiring's
+        ``_strong_series(0)`` in test_selection_bias_routes.py hits this
+        exact saturated case in the PR's own end-to-end test cohort."""
+        dsr_p_values = {"saturated": 1.0, "b": 0.5, "c": 0.5}
+        result = compute_board_level_fdr(dsr_p_values, fdr_level=0.05)
+
+        assert result["saturated"]["board_fdr_significant"] is True
+        assert 0.0 < result["saturated"]["board_fdr_adjusted_p"] < 1e-4
+        assert 1.0 - 1e-4 < result["saturated"]["board_fdr_confidence"] < 1.0
+
     def test_board_level_correction_is_cohort_size_sensitive(self):
         """The defining property of a BOARD-level (not per-strategy) correction:
         the SAME strategy's verdict can change purely as a function of how many

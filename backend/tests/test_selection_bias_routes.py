@@ -1212,10 +1212,17 @@ class TestBoardLevelFdrWiring:
     async def test_board_level_fdr_field_present_and_matches_pure_function(self, monkeypatch):
         """The response's board_level_fdr + per-strategy board_fdr_* fields must
         reflect an ACTUAL benjamini_hochberg_fdr call over the served cohort's
-        real dsr_p_value outputs — not a placeholder. Cross-checks by feeding
-        the response's own dsr_p_value list back through
+        real dsr_p_value outputs — not a placeholder. Two complementary checks:
+        (1) a cohort-specific outcome the route must produce independently —
+        the strong-series strategy comes back board-FDR-significant while
+        every weak-series one does not, which a stubbed/all-False or
+        all-True `compute_board_level_fdr` would fail; (2) cross-checks by
+        feeding the response's own dsr_p_value list back through
         rigor_evaluator.compute_board_level_fdr directly and asserting the
-        route's numbers match exactly."""
+        route's numbers match exactly — this alone would NOT prove realness
+        (a stub run identically on both sides of the boundary matches itself
+        trivially), so it is a consistency check layered on top of (1), not a
+        substitute for it (#1185 code review, 2026-08-20)."""
         from archimedes.api import selection_bias_routes as routes
         from archimedes.main import app
         from archimedes.services.rigor_evaluator import compute_board_level_fdr
@@ -1256,6 +1263,19 @@ class TestBoardLevelFdrWiring:
         assert data["board_level_fdr"]["fdr_level"] == pytest.approx(0.05)
         assert 0 <= data["board_level_fdr"]["n_significant"] <= data["board_level_fdr"]["n_tested"]
 
+        # Cohort-specific outcome the route must produce on its own: the
+        # strong-series strategy (dsr_p_value near 1.0, classical p near 0)
+        # is the only one that clears the board-level BH threshold across
+        # this 5-strategy cohort; every weak-series strategy (individually
+        # insignificant, and diluted further by sharing the board with 4
+        # others) does not. A stub that always returns True, always False,
+        # or a fixed pattern unrelated to the real dsr_p_values would fail
+        # this — unlike the pure cross-check below, which a stub could pass
+        # trivially by construction.
+        assert by_id[ids[0]]["board_fdr_significant"] is True, "strong-series strategy should clear board-level BH"
+        for sid in tested_ids[1:]:
+            assert by_id[sid]["board_fdr_significant"] is False, f"weak-series strategy {sid} should not clear it"
+
         # Rebuild the correction independently from the SAME served dsr_p_values
         # and require an exact match — proves this is a real computation over
         # the real cohort, not a stub.
@@ -1273,10 +1293,27 @@ class TestBoardLevelFdrWiring:
         board-FDR-NON-significant must not flip a single passes_all verdict —
         the scope decision (compute_board_level_fdr's docstring) is annotation
         only. This is the adversarial check: an implementation bug that
-        accidentally threaded board_fdr_significant into passes_all would be
-        caught here by the verdicts changing when the forced value flips."""
+        accidentally threaded board_fdr_significant into passes_all — whether
+        inside `_compute()` (the natural place #1185 names, where a board-level
+        correction would sit alongside the per-strategy gate) or in the
+        post-cache reconciliation block where the wiring actually lives today —
+        would be caught here by the verdicts changing when the forced value
+        flips.
+
+        Both requests must exercise a REAL (non-cached) `_compute()` run for
+        the `_compute()`-site case to be caught at all: `evaluate_rigor_gate`
+        memoizes `_compute()`'s result in `rigor_cache` keyed on
+        cohort+strictness+code, and the second request below uses the exact
+        same returns/strategies/strictness as the first — so without an
+        explicit `rigor_cache.clear()`, it is guaranteed to be a cache HIT,
+        `_compute()` never re-runs, and a bug living inside it would be
+        invisible to this test regardless of the forced monkeypatch (verified
+        by reverting the `clear()` call below and confirming this test still
+        passes against a `_compute()`-internal mutation that gates passes_all
+        on the forced board_fdr_significant — #1185 code review, 2026-08-20)."""
         from archimedes.api import selection_bias_routes as routes
         from archimedes.main import app
+        from archimedes.services import rigor_cache
 
         strategies = routes._provider().list_strategies()
         assert len(strategies) >= 3
@@ -1305,6 +1342,14 @@ class TestBoardLevelFdrWiring:
                 if p is not None
             },
         )
+
+        # Force a real recompute for the second request. Without this, the
+        # second call has the IDENTICAL cache_key (same strategy_ids, same
+        # patched returns, same code_versions, same strictness) as the first
+        # and is guaranteed to be a rigor_cache HIT — `_compute()` would never
+        # re-run, and this test would be blind to any bug living inside it
+        # (see docstring above).
+        rigor_cache.clear()
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp_forced = await client.get("/api/selection-bias/gate")

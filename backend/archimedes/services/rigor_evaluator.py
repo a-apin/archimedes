@@ -383,9 +383,28 @@ def compute_library_pbo(
     return float(pbo)
 
 
+# Default board-level FDR α (#1185 code review, 2026-08-20). A module constant
+# instead of two independent `= 0.05` defaults (one here, one on
+# selection_bias_routes.BoardLevelFdr.fdr_level): the route reports
+# BoardLevelFdr.fdr_level to the caller but was never passing it into either
+# default, so the two literals could silently diverge if one were edited
+# without the other. selection_bias_routes imports this constant and passes it
+# explicitly to both compute_board_level_fdr() and BoardLevelFdr(...), so the
+# reported α is always sourced from the value the correction actually used.
+DEFAULT_BOARD_FDR_LEVEL = 0.05
+
+# Floor for the DSR->classical p-value conversion below (#1185 code review,
+# 2026-08-20). compute_dsr's dsr_p_value saturates at exactly 1.0 for a long,
+# low-vol, confidently-positive series (rounded via `round(dsr_p_value, 6)` in
+# _dsr_from_stats) — converting that via `1.0 - 1.0` yields classical_p == 0.0,
+# an impossible p-value. Flooring at this resolution reports "as significant as
+# the DSR rounding can actually distinguish" instead of a false certainty.
+_CLASSICAL_P_FLOOR = 1e-6
+
+
 def compute_board_level_fdr(
     dsr_p_values: dict[str, float | None],
-    fdr_level: float = 0.05,
+    fdr_level: float = DEFAULT_BOARD_FDR_LEVEL,
 ) -> dict[str, dict[str, float | bool]]:
     """Board-level Benjamini-Hochberg FDR correction across a leaderboard cohort (#1185).
 
@@ -426,6 +445,15 @@ def compute_board_level_fdr(
     reports back in the ``dsr_p_value`` convention (``board_fdr_confidence = 1 -
     adjusted_p``) so the two numbers read the same way side by side.
 
+    **Saturation floor.** ``dsr_p_value`` can round to exactly 1.0 (a long,
+    confidently-positive series — see ``compute_dsr``'s own rounding), which
+    would convert to ``classical_p == 0.0``: an impossible p-value asserting
+    zero-probability certainty. ``classical_p`` is floored at
+    ``_CLASSICAL_P_FLOOR`` (1e-6) before BH-FDR runs, so the saturated case
+    reports "significant to the resolution the DSR rounding can distinguish"
+    rather than a false exact certainty — ``board_fdr_adjusted_p`` and
+    ``board_fdr_confidence`` are bounded away from 0.0 / 1.0 accordingly.
+
     Args:
         dsr_p_values: ``{strategy_id: dsr_p_value | None}`` for the current
             leaderboard cohort — one entry per strategy, in any order. Entries
@@ -434,9 +462,14 @@ def compute_board_level_fdr(
             p-value) and are ABSENT from the returned dict — the caller's own
             per-strategy MISSING handling covers them, same convention as every
             other rigor-gate field.
-        fdr_level: Target board-level FDR (α). Default 0.05, matching
-            ``benjamini_hochberg_fdr``'s own default and the DSR badge's 0.05
-            complement (dsr_p_min=0.90 at the strictest level).
+        fdr_level: Target board-level FDR (α). Default ``DEFAULT_BOARD_FDR_LEVEL``
+            (0.05), matching ``benjamini_hochberg_fdr``'s own default and the
+            conventional BH significance level. NOT derived from the DSR
+            badge's ``dsr_p_min`` (0.90 at strictest level, PR #901 — complement
+            0.10, not 0.05): the two are deliberately different axes (per-
+            strategy admission bar vs. board-level multiple-testing rate) and
+            the board-level α is intentionally stricter than the badge's
+            implied 0.10, not derived from it.
 
     Returns:
         ``{strategy_id: {"board_fdr_significant": bool, "board_fdr_adjusted_p":
@@ -447,7 +480,7 @@ def compute_board_level_fdr(
     if not ids:
         return {}
 
-    classical_pvalues = [1.0 - dsr_p_values[sid] for sid in ids]
+    classical_pvalues = [max(_CLASSICAL_P_FLOOR, 1.0 - dsr_p_values[sid]) for sid in ids]
     bh = benjamini_hochberg_fdr(classical_pvalues, fdr_level=fdr_level)
 
     out: dict[str, dict[str, float | bool]] = {}

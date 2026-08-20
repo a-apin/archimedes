@@ -14,6 +14,7 @@ from fastapi import APIRouter, Query, Request, Response
 
 from archimedes.api.limiter import limiter
 from archimedes.services.rigor_evaluator import (
+    DEFAULT_BOARD_FDR_LEVEL,
     assert_self_contained_cohort_correlation,
     compute_average_pairwise_correlation,
     compute_board_level_fdr,
@@ -108,7 +109,11 @@ class BoardLevelFdr(BaseModel):
     than fabricated.
     """
 
-    fdr_level: float = 0.05
+    # Sourced from DEFAULT_BOARD_FDR_LEVEL (rigor_evaluator) as a schema default
+    # ONLY — the value actually reported by any real response is passed
+    # explicitly at construction (see evaluate_rigor_gate below) so this field
+    # can never silently diverge from the α compute_board_level_fdr ran at.
+    fdr_level: float = DEFAULT_BOARD_FDR_LEVEL
     n_tested: int = 0  # cohort size m: strategies with a finite dsr_p_value
     n_significant: int = 0  # count of board_fdr_significant == True after correction
 
@@ -156,6 +161,12 @@ class StrategyRigorResult(BaseModel):
     # None/MISSING convention above).
     board_fdr_significant: bool | None = None
     board_fdr_adjusted_p: float | None = None
+    # board_fdr_confidence (1 - board_fdr_adjusted_p, same read-direction as
+    # dsr_p_value) — computed by compute_board_level_fdr but previously never
+    # wired past it (dead field, #1185 code review 2026-08-20). Surfaced here
+    # rather than dropped: it is the more honest number to show alongside
+    # dsr_p_value, since both now read "large = confident" the same way.
+    board_fdr_confidence: float | None = None
 
 
 class RigorGateResponse(BaseModel):
@@ -491,17 +502,21 @@ async def evaluate_rigor_gate(
     # exact strategy set actually being returned, never a stale cache-write-time
     # cohort. ADVISORY only — see BoardLevelFdr / compute_board_level_fdr for the
     # explicit scope decision; this never changes passes_all.
-    board_fdr = compute_board_level_fdr({r.strategy_id: r.dsr_p_value for r in results})
+    board_fdr = compute_board_level_fdr(
+        {r.strategy_id: r.dsr_p_value for r in results}, fdr_level=DEFAULT_BOARD_FDR_LEVEL
+    )
     results = [
         r.model_copy(
             update={
                 "board_fdr_significant": board_fdr.get(r.strategy_id, {}).get("board_fdr_significant"),
                 "board_fdr_adjusted_p": board_fdr.get(r.strategy_id, {}).get("board_fdr_adjusted_p"),
+                "board_fdr_confidence": board_fdr.get(r.strategy_id, {}).get("board_fdr_confidence"),
             }
         )
         for r in results
     ]
     board_level_fdr = BoardLevelFdr(
+        fdr_level=DEFAULT_BOARD_FDR_LEVEL,
         n_tested=len(board_fdr),
         n_significant=sum(1 for v in board_fdr.values() if v["board_fdr_significant"]),
     )
