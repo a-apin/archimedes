@@ -107,7 +107,7 @@ export default function App() {
   }, [features])
 
   if (route.kind === 'redirect') return null
-  if (route.kind === 'auth') return <AuthPage mode={route.page} />
+  if (route.kind === 'auth') return <AuthPage mode={route.page} oauthError={route.error} />
 
   if (route.kind === 'public') {
     return (

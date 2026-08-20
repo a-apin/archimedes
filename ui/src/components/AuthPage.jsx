@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { useAuth } from '../AuthContext'
+import { oauthErrorMessage } from '../auth-errors'
 import {
   getProviders,
   requestPasswordReset,
@@ -197,13 +198,19 @@ function ResetPasswordForm({ token, callbackOrigin }) {
   )
 }
 
-export default function AuthPage({ mode }) {
+export default function AuthPage({ mode, oauthError }) {
   const creating = mode === 'sign-up'
   const resetting = mode === 'reset-password'
   const next = postAuthPath(window.location.search)
   const callbackURL = `${window.location.origin}${next}`
   const callbackOrigin = window.location.origin
   const resetToken = resetting ? new URLSearchParams(window.location.search).get('token') : null
+  // Surfaces the account-linking rejection (routes.js bounces `/?error=...`
+  // here) or any other OAuth callback error — never shown on sign-up or
+  // reset-password, since those screens can't be the redirect's origin. Named
+  // `oauthError` (not `error`) to avoid shadowing the submit-flow `error`
+  // state declared below.
+  const oauthNotice = !creating && !resetting ? oauthErrorMessage(oauthError) : null
   const { user, refresh } = useAuth()
   const [providers, setProviders] = useState({ emailPassword: true, google: false, github: false })
   const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '' })
@@ -307,6 +314,12 @@ export default function AuthPage({ mode }) {
             <p className="body mb-6">
               Account owns your strategies and settings. Wallets stay optional and link only after signature proof.
             </p>
+
+            {oauthNotice && (
+              <div className="status mb-4" role="alert" id="oauth-error">
+                {oauthNotice}
+              </div>
+            )}
 
             <form onSubmit={submit} className="flex flex-col gap-4">
               {creating && (
