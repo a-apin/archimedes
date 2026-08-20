@@ -260,6 +260,9 @@ test("informative icons and charts carry a text alternative", () => {
 	// `title` on a bare span is not reliably exposed.
 	assert.match(strategies, /role="img" aria-label="Passes rigor gate"/);
 	assert.match(strategies, /role="img" aria-label="Does not pass rigor gate"/);
+	// Strategies.jsx must use --warning, never the raw amber hex: 2.15:1 on a
+	// white card in the light theme.
+	assert.doesNotMatch(strategies, /#f59e0b/);
 	// The knowledge graph is a 500px informative SVG that had no role at all.
 	assert.match(
 		corpusKg,
