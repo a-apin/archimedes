@@ -241,6 +241,12 @@ let _smartAccountClient = null // Circle modular-transport viem client (for bund
 
 export function getConnectedProvider() { return _providerId }
 export function getAddress() { return _address }
+// The raw EIP-1193 provider object for the connected EOA wallet (null for
+// the Circle passkey path, which has no such provider — see CIRCLE_PROVIDER_ID
+// paths above). Exported so callers outside this module (../x402.js's payment
+// flow) can pass it to ensureArcChain before a tx/signature, same as
+// connectWallet/reconnectWallet do internally.
+export function getRawProvider() { return _provider }
 // Returns the Circle smart account when connected via passkey, else null.
 // Phase 2.5 uses this to wrap deposit calls in sendUserOperation.
 export function getSmartAccount() { return _smartAccount }
@@ -369,7 +375,13 @@ function isAlreadyPendingError(err) {
   return err?.code === -32002
 }
 
-async function ensureArcChain(ethereum) {
+// Exported so ../x402.js's payment-signing flow can switch the connected
+// wallet to Arc before a deposit tx or an EIP-712 signature, reusing the
+// exact same chain-switch behavior connectWallet/reconnectWallet already use
+// (including the -32002 "request already pending" and 4902 "unknown chain,
+// add it" handling below) instead of a second implementation drifting from
+// this one.
+export async function ensureArcChain(ethereum) {
   // Skip the switch popup if we're already on Arc.
   try {
     const current = await ethereum.request({ method: 'eth_chainId' })
