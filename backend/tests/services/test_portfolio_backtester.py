@@ -326,13 +326,15 @@ class TestCorrelation:
         a = [0.01, -0.02, 0.005, 0.03]
         assert _correlation_to_benchmark(a, a) == pytest.approx(1.0, abs=1e-9)
 
-    def test_zero_variance_returns_zero(self) -> None:
+    def test_zero_variance_returns_none_not_zero(self) -> None:
+        """A flat series makes Pearson's r undefined — 0.0 would assert
+        "uncorrelated", a claim nothing measured (#1242 review)."""
         flat = [0.0, 0.0, 0.0, 0.0]
         varying = [0.01, -0.01, 0.02, -0.02]
-        assert _correlation_to_benchmark(flat, varying) == 0.0
+        assert _correlation_to_benchmark(flat, varying) is None
 
-    def test_short_series_returns_zero(self) -> None:
-        assert _correlation_to_benchmark([0.01], [0.01]) == 0.0
+    def test_short_series_returns_none_not_zero(self) -> None:
+        assert _correlation_to_benchmark([0.01], [0.01]) is None
 
 
 class TestBacktestPortfolioIntegration:

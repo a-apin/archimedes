@@ -426,3 +426,125 @@ class TestRowAttribution:
 
         assert restored.correlation_to_spy is None
         assert restored.correlation_to_btc is None
+
+
+class TestGeneratedWriterSitesReachTheRow:
+    """The writer-level guard the two fixes above never got (2026-08 review).
+
+    ``TestRowAttribution`` above only proves the STORE round-trips
+    ``cost_model_id`` / ``look_ahead_audit_source`` / a ``None`` correlation —
+    every test in it hand-builds a ``BacktestResult`` and never calls a
+    writer. Revert either fix — ``portfolio_backtester.backtest_portfolio``'s
+    cost/audit stamping and honest-``None`` correlations, or
+    ``generation_pipeline._persist_real_returns``'s independent mirror of the
+    same two fields — and every test above this class stays green. These two
+    call the real writers and would catch that.
+    """
+
+    def test_backtest_portfolio_sets_cost_and_audit_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Engine B's writer (``backtest_portfolio``) must stamp
+        cost_model_id/look_ahead_audit_source on the row it returns, and must
+        leave correlation_to_btc (never computed on this path) at None rather
+        than a fabricated 0.0. correlation_to_spy IS computed here, so it is
+        pinned non-None against a deterministic fixture panel rather than just
+        "not 0.0" — 0.0 is a legitimate real correlation and would make a
+        weaker assertion pass by accident.
+        """
+        from archimedes.services import portfolio_backtester as pb
+
+        idx = pd.bdate_range("2020-01-02", periods=90)
+        rng_a = np.random.default_rng(1)
+        rng_b = np.random.default_rng(2)
+        rng_spy = np.random.default_rng(3)
+        port_panel = pd.DataFrame(
+            {
+                "AAA": 100.0 * (1.0 + pd.Series(rng_a.normal(0.0004, 0.01, len(idx)), index=idx)).cumprod(),
+                "BBB": 100.0 * (1.0 + pd.Series(rng_b.normal(0.0003, 0.012, len(idx)), index=idx)).cumprod(),
+            }
+        )
+        port_vol = pd.DataFrame({c: pd.Series([1e9] * len(idx), index=idx) for c in port_panel.columns})
+        spy_panel = pd.DataFrame(
+            {"SPY": 100.0 * (1.0 + pd.Series(rng_spy.normal(0.0005, 0.01, len(idx)), index=idx)).cumprod()}
+        )
+        spy_vol = pd.DataFrame({"SPY": pd.Series([1e9] * len(idx), index=idx)})
+
+        def _fake_fetch(symbols: list[str], start: str, end: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+            if list(symbols) == ["SPY"]:
+                return spy_panel, spy_vol
+            return port_panel[list(symbols)], port_vol[list(symbols)]
+
+        monkeypatch.setattr(pb, "_fetch_price_panel", _fake_fetch)
+
+        result, _artifact = pb.backtest_portfolio(
+            strategy_id="writer-guard",
+            weights={"AAA": 0.5, "BBB": 0.5},
+            start_date=idx[0].date().isoformat(),
+            end_date=idx[-1].date().isoformat(),
+        )
+
+        assert result.cost_model_id == f"cm1:d{DEFAULT_TX_COST_BPS:g}:s{DEFAULT_SLIPPAGE_BPS:g}+almgren"
+        assert result.look_ahead_audit_source == "static_rebalance_no_signal_shift"
+        assert result.correlation_to_btc is None
+        assert result.correlation_to_spy is not None
+
+    @pytest.mark.asyncio
+    async def test_persist_real_returns_writer_reaches_the_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Engine C's fusion writer (``generation_pipeline._persist_real_returns``)
+        must reach the SAME two fields plus honest-``None`` correlations on the
+        persisted DB row — a second, independent writer path the #1242 fix
+        touched that ``TestRowAttribution``'s hand-built-dataclass tests never
+        exercise. Mirrors the DB-harness pattern in
+        ``test_gate_equivalence.py::TestPipelineCallSiteReadsTheLiveVerdict``.
+        """
+        import archimedes.db as _db
+        from archimedes.agents.generation_pipeline import _CandidateResult, _Emitter, _persist_real_returns
+        from archimedes.models.backtest_store import BacktestResultRecord
+        from archimedes.services.fusion_evaluator import DEFAULT_COST_MODEL_ID
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        strategy_id = "fusion-writer-guard"
+        test_engine = create_engine(
+            f"sqlite:///{tmp_path / 'persist_real_returns.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        monkeypatch.setattr(_db, "engine", test_engine)
+        monkeypatch.setattr(_db, "SessionLocal", sessionmaker(bind=test_engine, autocommit=False, autoflush=False))
+        from archimedes.models import kg, strategy_passport_record, strategy_store  # noqa: F401
+
+        _db.Base.metadata.create_all(bind=test_engine)
+
+        rng = np.random.default_rng(42)
+        returns = [float(x) for x in rng.normal(0.0008, 0.01, 300)]
+
+        class _FakeStore:
+            async def push_event(self, job_id: str, body: dict) -> int:
+                return 0
+
+        emit = _Emitter(f"job-{strategy_id}", _FakeStore())
+        c = _CandidateResult(
+            candidate_id="fusion-cand-1",
+            strategy_name="Fusion Writer Guard",
+            thesis="t",
+            asset_universe=["SPY"],
+            source_papers=[],
+            weights={},
+            reasoning="r",
+            rigor_verdict={"data_source": "real"},
+            passes_rigor=False,
+            return_series=returns,
+            has_real_rigor=True,
+        )
+
+        await _persist_real_returns(c, strategy_id, emit, num_trials=1)
+
+        with _db.get_session() as session:
+            row = session.query(BacktestResultRecord).filter_by(strategy_id=strategy_id).first()
+
+        assert row is not None, "no backtest_results row — _persist_real_returns did not run to completion"
+        assert row.cost_model_id == DEFAULT_COST_MODEL_ID
+        assert row.look_ahead_audit_source == "self_attested"
+        assert row.correlation_to_spy is None
+        assert row.correlation_to_btc is None

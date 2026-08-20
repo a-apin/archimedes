@@ -329,15 +329,23 @@ def _annualized_metrics(daily_returns: list[float], equity_curve: list[float]) -
     }
 
 
-def _correlation_to_benchmark(daily_returns: list[float], benchmark_returns: list[float]) -> float:
-    """Pearson correlation between two return series, robust to unequal length."""
+def _correlation_to_benchmark(daily_returns: list[float], benchmark_returns: list[float]) -> float | None:
+    """Pearson correlation between two return series, robust to unequal length.
+
+    Returns None — not a fabricated 0.0 — on either degenerate branch (too few
+    overlapping observations, or a zero-variance series that makes Pearson's r
+    undefined). 0.0 would assert "uncorrelated", a claim nothing measured
+    (#1242 review; the caller-side version of this fix already stops
+    coercing a missing/failed correlation to 0.0 — this closes the same gap
+    inside the helper it calls).
+    """
     n = min(len(daily_returns), len(benchmark_returns))
     if n < 2:
-        return 0.0
+        return None
     a = np.asarray(daily_returns[:n], dtype=float)
     b = np.asarray(benchmark_returns[:n], dtype=float)
     if a.std() == 0 or b.std() == 0:
-        return 0.0
+        return None
     return float(np.corrcoef(a, b)[0, 1])
 
 
