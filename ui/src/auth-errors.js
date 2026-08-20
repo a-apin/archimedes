@@ -55,9 +55,13 @@ const LINK_ERROR_MESSAGES = {
   // redirect happens. AccountSettings.jsx passes err.code here instead of
   // an `error` query param. "Session not fresh" does not mean signed out —
   // the fix is re-entering credentials, not discovering you were logged
-  // out.
+  // out. Round-4 review finding (major): reworded to name the actual
+  // trigger ("before changing sign-in methods") instead of the vaguer
+  // "changing connected accounts" — the honest re-auth affordance sits right
+  // next to this text (AccountSettings.jsx's "Sign in again" button, wired
+  // to reauthenticate(), not a bare logout to '/').
   SESSION_NOT_FRESH:
-    'For your security, changing connected accounts requires a recent sign-in. Sign in again, then retry.',
+    'For security, you need to sign in again before changing sign-in methods.',
 }
 
 const GENERIC_LINK_ERROR_MESSAGE =

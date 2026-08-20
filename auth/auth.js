@@ -58,7 +58,25 @@ const CONNECTED_ACCOUNT_LABELS = { credential: 'Email & password', google: 'Goog
 // fail the /link-social or /unlink-account request that triggered it, over
 // a notification email that is not the actual security control. Every
 // awaited step is inside the try/catch for exactly that reason.
-async function notifyAccountChange(mailer, endpointContext, account, action) {
+//
+// Round-4 review finding (minor): this had TWO distinct failure modes and
+// only one of them logged anything. Mode 1 (mailer.send() throws — SES
+// sandboxed/down/etc.) hit the catch below and logged a line. Mode 2 (the
+// recipient can't be resolved at all — `internalAdapter.findUserById`
+// returns nothing, or `endpointContext.context` itself is missing/malformed)
+// hit the `if (!user?.email) return` below and logged NOTHING — a second,
+// silent way for this account-takeover signal to just not go out, with no
+// operator-visible trace. Both modes now share one greppable marker
+// (`ACCOUNT_CHANGE_NOTIFY_FAILED`) so either is findable in logs / a
+// CloudWatch metric filter the same way. Neither mode throws: the
+// notification stays fail-open for the user-facing link/unlink flow (a mail
+// outage, or a data anomaly here, must not block the actual security
+// control — the link/unlink itself, already enforced server-side) — it just
+// never again fails *silently*. Exported for direct unit testing (see
+// auth/test/auth.test.js): both branches are hard to reach through the real
+// HTTP handler on demand, since `internalAdapter` always resolves a
+// just-committed row in practice.
+export async function notifyAccountChange(mailer, endpointContext, account, action) {
   try {
     // Round-3 review finding (blocker): this used to special-case only
     // `providerId === 'credential'` — the row EMAIL/PASSWORD signup
@@ -94,7 +112,12 @@ async function notifyAccountChange(mailer, endpointContext, account, action) {
       if ((accounts?.length ?? 1) <= 1) return
     }
     const user = await endpointContext?.context?.internalAdapter?.findUserById(account.userId)
-    if (!user?.email) return
+    if (!user?.email) {
+      // Failure mode 2 — see the header comment above. Fail-open (return,
+      // don't throw) but loud: this is the branch that used to be silent.
+      console.error('ACCOUNT_CHANGE_NOTIFY_FAILED: could not resolve account owner email', { userId: account.userId, action })
+      return
+    }
     const label = CONNECTED_ACCOUNT_LABELS[account.providerId] || account.providerId
     const verb = action === 'added' ? 'added to' : 'removed from'
     await mailer.send({
@@ -107,7 +130,9 @@ async function notifyAccountChange(mailer, endpointContext, account, action) {
         + (action === 'added' ? ', then remove it and reset your password.' : '.'),
     })
   } catch (error) {
-    console.error(`account ${action} notification email send failed:`, error instanceof Error ? error.name : 'UnknownError')
+    // Failure mode 1 — see the header comment above. Fail-open (swallow, the
+    // request that triggered this must still succeed) but loud.
+    console.error('ACCOUNT_CHANGE_NOTIFY_FAILED: mailer.send threw', { action, error: error instanceof Error ? error.name : 'UnknownError' })
   }
 }
 
@@ -351,8 +376,11 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
     // already-linked accounts).
     //
     // better-auth has no per-endpoint config knob for this — the fix is a
-    // global hooks.before that runs before every request (dispatch.mjs:139
-    // `matcher: () => true`) and applies the exact same check
+    // global hooks.before that runs before every request (dispatch.mjs:143
+    // `matcher: () => true` — round-4 review finding (minor): this used to
+    // cite :139, which is `function getHooks(authContext) {` itself, not the
+    // matcher; the user hooks.before's own `beforeHooks.push({ matcher: ()
+    // => true, ... })` is four lines further down) and applies the exact same check
     // freshSessionMiddleware runs (api/routes/session.mjs:359-371) to
     // /link-social specifically. session.freshAge above is what both sides
     // now read, so they cannot drift apart again. Proven in

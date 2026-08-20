@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { canUnlink, connectedProviderLabel, isLinkableProvider } from '../account-linking'
+import { canUnlink, connectableProvidersIntro, connectedActionErrorState, connectedProviderLabel, isLinkableProvider } from '../account-linking'
 import { linkErrorMessage } from '../auth-errors'
 import { getProviders, linkSocial, listAccounts, unlinkAccount } from '../auth-client'
 import { useAuth } from '../AuthContext'
@@ -103,6 +103,28 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
   }, [connectedLoaded, connectedAccounts])
 
   const linkErrorNotice = linkErrorMessage(linkError)
+  // Round-4 review finding (minor): derived from the SAME provider-discovery
+  // result that gates the Link buttons themselves (connectedProviders,
+  // fetched above), so the intro copy can never promise a provider the
+  // buttons below it don't actually offer — see connectableProvidersIntro's
+  // own header comment in account-linking.js.
+  const providersIntro = connectableProvidersIntro(connectedProviders)
+
+  // Round-4 review finding (major): link() and unlinkConnected() below both
+  // hit this exact fork — ATTEMPT the action, then react to whatever the
+  // server actually says, never precompute session age client-side (the
+  // server is the sole freshness authority; see account-linking.js's header
+  // comment on connectedActionErrorState). Shared here so both catches stay
+  // identical and the mapping itself is unit-tested directly.
+  const handleConnectedActionError = (err) => {
+    const { stale, message } = connectedActionErrorState(err)
+    if (stale) setConnectedSessionStale(true)
+    // SESSION_NOT_FRESH always renders the one honest, actionable message
+    // from auth-errors.js — never the raw library string, and never a
+    // fabricated notice/success state alongside it (connectedNotice is
+    // cleared before the request above and never set in this branch).
+    setConnectedError(stale ? linkErrorMessage('SESSION_NOT_FRESH') : message)
+  }
 
   const link = async (provider) => {
     setConnectedBusy(provider)
@@ -121,8 +143,7 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
       // `?linked=${provider}` (e.g. the same URL pasted back in) can't be
       // mistaken for the outcome of this failed attempt.
       sessionStorage.removeItem(PENDING_LINK_KEY)
-      if (err.code === 'SESSION_NOT_FRESH') setConnectedSessionStale(true)
-      setConnectedError(err.code === 'SESSION_NOT_FRESH' ? linkErrorMessage('SESSION_NOT_FRESH') : err.message)
+      handleConnectedActionError(err)
       setConnectedBusy(null)
     }
   }
@@ -131,7 +152,11 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
   // the last-credential state (see the export above), and the confirm below
   // still runs before the network call for any account, mirroring the
   // wallet-unlink confirm pattern above (3.3.4 — no single unconfirmed click
-  // for a destructive, no-undo action).
+  // for a destructive, no-undo action). Round-4 review finding (major): this
+  // confirm can still fire on a stale session (the server, not client-guessed
+  // age, is what actually knows) — that is correct per the "attempt, then
+  // react to the server" contract above, not a bug to route around; a
+  // 403 after "OK" still lands on the same honest re-auth state as Link's.
   const unlinkConnected = async (account) => {
     if (!canUnlink(connectedAccounts.length)) return
     const label = connectedProviderLabel(account.providerId)
@@ -144,8 +169,7 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
       await loadConnected()
       setConnectedNotice(`Unlinked ${label}.`)
     } catch (err) {
-      if (err.code === 'SESSION_NOT_FRESH') setConnectedSessionStale(true)
-      setConnectedError(err.code === 'SESSION_NOT_FRESH' ? linkErrorMessage('SESSION_NOT_FRESH') : err.message)
+      handleConnectedActionError(err)
     } finally {
       setConnectedBusy(null)
     }
@@ -196,6 +220,23 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
     window.location.assign('/')
   }
 
+  // Round-4 review finding (major): the stale-session "Sign in again"
+  // affordance below used to just call logout(), which lands on '/' —
+  // landing has no sign-in form, so it dumped the user on the marketing
+  // page with no path back here. AuthPage's own `user && window.location.
+  // replace(next)` guard means a still-signed-in session bounces straight
+  // past the sign-in form before it can render, so the (still valid, just
+  // stale) session has to actually end — same as logout() — then land on
+  // /sign-in with the same `?next=` convention every other anonymous bounce
+  // in this app uses (routes.js's postAuthPath/safeNextPath; see Layout.jsx/
+  // Leaderboard.jsx/StrategyPassport.jsx for the precedent), so completing
+  // sign-in returns to Account Settings instead of the generic /app.
+  const reauthenticate = async () => {
+    await signOut()
+    onDisconnect?.()
+    window.location.assign(`/sign-in?next=${encodeURIComponent('/app/account')}`)
+  }
+
   return (
     <div className="max-w-[760px]">
       <h1 className="serif text-[2rem] mb-2">Account</h1>
@@ -213,8 +254,8 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
       <section className="card-flat p-5 mb-5">
         <h2 className="serif text-xl mb-3">Connected accounts</h2>
         <p className="caption mb-3">
-          Sign in with any of these — they all reach this one account. Google and GitHub link only after you
-          authorize them from here, signed in as you are now.
+          Sign in with any of these — they all reach this one account.
+          {providersIntro && ` ${providersIntro}`}
         </p>
 
         {linkErrorNotice && <div className="status mb-3" role="alert">{linkErrorNotice}</div>}
@@ -267,7 +308,7 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
 
         {connectedProvidersError && (
           <p className="status mt-3" role="alert">
-            Could not check which sign-in providers are available — Link buttons may be missing below. Reload to try again.
+            Could not check which sign-in providers are available — Link buttons may be missing above. Reload to try again.
           </p>
         )}
 
@@ -280,12 +321,13 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
             {/* SESSION_NOT_FRESH (round-2 review, blocker): the session is
                 still signed in, just too old for auth.js's freshness gate
                 on /link-social and /unlink-account — re-authenticating is
-                the fix, not "you got logged out". logout() below drives the
-                same sign-out/redirect path the page's own Sign out button
-                uses; signing back in mints a brand-new session, which
-                resets createdAt and clears this state on next visit. */}
+                the fix, not "you got logged out". Round-4 review finding
+                (major): this used to call logout(), which lands on '/' — no
+                sign-in form there and no way back to this page. reauthenticate()
+                above ends the session the same way, then routes to
+                /sign-in?next=/app/account so completing sign-in returns here. */}
             {connectedSessionStale && (
-              <button className="btn-secondary ml-2" onClick={logout}>Sign in again</button>
+              <button className="btn-secondary ml-2" onClick={reauthenticate}>Sign in again</button>
             )}
           </div>
         )}

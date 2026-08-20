@@ -4,7 +4,7 @@ import test from 'node:test'
 
 import { getMigrations } from 'better-auth/db/migration'
 
-import { createAuth, enabledProviders, PLACEHOLDER_SECRET } from '../auth.js'
+import { createAuth, enabledProviders, notifyAccountChange, PLACEHOLDER_SECRET } from '../auth.js'
 
 const env = {
   NODE_ENV: 'test',
@@ -615,6 +615,54 @@ test("explicit link is refused when the provider's email differs from the signed
   assert.deepEqual(accounts.map(a => a.providerId), ['credential'])
 })
 
+// Round-4 review finding (minor): the provider-emailVerified guard on this
+// explicit path (callback.mjs:98's `!c.context.trustedProviders.includes(
+// provider.id) && !userInfo.emailVerified` — the same trustedProviders list
+// as the implicit path, absent today, per the round-3 correction above) was
+// previously proven only by a regex over the vendored source (the
+// source-pinned test above). This drives the guard behaviorally: same email
+// as the signed-in account (so allowDifferentEmails can't be what refuses
+// this — isolating the ONE guard under test), but the PROVIDER's own claim
+// is unverified.
+test("explicit link is refused when the provider's own email is unverified — behavioral, not just source-pinned (round-4 review)", async (t) => {
+  const { auth } = await googleEnabledAuth()
+  const credentials = { email: 'unverified-provider-email@example.com', password: 'correct horse battery staple' }
+  await auth.api.signUpEmail({ body: { ...credentials, name: 'Owner' }, asResponse: true })
+  const login = await auth.api.signInEmail({ body: credentials, asResponse: true })
+  const sessionCookie = cookieHeader(login)
+
+  const initiate = await auth.api.linkSocialAccount({
+    headers: new Headers({ cookie: sessionCookie }),
+    body: { provider: 'google', callbackURL: 'http://localhost:3000/app/account', disableRedirect: true },
+    asResponse: true,
+  })
+  const { url } = await initiate.json()
+  const state = new URL(url).searchParams.get('state')
+  const cookie = forwardedCookies(initiate)
+
+  mockGoogleTokenExchange(t, { email: credentials.email, emailVerified: false })
+
+  const callback = await auth.handler(new Request(
+    `http://localhost:3000/api/auth/callback/google?code=fake-code&state=${encodeURIComponent(state)}`,
+    { headers: { cookie } },
+  ))
+  assert.equal(callback.status, 302)
+  const location = new URL(callback.headers.get('location'))
+  assert.equal(location.searchParams.get('error'), 'unable_to_link_account')
+
+  // Nothing was attached — same shape as the email-mismatch test above.
+  const accounts = await auth.api.listUserAccounts({ headers: new Headers({ cookie: sessionCookie }) })
+  assert.deepEqual(accounts.map(a => a.providerId), ['credential'])
+
+  // Mutation-prove (done by hand before this commit): temporarily add
+  // trustedProviders: ['google'] to accountLinking in auth.js (which arms
+  // BOTH the implicit path AND this explicit-path guard, per the round-3
+  // finding above) and rerun — this test then fails: callback.status is
+  // still 302 but the `error` param is null and the account list gains
+  // 'google', because the same emailVerified: false claim no longer refuses
+  // it. Reverted.
+})
+
 test('explicit link succeeds for a matching email even while the base password account is UNVERIFIED — the working path while EMAIL_VERIFICATION_ENFORCED is off', async (t) => {
   const { auth } = await googleEnabledAuth()
   const credentials = { email: 'owner-unverified@example.com', password: 'correct horse battery staple' }
@@ -943,7 +991,7 @@ test('unlinking a sign-in credential also emails the account owner, naming the c
   assert.match(mailer.sent[0].text, /Email & password/)
 })
 
-test('a failing account-change mailer never breaks the link/unlink it is reporting on (fail-soft)', async () => {
+test('a failing account-change mailer never breaks the link/unlink it is reporting on, and the failure is actually logged (fail-soft, not silent — round-4 review)', async () => {
   const mailer = { kind: 'test', sender: 'x', send: async () => { throw new Error('SES sandbox: address not verified') } }
   const { auth } = await googleEnabledAuth({}, mailer)
   const credentials = { email: 'notify-failsoft@example.com', password: 'correct horse battery staple' }
@@ -959,10 +1007,65 @@ test('a failing account-change mailer never breaks the link/unlink it is reporti
   // error;`) — unlike sendResetPassword's hand-rolled, genuinely
   // not-awaited fire-and-forget above, an uncaught throw HERE fails the
   // request that triggered it.
-  const callback = await linkGoogleForReal(auth, cookieHeader(login), credentials.email)
+  const originalError = console.error
+  const logged = []
+  console.error = (...args) => logged.push(args)
+  let callback
+  try {
+    callback = await linkGoogleForReal(auth, cookieHeader(login), credentials.email)
+    await new Promise(resolve => setImmediate(resolve))
+  } finally {
+    console.error = originalError
+  }
   assert.equal(callback.status, 302)
   assert.equal(new URL(callback.headers.get('location')).searchParams.get('error'), null)
 
   const accounts = await auth.api.listUserAccounts({ headers: new Headers({ cookie: cookieHeader(login) }) })
   assert.deepEqual(accounts.map(a => a.providerId).sort(), ['credential', 'google'])
+
+  // Round-4 review finding (minor): fail-soft is correct here (this is not
+  // the actual security control — see auth.js's header comment) but it must
+  // never be SILENT — see notifyAccountChange's own header comment for the
+  // other failure mode this same marker now also covers.
+  assert.ok(
+    logged.some(args => String(args[0]).includes('ACCOUNT_CHANGE_NOTIFY_FAILED')),
+    `expected a loud, greppable failure log; saw: ${JSON.stringify(logged)}`,
+  )
+})
+
+// Round-4 review finding (minor): the mailer-throws mode above always logged
+// something (`account ${action} notification email send failed:`, pre-round-4)
+// — the OTHER failure mode, "couldn't even figure out who to email", used to
+// return with NO log line at all. Hard to reach through the real HTTP
+// handler on demand (internalAdapter always resolves the just-committed
+// row), so this drives notifyAccountChange directly with a stub adapter —
+// exported from auth.js for exactly this reason.
+test('notifyAccountChange logs the SAME greppable marker for its other, previously-silent failure mode — an unresolvable recipient (round-4 review)', async () => {
+  const originalError = console.error
+  const logged = []
+  console.error = (...args) => logged.push(args)
+  const neverCalledMailer = { send: async () => { throw new Error('must not be reached — nothing to send to') } }
+  try {
+    await notifyAccountChange(
+      neverCalledMailer,
+      { context: { internalAdapter: {
+        findAccounts: async () => [{ id: 'a' }, { id: 'b' }],
+        findUserById: async () => null, // simulates the unresolvable-recipient failure
+      } } },
+      { userId: 'u-missing', providerId: 'google' },
+      'added',
+    )
+  } finally {
+    console.error = originalError
+  }
+  assert.ok(
+    logged.some(args => String(args[0]).includes('ACCOUNT_CHANGE_NOTIFY_FAILED')),
+    `expected the same loud, greppable marker as the mailer-throws mode; saw: ${JSON.stringify(logged)}`,
+  )
+
+  // Mutation-prove (done by hand before this commit): revert the
+  // `if (!user?.email) { console.error(...); return }` block in auth.js back
+  // to a bare `if (!user?.email) return` — this test then fails, `logged` is
+  // empty, confirming the assertion actually depends on the new log call and
+  // not on some other side effect. Reverted.
 })

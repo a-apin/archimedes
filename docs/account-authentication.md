@@ -171,6 +171,37 @@ server-enforced regardless of the UI. `AccountSettings.jsx` additionally disable
 Unlink control in that state client-side (`canUnlink()` in `ui/src/account-linking.js`) so
 the control is never even clickable, not just rejected after a round trip.
 
+**Account-change notification email (round-2 review finding).** Every genuine link or
+unlink of a sign-in credential emails the account owner — the out-of-band signal for the
+account-takeover pattern the session-freshness gate above exists to close off.
+`auth/auth.js`'s `databaseHooks.account.{create,delete}.after` calls `notifyAccountChange`
+on every `auth_accounts` row create/delete:
+
+- **Trigger.** `delete.after` always means an unlink and always emails. `create.after`
+  fires for THREE different writes and only one of them is a genuine link: email/password
+  signup (`providerId: 'credential'`), OAuth signup for an email that owns no account yet
+  (`link-account.mjs`'s registration branch — same account-row shape as a link, provider
+  `'google'`/`'github'`), and an actual link onto an existing account via `/link-social` →
+  `/callback/:id`. `notifyAccountChange` distinguishes them by counting the user's total
+  `auth_accounts` rows at hook time (already including the just-committed one): `<= 1` is
+  either signup shape and sends nothing (a brand-new user has no "was this you?" question
+  to answer, and signup already gets its own verification mail); `> 1` is a genuine link
+  and sends.
+- **Content shape.** Subject `A sign-in method was {added to,removed from} your Archimedes
+  account`; body names the affected method (`Email & password`, `Google`, or `GitHub`) and,
+  for an add, tells the recipient to review Account Settings → Connected accounts and reset
+  their password if it wasn't them. Sent to the account's current email via the same mailer
+  (`auth/mailer.js`) `sendResetPassword`/`sendVerificationEmail` use — SES in deployed
+  environments, a console mailer in local compose.
+- **Failure semantics.** Fail-open for the user-facing request: better-auth itself `await`s
+  `create.after`/`delete.after` as part of the write, so an uncaught throw here would 500
+  the link/unlink it is reporting on — a notification email is not the actual security
+  control (the freshness gate and the server-side link/unlink guards are) and must not block
+  it. But never silently: both of this function's failure modes — the mailer itself
+  throwing, and not being able to resolve who to notify at all — log a shared, greppable
+  marker (`ACCOUNT_CHANGE_NOTIFY_FAILED`) so an outage is an operator-visible log line /
+  metric-filter hit, not silence indistinguishable from a mail that actually went out.
+
 The `?error=account_not_linked` message on `/sign-in` (routed there from `/`'s bare
 redirect — see routing note above) now points at this: sign in with the password, then
 link the provider under Account Settings → Connected accounts so it signs in directly next
