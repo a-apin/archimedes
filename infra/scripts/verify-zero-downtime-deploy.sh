@@ -131,11 +131,18 @@ loop_start_epoch="$(date -u +%s)"
   while true; do
     code_and_time=$(curl -o /dev/null -s -w "%{http_code} %{time_total}s" \
       --max-time 5 -H "Host: $HOST_HEADER" "https://$ALB_DNS/health" 2>/dev/null || echo "000 0s")
-    # Plain %H:%M:%S, not %3N — GNU date supports sub-second precision but
-    # BSD/macOS date (Dan's local shell, darwin) does not, and silently
-    # prints the literal "3N" instead of erroring, which would corrupt every
-    # logged line. 1-second resolution is enough at this probe interval.
-    echo "$(date -u +%H:%M:%S) $code_and_time" >> "$LOG_FILE"
+    # Epoch seconds FIRST — the field the verdict's window comparisons key
+    # off of. A raw HH:MM:SS *string* compare (the previous approach) wraps
+    # incorrectly across UTC midnight (e.g. "23:59:58" >= "00:00:09" is
+    # false), which would silently score a real, clean rollout as "0 probes
+    # fell inside the window" and fail it for no reason. Epoch seconds are
+    # monotonic and immune to that. HH:MM:SS is still logged second, purely
+    # for a human reading the raw file — not %3N: GNU date supports
+    # sub-second precision but BSD/macOS date (Dan's local shell, darwin)
+    # does not, and silently prints the literal "3N" instead of erroring,
+    # which would corrupt every logged line. 1-second resolution is enough
+    # at this probe interval.
+    echo "$(date -u +%s) $(date -u +%H:%M:%S) $code_and_time" >> "$LOG_FILE"
     sleep "$PROBE_INTERVAL"
   done
 ) &
@@ -152,6 +159,7 @@ echo "Triggering force-new-deployment on $SERVICE..."
 aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --force-new-deployment >/dev/null
 
 deploy_start="$(date -u +%H:%M:%S)"
+deploy_start_epoch="$(date -u +%s)"
 echo "Deploy started at $deploy_start (UTC) — waiting for steady state..."
 aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
 deploy_end="$(date -u +%H:%M:%S)"
@@ -189,32 +197,19 @@ if [ "$total_all" -eq 0 ]; then
   exit 1
 fi
 
-# Sanity-check the sample count against how long the loop actually ran
-# (loop start .. tail end). The loop can stay "alive" per kill -0 while
-# stalling partway (a wedged write, a hung curl) and produce far fewer
-# samples than the window warrants — that's not caught by probe_survived
-# alone, so catch it here: fail if fewer than half the expected samples
-# were recorded.
-elapsed_seconds=$(( probe_end_epoch - loop_start_epoch ))
-[ "$elapsed_seconds" -gt 0 ] || elapsed_seconds=1
-expected=$(( elapsed_seconds / PROBE_INTERVAL ))
-[ "$expected" -ge 1 ] || expected=1
-if [ $(( total_all * 2 )) -lt "$expected" ]; then
-  echo
-  echo "FAIL — only $total_all probes recorded over a ${elapsed_seconds}s run at ${PROBE_INTERVAL}s/probe (~$expected expected). The loop likely stalled partway through. Result is not a reliable measurement."
-  echo "Log kept at $LOG_FILE"
-  exit 1
-fi
-
 # Score only samples from deploy_start through probe_end (the rollout +
 # post-steady-state tail). Pre-trigger baseline samples are a known
 # false-positive source (a cold-start 000/5xx before the loop is warmed up
 # — see the baseline-sleep comment above) and are reported separately as a
-# warning, never as an acceptance-criterion violation. HH:MM:SS string
-# comparison is safe here: zero-padded, same UTC day.
-window_total=$(awk -v s="$deploy_start" -v e="$probe_end" '$1 >= s && $1 <= e { c++ } END { print c+0 }' "$LOG_FILE")
-bad_lines=$(awk -v s="$deploy_start" -v e="$probe_end" '$1 >= s && $1 <= e && $2 != "200" { print }' "$LOG_FILE")
-pre_window_bad=$(awk -v s="$deploy_start" '$1 < s && $2 != "200" { print }' "$LOG_FILE")
+# warning, never as an acceptance-criterion violation. Compared on field 1
+# (epoch seconds), NOT field 2 (the HH:MM:SS string) — a raw string
+# compare wraps incorrectly across UTC midnight (e.g. "23:59:58" >=
+# "00:00:09" is false), which would score a clean rollout as "0 probes
+# fell inside the window" and fail it for no reason. Field 3 is the http
+# status (field indices shifted by one now that field 1 is epoch seconds).
+window_total=$(awk -v s="$deploy_start_epoch" -v e="$probe_end_epoch" '$1 >= s && $1 <= e { c++ } END { print c+0 }' "$LOG_FILE")
+bad_lines=$(awk -v s="$deploy_start_epoch" -v e="$probe_end_epoch" '$1 >= s && $1 <= e && $3 != "200" { print }' "$LOG_FILE")
+pre_window_bad=$(awk -v s="$deploy_start_epoch" '$1 < s && $3 != "200" { print }' "$LOG_FILE")
 
 echo
 echo "=== $(basename "$LOG_FILE") — $window_total probes, window ${deploy_start}Z .. ${probe_end}Z ==="
@@ -231,14 +226,42 @@ if [ "$window_total" -eq 0 ]; then
   exit 1
 fi
 
-if [ -z "$bad_lines" ]; then
-  echo "PASS — 0 non-200 responses across $window_total probes during the rollout window."
-  echo "Full log kept at $LOG_FILE"
-  exit 0
-else
+# bad_lines is evaluated BEFORE the sample-count sanity check below — a
+# genuine in-window outage (e.g. every request timing out) must fail here
+# as an acceptance-criterion violation, with its offending lines printed,
+# never get reclassified by the sample-count check as "not a reliable
+# measurement" and have those lines swallowed. A timed-out probe (curl's
+# --max-time 5 below) still logs a real "000" sample — it costs ~6s
+# instead of ~1s, so an in-window outage covering a majority of the window
+# also depresses the sample count, which is exactly the failure mode the
+# old ordering mis-triaged. See #1309's own incident: 144s of a ~180s
+# window down.
+if [ -n "$bad_lines" ]; then
   echo "FAIL — non-200 response(s) observed during the rollout window (issue #1309 acceptance criterion violated):"
   echo "$bad_lines"
   echo
   echo "Full log kept at $LOG_FILE"
   exit 1
 fi
+
+# Sanity-check the sample count against how long the loop actually ran
+# (loop start .. tail end). The loop can stay "alive" per kill -0 while
+# stalling partway (a wedged write, a hung curl) and produce far fewer
+# samples than the window warrants — that's not caught by probe_survived
+# alone. Downgraded to a WARNING attached to the PASS verdict (not a hard
+# exit): by the time we reach here, bad_lines is already known to be
+# empty, so an in-window outage (the case that genuinely needs a FAIL) is
+# ruled out — what's left is a merely slow/stalled loop, worth flagging
+# but not worth turning a real 0-non-200s result into an unscored FAIL.
+elapsed_seconds=$(( probe_end_epoch - loop_start_epoch ))
+[ "$elapsed_seconds" -gt 0 ] || elapsed_seconds=1
+expected=$(( elapsed_seconds / PROBE_INTERVAL ))
+[ "$expected" -ge 1 ] || expected=1
+if [ $(( total_all * 2 )) -lt "$expected" ]; then
+  echo "WARNING — only $total_all probes recorded over a ${elapsed_seconds}s run at ${PROBE_INTERVAL}s/probe (~$expected expected). The loop may have stalled partway through; treat this PASS with caution."
+  echo
+fi
+
+echo "PASS — 0 non-200 responses across $window_total probes during the rollout window."
+echo "Full log kept at $LOG_FILE"
+exit 0

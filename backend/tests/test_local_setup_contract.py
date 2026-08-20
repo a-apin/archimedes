@@ -128,6 +128,35 @@ class TestLocalSetupContract(unittest.TestCase):
         self.assertIn("location = /openapi.json", nginx)
         self.assertIn("proxy_pass http://backend_api/openapi.json;", nginx)
 
+    def test_ecs_nginx_healthcheck_matches_a_real_nginx_conf_location(self) -> None:
+        # #1309 review: infra/ecs.tf's nginx container healthCheck hard-depends
+        # on a path defined in a DIFFERENT file (nginx/nginx.conf) with no
+        # guard tying them together — an unrelated nginx.conf edit that drops
+        # or renames /nginx-health would silently turn every nginx container
+        # UNHEALTHY (ECS would keep killing/replacing it), a self-inflicted
+        # deploy outage on the exact service issue #1309 is about. Mirrors
+        # test_nginx_proxies_backend_docs_through_sole_ingress above, which
+        # pins the /docs pairing the same way.
+        nginx = (ROOT / "nginx/nginx.conf").read_text()
+        ecs_tf = (ROOT / "infra/ecs.tf").read_text()
+
+        # 1. nginx.conf actually defines the container-local health location,
+        # answering 200 directly (never proxied — see the location's own
+        # comment on why: /health does real backend work and must not be
+        # hit by a frequent container-level poller).
+        self.assertIn("location = /nginx-health {", nginx)
+        loc_start = nginx.index("location = /nginx-health {")
+        loc_end = nginx.index("}", loc_start)
+        nginx_health_block = nginx[loc_start:loc_end]
+        self.assertIn("return 200", nginx_health_block)
+        self.assertNotIn("proxy_pass", nginx_health_block)
+
+        # 2. ecs.tf's nginx healthCheck command hits that exact path — a
+        # trailing space (not a bare substring match) so a typo'd path
+        # extension (e.g. "/nginx-health" -> "/nginx-healthz") is caught
+        # rather than silently satisfying an unanchored "contains" check.
+        self.assertIn("http://127.0.0.1:8080/nginx-health ", ecs_tf)
+
 
 if __name__ == "__main__":
     unittest.main()
