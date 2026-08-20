@@ -469,6 +469,71 @@ rather than the AST audit the live re-grade runs, so re-grading them at a looser
 level would be apples-to-oranges; wiring generated strategies into the live
 per-level path is a follow-up.
 
+## 6. Board-level Benjamini-Hochberg FDR correction (#1185, 2026-08-20)
+
+**The gap this closes.** Sections 1–5 above disclose board-level selection
+bias — the strictness ladder, the passport's PBO/DSR numbers, and the
+"num_trials = 1" per-strategy convention (§1.3 addendum, superseded by
+[`../adr/num-trials-self-containment.md`](../adr/num-trials-self-containment.md))
+all tell a user *that* browsing a 34-strategy leaderboard and deploying the
+top pick is a stronger claim than one strategy graded on its own merits. None
+of them *correct* for it. A Benjamini-Hochberg FDR correction
+(`_rigor_helpers.benjamini_hochberg_fdr`) existed in the codebase for this
+exact purpose but had zero non-test callers — and was in fact deleted as dead
+code on 2026-08-18 (Tranche-1 excision, PR #1259 / commit `c02d5fad`) three
+weeks *after* #1185 had already asked for it to be wired in instead. This
+section restores it and records the scope decision the deletion sidestepped.
+
+**The scope decision (issue #1185's first acceptance criterion, answered
+explicitly).** `rigor_evaluator.compute_board_level_fdr` is **ADVISORY /
+annotation only** — it computes a real BH-FDR-adjusted significance figure
+across the current leaderboard cohort's DSR p-values and surfaces it
+(`GET /api/selection-bias/gate` → `RigorGateResponse.board_level_fdr` +
+per-strategy `StrategyRigorResult.board_fdr_significant` /
+`board_fdr_adjusted_p` / `board_fdr_confidence`), but it is **not** wired into `passes_all` /
+`blocked_by_floor` at any strictness level. Three reasons, in order of
+weight:
+
+1. **Admission-policy calls belong to the rigor lane (Dan/Önder), not to an
+   issue implementation.** This mirrors the precedent already set for this
+   module's other cohort-shaped diagnostics — IID assumption violation (#621)
+   and regime-robustness are both computed, surfaced, and explicitly kept
+   OUT of `passes_all` for the same reason (see `run_rigor_gate`'s own
+   comments in `rigor_evaluator.py`).
+2. **Gating on it would reintroduce library-coupling.** A strategy's deploy
+   status would move purely because *other, unrelated* strategies were added
+   to or removed from the board — exactly the "library-coupled verdict"
+   problem `num-trials-self-containment.md` deliberately rejected for
+   `num_trials` (PR #1075). Silently reintroducing that coupling via a
+   different statistic would cut against a decision this codebase already
+   made on purpose.
+3. **No quant sign-off exists for a new gate.** §1.3's addendum records that
+   PR #1075's `num_trials` convention is still `Accepted, pending quant
+   sign-off` — a second, unreviewed statistical gate stacked on top before
+   the first is signed off is not a call an issue implementation should make
+   unilaterally. Promoting board-level FDR to an actual gate is a legitimate
+   follow-up; it needs its own explicit decision from Önder/Dan.
+
+**Mechanics.** `RigorGateResult.dsr_p_value` uses the `P(true SR > 0)`
+convention (HIGH = confident) — the OPPOSITE of the classical p-value
+`benjamini_hochberg_fdr` expects (LOW = significant). `compute_board_level_fdr`
+converts via `classical_p = 1 - dsr_p_value` before calling BH-FDR, then
+reports back in the `dsr_p_value` convention (`board_fdr_confidence = 1 -
+board_fdr_adjusted_p`). The converted classical p-value is floored at
+`rigor_evaluator._CLASSICAL_P_FLOOR` (`1e-6`) before BH-FDR runs: a
+confidently-positive series can round `dsr_p_value` to exactly `1.0`, which
+without the floor would convert to an impossible `classical_p == 0.0` (and
+`board_fdr_confidence == 1.0`) — not a hypothetical, the strong-series case in
+`TestBoardLevelFdrWiring` hits it directly. Strategies with no finite
+`dsr_p_value` (no backtest data, degenerate series) are excluded from the
+correction and omitted from the result — never assigned a fabricated verdict,
+matching every other MISSING convention in this gate. Default `fdr_level =
+rigor_evaluator.DEFAULT_BOARD_FDR_LEVEL` (`0.05`), independently chosen (BH
+convention) — NOT derived from the DSR badge's `dsr_p_min`. Computed fresh on
+every `/gate` request over the exact cohort being served (same reconciliation
+pattern as `library_pbo`), so a rigor-cache hit can never serve a stale board
+composition's correction.
+
 ## API surface
 
 Önder's `IBacktestEvaluator.evaluate` signature already takes the strategy

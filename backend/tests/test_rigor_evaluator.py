@@ -29,6 +29,7 @@ import pytest
 from archimedes.services._rigor_helpers import (
     _dsr_from_stats,
     _sharpe_per_col,
+    benjamini_hochberg_fdr,
     compute_average_pairwise_correlation,
     compute_cpcv_oos_sharpe,
     compute_dsr,
@@ -42,6 +43,7 @@ from archimedes.services.rigor_evaluator import (
     RigorGateResult,
     _get_func_name,
     align_returns_store,
+    compute_board_level_fdr,
     compute_library_pbo,
     is_oos_zero_variance_series,
     is_zero_variance_series,
@@ -1886,6 +1888,182 @@ class TestRigorGateLibraryPbo:
         )
         assert not result.passes_all
         assert result.gate_details["pbo"] == "MISSING (source=cohort)"
+
+
+class TestBenjaminiHochbergFDR:
+    """Tests for benjamini_hochberg_fdr — BH step-up procedure.
+
+    Restored (#1185) after Tranche-1's dead-code excision deleted this class
+    along with the function it tests (PR #1259 / commit c02d5fad, 2026-08-18) —
+    #1185 had asked for the function to be WIRED IN three weeks before that
+    deletion landed. See _rigor_helpers.benjamini_hochberg_fdr's docstring.
+    """
+
+    def test_all_significant(self):
+        """Very small p-values should all be rejected."""
+        pvalues = [0.001, 0.002, 0.003, 0.004, 0.005]
+        result = benjamini_hochberg_fdr(pvalues, fdr_level=0.05)
+        assert result["n_rejected"] == 5
+        assert all(result["rejected"])
+
+    def test_all_insignificant(self):
+        """Large p-values should not be rejected."""
+        pvalues = [0.80, 0.85, 0.90, 0.95]
+        result = benjamini_hochberg_fdr(pvalues, fdr_level=0.05)
+        assert result["n_rejected"] == 0
+        assert not any(result["rejected"])
+
+    def test_mixed_pvalues_correct_threshold(self):
+        """BH threshold check: k/m * q at rank k."""
+        # m=5, q=0.05 → thresholds [0.01, 0.02, 0.03, 0.04, 0.05]
+        pvalues = [0.009, 0.019, 0.04, 0.06, 0.10]
+        result = benjamini_hochberg_fdr(pvalues, fdr_level=0.05)
+        # Sorted: 0.009 ≤ 0.01 ✓, 0.019 ≤ 0.02 ✓, 0.04 > 0.03 ✗ → k*=2
+        assert result["n_rejected"] == 2
+
+    def test_output_keys(self):
+        result = benjamini_hochberg_fdr([0.01, 0.05, 0.10], fdr_level=0.05)
+        for key in ("rejected", "bh_critical_values", "n_rejected", "adjusted_pvalues"):
+            assert key in result
+
+    def test_empty_input(self):
+        result = benjamini_hochberg_fdr([], fdr_level=0.05)
+        assert result == {"rejected": [], "bh_critical_values": [], "n_rejected": 0, "adjusted_pvalues": []}
+
+    def test_adjusted_pvalues_monotone(self):
+        """BH adjusted p-values should be monotone non-decreasing in sorted order."""
+        rng = np.random.default_rng(5)
+        pvalues = list(rng.uniform(0, 1, 20))
+        result = benjamini_hochberg_fdr(pvalues, fdr_level=0.05)
+        adj = result["adjusted_pvalues"]
+        # All adjusted p-values must be in [0,1]
+        assert all(0.0 <= p <= 1.0 for p in adj)
+        # adjusted_pvalues is returned in original input order; re-order by
+        # ascending p-value (BH's natural rank order) and check the
+        # running-minimum step enforced non-decreasing values.
+        sorted_adj = [a for _, a in sorted(zip(pvalues, adj, strict=True))]
+        assert all(sorted_adj[i] <= sorted_adj[i + 1] for i in range(len(sorted_adj) - 1))
+
+
+class TestComputeBoardLevelFdr:
+    """Tests for rigor_evaluator.compute_board_level_fdr — the board-level
+    orchestration layer (#1185): direction-converts DSR p-values then calls
+    benjamini_hochberg_fdr. Distinct from TestBenjaminiHochbergFDR above (which
+    tests the pure BH math on hand-supplied classical p-values) — these tests
+    exercise the NEW conversion + cohort-assembly path this issue adds, with a
+    known cohort of dsr_p_values chosen so the expected rejection set can be
+    hand-verified against the BH step-up procedure.
+    """
+
+    def test_direction_conversion_low_dsr_p_is_significant_after_correction(self):
+        """dsr_p_value uses P(true SR>0) convention (HIGH=confident); a strategy
+        with dsr_p_value close to 1.0 must convert to a SMALL classical p-value
+        and be far more likely to survive BH-FDR than one near 0.5 (weak
+        evidence). This is the specific bug class a flipped conversion would
+        produce silently (both directions are 'plausible-looking' floats in
+        [0,1], so a reversed sign would not crash — it would just be wrong)."""
+        # 5 strong strategies (dsr_p_value ~0.999, classical p ~0.001 → BH-significant)
+        # + 5 weak strategies (dsr_p_value ~0.5, classical p ~0.5 → BH-insignificant)
+        dsr_p_values = {f"strong_{i}": 0.999 for i in range(5)} | {f"weak_{i}": 0.5 for i in range(5)}
+        result = compute_board_level_fdr(dsr_p_values, fdr_level=0.05)
+
+        assert len(result) == 10
+        for i in range(5):
+            assert result[f"strong_{i}"]["board_fdr_significant"] is True
+        for i in range(5):
+            assert result[f"weak_{i}"]["board_fdr_significant"] is False
+
+    def test_matches_hand_computed_bh_on_known_cohort(self):
+        """Cross-check against a hand-verified BH step-up computation.
+
+        classical_p = 1 - dsr_p_value for each, chosen with margin away from
+        the exact BH threshold boundaries (an exact-boundary hit like
+        classical_p == threshold is float-noise-sensitive: 1.0 - 0.99 !=
+        0.01 in IEEE-754, so a case pinned exactly on the boundary can flip on
+        floating-point error alone — this deliberately avoids that trap).
+        classical_p: [0.005, 0.015, 0.028, 0.15, 0.50] (dsr_p_values: [0.995,
+        0.985, 0.972, 0.85, 0.50]). m=5, q=0.05 → BH thresholds [0.01, 0.02,
+        0.03, 0.04, 0.05]. Sorted classical p vs threshold: 0.005<=0.01 ✓,
+        0.015<=0.02 ✓, 0.028<=0.03 ✓, 0.15>0.04 ✗, 0.50>0.05 ✗ → k*=3 rejected
+        (the first three), each with margin >= 0.002 from its threshold.
+        """
+        dsr_p_values = {"a": 0.995, "b": 0.985, "c": 0.972, "d": 0.85, "e": 0.50}
+        result = compute_board_level_fdr(dsr_p_values, fdr_level=0.05)
+
+        assert result["a"]["board_fdr_significant"] is True
+        assert result["b"]["board_fdr_significant"] is True
+        assert result["c"]["board_fdr_significant"] is True
+        assert result["d"]["board_fdr_significant"] is False
+        assert result["e"]["board_fdr_significant"] is False
+
+        # Cross-check directly against benjamini_hochberg_fdr on the same
+        # manually-converted classical p-values, in the same order.
+        ids = ["a", "b", "c", "d", "e"]
+        classical = [1.0 - dsr_p_values[k] for k in ids]
+        expected = benjamini_hochberg_fdr(classical, fdr_level=0.05)
+        for i, k in enumerate(ids):
+            assert result[k]["board_fdr_adjusted_p"] == pytest.approx(expected["adjusted_pvalues"][i])
+            assert result[k]["board_fdr_significant"] == expected["rejected"][i]
+
+    def test_none_and_non_finite_pvalues_excluded_not_fabricated(self):
+        """A strategy with no backtest data (dsr_p_value=None) or a non-finite
+        value must be OMITTED from the returned dict, not assigned a fabricated
+        corrected value — mirrors the MISSING convention used everywhere else
+        in the rigor gate."""
+        dsr_p_values = {"has_data": 0.9, "missing": None, "nan_case": float("nan")}
+        result = compute_board_level_fdr(dsr_p_values)
+        assert set(result.keys()) == {"has_data"}
+
+    def test_empty_cohort_returns_empty_dict(self):
+        assert compute_board_level_fdr({}) == {}
+        assert compute_board_level_fdr({"only": None}) == {}
+
+    def test_saturated_dsr_p_value_is_floored_not_zero(self):
+        """dsr_p_value == 1.0 (DSR rounding saturation — e.g. compute_dsr on a
+        long, low-vol, confidently-positive series rounds to exactly 1.0) must
+        NOT convert to a classical p-value of exactly 0.0: an impossible
+        zero-probability certainty claim. It is floored at
+        ``_CLASSICAL_P_FLOOR`` (1e-6) before BH-FDR runs (#1185 code review,
+        2026-08-20), so ``board_fdr_adjusted_p`` / ``board_fdr_confidence``
+        stay strictly inside (0.0, 1.0) rather than snapping to the endpoint.
+        This is not hypothetical: TestBoardLevelFdrWiring's
+        ``_strong_series(0)`` in test_selection_bias_routes.py hits this
+        exact saturated case in the PR's own end-to-end test cohort."""
+        dsr_p_values = {"saturated": 1.0, "b": 0.5, "c": 0.5}
+        result = compute_board_level_fdr(dsr_p_values, fdr_level=0.05)
+
+        assert result["saturated"]["board_fdr_significant"] is True
+        assert 0.0 < result["saturated"]["board_fdr_adjusted_p"] < 1e-4
+        assert 1.0 - 1e-4 < result["saturated"]["board_fdr_confidence"] < 1.0
+
+    def test_board_level_correction_is_cohort_size_sensitive(self):
+        """The defining property of a BOARD-level (not per-strategy) correction:
+        the SAME strategy's verdict can change purely as a function of how many
+        OTHER strategies are being simultaneously tested alongside it — unlike
+        the per-strategy num_trials convention (#1075), which is deliberately
+        NOT library-coupled (docs/adr/num-trials-self-containment.md). ``target``
+        keeps the exact same dsr_p_value (0.98, classical p=0.02) in both
+        cohorts; only the number of OTHER (individually insignificant,
+        dsr_p_value=0.5 → classical p=0.5) strategies alongside it changes. In
+        the 2-strategy cohort target's rank-1 BH threshold (q/m = 0.025) still
+        clears its own p-value (0.02 <= 0.025), so it is significant. Diluted
+        into a 31-strategy cohort, target's rank-1 threshold shrinks to
+        q/31 ≈ 0.0016 — no longer clearing 0.02 — and no later, weaker rank
+        rescues it (BH step-up: a rank is only rescued if some rank AT OR
+        BELOW its own p-value clears its own threshold, and every filler's own
+        p=0.5 never clears its own threshold, capped at q=0.05). So target
+        flips to non-significant purely from cohort growth."""
+        small_cohort = {"target": 0.98, "b": 0.5}  # classical p: [0.02, 0.5]
+        large_cohort = {"target": 0.98} | {f"filler_{i}": 0.5 for i in range(30)}  # 31-strategy board
+
+        small_result = compute_board_level_fdr(small_cohort, fdr_level=0.05)
+        large_result = compute_board_level_fdr(large_cohort, fdr_level=0.05)
+
+        assert small_result["target"]["board_fdr_significant"] is True
+        assert large_result["target"]["board_fdr_significant"] is False
+        # The raw per-strategy DSR p-value (0.98, i.e. classical p=0.02) never
+        # changed — only the board it was evaluated against did.
+        assert large_result["target"]["board_fdr_adjusted_p"] > small_result["target"]["board_fdr_adjusted_p"]
 
 
 class TestPboPowerFloor:
