@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiGet } from "../api";
+import { ROADMAP_SURFACES_ENABLED } from "../featureFlags.js";
+import { landing as ROADMAP_COPY } from "../roadmapCopy.js";
 
 // ConfigService returns these core singleton fields today. Arc-native USDC is
 // excluded; per-asset oracles and user vaults are not fully represented, so the
@@ -70,16 +72,18 @@ export default function Landing({ onNavigate }) {
 				<div className="public-shell public-hero__grid">
 					<div className="public-hero__copy">
 						<p className="public-kicker">
-							Research <span>→</span> rigor <span>→</span> vault
+							Research <span>→</span> rigor{ROADMAP_SURFACES_ENABLED && (
+								<> <span>→</span> {ROADMAP_COPY.kickerVault}</>
+							)}
 						</p>
 						<h1 id="public-hero-title">
 							Capital should follow
 							<em>a thesis it can prove.</em>
 						</h1>
 						<p className="public-hero__lede">
-							Archimedes turns a plain-language brief into a paper-grounded
-							strategy, tests it for selection bias, then runs accepted methods
-							in a non-custodial vault on Arc.
+							{ROADMAP_SURFACES_ENABLED
+								? ROADMAP_COPY.heroLede
+								: "Archimedes turns a plain-language brief into a paper-grounded strategy, then tests it for selection bias against a rigor gate it must pass before anything runs live."}
 						</p>
 						<div className="public-actions">
 							<button
@@ -135,7 +139,7 @@ export default function Landing({ onNavigate }) {
 				</div>
 			</section>
 
-			<AuthorityBoundary />
+			{ROADMAP_SURFACES_ENABLED && <AuthorityBoundary />}
 
 			<section
 				className="public-section public-stack"
@@ -225,11 +229,14 @@ function ProofSpiral({
 				aria-labelledby="proof-spiral-title proof-spiral-description"
 			>
 				<title id="proof-spiral-title">
-					Brief, debate, rigor, vault proof flow
+					{ROADMAP_SURFACES_ENABLED
+						? ROADMAP_COPY.spiralTitle
+						: "Brief, debate, rigor proof flow"}
 				</title>
 				<desc id="proof-spiral-description">
-					An Archimedean spiral traces a strategy from the user brief through
-					multi-agent debate and the rigor gate to a user-authorized vault.
+					{ROADMAP_SURFACES_ENABLED
+						? ROADMAP_COPY.spiralDesc
+						: "An Archimedean spiral traces a strategy from the user brief through multi-agent debate to the rigor gate that decides whether it can run live."}
 				</desc>
 				<line
 					className="proof-spiral__axis"
@@ -273,19 +280,23 @@ function ProofSpiral({
 						Rigor
 					</text>
 				</g>
-				<g className="proof-spiral__node proof-spiral__node--user">
-					<circle cx="450" cy="208" r="7" />
-					<text x="463" y="228">
-						Vault
-					</text>
-				</g>
+				{ROADMAP_SURFACES_ENABLED && (
+					<g className="proof-spiral__node proof-spiral__node--user">
+						<circle cx="450" cy="208" r="7" />
+						<text x="463" y="228">
+							{ROADMAP_COPY.spiralVaultLabel}
+						</text>
+					</g>
+				)}
 			</svg>
 
 			<ol className="proof-spiral__legend" aria-label="Strategy proof flow">
 				<li className="is-user">Brief</li>
 				<li>Debate</li>
 				<li>Rigor</li>
-				<li className="is-user">Vault</li>
+				{ROADMAP_SURFACES_ENABLED && (
+					<li className="is-user">{ROADMAP_COPY.spiralVaultLabel}</li>
+				)}
 			</ol>
 
 			<div className="proof-spiral__census" aria-live="polite">
@@ -392,7 +403,7 @@ function AuthorityBoundary() {
 						<p className="authority-boundary__owner">Only you may</p>
 						<ul>
 							<li>Authorize deposits with your wallet</li>
-							<li>Withdraw assets from your vault</li>
+							<li>{ROADMAP_COPY.authorityWithdrawBullet}</li>
 							<li>Choose whether a validated strategy receives capital</li>
 						</ul>
 					</div>
