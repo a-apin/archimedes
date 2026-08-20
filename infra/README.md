@@ -133,6 +133,40 @@ terraform import 'aws_route.private_nat[1]' rtb-<id>_0.0.0.0/0
 > without the reboot, `-target` them; to stop Terraform proposing the reboot for a
 > bootstrap-script edit, add `lifecycle { ignore_changes = [user_data] }`.
 
+### Operational variables — always apply via terraform.tfvars, never a bare TF_VAR_* export
+
+**The landmine:** `infra/` ships no `terraform.tfvars`. Every operationally-significant
+variable in [`variables.tf`](variables.tf) defaults to the *feature-off* value (`false` /
+`""`). Setting one only via a one-off `TF_VAR_*` shell export — the pattern this README
+used to document exclusively, e.g. for `aurora_master_password` above — is one bare
+`terraform apply` away from silently reverting it: a different shell, a later session, a
+teammate who doesn't know the export was ever needed. For the OAuth flags that strips the
+whole `secrets{}` block for that provider out of the auth task definition
+([`ecs.tf`](ecs.tf) lines 662-665 / 666-669); for the wallet variables it blanks a live env
+value ([`ecs.tf`](ecs.tf) lines 589-590). No error, no destructive-looking plan line — just
+a quiet, successful apply that undoes prod config.
+
+**The rule:** copy [`terraform.tfvars.example`](terraform.tfvars.example) to
+`terraform.tfvars` (gitignored — the real file with real values is never committed) and
+keep it current with whatever is actually live in prod. Terraform auto-loads
+`terraform.tfvars` from the working directory on every plan/apply — no `-var-file` flag
+needed — so once it's maintained, a bare `terraform apply` stops being a trap.
+`aurora_master_password` stays on the existing SSM-piped
+`TF_VAR_aurora_master_password=$(aws ssm get-parameter ...)` export documented above — it's
+a true secret (`sensitive = true`, no default) and belongs in SSM, not a local file, even a
+gitignored one.
+
+Known operationally-set variables as of 2026-08-20 — re-grep `variables.tf` for new
+`var.*` conditionals in `ecs.tf` any time a new operational flag is added:
+
+| Variable | Declared | Gates | Default | Status |
+| --- | --- | --- | --- | --- |
+| `google_oauth_enabled` | `variables.tf:100` | Google OAuth `secrets{}` block — `ecs.tf:662-665` | `false` | Live-set in prod via a bare `TF_VAR_*` export — verify the current value before any apply; not captured in a tfvars file before this PR. |
+| `github_oauth_enabled` | `variables.tf:106` | GitHub OAuth `secrets{}` block — `ecs.tf:666-669` | `false` | Same as above. |
+| `platform_admin_wallets` | `variables.tf:123` | `PLATFORM_ADMIN_WALLETS` env — `ecs.tf:589` | `""` | **Confirmed:** Dan applied a real value via `TF_VAR_platform_admin_wallets` on 2026-08-20. Not captured anywhere durable — the next bare apply reverts it to `""` and silently removes the admin-wallet publish bypass. |
+| `archimedes_treasury_wallet` | `variables.tf:129` | `ARCHIMEDES_TREASURY_WALLET` env — `ecs.tf:590` | `""` | Same landmine class and same `ecs.tf` gating pattern as `platform_admin_wallets`. This PR did **not** confirm whether a real value is currently applied in prod — check with Dan before any apply that could touch it. |
+| `alarm_email` | `cloudwatch.tf:17` | SNS email subscription — `cloudwatch.tf:33-36` | `""` | Lower stakes: `cloudwatch.tf` is additive-only (see Monitoring section above), so reverting this only drops a page subscription, not a feature. Same rule applies if a real address has been set. |
+
 ### Admin Access (SSM Session Manager)
 
 Once VPC migration is complete, admin access is via AWS SSM:
