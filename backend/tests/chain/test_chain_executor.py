@@ -825,6 +825,7 @@ class TestPriceBaselineWrite:
         mock_loader.oracle_for.return_value = oracle
 
         fake_redis = MagicMock()
+        fake_redis.exists = AsyncMock(return_value=0)
         fake_redis.set = AsyncMock(return_value=True)
         fake_redis.aclose = AsyncMock()
 
@@ -852,6 +853,7 @@ class TestPriceBaselineWrite:
     @pytest.mark.asyncio
     async def test_usdc_priced_at_one_dollar_no_oracle_read(self, executor, mock_loader):
         fake_redis = MagicMock()
+        fake_redis.exists = AsyncMock(return_value=0)
         fake_redis.set = AsyncMock(return_value=True)
         fake_redis.aclose = AsyncMock()
 
@@ -898,6 +900,7 @@ class TestPriceBaselineWrite:
         rather than guessed at — _compute_returns then correctly treats it as
         having no baseline instead of a wrong one."""
         fake_redis = MagicMock()
+        fake_redis.exists = AsyncMock(return_value=0)
         fake_redis.set = AsyncMock(return_value=True)
         fake_redis.aclose = AsyncMock()
 
@@ -905,3 +908,69 @@ class TestPriceBaselineWrite:
             await executor._write_price_baseline_if_absent("0xVault", ["0xDeadBeef"], [10000])
 
         fake_redis.set.assert_not_called()  # nothing usable to write
+
+
+class TestBaselineCompleteOrNothing:
+    """#1201 review major: a PARTIAL snapshot written via SET NX permanently
+    forecloses a vault's returns (the reader requires every allocated token;
+    NX blocks repair). The writer is therefore complete-or-nothing: any
+    failed or unpriceable token aborts the WRITE, leaving no key, so the
+    next tick retries with a fresh chance at a complete baseline.
+    Mutation-proven: the pre-fix writer (swallow-and-continue + non-empty
+    check) fails test_transient_oracle_failure_writes_nothing by persisting
+    the one-token partial."""
+
+    @pytest.mark.asyncio
+    async def test_transient_oracle_failure_writes_nothing(self, executor, mock_loader):
+        fake_redis = MagicMock()
+        fake_redis.exists = AsyncMock(return_value=0)
+        fake_redis.set = AsyncMock(return_value=True)
+        fake_redis.aclose = AsyncMock()
+
+        good = MagicMock()
+        good.functions.price.return_value.call = AsyncMock(return_value=100_000_000)
+        bad = MagicMock()
+        bad.functions.price.return_value.call = AsyncMock(side_effect=ConnectionError("rpc blip"))
+        mock_loader.oracle_for.side_effect = lambda sym: {"sTSLA": good, "sSPY": bad}[sym]
+
+        cc = executor._mock_cc
+        tsla = next(a for s_, a in cc.settings.synth_addresses.items() if s_ == "sTSLA")
+        spy = next(a for s_, a in cc.settings.synth_addresses.items() if s_ == "sSPY")
+
+        with patch("redis.asyncio.from_url", return_value=fake_redis):
+            await executor._write_price_baseline_if_absent("0xVault", [tsla, spy], [5000, 5000])
+
+        fake_redis.set.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_token_writes_nothing(self, executor, mock_loader):
+        fake_redis = MagicMock()
+        fake_redis.exists = AsyncMock(return_value=0)
+        fake_redis.set = AsyncMock(return_value=True)
+        fake_redis.aclose = AsyncMock()
+
+        with patch("redis.asyncio.from_url", return_value=fake_redis):
+            await executor._write_price_baseline_if_absent(
+                "0xVault", ["0x000000000000000000000000000000000000dEaD"], [10000]
+            )
+
+        fake_redis.set.assert_not_awaited()
+        mock_loader.oracle_for.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_existing_baseline_skips_all_oracle_reads(self, executor, mock_loader):
+        """#1201 review minor: an immutable already-written baseline means the
+        per-tick oracle RPC reads are pure waste — the EXISTS pre-check skips
+        them entirely."""
+        fake_redis = MagicMock()
+        fake_redis.exists = AsyncMock(return_value=1)
+        fake_redis.set = AsyncMock(return_value=True)
+        fake_redis.aclose = AsyncMock()
+
+        cc = executor._mock_cc
+        tsla = next(a for s_, a in cc.settings.synth_addresses.items() if s_ == "sTSLA")
+        with patch("redis.asyncio.from_url", return_value=fake_redis):
+            await executor._write_price_baseline_if_absent("0xVault", [tsla], [10000])
+
+        mock_loader.oracle_for.assert_not_called()
+        fake_redis.set.assert_not_awaited()

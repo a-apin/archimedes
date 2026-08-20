@@ -942,43 +942,66 @@ class ChainExecutor:
             usdc = chain_client.settings.usdc_address.lower()
             addr_to_symbol = {addr.lower(): sym for sym, addr in chain_client.settings.synth_addresses.items()}
 
-            # Snapshot keys are ALWAYS the normalized (lowercase) token address —
-            # the reader looks tokens up the same way (price_baseline module), so
-            # a checksummed caller-side address can never make a priced token
-            # read back as "no baseline" (#1201 review).
-            prices: dict[str, float] = {}
-            for token, weight in zip(tokens, weights_bps, strict=False):
-                if weight <= 0:
-                    continue
-                token_lower = normalize_token(token)
-                try:
-                    if token_lower == usdc:
-                        prices[token_lower] = 1.0
-                        continue
-                    symbol = addr_to_symbol.get(token_lower)
-                    if symbol is None:
-                        continue  # unknown token — no oracle to price it against
-                    oracle = self.loader.oracle_for(symbol)
-                    raw = await oracle.functions.price().call()
-                    prices[token_lower] = raw / 1e6
-                except Exception:
-                    logger.debug(
-                        "baseline price read failed for token %s on vault %s",
-                        token,
-                        vault_address,
-                        exc_info=True,
-                    )
-                    continue
-
-            if not prices:
-                return
-
             redis_url = (
                 os.getenv("REDIS_URL")
                 or f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}/0"
             )
             r = _aioredis.from_url(redis_url, decode_responses=True)
             try:
+                # A baseline is immutable once written (SET NX below) — when one
+                # already exists there is nothing to do, so skip the per-token
+                # oracle RPC reads entirely instead of re-pricing every tick and
+                # discarding the result (#1201 review).
+                if await r.exists(baseline_key(vault_address)):
+                    return
+
+                # Snapshot keys are ALWAYS the normalized (lowercase) token
+                # address — the reader looks tokens up the same way
+                # (price_baseline module), so a checksummed caller-side address
+                # can never make a priced token read back as "no baseline"
+                # (#1201 review).
+                #
+                # COMPLETE-OR-NOTHING (#1201 review): the reader makes the WHOLE
+                # vault unavailable if any allocated token is missing from the
+                # snapshot, and SET NX means the first write stands forever — so
+                # persisting a partial snapshot after a transient oracle blip
+                # would permanently foreclose the vault's returns with no retry.
+                # A failed/unknown token therefore aborts the WRITE (leaving no
+                # key), and the next tick gets a fresh chance at a complete one.
+                expected = {normalize_token(t) for t, w in zip(tokens, weights_bps, strict=False) if w > 0}
+                prices: dict[str, float] = {}
+                for token_lower in expected:
+                    try:
+                        if token_lower == usdc:
+                            prices[token_lower] = 1.0
+                            continue
+                        symbol = addr_to_symbol.get(token_lower)
+                        if symbol is None:
+                            # No oracle exists for this token — the baseline can
+                            # never be complete; the vault reads back honestly
+                            # as unavailable without a useless partial key.
+                            logger.warning(
+                                "no oracle mapping for token %s on vault %s — baseline not written",
+                                token_lower,
+                                vault_address,
+                            )
+                            return
+                        oracle = self.loader.oracle_for(symbol)
+                        raw = await oracle.functions.price().call()
+                        prices[token_lower] = raw / 1e6
+                    except Exception:
+                        logger.info(
+                            "baseline price read failed for token %s on vault %s — "
+                            "baseline not written this tick (will retry next tick)",
+                            token_lower,
+                            vault_address,
+                            exc_info=True,
+                        )
+                        return
+
+                if not prices:
+                    return
+
                 wrote = await r.set(baseline_key(vault_address), _json.dumps(prices), nx=True)
                 if wrote:
                     logger.info("Wrote price baseline for vault %s (%d tokens)", vault_address, len(prices))
