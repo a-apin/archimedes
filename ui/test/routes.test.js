@@ -26,6 +26,12 @@ test("account routes remain public", () => {
 	assert.equal(resolveRoute("/sign-up").kind, "auth");
 });
 
+test("reset-password is a public auth route (#1323)", () => {
+	const route = resolveRoute("/reset-password");
+	assert.equal(route.kind, "auth");
+	assert.equal(route.page, "reset-password");
+});
+
 test("application routes use /app boundary", () => {
 	const route = resolveRoute("/app/library", "?tab=examples");
 	assert.equal(route.kind, "app");

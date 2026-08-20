@@ -13,7 +13,7 @@ passkey authorizes Circle smart wallet only; it is not Archimedes login credenti
 
 Routes:
 
-- `/`, `/architecture`, `/sign-in`, and `/sign-up`: public SPA routes.
+- `/`, `/architecture`, `/sign-in`, `/sign-up`, and `/reset-password`: public SPA routes.
 - `/app/*`: Better Auth session required by nginx `auth_request` and client router.
 - private FastAPI routes: repeat session checks through `require_current_user`.
 - on-chain wallet actions: additionally require wallet present in `linked_wallets` for
@@ -84,6 +84,26 @@ Independently of enforcement, disposable accounts are bounded by three layers:
    (`backend/archimedes/services/generation_quota.py`). Generation is the
    endpoint that spends money, and its IP bucket does not reset when a new
    account is minted — so a signup farm gains nothing where it matters.
+
+### Password reset (#1323)
+
+Forgotten-password recovery is wired end to end — before this, a lost password
+permanently destroyed the account that owns the user's strategies. `auth/auth.js`
+`emailAndPassword.sendResetPassword` mirrors `sendVerificationEmail`: same mailer
+(`auth/mailer.js`), same fail-soft-on-send-failure handling. Better Auth's built-in
+`POST /api/auth/request-password-reset` returns the identical response body/status for
+a known and an unknown email — `sendResetPassword` is only ever invoked for a real
+account, so the fail-soft catch matters doubly here: a 500 that only real accounts could
+trigger would itself leak account existence via status code. `POST
+/api/auth/reset-password` consumes the mailed token, sets the new password, and (via
+`revokeSessionsOnPasswordReset: true`) signs out every existing session.
+
+UI: `ui/src/components/AuthPage.jsx` — "Forgot password?" on the sign-in view opens an
+inline request form (`ui/src/auth-client.js` `requestPasswordReset`); the mailed link
+points at the public `/reset-password` route, which reads `?token=` and calls
+`resetPassword`. A sign-in refused with 403 (unverified email) surfaces a "Resend
+verification email" action calling the existing `send-verification-email` endpoint
+(`resendVerificationEmail`) — closing the matching lockout for a lost verification mail.
 
 ## Wallet linking
 

@@ -8,6 +8,7 @@ const PUBLIC_PATHS = {
 const AUTH_PATHS = {
   '/sign-in': 'sign-in',
   '/sign-up': 'sign-up',
+  '/reset-password': 'reset-password',
 }
 
 const APP_PATHS = {
