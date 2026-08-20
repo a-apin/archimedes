@@ -15,8 +15,12 @@ Phase 3c contract:
   GET /api/corpus/kg/paper/{id}   — all triples for one paper
 
 This skeleton implements the runner-state + overview endpoints (read from
-the artifact volume + DB) and returns explicit "pipeline not yet run" 503s
-for graph/kg endpoints until the KB pipeline lands its first artifact.
+the artifact volume + DB). Until the KB pipeline lands its first artifact,
+/api/corpus/graph returns an explicit "pipeline not yet run" 503
+(kb_artifact_not_found); the kg/* endpoints do NOT 503 — they return 200
+with empty entity/relation sets, because overstating "not yet run" for a
+search endpoint would be the same over-claim pointing the other way. Both
+behaviours are pinned by backend/tests/test_corpus_claim_integrity.py.
 """
 
 from __future__ import annotations
