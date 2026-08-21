@@ -15,7 +15,7 @@ test("no-wallet branch offers the connect flow, not a dead end (#1298)", () => {
 	// The old copy told users to use a wallet without offering one — gone.
 	assert.doesNotMatch(generate, /isn't\s*\n?\s*supported for payments yet/);
 	// The replacement branch must dispatch the app's existing connect modal.
-	const branch = generate.match(/!walletSupportsPayment\(\) \? \(([\s\S]*?)\) : checkingBalance/);
+	const branch = generate.match(/!walletSupportsPayment\(\) \? \(([\s\S]*?)\) : \(/);
 	assert.ok(branch, "no-wallet branch missing");
 	assert.match(branch[1], /open-wallet-modal/);
 	assert.match(branch[1], /Connect wallet/);
