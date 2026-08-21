@@ -551,8 +551,8 @@ resource "aws_ecs_task_definition" "backend" {
         # code default because it was never added to the task definition is a
         # config-drift failure this file has already had (see KNOWN GAP list).
         # Not secrets. Both layers must pass; <= 0 disables a layer.
-        { name = "GENERATION_DAILY_CAP_PER_USER", value = "10" },
-        { name = "GENERATION_DAILY_CAP_PER_IP", value = "20" },
+        { name = "GENERATION_DAILY_CAP_PER_USER", value = "100" },
+        { name = "GENERATION_DAILY_CAP_PER_IP", value = "200" },
         # Generation payment gate (flip-list #834): flag stays "false" until
         # Dan flips it deliberately — and GENERATION_PAYMENT_RECIPIENT (the
         # platform wallet that receives x402 settlements) MUST be set first;

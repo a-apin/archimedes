@@ -402,7 +402,11 @@ export async function ensureArcChain(ethereum) {
           chainName: 'Arc Testnet',
           nativeCurrency: { name: 'USD Coin', symbol: 'USDC', decimals: 18 },
           rpcUrls: ['https://rpc.testnet.arc.network'],
-          blockExplorerUrls: [],
+          // MetaMask-family validation REJECTS an empty array here (EIP-3085:
+          // null or a non-empty HTTPS list) — `[]` made wallet_addEthereumChain
+          // throw for every wallet without Arc pre-added, killing the deposit
+          // and signing flows before any prompt appeared (#1298 field bug).
+          blockExplorerUrls: ['https://testnet.arcscan.app'],
         }],
       })
     } else if (isAlreadyPendingError(switchError)) {

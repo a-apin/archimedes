@@ -562,10 +562,11 @@ test("Generate.jsx: the deposit step's copy names the two on-chain steps (approv
 	assert.match(generate, /depositStep/);
 });
 
-test("Generate.jsx: an unsupported wallet type (e.g. the Circle passkey path) gets an honest message, not a broken pay button", () => {
-	// \s+ tolerates the source's own line wrap inside the JSX text node —
-	// JSX collapses it to a single space at render time either way.
-	assert.match(generate, /isn't\s+supported for payments yet/);
+test("Generate.jsx: the no-wallet state offers the connect flow (#1298 supersedes the old unsupported-wallet dead end)", () => {
+	// The #1427-era "isn't supported for payments yet" message is RETIRED:
+	// passkey wallets now sign via their smart account, and the no-connection
+	// state must offer the connect modal (see wallet-matrix.test.js).
+	assert.doesNotMatch(generate, /isn't\s+supported for payments yet/);
 	assert.match(generate, /walletSupportsPayment\(\)/);
 });
 

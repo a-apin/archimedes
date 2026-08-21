@@ -6,25 +6,28 @@
 // mirroring the DepositFlow.jsx / circle-tx-executor.js split already
 // established for vault deposits.
 //
-// EOA / injected-wallet path ONLY (MetaMask, Coinbase Wallet, any EIP-6963
-// wallet). The Circle passkey smart-account path is explicitly out of scope
-// for payments (Dan's directive): it has no viem WalletClient and can't sign
-// EIP-712 today — config.js's getWalletClient() already throws a clear error
-// for that path. walletSupportsPayment() below lets Generate.jsx show an
-// honest "use a browser wallet" message instead of a broken pay button,
-// rather than letting the throw surface as a crash.
+// Full wallet matrix (#1298, Dan's 2026-08-21 directive): EOA/injected
+// wallets (MetaMask, Coinbase, Brave, Phantom — anything EIP-6963) sign via
+// the viem WalletClient; the Circle passkey smart account signs typed data
+// through its viem SmartAccount (ERC-1271/6492) and transacts through the
+// bundler executor. paymentWalletKind() below is the branch point, and
+// 'none' means the session has no connected wallet yet — the UI must offer
+// the CONNECT flow there, never a dead-end message.
 //
 // No new dependency: viem is already a dependency (see config.js), and the
 // two ABIs below follow this repo's established "minimal inline ABI, just
 // what's needed" convention (config.js's USDC_ABI / VAULT_ABI).
 
 import { parseUnits } from "viem";
+import { encodeCall, executeUserOp } from "./circle-tx-executor";
 import {
 	CIRCLE_PROVIDER_ID,
 	USDC_DECIMALS,
 	ensureArcChain,
 	getConnectedProvider,
 	getRawProvider,
+	getSmartAccount,
+	getSmartAccountClient,
 	getWalletClient,
 	publicClient,
 } from "./config";
@@ -75,17 +78,25 @@ const USDC_APPROVE_ABI = [
 ];
 
 /**
- * True only when the connected wallet can sign EIP-712 typed data — any
- * EOA/injected path (MetaMask, Coinbase Wallet, EIP-6963 wallets). False
- * when nothing is connected, or the connected wallet is the Circle passkey
- * smart account (CIRCLE_PROVIDER_ID), which signs via Circle's bundler and
- * has no viem WalletClient. Generate.jsx checks this BEFORE offering a pay
- * button so an unsupported wallet gets an honest message instead of a click
- * that throws.
+ * Which kind of payment-capable wallet is connected right now (#1298 wallet
+ * matrix): 'eoa' — any injected/EIP-6963 wallet (MetaMask, Coinbase, Brave,
+ * Phantom, …) with a viem WalletClient; 'circle' — the Circle passkey smart
+ * account, which signs typed data through its viem SmartAccount and
+ * transacts through the bundler executor; 'none' — nothing connected in this
+ * session. Generate.jsx branches on this to offer the CONNECT flow for
+ * 'none' (the prior build dead-ended there: it told MetaMask users to "use a
+ * browser wallet" while giving them no connect button — the exact failure
+ * Dan hit in all three browsers).
  */
-export function walletSupportsPayment() {
+export function paymentWalletKind() {
 	const provider = getConnectedProvider();
-	return Boolean(provider) && provider !== CIRCLE_PROVIDER_ID;
+	if (!provider) return "none";
+	return provider === CIRCLE_PROVIDER_ID ? "circle" : "eoa";
+}
+
+/** Back-compat boolean: any connected wallet can now attempt payment. */
+export function walletSupportsPayment() {
+	return paymentWalletKind() !== "none";
 }
 
 /**
@@ -137,6 +148,25 @@ export async function depositToGateway(requirements, amountRaw, onProgress = () 
 	const token = requirements?.asset;
 	if (!gateway || !token) throw new Error("Missing Gateway contract or asset address in the payment requirements.");
 
+	// Circle passkey path: approve + deposit as ONE batched user operation
+	// through the bundler — same executor DepositFlow.jsx's vault path uses.
+	if (paymentWalletKind() === "circle") {
+		const smartAccount = getSmartAccount();
+		const client = getSmartAccountClient();
+		if (!smartAccount || !client) {
+			throw new Error("Passkey wallet session expired — reconnect your Circle wallet and retry.");
+		}
+		onProgress("approving");
+		const calls = [
+			encodeCall({ address: token, abi: USDC_APPROVE_ABI, functionName: "approve", args: [gateway, amountRaw] }),
+			encodeCall({ address: gateway, abi: GATEWAY_ABI, functionName: "deposit", args: [token, amountRaw] }),
+		];
+		onProgress("depositing");
+		const out = await executeUserOp({ smartAccount, client, calls, onStateChange: () => {} });
+		onProgress("deposited", { userOp: out });
+		return { userOp: out };
+	}
+
 	await ensureArcChain(getRawProvider());
 	const walletClient = await getWalletClient();
 
@@ -179,13 +209,10 @@ export async function depositToGateway(requirements, amountRaw, onProgress = () 
  * rather than letting getWalletClient()'s passkey error surface raw.
  */
 export async function signGatewayPayment({ requirements, resource, x402Version, payerAddress }) {
-	if (!walletSupportsPayment()) {
-		throw new Error(
-			"This wallet type can't sign payments yet — connect a browser wallet (e.g. MetaMask) to pay.",
-		);
+	const kind = paymentWalletKind();
+	if (kind === "none") {
+		throw new Error("No wallet connected — use Connect Wallet, then retry the payment.");
 	}
-	await ensureArcChain(getRawProvider());
-	const walletClient = await getWalletClient();
 
 	const nowSec = Math.floor(Date.now() / 1000);
 	const nonceBytes = crypto.getRandomValues(new Uint8Array(32));
@@ -196,7 +223,22 @@ export async function signGatewayPayment({ requirements, resource, x402Version, 
 		{ from: payerAddress, nowSec, nonceHex },
 	);
 
-	const signature = await walletClient.signTypedData({ domain, types, primaryType, message });
+	let signature;
+	if (kind === "circle") {
+		// Circle passkey smart account: viem SmartAccount.signTypedData returns
+		// the ERC-1271 (or ERC-6492-wrapped while counterfactual) signature in
+		// the wire format Circle's own stack verifies — do NOT wrap it again
+		// (the #870/#871 double-wrap lesson from the SIWE path applies here).
+		const smartAccount = getSmartAccount();
+		if (!smartAccount?.signTypedData) {
+			throw new Error("Passkey wallet session expired — reconnect your Circle wallet and retry.");
+		}
+		signature = await smartAccount.signTypedData({ domain, types, primaryType, message });
+	} else {
+		await ensureArcChain(getRawProvider());
+		const walletClient = await getWalletClient();
+		signature = await walletClient.signTypedData({ domain, types, primaryType, message });
+	}
 
 	return buildPaymentSignatureHeader({ x402Version, resource, requirements, authorization, signature });
 }
