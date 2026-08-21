@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiGet, apiPost } from '../api'
+import { driftTooltip, formatTotalReturn, paperErrorMessage } from '../paperCopy'
 
 // /app/paper — the act-on step of the MVP spine (generate → verdict → paper).
 // Lists the signed-in account's paper deployments from GET /api/paper/deployments
@@ -9,14 +10,14 @@ import { apiGet, apiPost } from '../api'
 // funds — and free by design (Dan's call: paper stays free even after the
 // generation paywall flips). Strategy display names come from a client-side
 // join against the library lists; the paper API deliberately returns ids only.
+//
+// The DRIFT tooltip, the total-return figure, and error-message rendering
+// are pure functions in ../paperCopy — unit-tested there (#1362) so this
+// component never re-fabricates a freeze that doesn't happen, a measured
+// look for an unmeasured day-0 ledger, or a raw "Backend returned NNN".
 
 function nameOf(row) {
   return row?.strategy_name || row?.name || row?.paper_title || null
-}
-
-function pct(x) {
-  if (x == null || Number.isNaN(x)) return '—'
-  return `${x >= 0 ? '+' : ''}${(x * 100).toFixed(2)}%`
 }
 
 function StatusChip({ status, driftAt }) {
@@ -38,7 +39,7 @@ function StatusChip({ status, driftAt }) {
       </span>
       {driftAt && (
         <span
-          title={`A fresh replay disagreed with the recorded ledger on ${driftAt}. The track record is frozen pending investigation — honest ledgers do not silently rewrite.`}
+          title={driftTooltip(driftAt, status)}
           style={{
             padding: '2px 10px',
             borderRadius: 999,
@@ -99,7 +100,7 @@ export default function PaperTrading({ onNavigate }) {
       const res = await apiGet('/api/paper/deployments')
       setDeployments(res.deployments || [])
     } catch (e) {
-      setError(e.message || 'Failed to load paper deployments')
+      setError(paperErrorMessage(e, 'Failed to load paper deployments'))
       setDeployments([])
       return
     }
@@ -143,7 +144,7 @@ export default function PaperTrading({ onNavigate }) {
       // was left with no statement of what happened (4.1.3).
       setNotice(`Paper trading stopped for ${label}. The track record is frozen at ${dep.days} trading day${dep.days === 1 ? '' : 's'}.`)
     } catch (e) {
-      setError(e.message || 'Failed to stop deployment')
+      setError(paperErrorMessage(e, 'Failed to stop deployment'))
     } finally {
       setStopping(null)
     }
@@ -245,7 +246,7 @@ export default function PaperTrading({ onNavigate }) {
                           : 'var(--text-2)',
                   }}
                 >
-                  {pct(dep.total_return)}
+                  {formatTotalReturn(dep.total_return, dep.days)}
                 </div>
                 <div className="caption">total return</div>
                 {dep.status === 'active' && (

@@ -49,6 +49,7 @@ from archimedes.api.generate_routes import generate_public_router, generate_rout
 from archimedes.api.leaderboard_routes import leaderboard_router
 from archimedes.api.limiter import limiter
 from archimedes.api.paper_routes import paper_router
+from archimedes.api.payment_routes import payment_router
 
 # FAIL-SOFT import: marketplace_routes → service → payments imports circlekit
 # (the circle-titanoboa-sdk VCS dependency). If that dependency fails to IMPORT
@@ -359,6 +360,21 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _logger.warning("startup: backtest scheduler failed to arm (non-fatal): %s", exc)
 
+    # Platform revenue sweep (services/revenue_sweep.py): opt-in Gateway →
+    # DCW-token withdrawal loop. Money-switch convention: only the literal
+    # REVENUE_SWEEP_ENABLED=true arms it; unset/anything-else stays off and
+    # says so. Same RUF006 app.state reference rule as the loops above.
+    try:
+        from archimedes.services.revenue_sweep import revenue_sweep_loop, sweep_enabled
+
+        if sweep_enabled():
+            _app.state.revenue_sweep_task = asyncio.create_task(revenue_sweep_loop())
+            _logger.info("startup: revenue sweep scheduler armed")
+        else:
+            _logger.info("startup: revenue sweep scheduler disabled (REVENUE_SWEEP_ENABLED != 'true')")
+    except Exception as exc:
+        _logger.warning("startup: revenue sweep failed to arm (non-fatal): %s", exc)
+
     yield  # ── app is now running ────────────────────────────────────────
 
     # ── SHUTDOWN ─────────────────────────────────────────────────────────
@@ -512,6 +528,7 @@ app.include_router(portfolio_router, dependencies=[Depends(require_current_user)
 app.include_router(selection_bias_router)
 app.include_router(rigor_verify_router)
 app.include_router(account_usage_router)
+app.include_router(payment_router)
 app.include_router(papers_router)
 app.include_router(user_router, dependencies=[Depends(require_current_user)])
 app.include_router(wallet_router)
@@ -612,6 +629,46 @@ async def health():
         risk_data_reason = _risk_diag.reason
     except Exception:
         risk_data_reason = "import failed"
+
+    # Oracle-freshness health (issue #1371 — isFresh()/lastUpdated() had zero
+    # backend callers; every deployed PriceOracle has been stale since the
+    # T3.2 redeploy with nothing reporting it). oracle_fresh is true only if
+    # EVERY probed oracle is fresh; oracle_probed_count/oracle_universe_count
+    # are always both present so a 2-of-281-fresh push set can never be read
+    # as "oracles are healthy" system-wide. A chain-read failure reports
+    # oracle_fresh=false with an explicit marker (never fail-soft "assume
+    # fresh") — see services/oracle_health.py's module docstring.
+    oracle_fresh = False
+    oracle_oldest_age_s: int | None = None
+    oracle_probed_count = 0
+    oracle_universe_count = 0
+    # oracle_reason needs no initializer: the try body and the except handler
+    # both assign it unconditionally before any use.
+    try:
+        from archimedes.services.oracle_health import oracle_health as _oracle_health_probe
+
+        _oracle_diag = await _oracle_health_probe()
+        oracle_fresh = _oracle_diag.oracle_fresh
+        oracle_oldest_age_s = _oracle_diag.oracle_oldest_age_s
+        oracle_probed_count = _oracle_diag.oracle_probed_count
+        oracle_universe_count = _oracle_diag.oracle_universe_count
+        oracle_reason = _oracle_diag.reason
+    except Exception as exc:
+        oracle_reason = f"oracle_health probe_error: {exc}"
+
+    if not oracle_fresh:
+        # Loud, greppable marker — infra/cloudwatch.tf's metric filter keys off
+        # this exact literal (mirrors HEALTH_CHAIN_DISCONNECTED at :545-553).
+        # /health's HTTP status stays 200 for the same ALB/ECS reason documented
+        # there; this is what makes the degraded state page a human instead of
+        # sitting silently in a JSON body nobody is reading.
+        logger.warning(
+            "HEALTH_ORACLE_STALE: oracle_fresh=false oldest_age_s=%s probed=%d/%d (%s)",
+            oracle_oldest_age_s,
+            oracle_probed_count,
+            oracle_universe_count,
+            oracle_reason,
+        )
 
     # Strategy-library presence (issue #1039). count_strategy_files() is a cheap
     # directory file count (NO provider construction → no filesystem refresh, DB
@@ -739,6 +796,16 @@ async def health():
         "regime_detector_reason": regime_detector_reason,
         "risk_data": risk_data_status,
         "risk_data_reason": risk_data_reason,
+        # Oracle-freshness health (issue #1371). oracle_fresh is true only when
+        # EVERY probed oracle is fresh — oracle_probed_count/oracle_universe_count
+        # are always both present so a fully-fresh push set is never read as
+        # "the oracle subsystem is healthy" when the push set is a small
+        # fraction of the deployed universe. See services/oracle_health.py.
+        "oracle_fresh": oracle_fresh,
+        "oracle_oldest_age_s": oracle_oldest_age_s,
+        "oracle_probed_count": oracle_probed_count,
+        "oracle_universe_count": oracle_universe_count,
+        "oracle_reason": oracle_reason,
         # Strategy-library presence (issue #1039) — 0 means the image is missing
         # analytics-engine/strategies (the Fargate-cutover regression). CI gates on > 0.
         "strategy_count": strategy_count,

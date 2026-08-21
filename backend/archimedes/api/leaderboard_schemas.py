@@ -8,8 +8,8 @@ StockBench + live paper-P&L) that is honest about what is live now vs pending.
 
 Design rule (the #1 rule — claims must be true): the leaderboard NEVER invents a
 number. Every ranking input is a real passport field; the score weights are
-explicit and echoed in the response; and the StockBench / live-P&L axis renders
-an honest "pending" state per strategy until that data actually flows. (A prior
+explicit and echoed in the response; and the StockBench / live-P&L axis carries an explicit "pending" value per strategy until that data actually
+flows — the UI omits the axis rather than rendering it (#1365). (A prior
 marketplace surface was removed for "hardcoded fees + invented math", #381 — we
 do not repeat that.)
 """
@@ -44,10 +44,11 @@ class LeaderboardScoreComponents(BaseModel):
 
 class LeaderboardForwardAxis(BaseModel):
     """The forward-looking axis paired with validation in the scoring engine.
-    Per-strategy StockBench and live paper-P&L are not tracked yet, so these are
-    honestly ``pending`` per entry until the engagement-engine wiring lands. We
-    surface them (not hide them) so the scoring engine visibly pairs them with
-    validation, per the North Star, without fabricating values."""
+    Per-strategy StockBench and live paper-P&L are not tracked yet, so these
+    carry an explicit ``pending`` value until the engagement-engine wiring
+    lands. The API surfaces them (never fabricates them) so the pairing with
+    validation stays visible to consumers; the UI omits the axis until real
+    data flows (#1365)."""
 
     stockbench_status: str = Field(
         "pending",
@@ -148,3 +149,11 @@ class LeaderboardResponse(BaseModel):
         ),
     )
     scoring_engine: LeaderboardScoringEngine
+    # Honest degradation signal (#1356): True when the underlying strategy
+    # provider raised, or the curated cohort came back empty for a reason
+    # other than a legitimate filter (e.g. the corpus is missing from the
+    # build). `degraded_reason` names which. The UI must never render "No
+    # strategies match these filters yet." while this is True — that is a
+    # different, false claim.
+    degraded: bool = False
+    degraded_reason: str = ""

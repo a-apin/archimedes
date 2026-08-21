@@ -157,7 +157,7 @@ def test_quote_endpoint_is_public_and_reports_the_flag(monkeypatch) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["payment_required"] is False
-    assert body["price"] == "$0.150000"
+    assert body["price"] == "$2.000000"
     assert body["pricing_model"] == "flat_v1"
 
 

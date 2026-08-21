@@ -10,7 +10,7 @@ package, but both read the SAME ``MARKET_DATA_PROVIDER`` env var and default
 to ``"yfinance"``, so a deploy of this change is a no-op until the flag
 flips).
 
-Three call sites route through here (grep-verified):
+Five call sites route through here (grep-verified):
   - ``strategy_signal_evaluator._fetch_price_history(ies)`` — daily close
     series for backtests/Explore's universe sweep (the #1218 volume driver).
   - ``chain.oracle_updater`` — the live oracle-push equity fetch, the VIX /
@@ -18,6 +18,10 @@ Three call sites route through here (grep-verified):
     independent reading.
   - ``services.asset_market_service._fetch_yfinance_series`` — the Explore
     per-asset history-modal endpoint.
+  - ``services.fusion_market_data._fetch_one`` — the GENERATION path's
+    fusion/debate real-data panel (#1218 generation-path seam fix).
+  - ``services.portfolio_backtester._fetch_price_panel`` — the GENERATION
+    path's portfolio-weights backtester (same fix).
 
 **#775 resolution, in one line:** the cross-check
 (``oracle_updater._cross_check_secondary``) reads its independent secondary
@@ -26,16 +30,19 @@ through ``get_provider()`` and treats ``provider_name()`` (not a hardcoded
 new vendor and the cross-check's secondary source swaps with it automatically
 — no separate change needed at the guardrail.
 
-**Caching, scoped intentionally.** Only ``get_daily_close_batch`` — the
-DAILY-bar shape that matches ``asset_daily_bars`` — is cache-backed
-(``CachingMarketDataProvider``). ``get_intraday_quote(s)`` (live oracle
-pushes, VIX, the cross-check's secondary) and ``get_series`` (the Explore
-history modal, any interval) pass straight through, uncached, on purpose: a
-stale daily close must never masquerade as a live push/guardrail reading, and
-a single-symbol drill-down isn't the volume driver #1218 identified — the
-280-symbol universe sweep behind ``get_daily_close_batch`` is. Background
-refresh is deliberately NOT built here (#1218 anti-goal: seam, not
-migration) — the cache primes itself on the first miss.
+**Caching, scoped intentionally.** ``get_daily_close_batch`` — the DAILY-bar
+close-only shape that matches ``asset_daily_bars`` — and ``get_daily_ohlcv``
+— the DAILY full-bar (Open/High/Low/Close/Volume) shape the generation path's
+backtrader feeds and Close+Volume panel need — are both cache-backed
+(``CachingMarketDataProvider``), and both read/write the SAME
+``asset_daily_bars`` table (a row primed by one method's writer that lacks a
+full bar is treated as a miss by the other, so the two never hand back a
+partially-populated frame as if it were complete). ``get_intraday_quote(s)``
+(live oracle pushes, VIX, the cross-check's secondary) and ``get_series`` (the
+Explore history modal, any interval) pass straight through, uncached, on
+purpose: a stale daily close must never masquerade as a live push/guardrail
+reading. Background refresh is deliberately NOT built here (#1218 anti-goal:
+seam, not migration) — the cache primes itself on the first miss.
 """
 
 from __future__ import annotations
@@ -125,6 +132,21 @@ class MarketDataProvider(ABC):
     def get_series(self, ticker: str, period: str, interval: str) -> pd.Series:
         """Generic close-price series at an arbitrary (period, interval) —
         the Explore history-modal shape. Never cached."""
+
+    @abstractmethod
+    def get_daily_ohlcv(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """Full daily OHLCV history for one vendor ticker over ``[start, end)``
+        (ISO date strings) — the shape the GENERATION path needs: backtrader
+        feeds (``fusion_market_data.feed_factory``) and the portfolio
+        simulator's Close+Volume panel (``portfolio_backtester._fetch_price_panel``)
+        both consume a full OHLCV frame, not a close-only series, so this is a
+        separate method from ``get_daily_close_batch`` rather than a batch
+        variant of it. Columns ``Open``/``High``/``Low``/``Close``/``Volume``,
+        a ``DatetimeIndex``, normalized (dropna, monotonic — see
+        ``archimedes_analytics_engine.data.normalize_ohlcv``). Raises on a
+        genuinely unfetchable symbol/range rather than returning an empty
+        frame — callers already handle that (fail-closed to synthetic,
+        per-symbol skip) and rely on the exception, not a sentinel value."""
 
 
 class YFinanceProvider(MarketDataProvider):
@@ -268,6 +290,21 @@ class YFinanceProvider(MarketDataProvider):
             logger.warning("Failed to extract Close for %s: %s", ticker, exc)
             return pd.Series(dtype=float)
 
+    def get_daily_ohlcv(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """Delegates to analytics-engine's ``data.fetch_ohlcv`` — the exact
+        fetch/retry/normalize contract ``fusion_market_data`` and
+        ``portfolio_backtester`` already depended on directly before this
+        seam existed (#1282). Reusing it here (rather than re-implementing
+        the fetch against yfinance a second time) is what guarantees the
+        cold-cache output is byte-identical to the pre-seam direct-fetch
+        path — the two are now the same function call."""
+        from archimedes.services.fusion_market_data import _ensure_analytics_import
+
+        _ensure_analytics_import()
+        from archimedes_analytics_engine.data import fetch_ohlcv
+
+        return fetch_ohlcv(ticker, start, end)
+
 
 _VENDOR_PROVIDERS: dict[str, type[MarketDataProvider]] = {
     "yfinance": YFinanceProvider,
@@ -376,6 +413,138 @@ def _write_cached_series(session, ticker: str, series: pd.Series, source: str) -
             )
 
 
+def _read_cached_ohlcv(session, ticker: str, start_date: date, end_date: date, ttl: timedelta) -> pd.DataFrame | None:
+    """Return a cached OHLCV ``DataFrame`` for ``ticker`` if the cache covers
+    back to (approximately) ``start_date``, holds through ``end_date``, every
+    row carries a full bar (not a close-only row written by
+    ``get_daily_close_batch``'s writer), and was written within ``ttl``.
+    ``None`` on any miss (caller re-fetches the whole range)."""
+    from archimedes.models.asset_daily_bars import AssetDailyBar
+
+    rows = (
+        session.query(AssetDailyBar)
+        .filter(
+            AssetDailyBar.symbol == ticker,
+            AssetDailyBar.trade_date >= start_date,
+            AssetDailyBar.trade_date <= end_date,
+        )
+        .order_by(AssetDailyBar.trade_date)
+        .all()
+    )
+    if not rows:
+        return None
+
+    # A row primed by get_daily_close_batch's writer only carries `close` —
+    # open/high/low/volume are NULL. Treat that as a miss for THIS method:
+    # a partial bar is not a valid OHLCV cache entry, and re-fetching the
+    # whole range fills it in properly (via _write_cached_ohlcv below).
+    if any(r.open is None or r.high is None or r.low is None or r.volume is None for r in rows):
+        return None
+
+    earliest = rows[0].trade_date
+    if earliest > start_date + timedelta(days=_COVERAGE_TOLERANCE_DAYS):
+        return None  # cache doesn't reach back far enough for this request
+
+    # Forward-coverage is load-bearing, not symmetry for its own sake: both
+    # call sites default `end` to "today" on every call, so a cache primed
+    # through day D is routinely re-read after the date rolls to D+1 while
+    # still inside the TTL. Without this check that read is a "hit" on a
+    # silently shorter frame — a backtest window truncation that moves every
+    # graded number with no signal. Known tradeoff: a symbol whose vendor
+    # data genuinely ends before `end_date` (delisted/halted) now misses and
+    # re-fetches every call; correctness over cache hits — recording a
+    # vendor-end marker at write time is the fix for that, out of scope here.
+    latest = rows[-1].trade_date
+    if latest < end_date - timedelta(days=_COVERAGE_TOLERANCE_DAYS):
+        return None  # cache doesn't reach forward to the requested end
+
+    newest_fetch = max(r.fetched_at for r in rows)
+    if newest_fetch.tzinfo is None:
+        newest_fetch = newest_fetch.replace(tzinfo=UTC)
+    if datetime.now(UTC) - newest_fetch > ttl:
+        return None  # cache is past its freshness window
+
+    idx = pd.to_datetime([r.trade_date for r in rows])
+    return pd.DataFrame(
+        {
+            "Open": [r.open for r in rows],
+            "High": [r.high for r in rows],
+            "Low": [r.low for r in rows],
+            "Close": [r.close for r in rows],
+            "Volume": [r.volume for r in rows],
+        },
+        index=idx,
+    )
+
+
+def _write_cached_ohlcv(session, ticker: str, df: pd.DataFrame, source: str) -> None:
+    """Upsert a full OHLCV frame (indexed by date, columns
+    Open/High/Low/Close/Volume — ``fetch_ohlcv``'s output shape) into
+    ``asset_daily_bars`` for ``ticker``. Mirrors ``_write_cached_series`` but
+    persists the whole bar, not close-only, so the row is a valid cache entry
+    for ``get_daily_ohlcv`` as well as ``get_daily_close_batch``."""
+    from archimedes.models.asset_daily_bars import AssetDailyBar
+
+    def _float_or_none(value: object) -> float | None:
+        try:
+            v = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        return None if math.isnan(v) else v
+
+    now = datetime.now(UTC)
+    to_write: list[tuple[date, float | None, float | None, float | None, float, float | None]] = []
+    for ts, row in df.iterrows():
+        close_f = _float_or_none(row.get("Close"))
+        if close_f is None:
+            continue
+        trade_date = ts.date() if hasattr(ts, "date") else ts
+        to_write.append(
+            (
+                trade_date,
+                _float_or_none(row.get("Open")),
+                _float_or_none(row.get("High")),
+                _float_or_none(row.get("Low")),
+                close_f,
+                _float_or_none(row.get("Volume")),
+            )
+        )
+    if not to_write:
+        return
+
+    dates = [d for d, *_ in to_write]
+    existing = {
+        row.trade_date: row
+        for row in session.query(AssetDailyBar)
+        .filter(AssetDailyBar.symbol == ticker, AssetDailyBar.trade_date.in_(dates))
+        .all()
+    }
+    for trade_date, open_f, high_f, low_f, close_f, volume_f in to_write:
+        row = existing.get(trade_date)
+        if row is not None:
+            row.open = open_f
+            row.high = high_f
+            row.low = low_f
+            row.close = close_f
+            row.volume = volume_f
+            row.source = source
+            row.fetched_at = now
+        else:
+            session.add(
+                AssetDailyBar(
+                    symbol=ticker,
+                    trade_date=trade_date,
+                    open=open_f,
+                    high=high_f,
+                    low=low_f,
+                    close=close_f,
+                    volume=volume_f,
+                    source=source,
+                    fetched_at=now,
+                )
+            )
+
+
 class CachingMarketDataProvider(MarketDataProvider):
     """Wraps another provider with the Postgres ``asset_daily_bars``
     read-through cache for ``get_daily_close_batch`` only. Every other method
@@ -447,6 +616,48 @@ class CachingMarketDataProvider(MarketDataProvider):
 
     def get_series(self, ticker: str, period: str, interval: str) -> pd.Series:
         return self._inner.get_series(ticker, period, interval)
+
+    def get_daily_ohlcv(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """Read-through cache for the generation-path (fusion / portfolio
+        backtester) OHLCV fetch — the #1218 volume driver these two call
+        sites contribute alongside the universe sweep behind
+        ``get_daily_close_batch``. On a coverage/freshness miss, the whole
+        ``[start, end)`` range is fetched from the vendor and returned
+        UNCHANGED (only a best-effort cache write happens afterward) — a
+        fetch failure never gets a chance to corrupt the returned frame, and
+        a cold cache produces the exact same object the pre-seam direct call
+        would have."""
+        start_date = date.fromisoformat(start)
+        end_date = date.fromisoformat(end) if end else date.today()
+
+        session = self._session_factory()
+        try:
+            cached = _read_cached_ohlcv(session, ticker, start_date, end_date, self._ttl)
+        finally:
+            session.close()
+        if cached is not None:
+            return cached
+
+        fetched = self._inner.get_daily_ohlcv(ticker, start, end)
+        if fetched is None or fetched.empty:
+            return fetched
+
+        session = self._session_factory()
+        try:
+            _write_cached_ohlcv(session, ticker, fetched, self._source_name)
+            session.commit()
+        except IntegrityError:
+            # Same benign concurrent-writer race as get_daily_close_batch's
+            # prime — the loser rolls back; the fetch is still served.
+            session.rollback()
+            logger.info("asset_daily_bars OHLCV prime lost a concurrent-writer race (benign); next read is warm")
+        except SQLAlchemyError:
+            session.rollback()
+            logger.warning("asset_daily_bars OHLCV cache write failed (fetch still served)", exc_info=True)
+        finally:
+            session.close()
+
+        return fetched
 
 
 def get_provider() -> MarketDataProvider:

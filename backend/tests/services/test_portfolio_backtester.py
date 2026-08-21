@@ -326,13 +326,15 @@ class TestCorrelation:
         a = [0.01, -0.02, 0.005, 0.03]
         assert _correlation_to_benchmark(a, a) == pytest.approx(1.0, abs=1e-9)
 
-    def test_zero_variance_returns_zero(self) -> None:
+    def test_zero_variance_returns_none_not_zero(self) -> None:
+        """A flat series makes Pearson's r undefined — 0.0 would assert
+        "uncorrelated", a claim nothing measured (#1242 review)."""
         flat = [0.0, 0.0, 0.0, 0.0]
         varying = [0.01, -0.01, 0.02, -0.02]
-        assert _correlation_to_benchmark(flat, varying) == 0.0
+        assert _correlation_to_benchmark(flat, varying) is None
 
-    def test_short_series_returns_zero(self) -> None:
-        assert _correlation_to_benchmark([0.01], [0.01]) == 0.0
+    def test_short_series_returns_none_not_zero(self) -> None:
+        assert _correlation_to_benchmark([0.01], [0.01]) is None
 
 
 class TestBacktestPortfolioIntegration:
@@ -389,18 +391,21 @@ class TestBacktestPortfolioIntegration:
             backtest_portfolio(strategy_id="x", weights={"SPY": 0.0, "TLT": 0.0})
 
     def test_empty_dataframe_vector(self) -> None:
-        import sys
-        from unittest.mock import MagicMock
+        """Mocked at the #1218/#1282 provider-seam boundary
+        (``market_data_provider.get_provider``), not the old
+        ``archimedes_analytics_engine.data`` sys.modules boundary —
+        ``_fetch_price_panel`` no longer imports that module directly."""
+        from unittest.mock import MagicMock, patch
 
         from archimedes.services.portfolio_backtester import _fetch_price_panel
 
-        mock_data = MagicMock()
-        mock_data.fetch_ohlcv.return_value = pd.DataFrame()
+        fake_provider = MagicMock()
+        fake_provider.get_daily_ohlcv.return_value = pd.DataFrame()
 
-        sys.modules["archimedes_analytics_engine"] = MagicMock()
-        sys.modules["archimedes_analytics_engine.data"] = mock_data
-
-        with pytest.raises(ValueError, match="Insufficient overlapping history"):
+        with (
+            patch("archimedes.services.market_data_provider.get_provider", return_value=fake_provider),
+            pytest.raises(ValueError, match="Insufficient overlapping history"),
+        ):
             _fetch_price_panel(["SPY", "TLT"], "2020-01-01", "2021-01-01")
 
     def test_rigor_metrics_match_evaluator(self) -> None:

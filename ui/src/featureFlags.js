@@ -6,16 +6,17 @@
 // plain node in ui/test/, where import.meta.env is undefined.
 
 // Gates the upfront cost-quote + x402 paywall step on the Generate page
-// (docs/specs/generation-quote-contract.md — RATIFIED, #1296). Off by
-// default: Generate submits directly with no quote step, same as before
-// this flag existed. Dan flips VITE_GENERATION_QUOTE_ENABLED=true once
-// the backend's GENERATION_PAYMENT_REQUIRED flag (independently
-// flag-gated on that side, see #834's flip-list) is worth trying against
-// — this frontend flag works fine against a backend where that's still
-// off, since GET /api/generate/quote always reports payment_required
-// honestly either way.
+// (docs/specs/generation-quote-contract.md — RATIFIED, #1296). ON by
+// default as of Dan's 2026-08-19 directive: payment enforcement at
+// $2.00/generation is going live on testnet, so the upfront quote + real
+// payment flow (Generate.jsx + ../x402.js) should be visible by default
+// rather than opt-in. Set VITE_GENERATION_QUOTE_ENABLED=false explicitly to
+// suppress it (e.g. a build that must not show payment UI at all) — this
+// frontend flag works fine either way against the backend's independently
+// flag-gated GENERATION_PAYMENT_REQUIRED (see #834's flip-list), since GET
+// /api/generate/quote always reports payment_required honestly regardless.
 export const GENERATION_QUOTE_ENABLED =
-	import.meta.env?.VITE_GENERATION_QUOTE_ENABLED === "true";
+	import.meta.env?.VITE_GENERATION_QUOTE_ENABLED !== "false";
 
 // Single flag gating the UI surfaces that are out of scope for the MVP
 // (#1266): vaults (Portfolio + the vault-detail deep link), the strategy

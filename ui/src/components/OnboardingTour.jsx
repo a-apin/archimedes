@@ -1,6 +1,8 @@
 import { useState, useEffect, useLayoutEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { roadmapSurfaceHidden } from '../featureFlags.js'
+import { roadmapSurfaceHidden, ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
+import { canNavigateTo } from '../routes.js'
+import { rectOnScreen } from '../tourGeometry.js'
 import useDialogFocus from '../hooks/useDialogFocus'
 
 const STORAGE_KEY = 'archimedes.onboarding.v1'
@@ -54,6 +56,32 @@ const ALL_CARDS = [
     illustration: 'corpus',
   },
   {
+    // Real regardless of the flag — paper trading isn't a ROADMAP_PAGES
+    // surface (routes.js), it's the MVP spine's act-on step (Layout.jsx
+    // "the act-on step of the MVP spine"). Named here so the tour has an
+    // honest next step even when 'deploy' below is filtered out (#1354).
+    //
+    // anchor is intentionally null, not 'paper': no nav item carries
+    // data-tour="paper" (Layout.jsx's NAV has no 'paper' entry), so the
+    // measure() effect would never find the element and would fall through
+    // to its "not mounted yet" branch, which calls setPage('paper') as a
+    // side effect. For a signed-out visitor that navigates to a page kind:
+    // 'app' route outside ANON_APP_PAGES (routes.js) and App.jsx bounces
+    // straight to /sign-in — the exact anon-bounce #1354's anti-goal
+    // forbids. A null anchor renders this as a centered, text-only card
+    // (rect stays null either way) with no navigation side effect at all.
+    id: 'paper',
+    title: 'Try it as paper trading',
+    body: (
+      <>
+        Every rigor-gate winner can run as a <strong>simulated, account-owned
+        paper trade</strong> — free, immediate, no wallet signature required.
+      </>
+    ),
+    anchor: null,
+    illustration: 'paper',
+  },
+  {
     id: 'deploy',
     title: 'Deploy as a vault',
     body: (
@@ -69,11 +97,18 @@ const ALL_CARDS = [
   {
     id: 'reasoning',
     title: 'Audit the reasoning',
-    body: (
+    body: ROADMAP_SURFACES_ENABLED ? (
       <>
         Every autonomous decision is <strong>hashed and anchored on Arc</strong> via
         the ReasoningTraceRegistry. Trace any action back to the strategy and the
         academic research that grounds it.
+      </>
+    ) : (
+      <>
+        Every rigor verdict carries the <strong>passport</strong> that produced it
+        — source papers, backtest, and gate values, all traceable. Trade-level
+        commit-reveal (hashed and anchored on Arc) activates once vault deploys
+        are live.
       </>
     ),
     anchor: 'reasoning',
@@ -107,7 +142,7 @@ function Illustration({ name }) {
           {[0, 1, 2, 3].map(i => (
             <rect key={i} x={20 + i * 30} y={20 + (i % 2) * 6} width="22" height="40" rx="2" fill={i === 2 ? accent : muted} opacity={i === 2 ? 1 : 0.5} />
           ))}
-          <text x="80" y="73" textAnchor="middle" fontFamily="monospace" fontSize="8" fill={muted}>10,000 papers</text>
+          <text x="80" y="73" textAnchor="middle" fontFamily="monospace" fontSize="8" fill={muted}>10,000 paper records</text>
         </svg>
       )
     case 'generate':
@@ -135,6 +170,15 @@ function Illustration({ name }) {
           <text x="134" y="38" textAnchor="middle" fontFamily="monospace" fontSize="7" fill={accent}>arc</text>
           <text x="134" y="50" textAnchor="middle" fontFamily="monospace" fontSize="7" fill={accent}>anchor</text>
           <text x="80" y="73" textAnchor="middle" fontFamily="monospace" fontSize="8" fill={muted}>hash → on-chain</text>
+        </svg>
+      )
+    case 'paper':
+      return (
+        <svg viewBox="0 0 160 80" width="100%" height="80" aria-hidden="true">
+          <rect x="2" y="2" width="156" height="76" rx="6" fill={bg} />
+          <rect x="30" y="16" width="100" height="48" rx="3" fill="none" stroke={text} strokeWidth="1" strokeDasharray="3 2" />
+          <polyline points="42,48 58,38 72,44 90,26 108,32 120,20" fill="none" stroke={accent} strokeWidth="1.5" />
+          <text x="80" y="73" textAnchor="middle" fontFamily="monospace" fontSize="8" fill={muted}>simulated · no funds</text>
         </svg>
       )
     case 'vault':
@@ -178,7 +222,7 @@ const TIP_W = 340         // tooltip width
 const TIP_GAP = 16        // gap between hole and tooltip
 const TIP_EST_H = 380     // height estimate used only to keep the tooltip on-screen
 
-export default function OnboardingTour({ open, onClose, setPage }) {
+export default function OnboardingTour({ open, onClose, setPage, user }) {
   const [cardIndex, setCardIndex] = useState(0)
   // Bounding rect of the spotlighted element, in viewport coords. `null`
   // means "no anchor / element not measurable" → render a centered card.
@@ -194,15 +238,19 @@ export default function OnboardingTour({ open, onClose, setPage }) {
   const isLast = cardIndex === CARDS.length - 1
 
   // Measure the current step's anchor element. Falls back to `null` (centered
-  // card) when there's no anchor, the element is absent, or it's hidden
-  // (mobile drawer closed, collapsed sidebar → zero-size rect).
+  // card) when there's no anchor, the element is absent, or it's not on
+  // screen — mobile drawer closed → a full-size rect translated to
+  // left ≈ -260 (non-zero, off-viewport). A zero-size rect (e.g. a
+  // `display:none` ancestor) is rejected too. The collapsed rail (72px)
+  // still measures a normal on-screen box and spotlights as usual.
+  // See rectOnScreen in ../tourGeometry.js.
   const measure = useCallback(() => {
     const c = CARDS[cardIndex]
     if (!c.anchor) { setRect(null); return }
     const el = document.querySelector(`[data-tour="${c.anchor}"]`)
     if (!el) { setRect(null); return }
     const r = el.getBoundingClientRect()
-    if (r.width === 0 || r.height === 0) { setRect(null); return }
+    if (!rectOnScreen(r, window.innerWidth, window.innerHeight)) { setRect(null); return }
     setRect({ top: r.top, left: r.left, width: r.width, height: r.height })
   }, [cardIndex])
 
@@ -224,13 +272,29 @@ export default function OnboardingTour({ open, onClose, setPage }) {
   // the sidebar — so the nav anchors don't exist. Navigating to the step's page
   // mounts the Layout shell (sidebar + nav), then we re-measure once it paints.
   // Guarded by `rect === null` so it fires at most once per step.
+  //
+  // Also guarded by `canNavigateTo` (#1364): `library` and `reasoning` are
+  // app pages an anonymous visitor may not open — before this guard, a
+  // missing anchor for those pages (anonymous viewer, or any page not yet
+  // mounted) drove setPage() anyway, App.jsx answered with
+  // `window.location.replace('/sign-in?next=…')`, and the tour unmounted
+  // along with the page the visitor was reading. When navigation isn't
+  // allowed we deliberately do nothing and fall through to the
+  // centered-card render below (`rect` stays null), which needs no anchor.
   useEffect(() => {
     if (!open || rect !== null || !card.anchor) return
+    if (!canNavigateTo(card.anchor, user)) return
+    // `rect === null` covers two cases and only one wants a navigation: the
+    // anchor absent from the DOM (navigating mounts it, e.g. from Landing),
+    // or the anchor mounted but off-screen (mobile drawer closed) — same
+    // page already, navigating just pushes a pointless history entry per
+    // card. Only navigate when the anchor truly isn't mounted yet.
+    if (document.querySelector(`[data-tour="${card.anchor}"]`)) return
     setPage(card.anchor)
     // Sidebar mounts on the next render; re-measure after it paints.
     const id = setTimeout(measure, 60)
     return () => clearTimeout(id)
-  }, [open, rect, card, setPage, measure])
+  }, [open, rect, card, setPage, measure, user])
 
   const finish = useCallback(() => {
     try {
@@ -342,7 +406,7 @@ export default function OnboardingTour({ open, onClose, setPage }) {
   if (!rect) {
     return createPortal(
       <div
-        className="tour-overlay fixed inset-0 flex items-center justify-center z-[1000]"
+        className="tour-overlay fixed inset-0 flex items-center justify-center z-[10001]"
         onClick={finish}
         role="dialog"
         aria-modal="true"
@@ -383,8 +447,11 @@ export default function OnboardingTour({ open, onClose, setPage }) {
 
   // pointer-events on each dim panel catch stray clicks (→ finish); the hole
   // between them has no element, so clicks reach the live nav button.
+  // z-indices (10001/10002/10003) clear the mobile drawer's 10000 (App.css)
+  // so a visitor who opens the drawer to find the spotlighted item sees the
+  // tooltip painted above it, not behind it (#1364).
   const dim = 'rgba(0,0,0,0.78)'
-  const panelStyle = { position: 'fixed', background: dim, zIndex: 1000 }
+  const panelStyle = { position: 'fixed', background: dim, zIndex: 10001 }
 
   return createPortal(
     <div role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
@@ -403,7 +470,7 @@ export default function OnboardingTour({ open, onClose, setPage }) {
         style={{
           position: 'fixed',
           top: hole.top, left: hole.left, width: hole.width, height: hole.height,
-          zIndex: 1001, pointerEvents: 'none',
+          zIndex: 10002, pointerEvents: 'none',
         }}
         aria-hidden="true"
       />
@@ -415,7 +482,7 @@ export default function OnboardingTour({ open, onClose, setPage }) {
         className="card-elevated tour-tooltip p-5"
         style={{
           position: 'fixed', top: tipTop, left: tipLeft, width: TIP_W, maxWidth: '90vw',
-          zIndex: 1002, background: 'var(--surface-1)',
+          zIndex: 10003, background: 'var(--surface-1)',
         }}
         onClick={e => e.stopPropagation()}
       >

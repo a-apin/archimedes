@@ -33,6 +33,19 @@ def _paper_row_to_dict(r) -> dict:
     }
 
 
+def _any_paper_processed(session) -> bool:
+    """True if the KB pipeline has clustered at least one paper.
+
+    Cheap existence probe (LIMIT 1), not a count — this runs on every catalog
+    request. Deliberately not memoised: the pipeline can land at any time and a
+    stale `False` would keep serving the unfiltered corpus after processing
+    exists, which is the less honest of the two failure directions.
+    """
+    from archimedes.models.corpus_store import PaperRecord
+
+    return session.query(PaperRecord.arxiv_id).filter(PaperRecord.cluster_id.isnot(None)).first() is not None
+
+
 @papers_router.get("/")
 async def list_papers(
     page: int = Query(1, ge=1),
@@ -63,7 +76,15 @@ async def list_papers(
     with get_session() as session:
         query = session.query(PaperRecord)
 
-        if processed_only:
+        if processed_only and _any_paper_processed(session):
+            # The filter is applied ONLY when the KB pipeline has actually
+            # clustered something. When nothing is processed — the live state,
+            # since the pipeline has never run (corpus_kg_built=false) — this
+            # predicate matches zero rows for EVERY query. The two `total == 0`
+            # fallbacks below rescue the unfiltered catalog, but both are
+            # guarded by `and not search`, so an empty catalog view looked fine
+            # while every search returned nothing. That combination is what made
+            # corpus search 100% dead rather than merely empty.
             query = query.filter(PaperRecord.cluster_id.isnot(None))
         if category:
             query = query.filter(PaperRecord.categories.contains(category))

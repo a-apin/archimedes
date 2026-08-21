@@ -1,0 +1,212 @@
+# Archimedes docs site — mkdocs-material config for issue #1381 (option B:
+# GitHub Pages). Builds the existing docs/ tree as-is; no content was moved
+# or rewritten to make this file. See docs/runbooks/docs-site-setup.md for
+# the two manual steps (Pages source + DNS) this needs to go live, and
+# .github/workflows/docs-site.yml for the deploy job — inert until those
+# steps are done.
+
+site_name: Archimedes
+site_url: https://docs.archimedes-arc.com
+repo_url: https://github.com/a-apin/archimedes
+repo_name: a-apin/archimedes
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - tables
+  - fenced_code
+  - admonition
+
+# `mkdocs build` here deliberately means non-strict (no `--strict`), in this
+# file and in .github/workflows/docs-site.yml. mkdocs's own (default)
+# validation settings already do the useful thing: WARNING-level output for
+# every link/nav target it can't resolve, without failing the build.
+# `--strict` was evaluated and rejected — see
+# docs/runbooks/docs-site-setup.md § "mkdocs --strict findings" for the full
+# count and categorization of the ~300 warnings it produces (in short: docs
+# in this repo correctly link out of docs_dir to source files and to
+# ../CLAUDE.md etc. per the repo's own "every claim is a link to a file"
+# convention — those links are outside mkdocs's docs_dir and can't resolve
+# in the built site, but they're not broken, they're doing their job on
+# GitHub, which is where this repo's own docs-gate.yml link checker
+# already validates them). Re-run that check if the count changes a lot.
+
+nav:
+  - Home: README.md
+
+  - Architecture — start here:
+      - architecture.md
+      - reference/file-tree.md
+      - database-architecture.md
+      - deployment.md
+      - architectural-principles.md
+      - anti-features.md
+
+  - Product:
+      - user-stories.md
+      - agent-api.md
+      - asset-universe.md
+      - demo-script-lepton.md
+
+  - Quant and rigor:
+      - quant/README.md
+      - quant/methodology.md
+      - quant/admission-criteria.md
+      - quant/backtest-interpretation.md
+      - quant/strategy-library.md
+      - quant/library-pbo.md
+      - quant/third-wave-retest.md
+      - quant/second-wave-universe-experiment.md
+      - rigor-methods.md
+      - analysis/faber-dsr-finding.md
+      - benchmarks/stockbench-results.md
+      - specs/selection-bias-corrections-spec.md
+      - specs/transaction-cost-turnover-model.md
+      - cited-literature.md
+
+  - Corpus and generation:
+      - generation-cost-instrumentation.md
+      - corpus-architecture.md
+      - specs/multi-agent-debate-spec.md
+      - specs/strategy-fusion-spec.md
+      - specs/strategy-passport-spec.md
+      - specs/strategy-dsl-spec.md
+      - specs/strategy-lifecycle-spec.md
+      - specs/generation-streaming-spec.md
+      - specs/generation-quote-contract.md
+      - specs/kb-integration-spec.md
+      - specs/page-roles-spec.md
+      - specs/component-interfaces-spec.md
+      - specs/ecosystem-design-spec.md
+      - specs/xia-2026-protocols.md
+      - specs/architecture-page-design.md
+      - diagrams/strategy-passport-architecture.md
+      - bedrock-model-cost-comparison.md
+      - cost-estimates/generate-llm-costs.md
+
+  # API Reference — content lands via branch dbrowneup/api-reference-docs
+  # (docs/api/*.md), which may merge before or after this docs-site branch.
+  # These entries are correct either way: mkdocs validation is set to warn
+  # (not fail) on a nav target that doesn't exist yet, and once that branch
+  # merges the pages populate with no further change here.
+  - API Reference:
+      - api/README.md
+      - api/auth-and-accounts.md
+      - api/generation.md
+      - api/strategies-and-rigor.md
+      - api/vaults-and-chain.md
+      - api/wallets.md
+      - api/chat.md
+      - api/leaderboard-and-metrics.md
+      - api/paper-trading.md
+      - api/admin-private.md
+
+  - On-chain and Arc:
+      - arc-integration.md
+      - specs/vault-semantics-spec.md
+      - specs/commit-reveal-trace-spec.md
+      - specs/ipfs-reasoning-traces-design-note.md
+      - specs/execution-trading-agent-society-spec.md
+
+  - Security:
+      - security/auth-model.md
+      - runbooks/github-security-toggles.md
+
+  - Runbooks and operations:
+      - runbooks/README.md
+      - runbooks/operations.md
+      - runbooks/arc-testnet-e2e.md
+      - runbooks/arc-testnet-e2e-evidence.md
+      - runbooks/spec-1-walkthrough.md
+      - runbooks/t3.2-contract-redeploy.md
+      - runbooks/docs-site-setup.md
+
+  - Decisions (ADRs):
+      - adr/README.md
+      - adr/unlicense-public-domain.md
+      - adr/arc-settlement-chain.md
+      - adr/two-tier-marketplace.md
+      - adr/backtrader-backtest-engine.md
+      - adr/build-on-deploy-main-only.md
+      - adr/portfolio-constructor-decision-tree.md
+      - adr/k1-generation-external-rigor-gate.md
+      - adr/aws-account-migration.md
+      - adr/glm-to-bedrock-llm-migration.md
+      - adr/non-custodial-vault-owner-agent.md
+      - adr/portfolio-constructor-consolidation.md
+      - adr/rigor-gate-unification.md
+      - adr/fusion-primary-generation.md
+      - adr/chainlink-primary-oracle.md
+      - adr/ec2-to-ecs-fargate-cutover.md
+      - adr/debate-society-sole-generation-pipeline.md
+      - adr/num-trials-self-containment.md
+      - adr/aurora-postgres-alembic-datastore.md
+
+  - Plans and roadmaps:
+      - account-authentication.md
+      - plans/2026-07-28-account-auth-app-boundary.md
+      - plans/2026-08-15-core-app-visual-refresh.md
+      - plans/quant-roadmap.md
+      - plans/spine-plus-v2-plan.md
+      - plans/second-wave-multi-asset-strategies.md
+      - plans/paper-replication-spec.md
+
+  - Sprint session cards:
+      - sprint/README.md
+
+  - Audits and findings:
+      - audits/2026-06-14-full-tree-audit.md
+      - audits/2026-06-14-gpt-oss-findings-verified.md
+      - audits/2026-06-13-Onder-findings.md
+      - audits/2026-07-09-curated-consolidation.md
+      - audits/merge-handoff-2026-06-10.md
+      - audits/rigor-gate-fixes.md
+
+  - Handovers and session logs:
+      - handovers/2026-07-14-architecture-review.md
+      - handovers/second-wave-handover.md
+      - handovers/third-wave-handover.md
+      - handovers/fourth-wave-handover.md
+      - handovers/phase8-9-landing-and-fusion-spec.md
+
+  - Research and prompts:
+      - research/README.md
+      - research/linus-archimedes-comparison.md
+      - research/archimedes-to-linus-portbacks.md
+      - prompts/quant-audit-prompt.md
+      - prompts/agentic-issue-skeleton.md
+
+  - Working with the repo and the team:
+      - CONVENTIONS.md
+      - team.md
+      - agent-gotchas.md
+      - submodules.md
+
+  - Archive:
+      - archive/README.md

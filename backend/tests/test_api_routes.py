@@ -315,7 +315,10 @@ class TestStrategyRoutes:
         the LIVE gate on persisted returns — NOT the fixture boolean. ``seeded_db``
         only seeds Buy-and-Hold's backtest, so Moreira-Muir has no live returns and
         the badge must be ``pending`` (False), even though its fixture row says True.
-        The fixture-derived display metric (dsr_p_value) still flows for rendering."""
+        #1187: the numeric rigor fields (dsr_p_value etc.) are None alongside the
+        pending badge — never the fixture-derived number (that was the claim-
+        integrity bug #1187 fixed; a concrete pending badge next to a concrete
+        fixture number was self-contradictory)."""
         strategies = _list_all_strategies(client)
         # Match Moreira-Muir specifically by its full title. A bare "Volatility"
         # substring also matches Ang-Hodrick's "The Cross-Section of Volatility
@@ -329,6 +332,134 @@ class TestStrategyRoutes:
         # No live returns for this strategy → pending, NOT a fixture True/False.
         assert mm["rigor_gate_status"] == "pending"
         assert mm["passes_rigor_gate"] is False, "fixture boolean must NOT drive the live badge (#821)"
+        # #1187: pending must mean pending — no fixture-sourced number rendered
+        # as if it were measured.
+        assert mm["dsr_p_value"] is None, f"dsr_p_value must be None when pending (#1187); got {mm['dsr_p_value']}"
+        assert mm["pbo_score"] is None, f"pbo_score must be None when pending (#1187); got {mm['pbo_score']}"
+        assert mm["deflated_sharpe_ratio"] is None, (
+            f"deflated_sharpe_ratio must be None when pending (#1187); got {mm['deflated_sharpe_ratio']}"
+        )
+        assert mm["out_of_sample_sharpe"] is None, (
+            f"out_of_sample_sharpe must be None when pending (#1187); got {mm['out_of_sample_sharpe']}"
+        )
+
+    def test_advisor_serves_null_not_fixture_when_live_gate_empty(self, client, seeded_db):
+        """#1187 (``_rigor_fields``, the advisor's own copy of the leaderboard's
+        fixed-then-fixed-again fallback): when the live-gate batch returns no
+        result for any strategy, the four numeric rigor fields on EVERY advisor
+        allocation must render ``None`` — never the migrated fixture value on
+        the in-memory ``Strategy`` object. Not vacuous: reverting just this
+        fallback (restoring ``else st.<field>`` on the four keys) makes this
+        fail — an allocation then serves the exact fixture constants
+        (0.277212 / 0.339938 / 0.910213) from
+        ``backend/tests/fixtures/backtest_fixtures_snapshot.json``, confirmed
+        by hand against the pre-fix code."""
+        from archimedes.api import strategies_routes as sr
+
+        with patch.object(sr, "_live_rigor_results_for_strategies", return_value={}):
+            resp = client.get("/api/strategies/advisor?risk_profile=moderate")
+        assert resp.status_code == 200
+        allocations = resp.json()["allocations"]
+        assert allocations, "advisor returned no allocations to check"
+        for a in allocations:
+            # The rule-based aggregate row (id "agg_<symbol>") does not carry
+            # rigor_gate_status forward (_RIGOR_KEYS omits it) — passes_rigor_gate
+            # is the field available on every row, and must stay the fail-closed
+            # default.
+            assert a["passes_rigor_gate"] is False, f"{a.get('id')}: passes_rigor_gate must be fail-closed False"
+            assert a["deflated_sharpe_ratio"] is None, (
+                f"{a.get('id')}: deflated_sharpe_ratio must be None, not the fixture value; "
+                f"got {a['deflated_sharpe_ratio']}"
+            )
+            assert a["dsr_p_value"] is None, (
+                f"{a.get('id')}: dsr_p_value must be None, not the fixture value; got {a['dsr_p_value']}"
+            )
+            assert a["pbo_score"] is None, (
+                f"{a.get('id')}: pbo_score must be None, not the fixture value; got {a['pbo_score']}"
+            )
+            assert a["out_of_sample_sharpe"] is None, (
+                f"{a.get('id')}: out_of_sample_sharpe must be None, not the fixture value; "
+                f"got {a['out_of_sample_sharpe']}"
+            )
+
+    def test_list_strategies_reports_degraded_when_provider_raises(self, client):
+        """#1356: a provider failure must be visible on the wire as
+        degraded=True with a reason, not silently rendered as
+        total=0/strategies=[] — indistinguishable from a real empty library."""
+        with patch(
+            "archimedes.api.strategies_routes.strategy_provider",
+            side_effect=RuntimeError("provider down"),
+        ):
+            resp = client.get("/api/strategies/")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["strategies"] == []
+        assert data["total"] == 0
+        assert data["degraded"] is True
+        assert data["degraded_reason"]
+        # The raw exception string must never reach the client (it can carry
+        # DB/RPC internals — CLAUDE.md / docs/api/*.md convention).
+        # `degraded_reason` is a fixed category string, not an interpolation
+        # of `exc`; assert against the literal so a reintroduced f-string
+        # fails this test even if the mock message happens not to.
+        assert "provider down" not in data["degraded_reason"]
+        assert data["degraded_reason"] == "strategy provider unavailable"
+
+    def test_list_strategies_reports_degraded_when_library_empty_but_corpus_present(self, client):
+        """#1356 review-fix: count_strategy_files() > 0 but discovery still
+        returned nothing (e.g. every file failed to parse, or a shared-
+        helper import error skipped them all) is a real degradation distinct
+        from the corpus-missing-from-build case, and must be distinguished
+        from it — mirrors test_leaderboard_reports_degraded_when_curated_
+        cohort_empty_but_corpus_present, so the two routes over the same
+        corpus agree."""
+        empty_provider = MagicMock()
+        empty_provider.list_strategies.return_value = []
+
+        with (
+            patch("archimedes.api.strategies_routes.strategy_provider", return_value=empty_provider),
+            patch("archimedes.services.strategy_provider.count_strategy_files", return_value=5),
+        ):
+            resp = client.get("/api/strategies/")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["strategies"] == []
+        assert data["total"] == 0
+        assert data["degraded"] is True
+        assert data["degraded_reason"] == "library is empty"
+
+    def test_list_strategies_reports_degraded_when_corpus_missing_from_build(self, client):
+        """#1356: an empty (non-raising) library must still say WHY —
+        count_strategy_files()==0 is the #1039 corpus-missing-from-build
+        signal /health already reports; this route must say the same thing
+        rather than render a confident "0 strategies" indistinguishable from
+        a genuinely empty library."""
+        empty_provider = MagicMock()
+        empty_provider.list_strategies.return_value = []
+
+        with (
+            patch("archimedes.api.strategies_routes.strategy_provider", return_value=empty_provider),
+            patch("archimedes.services.strategy_provider.count_strategy_files", return_value=0),
+        ):
+            resp = client.get("/api/strategies/")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["strategies"] == []
+        assert data["total"] == 0
+        assert data["degraded"] is True
+        assert data["degraded_reason"] == "strategy corpus not found in build"
+
+    def test_list_strategies_not_degraded_when_library_populated(self, client, seeded_db):
+        """Negative case: a populated, non-raising library must NOT be marked
+        degraded — the empty-cohort branch above must not fire when there is
+        real data."""
+        resp = client.get("/api/strategies/")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] > 0, "seeded_db must provide real strategies for this assertion to be meaningful"
+        assert data["degraded"] is False
 
 
 class TestRiskRoutes:

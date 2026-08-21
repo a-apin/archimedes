@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 import WalletConnect from "./WalletConnect";
 import Breadcrumbs from "./Breadcrumbs";
-import { NEW_CONTRACTS, getStoredWalletName } from "../config";
+import { getStoredWalletName } from "../config";
+import { deriveChainStatus } from "../chainStatus";
+import { fetchHealth } from "../health";
 import { getStoredTheme, applyTheme } from "../theme";
 import { visibleNavigation } from "../routes";
 import { lockBodyScroll, unlockBodyScroll } from "../utils/scrollLock";
+import { getProofStages } from "../proofStages.js";
 
 // Sidebar groups separate Home (anchor / landing) from the three product-state
 // bands. Empty group label is intentional for the Home entry — it renders as a
@@ -106,13 +109,10 @@ export const PAGE_LABELS = {
 	account: "Account",
 };
 
-const PROOF_STAGES = [
-	{ id: "brief", label: "Brief" },
-	{ id: "debate", label: "Debate" },
-	{ id: "gate", label: "Gate" },
-	{ id: "vault", label: "Vault" },
-	{ id: "monitor", label: "Monitor" },
-];
+// PROOF_STAGES logic lives in ../proofStages.js (#1354) — plain .js so the
+// hermetic node test can import and call getProofStages() directly; see
+// that file for the rail's 3-vs-5-stage rationale.
+const PROOF_STAGES = getProofStages();
 
 const CORE_PAGE_STAGE = {
 	generate: "brief",
@@ -136,12 +136,57 @@ export default function Layout({
 	const [menuOpen, setMenuOpen] = useState(false);
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [theme, setTheme] = useState(getStoredTheme);
+	const [health, setHealth] = useState(null);
+	const [healthError, setHealthError] = useState(false);
 	const hamburgerRef = useRef(null);
-	const blockLabel = Object.keys(NEW_CONTRACTS).length
-		? "Arc · Testnet live"
-		: "Arc · Connecting";
+	const chainStatus = deriveChainStatus(health, healthError);
 	const proofStage =
 		(page === "generate" ? journeyStage : null) ?? CORE_PAGE_STAGE[page];
+
+	// Chain-status pill (#1321): re-derives from /health on mount and on every
+	// in-app navigation (dep: `page`) — not a polling loop, a bounded
+	// re-derivation. Layout sits at a stable position in the tree
+	// (AuthenticatedApp.jsx renders it with no `key`, so React reconciles
+	// rather than remounts across route changes), so an empty dep array here
+	// would mean an outage that begins mid-session stays invisible until the
+	// tab is reloaded — the same fail-soft failure #1321 was filed for, just
+	// time-bounded instead of permanent. The "unknown" tone (deriveChainStatus,
+	// ../chainStatus.js) covers both the pre-resolution window and a failed
+	// fetch, so a backend outage in progress at mount OR surfaced by the next
+	// navigation never silently renders as "Arc · Testnet live". A tab left
+	// idle on a single page for the whole session still won't repaint until
+	// the user navigates — that gap is accepted, not solved, by design: it
+	// stays bounded by the next click rather than growing unbounded, without
+	// adding the polling loop this issue explicitly ruled out.
+	//
+	// The actual network call goes through fetchHealth() (../health.js), a
+	// short-TTL-cached wrapper, not a direct call to the raw fetch helper
+	// here: Layout isn't the only /health caller (Architecture.jsx,
+	// ModelCostPanel.jsx), so re-fetching straight from this effect on every
+	// navigation would fire a fresh Arc RPC round-trip + DB reads even on a
+	// nav that lands on a page with its own /health read. fetchHealth() lets
+	// those callers share one response instead (#1333 review).
+	useEffect(() => {
+		let cancelled = false;
+		fetchHealth()
+			.then((d) => {
+				if (!cancelled) {
+					setHealth(d);
+					// Clear a prior failure so a fetch on a later navigation can
+					// report recovery — without this, one failed /health call
+					// pins the pill on "unknown" for the rest of the session even
+					// after the backend comes back, defeating the re-fetch this
+					// effect now does on every `page` change.
+					setHealthError(false);
+				}
+			})
+			.catch(() => {
+				if (!cancelled) setHealthError(true);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [page]);
 
 	// Lock body scroll while the mobile nav drawer is open — otherwise the
 	// page content underneath can still scroll behind the fixed overlay/drawer,
@@ -278,8 +323,11 @@ export default function Layout({
 				</nav>
 
 				<div className="sidebar-footer">
-					<span className="live-dot" />
-					<span className="sidebar-footer-label">{blockLabel}</span>
+					<span
+						className={`live-dot live-dot-${chainStatus.tone}`}
+						aria-hidden="true"
+					/>
+					<span className="sidebar-footer-label">{chainStatus.label}</span>
 					<button
 						type="button"
 						className="sidebar-collapse-btn"

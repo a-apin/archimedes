@@ -31,6 +31,22 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`architectural-principles.md`](architectural-principles.md) | current | Dan Browne | 2026-07-28 | The four primitives the product is built to defend. |
 | [`anti-features.md`](anti-features.md) | current | Dan Browne | 2026-07-28 | What Archimedes deliberately does not build. |
 
+## API reference
+
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`api/README.md`](api/README.md) | current | Dan Browne | 2026-08-20 | Index of the API reference: per-surface docs, the auth-model overview table, and the `/docs` (Swagger) production-gate note. |
+| [`api/auth-and-accounts.md`](api/auth-and-accounts.md) | current | Dan Browne | 2026-08-20 | The Better Auth sidecar (`/api/auth/*`): email/password + OAuth, session lookup, email verification. |
+| [`api/wallets.md`](api/wallets.md) | current | Dan Browne | 2026-08-20 | `/api/wallets/*` — EIP-4361 wallet-link challenge/verify. |
+| [`api/generation.md`](api/generation.md) | current | Dan Browne | 2026-08-20 | `/api/generate/*` — the debate-society generation pipeline, its x402 payment gate, and daily quotas. |
+| [`api/strategies-and-rigor.md`](api/strategies-and-rigor.md) | current | Dan Browne | 2026-08-20 | `/api/strategies/*` and `/api/selection-bias/*` — the strategy library, portfolio advisor, stress testing, and the rigor gate. |
+| [`api/paper-trading.md`](api/paper-trading.md) | current | Dan Browne | 2026-08-20 | `/api/paper/*` — deploy a strategy to an append-only, never-rewritten forward-return ledger. |
+| [`api/vaults-and-chain.md`](api/vaults-and-chain.md) | current | Dan Browne | 2026-08-20 | `/api/vaults/*`, `/api/traces/*`, `/api/swap/*`, `/api/config/contracts`, and the health/root endpoints. |
+| [`api/chat.md`](api/chat.md) | current | Dan Browne | 2026-08-20 | `/api/vaults/{address}/chat*` — per-vault chat: public reads, linked-wallet writes, internal-only system events. |
+| [`api/leaderboard-and-metrics.md`](api/leaderboard-and-metrics.md) | current | Dan Browne | 2026-08-20 | `/api/leaderboard` and the public, PII-free `/api/metrics/*` traction surface. |
+| [`api/admin-private.md`](api/admin-private.md) | current | Dan Browne | 2026-08-20 | `/api/metrics/private/*` — the platform-admin-gated cost/ops dashboard and per-wallet identity roster. |
+| [`api-surface-status.md`](api-surface-status.md) | current | Dan Browne | 2026-08-20 | Census of every router `backend/archimedes/main.py` registers: prefix, auth model, status, and whether a detailed doc above covers it (15/30 do). Backed by a completeness test that fails CI if a registered router has no row. |
+
 ## Product
 
 | Doc | Status | Owner | Last verified | What it is |
@@ -109,6 +125,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`runbooks/arc-testnet-e2e-evidence.md`](runbooks/arc-testnet-e2e-evidence.md) | evidence | Önder Akkaya | 2026-05-26 | Replayable on-chain evidence for SPEC-1. |
 | [`runbooks/spec-1-walkthrough.md`](runbooks/spec-1-walkthrough.md) | runbook | Dan Browne | — | SPEC-1 user-journey walkthrough. |
 | [`runbooks/t3.2-contract-redeploy.md`](runbooks/t3.2-contract-redeploy.md) | runbook | Dan Browne | — | Contract redeploy procedure and secret handling. |
+| [`runbooks/docs-site-setup.md`](runbooks/docs-site-setup.md) | runbook | Dan Browne | 2026-08-20 | GitHub Pages docs site (#1381, option B): Dan's two manual steps (Pages source + Route 53 CNAME), local `mkdocs serve` preview, and why `mkdocs build --strict` isn't used. |
 
 ## Decisions (ADRs)
 
@@ -138,7 +155,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`account-authentication.md`](account-authentication.md) | runbook | Daniel Reis | 2026-08 | Better Auth deploy runbook: secrets, ECR, rollback (#1194). |
+| [`account-authentication.md`](account-authentication.md) | runbook | Daniel Reis | 2026-08 | Better Auth deploy runbook: secrets, ECR, rollback (#1194); account linking, explicit link/unlink (#1420 follow-up; implicit auto-link stays off). |
 | [`plans/2026-07-28-account-auth-app-boundary.md`](plans/2026-07-28-account-auth-app-boundary.md) | plan | Daniel Reis | 2026-07-28 | The #1194 account-auth boundary plan. |
 | [`plans/2026-08-15-core-app-visual-refresh.md`](plans/2026-08-15-core-app-visual-refresh.md) | plan | Daniel Reis | 2026-08-15 | Core-app visual refresh plan. |
 | [`plans/quant-roadmap.md`](plans/quant-roadmap.md) | plan | Önder Akkaya | — | The portfolio-math and backtest-rigor lane. |

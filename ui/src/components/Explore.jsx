@@ -98,6 +98,15 @@ export default function Explore() {
   const majorityStale = !allStale && staleCount > assets.length / 2
   const minorityStale = !allStale && !majorityStale && staleCount > 0
 
+  // Honest oracle-coverage count (#1371) — derived from the served assets'
+  // price_source, never a literal. Today this resolves to 2 (sSPY + sBTC,
+  // oracle_updater's only pushed symbols) of the ~281-asset universe; the
+  // copy below must say so rather than implying oracle-primary pricing.
+  const oracleBackedCount = assets.filter(a => a.price_source === 'oracle').length
+  const oracleCoverageNote = assets.length > 0
+    ? `on-chain oracle for ${oracleBackedCount} of the ${assets.length} assets below today`
+    : 'on-chain oracle for a small subset of assets today'
+
   return (
     <div>
       {/* Top-of-page header & explanation */}
@@ -115,7 +124,9 @@ export default function Explore() {
         </p>
         <p className="caption" style={{ color: 'var(--text-4)', marginTop: 8 }}>
           Click any card for full detail, price-history chart, and the upstream source the
-          price came from (on-chain oracle vs. off-chain fallback).
+          price came from. Most assets here are priced from off-chain market-data feeds
+          (yfinance) — it's {oracleCoverageNote}; each card's "Source" field says which
+          applies to it.
         </p>
       </div>
 
@@ -390,11 +401,13 @@ export default function Explore() {
 
       {/* Footer disclosure */}
       <p className="caption" style={{ marginTop: 22, color: 'var(--text-4)' }}>
-        Prices come from the on-chain PriceOracle when available, with yfinance as the
-        off-chain fallback. "STALE" means the displayed price is itself older than the
-        freshness window (5 minutes for the oracle, ~4 days for daily-close fallback).
-        The "Vol 30d" metric in the detail modal is annualized realized volatility
-        (std of daily returns × √252).
+        {oracleBackedCount} of the {assets.length || 'these'} assets above are priced
+        from the on-chain PriceOracle today; the rest are priced from yfinance
+        (off-chain market data) — each card's "Source" field says which applies to it.
+        "STALE" means the displayed price is itself older than the freshness window
+        (5 minutes for the oracle, ~4 days for daily-close fallback). The "Vol 30d"
+        metric in the detail modal is annualized realized volatility (std of daily
+        returns × √252).
       </p>
 
       {openAsset && <AssetModal asset={openAsset} onClose={() => setOpenAsset(null)} />}

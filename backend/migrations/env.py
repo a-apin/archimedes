@@ -62,6 +62,7 @@ from archimedes.models.marketplace import (  # noqa: E402
     SubscriberLiability,
     SubscriberTickLog,
 )
+from archimedes.models.payment_receipt import PaymentReceiptRecord  # noqa: E402
 from archimedes.models.request_snapshot import RequestCountSnapshot  # noqa: E402
 from archimedes.models.strategy_generators import StrategyGenerator  # noqa: E402
 from archimedes.models.strategy_passport_record import (  # noqa: E402
@@ -97,6 +98,7 @@ __all__ = [
     "MarketplaceAgent",
     "PaperRecord",
     "PassportPaperRef",
+    "PaymentReceiptRecord",
     "RequestCountSnapshot",
     "SettlementIntent",
     "StrategyBacktestFixture",
