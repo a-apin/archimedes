@@ -359,6 +359,21 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _logger.warning("startup: backtest scheduler failed to arm (non-fatal): %s", exc)
 
+    # Platform revenue sweep (services/revenue_sweep.py): opt-in Gateway →
+    # DCW-token withdrawal loop. Money-switch convention: only the literal
+    # REVENUE_SWEEP_ENABLED=true arms it; unset/anything-else stays off and
+    # says so. Same RUF006 app.state reference rule as the loops above.
+    try:
+        from archimedes.services.revenue_sweep import revenue_sweep_loop, sweep_enabled
+
+        if sweep_enabled():
+            _app.state.revenue_sweep_task = asyncio.create_task(revenue_sweep_loop())
+            _logger.info("startup: revenue sweep scheduler armed")
+        else:
+            _logger.info("startup: revenue sweep scheduler disabled (REVENUE_SWEEP_ENABLED != 'true')")
+    except Exception as exc:
+        _logger.warning("startup: revenue sweep failed to arm (non-fatal): %s", exc)
+
     yield  # ── app is now running ────────────────────────────────────────
 
     # ── SHUTDOWN ─────────────────────────────────────────────────────────
