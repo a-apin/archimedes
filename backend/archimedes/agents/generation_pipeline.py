@@ -1594,6 +1594,7 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             SOURCE_PIPELINE_DSL_FUSION,
             insert_backtest_if_missing,
         )
+        from archimedes.services.fusion_evaluator import DEFAULT_COST_MODEL_ID
         from archimedes.services.live_rigor_gate import verdict_from_returns
 
         returns = list(c.return_series)
@@ -1622,8 +1623,11 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             profit_factor=0.0,
             total_trades=int(rv.get("total_trades") or 0),
             avg_holding_period_days=0.0,
-            correlation_to_spy=0.0,
-            correlation_to_btc=0.0,
+            # None, not a fabricated 0.0 — SPY/BTC correlation is not computed on
+            # this path; 0.0 would assert "uncorrelated", a claim nothing measured
+            # (#1242 review).
+            correlation_to_spy=None,
+            correlation_to_btc=None,
             equity_curve=equity,
             deflated_sharpe_ratio=_of("dsr"),
             dsr_p_value=_of("dsr_p_value"),
@@ -1632,6 +1636,14 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             out_of_sample_sharpe=_of("oos_sharpe"),
             look_ahead_audit_passed=bool(rv.get("lookahead_audit_passed", False)),
             backtest_engine="dsl-fusion",
+            # Fixed cost basis every fusion/DSL backtest is charged — tx_cost_bps
+            # and slippage_bps are never overridden by a caller on this path today
+            # (see fusion_evaluator.DEFAULT_COST_MODEL_ID). Matches the mapper's
+            # "self_attested" label: this is the closed-DSL path, no inspectable
+            # source for an AST audit (#1242 review: cost_model_id used to stop at
+            # the artifact dict on this path and never reach the persisted row).
+            cost_model_id=DEFAULT_COST_MODEL_ID,
+            look_ahead_audit_source="self_attested",
         )
         artifact = {
             "results": [{"metrics": {"daily_returns": returns}}],

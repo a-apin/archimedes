@@ -329,15 +329,23 @@ def _annualized_metrics(daily_returns: list[float], equity_curve: list[float]) -
     }
 
 
-def _correlation_to_benchmark(daily_returns: list[float], benchmark_returns: list[float]) -> float:
-    """Pearson correlation between two return series, robust to unequal length."""
+def _correlation_to_benchmark(daily_returns: list[float], benchmark_returns: list[float]) -> float | None:
+    """Pearson correlation between two return series, robust to unequal length.
+
+    Returns None — not a fabricated 0.0 — on either degenerate branch (too few
+    overlapping observations, or a zero-variance series that makes Pearson's r
+    undefined). 0.0 would assert "uncorrelated", a claim nothing measured
+    (#1242 review; the caller-side version of this fix already stops
+    coercing a missing/failed correlation to 0.0 — this closes the same gap
+    inside the helper it calls).
+    """
     n = min(len(daily_returns), len(benchmark_returns))
     if n < 2:
-        return 0.0
+        return None
     a = np.asarray(daily_returns[:n], dtype=float)
     b = np.asarray(benchmark_returns[:n], dtype=float)
     if a.std() == 0 or b.std() == 0:
-        return 0.0
+        return None
     return float(np.corrcoef(a, b)[0, 1])
 
 
@@ -434,7 +442,9 @@ def backtest_portfolio(
     look_ahead_passed = True
 
     # ── SPY correlation (diversification signal) ──
-    correlation_to_spy = 0.0
+    # None means "not measured" — coercing a missing/failed correlation to 0.0
+    # asserts "uncorrelated to SPY", a claim nothing measured (#1242 review).
+    correlation_to_spy: float | None = None
     try:
         spy_panel, _ = _fetch_price_panel(["SPY"], start_iso, end_iso)
         spy_full = spy_panel["SPY"].pct_change().fillna(0.0)
@@ -465,7 +475,7 @@ def backtest_portfolio(
         total_trades=rebalance_events,
         avg_holding_period_days=float(rebalance_days),
         correlation_to_spy=correlation_to_spy,
-        correlation_to_btc=0.0,  # not computed for portfolio sim
+        correlation_to_btc=None,  # not computed for portfolio sim — None, not a fabricated 0.0
         equity_curve=equity_curve,
         monthly_returns=[],
         backtest_start=date.fromisoformat(start_iso),
@@ -483,6 +493,12 @@ def backtest_portfolio(
         backtest_engine="portfolio-simulator-v1",
         backtest_code_hash=_module_hash(),
         transaction_cost_bps=tx_cost_bps,
+        # Cost basis this row was actually charged, so a reader comparing it
+        # against engine A/C rows can tell whether they're comparable (#1242
+        # review: this used to stop at the artifact dict, never reach the
+        # persisted BacktestResult / DB column it was added for).
+        cost_model_id=f"cm1:d{tx_cost_bps:g}:s{DEFAULT_SLIPPAGE_BPS:g}+almgren",
+        look_ahead_audit_source="static_rebalance_no_signal_shift",
     )
 
     artifact = {
