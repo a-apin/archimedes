@@ -48,8 +48,12 @@ class BacktestResult:
     avg_holding_period_days: float
 
     # ── Correlation (diversification signal) ────────────────
-    correlation_to_spy: float  # -1 to 1
-    correlation_to_btc: float  # -1 to 1
+    # None means "not measured" — never coerce a missing correlation to 0.0,
+    # which asserts "uncorrelated to SPY/BTC", a claim nothing measured (#1242
+    # review: backtest_mapper.py already made this distinction on the read
+    # side; the dataclass annotation had not caught up).
+    correlation_to_spy: float | None  # -1 to 1, or None if not measured
+    correlation_to_btc: float | None  # -1 to 1, or None if not measured
 
     # ── Time series ─────────────────────────────────────────
     equity_curve: list[float] = field(default_factory=list)  # Daily equity values
@@ -104,10 +108,14 @@ class BacktestResult:
     # signal logic — see _lookahead_audit_passed's docstring. The real AST audit
     # is rigor_evaluator.look_ahead_audit and does not run on that path. Without
     # this field a reader cannot tell a genuine audit pass from the constant.
-    #   "broker_config_only" — execution-timing check only, never fails
-    #   "ast_audit"          — rigor_evaluator.look_ahead_audit ran on real source
-    #   "self_attested"      — closed-DSL path, no inspectable source
-    #   None                 — unknown / pre-dates this field
+    #   "broker_config_only"                — execution-timing check only, never fails
+    #   "ast_audit"                         — rigor_evaluator.look_ahead_audit ran on real source
+    #   "self_attested"                     — closed-DSL path, no inspectable source
+    #   "static_rebalance_no_signal_shift"  — portfolio simulator: t-1 held weights
+    #                                          earn t returns (mechanically look-ahead-
+    #                                          free), but the weight matrix itself is
+    #                                          unaudited — not a claim about signal logic
+    #   None                                — unknown / pre-dates this field
     look_ahead_audit_source: str | None = None
 
     @property

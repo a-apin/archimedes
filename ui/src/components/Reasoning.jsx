@@ -5,6 +5,7 @@ import {
   TRACE_REGISTRY_ABI, NEW_CONTRACTS,
 } from '../config'
 import { regimeMeta } from '../regime'
+import { blockOrderCopy, verificationTone } from '../trace-binding'
 
 
 
@@ -134,9 +135,12 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
         regime change, or a strategy construction from the Generate page. The hash
         is computed deterministically off-chain and anchored on Arc via the
         <code style={{ marginLeft: 4 }}>ReasoningTraceRegistry</code> contract.
-        Click <strong>Verify on-chain</strong> on any trace to recompute and check
-        against the on-chain anchor; click <strong>→ Strategy in Library</strong>
-        to jump to the source strategy and its full passport.
+        Click <strong>Verify hash on-chain</strong> on any trace to re-fetch the
+        on-chain receipt and confirm the stored hash matches — traces anchored
+        without an off-chain body to compare against report{' '}
+        <strong>anchored, not re-hashed</strong> instead of a false match; click{' '}
+        <strong>→ Strategy in Library</strong> to jump to the source strategy and
+        its full passport.
       </p>
 
       {/* Filter chips — hide types with zero traces (Issue #338 item 3) */}
@@ -309,18 +313,38 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
 
                 {/* Verify button + strategy back-link — only for non-skip
                     traces. Skip rows already collapsed their detail above. */}
-                {!isSkip && (
+                {!isSkip && (() => {
+                  // vTone: 'verified' (hash re-fetched and matched) |
+                  // 'anchored' (reachable store, no off-chain body — the
+                  // on-chain anchor exists but ZERO hashes were compared) |
+                  // 'failed' (mismatch, missing receipt, network error, or
+                  // no vResult yet). 'anchored' is deliberately never given
+                  // the same icon/class as 'verified' — a hash that was
+                  // never compared does not get the affordance of one that
+                  // matched (#1359 anti-goal).
+                  const vTone = verificationTone(vResult?.verification_mode)
+                  return (
                 <div className="flex gap-2 items-center flex-wrap">
                   <button
                     className="btn btn-outline btn-sm flex items-center gap-1.5"
                     onClick={() => verifyTrace(t.id)}
                     disabled={verifying[t.id]}
-                    title="Re-fetch the on-chain receipt and confirm the trace hash matches"
+                    title={
+                      // verification_mode: "anchored_only" means the store had
+                      // no off-chain body to compare — zero hashes were
+                      // checked, so the tooltip says so instead of implying a
+                      // real re-hash happened.
+                      vTone === 'anchored'
+                        ? 'Anchored on-chain, but no off-chain trace body was stored to re-hash against (verification_mode: anchored_only)'
+                        : 'Re-fetch the on-chain receipt and confirm the trace hash matches'
+                    }
                   >
                     {verifying[t.id] ? (
                       'Verifying…'
-                    ) : vResult?.is_verified ? (
+                    ) : vResult && vTone === 'verified' ? (
                       <><span className="i-lucide-check w-3.5 h-3.5 positive" /> Hash verified</>
+                    ) : vResult && vTone === 'anchored' ? (
+                      <><span className="i-lucide-anchor w-3.5 h-3.5" /> Anchored — not re-hashed</>
                     ) : (
                       <><span className="i-lucide-search w-3.5 h-3.5" /> Verify hash on-chain</>
                     )}
@@ -334,9 +358,9 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                       → Strategy in Library
                     </button>
                   )}
-                  {vResult && !vResult.is_verified && (
-                    <span className="caption flex items-center gap-1 negative">
-                      <span className="i-lucide-x w-3 h-3" />
+                  {vResult && (
+                    <span className={`caption flex items-center gap-1 ${vTone === 'verified' ? 'positive' : vTone === 'failed' ? 'negative' : ''}`}>
+                      <span className={vTone === 'verified' ? 'i-lucide-check w-3 h-3' : vTone === 'anchored' ? 'i-lucide-anchor w-3 h-3' : 'i-lucide-x w-3 h-3'} />
                       {vResult.details}
                     </span>
                   )}
@@ -348,35 +372,61 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                       Why does this matter?
                     </summary>
                     <div className="caption text-[var(--text-3)] mt-1.5 max-w-[480px] leading-relaxed">
-                      The hash is computed deterministically from the agent's reasoning, allocations, and regime context. By anchoring it on Arc's <code>ReasoningTraceRegistry</code>, anyone can independently recompute the hash and confirm the agent's decision existed at the recorded block — proving the reasoning preceded the trade, not the other way around.
+                      The hash is computed deterministically from the agent's reasoning, allocations, and regime context. By anchoring it on Arc's <code>ReasoningTraceRegistry</code>, anyone can independently fetch the canonical trace bytes (<code>{'GET /api/traces/{id}/canonical'}</code>), hash them, and confirm the agent's decision existed at the recorded block — proving the reasoning preceded the trade, not the other way around.
                     </div>
                   </details>
                 </div>
-                )}
+                  )
+                })()}
 
-                {/* Block-order check (off-chain) — NOT an on-chain commit-reveal
-                    guarantee. temporal_binding_valid is a Python/Redis-computed
-                    boolean (commit_block < trade_block); the time-locked
-                    commit()/reveal() contract calls are not yet wired into the
-                    live path. See docs/specs/commit-reveal-trace-spec.md (v1.5). */}
-                {!isSkip && t.temporal_binding_valid != null && (
-                  <div className="mt-2 rounded-md px-3 py-2" style={{ background: t.temporal_binding_valid ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)' }}>
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <span className={`w-4 h-4 flex-shrink-0 ${t.temporal_binding_valid ? 'i-lucide-check-circle text-[var(--positive)]' : 'i-lucide-x-circle text-[var(--negative)]'}`} />
-                      <strong className="text-[0.85rem]">Block Order Check (off-chain)</strong>
+                {/* Block-order panel — the COPY keys off temporal_binding_source,
+                    the field TraceResponse's claim-integrity validator
+                    (schemas.py) guarantees can never carry a True binding
+                    without the real on-chain commit()/reveal()/executeTrade()
+                    path having run. Previously this keyed off
+                    temporal_binding_valid alone and always rendered
+                    "(off-chain)" / roadmap-disclaimer copy — wrong 100% of
+                    the times a user could see it,
+                    because that copy only rendered when valid was truthy,
+                    and truthy requires source === "chain" (#1359). See
+                    docs/specs/commit-reveal-trace-spec.md (v1.5) and
+                    src/trace-binding.js for the pinned copy.
+
+                    The AFFORDANCE (icon/background) is a separate decision
+                    from the copy: source === "chain" alone is not enough,
+                    because temporal_binding_valid can legitimately be False
+                    for a chain-sourced trace — a minted commit whose reveal
+                    never landed (dangling commit; see agent_runner.py
+                    _reconcile_failure and the #1275 honest-degradation
+                    contract). That state must keep rendering as unresolved
+                    (red x-circle + caveat line), never as a false green
+                    pass, even though the heading text still correctly says
+                    the commit step is contract-enforced. */}
+                {!isSkip && t.temporal_binding_valid != null && (() => {
+                  const copy = blockOrderCopy({ source: t.temporal_binding_source, valid: t.temporal_binding_valid })
+                  const isChainEnforced = copy.tone === 'verified' && t.temporal_binding_valid === true
+                  const isDanglingReveal = t.temporal_binding_source === 'chain' && t.temporal_binding_valid === false
+                  return (
+                    <div className="mt-2 rounded-md px-3 py-2" style={{ background: isChainEnforced ? 'rgba(34,197,94,0.1)' : isDanglingReveal ? 'rgba(239,68,68,0.1)' : 'rgba(148,163,184,0.12)' }}>
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className={`w-4 h-4 flex-shrink-0 ${isChainEnforced ? 'i-lucide-check-circle text-[var(--positive)]' : isDanglingReveal ? 'i-lucide-x-circle text-[var(--negative)]' : 'i-lucide-info text-[var(--text-3)]'}`} />
+                        <strong className="text-[0.85rem]">{copy.heading}</strong>
+                      </div>
+                      <div className="text-xs text-[var(--text-3)] leading-relaxed">
+                        {t.commit_block_number != null && <div>Commit block: <strong>#{t.commit_block_number}</strong></div>}
+                        {t.trade_block_number != null && <div>Trade block: <strong>#{t.trade_block_number}</strong></div>}
+                        {t.reveal_block_number != null && <div>Reveal block: <strong>#{t.reveal_block_number}</strong></div>}
+                        {isDanglingReveal && (
+                          <div className="negative" style={{ marginTop: 4 }}>
+                            Commit is contract-enforced, but this trace's commit → trade → reveal blocks are
+                            incomplete or out of order — binding unproven.
+                          </div>
+                        )}
+                        <div style={{ marginTop: 4, fontStyle: 'italic' }}>{copy.note}</div>
+                      </div>
                     </div>
-                    <div className="text-xs text-[var(--text-3)] leading-relaxed">
-                      {t.commit_block_number != null && <div>Commit block: <strong>#{t.commit_block_number}</strong></div>}
-                      {t.trade_block_number != null && <div>Trade block: <strong>#{t.trade_block_number}</strong></div>}
-                      {t.reveal_block_number != null && <div>Reveal block: <strong>#{t.reveal_block_number}</strong></div>}
-                      {t.temporal_binding_valid && (
-                        <div style={{ marginTop: 4, fontStyle: 'italic' }}>
-                          Off-chain record: commit was logged before the trade block (not yet enforced on-chain — commit-reveal wiring is on the roadmap).
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
+                  )
+                })()}
               </div>
             )
           })}

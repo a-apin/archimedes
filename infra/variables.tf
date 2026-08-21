@@ -132,6 +132,12 @@ variable "archimedes_treasury_wallet" {
   default     = ""
 }
 
+variable "generation_payment_recipient" {
+  description = "Platform wallet address that receives x402 generation payments (flip-list #834). Public address, not a secret. Defaults to the platform generation-revenue DCW (Circle Console, wallet ID af3e1cf6-76a3-55db-911a-b356860058e4) so a terraform apply without the TF_VAR cannot silently un-configure the paywall; override via TF_VAR_generation_payment_recipient only to rotate the wallet."
+  type        = string
+  default     = "0xffa7abba5f17cb8471ebf150bf808bd6fb8856c1"
+}
+
 # ── Runner relocation (issue #1065 / #1043) ─────────────────────────────────
 # Draft IaC — Dan applies POST-T3.2. See infra/runner_ec2.tf, infra/kb_runner.tf,
 # infra/efs.tf, and the PR body for the full architecture + caveats.

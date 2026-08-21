@@ -5,18 +5,43 @@ import test from "node:test";
 import {
 	DEPTH_OPTIONS,
 	PAYMENT_STATUS,
-	buildDryRunPaymentHeader,
+	buildPaymentSignatureHeader,
+	buildTransferAuthorizationTypedData,
+	decodePaymentRequiredHeader,
 	deriveQuoteView,
+	derivePaymentRequirements,
 	derivePaymentState,
 	describePayerMismatch,
+	extractPaymentRequiredHeader,
 	extractReceipt,
 	isPaywallError,
 	isWalletLinkRequiredError,
 	paymentErrorMessage,
 	primaryLinkedWallet,
-	resolveDryRunPayer,
+	requirementChainId,
+	selectGatewayRequirement,
 	startErrorMessage,
 } from "../src/generateQuote.js";
+
+// The REAL 402 requirements — decoded from an actual PAYMENT-REQUIRED header
+// produced by calling backend/archimedes/marketplace/payments.py's
+// get_gateway_middleware(...).require("2.00", "/api/generate/start")
+// directly (circlekit's create_gateway_middleware underneath), not
+// hand-authored. This is the drift guard: the parser below is built against
+// this fixture, not against prose. See the fixture file's own _comment for
+// the exact regeneration recipe.
+const fixture = JSON.parse(
+	readFileSync(new URL("./fixtures/payment-required-402.json", import.meta.url), "utf8"),
+);
+const fixtureRequirement = fixture.accepts[0];
+
+/** Re-encode (a subset of) the fixture as a PAYMENT-REQUIRED header value —
+ * base64-JSON, same encoding generateQuote.js's toBase64/fromBase64 use.
+ * Excludes the fixture file's own `_comment` field (not part of the wire
+ * shape) so decode-and-compare tests don't have to special-case it. */
+function encodeFixtureHeader({ x402Version = fixture.x402Version, resource = fixture.resource, accepts = fixture.accepts } = {}) {
+	return globalThis.Buffer.from(JSON.stringify({ x402Version, resource, accepts }), "utf-8").toString("base64");
+}
 
 // ── deriveQuoteView: shapes the ratified GET /api/generate/quote response
 // (#1296) — payment_required, pricing_model, price, asset, chain,
@@ -256,56 +281,196 @@ test("describePayerMismatch: flags the primary linked wallet when the active add
 	assert.deepEqual(result, { active: "0xCCC", linked: "0xBBB" });
 });
 
-// ── buildDryRunPaymentHeader: the honest test-mode stand-in ────────────────
+// ── Real x402: parsing the PAYMENT-REQUIRED header against the fixture ────
+//
+// The fixture (ui/test/fixtures/payment-required-402.json) came from a REAL
+// call to backend/archimedes/marketplace/payments.py's get_gateway_middleware
+// (circlekit underneath) — this is the drift guard the task calls for: the
+// parser is built against the actual wire shape, not prose.
 
-test("buildDryRunPaymentHeader: base64-JSON carrying the REAL payer, decodable the same way the backend's own test fixture is built", () => {
-	const header = buildDryRunPaymentHeader("0xPayerAddress");
+test("decodePaymentRequiredHeader: round-trips the fixture through base64", () => {
+	const header = encodeFixtureHeader();
+	const decoded = decodePaymentRequiredHeader(header);
+	assert.equal(decoded.x402Version, 2);
+	assert.deepEqual(decoded.resource, fixture.resource);
+	assert.deepEqual(decoded.accepts, fixture.accepts);
+});
+
+test("decodePaymentRequiredHeader: null on a missing/malformed header, never a throw", () => {
+	assert.equal(decodePaymentRequiredHeader(null), null);
+	assert.equal(decodePaymentRequiredHeader(""), null);
+	assert.equal(decodePaymentRequiredHeader("not-valid-base64-json!!!"), null);
+	// Valid base64 that isn't valid JSON underneath.
+	assert.equal(decodePaymentRequiredHeader(globalThis.Buffer.from("not json", "utf-8").toString("base64")), null);
+});
+
+test("selectGatewayRequirement: picks the fixture's GatewayWalletBatched entry", () => {
+	const parsed = decodePaymentRequiredHeader(encodeFixtureHeader());
+	const requirement = selectGatewayRequirement(parsed);
+	assert.deepEqual(requirement, fixtureRequirement);
+});
+
+test("selectGatewayRequirement: null when accepts is missing/empty, or nothing matches", () => {
+	assert.equal(selectGatewayRequirement({}), null);
+	assert.equal(selectGatewayRequirement({ accepts: [] }), null);
+	assert.equal(
+		selectGatewayRequirement({ accepts: [{ extra: { name: "SomeOtherScheme" } }] }),
+		null,
+	);
+});
+
+test("derivePaymentRequirements: happy path against the fixture — requirements, resource, x402Version, no error", () => {
+	const result = derivePaymentRequirements(encodeFixtureHeader());
+	assert.deepEqual(result.requirements, fixtureRequirement);
+	assert.deepEqual(result.resource, fixture.resource);
+	assert.equal(result.x402Version, 2);
+	assert.equal(result.error, null);
+});
+
+test("derivePaymentRequirements: header_missing_or_malformed on a missing/malformed header", () => {
+	const result = derivePaymentRequirements(null);
+	assert.equal(result.requirements, null);
+	assert.equal(result.resource, null);
+	assert.equal(result.error, "header_missing_or_malformed");
+});
+
+test("derivePaymentRequirements: no_gateway_option when the header parses but has no matching accepts entry", () => {
+	const header = encodeFixtureHeader({ accepts: [{ scheme: "exact", extra: { name: "SomeOtherScheme" } }] });
+	const result = derivePaymentRequirements(header);
+	assert.equal(result.requirements, null);
+	assert.equal(result.error, "no_gateway_option");
+	// resource/x402Version still surfaced — they don't depend on which option matched.
+	assert.deepEqual(result.resource, fixture.resource);
+	assert.equal(result.x402Version, 2);
+});
+
+test("requirementChainId: parses the fixture's eip155 network, null on anything else", () => {
+	assert.equal(requirementChainId(fixtureRequirement), 5042002);
+	assert.equal(requirementChainId({ network: "not-eip155" }), null);
+	assert.equal(requirementChainId({}), null);
+	assert.equal(requirementChainId(null), null);
+});
+
+// ── buildTransferAuthorizationTypedData: the EIP-712 payload, against the
+// fixture's real requirement (GatewayWalletBatched domain, not USDC's) ────
+
+test("buildTransferAuthorizationTypedData: domain is the GATEWAY's EIP-712 domain, from the fixture", () => {
+	const { domain } = buildTransferAuthorizationTypedData(fixtureRequirement, {
+		from: "0xPayerAddress",
+		nowSec: 1_000_000,
+		nonceHex: "0xaa".padEnd(66, "0"),
+	});
+	assert.deepEqual(domain, {
+		name: "GatewayWalletBatched",
+		version: "1",
+		chainId: 5042002,
+		verifyingContract: "0x0077777d7EBA4688BDeF3E311b846F25870A19B9",
+	});
+});
+
+test("buildTransferAuthorizationTypedData: message uses bigints for uint256 fields (signing requires them, strings sign the wrong hash)", () => {
+	const nonceHex = "0xaa".padEnd(66, "0");
+	const { message } = buildTransferAuthorizationTypedData(fixtureRequirement, {
+		from: "0xPayerAddress",
+		nowSec: 1_000_000,
+		nonceHex,
+	});
+	assert.equal(message.value, 2_000_000n);
+	assert.equal(typeof message.value, "bigint");
+	assert.equal(message.validAfter, 1_000_000n - 600n);
+	assert.equal(message.validBefore, 1_000_000n + 345_600n);
+	assert.equal(message.nonce, nonceHex);
+	assert.equal(message.to, fixtureRequirement.payTo);
+});
+
+test("buildTransferAuthorizationTypedData: authorization (the wire payload) uses STRINGS, nonce as 0x-hex", () => {
+	const nonceHex = "0xaa".padEnd(66, "0");
+	const { authorization } = buildTransferAuthorizationTypedData(fixtureRequirement, {
+		from: "0xPayerAddress",
+		nowSec: 1_000_000,
+		nonceHex,
+	});
+	assert.equal(authorization.from, "0xPayerAddress");
+	assert.equal(authorization.to, fixtureRequirement.payTo);
+	assert.equal(authorization.value, "2000000");
+	assert.equal(authorization.validAfter, String(1_000_000 - 600));
+	assert.equal(authorization.validBefore, String(1_000_000 + 345_600));
+	assert.equal(authorization.nonce, nonceHex);
+	for (const key of ["from", "to", "value", "validAfter", "validBefore", "nonce"]) {
+		assert.equal(typeof authorization[key], "string", `authorization.${key} must be a string`);
+	}
+	assert.match(authorization.nonce, /^0x[0-9a-f]{64}$/);
+});
+
+test("buildTransferAuthorizationTypedData: types shape is exactly TransferWithAuthorization", () => {
+	const { types, primaryType } = buildTransferAuthorizationTypedData(fixtureRequirement, {
+		from: "0xPayerAddress",
+		nowSec: 1_000_000,
+		nonceHex: "0xaa".padEnd(66, "0"),
+	});
+	assert.equal(primaryType, "TransferWithAuthorization");
+	assert.deepEqual(types.TransferWithAuthorization.map((f) => f.name), [
+		"from",
+		"to",
+		"value",
+		"validAfter",
+		"validBefore",
+		"nonce",
+	]);
+});
+
+// ── buildPaymentSignatureHeader: the outbound Payment-Signature header ────
+
+test("buildPaymentSignatureHeader: builds a header from the fixture + a dummy signature; decoding it round-trips the shape", () => {
+	const nonceHex = "0xaa".padEnd(66, "0");
+	const { authorization } = buildTransferAuthorizationTypedData(fixtureRequirement, {
+		from: "0xPayerAddress",
+		nowSec: 1_000_000,
+		nonceHex,
+	});
+	const header = buildPaymentSignatureHeader({
+		x402Version: fixture.x402Version,
+		resource: fixture.resource,
+		requirements: fixtureRequirement,
+		authorization,
+		signature: "0xDEADBEEF",
+	});
 	const decoded = JSON.parse(globalThis.Buffer.from(header, "base64").toString("utf8"));
-	assert.equal(decoded.payload.authorization.from, "0xPayerAddress");
+
+	assert.deepEqual(Object.keys(decoded).sort(), ["accepted", "payload", "resource", "x402Version"]);
+	assert.equal(decoded.x402Version, 2);
+	assert.deepEqual(decoded.resource, fixture.resource);
+	assert.deepEqual(decoded.payload, { authorization, signature: "0xDEADBEEF" });
+	// `accepted` echoes the requirements under the wire's field names.
+	assert.equal(decoded.accepted.scheme, "exact");
+	assert.equal(decoded.accepted.network, "eip155:5042002");
+	assert.equal(decoded.accepted.asset, fixtureRequirement.asset);
+	assert.equal(decoded.accepted.amount, "2000000");
+	assert.equal(decoded.accepted.payTo, fixtureRequirement.payTo);
+	assert.equal(decoded.accepted.maxTimeoutSeconds, 345600);
+	assert.deepEqual(decoded.accepted.extra, fixtureRequirement.extra);
+	// Authorization values are strings, nonce is 0x-hex 32 bytes.
+	for (const key of ["from", "to", "value", "validAfter", "validBefore", "nonce"]) {
+		assert.equal(typeof decoded.payload.authorization[key], "string");
+	}
+	assert.match(decoded.payload.authorization.nonce, /^0x[0-9a-f]{64}$/);
 });
 
-test("buildDryRunPaymentHeader: REFUSES a falsy payer (loud contract for #1298)", () => {
-	// A payment header with no payer is never meaningful. Strengthened from
-	// the original "encode an empty from honestly" (#1295 review nit): the
-	// server's payer binding (#1296) requires the linked wallet, so an
-	// empty payer at this seam is a caller bug — throw, don't encode.
-	assert.throws(() => buildDryRunPaymentHeader(null), /requires a payer address/);
-	assert.throws(() => buildDryRunPaymentHeader(""), /requires a payer address/);
+// ── extractPaymentRequiredHeader: the PAYMENT-REQUIRED counterpart of
+// extractReceipt, reading api.js's err.headers ─────────────────────────────
+
+test("extractPaymentRequiredHeader: reads PAYMENT-REQUIRED from a Headers-like object and a plain object, case-insensitively", () => {
+	const fakeHeaders = { get: (name) => (name.toLowerCase() === "payment-required" ? "abc123" : null) };
+	assert.equal(extractPaymentRequiredHeader(fakeHeaders), "abc123");
+	assert.equal(extractPaymentRequiredHeader({ "payment-required": "def456" }), "def456");
+	assert.equal(extractPaymentRequiredHeader({ "PAYMENT-REQUIRED": "ghi789" }), "ghi789");
 });
 
-test("resolveDryRunPayer: the header carries the linked wallet's ADDRESS STRING, never the object", () => {
-	// #1299 review: the old call site passed primaryLinkedWallet(...) — the
-	// whole LinkedWalletResponse object — into buildDryRunPaymentHeader. The
-	// object is truthy, so neither the no-payer bail nor the falsy-payer
-	// throw caught it. This test EXECUTES the resolution end to end and pins
-	// the decoded payer as the address string.
-	const wallets = [
-		{ address: "0xAAA", is_primary: false },
-		{ address: "0xBBB", is_primary: true },
-	];
-	const payer = resolveDryRunPayer(wallets, "0xBrowserWallet");
-	assert.equal(payer, "0xBBB"); // linked-first, and the ADDRESS, not the object
-	const header = buildDryRunPaymentHeader(payer);
-	const decoded = JSON.parse(globalThis.Buffer.from(header, "base64").toString("utf8"));
-	assert.equal(decoded.payload.authorization.from, "0xBBB");
-	assert.equal(typeof decoded.payload.authorization.from, "string");
-});
-
-test("resolveDryRunPayer: browser-wallet fallback, then null (the bail case)", () => {
-	// Reaching a 402 proves the SERVER-side link, not that the browser wallet
-	// is connected or the linked-wallets fetch succeeded.
-	assert.equal(resolveDryRunPayer([], "0xBrowserWallet"), "0xBrowserWallet");
-	assert.equal(resolveDryRunPayer(null, ""), null);
-	assert.equal(resolveDryRunPayer(undefined, undefined), null);
-});
-
-test("Generate.jsx wires the shared resolver, the bail message, and the header call", () => {
-	// Wiring pin only — the LOGIC is executed by the two tests above (a
-	// source regex can't catch a type bug; #1299 review).
-	const generateSrc = readFileSync(new URL("../src/components/Generate.jsx", import.meta.url), "utf8");
-	assert.match(generateSrc, /resolveDryRunPayer\(linkedWallets, walletAddr\)/);
-	assert.match(generateSrc, /No payment was attempted/);
-	assert.match(generateSrc, /buildDryRunPaymentHeader\(payer\)/);
+test("extractPaymentRequiredHeader: null when absent, never a crash on a missing/empty headers object", () => {
+	assert.equal(extractPaymentRequiredHeader(null), null);
+	assert.equal(extractPaymentRequiredHeader({}), null);
+	const fakeHeaders = { get: () => null };
+	assert.equal(extractPaymentRequiredHeader(fakeHeaders), null);
 });
 
 // ── extractReceipt: the PAYMENT-RESPONSE settlement receipt ───────────────
@@ -358,10 +523,50 @@ test("Generate.jsx routes 409/402 through derivePaymentState into the ratified p
 	assert.match(generate, /open-wallet-modal/);
 });
 
-test("Generate.jsx offers a functional test-mode continuation and surfaces the receipt when present", () => {
-	assert.match(generate, /buildDryRunPaymentHeader\(/);
-	assert.match(generate, /continueInTestMode/);
+test("Generate.jsx wires the real x402 payment flow: parsing, signing, and the receipt surface", () => {
+	assert.match(generate, /from ["']\.\.\/x402["']/);
+	assert.match(generate, /derivePaymentRequirements\(/);
+	assert.match(generate, /extractPaymentRequiredHeader\(/);
+	assert.match(generate, /signGatewayPayment\(/);
+	assert.match(generate, /depositToGateway\(/);
+	assert.match(generate, /getGatewayBalance\(/);
+	assert.match(generate, /walletSupportsPayment\(/);
 	assert.match(generate, /extractReceipt\(/);
+});
+
+test("Generate.jsx: the test-mode-only 'continue' button is GONE — replaced by the real pay flow", () => {
+	// Anti-goal check (repo convention: verify a forbidden pattern is
+	// actually absent, don't just trust the diff). The old flow's function
+	// names, state, and button copy must not survive anywhere in the file.
+	assert.doesNotMatch(generate, /Continue in test mode/);
+	assert.doesNotMatch(generate, /continueInTestMode/);
+	assert.doesNotMatch(generate, /continuingTestMode/);
+	assert.doesNotMatch(generate, /buildDryRunPaymentHeader/);
+	assert.doesNotMatch(generate, /resolveDryRunPayer/);
+	assert.doesNotMatch(generate, /testModeNotice/);
+	assert.doesNotMatch(generate, /Payments aren't enabled in this build yet/);
+});
+
+test("Generate.jsx: the no-receipt success copy is honest — never claims settlement", () => {
+	assert.match(generate, /noSettlementNotice/);
+	assert.match(generate, /accepted without settlement/i);
+	assert.match(generate, /no funds moved/i);
+	// Must not describe this state as paid/settled/charged — that's the
+	// receipt branch below it, a DIFFERENT state.
+	assert.doesNotMatch(generate, /Payment accepted unverified — no real charge/);
+});
+
+test("Generate.jsx: the deposit step's copy names the two on-chain steps (approve, then deposit)", () => {
+	assert.match(generate, /approve USDC, then deposit/i);
+	assert.match(generate, /handleDeposit/);
+	assert.match(generate, /depositStep/);
+});
+
+test("Generate.jsx: an unsupported wallet type (e.g. the Circle passkey path) gets an honest message, not a broken pay button", () => {
+	// \s+ tolerates the source's own line wrap inside the JSX text node —
+	// JSX collapses it to a single space at render time either way.
+	assert.match(generate, /isn't\s+supported for payments yet/);
+	assert.match(generate, /walletSupportsPayment\(\)/);
 });
 
 // ── Issue #1363 wiring pins ─────────────────────────────────────────────
@@ -373,4 +578,15 @@ test("Generate.jsx renders the non-payment /start error through startErrorMessag
 
 test("Generate.jsx offers DEPTH_OPTIONS, not a hardcoded superset the pipeline silently clamps", () => {
 	assert.match(generate, /DEPTH_OPTIONS\.map/);
+});
+
+// ── featureFlags.js: GENERATION_QUOTE_ENABLED now defaults ON ─────────────
+// (payment enforcement going live on testnet, Dan's 2026-08-19 directive) —
+// still explicitly disable-able via VITE_GENERATION_QUOTE_ENABLED=false.
+
+test("featureFlags.js: GENERATION_QUOTE_ENABLED defaults to enabled (only an explicit \"false\" turns it off)", () => {
+	const featureFlagsSrc = readFileSync(new URL("../src/featureFlags.js", import.meta.url), "utf8");
+	assert.match(featureFlagsSrc, /VITE_GENERATION_QUOTE_ENABLED\s*!==\s*["']false["']/);
+	// The old off-by-default comparison must be gone, not just superseded.
+	assert.doesNotMatch(featureFlagsSrc, /VITE_GENERATION_QUOTE_ENABLED\s*===\s*["']true["']/);
 });

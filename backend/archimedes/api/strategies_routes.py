@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import math
+import os
 from datetime import UTC
 
 import numpy as np
@@ -344,6 +345,8 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
         # context — same fix as selection_bias_routes.py's valid_returns filter
         # (#868), so avg_correlation/pbo_scores here match that route's cohort gate
         # exactly rather than drifting apart on this input.
+        # TODO(A7): cohort filter here diverges from live_rigor_gate's cohort — see
+        # docs/sprint/cluster-4-strategies-route.md
         valid_returns = {
             k: v
             for k, v in returns_by_strategy.items()
@@ -515,7 +518,45 @@ async def list_strategies(
     # Bonus: the cache key (see cohort_key) is derived from the cohort's ids, so
     # grading the full library collapses the previous one-cohort-computation-per
     # -offset AND per-status-filter (~6s each) into a single shared entry.
-    library = strategy_provider().list_strategies()
+    #
+    # Provider failure must be visible on the wire, not a silent empty list
+    # (#1356: `total=len(strats)` used to render as a confident, honest-
+    # looking "0 strategies" whether the provider raised or the library was
+    # genuinely empty — the caller had no way to tell the two apart).
+    try:
+        library = strategy_provider().list_strategies()
+    except Exception as exc:
+        # Full exception detail is logged server-side only — never echoed to
+        # the client (DB/chain internals, per docs/api/*.md convention).
+        # `degraded_reason` stays a fixed, named category string.
+        logger.warning("list_strategies: strategy provider unavailable: %s", exc)
+        return StrategyListResponse(
+            strategies=[],
+            total=0,
+            degraded=True,
+            degraded_reason="strategy provider unavailable",
+        )
+
+    degraded = False
+    degraded_reason = ""
+    if not library:
+        # The dominant real cause is the strategy corpus missing from the
+        # build (#1039) — count_strategy_files()'s own docstring already
+        # names this for /health; reuse the same signal here instead of
+        # rendering "0 strategies" as if the library is legitimately empty.
+        # But the corpus CAN be present on disk while discovery still comes
+        # back empty (e.g. a shared-helper import error skips every file) —
+        # that's a different, real degradation and must say so too, so this
+        # route agrees with GET /api/leaderboard over the same corpus.
+        from archimedes.services.strategy_provider import count_strategy_files
+
+        if count_strategy_files() == 0:
+            degraded = True
+            degraded_reason = "strategy corpus not found in build"
+        else:
+            degraded = True
+            degraded_reason = "library is empty"
+
     rigor_results = _live_rigor_results_for_strategies(library)
 
     # Filter/paginate only AFTER grading. Delegated to the provider rather than
@@ -537,6 +578,8 @@ async def list_strategies(
     return StrategyListResponse(
         strategies=responses,
         total=total,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
     )
 
 
@@ -563,6 +606,16 @@ async def list_generated_strategies(
     caller = get_linked_wallet_address(request)  # None when anonymous — never an error
 
     rows: list[dict] = []
+    # Honest degradation signal (#1356 review round 2): this route used to
+    # swallow a DB/store exception into a 200 with a measured `total: 0`,
+    # indistinguishable on the wire from a genuinely-empty store. The Library's
+    # default tab then painted "No generated strategies yet" with a Generate
+    # CTA — the exact false-empty-state shape #1356 was filed to kill,
+    # unfixed on the one route the issue's own Summary names first. Mirrors
+    # the `degraded`/`degraded_reason` contract `StrategyListResponse` already
+    # carries for GET /api/strategies/ — see that route above.
+    degraded = False
+    degraded_reason = ""
     try:
         with get_session() as session:  # type: _Session
             query = session.query(StrategyRecord).filter(StrategyRecord.is_example.is_(False))
@@ -592,11 +645,16 @@ async def list_generated_strategies(
                 d["generation_cost"] = costs.get(r.id)
                 rows.append(_redact_owner_wallet(d, caller))
     except Exception as exc:
+        # Full exception detail is logged server-side only — never echoed to
+        # the client (DB/chain internals, per docs/api/*.md convention).
+        # `degraded_reason` stays a fixed, named category string.
         import logging as _logging
 
         _logging.getLogger(__name__).warning("list_generated_strategies failed: %s", exc)
         rows = []
-    return {"strategies": rows, "total": len(rows)}
+        degraded = True
+        degraded_reason = "strategy store unavailable"
+    return {"strategies": rows, "total": len(rows), "degraded": degraded, "degraded_reason": degraded_reason}
 
 
 @strategies_router.get("/signals", response_model=StrategySignalsResponse)
@@ -2166,12 +2224,28 @@ async def generate_strategy(
     Direct-fusion path only — the ``mode=fast`` (interactive Strategy
     Architect) branch was removed in #1064; the debate society
     (``POST /api/generate/start``) is the sole interactive generation path.
+
+    This is a second live, SIWE-gated, LLM-spending generation endpoint
+    (docs/sprint/cluster-4-strategies-route.md § "the unmetered budget hole") —
+    it shares the SAME per-account/per-IP daily caps ``/api/generate/start``
+    enforces (``services/generation_quota.py``), via the identical call this
+    module's sibling route makes: same function, same Redis key format
+    (``archimedes:genquota:{scope}:{day}:{identity}``, keyed on ``user.id`` /
+    client IP — never on which endpoint was hit), so a caller cannot double
+    their daily allowance by alternating between the two routes. Runs FIRST,
+    before the fusion-enabled/corpus checks below, matching the primary
+    path's "cheapest anti-abuse check before any other work" ordering.
+    Disabled under TESTING (conftest sets it), matching ``/api/generate/start``.
     """
     from fastapi import HTTPException
 
     from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
     from archimedes.models.portfolio import RiskProfile
+    from archimedes.services.generation_quota import enforce_generation_quota
     from archimedes.services.job_queue import JobStore
+
+    if not os.getenv("TESTING"):
+        await enforce_generation_quota(request, user.id)
 
     if not fusion_enabled():
         raise HTTPException(

@@ -201,6 +201,15 @@ const modelCostPanel = readFileSync(
 	new URL("../src/components/ModelCostPanel.jsx", import.meta.url),
 	"utf8",
 );
+// CorpusKG.jsx (#1368 second adversarial review): a fourth caller found
+// making the exact direct apiGet("/health") mistake this test exists to
+// forbid, on a branch that predated this file (it was 34 commits behind
+// `main` when the mistake was introduced, so this guard did not yet exist
+// to catch it). Added to the loop below rather than left unguarded.
+const corpusKg = readFileSync(
+	new URL("../src/components/CorpusKG.jsx", import.meta.url),
+	"utf8",
+);
 
 const health = readFileSync(
 	new URL("../src/health.js", import.meta.url),
@@ -213,11 +222,12 @@ test("health.js: fetchHealth() delegates to the shared getCachedHealth cache wit
 	assert.match(health, /getCachedHealth\(apiGet\)/);
 });
 
-test("Layout.jsx / Architecture.jsx / ModelCostPanel.jsx: /health is read through the shared fetchHealth cache, not independent apiGet('/health') calls", () => {
+test("Layout.jsx / Architecture.jsx / ModelCostPanel.jsx / CorpusKG.jsx: /health is read through the shared fetchHealth cache, not independent apiGet('/health') calls", () => {
 	for (const [name, src] of [
 		["Layout.jsx", layout],
 		["Architecture.jsx", architecture],
 		["ModelCostPanel.jsx", modelCostPanel],
+		["CorpusKG.jsx", corpusKg],
 	]) {
 		assert.doesNotMatch(
 			src,
