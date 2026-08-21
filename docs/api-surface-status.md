@@ -68,6 +68,7 @@ per-surface reference doc yet (a real gap, not an oversight to paper over).
 | `/api/selection-bias` | `archimedes.api.selection_bias_routes.selection_bias_router` | public | live | [`api/strategies-and-rigor.md`](api/strategies-and-rigor.md) |
 | `/api/rigor` | `archimedes.api.rigor_verify_routes.rigor_verify_router` | session | live | — |
 | `/api/account` | `archimedes.api.account_usage_routes.account_usage_router` | session | live | — |
+| `/api/payments` | `archimedes.api.payment_routes.payment_router` | session | live | [`api/generation.md`](api/generation.md) |
 | `/api/papers` | `archimedes.api.papers_routes.papers_router` | public | live | — |
 | `/api/user` | `archimedes.api.user_routes.user_router` | session | live | — |
 | `/api/wallets` | `archimedes.api.wallet_routes.wallet_router` | session | live | [`api/wallets.md`](api/wallets.md) |

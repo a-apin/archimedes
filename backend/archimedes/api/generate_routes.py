@@ -179,6 +179,62 @@ def _require_job_access(job: dict, user_id: str, job_id: str, linked_wallet: str
         raise HTTPException(status_code=404, detail=f"job {job_id} not found or expired")
 
 
+# USDC's on-chain decimal precision — matches marketplace.payments._USDC_DECIMALS.
+# PaymentInfo.amount (circlekit) is a string of raw base units, e.g. "2000000"
+# for $2.00; this is the sole place generate_routes converts that into a
+# display dollar string for the receipt (see models/payment_receipt.py).
+_RECEIPT_USDC_DECIMALS = 6
+
+
+def _format_receipt_usd(amount_base_units: int) -> str:
+    from decimal import Decimal
+
+    return f"${Decimal(amount_base_units) / Decimal(10**_RECEIPT_USDC_DECIMALS):.2f}"
+
+
+def _write_payment_receipt(*, user_id: str, payment, job_id: str) -> None:
+    """The persistence boundary — no try/except here. The caller
+    (``_persist_payment_receipt``) wraps this; tests patch this exact name to
+    exercise the fail-safe path without reaching into the DB layer."""
+    from archimedes.db import get_session
+    from archimedes.models.payment_receipt import record_payment_receipt
+
+    amount_base_units = int(payment.amount)
+    with get_session() as session:
+        record_payment_receipt(
+            session,
+            user_id=user_id,
+            payer_wallet=payment.payer,
+            amount_base_units=amount_base_units,
+            price_usd=_format_receipt_usd(amount_base_units),
+            network=payment.network,
+            settlement_ref=payment.transaction,
+            job_id=job_id,
+        )
+        session.commit()
+
+
+def _persist_payment_receipt(*, user_id: str, payment, job_id: str) -> None:
+    """Persist one settled generation payment as a receipt (Dan's directive:
+    "we must provide people with their receipts").
+
+    FAIL-SAFE, deliberately: the payment already cleared by the time this
+    runs — the user already paid. A receipt-write failure must never fail or
+    delay the paid generation, so every exception is swallowed here and only
+    logged. This is the ONE place in this module that name is true; every
+    other write on the happy path (job enqueue, funnel, identity event) is
+    allowed to matter to the response.
+    """
+    try:
+        _write_payment_receipt(user_id=user_id, payment=payment, job_id=job_id)
+    except Exception:
+        logger.warning(
+            "payment receipt write failed for job %s (payment already settled — no user impact)",
+            sanitize_log_value(job_id),
+            exc_info=True,
+        )
+
+
 @generate_public_router.get("/quote")
 async def get_generation_quote():
     """The upfront generation cost estimate — public, so a human can see the
@@ -231,6 +287,11 @@ async def start_generation(
     # BEFORE entitlement/enqueue (no work is burned for an unpaid request).
     # The 402 carries the full x402 requirements — that response IS the
     # quote-approval flow for humans and agents alike. Paper trading stays free.
+    # None under flag-off / dry-run (see enforce_generation_payment); a real
+    # settled PaymentInfo only when the flag is on and the payment cleared —
+    # that is also the ONLY case a payment receipt is persisted (below, once
+    # job_id exists).
+    payment = None
     if generation_payment.payment_required():
         if not linked_wallet:
             # The wallet-connection precondition. 409 (not 402): the blocker is
@@ -291,6 +352,13 @@ async def start_generation(
             "model": selected_model,
         },
     )
+
+    # Payment receipt (Dan's directive: "we must provide people with their
+    # receipts"). Only when a real settled PaymentInfo exists — flag-off and
+    # dry-run leave `payment` None and nothing is written. Deliberately AFTER
+    # enqueue succeeds, so the receipt carries a real job_id.
+    if payment is not None:
+        _persist_payment_receipt(user_id=user.id, payment=payment, job_id=job_id)
 
     # Fire-and-forget; the SSE stream tails events. User ownership is threaded
     # from this authenticated request, never client-supplied.
