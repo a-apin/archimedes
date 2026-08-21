@@ -40,13 +40,16 @@ PRs as still open. **Both were accurate when written** — the card was authored
    Fargate, at the artifact write that *precedes* the DB insert, so every computed backtest was
    discarded. Fixed 2026-08-18 (`8e6554c`), after which the armed in-app scheduler self-healed
    the leaderboard: fresh curated rows reached prod 2026-08-19/20 with Engine C still charging
-   commission only. **`4f60971` (2026-08-20) then put Engine C on the cost floor** — slippage at
-   `fusion_evaluator.py:230-232` and `:393-395`, `cost_model_id` stamped on fusion rows, and
-   `test_cost_parity.py` now exercises engine C directly. So the floor is complete now, but it
-   completed *after* those rows published. **The residual is whether the curated rows on the
-   board predate `4f60971`** — if they do, they were graded on a two-of-three floor and need a
-   re-grade or a re-run. That cannot be settled from this repo; check
-   `backtest_results.cost_model_id` on prod against the post-`4f60971` fingerprint.
+   commission only. **`4f60971`, in #1379 (2026-08-20), then put Engine C on the cost floor** —
+   slippage at `fusion_evaluator.py:230-232` and `:393-395`, `cost_model_id` stamped on fusion
+   rows, and `test_cost_parity.py` now exercising engine C directly. So the floor is complete,
+   but it completed *after* those rows published. Two residuals, and only one is tracked:
+   #1449 covers the **paper-trading** side (a full-history replay under the new floor will
+   register drift on every past date of every open deployment, and the ledger is append-only by
+   design). Nothing covers the **curated leaderboard** side: whether the rows now on the board
+   were graded before or after `4f60971`, and so whether they need a re-grade. Settle it by
+   checking `backtest_results.cost_model_id` on prod against the post-`4f60971` fingerprint —
+   it cannot be answered from this repo.
 2. **`POST /api/rigor/verify` can answer `passes: true` on four bars.** Shipped via #1305
    (2026-08-19), ahead of and overlapping [cluster-8](cluster-8-returns-csv.md). `passes` is
    `all(...)` over *evaluable* legs only, and PBO plus look-ahead are hard-coded
