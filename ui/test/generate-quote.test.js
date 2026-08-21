@@ -556,10 +556,14 @@ test("Generate.jsx: the no-receipt success copy is honest — never claims settl
 	assert.doesNotMatch(generate, /Payment accepted unverified — no real charge/);
 });
 
-test("Generate.jsx: the deposit step's copy names the two on-chain steps (approve, then deposit)", () => {
-	assert.match(generate, /approve USDC, then deposit/i);
-	assert.match(generate, /handleDeposit/);
-	assert.match(generate, /depositStep/);
+test("Generate.jsx: one-click payment — deposit folds into the single pay flow (2026-08-21 UX fix)", () => {
+	// The separate "Approve & deposit" button is retired: ONE control runs
+	// fresh-402 → deposit-if-short → sign → start, narrating each step.
+	assert.doesNotMatch(generate, /Approve & deposit/);
+	assert.match(generate, /handlePayAndGenerate/);
+	assert.match(generate, /const fresh = await refreshPaymentRequirements\(\)/);
+	assert.match(generate, /Step 1 of 3/);
+	assert.match(generate, /one-time\s+deposit covers many generations/);
 });
 
 test("Generate.jsx: the no-wallet state offers the connect flow (#1298 supersedes the old unsupported-wallet dead end)", () => {
