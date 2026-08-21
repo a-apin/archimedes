@@ -394,7 +394,11 @@ export default function Generate({ onNavigate, onStageChange }) {
 			setNoSettlementNotice(!settledReceipt);
 			if (GENERATION_QUOTE_ENABLED) fetchQuote();
 		} catch (e) {
-			setPaymentMessage(paymentErrorMessage(e, e?.message || "Payment failed — try again."));
+			// Surface the wallet/backend's OWN words — a generic "failed" here
+			// cost a full manual test cycle per wallet (#1298 field report).
+			setPaymentMessage(
+				paymentErrorMessage(e, e?.shortMessage || e?.message || "Payment failed — try again."),
+			);
 		} finally {
 			setPaying(false);
 		}
@@ -889,10 +893,19 @@ export default function Generate({ onNavigate, onStageChange }) {
 										one below.
 									</p>
 								) : !walletSupportsPayment() ? (
-									<p className="caption mb-0" style={{ marginTop: 6 }}>
-										Pay with a browser wallet (e.g. MetaMask) — this wallet type isn't
-										supported for payments yet.
-									</p>
+									<div style={{ marginTop: 6 }}>
+										<p className="caption mb-1">
+											Connect the wallet you linked to pay — MetaMask, Coinbase, Brave,
+											Phantom, or your Circle passkey wallet.
+										</p>
+										<button
+											type="button"
+											className="btn btn-outline btn-sm"
+											onClick={() => window.dispatchEvent(new Event("open-wallet-modal"))}
+										>
+											Connect wallet →
+										</button>
+									</div>
 								) : checkingBalance ? (
 									<p className="caption mb-0" style={{ marginTop: 6 }}>
 										Checking your Gateway balance…
