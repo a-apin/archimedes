@@ -134,6 +134,25 @@ Errors: 404 `job {job_id} not found or expired` (unknown, or not owned).
 curl -s -b /tmp/session.jar https://archimedes-arc.com/api/generate/jobs/<job_id>/candidates
 ```
 
+### GET /api/payments/receipts
+The caller's own settled generation-payment receipts, newest-first (Dan's
+directive, 2026-08-21: "we must provide people with their receipts"). Written
+at settle time inside `/start` — fail-safe: a receipt-write failure never
+fails or delays the paid generation, so this list can in principle be
+incomplete during a genuine DB outage. Owner-scoped server-side; no
+pagination yet (capped at 200 rows). | **Auth**: account-session
+
+Request: none.
+Response: `[{id: int, created_at: str|null, price_usd: str, amount_base_units: int, payer_wallet: str, settlement_ref: str|null, job_id: str|null, network: str}]`.
+`settlement_ref` is `PaymentInfo.transaction` — a **Circle facilitator
+reference id, not an on-chain transaction hash** (Circle batches and settles
+on-chain later); it must never be rendered as a block-explorer link.
+Errors: none beyond the global 401.
+
+```bash
+curl -s -b /tmp/session.jar https://archimedes-arc.com/api/payments/receipts
+```
+
 ## The payment-gate status-code flow (POST /api/generate/start)
 
 The paywall carries no payment fields in the request body — it is entirely a

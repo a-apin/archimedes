@@ -49,6 +49,7 @@ from archimedes.api.generate_routes import generate_public_router, generate_rout
 from archimedes.api.leaderboard_routes import leaderboard_router
 from archimedes.api.limiter import limiter
 from archimedes.api.paper_routes import paper_router
+from archimedes.api.payment_routes import payment_router
 
 # FAIL-SOFT import: marketplace_routes → service → payments imports circlekit
 # (the circle-titanoboa-sdk VCS dependency). If that dependency fails to IMPORT
@@ -512,6 +513,7 @@ app.include_router(portfolio_router, dependencies=[Depends(require_current_user)
 app.include_router(selection_bias_router)
 app.include_router(rigor_verify_router)
 app.include_router(account_usage_router)
+app.include_router(payment_router)
 app.include_router(papers_router)
 app.include_router(user_router, dependencies=[Depends(require_current_user)])
 app.include_router(wallet_router)

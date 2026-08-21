@@ -35,6 +35,7 @@ from archimedes.models.marketplace import (
     SubscriberLiability,
     SubscriberTickLog,
 )
+from archimedes.models.payment_receipt import PaymentReceiptRecord
 from archimedes.models.request_snapshot import RequestCountSnapshot
 from archimedes.models.strategy_generators import StrategyGenerator
 from archimedes.models.strategy_proposal import StrategyProposal
@@ -62,6 +63,7 @@ __all__ = [
     "LinkedWallet",
     "MarketplaceAgent",
     "PaperRecord",
+    "PaymentReceiptRecord",
     "RequestCountSnapshot",
     "SettlementIntent",
     "StrategyBacktestFixture",
