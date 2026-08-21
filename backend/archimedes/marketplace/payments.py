@@ -20,6 +20,7 @@ import logging
 import os
 from decimal import Decimal
 
+import circlekit.server as _circlekit_server
 from circlekit import create_gateway_middleware
 from circlekit.server import GatewayMiddleware
 from circlekit.wallets import CircleWalletSigner
@@ -30,6 +31,22 @@ from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
 logger = logging.getLogger(__name__)
 
 _USDC_DECIMALS = 6
+
+# Minimum authorization validity Circle's Gateway facilitator will VERIFY, in
+# seconds. Established empirically against the live testnet facilitator
+# (2026-08-20, first real settle on the generation paywall): windows of 3600,
+# 21600, 86400, and circlekit's own DEFAULT_MAX_TIMEOUT_SECONDS (345600 = 4d)
+# are ALL rejected with `authorization_validity_too_short`; 604800 (7d)
+# verifies and settles (tx 831aaaf1-f110-47f7-8faf-c76aa8f841cb). The pre-1.0
+# SDK hardcodes its stale default into `require()` with no override parameter,
+# so this module — the declared one-file blast radius for circlekit API drift
+# (see module docstring) — rebinds the SDK server module's constant at import.
+# Every 402 this backend issues then advertises a window clients can actually
+# sign against (the UI derives validBefore from the server's maxTimeoutSeconds,
+# so a stale server value bricks every honest browser payment). Remove when the
+# SDK ships a current default or a require() parameter.
+GATEWAY_MIN_AUTH_VALIDITY_SECONDS = 604_800
+_circlekit_server.DEFAULT_MAX_TIMEOUT_SECONDS = GATEWAY_MIN_AUTH_VALIDITY_SECONDS
 
 # Per-creator Gateway middleware cache, keyed by lowercase seller address.
 _middleware_cache: dict[str, GatewayMiddleware] = {}
@@ -129,10 +146,15 @@ async def charge(
         # Event-loop safety: CircleWalletSigner.sign_typed_data and
         # create_payment_header make blocking HTTPS calls.
         signer = _get_signer(wallet_id, wallet_address)
+        # `resource` is REQUIRED by the facilitator's payload schema
+        # (paymentPayload.resource.{url,description,mimeType}: Required —
+        # verified against the live facilitator 2026-08-20); circlekit
+        # defaults it to {} when omitted, which 400s every verify.
         header = await asyncio.to_thread(
             create_payment_header,
             signer=signer,
             requirements=requirements,
+            resource=x402.resource,
         )
 
         # 3. Verify + settle via Circle's facilitator.

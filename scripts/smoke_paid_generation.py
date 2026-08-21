@@ -86,8 +86,22 @@ def main() -> int:
 
     with httpx.Client(base_url=args.base_url, timeout=60.0, follow_redirects=True) as client:
         print(f"— smoke: paid generation against {args.base_url}")
+        # Sign-in-else-sign-up: a fresh smoke account (env creds) is created on
+        # first use, then signed into on every later run — the ephemeral mode
+        # would mint a NEW account each run and orphan the funded wallet's link.
         if step_auth(client, args.base_url, ephemeral=False) is None:
-            return _fail("sign-in failed")
+            signup = client.post(
+                "/api/auth/sign-up/email",
+                json={
+                    "name": "x402 smoke",
+                    "email": os.environ.get("ARCHIMEDES_EMAIL", ""),
+                    "password": os.environ.get("ARCHIMEDES_PASSWORD", ""),
+                },
+            )
+            if not signup.is_success:
+                return _fail(f"sign-in and sign-up both failed (HTTP {signup.status_code})")
+            if step_auth(client, args.base_url, ephemeral=False) is None:
+                return _fail("sign-in failed after successful sign-up")
         wallet = step_wallet_link(client, ephemeral=False)
         if wallet is None:
             return _fail("wallet link failed")
@@ -111,6 +125,7 @@ def main() -> int:
             r.text,
         )
         requirements = x402.get_gateway_option()
+        resource = getattr(x402, "resource", None)  # REQUIRED by the facilitator schema (2026-08-20)
         if requirements is None:
             return _fail("402 carried no GatewayWalletBatched payment option")
         need_units = int(requirements.amount)
@@ -127,7 +142,7 @@ def main() -> int:
         signer = PrivateKeySigner(key)
         if signer.address.lower() != wallet.lower():
             print(f"  · note: payer {signer.address} != linked wallet {wallet} — payer-binding may refuse")
-        header = create_payment_header(signer=signer, requirements=requirements)
+        header = create_payment_header(signer=signer, requirements=requirements, resource=resource)
         r2 = client.post("/api/generate/start", json=_BODY, headers={"Payment-Signature": header})
         if r2.status_code != 202:
             return _fail(f"paid retry expected 202, got HTTP {r2.status_code}: {r2.text[:300]}")
