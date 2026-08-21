@@ -50,9 +50,11 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 from abc import ABC, abstractmethod
 from datetime import UTC, date, datetime, timedelta
 
+import httpx
 import pandas as pd
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -306,8 +308,390 @@ class YFinanceProvider(MarketDataProvider):
         return fetch_ohlcv(ticker, start, end)
 
 
+# ─── Tiingo provider (#1218 Part 1 — yfinance replacement) ─────────────
+
+
+class TiingoProviderError(RuntimeError):
+    """Base class for TiingoProvider failures. Deliberately loud (never
+    caught-and-silently-substituted with yfinance) — see CLAUDE.md 'fail-soft
+    is wrong for anything a claim depends on'."""
+
+
+class TiingoAPIKeyMissingError(TiingoProviderError):
+    """``TIINGO_API_KEY`` is unset/blank. Raised at ``TiingoProvider``
+    construction — ``get_provider()`` builds a fresh instance on every call
+    (no long-lived singleton in this seam), so this fires on the very next
+    call site that routes through the seam with ``MARKET_DATA_PROVIDER=tiingo``:
+    the closest thing this seam has to a "startup" check, since there is no
+    separate eager app-boot validation of the market-data vendor today — AND
+    again at every HTTP call (the key is never cached on the instance;
+    re-read from the environment every time, so a rotated SSM value takes
+    effect without a process restart). The message never contains the key
+    itself — there is none to include."""
+
+
+class TiingoUnsupportedSymbolError(TiingoProviderError, ValueError):
+    """A ticker's shape identifies it as a commodity-future / index symbol
+    (e.g. ``GC=F``, ``CL=F``, ``^N225``, ``^GSPC``) that none of Tiingo's
+    three REST endpoint families (equities/ETFs, crypto, FX) can serve.
+    Raised loud, naming the symbol and the reason — never silently swapped
+    for a yfinance fallback, which would defeat the #1218 migration this
+    provider exists to make. ``ValueError`` in the MRO keeps it catchable by
+    any existing ``except ValueError`` call site (matches
+    ``YFinanceProvider``'s / ``fetch_ohlcv``'s existing
+    raise-on-unfetchable-symbol contract)."""
+
+
+class TiingoEmptyResponseError(TiingoProviderError, ValueError):
+    """Tiingo returned a syntactically valid but empty result (no rows) for a
+    ticker/date-range that passed symbol-routing. Raised loud rather than
+    handed back as an empty-but-"successful" DataFrame — an empty frame
+    masquerading as a hit would look identical to "no data exists" at every
+    downstream consumer (backtrader feed, portfolio panel), silently
+    truncating whatever depends on it."""
+
+
+_TIINGO_BASE_URL = "https://api.tiingo.com"
+_TIINGO_TIMEOUT_S = 15.0
+
+# Case-insensitive: crypto vendor tickers in this codebase are always
+# "<BASE>-USD" (see backend/archimedes/data/synthetic_universe.json's 71
+# `crypto` entries, e.g. "BTC-USD", "AAVE-USD") — the same shape yfinance
+# uses. Tiingo's crypto endpoint wants the pair concatenated and lowercased
+# ("btcusd").
+_CRYPTO_TICKER_RE = re.compile(r"^[A-Z0-9]{1,10}-USD$")
+
+
+def _classify_tiingo_ticker(ticker: str) -> str:
+    """Route a vendor-ticker string to one of Tiingo's three REST endpoint
+    families by ITS SHAPE — the same shape yfinance's own ticker convention
+    already encodes (``=X`` FX suffix, ``-USD`` crypto suffix, bare symbol
+    for equities/ETFs), since every call site into this seam still hands
+    ``TiingoProvider`` a yfinance-formatted ticker string (the ``tickers``
+    dict's VALUES / the ``ticker`` positional arg — see the ABC method
+    docstrings), not a synth symbol or an ``asset_class`` label.
+
+    A ``archimedes.universe.SYNTHETIC_UNIVERSE`` lookup was considered
+    instead of a shape heuristic, and rejected: several real call sites hand
+    this seam tickers that are NOT in the on-chain synthetic universe at all
+    — ``chain.oracle_updater``'s ``^GSPC``/``^VIX`` regime-signal tickers,
+    and arbitrary Explore/backtest tickers passed straight through by
+    ``asset_market_service`` / ``fusion_market_data``. A universe lookup
+    would return nothing useful for exactly the tickers most likely to need
+    the unsupported-symbol guard (index tickers aren't synths at all).
+    The shape heuristic covers every one of the 281 SSOT entries'
+    ``yfinance_ticker`` values correctly (verified against
+    ``synthetic_universe.json`` while building this provider) plus the
+    out-of-universe ``^`` / ``=F`` cases the guard exists for.
+
+    Returns ``"equity"``, ``"crypto"``, or ``"fx"``. Raises
+    ``TiingoUnsupportedSymbolError`` for an index (``^``-prefixed) or
+    commodity-future/continuous-contract (``=F``-suffixed) ticker — e.g. the
+    5 ``metal_spot`` SSOT entries (``GC=F``/``SI=F``/``HG=F``/``PA=F``/
+    ``PL=F``) and index regime tickers like ``^GSPC``/``^VIX``/``^N225``/
+    ``CL=F``. These have no Tiingo REST equivalent on the endpoint families
+    this provider targets.
+    """
+    t = ticker.strip()
+    if t.startswith("^"):
+        raise TiingoUnsupportedSymbolError(
+            f"{ticker!r} is an index ticker (^-prefixed, e.g. ^GSPC/^VIX/^N225) — "
+            "Tiingo's REST API has no index-level endpoint; TiingoProvider cannot "
+            "serve this symbol. Never silently falls back to yfinance."
+        )
+    if t.upper().endswith("=F"):
+        raise TiingoUnsupportedSymbolError(
+            f"{ticker!r} is a futures/commodity-continuous-contract ticker (=F suffix, "
+            "e.g. GC=F/SI=F/CL=F) — Tiingo has no futures endpoint on the "
+            "equities/crypto/FX REST families TiingoProvider targets. Never silently "
+            "falls back to yfinance."
+        )
+    if t.upper().endswith("=X"):
+        return "fx"
+    if _CRYPTO_TICKER_RE.match(t.upper()):
+        return "crypto"
+    return "equity"
+
+
+def _tiingo_api_key() -> str:
+    """Read ``TIINGO_API_KEY`` fresh from the environment — never cached on a
+    ``TiingoProvider`` instance, so a rotated SSM-backed value takes effect
+    on the next call without a process restart. Raises loud
+    (``TiingoAPIKeyMissingError``) rather than proceeding with an
+    unauthenticated request Tiingo would reject anyway; the message never
+    includes the key (there is none to include)."""
+    key = os.getenv("TIINGO_API_KEY", "").strip()
+    if not key:
+        raise TiingoAPIKeyMissingError(
+            "TIINGO_API_KEY is not set. Required whenever MARKET_DATA_PROVIDER=tiingo "
+            "(see .env.example / infra/ecs.tf's /archimedes/prod/TIINGO_API_KEY SSM param)."
+        )
+    return key
+
+
+def _tiingo_rows_to_ohlcv(
+    rows: list[dict],
+    ticker: str,
+    *,
+    open_key: str,
+    high_key: str,
+    low_key: str,
+    close_key: str,
+    volume_key: str | None,
+) -> pd.DataFrame:
+    """Shared row->frame mapper for all three Tiingo endpoint families —
+    shape contract match with ``YFinanceProvider`` (same columns, a
+    tz-naive ``DatetimeIndex``, float64 throughout). ``volume_key=None``
+    (Tiingo's FX endpoint carries no volume field — FX is OTC, there is no
+    consolidated tape) fills ``Volume`` with 0.0, matching yfinance's own
+    FX-ticker behavior (``EURUSD=X`` etc. return an all-zero ``Volume``
+    column from yfinance too — forex has no exchange-reported volume for
+    either vendor, so this is not a Tiingo-specific gap)."""
+    if not rows:
+        raise TiingoEmptyResponseError(f"Tiingo returned zero rows for {ticker!r} in the requested range")
+    index = pd.DatetimeIndex(pd.to_datetime([r["date"] for r in rows], utc=True)).tz_localize(None)
+    volume = [float(r[volume_key]) for r in rows] if volume_key else [0.0] * len(rows)
+    frame = pd.DataFrame(
+        {
+            "Open": [float(r[open_key]) for r in rows],
+            "High": [float(r[high_key]) for r in rows],
+            "Low": [float(r[low_key]) for r in rows],
+            "Close": [float(r[close_key]) for r in rows],
+            "Volume": volume,
+        },
+        index=index,
+    )
+    return frame.sort_index()
+
+
+class TiingoProvider(MarketDataProvider):
+    """Yfinance-replacement vendor (#1218 Part 1) backed by Tiingo's REST
+    API. Scope of THIS PR: ``get_daily_close_batch`` and ``get_daily_ohlcv``
+    only — the two methods ``CachingMarketDataProvider`` cache-backs, and the
+    #1218 cost driver (the universe sweep + generation-path OHLCV fetches).
+    ``get_intraday_quote`` / ``get_intraday_quotes_batch`` / ``get_series``
+    are intentionally NOT implemented — see their docstrings below for why,
+    and the PR body for the cutover implication (call sites depending on
+    them must stay on ``MARKET_DATA_PROVIDER=yfinance`` until a follow-up
+    covers Tiingo's IEX/top-of-book endpoints).
+
+    Three REST endpoint families, routed per-ticker by
+    ``_classify_tiingo_ticker`` (ticker-SHAPE heuristic — see that function's
+    docstring for why a universe lookup was rejected):
+      - equities/ETFs → ``GET /tiingo/daily/{ticker}/prices``
+      - crypto        → ``GET /tiingo/crypto/prices?tickers=...``
+      - FX            → ``GET /tiingo/fx/{ticker}/prices``
+
+    **Adjustment semantics — the load-bearing part (#1218 point 3).** The
+    yfinance path this replaces calls ``yf.download(..., auto_adjust=True,
+    ...)`` at every equity/ETF call site that feeds these two methods:
+    ``YFinanceProvider.get_daily_close_batch`` (this file, line ~173),
+    ``YFinanceProvider.get_series`` (this file, line ~275), and — via
+    delegation from ``YFinanceProvider.get_daily_ohlcv`` — ``archimedes_analytics_engine
+    .market_data.YFinanceProvider.fetch_ohlcv`` (``analytics-engine/src/
+    archimedes_analytics_engine/market_data.py:63``). ``auto_adjust=True``
+    means yfinance's ``Close``/``Open``/``High``/``Low`` columns are ALREADY
+    split/dividend back-adjusted — yfinance folds what would otherwise be a
+    separate ``Adj Close`` column into ``Close`` itself under this flag, so
+    there is no unadjusted column left in the frame at all. Every graded
+    backtest, PBO run, and the #775 cross-check compares against that
+    adjusted series today.
+
+    TiingoProvider therefore maps its EQUITY rows from Tiingo's
+    ``adjOpen``/``adjHigh``/``adjLow``/``adjClose``/``adjVolume`` fields —
+    NEVER the sibling raw ``open``/``high``/``low``/``close``/``volume``
+    fields Tiingo also returns in the same payload. Using the raw fields
+    would silently reintroduce split/dividend discontinuities into every
+    backtest run against this provider (a KO-style 2-for-1 split would show
+    up as a ~50% overnight price cliff) with no error and no log — exactly
+    the corruption #1218 point 3 warns about. Mutation-checked: flipping
+    ``adjClose`` -> ``close`` (etc.) in this mapping makes
+    ``TestAdjustmentSemantics`` in ``test_tiingo_provider.py`` fail (before/
+    after run recorded in the PR body).
+
+    Crypto and FX have no adjusted/raw distinction to make: Tiingo's crypto
+    and FX payloads carry only ONE set of OHLC fields each (no corporate
+    actions apply to either asset class), so those two families map their
+    single raw field set directly — there is nothing to get wrong there.
+    """
+
+    def __init__(self, client: httpx.Client | None = None) -> None:
+        # Presence-check (not value-cache) at construction — see
+        # TiingoAPIKeyMissingError's docstring for why this is the closest
+        # thing this seam has to a "startup" gate. The key itself is
+        # re-read fresh (never reused from here) by every _request() call.
+        _tiingo_api_key()
+        self._client = client
+
+    # ─── HTTP boundary ───────────────────────────────────────────────
+
+    def _request(self, path: str, params: dict[str, str]) -> object:
+        key = _tiingo_api_key()  # re-read fresh — never cached on self
+        headers = {"Authorization": f"Token {key}"}  # header, never a query param: never lands in a logged URL
+        client = self._client
+        owns_client = client is None
+        if owns_client:
+            client = httpx.Client(base_url=_TIINGO_BASE_URL, timeout=_TIINGO_TIMEOUT_S)
+        try:
+            response = client.get(path, params=params, headers=headers)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            raise TiingoProviderError(f"Tiingo API returned HTTP {exc.response.status_code} for {path}") from exc
+        except httpx.RequestError as exc:
+            raise TiingoProviderError(f"Tiingo API request failed for {path}: {type(exc).__name__}") from exc
+        finally:
+            if owns_client:
+                client.close()
+
+    # ─── Per-family fetch ────────────────────────────────────────────
+
+    def _fetch_equity_rows(self, ticker: str, start: str, end: str) -> list[dict]:
+        params: dict[str, str] = {"format": "json", "startDate": start}
+        if end:
+            params["endDate"] = end
+        data = self._request(f"/tiingo/daily/{ticker}/prices", params)
+        if not isinstance(data, list):
+            raise TiingoProviderError(f"Unexpected Tiingo equity response shape for {ticker!r}")
+        return data
+
+    def _fetch_crypto_rows(self, ticker: str, start: str, end: str) -> list[dict]:
+        tiingo_ticker = ticker.replace("-", "").lower()
+        params: dict[str, str] = {"tickers": tiingo_ticker, "startDate": start, "resampleFreq": "1day"}
+        if end:
+            params["endDate"] = end
+        data = self._request("/tiingo/crypto/prices", params)
+        if not isinstance(data, list) or not data:
+            return []
+        return data[0].get("priceData") or []
+
+    def _fetch_fx_rows(self, ticker: str, start: str, end: str) -> list[dict]:
+        tiingo_ticker = ticker[:-2].lower() if ticker.upper().endswith("=X") else ticker.lower()
+        params: dict[str, str] = {"startDate": start, "resampleFreq": "1day"}
+        if end:
+            params["endDate"] = end
+        data = self._request(f"/tiingo/fx/{tiingo_ticker}/prices", params)
+        if not isinstance(data, list):
+            raise TiingoProviderError(f"Unexpected Tiingo FX response shape for {ticker!r}")
+        return data
+
+    def _fetch_ohlcv_for_ticker(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """Shared by both public methods below — one routing + adjustment-
+        mapping implementation, not two, so the two public methods can never
+        drift into inconsistent semantics for the same ticker."""
+        asset_class = _classify_tiingo_ticker(ticker)
+        if asset_class == "equity":
+            rows = self._fetch_equity_rows(ticker, start, end)
+            return _tiingo_rows_to_ohlcv(
+                rows,
+                ticker,
+                open_key="adjOpen",
+                high_key="adjHigh",
+                low_key="adjLow",
+                close_key="adjClose",
+                volume_key="adjVolume",
+            )
+        if asset_class == "crypto":
+            rows = self._fetch_crypto_rows(ticker, start, end)
+            return _tiingo_rows_to_ohlcv(
+                rows, ticker, open_key="open", high_key="high", low_key="low", close_key="close", volume_key="volume"
+            )
+        rows = self._fetch_fx_rows(ticker, start, end)  # asset_class == "fx"
+        return _tiingo_rows_to_ohlcv(
+            rows, ticker, open_key="open", high_key="high", low_key="low", close_key="close", volume_key=None
+        )
+
+    # ─── ABC surface — IN SCOPE for this PR ─────────────────────────
+
+    def get_daily_close_batch(self, tickers: dict[str, str], period: str) -> dict[str, pd.Series]:
+        """Per the ABC contract, a failed/unsupported/empty ticker is simply
+        ABSENT from the result (never raises the whole batch) — matching
+        ``YFinanceProvider``'s existing behavior for this method and the
+        cache-wrapper's own invariant
+        (``test_vendor_miss_leaves_symbol_absent_not_erroring``). An
+        unsupported symbol is still LOUD in the log (full symbol + reason,
+        at ERROR level): "loud" here means "never silently substitutes
+        yfinance data", not "raises out of a 280-symbol universe sweep over
+        one bad ticker". ``get_daily_ohlcv`` below is the method whose
+        contract is to raise on a single unfetchable ticker; this one's
+        contract (inherited from the ABC, unchanged by this PR) is per-item
+        skip.
+
+        A missing API key is the one exception that DOES propagate out of
+        the batch immediately rather than being skipped per-ticker: it is a
+        configuration problem affecting every ticker, not a per-symbol data
+        issue, and skipping it per-item would silently degrade
+        ``MARKET_DATA_PROVIDER=tiingo`` with no key into "every symbol
+        empty" instead of a loud startup-shaped failure.
+        """
+        if not tickers:
+            return {}
+        start_date = _period_to_start_date(period, datetime.now(UTC))
+        start = start_date.isoformat()
+        end = datetime.now(UTC).date().isoformat()
+
+        result: dict[str, pd.Series] = {}
+        for key, ticker in tickers.items():
+            try:
+                frame = self._fetch_ohlcv_for_ticker(ticker, start, end)
+            except TiingoAPIKeyMissingError:
+                raise  # configuration problem, not a per-symbol issue — loud, no partial batch
+            except TiingoProviderError as exc:
+                logger.error("TiingoProvider: skipping %s (%s) in batch — %s", key, ticker, exc)
+                continue
+            close = frame["Close"].dropna()
+            if close.empty:
+                continue
+            close.name = key
+            result[key] = close
+        return result
+
+    def get_daily_ohlcv(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """Raises on a genuinely unfetchable/unsupported symbol or an empty
+        result — matches the ABC's documented contract (and
+        ``YFinanceProvider.get_daily_ohlcv``'s delegate,
+        ``archimedes_analytics_engine.data.fetch_ohlcv``): callers
+        (``fusion_market_data``, ``portfolio_backtester``) rely on the
+        exception for their own fail-closed / per-symbol-skip handling, not
+        a sentinel empty frame."""
+        return self._fetch_ohlcv_for_ticker(ticker, start, end)
+
+    # ─── ABC surface — OUT OF SCOPE for this PR ─────────────────────
+    # See the class docstring's "Scope of THIS PR" note. Loud
+    # NotImplementedError, never a silent wrong-data fallback: a stubbed
+    # intraday quote or arbitrary-interval series would be indistinguishable
+    # from a working one at every call site until it produced a visibly
+    # wrong number in production (the live oracle push, the VIX/S&P regime
+    # reads, or the Explore history modal) — see CLAUDE.md "fail-soft is
+    # wrong for anything a claim depends on".
+
+    def get_intraday_quote(self, ticker: str) -> tuple[float, datetime] | None:
+        raise NotImplementedError(
+            "TiingoProvider.get_intraday_quote is out of scope for #1218 Part 1 (daily "
+            "batch + OHLCV only). chain.oracle_updater's live oracle push and VIX/S&P "
+            "regime reads must stay on MARKET_DATA_PROVIDER=yfinance until a follow-up "
+            "wires Tiingo's IEX top-of-book endpoint."
+        )
+
+    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, float]:
+        raise NotImplementedError(
+            "TiingoProvider.get_intraday_quotes_batch is out of scope for #1218 Part 1 "
+            "(daily batch + OHLCV only). Call sites needing a live intraday batch quote "
+            "must stay on MARKET_DATA_PROVIDER=yfinance until a follow-up wires Tiingo's "
+            "IEX top-of-book endpoint."
+        )
+
+    def get_series(self, ticker: str, period: str, interval: str) -> pd.Series:
+        raise NotImplementedError(
+            "TiingoProvider.get_series is out of scope for #1218 Part 1 (daily batch + "
+            "OHLCV only). services.asset_market_service's Explore history modal must "
+            "stay on MARKET_DATA_PROVIDER=yfinance until a follow-up wires this method."
+        )
+
+
 _VENDOR_PROVIDERS: dict[str, type[MarketDataProvider]] = {
     "yfinance": YFinanceProvider,
+    "tiingo": TiingoProvider,
 }
 
 
