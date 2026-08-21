@@ -30,7 +30,8 @@ export default function Terms() {
 				<h1>Terms of Service</h1>
 				<p className="policy-meta">
 					Last updated: [pending owner approval] · Archimedes
-					(archimedes-arc.com) is operated by APRIN&nbsp;Labs
+					(archimedes-arc.com) is operated under the name APRIN&nbsp;Labs, which
+					is not a registered company
 				</p>
 			</header>
 
@@ -233,10 +234,6 @@ export default function Terms() {
 					loss arising out of your use of the service — including any decision
 					you make on the basis of something it produced.
 				</p>
-				<p className="policy-meta">
-					[OWNER TO SPECIFY] — whether to state a liability cap here, and what it
-					should be.
-				</p>
 			</section>
 
 			<section>
@@ -252,11 +249,12 @@ export default function Terms() {
 
 			<section>
 				<h2>Governing law</h2>
-				<p className="policy-meta">
-					[OWNER TO SPECIFY] — governing law and the venue for disputes. Left
-					blank deliberately: this is a jurisdiction question tied to where the
-					operating entity is registered, and it is the owner&rsquo;s call, not a
-					detail to guess at.
+				<p>
+					These terms are governed by the laws of the State of Illinois, United
+					States, without regard to its conflict-of-laws rules. Any dispute
+					arising out of or relating to them will be brought in the state or
+					federal courts located in Illinois, and you and we each consent to
+					those courts&rsquo; jurisdiction.
 				</p>
 			</section>
 

@@ -26,7 +26,8 @@ export default function Privacy() {
 				<h1>Privacy Policy</h1>
 				<p className="policy-meta">
 					Last updated: [pending owner approval] · Archimedes
-					(archimedes-arc.com) is operated by APRIN&nbsp;Labs
+					(archimedes-arc.com) is operated under the name APRIN&nbsp;Labs, which
+					is not a registered company
 				</p>
 			</header>
 

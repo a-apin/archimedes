@@ -213,9 +213,10 @@ test("the terms state the testnet, no-advice and no-real-funds position", () => 
 	assert.match(terms, /Limitation of liability/i);
 });
 
-// Governing law is the owner's call and must not be guessed at. The marker
-// staying in the page is what makes "the owner still has to decide this"
-// visible to him when he reviews it.
+// Governing law was the owner's call, and he made it (2026-08-21): Illinois.
+// The guard flipped WITH the decision rather than being deleted by it. It used
+// to pin the [OWNER TO SPECIFY] marker so nobody could guess a jurisdiction;
+// it now pins the answer so nobody can quietly drift off it.
 //
 // Scoped to the section body, NOT to the whole file: the file-wide form of
 // this assertion passed a mutation that replaced the governing-law marker with
@@ -229,13 +230,46 @@ function sectionBody(source, heading) {
 	return m[1];
 }
 
-test("governing law is left for the owner to specify", () => {
+test("governing law names Illinois, and no other jurisdiction", () => {
 	const governing = sectionBody(terms, "Governing law");
-	assert.match(governing, /\[OWNER TO SPECIFY\]/);
-	// No jurisdiction may be named in that section until he names one.
+	assert.match(governing, /laws of the State of Illinois/, "the owner specified Illinois");
+	assert.match(
+		governing,
+		/courts located in Illinois/,
+		"venue must be named too — governing law alone leaves where-you-sue open",
+	);
 	assert.doesNotMatch(
 		governing,
-		/\b(governed by the laws of|law governs|Delaware|England|Wales|Singapore|Switzerland|New York|California)\b/i,
-		"governing law must not be guessed at — the owner specifies it",
+		/\b(Delaware|England|Wales|Singapore|Switzerland|New York|California|Texas|Massachusetts)\b/i,
+		"no jurisdiction other than Illinois may appear in this section",
 	);
+});
+
+// Both owner-decision markers are resolved: governing law -> Illinois, and the
+// liability cap -> none (the exclusions stand on their own). Neither page may
+// carry the marker again — a page shipped with an unresolved decision printed
+// on it is a page nobody finished.
+test("no unresolved owner-decision markers remain on either page", () => {
+	for (const [name, page] of [
+		["Privacy", privacy],
+		["Terms", terms],
+	]) {
+		assert.doesNotMatch(page, /\[OWNER TO SPECIFY\]/, `${name} still carries an unresolved owner decision`);
+	}
+});
+
+// APRIN Labs is a trading name, not a filed company (owner, 2026-08-21).
+// "operated by APRIN Labs" reads as though a legal entity exists to stand
+// behind these terms. It doesn't — and asserting one on the two pages whose
+// entire purpose is claims that are true is exactly the failure CLAUDE.md's
+// first rule exists to prevent.
+test("the operator line does not imply a company that does not exist", () => {
+	for (const [name, page] of [
+		["Privacy", privacy],
+		["Terms", terms],
+	]) {
+		assert.match(page, /operated under the name APRIN&nbsp;Labs/, `${name} must name the operator`);
+		assert.match(page, /not a registered company/, `${name} must not leave incorporation implied`);
+		assert.doesNotMatch(page, /operated by APRIN/, `${name} must not imply APRIN Labs is a company`);
+	}
 });
