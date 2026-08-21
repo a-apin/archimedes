@@ -167,7 +167,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`sprint/README.md`](sprint/README.md) | current | Dan Browne | 2026-08-16 | Index of per-session working cards for the Arc-mainnet sprint, sharded so each session reads ~50 lines instead of the full plan. |
+| [`sprint/README.md`](sprint/README.md) | current | Önder Akkaya | 2026-08-21 | Index of per-session working cards for the Arc-mainnet sprint, plus the per-card completion status and the corrections to the cards' own claims. |
 
 ## Audits and findings
 
