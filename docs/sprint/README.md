@@ -74,11 +74,14 @@ PRs as still open. **Both were accurate when written** — the card was authored
 
 Verified against source at `0057518`, 2026-08-21, by an 11-way item-level audit. Fractions are
 that audit's own decomposition (acceptance clauses, anti-goals and test asks counted
-separately) — a shape, not a score. Adversarial re-verification reached 3 of 11 cards before
-running out of budget and **overturned 16 claims, every one in the less-complete direction**
-(including this section's own first draft, which wrongly called the Aug-16 State section
-inaccurate). Treat the un-reverified cards' DONEs as strong-but-unconfirmed, and read every
-fraction here as an upper bound on completeness.
+separately) — a shape, not a score. Adversarial re-verification **covered 3 of 11 cards and
+stopped there** (two resume attempts wedged; not retried again). Over 88 claims attacked it
+**overturned 16, every one in the less-complete direction** — including this section's own
+first draft, which wrongly called the Aug-16 State section inaccurate. So: the three
+re-verified cards (this one, cluster-0, cluster-1) are twice-checked; the other eight are
+single-source. Treat their DONEs as strong-but-unconfirmed and read every fraction here as an
+upper bound on completeness. Re-verification is the cheapest thing to extend if anyone doubts
+a row.
 
 | Session | Card | Status | What is actually left |
 |---|---|---|---|
