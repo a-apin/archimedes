@@ -8,6 +8,7 @@ const PUBLIC_PATHS = {
 const AUTH_PATHS = {
   '/sign-in': 'sign-in',
   '/sign-up': 'sign-up',
+  '/reset-password': 'reset-password',
 }
 
 const APP_PATHS = {
@@ -66,6 +67,17 @@ export function passportBackLabel(user) {
   return user == null ? '← Back to Explore' : '← Back to Library'
 }
 
+// True when `user` may navigate to `page` — signed in, always; anonymous,
+// only for the browsable ANON_APP_PAGES set above. Delegates to
+// isAnonymousAppPage so the two never drift (#1364): the onboarding tour's
+// navigation effect gates on this, not on a hard-coded card id, so any page
+// the product later adds to ANON_APP_PAGES becomes anon-navigable for the
+// tour automatically, and any page NOT added stays a centered card instead
+// of ejecting the visitor to /sign-in.
+export function canNavigateTo(page, user) {
+  return user != null || isAnonymousAppPage(page)
+}
+
 const PAGE_PATHS = Object.fromEntries(Object.entries(APP_PATHS).map(([path, page]) => [page, path]))
 const LEGACY_PATHS = Object.fromEntries(
   Object.entries(APP_PATHS)
@@ -81,6 +93,7 @@ const route = (kind, page, extras = {}) => ({
   strategyId: null,
   highlight: null,
   tab: null,
+  error: null,
   redirect: null,
   anonymousOk: kind === 'app' && ANON_APP_PAGES.has(page),
   ...extras,
@@ -102,6 +115,19 @@ export function resolveRoute(pathname = '/', search = '', features = { quant: tr
     highlight: params.get('highlight'),
     traceId: params.get('trace_id'),
     tab: params.get('tab'),
+    error: params.get('error'),
+  }
+
+  // Better Auth's account-linking guard (auth/auth.js: accountLinking.
+  // disableImplicitLinking — a deliberate security posture, not a bug) rejects
+  // an OAuth sign-in for an email that already owns a password account by
+  // redirecting the browser straight back to `${baseURL}?error=...`, i.e. the
+  // bare landing route. Landing has no sign-in form to show that error on —
+  // the surface with the "Continue with Google/GitHub" buttons the visitor
+  // just clicked is /sign-in. Bounce the error there so AuthPage can read and
+  // render it instead of it silently vanishing.
+  if (pathname === '/' && query.error) {
+    return route('redirect', null, { redirect: `/sign-in?error=${encodeURIComponent(query.error)}` })
   }
 
   if (PUBLIC_PATHS[pathname]) return route('public', PUBLIC_PATHS[pathname], query)

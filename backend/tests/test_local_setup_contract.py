@@ -128,6 +128,63 @@ class TestLocalSetupContract(unittest.TestCase):
         self.assertIn("location = /openapi.json", nginx)
         self.assertIn("proxy_pass http://backend_api/openapi.json;", nginx)
 
+    def test_nginx_webmanifest_mime_override_is_additive_not_nested_in_server(self) -> None:
+        """#1380: stock nginx `mime.types` has no `.webmanifest` entry, so a
+        served `site.webmanifest` fell back to `default_type`
+        (application/octet-stream) instead of `application/manifest+json`.
+
+        The override MUST live at this file's top level (http context, via
+        the conf.d splice documented in the file header) rather than nested
+        inside `server {}`. A `types {}` block does not merge into an
+        ancestor context's type map when declared in a child context — it
+        replaces it outright for that context, so declaring this inside
+        `server {}` would silently blank the content type of every other
+        static asset (.css/.js/.html) served by that block back to
+        `default_type` too. Verified live with nginx 1.31.2 (the pinned
+        image): moving this exact line inside `server {}` turned
+        `/style.css` and `/` from their correct types into
+        `application/octet-stream`. Placed here, at the same http-context
+        level where the base image's own `include mime.types;` already ran
+        (before this conf.d fragment is spliced in), it appends to that
+        existing map instead — the anti-goal's "additive override only"."""
+        nginx = (ROOT / "nginx/nginx.conf").read_text()
+        override = "types { application/manifest+json webmanifest; }"
+        self.assertIn(override, nginx)
+        override_index = nginx.index(override)
+        server_block_anchor = "server {\n    listen 8080;"
+        server_block_index = nginx.find(server_block_anchor)
+        self.assertNotEqual(
+            server_block_index,
+            -1,
+            f"anchor {server_block_anchor!r} not found in nginx.conf — this "
+            "test's anchor has drifted from the real file and needs updating, "
+            "not a ValueError from nginx.index() with no context",
+        )
+        self.assertLess(
+            override_index,
+            server_block_index,
+            "the .webmanifest MIME override must precede `server {}` (http "
+            "context) — nested inside it, `types {}` replaces rather than "
+            "extends the inherited MIME map, breaking every other static "
+            "asset's content type",
+        )
+        # The above only pins the POSITION of this one override line — it
+        # says nothing about any OTHER `types {}` block. A second `types {}`
+        # declared inside `server {}` (this override left untouched at http
+        # level) still replaces the inherited MIME map for every other
+        # static asset that block serves — verified live against the pinned
+        # image (nginxinc/nginx-unprivileged:1.31.2-alpine): with any
+        # `types {}` inside `server {}`, /style.css, /bundle.js, and / all
+        # degrade to application/octet-stream. Guard the whole hazard class,
+        # not just this one line's position.
+        self.assertNotIn(
+            "types {",
+            nginx[server_block_index:],
+            "no `types {}` block may appear inside `server {}` — it "
+            "replaces rather than extends the inherited MIME map for every "
+            "static asset that block serves",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

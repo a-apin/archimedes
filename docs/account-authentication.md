@@ -13,7 +13,7 @@ passkey authorizes Circle smart wallet only; it is not Archimedes login credenti
 
 Routes:
 
-- `/`, `/architecture`, `/sign-in`, and `/sign-up`: public SPA routes.
+- `/`, `/architecture`, `/sign-in`, `/sign-up`, and `/reset-password`: public SPA routes.
 - `/app/*`: Better Auth session required by nginx `auth_request` and client router.
 - private FastAPI routes: repeat session checks through `require_current_user`.
 - on-chain wallet actions: additionally require wallet present in `linked_wallets` for
@@ -84,6 +84,141 @@ Independently of enforcement, disposable accounts are bounded by three layers:
    (`backend/archimedes/services/generation_quota.py`). Generation is the
    endpoint that spends money, and its IP bucket does not reset when a new
    account is minted — so a signup farm gains nothing where it matters.
+
+### Password reset (#1323)
+
+Forgotten-password recovery is wired end to end — before this, a lost password
+permanently destroyed the account that owns the user's strategies. `auth/auth.js`
+`emailAndPassword.sendResetPassword` mirrors `sendVerificationEmail`: same mailer
+(`auth/mailer.js`), same fail-soft-on-send-failure handling. Better Auth's built-in
+`POST /api/auth/request-password-reset` returns the identical response body/status for
+a known and an unknown email — `sendResetPassword` is only ever invoked for a real
+account, so the fail-soft catch matters doubly here: a 500 that only real accounts could
+trigger would itself leak account existence via status code. `POST
+/api/auth/reset-password` consumes the mailed token, sets the new password, and (via
+`revokeSessionsOnPasswordReset: true`) signs out every existing session.
+
+UI: `ui/src/components/AuthPage.jsx` — "Forgot password?" on the sign-in view opens an
+inline request form (`ui/src/auth-client.js` `requestPasswordReset`); the mailed link
+points at the public `/reset-password` route, which reads `?token=` and calls
+`resetPassword`. A sign-in refused with 403 (unverified email) surfaces a "Resend
+verification email" action calling the existing `send-verification-email` endpoint
+(`resendVerificationEmail`) — closing the matching lockout for a lost verification mail.
+
+### Account linking (#1420 follow-up)
+
+The owner has one email/password account and wants Google and GitHub to reach the SAME
+account, so any of the three signs in as one identity. `auth/auth.js`'s `account.
+accountLinking` config (verified against the **installed** `better-auth@1.6.25` source —
+see the long comment on that config block for exact file/line pointers) drives two
+independent paths that behave differently, one of which is deliberately disabled today:
+
+**1. Implicit auto-link** — a plain "Continue with Google/GitHub" click on the sign-in
+screen for an email that already owns a password account. Stays **off**
+(`disableImplicitLinking: true`, unchanged from before this feature) and refuses
+unconditionally (`?error=account_not_linked`), regardless of either side's
+`emailVerified`. **Round-2 review finding (major):** an earlier revision of this PR
+flipped `disableImplicitLinking` to `false` and added `trustedProviders: ['google',
+'github']` to enable this path once the base account was verified. That was reverted
+before merge. **Round-3 review finding (major) — correction to the round-2 writeup
+above:** `trustedProviders` is not consulted in only one place. The installed library
+reads it in three: `oauth2/link-account.mjs:21` (this implicit path), and — importantly —
+`api/routes/callback.mjs:98` and `api/routes/account.mjs:176`, both on the **explicit**
+path below. In both of those it is the same switch: it turns off the requirement that the
+*provider's* own `emailVerified` claim be true. Reintroducing `trustedProviders` to arm
+implicit auto-link would therefore also silently waive that requirement on the explicit
+flow that actually ships, not just enable the implicit one. Arming implicit auto-link
+remains its own security decision, deferred to a future change made and reviewed on its
+own once `EMAIL_VERIFICATION_ENFORCED` is genuinely on (until then, `requireLocalEmailVerified`
+— the library's still-unset default `true` — would have kept this refused for most
+accounts anyway, but not once real accounts start verifying) **and** with the explicit-path
+consequence above accounted for. See the long comment on `accountLinking` in
+`auth/auth.js` for the exact gate lines and both source-pinned tests.
+
+**2. Explicit link** — signed-in "Link Google" / "Link GitHub" in Account Settings →
+Connected accounts (`ui/src/components/AccountSettings.jsx`, `linkSocial`/`listAccounts`/
+`unlinkAccount` in `ui/src/auth-client.js`, calling Better Auth's own `/link-social`,
+`/list-accounts`, `/unlink-account`). This is the path that works **today**, regardless of
+the base account's verification state: proof of ownership comes from the live session
+`/link-social` was called with, not from `emailVerified`. It still enforces: the
+provider's own `emailVerified` claim — today, because `trustedProviders` is absent (see
+the round-3 correction above; this is the *same* list read at `callback.mjs:98`, not an
+independent guarantee) — and `allowDifferentEmails` (kept `false`) — the OAuth account's
+email must equal the signed-in account's email, or the callback redirects with
+`?error=email_doesn't_match`. The state/PKCE/CSRF handshake for the OAuth round trip (the
+`state` param plus its double-submit `better-auth.state` cookie) is entirely
+library-managed on both ends; nothing here hand-rolls any part of it.
+
+`/link-social` and `/unlink-account` both now require a **session younger than
+`session.freshAge`** (pinned explicitly in `auth/auth.js`, 24h) — a round-2 review
+blocker finding: the library gates `/unlink-account` behind its own
+`freshSessionMiddleware` but left `/link-social` ungated, so a session stale enough to
+have lost the ability to *remove* a credential could still *add* one. `auth/auth.js`'s
+`hooks.before` mirrors the library's own check onto `/link-social`'s **initiation**, so
+both directions require an equally fresh session to *start*. **Round-3 review finding
+(minor) — this is not full symmetry:** the step that actually attaches the credential
+(`callback.mjs`'s `if (link)` branch, reached at `/callback/:id` after the OAuth round
+trip) performs no session check of its own — it acts on the signed `link` payload carried
+in OAuth `state`, independent of whether the original session is still fresh (or even
+still signed in) by the time the provider redirects back. That window is bounded by the
+state TTL (`oauth2/state.mjs`, 600 seconds) plus the double-submit state cookie and the
+`allowDifferentEmails` email match above, not by a second session-freshness check — which
+is why this is a documented bound, not an unclosed gap.
+
+Unlinking: `/unlink-account` refuses to remove an account's last remaining credential
+(`allowUnlinkingAll` stays `false` → `FAILED_TO_UNLINK_LAST_ACCOUNT`, HTTP 400) —
+server-enforced regardless of the UI. `AccountSettings.jsx` additionally disables the
+Unlink control in that state client-side (`canUnlink()` in `ui/src/account-linking.js`) so
+the control is never even clickable, not just rejected after a round trip.
+
+**Account-change notification email (round-2 review finding).** Every genuine link or
+unlink of a sign-in credential emails the account owner — the out-of-band signal for the
+account-takeover pattern the session-freshness gate above exists to close off.
+`auth/auth.js`'s `databaseHooks.account.{create,delete}.after` calls `notifyAccountChange`
+on every `auth_accounts` row create/delete:
+
+- **Trigger.** `delete.after` always means an unlink and always emails. `create.after`
+  fires for THREE different writes and only one of them is a genuine link: email/password
+  signup (`providerId: 'credential'`), OAuth signup for an email that owns no account yet
+  (`link-account.mjs`'s registration branch — same account-row shape as a link, provider
+  `'google'`/`'github'`), and an actual link onto an existing account via `/link-social` →
+  `/callback/:id`. `notifyAccountChange` distinguishes them by counting the user's total
+  `auth_accounts` rows at hook time (already including the just-committed one): `<= 1` is
+  either signup shape and sends nothing (a brand-new user has no "was this you?" question
+  to answer, and signup already gets its own verification mail); `> 1` is a genuine link
+  and sends.
+- **Content shape.** Subject `A sign-in method was {added to,removed from} your Archimedes
+  account`; body names the affected method (`Email & password`, `Google`, or `GitHub`) and,
+  for an add, tells the recipient to review Account Settings → Connected accounts and reset
+  their password if it wasn't them. Sent to the account's current email via the same mailer
+  (`auth/mailer.js`) `sendResetPassword`/`sendVerificationEmail` use — SES in deployed
+  environments, a console mailer in local compose.
+- **Failure semantics.** Fail-open for the user-facing request: better-auth itself `await`s
+  `create.after`/`delete.after` as part of the write, so an uncaught throw here would 500
+  the link/unlink it is reporting on — a notification email is not the actual security
+  control (the freshness gate and the server-side link/unlink guards are) and must not block
+  it. But never silently: both of this function's failure modes — the mailer itself
+  throwing, and not being able to resolve who to notify at all — log a shared, greppable
+  marker (`ACCOUNT_CHANGE_NOTIFY_FAILED`) so an outage is an operator-visible log line /
+  metric-filter hit, not silence indistinguishable from a mail that actually went out.
+
+The `?error=account_not_linked` message on `/sign-in` (routed there from `/`'s bare
+redirect — see routing note above) now points at this: sign in with the password, then
+link the provider under Account Settings → Connected accounts so it signs in directly next
+time (`ui/src/auth-errors.js` `oauthErrorMessage`). A second, separate map in the same
+file, `linkErrorMessage`, covers the explicit flow's own error codes
+(`email_doesn't_match`, `account_already_linked_to_different_user`, `access_denied`, and a
+generic fallback) and is rendered on Account Settings via the `error` query param the
+`/link-social` → `/callback/:id` round trip redirects back with — the same generic
+`route.error` plumbing `routes.js` already parses for every route, not a new mechanism.
+
+Both paths, and the unlink guard, are covered by real behavioral tests in
+`auth/test/auth.test.js` that drive the actual Better Auth endpoints (`auth.api.
+signInSocial`/`linkSocialAccount`/`unlinkAccount`/`listUserAccounts`) against an in-memory
+sqlite adapter, faking only the network boundary (Google's token endpoint) via a `fetch`
+mock — the authorization-URL construction, CSRF state, and linking decisions are the real
+library code. UI wiring and the `canUnlink` guard are covered in `ui/test/auth-client.test.js`,
+`ui/test/auth-errors.test.js`, and `ui/test/account-settings.test.js`.
 
 ## Wallet linking
 

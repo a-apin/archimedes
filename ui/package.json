@@ -8,7 +8,10 @@
     "build": "vite build",
     "lint": "eslint .",
     "test": "node --test",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check:orphans": "node scripts/check-orphans.mjs",
+    "check:sitemap": "node scripts/check-sitemap.mjs",
+    "check:routes": "npm run check:orphans && npm run check:sitemap"
   },
   "dependencies": {
     "@circle-fin/modular-wallets-core": "^1.0.15",

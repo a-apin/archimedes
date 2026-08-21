@@ -239,7 +239,14 @@ export default function AssetModal({ asset, onClose }) {
               {asset.realized_vol_30d != null ? asset.realized_vol_30d.toFixed(2) : '—'}
             </div>
           </div>
-          {asset.oracle_address && (
+          {/* oracle_address is a capability marker (populated whenever a deployed
+              PriceOracle contract exists for this symbol, regardless of whether
+              its price is actually being displayed — see asset_market_service.py's
+              "capability marker" comment, issue #346). Rendering it whenever it's
+              merely present implied every card with an address was oracle-priced;
+              gate on price_source === 'oracle' too, so the address only shows for
+              a card whose displayed price actually came from that oracle (#1371). */}
+          {asset.oracle_address && asset.price_source === 'oracle' && (
             <div>
               <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem' }}>Oracle address</div>
               <div className="mono" style={{ fontSize: '0.72rem', wordBreak: 'break-all' }}>

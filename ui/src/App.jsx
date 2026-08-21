@@ -87,6 +87,7 @@ export default function App() {
       paper: 'Paper Trading · Archimedes',
       'sign-in': 'Sign in · Archimedes',
       'sign-up': 'Create account · Archimedes',
+      'reset-password': 'Reset password · Archimedes',
       // resolveRoute() returns page === null for not-found, so this branch used
       // to fall through to the bare 'Archimedes' title — byte-identical to the
       // landing page, leaving a screen-reader or many-tabs user unable to tell
@@ -106,7 +107,7 @@ export default function App() {
   }, [features])
 
   if (route.kind === 'redirect') return null
-  if (route.kind === 'auth') return <AuthPage mode={route.page} />
+  if (route.kind === 'auth') return <AuthPage mode={route.page} oauthError={route.error} />
 
   if (route.kind === 'public') {
     return (

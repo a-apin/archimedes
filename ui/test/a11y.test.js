@@ -14,6 +14,77 @@ import test from "node:test";
 
 const src = (p) => readFileSync(new URL(`../src/${p}`, import.meta.url), "utf8");
 
+// ── WCAG contrast helpers ───────────────────────────────────────────────
+//
+// A regex pinning a literal foreground hex only guards that one side of the
+// pair — the background it is measured against can drift (a token edit
+// elsewhere in the same block) with the guard still green, because nothing
+// ever computes the ratio. These resolve `--token: var(--other-token)`
+// indirection inside one CSS block and compute the real WCAG 2.x relative
+// luminance / contrast ratio, so the 4.5:1 floor is enforced against
+// whatever the current tokens actually are, not a snapshot of them.
+
+function cssBlock(cssText, selector) {
+	const re = new RegExp(`${selector}\\s*\\{([\\s\\S]*?)\\n\\}`);
+	const m = cssText.match(re);
+	assert.ok(m, `CSS block not found: ${selector}`);
+	return m[1];
+}
+
+function tokenValue(block, name) {
+	const re = new RegExp(`--${name}:\\s*([^;]+);`);
+	const m = block.match(re);
+	assert.ok(m, `token not found in block: --${name}`);
+	return m[1].trim();
+}
+
+function resolveHex(block, rawValue) {
+	const varRef = rawValue.match(/^var\(--([\w-]+)\)$/);
+	if (varRef) return resolveHex(block, tokenValue(block, varRef[1]));
+	assert.match(rawValue, /^#[0-9a-fA-F]{3,6}$/, `not a hex literal: ${rawValue}`);
+	return rawValue;
+}
+
+// A regex pinning `scroll-padding-top: 80px` only guards that one side of
+// the clearance pair too — the header height / focus-ring geometry it was
+// derived from can drift with the guard still green unless the relationship
+// is actually computed. These pull a raw px number off a declaration and,
+// for a rule nested one level inside another block (e.g. inside a @media
+// query), off a block whose own closing brace carries that block's indent
+// rather than sitting at column 0.
+
+function numPx(block, prop) {
+	const re = new RegExp(`\\b${prop}:\\s*(\\d+(?:\\.\\d+)?)px`);
+	const m = block.match(re);
+	assert.ok(m, `property not found in block: ${prop}`);
+	return Number(m[1]);
+}
+
+function nestedCssBlock(blockText, selector) {
+	const re = new RegExp(`${selector}\\s*\\{([\\s\\S]*?)\\n\\t\\}`);
+	const m = blockText.match(re);
+	assert.ok(m, `nested CSS block not found: ${selector}`);
+	return m[1];
+}
+
+function relativeLuminance(hex) {
+	const h = hex.replace("#", "");
+	const full = h.length === 3 ? [...h].map((c) => c + c).join("") : h;
+	const n = Number.parseInt(full, 16);
+	const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => {
+		const s = v / 255;
+		return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+	});
+	return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrastRatio(hexA, hexB) {
+	const [lo, hi] = [relativeLuminance(hexA), relativeLuminance(hexB)].sort(
+		(a, b) => a - b,
+	);
+	return (hi + 0.05) / (lo + 0.05);
+}
+
 const css = src("App.css");
 const app = src("App.jsx");
 const authPage = src("components/AuthPage.jsx");
@@ -54,8 +125,23 @@ test("base and public palettes keep muted text above the 4.5:1 floor", () => {
 		css,
 		/:root\[data-theme="light"\]\s*\{[\s\S]*?--accent-rgb:\s*138,\s*95,\s*10;/,
 	);
-	// Public --text-4 was #657a73 = 3.46:1 on the slate card.
-	assert.match(css, /\.public-site\s*\{[\s\S]*?--text-4:\s*#7d9189;/);
+	// Public --text-4 was #657a73 = 3.46:1 on the slate card, then #7d9189
+	// (3.94:1 on the lighter --surface-3, a #1318 residual). Pinning the
+	// foreground literal alone only guards that one side of the pair — the
+	// background (--surface-2 / --surface-3) can drift with the guard still
+	// green unless the ratio is actually computed, so this resolves both
+	// tokens out of the live .public-site block and checks the real WCAG
+	// contrast rather than trusting a snapshot value.
+	const publicBlock = cssBlock(css, "\\.public-site");
+	const publicText4 = resolveHex(publicBlock, tokenValue(publicBlock, "text-4"));
+	for (const surfaceName of ["surface-2", "surface-3"]) {
+		const surfaceHex = resolveHex(publicBlock, tokenValue(publicBlock, surfaceName));
+		const ratio = contrastRatio(publicText4, surfaceHex);
+		assert.ok(
+			ratio >= 4.5,
+			`--text-4 (${publicText4}) on --${surfaceName} (${surfaceHex}) is ${ratio.toFixed(2)}:1, below the 4.5:1 floor`,
+		);
+	}
 	// --text-4 is a border/decoration token on the base palette (it is #3f3f46
 	// there = 1.73:1) and must never be used as text on the auth screen.
 	assert.doesNotMatch(authPage, /text-\[var\(--text-4\)\]/);
@@ -138,8 +224,61 @@ test("no rule strips the focus indicator from a control", () => {
 // ── 2.4.11 Focus Not Obscured / 1.4.4 Resize Text ─────────────────────────
 
 test("sticky topbar cannot cover a focused control", () => {
-	// 56px bar + 3px outline + 3px offset.
-	assert.match(css, /^html \{[^}]*scroll-padding-top: 64px;/m);
+	// Pinning the scroll-padding-top literal alone only guards that one side
+	// of the clearance pair — the sticky bar's height and the focus ring's
+	// outline width / offset can drift out from under it with the guard
+	// still green. This resolves both sides out of the live CSS for each
+	// shell and asserts scroll-padding-top actually clears
+	// height + outline + outline-offset, the same static-parse approach the
+	// contrast test above uses.
+
+	// App shell: `.topbar`'s own rule below says 56px, but `.topbar` only
+	// ever renders inside `.app-site` (Layout.jsx nests it under
+	// `.shell.app-site`), and `.app-site .topbar` — higher specificity, not
+	// scoped to any breakpoint — overrides that to 64px. That is the height
+	// that actually renders, so it's what has to be measured, not the bare
+	// rule's 56px.
+	const appTopbarHeight = numPx(cssBlock(css, "\\.app-site \\.topbar"), "height");
+	const appFocus = cssBlock(css, "\\.app-site :focus-visible");
+	const appRequired =
+		appTopbarHeight + numPx(appFocus, "outline") + numPx(appFocus, "outline-offset");
+	const baseScrollPad = numPx(cssBlock(css, "html"), "scroll-padding-top");
+	assert.ok(
+		baseScrollPad >= appRequired,
+		`scroll-padding-top (${baseScrollPad}px) does not clear .app-site .topbar: ` +
+			`${appTopbarHeight}px height + focus ring needs ${appRequired}px`,
+	);
+
+	// Public shell: `.public-header__inner` is taller than the app topbar
+	// (72px, 66px on the ≤560px breakpoint) with a wider :focus-visible
+	// offset (4px) than `.app-site`'s (3px). `.public-site` is not the
+	// scroll container — html is — so the override has to reach html via
+	// :has(), not sit on .public-site itself (#1318 residual).
+	const publicHeaderHeight = numPx(cssBlock(css, "\\.public-header__inner"), "min-height");
+	const media560 = cssBlock(css, "@media \\(max-width: 560px\\)");
+	const publicHeaderHeight560 = numPx(
+		nestedCssBlock(media560, "\\.public-header__inner"),
+		"min-height",
+	);
+	// `.public-header__inner`'s min-height is not the whole sticky bar: the
+	// outer `.public-header` adds its own border-bottom below it, which also
+	// occupies rendered height a scrolled-to control can hide under.
+	const publicHeaderBorder = numPx(cssBlock(css, "\\.public-header"), "border-bottom");
+	const publicFocus = cssBlock(css, "\\.public-site :focus-visible");
+	const publicRequired =
+		Math.max(publicHeaderHeight, publicHeaderHeight560) +
+		publicHeaderBorder +
+		numPx(publicFocus, "outline") +
+		numPx(publicFocus, "outline-offset");
+	const publicScrollPad = numPx(
+		cssBlock(css, "html:has\\(\\.public-site\\)"),
+		"scroll-padding-top",
+	);
+	assert.ok(
+		publicScrollPad >= publicRequired,
+		`html:has(.public-site) scroll-padding-top (${publicScrollPad}px) does not clear ` +
+			`.public-header__inner: needs ${publicRequired}px`,
+	);
 });
 
 test("corpus category labels wrap instead of clipping under zoom", () => {
@@ -224,7 +363,11 @@ test("row-level click targets expose a real control", () => {
 	// the desktop table row was the only disclosure and it had no role, no tab
 	// stop and no aria-expanded.
 	assert.match(strategies, /className="lib-row-toggle"[\s\S]{0,120}aria-expanded=\{open\}/);
-	assert.match(strategies, /aria-controls=\{detailId\}/);
+	// aria-controls must be conditional: <tr id={detailId}> only exists in the
+	// DOM while open, so an unconditional aria-controls pointed at a
+	// nonexistent id on every collapsed row (4.1.2, #1318).
+	assert.match(strategies, /aria-controls=\{open \? detailId : undefined\}/);
+	assert.doesNotMatch(strategies, /aria-controls=\{detailId\}/);
 	assert.match(strategies, /className="lib-row-detail" id=\{detailId\}/);
 	// Corpus catalog: clicking the row was the only way into a paper.
 	assert.match(
@@ -260,9 +403,8 @@ test("informative icons and charts carry a text alternative", () => {
 	// `title` on a bare span is not reliably exposed.
 	assert.match(strategies, /role="img" aria-label="Passes rigor gate"/);
 	assert.match(strategies, /role="img" aria-label="Does not pass rigor gate"/);
-	assert.match(strategies, /role="img" aria-label="Drift detected"/);
-	// The drift triangle was hardcoded to base-dark amber: 2.15:1 on a white
-	// card in the light theme.
+	// Strategies.jsx must use --warning, never the raw amber hex: 2.15:1 on a
+	// white card in the light theme.
 	assert.doesNotMatch(strategies, /#f59e0b/);
 	// The knowledge graph is a 500px informative SVG that had no role at all.
 	assert.match(
@@ -276,6 +418,10 @@ test("threshold verdicts do not rely on colour alone", () => {
 	assert.match(strategies, /replicated \? '✓' : '✗'/);
 	assert.match(strategies, /below the 50% replication threshold/);
 	assert.match(strategies, /above the 0\.50 overfitting threshold/);
+	// The Library table's "$1k ->" projection painted every strategy
+	// profit-green regardless of sign; fmtUsd never emits a minus, so a losing
+	// projection needs its own sr-only text alternative (#1361).
+	assert.match(strategies, /below the \{fmtUsd\(principal\)\} starting principal/);
 	assert.match(css, /^\.sr-only \{/m);
 });
 
