@@ -20,19 +20,33 @@ PRs as still open. **Both were accurate when written** — the card was authored
 (`1f3788d`), #1226 (`0d22af7`), #1201 (`ddd21fc`) and #1095 (`8abf1cd`) are all merged, and the
 2026-08-20 frontend series landed on top.
 
+> **Scope of this section vs [#1442](https://github.com/a-apin/archimedes/pull/1442).** Dan's
+> #1442 is the **dispatch state**: which work packages are out, which PRs close which partials
+> (#1379, #1401, #1439, #1441), and which cards are retired outright. This section is the
+> **verification layer**: what a `grep` finds in the tree today, and where a card's own text is
+> wrong. Read #1442 for what is being worked; read this for what is true. Where they disagree,
+> re-run the command — and one disagreement is flagged in the table below (cluster-5).
+>
+> **This section decays in days, not weeks.** `main` took 170 commits between this doc's first
+> draft and its rebase, which closed three findings outright (Engine C's cost floor,
+> `cost_model_id`-NULL, fabricated `0.0` correlations). Re-verify before acting on any row.
+
 ### Four things a session must know before picking up any card
 
-1. **The re-run already happened, ahead of its own gate — and nobody decided to run it.**
+1. **The re-run happened ahead of its gate; the gate has since closed behind it.**
    [cluster-1](cluster-1-cost-ssot.md) makes a passing cost-parity test the sole authorisation
-   for [the re-run](a6-rerun.md) ("do not run it anyway"). The real A6 blocker turned out to be
-   none of the card's three hypotheses — it was `PermissionError` on a read-only packaged
-   artifact dir on Fargate, at the artifact write that *precedes* the DB insert, so every
-   computed backtest was being discarded. Fixed 2026-08-18 (`8e6554c`), after which **the armed
-   in-app scheduler self-healed the leaderboard** (`backtest_scheduler.py`, default on, 168h max
-   age). Fresh curated rows reached prod 2026-08-19/20 with **Engine C still charging commission
-   only** — the cost floor is identical across two of three engines. Nobody overrode the gate;
-   automation nobody disarmed walked past it. [cluster-2](cluster-2-fusion-engine.md)'s A1c is
-   what closes it, and it is unstarted. **This is the sprint's open honesty debt.**
+   for [the re-run](a6-rerun.md) ("do not run it anyway"). The real A6 blocker was none of the
+   card's three hypotheses — it was `PermissionError` on a read-only packaged artifact dir on
+   Fargate, at the artifact write that *precedes* the DB insert, so every computed backtest was
+   discarded. Fixed 2026-08-18 (`8e6554c`), after which the armed in-app scheduler self-healed
+   the leaderboard: fresh curated rows reached prod 2026-08-19/20 with Engine C still charging
+   commission only. **`4f60971` (2026-08-20) then put Engine C on the cost floor** — slippage at
+   `fusion_evaluator.py:230-232` and `:393-395`, `cost_model_id` stamped on fusion rows, and
+   `test_cost_parity.py` now exercises engine C directly. So the floor is complete now, but it
+   completed *after* those rows published. **The residual is whether the curated rows on the
+   board predate `4f60971`** — if they do, they were graded on a two-of-three floor and need a
+   re-grade or a re-run. That cannot be settled from this repo; check
+   `backtest_results.cost_model_id` on prod against the post-`4f60971` fingerprint.
 2. **`POST /api/rigor/verify` can answer `passes: true` on four bars.** Shipped via #1305
    (2026-08-19), ahead of and overlapping [cluster-8](cluster-8-returns-csv.md). `passes` is
    `all(...)` over *evaluable* legs only, and PBO plus look-ahead are hard-coded
@@ -66,12 +80,12 @@ fraction here as an upper bound on completeness.
 | Session | Card | Status | What is actually left |
 |---|---|---|---|
 | 1 | [cluster-0](cluster-0-unblock.md) | **code done, asks unmet** (23/37) | **Ask 1 did not just go unsent — it was overtaken.** #1129 and #1200 both changed `contracts/src/Vault.sol` (fee caps; NAV decimals + performance-fee share mint) and merged 2026-08-19/20 with **zero human reviews** — every review on #1129 is `copilot-pull-request-reviewer[bot]`, state `COMMENTED`, none `APPROVED`. `CLAUDE.md` makes Dan the sole required approver for contract changes. Raise this before any further contract merge. Also: PyPI `archimedes-cli` unreserved · `PAYMENTS_DRY_RUN` pinned in `ecs.tf` only, still unset in all three compose files and `infra/scripts/setup-ssm-secrets.sh`. A6 is **no longer blocked** — diagnosed 2026-08-18, do not re-run it |
-| 2 | [cluster-1](cluster-1-cost-ssot.md) | **2 of 3 engines** (12/21) | All three code edits landed in `5c601fb`. Engine C untouched, so "identical floor everywhere" is not yet true. 3 of 6 test asks unwritten |
-| 2 | [cluster-3](cluster-3-backtest-models.md) | **mostly done** (13/20) | A7 shipped in full — the sprint's cleanest win. `cost_model_id` still persists NULL from two of three writers, so the Done-when clause fails; provenance fields are declared on `StrategyResponse` but never assigned, and absent from `leaderboard_schemas.py` and all UI |
-| 3 | [cluster-2](cluster-2-fusion-engine.md) | **barely started** (9/21) | A1c, A4, the whole A8 label, all three tests. Only A7-adapter is satisfied — and it already was when the card was written. **Highest-leverage remaining work in the sprint** |
+| 2 | [cluster-1](cluster-1-cost-ssot.md) | **done** | Code edits landed in `5c601fb`; `4f60971` closed the Engine C leg and the test gap. "Identical floor everywhere" is now true. Audited at 12/21 before that commit — re-read the row above, not the fraction |
+| 2 | [cluster-3](cluster-3-backtest-models.md) | **done at the DB, open at the surface** | A7 shipped in full — the sprint's cleanest win. `4f60971` closed the `cost_model_id`-NULL and fabricated-`0.0`-correlation gaps (both now `None`, with `portfolio_backtester.py:447` no longer defaulting `correlation_to_spy` to `0.0`). What remains is surfacing: provenance fields are declared on `StrategyResponse` but never assigned, and absent from `leaderboard_schemas.py` and all UI |
+| 3 | [cluster-2](cluster-2-fusion-engine.md) | **A1c done, rest open** | `4f60971` landed A1c. Still open: A4 (the dead `backtest_start` condition at `:277`, and `:430` fabricating `date(2004, 1, 2)`) and the whole A8 sleeve label — `dsl-fusion-sleeves` / `n_independent_sleeves_equal_weight` are still absent tree-wide, so an "inverse-vol 5-asset" generated strategy is still graded as N independent 100%-long sleeves with no disclosure on the row |
 | 4 | [cluster-4](cluster-4-strategies-route.md) | **partial** (9/19) | Both A3 items landed 2026-08-20 (`757341a`, `14db21d`) by a different design — there is no `metrics_source` field anywhere. §3 TODO markers and §4 the unmetered generate endpoint untouched |
 | 5 | [a6-rerun](a6-rerun.md) | **executed, prerequisites skipped** (12/26) | The A4 read-path fix was not taken and its stated window ("the one moment in the year") has closed; the A5 fetch memo was never threaded (`run_backtests.py` passes no `fetcher`); **the before/after table — the card's named deliverable — does not exist**; rejection-rate copy never written |
-| 6–8 | [cluster-5](cluster-5-meter.md) | **barely started** (9/48) | No `metering.py`, `Principal`, SKUs, reserve/commit/release, or `METER_ENFORCE`. #1199 was closed independently by #1194 — which breaches this card's first anti-goal, since `GenerationQuota.peek` now backs the CLI's `meter` on the same one-way INCR. B5's silent model downgrade is **still live** (`generate_routes.py:193`) |
+| 6–8 | [cluster-5](cluster-5-meter.md) | **retired, with one live tail** (9/48) | #1442 retires this card (#1194 + #1296/#1300 rebuilt the space; refund/release is now #1441) and that reading is right about the metering design. **One item it does not cover: B5's silent model downgrade is still live** at `generate_routes.py:335` — an entitled premium request is still downgraded to the env default, and #1441 is about refund/release, not this. Either fix it or track it before the card is closed |
 | 6–8 | [cluster-6](cluster-6-boot-paywall.md) | **barely started** (7/31) | An x402 generation paywall **shipped** 2026-08-19 (`ab712a1`), flag-off in prod — so the card's premise that no route emits a satisfiable 402 is false. **Neither boot assertion exists**, and `GATEWAY_CHAIN` still silently falls back to `arcTestnet` in three places. A live paywall with no mainnet-chain guard is the dangerous half of this card. No `/api/v1/`, no manifest-honesty edits |
 | 9 | [cluster-8](cluster-8-returns-csv.md) | **barely started** (11/53) | None of the specified deliverable: no `returns_import.py`, no `/api/v1/rigor/verdict`, no CSV transport, none of the eight validations, no test file. #1305's overlapping endpoint breaches two prohibitions — see item 2 above and A1 (gate compute runs on the event loop, not `asyncio.to_thread`) |
 | 10 | [cluster-7](cluster-7-ui-surface.md) | **barely started** (14/38) | `sitemap.xml` is the one clean win. A9/A10 are **product reversals**: the card says keep /portfolio and /marketplace live with a banner; #1266 hid them instead. All five orphan deletions untouched — `FusionResult.jsx` (198L) is being *actively maintained while orphaned*, `PortfolioAdvisor.jsx` (477L) leaves `/api/strategies/advisor` with no consumer. No `WorkInProgress.jsx`, so A4/A8/A10 have no banner to render. All three check scripts missing |
@@ -83,14 +97,19 @@ fraction here as an upper bound on completeness.
    this directory.** The Aug-16 note claiming the anchors were "re-verified 6/6 fresh — trust
    them" was retired 2026-08-21: every rule-2 count had drifted and two anchors named a file
    that has never existed.
-2. **Never read whole** — counts as of 2026-08-21: `strategies_routes.py` (2547) ·
-   `Architecture.jsx` (1322) · `rigor_evaluator.py` (1246) · `_rigor_helpers.py` (1176, under
-   `services/`, not `api/`) · `main.py` (861) · `fusion_evaluator.py` (856).
-   **`portfolio_backtester.py` has left this list** — `c02d5fa` (2026-08-18) cut it 1180 → 683,
+2. **Never read whole** — counts at `f3d4103` (2026-08-21): `strategies_routes.py` (2621) ·
+   `Architecture.jsx` (1329) · `rigor_evaluator.py` (1246) · `_rigor_helpers.py` (1176, under
+   `services/`, not `api/`) · `main.py` (928) · `fusion_evaluator.py` (884).
+   **`portfolio_backtester.py` has left this list** — `c02d5fa` (2026-08-18) cut it 1180 → 694,
    so it is readable whole and cluster-1's "window-read only" note on it is moot.
+   These drift by tens of lines per day; re-measure rather than cite.
 3. **One cluster per session.** Do not drift into an adjacent item because it is nearby.
 4. **Test narrow:** `pytest backend/tests/test_<module>.py -q`. Full suite once, pre-merge.
-5. **No subagents, no workflows.** No discovery left to parallelize.
+5. ~~**No subagents, no workflows.**~~ **Superseded** by the owner's execution-style call
+   (Dan, 2026-08-20, recorded in [#1442](https://github.com/a-apin/archimedes/pull/1442)):
+   rules 5 and 7 were written for a solo token-constrained session and do not bind sessions
+   running the repo's parallel-agent pipeline (CLAUDE.md § parallel agent fan-out). Rule 6's
+   anti-goals stay in force.
 6. **Universal anti-goals:** no vitest/playwright · no `python-multipart` · no server-side user
    Python · no DSL-JSON upload · don't delete `_run_fusion_job` · don't repair QuantLab's mocks ·
    no KB pipeline · no distributed meter reaper · don't un-pin `circlekit` · no vectorbt.
@@ -100,14 +119,12 @@ fraction here as an upper bound on completeness.
    `ui/src/App.jsx:13` (the #1194 auth boundary, `e76c1c7`), and `Architecture.jsx` was
    effectively rewritten (896 → 1322 lines, +750/−324 whitespace-insensitive) by eight
    claim-integrity commits on 2026-08-19/20.
-7. **Merge discipline — breached; settle it with Dan before relying on it.** The rule reads max
-   2 merges/day, ≥40 min apart, `/health` verified between. Actual: 21 merges 2026-08-18, 34 on
-   08-19, 58 on 08-20 (`git log --merges --since=2026-08-16 --format=%ad --date=short | sort |
-   uniq -c`; a `Merge pull request` subject count agrees within 2, so the order of magnitude
-   holds even though CI clones here are shallow with grafted roots). Either it is dead or the
-   sprint is running blind on deploy verification — and
-   #1346 (deploy starvation from a fast merge train) and #1309 (~2-minute 502 per deploy) are
-   exactly the failure modes it existed to prevent. Both still open.
+7. ~~**Merge discipline: max 2 merges/day.**~~ **Superseded by the same 2026-08-20 call** — see
+   rule 5. For the record of what it was measuring: 21 merges landed 2026-08-18, 34 on 08-19,
+   58 on 08-20, and `main` took 170 commits in the day to 2026-08-21 alone. The two failure
+   modes the rule was written against are still open issues — #1346 (deploy starvation from a
+   fast merge train) and #1309 (~2-minute 502 window per deploy) — so the *risk* it named is
+   real even though the *rule* is retired; treat those as issues to fix, not a cadence to obey.
 
 ## Corrections to the cards
 
@@ -124,7 +141,6 @@ Substantive errors only. Line drift is pervasive and rule 1 handles it.
 | cluster-2 | A8 rename to `dsl-fusion-sleeves` | `_SEARCH_TRACKED_ENGINES` (`selection_bias_routes.py:605`) matches the literal `"dsl-fusion"`; a bare rename breaks num-trials attribution |
 | cluster-3 | `look_ahead_audit_passed` is the OR of a real AST audit and a broker-config check | **Neither leg is the AST audit.** `cli.py:378` reduces the same field with `all(...)`, so the OR compares a value against a reduction of itself. The real AST audit is never invoked on this path. Shipped as disclosure (`look_ahead_audit_source`), flag flip deferred to the re-run — which has now passed |
 | cluster-3 | Done-when: `grep passes_rigor_gate models/backtest.py` is empty | Contradicts the card's own ask for a retraction comment containing that string. Trust `test_gate_equivalence.py` instead |
-| cluster-3 | A4-part ends fabricated `0.0` correlations | Fixed at the mapper (`:271-272`), but `generation_pipeline.py:1625-1626` hard-codes both and `portfolio_backtester.py:473` hard-codes `correlation_to_btc`. Worse, `:442` initialises `correlation_to_spy = 0.0` before the `:452` compute, so a failed computation is indistinguishable from a measured zero |
 | cluster-4 | `pytest backend/tests/test_live_rigor_gate.py` | No such file. Coverage is in `test_gate_equivalence.py`, `test_live_gate_returns.py`, `test_rigor_evaluator.py`, `test_strategies_routes.py` |
 | cluster-5 | `enforce_generation_quota()` opens `if wallet: return`, so the cap never applies | Inverted. Rebuilt for #1194: `(request, user_id)`, no bypass, stacked user+IP day caps (10/20). `WALLET_LESS_GENERATION_DAILY_CAP` no longer exists |
 | cluster-5 | Proof test: an N+1 route test reads as unlimited today | `generate_routes.py:144` skips enforcement when `TESTING` is set, so such a test passes against unfixed code — the exact trap CLAUDE.md § *a test that passes against the unfixed code proves nothing* warns about |
