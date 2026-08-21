@@ -13,9 +13,12 @@ Purpose: one card per session instead of a 45k-token plan re-read.
 
 Cards are committed (`16324bd`, PR #1238) and indexed in [`docs/README.md`](../README.md).
 The Aug-16 State section this replaces claimed *"zero sprint work has landed"* and listed four
-PRs as still open. Both were already wrong when written and are thoroughly wrong now: four
-sprint commits landed 2026-08-16 (`5c601fb`, `d7073f1`, `ba102c3`, `5327dbf`), and #1224
-(`1f3788d`), #1226 (`0d22af7`), #1201 (`ddd21fc`) and #1095 (`8abf1cd`) are all merged.
+PRs as still open. **Both were accurate when written** — the card was authored 2026-08-16
+00:18 +0300, and the four sprint commits (`5327dbf` 00:27, `5c601fb` 00:39, `d7073f1` 00:46,
+`ba102c3` 01:09) were written later that same night on sibling branches, reaching `main` only on
+2026-08-18 via #1238 and #1242. They are stale now, not wrong then: that work is in, #1224
+(`1f3788d`), #1226 (`0d22af7`), #1201 (`ddd21fc`) and #1095 (`8abf1cd`) are all merged, and the
+2026-08-20 frontend series landed on top.
 
 ### Four things a session must know before picking up any card
 
@@ -54,12 +57,15 @@ sprint commits landed 2026-08-16 (`5c601fb`, `d7073f1`, `ba102c3`, `5327dbf`), a
 
 Verified against source at `0057518`, 2026-08-21, by an 11-way item-level audit. Fractions are
 that audit's own decomposition (acceptance clauses, anti-goals and test asks counted
-separately) — a shape, not a score. Adversarial re-verification of the DONE claims was still
-running when this was written; treat single-source DONEs as strong-but-unconfirmed.
+separately) — a shape, not a score. Adversarial re-verification reached 3 of 11 cards before
+running out of budget and **overturned 16 claims, every one in the less-complete direction**
+(including this section's own first draft, which wrongly called the Aug-16 State section
+inaccurate). Treat the un-reverified cards' DONEs as strong-but-unconfirmed, and read every
+fraction here as an upper bound on completeness.
 
 | Session | Card | Status | What is actually left |
 |---|---|---|---|
-| 1 | [cluster-0](cluster-0-unblock.md) | **code done, asks open** (23/37) | Asks to Dan ~1 of 7 · PyPI `archimedes-cli` unreserved · `PAYMENTS_DRY_RUN` pinned in `ecs.tf` only, still unset in all three compose files and `setup-ssm-secrets.sh`. A6 is **no longer blocked** — diagnosed 2026-08-18, do not re-run it |
+| 1 | [cluster-0](cluster-0-unblock.md) | **code done, asks unmet** (23/37) | **Ask 1 did not just go unsent — it was overtaken.** #1129 and #1200 both changed `contracts/src/Vault.sol` (fee caps; NAV decimals + performance-fee share mint) and merged 2026-08-19/20 with **zero human reviews** — every review on #1129 is `copilot-pull-request-reviewer[bot]`, state `COMMENTED`, none `APPROVED`. `CLAUDE.md` makes Dan the sole required approver for contract changes. Raise this before any further contract merge. Also: PyPI `archimedes-cli` unreserved · `PAYMENTS_DRY_RUN` pinned in `ecs.tf` only, still unset in all three compose files and `infra/scripts/setup-ssm-secrets.sh`. A6 is **no longer blocked** — diagnosed 2026-08-18, do not re-run it |
 | 2 | [cluster-1](cluster-1-cost-ssot.md) | **2 of 3 engines** (12/21) | All three code edits landed in `5c601fb`. Engine C untouched, so "identical floor everywhere" is not yet true. 3 of 6 test asks unwritten |
 | 2 | [cluster-3](cluster-3-backtest-models.md) | **mostly done** (13/20) | A7 shipped in full — the sprint's cleanest win. `cost_model_id` still persists NULL from two of three writers, so the Done-when clause fails; provenance fields are declared on `StrategyResponse` but never assigned, and absent from `leaderboard_schemas.py` and all UI |
 | 3 | [cluster-2](cluster-2-fusion-engine.md) | **barely started** (9/21) | A1c, A4, the whole A8 label, all three tests. Only A7-adapter is satisfied — and it already was when the card was written. **Highest-leverage remaining work in the sprint** |
@@ -97,7 +103,9 @@ running when this was written; treat single-source DONEs as strong-but-unconfirm
 7. **Merge discipline — breached; settle it with Dan before relying on it.** The rule reads max
    2 merges/day, ≥40 min apart, `/health` verified between. Actual: 21 merges 2026-08-18, 34 on
    08-19, 58 on 08-20 (`git log --merges --since=2026-08-16 --format=%ad --date=short | sort |
-   uniq -c`). Either it is dead or the sprint is running blind on deploy verification — and
+   uniq -c`; a `Merge pull request` subject count agrees within 2, so the order of magnitude
+   holds even though CI clones here are shallow with grafted roots). Either it is dead or the
+   sprint is running blind on deploy verification — and
    #1346 (deploy starvation from a fast merge train) and #1309 (~2-minute 502 per deploy) are
    exactly the failure modes it existed to prevent. Both still open.
 
