@@ -97,7 +97,7 @@ resource "aws_cloudwatch_metric_alarm" "alb_latency_high" {
   # p50 (median) tracks systemic slowness of ordinary requests instead, and
   # three sustained periods ride out deploy cold-starts.
   alarm_name          = "${var.project_name}-alb-target-latency-high"
-  alarm_description   = "p95 backend response time > 2s for 10 min."
+  alarm_description   = "Median (p50) backend response time > 1.5s for 15 min."
   namespace           = "AWS/ApplicationELB"
   metric_name         = "TargetResponseTime"
   extended_statistic  = "p50"
