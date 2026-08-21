@@ -558,11 +558,13 @@ test("Generate.jsx: the no-receipt success copy is honest — never claims settl
 
 test("Generate.jsx: one-click payment — deposit folds into the single pay flow (2026-08-21 UX fix)", () => {
 	// The separate "Approve & deposit" button is retired: ONE control runs
-	// fresh-402 → deposit-if-short → sign → start, narrating each step.
+	// the whole flow, narrating each step. (The click-time refetch moved to
+	// the not-yet-funded branch only — the funded tap signs with held
+	// requirements so WebKit's activation survives; see
+	// webauthn-activation.test.js.)
 	assert.doesNotMatch(generate, /Approve & deposit/);
 	assert.match(generate, /handlePayAndGenerate/);
-	assert.match(generate, /const fresh = await refreshPaymentRequirements\(\)/);
-	assert.match(generate, /Step 1 of 3/);
+	assert.match(generate, /const fresh = held \?\? \(await refreshPaymentRequirements\(\)\)/);
 	assert.match(generate, /one-time\s+deposit covers many generations/);
 });
 

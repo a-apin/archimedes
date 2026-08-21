@@ -141,6 +141,12 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// option) — see ../generateQuote.js's derivePaymentRequirements. Null
 	// until a 402 lands.
 	const [paymentRequirements, setPaymentRequirements] = useState(null);
+	// When the active requirements were parsed. WebKit refuses a WebAuthn
+	// ceremony after any await chain, so the pay tap must sign with HELD
+	// requirements, not refetched ones — this timestamp bounds how old a
+	// held set may be before we refetch anyway (the server window is 7
+	// days, #1452; the cap only guards a config change under an idle tab).
+	const [paymentRequirementsAt, setPaymentRequirementsAt] = useState(0);
 	// The 402 body's OWN quote ({price, asset, chain, dry_run, ...}) —
 	// captured independently of the upfront GET /api/generate/quote fetch so
 	// the payment step can show a price even when GENERATION_QUOTE_ENABLED
@@ -268,6 +274,20 @@ export default function Generate({ onNavigate, onStageChange }) {
 		};
 	}, [paymentRequirements, walletAddr, payerMismatch]);
 
+	// True exactly when the payment panel renders its own pay button — the
+	// main submit button hides then, so precisely ONE button is on screen
+	// (Dan's 2026-08-21 field report: "Pay & generate" next to "Approve &
+	// Generate" is redundant and confusing). Every other panel branch keeps
+	// the main button as the retry control after the user fixes the
+	// connect/link condition it describes.
+	const payPanelReady =
+		(paymentStatus === PAYMENT_STATUS.DRY_RUN ||
+			paymentStatus === PAYMENT_STATUS.LIVE_UNAVAILABLE) &&
+		!paymentRequirements?.error &&
+		!!walletAddr &&
+		!payerMismatch &&
+		walletSupportsPayment();
+
 	// ── Build the /start request body. No payment field on it anywhere —
 	// the ratified contract (#1296) gates entirely via status codes/headers,
 	// not a request-body field (the PROPOSED contract's quote_id is dead). ──
@@ -306,6 +326,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 		setPaymentStatus(PAYMENT_STATUS.NONE);
 		setPaymentMessage("");
 		setPaymentRequirements(null);
+		setPaymentRequirementsAt(0);
 		setPaywallQuoteRaw(null);
 		setGatewayBalance(null);
 		setDepositError("");
@@ -344,6 +365,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 					// IS the human version of that instruction; rendering both was
 					// pure noise (Dan's 2026-08-21 field report).
 					setPaymentRequirements(derivePaymentRequirements(extractPaymentRequiredHeader(e.headers)));
+					setPaymentRequirementsAt(Date.now());
 				} else {
 					setPaymentMessage(paymentErrorMessage(e));
 				}
@@ -356,10 +378,12 @@ export default function Generate({ onNavigate, onStageChange }) {
 	};
 
 	// One-click pay step ("idle" | "refreshing" | "approving" | "depositing"
-	// | "signing" | "starting") — drives the single button's label so the
-	// user watches ONE control narrate the whole flow instead of juggling a
-	// deposit button and a pay button (Dan's 2026-08-21 field report:
-	// "redundant, confusing" — this is the fix).
+	// | "signing" | "starting" | "confirm") — drives the single button's
+	// label so the user watches ONE control narrate the whole flow instead
+	// of juggling a deposit button and a pay button (Dan's 2026-08-21 field
+	// report: "redundant, confusing" — this is the fix). "confirm" = a
+	// signature is ready to be requested but the browser needs a fresh tap
+	// to open the prompt (WebKit activation rules, or the user cancelled).
 	const [payStep, setPayStep] = useState("idle");
 
 	// Re-fetch a FRESH 402 at click time. Requirements parsed from an earlier
@@ -380,20 +404,79 @@ export default function Generate({ onNavigate, onStageChange }) {
 			const fresh = derivePaymentRequirements(extractPaymentRequiredHeader(e.headers));
 			if (!fresh?.requirements) throw e;
 			setPaymentRequirements(fresh);
+			setPaymentRequirementsAt(Date.now());
 			setPaywallQuoteRaw(e?.detail?.quote ?? null);
 			return fresh;
 		}
 	};
 
-	// ── One-click: fresh 402 → deposit if short → sign → start ──
+	// True when the browser refused to OPEN the signing prompt because the
+	// tap's transient user activation was already consumed by earlier awaits
+	// (ox Authentication.SignFailedError, surfaced verbatim as "Failed to
+	// request credential." in Dan's 2026-08-21 field test — the deposit
+	// prompt, close to the tap, succeeded; the payment prompt after the
+	// deposit's confirmation wait was refused every time, iPad and Mac
+	// alike). Not a wallet failure: the fix is a fresh tap that reaches the
+	// ceremony first.
+	const isActivationRefusal = (e) =>
+		e?.name === "Authentication.SignFailedError" ||
+		/failed to request credential/i.test(e?.message || "") ||
+		/failed to request credential/i.test(e?.cause?.message || "");
+
+	// Requirements already held in page state are signable without a
+	// click-time refetch while younger than this — the refetch was #1459's
+	// staleness guard, but awaiting it before the signature is exactly what
+	// kills the WebAuthn ceremony on WebKit. 10 minutes is far inside the
+	// 7-day validity window (#1452) while still bounding how long a server
+	// config change can sit unnoticed under an idle tab.
+	const REQUIREMENTS_FRESH_MS = 10 * 60 * 1000;
+	const heldSignableRequirements = () => {
+		const held = paymentRequirements;
+		if (!held?.requirements) return null;
+		if (Date.now() - paymentRequirementsAt > REQUIREMENTS_FRESH_MS) return null;
+		return held;
+	};
+
+	const finishStart = async (header) => {
+		setPayStep("starting");
+		const { receipt: settledReceipt } = await submitStart({ "Payment-Signature": header });
+		resetPaymentStepState();
+		setNoSettlementNotice(!settledReceipt);
+		if (GENERATION_QUOTE_ENABLED) fetchQuote();
+	};
+
+	// ── One tap when funded: the signing ceremony runs FIRST, inside the
+	// tap's activation, against held requirements and the held balance.
+	// Deposit-needed taps run refetch → deposit (its prompt is close enough
+	// to the tap to survive), then TRY to finish; a browser that refuses
+	// the second ceremony arms payStep "confirm" so the next tap gives the
+	// payment signature its own activation. ──
 	const handlePayAndGenerate = async () => {
 		setPaying(true);
 		setPaymentMessage("");
 		setDepositError("");
 		try {
+			const held = heldSignableRequirements();
+			const funded =
+				held != null &&
+				requiredAmountRaw != null &&
+				gatewayBalance != null &&
+				gatewayBalance >= requiredAmountRaw;
+			if (funded) {
+				// NOTHING may be awaited between the tap and this call.
+				setPayStep("signing");
+				const header = await signGatewayPayment({
+					requirements: held.requirements,
+					resource: held.resource,
+					x402Version: held.x402Version,
+					payerAddress: walletAddr,
+				});
+				await finishStart(header);
+				return;
+			}
 			setPayStep("refreshing");
-			const fresh = await refreshPaymentRequirements();
-			if (!fresh) return; // started without payment
+			const fresh = held ?? (await refreshPaymentRequirements());
+			if (!fresh) return; // started without payment (paywall off)
 			const req = fresh.requirements;
 			const need = BigInt(req.amount);
 			let bal = await getGatewayBalance(req, walletAddr);
@@ -409,24 +492,35 @@ export default function Generate({ onNavigate, onStageChange }) {
 				setGatewayBalance(bal);
 			}
 			setPayStep("signing");
-			const header = await signGatewayPayment({
-				requirements: req,
-				resource: fresh.resource,
-				x402Version: fresh.x402Version,
-				payerAddress: walletAddr,
-			});
-			setPayStep("starting");
-			const { receipt: settledReceipt } = await submitStart({ "Payment-Signature": header });
-			resetPaymentStepState();
-			setNoSettlementNotice(!settledReceipt);
-			if (GENERATION_QUOTE_ENABLED) fetchQuote();
+			let header;
+			try {
+				header = await signGatewayPayment({
+					requirements: req,
+					resource: fresh.resource,
+					x402Version: fresh.x402Version,
+					payerAddress: walletAddr,
+				});
+			} catch (e) {
+				if (isActivationRefusal(e)) {
+					// Deposit landed; the browser just needs a fresh tap for
+					// the payment prompt. Not an error state.
+					setPayStep("confirm");
+					return;
+				}
+				throw e;
+			}
+			await finishStart(header);
 		} catch (e) {
-			setPaymentMessage(
-				paymentErrorMessage(e, e?.shortMessage || e?.message || "Payment failed — try again."),
-			);
+			if (isActivationRefusal(e)) {
+				setPayStep("confirm");
+			} else {
+				setPaymentMessage(
+					paymentErrorMessage(e, e?.shortMessage || e?.message || "Payment failed — try again."),
+				);
+			}
 		} finally {
 			setPaying(false);
-			setPayStep("idle");
+			setPayStep((s) => (s === "confirm" ? s : "idle"));
 		}
 	};
 
@@ -953,14 +1047,16 @@ export default function Generate({ onNavigate, onStageChange }) {
 											{payStep === "refreshing"
 												? "Checking price…"
 												: payStep === "approving"
-													? "Step 1 of 3 — approve USDC in your wallet…"
+													? "Approve USDC in your wallet…"
 													: payStep === "depositing"
-														? "Step 2 of 3 — depositing into Gateway…"
+														? "Depositing into Gateway…"
 														: payStep === "signing"
-															? "Step 3 of 3 — sign the payment…"
+															? "Sign the payment in your wallet…"
 															: payStep === "starting"
 																? "Starting generation…"
-																: `Pay ${fmtUsd(effectiveQuoteView?.price) ?? ""} & generate →`}
+																: payStep === "confirm"
+																	? `Tap to approve the ${fmtUsd(effectiveQuoteView?.price) ?? ""} payment →`
+																	: `Pay ${fmtUsd(effectiveQuoteView?.price) ?? ""} & generate →`}
 										</button>
 										{(gatewayBalance == null ||
 											(requiredAmountRaw != null && gatewayBalance < requiredAmountRaw)) && (
@@ -1018,20 +1114,22 @@ export default function Generate({ onNavigate, onStageChange }) {
 							<div />
 						)}
 						</div>
-						<button
-							className="btn btn-primary"
-							onClick={startJob}
-							disabled={starting || !intent.trim() || !quoteReady}
-							aria-describedby={
-								!intent.trim() ? "generate-submit-hint" : undefined
-							}
-						>
-							{starting
-								? "Starting…"
-								: GENERATION_QUOTE_ENABLED
-									? "Approve & Generate →"
-									: "Generate →"}
-						</button>
+						{!payPanelReady && (
+							<button
+								className="btn btn-primary"
+								onClick={startJob}
+								disabled={starting || !intent.trim() || !quoteReady}
+								aria-describedby={
+									!intent.trim() ? "generate-submit-hint" : undefined
+								}
+							>
+								{starting
+									? "Starting…"
+									: GENERATION_QUOTE_ENABLED
+										? "Approve & Generate →"
+										: "Generate →"}
+							</button>
+						)}
 					</div>
 					{/* The submit button is disabled until a brief exists; state the
 					    cause rather than leaving the form looking stuck (3.3.1). */}
