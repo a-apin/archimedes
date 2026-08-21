@@ -65,6 +65,10 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "alb_unhealthy_hosts" {
+  # RE-TUNED 2026-08-21 (10 transitions/night): a rolling deploy's draining
+  # task can read unhealthy for >3 minutes — 5 sustained minutes separates
+  # real outages from every deploy. 5xx-count (zero false fires) remains the
+  # fast tripwire.
   alarm_name          = "${var.project_name}-alb-unhealthy-hosts"
   alarm_description   = "One or more backend targets are unhealthy."
   namespace           = "AWS/ApplicationELB"
@@ -73,7 +77,8 @@ resource "aws_cloudwatch_metric_alarm" "alb_unhealthy_hosts" {
   comparison_operator = "GreaterThanThreshold"
   threshold           = 0
   period              = 60
-  evaluation_periods  = 3
+  evaluation_periods  = 5
+  datapoints_to_alarm = 5
   dimensions = {
     LoadBalancer = aws_lb.main.arn_suffix
     TargetGroup  = aws_lb_target_group.backend.arn_suffix
@@ -85,15 +90,22 @@ resource "aws_cloudwatch_metric_alarm" "alb_unhealthy_hosts" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "alb_latency_high" {
+  # RE-TUNED 2026-08-21 (36 state transitions in one night): p95 of
+  # TargetResponseTime is structurally contaminated here — SSE generation
+  # streams legitimately run 300s+, so at low traffic p95 EQUALS the stream
+  # duration whenever anyone generates, and a 2s threshold cycles forever.
+  # p50 (median) tracks systemic slowness of ordinary requests instead, and
+  # three sustained periods ride out deploy cold-starts.
   alarm_name          = "${var.project_name}-alb-target-latency-high"
   alarm_description   = "p95 backend response time > 2s for 10 min."
   namespace           = "AWS/ApplicationELB"
   metric_name         = "TargetResponseTime"
-  extended_statistic  = "p95"
+  extended_statistic  = "p50"
   comparison_operator = "GreaterThanThreshold"
-  threshold           = 2
+  threshold           = 1.5
   period              = 300
-  evaluation_periods  = 2
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
   dimensions = {
     LoadBalancer = aws_lb.main.arn_suffix
     TargetGroup  = aws_lb_target_group.backend.arn_suffix
@@ -276,12 +288,13 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx_rate_high" {
   alarm_description   = "Backend 5xx rate > 1% of requests for 5 min."
   comparison_operator = "GreaterThanThreshold"
   threshold           = 1
-  evaluation_periods  = 1
+  evaluation_periods  = 3
+  datapoints_to_alarm = 2
   treat_missing_data  = "notBreaching"
 
   metric_query {
     id          = "error_rate"
-    expression  = "100 * (m5xx / IF(reqs > 0, reqs, 1))"
+    expression  = "IF(reqs >= 50, 100 * m5xx / reqs, 0)" # min-traffic guard: rate is meaningless under 50 req/5min (re-tuned 2026-08-21, 8 transitions/night)
     label       = "5xx error rate (%)"
     return_data = true
   }
