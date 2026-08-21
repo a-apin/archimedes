@@ -567,6 +567,11 @@ resource "aws_ecs_task_definition" "backend" {
         # docs repo, business-model refresh §3a).
         { name = "GENERATION_PRICE_USD", value = "2.00" },
         { name = "GENERATION_PAYMENT_RECIPIENT", value = var.generation_payment_recipient },
+        # The recipient DCW's Circle wallet id — an identifier (the API key +
+        # entity secret in SSM are the credentials), needed so the revenue
+        # sweep (services/revenue_sweep.py) can sign Gateway withdrawals.
+        # Sweep stays OFF until REVENUE_SWEEP_ENABLED=true is added here.
+        { name = "REVENUE_WALLET_ID", value = "af3e1cf6-76a3-55db-911a-b356860058e4" },
         # KNOWN GAP #2 (see file header): these three paths have no Fargate
         # equivalent of the docker-compose host bind mount yet.
         { name = "ARCHIMEDES_STRATEGIES_DIR", value = "/app/analytics-engine/strategies" },
