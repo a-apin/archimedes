@@ -9,6 +9,7 @@ import test from "node:test";
 
 const x402 = readFileSync(new URL("../src/x402.js", import.meta.url), "utf8");
 const generate = readFileSync(new URL("../src/components/Generate.jsx", import.meta.url), "utf8");
+const config = readFileSync(new URL("../src/config.js", import.meta.url), "utf8");
 
 test("no-wallet branch offers the connect flow, not a dead end (#1298)", () => {
 	// The old copy told users to use a wallet without offering one — gone.
@@ -35,4 +36,11 @@ test("circle passkey wallets sign and deposit instead of being refused (#1298)",
 
 test("payment errors surface the wallet's own words (#1298)", () => {
 	assert.match(generate, /e\?\.shortMessage \|\| e\?\.message/);
+});
+
+test("wallet_addEthereumChain declares a non-empty block explorer (#1298 MetaMask validation)", () => {
+	// MetaMask/Brave reject blockExplorerUrls: [] outright — the add-chain
+	// call must carry the real explorer or omit the key entirely.
+	assert.doesNotMatch(config, /blockExplorerUrls:\s*\[\s*\]/);
+	assert.match(config, /blockExplorerUrls:\s*\['https:\/\/testnet\.arcscan\.app'\]/);
 });
