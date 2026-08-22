@@ -8,7 +8,8 @@ import { apiGet, apiPostWithMeta } from "../api";
 import { getAddress } from "../config";
 import { listLinkedWallets } from "../linked-wallets";
 import { GENERATION_QUOTE_ENABLED } from "../featureFlags";
-import { depositToGateway, getGatewayBalance, parseUsdcAmount, paymentWalletKind, signGatewayPayment, walletSupportsPayment } from "../x402";
+import { depositToGateway, getGatewayBalance, parseUsdcAmount, paymentPayerAddress, paymentWalletKind, signGatewayPayment, walletSupportsPayment } from "../x402";
+import { ensureSessionLinked, getOrCreateSessionAccount } from "../payment-session";
 import {
 	DEPTH_OPTIONS,
 	PAYMENT_STATUS,
@@ -257,12 +258,16 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// is active and the payer is unambiguous (connected + linked agree).
 	useEffect(() => {
 		const requirements = paymentRequirements?.requirements;
-		if (!requirements || !walletAddr || payerMismatch) {
+		// The balance that matters is the PAYER's: the connected wallet for
+		// EOA kinds, the device payment key for the passkey kind (null until
+		// the first payment creates one — the deposit disclosure then shows).
+		const payer = paymentPayerAddress();
+		if (!requirements || !walletAddr || !payer || payerMismatch) {
 			setGatewayBalance(null);
 			return;
 		}
 		let cancelled = false;
-		getGatewayBalance(requirements, walletAddr)
+		getGatewayBalance(requirements, payer)
 			.then((bal) => {
 				if (!cancelled) setGatewayBalance(bal);
 			})
@@ -456,6 +461,53 @@ export default function Generate({ onNavigate, onStageChange }) {
 		setPaymentMessage("");
 		setDepositError("");
 		try {
+			// ── Passkey path: the device payment key does everything. ──
+			// No WebAuthn ceremony is involved in SIGNING (local ECDSA key),
+			// so there is no user-activation ordering constraint here — the
+			// only prompt is the funding user-op, and only when the key's
+			// balance is short. See ../payment-session.js for why this rail
+			// exists (Circle's facilitator verifies EOA signatures only).
+			if (paymentWalletKind() === "circle") {
+				setPayStep("refreshing");
+				const fresh = heldSignableRequirements() ?? (await refreshPaymentRequirements());
+				if (!fresh) return; // started without payment (paywall off)
+				const req = fresh.requirements;
+				const need = BigInt(req.amount);
+				const session = getOrCreateSessionAccount(walletAddr);
+				await ensureSessionLinked(session);
+				let bal = await getGatewayBalance(req, session.address);
+				if (bal == null || bal < need) {
+					const amountRaw = parseUsdcAmount(depositAmount || "20.00");
+					if (amountRaw < need) {
+						throw new Error("Deposit amount must at least cover the generation price.");
+					}
+					await depositToGateway(req, amountRaw, (step) =>
+						setPayStep(step === "approving" ? "approving" : "depositing"),
+					);
+					bal = await getGatewayBalance(req, session.address);
+					setGatewayBalance(bal);
+				}
+				setPayStep("signing");
+				const header = await signGatewayPayment({
+					requirements: req,
+					resource: fresh.resource,
+					x402Version: fresh.x402Version,
+					payerAddress: session.address,
+				});
+				setPayStep("starting");
+				const { receipt: settledReceipt } = await submitStart({
+					"Payment-Signature": header,
+					// The paywall binds authorization.from to a LINKED wallet
+					// resolved from this header — it must name the payment
+					// key, not the connected passkey account.
+					"X-Wallet-Address": session.address,
+				});
+				resetPaymentStepState();
+				setNoSettlementNotice(!settledReceipt);
+				if (GENERATION_QUOTE_ENABLED) fetchQuote();
+				return;
+			}
+
 			const held = heldSignableRequirements();
 			const funded =
 				held != null &&
@@ -1028,41 +1080,36 @@ export default function Generate({ onNavigate, onStageChange }) {
 											Connect wallet →
 										</button>
 									</div>
-								) : paymentWalletKind() === "circle" ? (
-									// Circle's nanopayments rail validates burn intents as EOA
-									// (ERC-3009) signatures ONLY — "Nanopayments require an EOA
-									// wallet. Smart contract account (SCA) wallets are not
-									// supported" (Circle buyer quickstart), and the ERC-1271
-									// path is explicitly excluded from nanopayments (Circle
-									// ERC-1271 reference). Field-proven 2026-08-21: a passkey
-									// smart-account signature reaches the facilitator and dies
-									// with invalid_signature. Until the delegate design ships
-									// (registered session-EOA signing on the SCA's behalf),
-									// offering the pay button to a passkey wallet is a trap
-									// that ends in a cryptic error AFTER a deposit.
-									<div style={{ marginTop: 6 }}>
-										<p className="caption mb-1">
-											Your Circle passkey wallet can hold and deposit USDC, but
-											Circle's payment rail can't verify passkey signatures on
-											x402 payments yet — payments need a standard wallet
-											(MetaMask, Coinbase, Brave, Phantom) for now.
-										</p>
-										<button
-											type="button"
-											className="btn btn-outline btn-sm"
-											onClick={() => window.dispatchEvent(new Event("open-wallet-modal"))}
-										>
-											Connect a payment wallet →
-										</button>
-									</div>
 								) : (
 									<div style={{ marginTop: 6 }}>
 										<p className="caption mb-1">
-											Payments run from your Circle Gateway balance — a one-time
-											deposit covers many generations; each one is then a single
-											wallet signature.
-											{gatewayBalance != null && (
-												<> Your balance: ${(Number(gatewayBalance) / 1e6).toFixed(2)}.</>
+											{paymentWalletKind() === "circle" ? (
+												// Passkey wallets pay through a device payment key
+												// (see ../payment-session.js): Circle's nanopayments
+												// rail verifies EOA signatures only, so the passkey
+												// account funds a local key once and that key signs
+												// each payment silently. Copy states the custody
+												// bound plainly — the key lives in this browser and
+												// only ever controls its own deposited balance.
+												<>
+													Payments run from a device payment key your passkey
+													wallet funds — one passkey approval to set it up,
+													then each generation settles with no prompts. The
+													key stays in this browser and only controls its own
+													deposited balance.
+													{gatewayBalance != null && (
+														<> Payment balance: ${(Number(gatewayBalance) / 1e6).toFixed(2)}.</>
+													)}
+												</>
+											) : (
+												<>
+													Payments run from your Circle Gateway balance — a one-time
+													deposit covers many generations; each one is then a single
+													wallet signature.
+													{gatewayBalance != null && (
+														<> Your balance: ${(Number(gatewayBalance) / 1e6).toFixed(2)}.</>
+													)}
+												</>
 											)}
 										</p>
 										<button
