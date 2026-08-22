@@ -48,12 +48,15 @@ test("exactly one button: main submit hides when the pay panel is armed", () => 
 	assert.match(generate, /\{!payPanelReady && \(/);
 });
 
-test("the circle signing path itself stays await-free before the prompt", () => {
-	// signGatewayPayment's circle branch must go straight from sync typed-data
-	// assembly to smartAccount.signTypedData — an ensureArcChain/getWalletClient
-	// hop before the passkey ceremony would reintroduce the refusal class.
+test("the circle signing path involves no WebAuthn ceremony at all (#1467)", () => {
+	// SUPERSESSION (#1467): payments from the passkey kind are signed by the
+	// device payment key — a local EOA — so the activation-refusal class this
+	// file guards cannot occur there. The branch must sign with the session
+	// key and must NOT reach for the smart account's WebAuthn signer or an
+	// ensureArcChain/getWalletClient hop.
 	const circleBranch = x402.match(/if \(kind === "circle"\) \{([\s\S]*?)\} else \{/);
 	assert.ok(circleBranch, "circle signing branch missing");
 	assert.doesNotMatch(circleBranch[1], /ensureArcChain|getWalletClient/);
-	assert.match(circleBranch[1], /smartAccount\.signTypedData/);
+	assert.match(circleBranch[1], /session\.signTypedData/);
+	assert.doesNotMatch(circleBranch[1], /smartAccount\.signTypedData\(/);
 });
