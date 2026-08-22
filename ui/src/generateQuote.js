@@ -297,10 +297,25 @@ export function requirementChainId(requirements) {
  * domain is the #1 way a naive implementation of this flow produces a hash
  * the Gateway contract rejects.
  */
+// Margin ADDED to the server-advertised maxTimeoutSeconds when computing
+// validBefore. The facilitator enforces its validity minimum against ITS OWN
+// clock at verification time with essentially zero grace — probed live
+// 2026-08-21 against the testnet facilitator with byte-identical browser
+// payloads: a client clock a mere 30 SECONDS behind real time fails
+// `authorization_validity_too_short`; correct clock passes; with this
+// 24-hour margin even a clock 10 minutes behind passes (and the facilitator
+// accepts the longer window). Signing exactly the advertised minimum from
+// the CLIENT clock therefore bricks payments for every consumer device
+// whose clock runs behind — Dan's iPad, field report 2026-08-21. The
+// authorization is single-nonce and for the exact amount/recipient, so the
+// longer window adds no spend exposure.
+export const VALIDITY_SKEW_MARGIN_SECONDS = 86_400;
+
 export function buildTransferAuthorizationTypedData(requirements, { from, nowSec, nonceHex }) {
 	const chainId = requirementChainId(requirements);
 	const validAfter = nowSec - 600; // 10 min clock-skew buffer, matches circlekit
-	const validBefore = nowSec + Number(requirements?.maxTimeoutSeconds ?? 0);
+	const validBefore =
+		nowSec + Number(requirements?.maxTimeoutSeconds ?? 0) + VALIDITY_SKEW_MARGIN_SECONDS;
 	const to = requirements?.payTo;
 	const value = String(requirements?.amount ?? "0");
 	return {

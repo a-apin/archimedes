@@ -378,7 +378,10 @@ test("buildTransferAuthorizationTypedData: message uses bigints for uint256 fiel
 	assert.equal(message.value, 2_000_000n);
 	assert.equal(typeof message.value, "bigint");
 	assert.equal(message.validAfter, 1_000_000n - 600n);
-	assert.equal(message.validBefore, 1_000_000n + 345_600n);
+	// maxTimeoutSeconds + the 24h skew margin — the facilitator measures
+	// remaining validity against ITS clock with zero grace (probed live
+	// 2026-08-21: a client clock 30s behind fails without the margin).
+	assert.equal(message.validBefore, 1_000_000n + 345_600n + 86_400n);
 	assert.equal(message.nonce, nonceHex);
 	assert.equal(message.to, fixtureRequirement.payTo);
 });
@@ -394,7 +397,7 @@ test("buildTransferAuthorizationTypedData: authorization (the wire payload) uses
 	assert.equal(authorization.to, fixtureRequirement.payTo);
 	assert.equal(authorization.value, "2000000");
 	assert.equal(authorization.validAfter, String(1_000_000 - 600));
-	assert.equal(authorization.validBefore, String(1_000_000 + 345_600));
+	assert.equal(authorization.validBefore, String(1_000_000 + 345_600 + 86_400));
 	assert.equal(authorization.nonce, nonceHex);
 	for (const key of ["from", "to", "value", "validAfter", "validBefore", "nonce"]) {
 		assert.equal(typeof authorization[key], "string", `authorization.${key} must be a string`);
