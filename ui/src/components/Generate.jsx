@@ -8,7 +8,7 @@ import { apiGet, apiPostWithMeta } from "../api";
 import { getAddress } from "../config";
 import { listLinkedWallets } from "../linked-wallets";
 import { GENERATION_QUOTE_ENABLED } from "../featureFlags";
-import { depositToGateway, getGatewayBalance, parseUsdcAmount, signGatewayPayment, walletSupportsPayment } from "../x402";
+import { depositToGateway, getGatewayBalance, parseUsdcAmount, paymentWalletKind, signGatewayPayment, walletSupportsPayment } from "../x402";
 import {
 	DEPTH_OPTIONS,
 	PAYMENT_STATUS,
@@ -1026,6 +1026,33 @@ export default function Generate({ onNavigate, onStageChange }) {
 											onClick={() => window.dispatchEvent(new Event("open-wallet-modal"))}
 										>
 											Connect wallet →
+										</button>
+									</div>
+								) : paymentWalletKind() === "circle" ? (
+									// Circle's nanopayments rail validates burn intents as EOA
+									// (ERC-3009) signatures ONLY — "Nanopayments require an EOA
+									// wallet. Smart contract account (SCA) wallets are not
+									// supported" (Circle buyer quickstart), and the ERC-1271
+									// path is explicitly excluded from nanopayments (Circle
+									// ERC-1271 reference). Field-proven 2026-08-21: a passkey
+									// smart-account signature reaches the facilitator and dies
+									// with invalid_signature. Until the delegate design ships
+									// (registered session-EOA signing on the SCA's behalf),
+									// offering the pay button to a passkey wallet is a trap
+									// that ends in a cryptic error AFTER a deposit.
+									<div style={{ marginTop: 6 }}>
+										<p className="caption mb-1">
+											Your Circle passkey wallet can hold and deposit USDC, but
+											Circle's payment rail can't verify passkey signatures on
+											x402 payments yet — payments need a standard wallet
+											(MetaMask, Coinbase, Brave, Phantom) for now.
+										</p>
+										<button
+											type="button"
+											className="btn btn-outline btn-sm"
+											onClick={() => window.dispatchEvent(new Event("open-wallet-modal"))}
+										>
+											Connect a payment wallet →
 										</button>
 									</div>
 								) : (
