@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
+const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
 const architecture = readFileSync(
 	new URL("../src/components/Architecture.jsx", import.meta.url),
@@ -15,22 +17,197 @@ const publicLayout = readFileSync(
 	new URL("../src/components/PublicLayout.jsx", import.meta.url),
 	"utf8",
 );
-const roadmapCopy = readFileSync(
-	new URL("../src/roadmapCopy.js", import.meta.url),
+const securityUrl = new URL("../src/components/Security.jsx", import.meta.url);
+const flowDiagram = readFileSync(
+	new URL("../src/assets/flow-diagram.svg", import.meta.url),
+	"utf8",
+);
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const sitemap = readFileSync(
+	new URL("../public/sitemap.xml", import.meta.url),
+	"utf8",
+);
+const nginx = readFileSync(
+	new URL("../../nginx/nginx.conf", import.meta.url),
 	"utf8",
 );
 
-test("public shell owns an isolated visual system and accessible navigation", () => {
+test("public shell owns calm-precision tokens and accessible navigation", () => {
 	assert.match(publicLayout, /className="public-site"/);
-	assert.match(publicLayout, /className="public-header"/);
+	assert.match(publicLayout, /BrandMark/);
+	assert.match(publicLayout, /className="public-announcement"/);
 	assert.match(publicLayout, /aria-label="Public navigation"/);
-	assert.match(publicLayout, /className="public-auth-link"/);
-	assert.match(css, /\.public-site\s*\{[^}]*--public-abyss:\s*#071319;/s);
+	assert.match(publicLayout, /aria-label=.*theme/i);
+	assert.doesNotMatch(
+		css,
+		/\.public-brand__copy small,\s*\.public-theme-toggle\s*\{\s*display:\s*none;/s,
+	);
+	assert.match(publicLayout, /href="\/app\/generate"/);
+	assert.match(css, /--brand-canvas:\s*#f4f1e9;/i);
+	assert.match(css, /--brand-ink:\s*#0d1218;/i);
+	assert.match(css, /--brand-cobalt:\s*#4658e8;/i);
+	assert.match(css, /--brand-verdigris:\s*#147a69;/i);
+	assert.match(css, /--brand-muted:\s*#596570;/i);
 	assert.match(css, /\.public-site :focus-visible\s*\{/);
+	assert.match(
+		css,
+		/\.public-skip-link\s*\{[^}]*color:\s*var\(--accent-on\);/s,
+	);
+	assert.doesNotMatch(css, /gradient\(/i);
+	assert.doesNotMatch(architecture, /gradient\(/i);
 });
 
-test("public architecture page restores app content gutter", () => {
-	assert.match(architecture, /return \(\s*<div className="page-content">/);
+test("security page separates verified controls from known limits", () => {
+	assert.equal(existsSync(securityUrl), true, "Security.jsx must exist");
+	const security = readFileSync(securityUrl, "utf8");
+	assert.match(security, /Security is enforced boundaries, not a guarantee/i);
+	assert.match(security, /Better Auth/);
+	assert.match(security, /five-minute/i);
+	assert.match(security, /Agent may mis-rebalance/i);
+	assert.match(security, /cannot withdraw/i);
+	assert.match(security, /No independent security audit/i);
+	assert.match(security, /Arc public testnet/i);
+	assert.match(security, /<main className="security-page">/);
+	assert.match(security, /<h1 id="security-title">/);
+	assert.match(security, /id="known-limits"/);
+});
+
+test("security controls reserve enough width for their display heading", () => {
+	assert.match(
+		css,
+		/\.security-controls__layout\s*\{[^}]*grid-template-columns:\s*minmax\(360px,\s*0\.82fr\)\s*minmax\(0,\s*1\.18fr\);[^}]*gap:\s*clamp\(56px,\s*6vw,\s*80px\);/s,
+	);
+});
+
+test("landing has complete evidence-led conversion narrative", () => {
+	for (const id of [
+		"problem",
+		"product",
+		"capabilities",
+		"workflow",
+		"use-cases",
+		"integrations",
+		"security",
+		"faq",
+	]) {
+		assert.match(landing, new RegExp(`id=["']${id}["']`));
+	}
+	assert.match(landing, /EvidenceLedger/);
+	assert.match(landing, /RigorMatrix/);
+	assert.match(landing, /AuthorityBoundary/);
+	assert.match(
+		landing,
+		/\{ROADMAP_SURFACES_ENABLED && <AuthorityBoundary \/>\}/,
+	);
+	assert.match(landing, /WORKFLOW\.slice\(0, 3\)/);
+	assert.match(landing, /Deflated Sharpe Ratio/);
+	assert.match(landing, /Probability of Backtest Overfitting/);
+	assert.match(landing, /Walk-forward out-of-sample/);
+	assert.match(landing, /Look-ahead audit/);
+	assert.doesNotMatch(landing, /testimonial|trusted by|customer logos/i);
+});
+
+test("landing uses a bespoke product theatre instead of register-template motifs", () => {
+	assert.match(landing, /className="public-hero__stage"/);
+	assert.match(landing, /className="public-proof-strip"/);
+	assert.match(landing, /className="public-proof-deck"/);
+	assert.match(landing, /className="public-use-case-scenes"/);
+	assert.doesNotMatch(landing, /capability-register__index/);
+	assert.doesNotMatch(
+		landing,
+		/Inspection register|Admission register|Product anatomy/,
+	);
+	assert.match(css, /--public-haze:\s*#efedff;/i);
+	assert.match(css, /--public-stage:\s*#0c0c11;/i);
+	assert.match(
+		css,
+		/@font-face\s*\{[^}]*font-family:\s*"Gabarito";[^}]*gabarito-latin\.woff2/s,
+	);
+	assert.match(
+		css,
+		/@font-face\s*\{[^}]*font-family:\s*"IBM Plex Mono";[^}]*ibm-plex-mono-latin-400\.woff2/s,
+	);
+	assert.match(
+		css,
+		/\.public-proof-deck article\s*\{[^}]*position:\s*sticky;/s,
+	);
+	assert.match(
+		css,
+		/\.public-landing\s*\{[^}]*overflow:\s*visible;[^}]*background:\s*var\(--canvas\);/s,
+	);
+	assert.match(
+		css,
+		/html:has\(\.public-site\),\s*body:has\(\.public-site\)\s*\{[^}]*overflow:\s*visible;/s,
+	);
+	assert.equal(
+		existsSync(
+			new URL("../public/fonts/gabarito-latin.woff2", import.meta.url),
+		),
+		true,
+	);
+	assert.equal(
+		existsSync(
+			new URL("../public/fonts/ibm-plex-mono-latin-400.woff2", import.meta.url),
+		),
+		true,
+	);
+});
+
+test("proof deck exits its sticky phase as one complete card", () => {
+	assert.match(
+		css,
+		/\.public-proof-deck article\s*\{[^}]*position:\s*sticky;[^}]*height:\s*340px;/s,
+	);
+	assert.match(
+		css,
+		/@media \(max-width: 760px\)[^{]*\{[\s\S]*?\.public-proof-deck article,[\s\S]*?\.public-proof-deck article:nth-child\(4\)\s*\{[^}]*position:\s*static;[^}]*height:\s*auto;/s,
+	);
+});
+
+test("landing consolidates proof into connected instrument sections", () => {
+	assert.match(landing, /className="public-section public-rigor-story"/);
+	assert.match(landing, /className="public-proof-deck"/);
+	assert.match(landing, /className="public-section public-path"/);
+	assert.match(landing, /id="workflow"\s+className="public-path__sequence"/);
+	assert.match(landing, /className="public-use-case-scenes"/);
+	assert.match(landing, /id="integrations"\s+className="public-rail-stack"/);
+	assert.match(landing, /className="authority-boundary__verdict"/);
+	assert.match(
+		css,
+		/\.public-path__sequence ol\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,/s,
+	);
+	assert.match(
+		css,
+		/\.public-use-case-scenes \.is-research\s*\{[^}]*margin-left:\s*auto;/s,
+	);
+});
+
+test("landing uses real product capture and one primary CTA label", () => {
+	assert.match(landing, /src="\/product-workspace\.png"/);
+	assert.match(landing, /width=\{1600\}/);
+	assert.match(landing, /height=\{1000\}/);
+	assert.match(landing, /Generate a strategy/);
+	assert.doesNotMatch(landing, /Get started|Try free|Start now/);
+	assert.match(landing, /apiGet\("\/api\/config\/contracts"\)/);
+	assert.match(landing, /Live census unavailable/);
+	assert.match(landing, /poolsUnread/);
+});
+
+test("public architecture page uses one skip target and main landmark", () => {
+	assert.match(publicLayout, /<div id="public-content" tabIndex="-1">/);
+	assert.match(architecture, /return \(\s*<main className="page-content">/);
+	assert.doesNotMatch(architecture, /id="public-content"/);
+});
+
+test("architecture diagram uses account-first identity and current brand semantics", () => {
+	assert.match(flowDiagram, /Account owns research and settings/);
+	assert.match(flowDiagram, /Wallet proof only for on-chain actions/);
+	assert.match(flowDiagram, /Arc public testnet/);
+	assert.doesNotMatch(
+		flowDiagram,
+		/#D4A853|Georgia|SIWE|289 contracts|verified against main/i,
+	);
+	assert.doesNotMatch(architecture, /sign in with any wallet/i);
 });
 
 test("architecture stats keep two mobile columns and four desktop columns", () => {
@@ -45,83 +222,157 @@ test("architecture stats keep two mobile columns and four desktop columns", () =
 	);
 });
 
-test("landing hero makes proof flow the signature element", () => {
-	assert.match(landing, /className="proof-spiral"/);
-	assert.match(landing, /Brief/);
-	assert.match(landing, /Debate/);
-	assert.match(landing, /Rigor/);
-	// Flag-off shape (#1354): the spiral's 4th stop names no bare "Vault"
-	// literal in Landing.jsx — it's gated, sourced from roadmapCopy.js.
-	// (backend/tests/... precedent: rewrite the assertion pinning the
-	// pre-fix defect, don't just delete it — see ui/test/roadmap-copy.test.js
-	// for the guard that pins this precisely.)
-	assert.match(landing, /ROADMAP_SURFACES_ENABLED && \(/);
-	assert.match(landing, /ROADMAP_COPY\.spiralVaultLabel/);
-	// Flag-on counterpart: the full spiral still names a dedicated Vault
-	// stop when the flag is on — the string lives in roadmapCopy.js, which
-	// this file's own guard (roadmap-copy.test.js) keeps deletable-but-real.
-	assert.match(roadmapCopy, /spiralVaultLabel:\s*"Vault"/);
-	assert.match(css, /@keyframes proof-pulse/);
+test("public product theatre stays structural across desktop and mobile", () => {
 	assert.match(
 		css,
-		/@media \(prefers-reduced-motion: reduce\)[^{]*\{[\s\S]*?\.proof-spiral__pulse/s,
+		/\.public-hero__stage\s*\{[^}]*display:\s*grid;[^}]*border-radius:\s*10px;[^}]*background:\s*var\(--public-theatre-bg\);/s,
+	);
+	assert.match(
+		css,
+		/\.public-product-frame\s*\{[^}]*width:\s*min\(100%,\s*900px\);/s,
+	);
+	assert.match(
+		css,
+		/@media \(max-width: 760px\)[^{]*\{[\s\S]*?\.public-hero__stage\s*\{[^}]*padding:\s*44px 20px 0;/s,
 	);
 });
 
-test("proof-spiral legend grid tracks item count, not a fixed stage count", () => {
-	// PR #1396 review (major finding): a fixed repeat(4, …) left an empty
-	// bordered column when ROADMAP_SURFACES_ENABLED is off and the legend
-	// renders only 3 <li>. Mirrors the .app-proof-rail auto-fit fix.
+test("light landing replaces every dark theatre surface", () => {
 	assert.match(
 		css,
-		/\.proof-spiral__legend\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,/s,
+		/:root\[data-theme="light"\] \.public-site\s*\{[^}]*--public-theatre-bg:\s*var\(--surface-2\);[^}]*--public-theatre-text:\s*var\(--public-ink\);/s,
 	);
+	for (const selector of [
+		"public-hero__stage",
+		"public-path__sequence",
+		"authority-boundary",
+	]) {
+		assert.match(
+			css,
+			new RegExp(
+				`\\.${selector}\\s*\\{[^}]*background:\\s*var\\(--public-theatre-bg\\);`,
+				"s",
+			),
+		);
+	}
+	assert.match(
+		css,
+		/\.public-proof-deck article:nth-child\(3\)\s*\{[^}]*background:\s*var\(--public-theatre-bg\);/s,
+	);
+	assert.match(
+		css,
+		/\.public-use-case-scenes \.is-research\s*\{[^}]*background:\s*var\(--public-theatre-bg\);/s,
+	);
+	assert.match(
+		css,
+		/:root\[data-theme="light"\] \.public-site\s*\{[^}]*--public-theatre-positive:\s*#116c5e;/s,
+	);
+	assert.match(
+		css,
+		/\.authority-boundary__side--agent \.authority-boundary__owner\s*\{[^}]*color:\s*var\(--public-theatre-positive\);/s,
+	);
+});
+
+test("dark landing preserves atmospheric contrast and semantic accents", () => {
+	assert.match(
+		css,
+		/\.public-site\s*\{[^}]*--canvas:\s*#15131d;[^}]*--glass-border:\s*#484155;[^}]*--accent-on:\s*#17151f;/s,
+	);
+	assert.match(css, /--accent-on-muted:\s*rgba\(23, 21, 31, 0\.82\);/);
+	assert.match(
+		css,
+		/:root\[data-theme="light"\] \.public-site\s*\{[^}]*--accent-on-muted:\s*rgba\(255, 255, 255, 0\.9\);/s,
+	);
+	assert.match(
+		css,
+		/\.public-site\s*\{[^}]*--public-theatre-bg:\s*var\(--public-stage\);/s,
+	);
+	assert.match(
+		css,
+		/\.authority-boundary\s*\{[^}]*background:\s*var\(--public-theatre-bg\);/s,
+	);
+	assert.match(
+		css,
+		/\.public-proof-deck article:nth-child\(2\)\s*\{[^}]*background:\s*var\(--accent\);[^}]*color:\s*var\(--accent-on\);/s,
+	);
+});
+
+test("ownership verdict follows the active public theme", () => {
+	assert.match(
+		css,
+		/\.public-site\s*\{[^}]*--public-theatre-contrast:\s*var\(--surface-1\);[^}]*--public-theatre-contrast-text:\s*var\(--text-1\);[^}]*--public-theatre-contrast-muted:\s*var\(--text-3\);/s,
+	);
+	assert.match(
+		css,
+		/:root\[data-theme="light"\] \.public-site\s*\{[^}]*--public-theatre-contrast-muted:\s*#625d6a;/s,
+	);
+	assert.match(
+		css,
+		/\.authority-boundary__verdict span\s*\{[^}]*color:\s*var\(--public-theatre-contrast-muted\);/s,
+	);
+});
+
+test("metadata and sitemap describe canonical anonymous public routes", () => {
+	assert.doesNotMatch(html, /rel="canonical"/);
+	assert.match(app, /document\.querySelector\(['"]link\[rel=[^\]]*canonical/);
+	assert.match(app, /architecture:\s*["']\/architecture["']/);
+	assert.match(app, /canonicalPaths\[route\.page\]\s*\?\?\s*["']\/["']/);
+	assert.match(
+		html,
+		/property="og:image"\s+content="https:\/\/archimedes-arc\.com\/og-image\.png"/,
+	);
+	assert.match(html, /name="twitter:card" content="summary_large_image"/);
+	assert.match(
+		html,
+		/"target":\s*"https:\/\/archimedes-arc\.com\/app\/generate"/,
+	);
+	assert.match(sitemap, /<loc>https:\/\/archimedes-arc\.com\/<\/loc>/);
+	assert.match(
+		sitemap,
+		/<loc>https:\/\/archimedes-arc\.com\/architecture<\/loc>/,
+	);
+	for (const route of ["explore", "leaderboard", "corpus", "insights"]) {
+		assert.match(
+			sitemap,
+			new RegExp(`<loc>https://archimedes-arc\\.com/${route}</loc>`),
+		);
+	}
 	assert.doesNotMatch(
-		css,
-		/\.proof-spiral__legend\s*\{[^}]*grid-template-columns:\s*repeat\(\d+,/s,
+		sitemap,
+		/<loc>https:\/\/archimedes-arc\.com\/(marketplace|portfolio|publish|subscriptions)<\/loc>/,
 	);
 });
 
-test("landing presents evidence as criteria, not decorative steps", () => {
-	assert.match(landing, /EvidenceLedger/);
-	assert.match(landing, /RigorMatrix/);
-	// Flag-off shape (#1354): AuthorityBoundary (the custody-boundary panel,
-	// which names a deposit/withdraw vault flow with no reachable mount
-	// while vault surfaces are off) is gated at its mount site, not
-	// rendered unconditionally.
-	assert.match(
-		landing,
-		/\{ROADMAP_SURFACES_ENABLED && <AuthorityBoundary \/>\}/,
-	);
-	// Flag-on counterpart: the component itself is untouched — full custody
-	// story still renders, byte-identical, when the flag is on.
-	assert.match(landing, /function AuthorityBoundary\(\)/);
-	assert.match(landing, /Autonomy stops at ownership\./);
-	assert.match(landing, /Deflated Sharpe Ratio/);
-	assert.match(landing, /Probability of Backtest Overfitting/);
-	assert.match(landing, /Walk-forward out-of-sample/);
-	assert.match(landing, /Look-ahead audit/);
-	assert.doesNotMatch(landing, /n:\s*["']0[1-4]["']/);
+test("security page is a canonical public destination", () => {
+	assert.match(app, /import Security from ["']\.\/components\/Security["']/);
+	assert.match(app, /security:\s*["']Security · Archimedes["']/);
+	assert.match(app, /security:\s*["']\/security["']/);
+	assert.match(app, /route\.page === ["']security["'][\s\S]*<Security \/>/);
+	assert.match(publicLayout, /href="\/security"[\s\S]*Security/);
+	assert.ok((landing.match(/href="\/security"/g) ?? []).length >= 2);
+	assert.match(sitemap, /<loc>https:\/\/archimedes-arc\.com\/security<\/loc>/);
 });
 
-test("landing keeps live census, honest failure copy, and both primary journeys", () => {
-	assert.match(landing, /apiGet\("\/api\/config\/contracts"\)/);
-	assert.match(landing, /Live census unavailable/);
-	assert.match(landing, /onNavigate\("generate"\)/);
-	assert.match(landing, /onNavigate\("library", \{ tab: "examples" \}\)/);
+test("production CSP permits only the hashed theme bootstrap", () => {
+	const themeBootstrap = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+	assert.ok(themeBootstrap);
+	const themeHash = createHash("sha256")
+		.update(themeBootstrap)
+		.digest("base64");
+	assert.ok(nginx.includes(`script-src 'self' 'sha256-${themeHash}'`));
+	assert.doesNotMatch(nginx, /script-src[^;]*'unsafe-inline'/);
 });
 
-test("public layout is asymmetric on desktop and stacks before tablet width", () => {
-	assert.match(
-		css,
-		/\.public-hero__grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1\.08fr\) minmax\(320px,\s*0\.92fr\);/s,
+test("generated public product and social images exist", () => {
+	assert.equal(
+		existsSync(new URL("../public/product-workspace.png", import.meta.url)),
+		true,
 	);
-	assert.match(
-		css,
-		/@media \(max-width: 980px\)[^{]*\{[\s\S]*?\.public-hero__grid\s*\{[^}]*grid-template-columns:\s*1fr;/s,
+	assert.equal(
+		existsSync(new URL("../public/og-image.png", import.meta.url)),
+		true,
 	);
 });
-
 test("landing does not claim the OOS gate rolls its window forward", () => {
 	// The rigor gate is a single 70/30 chronological cut; the rolling
 	// walk-forward re-estimation exists but never runs on a live path
