@@ -1,6 +1,6 @@
 # Phantom-inspired public landing direction
 
-**Status:** Approved for public landing only  
+**Status:** Approved for public landing only
 **Reference:** Phantom Wallet homepage, inspected 2026-08-23. Borrow confidence, scale, atmosphere, and product staging. Do not copy Phantom typography, ghost identity, pill language, card radius, or product claims.
 
 **Phase boundary:** This follow-up starts after the broader calm-precision rebrand in `2026-08-22-calm-precision-rebrand.md`. “Authenticated app styling remains unchanged” means this landing phase adds no further app/auth styling changes; preceding rebrand work remains a separate atomic commit.

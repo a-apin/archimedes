@@ -1,6 +1,6 @@
 # Infrastructure Provider Analysis for Archimedes
 
-> **Pricing checked:** 2026-08-16  
+> **Pricing checked:** 2026-08-16
 > **Basis:** Current repository architecture and public list prices. This is a
 > modeled estimate, not the actual AWS invoice, because Cost Explorer access was
 > unavailable.
@@ -53,7 +53,7 @@ misleading.
 ### Current modeled monthly floor
 
 | Component | Approx. monthly |
-|---|---:|
+| --- | ---: |
 | Fargate web task, 1 vCPU / 3 GB | $39.30 |
 | Aurora minimum 0.5 ACU | $43.80 |
 | ElastiCache `cache.t3.micro` | $12.41 |
@@ -119,7 +119,7 @@ part, but not all, of the old EC2 cost.
 ### Archimedes estimate
 
 | Configuration | Approx. monthly |
-|---|---:|
+| --- | ---: |
 | Lean: 2 GB web, basic PostgreSQL, two small workers | **$105–115** |
 | Safer: 4 GB web, Pro PostgreSQL, Redis, workers | **$195–210** |
 | Future 8 GB KB job running four hours/day | add approximately **$29** |
@@ -260,7 +260,7 @@ full-stack migration.
 ### Relevant prices
 
 | Plan | Monthly | Annual-billed effective |
-|---|---:|---:|
+| --- | ---: | ---: |
 | Free | $0 | $0 |
 | Developer | $5.99 | $4.99/month |
 | Scaler | $29 | $24.92/month |
@@ -295,7 +295,7 @@ path today.
 ## 7. Final decision
 
 | Requirement | Best choice |
-|---|---|
+| --- | --- |
 | Current production and funds-adjacent execution | **AWS** |
 | Cheapest staging/preview environment | **Railway** |
 | Simplest production PaaS | **Render** |
