@@ -1,10 +1,7 @@
 export default function Security() {
 	return (
 		<main className="security-page">
-			<section
-				className="security-hero"
-				aria-labelledby="security-title"
-			>
+			<section className="security-hero" aria-labelledby="security-title">
 				<div className="public-shell security-hero__layout">
 					<div>
 						<p className="public-overline">Public security posture</p>
@@ -41,7 +38,9 @@ export default function Security() {
 				<div className="public-shell">
 					<div className="security-section-heading">
 						<p className="public-overline">Authority model</p>
-						<h2 id="authority-model-title">Four boundaries. No role inflation.</h2>
+						<h2 id="authority-model-title">
+							Four boundaries. No role inflation.
+						</h2>
 						<p>
 							Signing in, linking a wallet, running an agent, and owning vault
 							shares are separate capabilities.
@@ -64,8 +63,9 @@ export default function Security() {
 								Proof-linked wallet
 							</dt>
 							<dd>
-								A five-minute, single-use EIP-4361 challenge proves control before
-								a wallet is linked. Wallet state is not an app credential.
+								A five-minute, single-use EIP-4361 challenge proves control
+								before a wallet is linked. Wallet state is not an app
+								credential.
 							</dd>
 						</div>
 						<div>
@@ -112,8 +112,9 @@ export default function Security() {
 							<div>
 								<h3>Account access is checked at three layers.</h3>
 								<p>
-									Production cookies are HttpOnly and Secure. nginx, the UI route
-									guard, and FastAPI independently protect private surfaces.
+									Production cookies are HttpOnly and Secure. nginx, the UI
+									route guard, and FastAPI independently protect private
+									surfaces.
 								</p>
 							</div>
 						</li>
@@ -122,8 +123,9 @@ export default function Security() {
 							<div>
 								<h3>Private records follow the canonical user ID.</h3>
 								<p>
-									Profile, strategy, job, and linked-wallet reads resolve through
-									the authenticated Better Auth user—not a client-supplied address.
+									Profile, strategy, job, and linked-wallet reads resolve
+									through the authenticated Better Auth user—not a
+									client-supplied address.
 								</p>
 							</div>
 						</li>
@@ -132,8 +134,8 @@ export default function Security() {
 							<div>
 								<h3>Agent-only writes require a service credential.</h3>
 								<p>
-									User sessions cannot forge internal reasoning traces, rebalance
-									events, or other integrity-critical agent records.
+									User sessions cannot forge internal reasoning traces,
+									rebalance events, or other integrity-critical agent records.
 								</p>
 							</div>
 						</li>
@@ -143,8 +145,9 @@ export default function Security() {
 								<h3>Browser and API ingress is constrained.</h3>
 								<p>
 									Same-origin rules, a hash-restricted script policy, HSTS,
-									anti-framing headers, limited browser permissions, and separate
-									read/write rate limits reduce common web attack paths.
+									anti-framing headers, limited browser permissions, and
+									separate read/write rate limits reduce common web attack
+									paths.
 								</p>
 							</div>
 						</li>
@@ -153,8 +156,9 @@ export default function Security() {
 							<div>
 								<h3>Trades must stay inside contract rules.</h3>
 								<p>
-									Rebalances require an earlier reasoning-trace commitment, bounded
-									target movement, slippage checks, and owner-curated oracle paths.
+									Rebalances require an earlier reasoning-trace commitment,
+									bounded target movement, slippage checks, and owner-curated
+									oracle paths.
 								</p>
 							</div>
 						</li>
@@ -170,7 +174,9 @@ export default function Security() {
 				<div className="public-shell security-limits__layout">
 					<div>
 						<p className="public-overline">Known limits</p>
-						<h2 id="known-limits-title">Controls reduce risk. They do not erase it.</h2>
+						<h2 id="known-limits-title">
+							Controls reduce risk. They do not erase it.
+						</h2>
 					</div>
 					<ul>
 						<li>
