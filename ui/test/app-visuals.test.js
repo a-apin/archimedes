@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const css = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
+const authPage = readFileSync(
+	new URL("../src/components/AuthPage.jsx", import.meta.url),
+	"utf8",
+);
 const authenticatedApp = readFileSync(
 	new URL("../src/AuthenticatedApp.jsx", import.meta.url),
 	"utf8",
@@ -15,6 +19,11 @@ const layout = readFileSync(
 	new URL("../src/components/Layout.jsx", import.meta.url),
 	"utf8",
 );
+const onboarding = readFileSync(
+	new URL("../src/components/OnboardingTour.jsx", import.meta.url),
+	"utf8",
+);
+const theme = readFileSync(new URL("../src/theme.js", import.meta.url), "utf8");
 // PROOF_STAGES itself moved out of Layout.jsx into proofStages.js (#1354) so
 // the roadmap-copy guard can call getProofStages() under plain node — see
 // that file and ui/test/roadmap-copy.test.js for the 3-vs-5-stage guard
@@ -35,6 +44,12 @@ const insights = readFileSync(
 
 test("authenticated shell has isolated operational tokens and journey rail", () => {
 	assert.match(layout, /shell app-site/);
+	assert.match(layout, /BrandMark/);
+	assert.match(layout, /className="app-skip-link"/);
+	assert.match(layout, /id="app-content"/);
+	assert.match(layout, /<nav aria-label="Main">/);
+	assert.match(layout, /event\.key === "Escape"/);
+	assert.match(layout, /closeButtonRef/);
 	// Pin the wiring, not just the identifier: Layout.jsx must actually call
 	// the flag-derived getProofStages() (proofStages.js), not a hardcoded
 	// array — CORE_PROOF_STAGES/ROADMAP_PROOF_STAGES both declare their
@@ -69,6 +84,35 @@ test("authenticated shell has isolated operational tokens and journey rail", () 
 		css,
 		/:root\[data-theme="light"\] \.app-site\s*\{[^}]*--text-4:\s*#60746b;/s,
 	);
+});
+
+test("authenticated routes load behind route-level suspense boundaries", () => {
+	assert.match(
+		authenticatedApp,
+		/lazy\(\(\) => import\(["']\.\/components\/Explore["']\)\)/,
+	);
+	assert.match(
+		authenticatedApp,
+		/<Suspense fallback=\{<AppRouteFallback \/>\}>/,
+	);
+});
+
+test("onboarding uses proof-frame identity and verified product language", () => {
+	assert.match(onboarding, /Research-grounded strategy generation/);
+	assert.match(onboarding, /selection-bias rigor/);
+	assert.doesNotMatch(onboarding, /Λ|bleeding-edge/i);
+});
+
+test("system preference supplies first theme when user has no saved choice", () => {
+	assert.match(theme, /matchMedia\(["']\(prefers-color-scheme: dark\)["']\)/);
+	assert.match(theme, /stored === ["']dark["']/);
+	assert.match(theme, /stored === ["']light["']/);
+});
+
+test("social auth controls do not wait for provider discovery", () => {
+	assert.match(authPage, /Continue with Google/);
+	assert.match(authPage, /Continue with GitHub/);
+	assert.doesNotMatch(authPage, /getProviders|providers\.(?:google|github)/);
 });
 
 test("Generate uses brief-first workbench with context rail", () => {
@@ -112,9 +156,9 @@ test("Portfolio uses ledger metrics and split audit workspace", () => {
 	);
 });
 
-test("app semantics reserve bronze for action and verdigris for verification", () => {
-	assert.match(css, /--app-action:\s*#d9a85c;/);
-	assert.match(css, /--app-verify:\s*#79c9b7;/);
+test("app semantics reserve cobalt for action and verdigris for verification", () => {
+	assert.match(css, /--app-action:\s*var\(--brand-cobalt\);/);
+	assert.match(css, /--app-verify:\s*var\(--brand-verdigris\);/);
 	assert.match(
 		css,
 		/\.app-site \.btn-primary\s*\{[^}]*background:\s*var\(--app-action\);/s,

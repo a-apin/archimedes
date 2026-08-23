@@ -153,8 +153,8 @@ test("public shell lazy-loads wallet and protected application code", () => {
 		new URL("../src/AuthenticatedApp.jsx", import.meta.url),
 		"utf8",
 	);
-	assert.match(app, /lazy\(\(\) => import\('\.\/AuthenticatedApp'\)\)/);
-	assert.doesNotMatch(app, /from '\.\/config'/);
+	assert.match(app, /lazy\(\(\) => import\(["']\.\/AuthenticatedApp["']\)\)/);
+	assert.doesNotMatch(app, /from ["']\.\/config["']/);
 	assert.match(authenticated, /from ["']\.\/config["']/);
 });
 

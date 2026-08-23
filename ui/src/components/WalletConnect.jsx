@@ -279,7 +279,7 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
 
   return (
     <>
-      <button className="wallet-chip" onClick={() => setShowModal(true)}>
+      <button type="button" className="wallet-chip" onClick={() => setShowModal(true)}>
         Connect Wallet
       </button>
 
@@ -418,6 +418,7 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
                           </div>
                           <div style={{ display: 'flex', gap: 8 }}>
                             <button
+                              type="button"
                               className="btn btn-primary"
                               style={{ flex: 1 }}
                               onClick={() => handleConnect(p.id, { mode: 'login' })}
@@ -426,6 +427,7 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
                               Open existing wallet
                             </button>
                             <button
+                              type="button"
                               className="btn btn-outline"
                               style={{ flex: 1 }}
                               onClick={() => handleConnect(p.id, { mode: 'register', walletName })}
@@ -440,7 +442,7 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
                           </span>
                         </div>
                       ) : (
-                        <button className="wallet-option" onClick={() => handleConnect(p.id)} disabled={busy}>
+                        <button type="button" className="wallet-option" onClick={() => handleConnect(p.id)} disabled={busy}>
                           {p.iconDataUri ? (
                             <img src={p.iconDataUri} alt="" width={20} height={20} style={{ borderRadius: 4 }} />
                           ) : (
@@ -455,9 +457,9 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
               </div>
             )}
 
-            {error && <div className="status mt-3">{error}</div>}
+            {error && <div className="status mt-3" role="alert">{error}</div>}
 
-            <button className="btn btn-outline mt-3 w-full" onClick={() => setShowModal(false)}>Cancel</button>
+            <button type="button" className="btn btn-outline mt-3 w-full" onClick={() => setShowModal(false)}>Cancel</button>
           </div>
         </div>,
         document.body

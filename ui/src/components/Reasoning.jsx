@@ -445,15 +445,16 @@ export default function Reasoning({ onNavigate }) {
     : null
 
   return (
-    <div>
-      <div className="max-w-[720px] mb-7">
-        <h2 className="font-serif text-[2rem] mb-2.5">Reasoning</h2>
-        <p className="body">
+    <div className="reasoning-page">
+      <header className="app-page-heading">
+        <p className="app-eyebrow">Trace and verification</p>
+        <h1>Reasoning</h1>
+        <p>
           Every autonomous agent decision is anchored on-chain by hash. Browse the
           trace timeline below, verify any hash against the on-chain registry, and
           follow each trace back to the source strategy in the Library.
         </p>
-      </div>
+      </header>
       <OnChainTraces onNavigate={onNavigate} highlightTraceId={highlightTraceId} />
     </div>
   )
