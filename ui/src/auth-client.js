@@ -24,7 +24,6 @@ async function authRequest(path, options = {}) {
 }
 
 export const getSession = () => authRequest('/api/auth/get-session')
-export const getProviders = () => authRequest('/api/auth/providers')
 
 export const signInEmail = (email, password, callbackURL) => authRequest('/api/auth/sign-in/email', {
   method: 'POST',
