@@ -39,7 +39,7 @@ export default function PublicLayout({ user, children }) {
 							Product
 						</a>
 						<a
-							href="/#security"
+							href="/security"
 							className="public-nav__link public-nav__section"
 						>
 							Security

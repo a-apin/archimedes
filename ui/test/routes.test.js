@@ -17,9 +17,14 @@ import {
 // parseFeatures() never emits this key, so app code can't pass it.
 const ROADMAP_ON = { quant: true, roadmapSurfaces: true };
 
-test("landing and architecture remain public", () => {
-	assert.deepEqual(resolveRoute("/").kind, "public");
-	assert.deepEqual(resolveRoute("/architecture").kind, "public");
+test("landing, security, and architecture remain public", () => {
+	assert.equal(resolveRoute("/").kind, "public");
+	assert.equal(resolveRoute("/architecture").kind, "public");
+	const security = resolveRoute("/security");
+	assert.equal(security.kind, "public");
+	assert.equal(security.page, "security");
+	assert.equal(pageToPath("security"), "/security");
+	assert.equal(safeNextPath("/security"), "/app");
 });
 
 // Better Auth's account-linking guard (auth/auth.js disableImplicitLinking)
@@ -153,8 +158,8 @@ test("public shell lazy-loads wallet and protected application code", () => {
 		new URL("../src/AuthenticatedApp.jsx", import.meta.url),
 		"utf8",
 	);
-	assert.match(app, /lazy\(\(\) => import\(["']\.\/AuthenticatedApp["']\)\)/);
-	assert.doesNotMatch(app, /from ["']\.\/config["']/);
+	assert.match(app, /lazy\(\(\) => import\('\.\/AuthenticatedApp'\)\)/);
+	assert.doesNotMatch(app, /from '\.\/config'/);
 	assert.match(authenticated, /from ["']\.\/config["']/);
 });
 
