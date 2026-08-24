@@ -553,13 +553,30 @@ resource "aws_ecs_task_definition" "backend" {
         # Not secrets. Both layers must pass; <= 0 disables a layer.
         { name = "GENERATION_DAILY_CAP_PER_USER", value = "100" },
         { name = "GENERATION_DAILY_CAP_PER_IP", value = "200" },
-        # Generation payment gate (flip-list #834): flag stays "false" until
-        # Dan flips it deliberately — and GENERATION_PAYMENT_RECIPIENT (the
-        # platform wallet that receives x402 settlements) MUST be set first;
-        # flag-on with no recipient is a deliberate 503, never a free pass.
-        # The recipient is a TF_VAR (same pattern as PLATFORM_ADMIN_WALLETS
-        # below): supplied at apply time once the platform DCW exists, so the
-        # flip needs no code change.
+        # Premium-tier entitlement switch (services/model_gate.py:56 reads it;
+        # unset/anything-but-truthy = off). Pinned to the value prod already
+        # has in effect, so this is behaviourally a no-op today — the point is
+        # that it was UNSET here, which made prod's answer an accident of a
+        # code default rather than a decision. Same class of bug the money
+        # switches above were pinned to close (#1239).
+        #
+        # Load-bearing now that GENERATION_PAYMENT_REQUIRED is "true": an
+        # entitled premium request is NOT servable yet (premium ids are absent
+        # from FREE_TIER_MODELS, so generate_routes.py:335 falls back to the
+        # env default — disclosed at :329-334, roadmap T3.8/Bedrock). Flipping
+        # this to "true" before that is fixed would charge GENERATION_PRICE_USD
+        # and deliver a different model than the caller paid for. Fix the
+        # serving path first; do not flip this to unblock a demo.
+        { name = "PREMIUM_MODELS_ENABLED", value = "false" },
+        # Generation payment gate (flip-list #834). FLIPPED to "true" by Dan
+        # on 2026-08-20 (a45e8e5, "THE FLIP") — this comment previously still
+        # said the flag "stays false until Dan flips it", contradicting the
+        # line below it. GENERATION_PAYMENT_RECIPIENT (the platform wallet that
+        # receives x402 settlements) MUST stay set: flag-on with no recipient
+        # is a deliberate 503, never a free pass. The recipient is a TF_VAR
+        # (same pattern as PLATFORM_ADMIN_WALLETS below), supplied at apply
+        # time, so neither the flip nor a rollback needs a code change.
+        # Do not flip it back in a drive-by PR either.
         { name = "GENERATION_PAYMENT_REQUIRED", value = "true" },
         # $2.00/generation (Dan, 2026-08-20): the testnet faucet drips $20
         # per 2h cooldown, so one drip = a clean 10 generations — and $2 sits
