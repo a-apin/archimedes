@@ -58,7 +58,9 @@ PRs as still open. **Both were accurate when written** — the card was authored
    `OK` on that boolean, which is what a script or CI branches on. The full body is honest
    (every leg carries a status and reason) and the nothing-evaluable case is explicitly guarded
    ("vacuous truth is not honesty", `test_rigor_verify_routes.py:174`). The scalar and the exit
-   code are not. Worth an issue; do not build on `passes` until it is qualified.
+   code are not. **Tracked as [#1481](https://github.com/a-apin/archimedes/issues/1481)** with a
+   machine-checkable acceptance set and the `verdict_from_returns` reuse that cluster-8's U1 item
+   already wanted. Do not build on `passes` until it is qualified.
 3. **Do not trust this directory's anchors.** Follow session rule 1 without exception. Two are
    not stale but fictional: cluster-0 records `ui/src/siwe.js:15` as a *verified* day-0 finding
    and **that file has never existed** — `grep -rn VITE_ARC_CHAIN_ID .` matches only the card.
@@ -93,7 +95,7 @@ a row.
 | 5 | [a6-rerun](a6-rerun.md) | **executed, prerequisites skipped** (12/26) | The A4 read-path fix was not taken and its stated window ("the one moment in the year") has closed; the A5 fetch memo was never threaded (`run_backtests.py` passes no `fetcher`); **the before/after table — the card's named deliverable — does not exist**; rejection-rate copy never written |
 | 6–8 | [cluster-5](cluster-5-meter.md) | **retired, with one live tail** (9/48) | #1442 retires this card (#1194 + #1296/#1300 rebuilt the space; refund/release is now #1441) and that reading is right about the metering design. **One item it does not cover: B5's silent model downgrade is still live** at `generate_routes.py:335` — an entitled premium request is still downgraded to the env default, and #1441 is about refund/release, not this. Either fix it or track it before the card is closed |
 | 6–8 | [cluster-6](cluster-6-boot-paywall.md) | **barely started** (7/31) | An x402 generation paywall **shipped** 2026-08-19 (`ab712a1`), flag-off in prod — so the card's premise that no route emits a satisfiable 402 is false. **Neither boot assertion exists**, and `GATEWAY_CHAIN` still silently falls back to `arcTestnet` in three places. A live paywall with no mainnet-chain guard is the dangerous half of this card. No `/api/v1/`, no manifest-honesty edits |
-| 9 | [cluster-8](cluster-8-returns-csv.md) | **barely started** (11/53) | None of the specified deliverable: no `returns_import.py`, no `/api/v1/rigor/verdict`, no CSV transport, none of the eight validations, no test file. #1305's overlapping endpoint breaches two prohibitions — see item 2 above and A1 (gate compute runs on the event loop, not `asyncio.to_thread`) |
+| 9 | [cluster-8](cluster-8-returns-csv.md) | **barely started** (11/53) | None of the specified deliverable: no `returns_import.py`, no `/api/v1/rigor/verdict`, no CSV transport, none of the eight validations, no test file. #1305's overlapping endpoint breaches two prohibitions: the `passes` scalar (now [#1481](https://github.com/a-apin/archimedes/issues/1481)) and A1 — gate compute runs on the event loop, not `asyncio.to_thread`. Rescope this card against what #1305 shipped rather than writing beside it |
 | 10 | [cluster-7](cluster-7-ui-surface.md) | **barely started** (14/38) | `sitemap.xml` is the one clean win. A9/A10 are **product reversals**: the card says keep /portfolio and /marketplace live with a banner; #1266 hid them instead. All five orphan deletions untouched — `FusionResult.jsx` (198L) is being *actively maintained while orphaned*, `PortfolioAdvisor.jsx` (477L) leaves `/api/strategies/advisor` with no consumer. No `WorkInProgress.jsx`, so A4/A8/A10 have no banner to render. All three check scripts missing |
 
 ## Session rules — apply to every card
