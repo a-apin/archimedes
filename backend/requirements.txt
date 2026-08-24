@@ -10,7 +10,7 @@ fastapi>=0.139.2
 # starlette>=0.46.0 with no upper bound, so this floor resolves cleanly.
 starlette>=1.4.1
 uvicorn[standard]>=0.52.3
-sqlalchemy>=2.0.51
+sqlalchemy>=2.0.52
 # Schema migration tool (issue #1028) — replaces the hand-rolled idempotent
 # `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` patches in db.py for retrofitting
 # the already-populated prod Postgres DB. MIT license, maintained by the
