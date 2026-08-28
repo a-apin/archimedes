@@ -1041,7 +1041,15 @@ async def get_portfolio_advisor(
         # (level 1, the Archimedes Verified bar). This tile must use the identical
         # floor+direction: a `< 0.05` comparator here previously counted the LOWEST-
         # confidence strategies (round-2 review, #1358) — the opposite of what the
-        # PortfolioAdvisor.jsx "DSR conf<threshold" label (this same PR) claims.
+        # "DSR significant" name claims. `dsr_p_value` is `norm.cdf(z)` in
+        # `_rigor_helpers._dsr_from_stats`, i.e. Prob(true SR > best-of-N null) —
+        # the Bailey-LdP DSR itself, not a frequentist p-value — so higher IS
+        # better and `>=` is the correct direction.
+        #
+        # No UI reads this today: PortfolioAdvisor.jsx, the tile's only consumer,
+        # was deleted as dead code in 2fccecf6. `GET /api/strategies/advisor` is
+        # still live and still emits these fields, so the wire value has to be
+        # honest regardless of whether anything renders it.
         from archimedes.services.rigor_profiles import STRICTEST_LEVEL, get_profile
 
         dsr_badge_floor = get_profile(STRICTEST_LEVEL).dsr_p_min

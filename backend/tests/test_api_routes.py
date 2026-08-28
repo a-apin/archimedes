@@ -981,8 +981,10 @@ class TestAdvisorRoutes:
         RigorExplainer.jsx ("confidence >= 0.90 (badge)") and
         RigorStrictnessControl.jsx ("DSR confidence >= dsr_p_min") already use.
         Pre-fix, a ``< 0.05`` comparator counted the WORST (lowest-confidence)
-        strategies under this positive-sounding stat, self-contradicting the
-        PortfolioAdvisor.jsx "DSR conf" tile this same PR renamed."""
+        strategies under this positive-sounding stat. ``dsr_p_value`` is
+        ``norm.cdf(z)`` in ``_rigor_helpers._dsr_from_stats`` — Prob(true SR >
+        best-of-N null), the Bailey-LdP DSR itself rather than a frequentist
+        p-value — so higher is better and ``>=`` is the correct direction."""
         from archimedes.api import strategies_routes as sr
         from archimedes.services.rigor_evaluator import RigorGateResult
         from archimedes.services.rigor_profiles import STRICTEST_LEVEL, get_profile
@@ -1024,11 +1026,11 @@ class TestAdvisorRoutes:
         return must carry the SAME key set as its populated-case return, so
         every consumer that reads ``dsr_significant_threshold`` /
         ``pbo_acceptable_threshold`` unconditionally (``rigor_summary`` is
-        built unconditionally at both call sites in this route; the one
-        current UI consumer, ``PortfolioAdvisor.jsx``, happens to guard on
-        ``total_picks > 0`` today, but the API contract itself must not
-        depend on that guard existing) gets the honest floor value rather
-        than ``undefined``/a ``KeyError``.
+        built unconditionally at both call sites in this route) gets the
+        honest floor value rather than ``undefined``/a ``KeyError``. There is
+        no UI consumer at all on ``main`` — ``PortfolioAdvisor.jsx`` was
+        deleted as dead code in 2fccecf6 — which makes the wire contract the
+        only thing holding this shape, not a guard in some component.
 
         Source-text assertion (not a live route call): every reachable path
         through ``get_portfolio_advisor`` short-circuits to a *different*,
@@ -1036,9 +1038,7 @@ class TestAdvisorRoutes:
         {"error": ..., "allocations": []}``) before ``_build_rigor_summary``
         is ever called with an empty list, so the ``n == 0`` branch is
         currently unreachable via the live endpoint — this test guards the
-        function's internal key-symmetry contract directly, the same way
-        ``ui/test/rigor-tristate.test.js`` guards JSX branches via source
-        text rather than a full render.
+        function's internal key-symmetry contract directly.
         """
         import inspect
 
