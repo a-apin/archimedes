@@ -59,6 +59,15 @@ REGIME_MULTIPLIER: dict[Regime, float] = {
 # fetch failed or lacked VIX/MA signals — see agent_runner._classify_market_regime).
 REGIME_MULTIPLIER_NONE = 0.7
 
+# ── Regime provenance markers (#1264 review) ────────────────────────
+# `KellyRegimePortfolioConstructor` treats `regime is None` as neutral (scale
+# 1.0), so an inert tilt and a benign regime that scores 1.0 produce identical
+# weights. These name which one happened, so a consumer can tell them apart.
+# Same reasoning as `rf_convention` in `services/rf_series.py` (#1409): a
+# fail-soft default has to be a disclosed state, never a silent substitute.
+REGIME_CONVENTION_NEUTRAL_NO_FEED = "neutral_no_feed"
+REGIME_CONVENTION_APPLIED = "regime_tilt_applied"
+
 # Confidence floor: even at confidence 0 the regime multiplier is not fully
 # erased — low confidence halves the regime's effect rather than zeroing it.
 # scale_within_regime = _CONF_BASE + _CONF_SLOPE * confidence.
@@ -297,6 +306,16 @@ class KellyRegimePortfolioConstructor(IPortfolioConstructor):
         if regime is None:
             return 1.0
         return self._regime_scaler.compute_position_scale(regime, ensemble_consensus)
+
+    def regime_convention(self, regime: RegimeClassification | None) -> str:
+        """Which regime state produced the scale ``compute_position_scale`` returned.
+
+        Derived from the SAME ``regime is None`` test the scale is, so the two
+        cannot disagree. Callers surface this alongside the weights: without
+        it, a response carrying an un-tilted allocation is indistinguishable
+        from one carrying a regime-tilted allocation that scored 1.0.
+        """
+        return REGIME_CONVENTION_NEUTRAL_NO_FEED if regime is None else REGIME_CONVENTION_APPLIED
 
     def construct(
         self,

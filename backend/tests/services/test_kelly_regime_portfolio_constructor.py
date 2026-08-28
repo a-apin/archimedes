@@ -23,7 +23,12 @@ import pytest
 from archimedes.models.backtest import BacktestResult
 from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
 from archimedes.models.regime import Regime, RegimeClassification, RegimeSignals
-from archimedes.services.portfolio_constructor import SAFE_ASSET, KellyRegimePortfolioConstructor
+from archimedes.services.portfolio_constructor import (
+    REGIME_CONVENTION_APPLIED,
+    REGIME_CONVENTION_NEUTRAL_NO_FEED,
+    SAFE_ASSET,
+    KellyRegimePortfolioConstructor,
+)
 from archimedes.services.strategy_signal_evaluator import AssetSignal, Signal, StrategySignals
 from archimedes.services.strategy_sizer import (
     kelly_multiplier,
@@ -326,3 +331,41 @@ def test_construct_reproduces_old_strategy_sizer_pipeline_on_fixed_fixture(
     new_weights = {a.symbol: a.weight for a in allocs}
 
     assert new_weights == old_weights
+
+
+# ── Regime provenance (#1264 review) ──────────────────────────────────────
+
+
+def test_regime_convention_tracks_whether_the_tilt_actually_applied() -> None:
+    """The disclosed convention must agree with the scale actually used.
+
+    `regime=None` yields scale 1.0 here (the documented divergence from the
+    execution society's conservative 0.7), so a caller cannot tell an inert
+    tilt apart from a benign regime that happened to score 1.0. The response
+    marker exists to make that difference visible, and it is only worth
+    anything if it is derived from the SAME input the arithmetic used --
+    the `rf_convention` lesson from #1409, applied here.
+    """
+    c = KellyRegimePortfolioConstructor()
+
+    assert c.compute_position_scale(None, None) == 1.0
+    assert c.regime_convention(None) == REGIME_CONVENTION_NEUTRAL_NO_FEED
+
+    crisis = _regime(Regime.CRISIS, confidence=0.9)
+    assert c.compute_position_scale(crisis, None) < 1.0
+    assert c.regime_convention(crisis) == REGIME_CONVENTION_APPLIED
+
+
+def test_regime_convention_says_applied_even_when_the_tilt_scores_neutral() -> None:
+    """A real regime that happens to produce scale 1.0 must NOT read as
+    'no feed'. This is the case the marker exists to separate: same weights
+    out, materially different provenance."""
+    c = KellyRegimePortfolioConstructor()
+
+    # RISK_ON's multiplier IS 1.0, so at full confidence this produces the
+    # identical scale the no-feed path produces. Identical weights out, and
+    # the only thing separating them is the marker.
+    risk_on = _regime(Regime.RISK_ON, confidence=1.0)
+    assert c.compute_position_scale(risk_on, None) == c.compute_position_scale(None, None)
+    assert c.regime_convention(risk_on) == REGIME_CONVENTION_APPLIED
+    assert c.regime_convention(None) == REGIME_CONVENTION_NEUTRAL_NO_FEED

@@ -615,11 +615,14 @@ async def derive_vault_allocations(
     # documented neutral default (see KellyRegimePortfolioConstructor's
     # docstring) — so this is a behavior-preserving pass-through of
     # `kelly_weights` for every caller of this endpoint today.
+    # One `regime` value feeds both the arithmetic and the disclosed marker, so
+    # the two can never report different things (the #1409 rf_convention rule).
+    regime = None
     allocs = _portfolio_constructor.construct(
         risk_profile=RiskProfile(req.risk_profile),
         strategies=strategies,
         backtest_results={},
-        regime=None,
+        regime=regime,
         ensemble_consensus=None,
         base_weights=kelly_weights,
     )
@@ -662,4 +665,5 @@ async def derive_vault_allocations(
         risk_profile=req.risk_profile,
         sized_strategies={sid: frac for sid, frac in sized_fractions.items() if frac > 0.0},
         excluded_strategy_ids=excluded,
+        regime_convention=_portfolio_constructor.regime_convention(regime),
     )
