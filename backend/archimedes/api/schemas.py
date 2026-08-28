@@ -223,6 +223,34 @@ class StrategyResponse(BaseModel):
     # fixture True/False. ``passes_rigor_gate`` stays the fail-closed boolean (True
     # only when status == "pass").
     rigor_gate_status: str = "pending"
+    # ── Metric provenance (A3 / #1187) ──────────────────────────────────────
+    # Which source produced the RIGOR numbers above (deflated_sharpe_ratio,
+    # dsr_p_value, pbo_score, out_of_sample_sharpe):
+    #   "live_gate"   — the live run_rigor_gate call on persisted real returns
+    #   "unavailable" — the gate could not run; every rigor field is None
+    #
+    # There is deliberately no "persisted_backtest" value. #1187/#1340 removed
+    # the `s.<field> ?? bt.<field>` fallback that served fixture constants
+    # beside live numbers, so a persisted rigor column can no longer reach a
+    # response at all. The value's ABSENCE from this enum is the assertion that
+    # the fallback is gone — if it ever reappears, something has to add it back
+    # here and that shows up in a diff.
+    metrics_source: str = "unavailable"
+    # Which source produced the DISPLAY metrics (sharpe_ratio, cagr, win_rate,
+    # max_drawdown, calmar_ratio, sortino_ratio, correlation_to_spy,
+    # total_trades). These are descriptive backtest stats rather than a
+    # gate pass/fail claim, so unlike the rigor fields they still fall through a
+    # chain — and the last link is a STUB. Naming the link is what stops a
+    # placeholder reading as a measurement:
+    #   "strategy_record"    — the passport's own stored metrics (s.real_*)
+    #   "persisted_backtest" — the BacktestResultRecord row
+    #   "stub_placeholder"   — a hardcoded placeholder, measured nothing
+    #   "unavailable"        — no source at all; fields are None
+    # Deliberately NOT called "measured": s.real_* is stored on the strategy
+    # record and for the curated library traces to the #1187 fixture snapshot,
+    # so calling it measured would make exactly the claim this field exists to
+    # avoid.
+    display_metrics_source: str = "unavailable"
     paper_claimed_sharpe: float | None = None
     paper_claim_blended_sharpe: float | None = None
     is_backtest_placeholder: bool = False
