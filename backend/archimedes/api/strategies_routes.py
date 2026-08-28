@@ -41,6 +41,28 @@ logger = logging.getLogger(__name__)
 strategies_router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 
 
+def _display_metrics_source(s, bt) -> str:
+    """Which link of the display-metric fallback chain actually supplied values.
+
+    The chain is `s.real_* -> bt.* -> s.stub_*`, and its last link is a hardcoded
+    placeholder. Unlike the rigor fields (whose fallback #1187/#1340 removed
+    outright) these are descriptive stats, so the chain stays — but an
+    un-named chain means a stub renders identically to a real backtest.
+
+    Keyed on `real_sharpe` / `sharpe_ratio` as the representative field: the whole
+    block is populated from one link, so one probe describes all of them.
+    """
+    if s.real_sharpe is not None:
+        # NOT "measured": for the curated library this traces to the #1187
+        # fixture snapshot. It is what the strategy record stores, no more.
+        return "strategy_record"
+    if bt is not None and bt.sharpe_ratio is not None:
+        return "persisted_backtest"
+    if s.stub_sharpe is not None:
+        return "stub_placeholder"
+    return "unavailable"
+
+
 def _to_strategy_response(
     s: Strategy,
     verdict: RigorGateVerdict | None = None,
@@ -175,6 +197,13 @@ def _to_strategy_response(
         # "pass" | "fail" | "pending" | "degenerate".
         passes_rigor_gate=verdict.passes,
         rigor_gate_status=verdict.status,
+        # A3: name the source of the numbers instead of leaving the reader to
+        # infer it. "live_gate" iff the live gate actually produced a result for
+        # this strategy; otherwise every rigor field above is None and this says
+        # so. No "persisted_backtest" branch exists here on purpose — see
+        # StrategyResponse.metrics_source.
+        metrics_source=("live_gate" if rigor_result is not None else "unavailable"),
+        display_metrics_source=_display_metrics_source(s, bt),
         # is_backtest_placeholder: True when no BacktestResultRecord row exists.
         # ``has_real`` is now bt is not None so this is the honest gate.
         is_backtest_placeholder=not has_real,
