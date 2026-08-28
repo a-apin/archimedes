@@ -235,6 +235,46 @@ def test_numpy_datetime64_resolves_the_same_as_the_equivalent_iso_string() -> No
     assert ns_rates == iso_rates
 
 
+def test_numpy_ndarray_of_dates_resolves_like_the_equivalent_list() -> None:
+    """A numpy ndarray of dates must resolve, not raise.
+
+    ``test_numpy_datetime64_resolves_the_same_as_the_equivalent_iso_string``
+    passes a Python LIST of ``np.datetime64`` scalars, but the caller shape
+    this module's own docstring names -- ``.values`` / ``.to_numpy()`` on a
+    pandas ``DatetimeIndex`` -- is an ``ndarray``, and an ndarray with >1
+    element raises ``ValueError`` on the ``if not dates:`` truthiness test
+    before it ever reaches ``_to_iso``'s datetime64 handling. That
+    contradicts this module's stated posture: every unresolvable-date case
+    degrades to the flat rate loudly, never a crash.
+
+    The failure was length-dependent, which is why a list-based test could
+    not catch it: a 1-element ndarray is truthy-testable and worked, so only
+    a real multi-bar window (i.e. every real one) broke.
+    """
+    np = pytest.importorskip("numpy")
+
+    iso_rates, iso_convention = rf_series.resolve_annual_rf_for_dates(["2015-01-02", "2015-01-05", "2015-01-06"])
+    arr = np.array(["2015-01-02", "2015-01-05", "2015-01-06"], dtype="datetime64[ns]")
+
+    arr_rates, arr_convention = rf_series.resolve_annual_rf_for_dates(arr)
+
+    assert iso_convention == rf_series.RF_CONVENTION_SERIES
+    assert arr_convention == rf_series.RF_CONVENTION_SERIES
+    assert arr_rates == iso_rates
+    assert len(arr_rates) == 3
+
+
+def test_empty_numpy_ndarray_is_the_disclosed_fallback_like_an_empty_list() -> None:
+    """An empty ndarray must take the same no-date-index fallback an empty
+    list takes (``([], RF_CONVENTION_FALLBACK)``), not resolve to anything."""
+    np = pytest.importorskip("numpy")
+
+    rates, convention = rf_series.resolve_annual_rf_for_dates(np.array([], dtype="datetime64[ns]"))
+
+    assert rates == []
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+
+
 def test_numpy_datetime64_nat_still_falls_back_not_silently_accepted() -> None:
     """The broadened `_to_iso` handling must not let a malformed
     `numpy.datetime64("NaT")` slip through as a valid date -- it stringifies

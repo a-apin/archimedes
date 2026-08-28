@@ -206,7 +206,13 @@ def resolve_annual_rf_for_dates(
     falls back together rather than mixing real and flat rates bar-by-bar,
     and the fallback is always logged loudly.
     """
-    if not dates:
+    # `len(dates) == 0` rather than `not dates`: a numpy ndarray (what
+    # `.values` / `.to_numpy()` on a pandas DatetimeIndex returns — the caller
+    # shape this module's docstring names, and the one `_to_iso`'s datetime64
+    # branch exists for) raises ValueError on a bare truthiness test, both when
+    # it holds >1 element and when it is empty. That crashed this function
+    # before it reached any of the fail-soft handling below.
+    if dates is None or len(dates) == 0:
         logger.info(
             "rf_series: no date index supplied -- using the flat %.2f%% risk-free rate "
             "(rf_convention=%s, disclosed fallback, not an error)",
