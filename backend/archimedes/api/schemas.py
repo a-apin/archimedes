@@ -340,6 +340,20 @@ class TraceResponse(BaseModel):
     arc_tx_hash: str | None = None
     is_verified: bool = False  # Has on-chain hash been confirmed?
 
+    # How that confirmation was reached — same vocabulary as
+    # TraceVerifyResponse.verification_mode (#1359), so the display routes and
+    # the verify route cannot invent two different words for the same state.
+    #
+    # None is the honest default: this response makes NO verification claim.
+    # The off-chain path replays whatever `is_verified` was stored with the
+    # trace and compares nothing itself, so it has no mode to report — call
+    # /api/traces/{id}/verify for one.
+    #
+    # "anchored_only" is what the on-chain-only path reports (#1407): an anchor
+    # exists in the registry and ZERO hashes were compared against it. It must
+    # not render with the same affordance as a hash match.
+    verification_mode: Literal["hash_matched", "anchored_only", "failed"] | None = None
+
     # Context
     regime_at_decision: str | None = None
     trades_executed: list[TradeExecutedResponse] = []
