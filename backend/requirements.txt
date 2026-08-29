@@ -23,7 +23,7 @@ pydantic-settings>=2.14.2
 python-dotenv>=1.2.2
 
 # Data + numerics
-numpy>=2.5.1,<3.0
+numpy>=2.5.2,<3.0
 # 3.0.4 was yanked from PyPI after the dependabot bump (#798) merged, so
 # `pandas>=3.0.4` became unsatisfiable and broke every fresh CI install +
 # Docker build (latest available is 3.0.3). Floor lowered to the newest
