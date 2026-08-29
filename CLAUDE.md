@@ -11,7 +11,7 @@
 > **Where things live:** [`docs/README.md`](docs/README.md) — the doc index (a doc not
 > listed there does not exist) · [`docs/user-stories.md`](docs/user-stories.md) — canonical
 > product spine · [`docs/architecture.md`](docs/architecture.md) — architecture map ·
-> [`docs/adr/`](docs/adr/README.md) — 18 decision records. Current status comes from
+> [`docs/adr/`](docs/adr/README.md) — 19 decision records. Current status comes from
 > the live system, not a doc: `/health`, `GET /api/config/contracts`, and the
 > deploy history. (The README's dated Status section was retired 2026-08-20.)
 
