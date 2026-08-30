@@ -718,16 +718,43 @@ async def health():
     # the real state machine-readable so no surface can present manifest metadata
     # as "embedded / knowledge-graphed". Each is driven from actual state, never a
     # constant:
-    #   corpus_embedded         — live sentence-transformer embeddings active
-    #                             (paper_rag == "live"; "degraded" => TF-IDF, NOT embedded).
-    #                             NOTE: "ready" (weights on disk, model not yet
-    #                             loaded because nothing has retrieved yet) is
-    #                             deliberately NOT embedded — presence on disk is
-    #                             not proof, and this field must not overstate.
-    #                             It flips to true on the first real retrieval.
+    #   paper_rerank_model_live — a sentence-transformer object is loaded IN THIS
+    #                             PROCESS (paper_rag == "live"). "ready" (weights on
+    #                             disk, nothing has retrieved yet) is deliberately not
+    #                             live: presence on disk is not proof. Flips to true on
+    #                             the first real retrieval, and back to false on restart.
+    #   corpus_embedded_at_rest — whether STORED vectors exist, derived from the schema.
+    #                             This was previously published as `corpus_embedded` with
+    #                             the value of the field above it (#1488): the name
+    #                             asserted a property of the corpus while the value
+    #                             measured a property of the process, so one retrieval
+    #                             made /api/health say the 10k corpus was embedded. It
+    #                             was never embedded; retrieval is a keyword filter plus
+    #                             a query-time rerank of at most `rerank_candidate_cap`
+    #                             candidates, and everything past that cap is appended at
+    #                             score 0.0. Both fields ship because the pair is what
+    #                             makes the absence legible — a lone false reads as an
+    #                             outage, and a lone true reads as the claim we must not
+    #                             make. Same reason `corpus_kg_built: false` sits beside
+    #                             `corpus_kg_entities: 0`.
     #   corpus_kg_built         — at least one KG entity exists (REBEL/SciSpacy output)
     #   corpus_artifact_present — a real KB-pipeline artifact (S3/local manifest) exists
-    corpus_embedded = paper_rag_status == "live"
+    paper_rerank_model_live = paper_rag_status == "live"
+    # Reporting "not embedded" on a failed read is the only safe direction here:
+    # the sole way this field can do harm is by claiming vectors that are absent.
+    corpus_embedded_at_rest = False
+    corpus_embedded_at_rest_reason = "probe failed"
+    rerank_cap = 0
+    try:
+        from archimedes.services.paper_rag import corpus_embedding_at_rest, rerank_candidate_cap
+
+        _at_rest = corpus_embedding_at_rest()
+        corpus_embedded_at_rest = _at_rest.embedded_at_rest
+        corpus_embedded_at_rest_reason = _at_rest.reason
+        rerank_cap = rerank_candidate_cap()
+    except Exception as exc:
+        logger.warning("corpus_embedding_at_rest read failed (%s) — reporting not-embedded", type(exc).__name__)
+        corpus_embedded_at_rest_reason = f"probe failed ({type(exc).__name__})"
     kg_entity_count = 0
     kg_relation_count = 0
     try:
@@ -777,7 +804,10 @@ async def health():
         # manifest-seeded *metadata records*; these say what has actually been
         # built on top of them. New keys only — existing keys are unchanged so
         # current UI/monitoring consumers don't break.
-        "corpus_embedded": corpus_embedded,
+        "paper_rerank_model_live": paper_rerank_model_live,
+        "corpus_embedded_at_rest": corpus_embedded_at_rest,
+        "corpus_embedded_at_rest_reason": corpus_embedded_at_rest_reason,
+        "rerank_candidate_cap": rerank_cap,
         "corpus_kg_built": corpus_kg_built,
         "corpus_kg_entities": kg_entity_count,
         "corpus_kg_relations": kg_relation_count,
