@@ -100,3 +100,130 @@ export function paperErrorMessage(err, fallback = 'Something went wrong.') {
   if (err.status != null) return 'Paper trading is temporarily unavailable — try again in a moment.'
   return err.message || fallback
 }
+
+// ── Intraday marks (design §5.1) ─────────────────────────────────────────────
+//
+// A mark is a re-PRICING of the position the daily replay established — not a
+// re-decision. The settled daily ledger is the track record that carries to
+// mainnet; a mark is an unsettled decoration the backend deletes past 90 days.
+// Every helper below exists so the card can never state more than that:
+//
+//   - markLabel: never a bare number. Always value + as-of time, and the word
+//     "delayed" whenever the row says so. `is_delayed` is a STORED column set
+//     by the fetch path from what the provider declares — this function reads
+//     that fact, it does not infer delay from a timestamp.
+//   - The existence gate is `mark == null`, never the mark's value — the same
+//     discriminator lesson as formatTotalReturn's `days`: a genuinely marked
+//     flat 0.00% is a measurement and must print, while an absent mark must
+//     never be dressed as "+0.00%".
+//   - marksStalenessNote: a frozen number must read as "last marked Friday
+//     16:00", not as a broken ticker. This is the #1378 shape — a time-labelled
+//     number going stale across a weekend/gap — so the note states the OBSERVED
+//     age and never asserts a market state ("closed", "halted") the client has
+//     no way to know.
+
+/** HH:MM in UTC for a mark's `ts`, or null if the timestamp is unusable.
+ * Never renders "Invalid Date" and never throws — same defensive contract as
+ * formatDriftDate. */
+function formatUtcTime(iso) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toLocaleTimeString('en-GB', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit' })
+}
+
+/** "Fri 16:00" in UTC, for a mark old enough that the day matters. */
+function formatUtcDayTime(iso) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  const day = d.toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short' })
+  return `${day} ${formatUtcTime(iso)}`
+}
+
+/**
+ * The live-value line: `+0.42% · as of 14:45 UTC · delayed`.
+ *
+ * `portfolio_value` is an INDEX with 1.0 == deploy-time capital (there is no
+ * deployed-capital amount anywhere in the system, so a dollar figure would be
+ * invented), which makes the percentage `value - 1`.
+ *
+ * Returns '—' only when there is no mark at all, or when the mark carries no
+ * usable value or timestamp — because a value without its as-of time is
+ * exactly the bare number §2.4 rule 3 forbids, and half a claim is worse than
+ * none. The gate is never the value itself.
+ */
+export function markLabel(mark) {
+  if (!mark) return '—'
+  const value = mark.portfolio_value
+  if (value == null || Number.isNaN(value)) return '—'
+  const at = formatUtcTime(mark.ts)
+  if (!at) return '—'
+  const pct = (value - 1) * 100
+  const signed = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
+  return `${signed} · as of ${at} UTC${mark.is_delayed ? ' · delayed' : ''}`
+}
+
+/**
+ * A screen-reader-friendly restatement of the same line. The number updates
+ * silently inside a live region otherwise, which is invisible to a screen
+ * reader (4.1.3) — the as-of time belongs in the accessible name, not only in
+ * the visual glyphs.
+ */
+export function markAnnouncement(mark) {
+  if (!mark) return ''
+  const label = markLabel(mark)
+  if (label === '—') return ''
+  const at = formatUtcTime(mark.ts)
+  const pct = ((mark.portfolio_value - 1) * 100).toFixed(2)
+  const delayed = mark.is_delayed ? ', from a delayed feed' : ''
+  return `Live value ${pct} percent, as of ${at} UTC${delayed}. Unsettled — the daily ledger is the track record.`
+}
+
+/**
+ * A note when the newest mark has stopped moving — null while it is fresh.
+ *
+ * "Fresh" is two cadence intervals (`intervalMinutes`, default 15): one missed
+ * tick is a hiccup, two is a state worth naming. Equities have market hours and
+ * crypto does not, so an equity deployment's value is GENUINELY frozen
+ * overnight and at weekends; the note makes that read as an observation age
+ * rather than as a broken ticker. It deliberately does NOT say "market closed"
+ * — the client cannot observe that, and #1378 is exactly the defect of
+ * labelling a gap with a window nobody measured.
+ */
+export function marksStalenessNote(mark, now = Date.now(), intervalMinutes = 15) {
+  if (!mark) return null
+  const t = new Date(mark.ts).getTime()
+  if (Number.isNaN(t)) return null
+  const ageMinutes = (now - t) / 60000
+  if (ageMinutes < intervalMinutes * 2) return null
+  const when = formatUtcDayTime(mark.ts)
+  return when ? `Last marked ${when} UTC — no newer price has been observed since.` : null
+}
+
+/**
+ * The no-marks-yet state's reason. A deployment created between ticks, or one
+ * on SPY before the session opens, legitimately has zero marks — a real state,
+ * not an error, and one that renders as an em-dash WITH this reason rather
+ * than as a measured-looking +0.00%.
+ *
+ * Gated on `status` for the same reason driftTooltip is: the marks loop filters
+ * on STATUS_ACTIVE, so a stopped deployment will never get a mark and telling
+ * its owner to wait for one would be false.
+ */
+export function noMarksNote(status) {
+  return status === 'active'
+    ? 'No live value yet — the first intraday mark lands at the next 15-minute tick.'
+    : 'No live value — marks stop when a deployment is stopped.'
+}
+
+/**
+ * The marks-fetch-failure state. The deployment card itself loaded fine; only
+ * the live value is missing — a partial failure the card must state rather
+ * than paper over. Routes through paperErrorMessage so a raw
+ * "Backend returned 503" can no more reach this line than the main error card,
+ * and says the value is UNAVAILABLE rather than showing the last mark it
+ * happened to hold: a stale number under a fresh-looking label is the same
+ * defect as writing a duplicated stale row, just in the UI.
+ */
+export function marksUnavailableNote(err) {
+  return `Live value unavailable — ${paperErrorMessage(err, 'the intraday feed could not be reached.')}`
+}

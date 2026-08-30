@@ -38,15 +38,23 @@ def updater() -> OracleUpdater:
     return OracleUpdater()
 
 
-def _fake_yfinance_multi(prices_by_ticker: dict[str, float]):
+_BAR_TS = datetime(2026, 8, 30, 19, 45, tzinfo=UTC)
+
+
+def _fake_yfinance_multi(prices_by_ticker: dict[str, float], bar_ts: datetime = _BAR_TS):
     """A fake `yfinance` module whose download() returns a multi-ticker frame.
 
-    The real code reads `data["Close"]` and indexes `.columns` per ticker, then
-    takes `.dropna().iloc[-1]`. We mimic the pandas surface the code touches.
+    The real code reads `data["Close"]`, indexes `.columns` per ticker, then
+    takes `.dropna()` and reads BOTH `.iloc[-1]` (the price) and `.index[-1]`
+    (the bar's upstream observation time). The index is therefore a real
+    tz-aware DatetimeIndex, not the default RangeIndex — the bar time is part
+    of the batch-quote contract now (intraday design §2 item 0), so a fake
+    without one is not a faithful stand-in for the vendor.
     """
     import pandas as pd
 
-    close = pd.DataFrame({t: [p] for t, p in prices_by_ticker.items()})
+    index = pd.DatetimeIndex([pd.Timestamp(bar_ts)])
+    close = pd.DataFrame({t: [p] for t, p in prices_by_ticker.items()}, index=index)
     frame = MagicMock()
     frame.empty = False
     frame.__getitem__ = MagicMock(side_effect=lambda k: close if k == "Close" else None)
@@ -63,6 +71,26 @@ class TestFetchYfinance:
         by_symbol = {r.symbol: r.price_usd for r in results}
         assert by_symbol["sTSLA"] == 250.0
         assert by_symbol["sSPY"] == 500.0
+
+    def test_price_carries_the_upstream_bar_time_not_the_poll_time(self, updater):
+        """The honesty gap the widened batch seam closes (intraday design §2).
+
+        `_validate_for_push` computes `age_s` as `now - price.timestamp`. While
+        this leg stamped the POLL time, that gate compared now against now and
+        could not reject a stale bar — on the one leg where the staleness cap
+        (DEFAULT_MAX_UPSTREAM_STALENESS_SECONDS) is doing user-visible work.
+
+        Demonstrated to reject: restoring `timestamp=timestamp` in
+        `_fetch_yfinance` makes this test fail (the stamp becomes `poll_time`)
+        while `test_parses_multi_ticker_close` above still passes — i.e. the
+        price was right and the *time* was the lie.
+        """
+        poll_time = datetime(2026, 8, 30, 23, 59, tzinfo=UTC)
+        fake_yf = _fake_yfinance_multi({"SPY": 500.0})
+        with patch.dict(sys.modules, {"yfinance": fake_yf}):
+            results = updater._fetch_yfinance({"sSPY": "SPY"}, poll_time)
+        assert results[0].timestamp == _BAR_TS
+        assert results[0].timestamp != poll_time
 
     def test_import_error_returns_empty(self, updater):
         # Force the `import yfinance as yf` inside to raise (no mock object needed —

@@ -1,6 +1,22 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiGet, apiPost } from '../api'
-import { driftTooltip, formatTotalReturn, paperErrorMessage } from '../paperCopy'
+import {
+  driftTooltip,
+  formatTotalReturn,
+  markAnnouncement,
+  markLabel,
+  marksStalenessNote,
+  marksUnavailableNote,
+  noMarksNote,
+  paperErrorMessage,
+} from '../paperCopy'
+
+// How often the live value is refetched. A 15-minute mark cadence does not
+// justify an SSE channel — the generation stream already cost this repo one
+// reproducible drop-under-load incident (#891), and a once-per-quarter-hour
+// number is not worth re-opening that surface. Polling at a third of the
+// cadence means a new mark shows up within ~5 minutes of being written.
+const MARKS_POLL_MS = 5 * 60 * 1000
 
 // /app/paper — the act-on step of the MVP spine (generate → verdict → paper).
 // Lists the signed-in account's paper deployments from GET /api/paper/deployments
@@ -11,10 +27,19 @@ import { driftTooltip, formatTotalReturn, paperErrorMessage } from '../paperCopy
 // generation paywall flips). Strategy display names come from a client-side
 // join against the library lists; the paper API deliberately returns ids only.
 //
-// The DRIFT tooltip, the total-return figure, and error-message rendering
-// are pure functions in ../paperCopy — unit-tested there (#1362) so this
-// component never re-fabricates a freeze that doesn't happen, a measured
-// look for an unmeasured day-0 ledger, or a raw "Backend returned NNN".
+// The DRIFT tooltip, the total-return figure, the intraday mark labels, and
+// error-message rendering are pure functions in ../paperCopy — unit-tested
+// there (#1362) so this component never re-fabricates a freeze that doesn't
+// happen, a measured look for an unmeasured day-0 ledger, a bare intraday
+// number with no as-of time, or a raw "Backend returned NNN".
+//
+// Two series, two lifetimes, and the card must never let them blur:
+//   - `series` (paper_daily_returns) is the SETTLED, append-only track record
+//     that carries to mainnet;
+//   - the intraday marks from GET /api/paper/deployments/{id}/marks are an
+//     UNSETTLED re-pricing of the same position, which the backend deletes
+//     past 90 days. They are polled, drawn as a dashed tail, and always
+//     labelled with their as-of time.
 
 function nameOf(row) {
   return row?.strategy_name || row?.name || row?.paper_title || null
@@ -57,33 +82,101 @@ function StatusChip({ status, driftAt }) {
   )
 }
 
-// Minimal equity sparkline over series[].equity_index. Starts the path at the
-// 1.0 baseline so day-1 deployments still draw a meaningful segment.
-function Sparkline({ series }) {
+// Minimal equity sparkline over series[].equity_index, with the UNSETTLED
+// intraday tail (paper_marks[].portfolio_value) drawn as a separate dashed,
+// half-weight segment. The visual break is load-bearing, not decoration: only
+// the settled daily ledger carries to mainnet, so a reader has to be able to
+// see at a glance where the recorded track record ends and the intraday view
+// begins. Starts the path at the 1.0 baseline so day-1 deployments still draw
+// a meaningful segment.
+function Sparkline({ series, intraday }) {
   if (!series || series.length === 0) return null
-  const values = [1.0, ...series.map((p) => p.equity_index)]
+  const settled = [1.0, ...series.map((p) => p.equity_index)]
+  const tail = (intraday || []).map((m) => m.portfolio_value).filter((v) => v != null && !Number.isNaN(v))
+  const values = [...settled, ...tail]
   const min = Math.min(...values)
   const max = Math.max(...values)
   const span = max - min || 1
   const W = 220
   const H = 48
-  const pts = values
-    .map((v, i) => {
-      const x = (i / (values.length - 1)) * (W - 4) + 2
-      const y = H - 6 - ((v - min) / span) * (H - 12)
-      return `${x.toFixed(1)},${y.toFixed(1)}`
-    })
-    .join(' ')
+  const x = (i) => (values.length === 1 ? 2 : (i / (values.length - 1)) * (W - 4) + 2)
+  const y = (v) => H - 6 - ((v - min) / span) * (H - 12)
+  const pointsFor = (vals, offset) => vals.map((v, i) => `${x(i + offset).toFixed(1)},${y(v).toFixed(1)}`).join(' ')
   const up = values[values.length - 1] >= values[0]
+  const stroke = up ? 'var(--accent)' : 'var(--negative)'
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} aria-hidden="true">
-      <polyline
-        points={pts}
-        fill="none"
-        stroke={up ? 'var(--accent)' : 'var(--negative)'}
-        strokeWidth="1.5"
-      />
+      <polyline points={pointsFor(settled, 0)} fill="none" stroke={stroke} strokeWidth="1.5" />
+      {tail.length > 0 && (
+        // Joined to the last settled point so the tail reads as a continuation,
+        // then immediately distinguished by weight + dash.
+        <polyline
+          points={pointsFor([settled[settled.length - 1], ...tail], settled.length - 1)}
+          fill="none"
+          stroke={stroke}
+          strokeWidth="1"
+          strokeDasharray="2 2"
+          opacity="0.7"
+        />
+      )}
     </svg>
+  )
+}
+
+// The live value line under the settled total return. Four states, and only
+// one of them shows a number:
+//
+//   1. a mark exists          -> "+0.42% · as of 14:45 UTC · delayed", plus a
+//                                staleness note once it stops moving;
+//   2. the marks fetch failed -> says so, and shows NO number (never the last
+//                                one it happened to hold);
+//   3. no mark yet            -> an em-dash WITH a reason. Never "+0.00%" —
+//                                that is the day-0 bug formatTotalReturn was
+//                                extracted to fix, in a new place;
+//   4. marks not loaded yet   -> nothing at all, so a card cannot flash an
+//                                "unavailable" claim it has not established.
+//
+// The value's own colour is deliberately NOT the accent/negative pair the
+// settled figure uses: an unsettled number should not be dressed like a
+// settled one.
+function LiveValue({ dep, marks, error }) {
+  if (error) {
+    return (
+      <div className="caption" style={{ marginTop: 6, color: 'var(--text-3)' }}>
+        {error}
+      </div>
+    )
+  }
+  if (marks === undefined) return null
+  // `latest_mark` rides along on the deployment summary, so the value is
+  // already correct on first paint; the polled list only refines it.
+  const latest = marks.length > 0 ? marks[marks.length - 1] : dep.latest_mark
+  if (!latest) {
+    return (
+      <div className="caption" style={{ marginTop: 6, color: 'var(--text-3)' }}>
+        — {noMarksNote(dep.status)}
+      </div>
+    )
+  }
+  const stale = marksStalenessNote(latest)
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div
+        className="caption"
+        style={{ fontFamily: 'var(--mono, monospace)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-2)' }}
+      >
+        <span className="sr-only">{markAnnouncement(latest)}</span>
+        <span aria-hidden="true">{markLabel(latest)}</span>
+      </div>
+      <div className="caption" style={{ color: 'var(--text-3)' }}>
+        live · unsettled
+      </div>
+      {stale && (
+        <div className="caption" style={{ color: 'var(--text-3)' }}>
+          {stale}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -93,12 +186,21 @@ export default function PaperTrading({ onNavigate }) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [stopping, setStopping] = useState(null)
+  // Marks are kept in their OWN state, keyed by deployment id, and are never
+  // merged into the deployment row: the settled ledger and the unsettled
+  // intraday view have different lifetimes (the backend deletes marks past 90
+  // days) and must never be confusable at the point of render.
+  const [marks, setMarks] = useState({})
+  const [marksErrors, setMarksErrors] = useState({})
+  const deploymentIdsRef = useRef([])
 
   const load = useCallback(async () => {
     setError('')
     try {
       const res = await apiGet('/api/paper/deployments')
-      setDeployments(res.deployments || [])
+      const rows = res.deployments || []
+      setDeployments(rows)
+      deploymentIdsRef.current = rows.map((d) => d.deployment_id)
     } catch (e) {
       setError(paperErrorMessage(e, 'Failed to load paper deployments'))
       setDeployments([])
@@ -127,9 +229,44 @@ export default function PaperTrading({ onNavigate }) {
     setNames(map)
   }, [])
 
+  // Intraday marks, polled per deployment. Each deployment settles
+  // independently: one deployment's marks endpoint failing must not blank the
+  // others, and must not blank that deployment's SETTLED daily return either
+  // — it is a partial failure, and the card keeps showing what it still knows.
+  const loadMarks = useCallback(async () => {
+    const ids = deploymentIdsRef.current
+    if (ids.length === 0) return
+    const results = await Promise.allSettled(
+      ids.map((id) => apiGet(`/api/paper/deployments/${encodeURIComponent(id)}/marks?limit=200`)),
+    )
+    const nextMarks = {}
+    const nextErrors = {}
+    ids.forEach((id, i) => {
+      const res = results[i]
+      if (res.status === 'fulfilled') {
+        nextMarks[id] = res.value.marks || []
+      } else {
+        // Deliberately do NOT carry the previous marks forward. A number the
+        // last successful poll fetched, rendered under a live-looking label,
+        // is a stale reading wearing a fresh timestamp — the same defect as
+        // writing a duplicated stale row, moved into the UI.
+        nextErrors[id] = marksUnavailableNote(res.reason)
+      }
+    })
+    setMarks(nextMarks)
+    setMarksErrors(nextErrors)
+  }, [])
+
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    if (deployments === null) return
+    loadMarks()
+    const timer = setInterval(loadMarks, MARKS_POLL_MS)
+    return () => clearInterval(timer)
+  }, [deployments, loadMarks])
 
   const stop = async (dep) => {
     const label = names[dep.strategy_id] || dep.strategy_id
@@ -160,7 +297,9 @@ export default function PaperTrading({ onNavigate }) {
           Simulated deployments of your strategies — <strong>no funds move</strong>. Each one
           snapshots the strategy spec at deploy time and appends one real-data return per trading
           day; later regeneration of the strategy never rewrites a running ledger. This is the
-          track record that carries to mainnet.
+          track record that carries to mainnet. The <strong>live value</strong> beneath each total
+          return re-prices that same position every 15 minutes — it is unsettled, carries the time
+          it was observed, and never changes what the strategy does.
         </p>
       </div>
 
@@ -229,7 +368,7 @@ export default function PaperTrading({ onNavigate }) {
               </div>
 
               <div style={{ flex: '0 0 auto' }}>
-                <Sparkline series={dep.series} />
+                <Sparkline series={dep.series} intraday={marks[dep.deployment_id]} />
               </div>
 
               <div style={{ flex: '0 0 auto', textAlign: 'right', minWidth: 110 }}>
@@ -249,6 +388,7 @@ export default function PaperTrading({ onNavigate }) {
                   {formatTotalReturn(dep.total_return, dep.days)}
                 </div>
                 <div className="caption">total return</div>
+                <LiveValue dep={dep} marks={marks[dep.deployment_id]} error={marksErrors[dep.deployment_id]} />
                 {dep.status === 'active' && (
                   <button
                     className="btn btn-outline btn-sm"

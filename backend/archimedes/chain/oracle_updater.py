@@ -761,20 +761,33 @@ class OracleUpdater:
 
     def _fetch_yfinance(self, symbols: dict[str, str], timestamp: datetime) -> list[AssetPrice]:
         """Fetch equity prices via the market-data provider seam (#1218; sync —
-        call via to_thread). Default provider is yfinance — identical
-        behavior to before this seam existed (the fetch logic itself moved to
-        ``YFinanceProvider.get_intraday_quotes_batch``, unchanged). ``source``
-        on the returned prices is the ACTIVE provider name, not a hardcoded
+        call via to_thread). Default provider is yfinance. ``source`` on the
+        returned prices is the ACTIVE provider name, not a hardcoded
         ``"yfinance"``, so a vendor swap is visible on every downstream
         consumer of these prices (including the #775 cross-check).
+
+        **Each price now carries its UPSTREAM bar timestamp, not the poll
+        time.** This used to stamp ``timestamp`` (``now``, from
+        ``fetch_prices``) on every leg, while ``_validate_for_push`` computes
+        ``age_s`` from that same field — so on this leg the staleness gate
+        compared now against now and *could not reject a stale bar*, even
+        though ``fetch_prices``'s docstring promises "every price keeps its
+        true source + upstream timestamp so the on-chain push
+        staleness/deviation gates stay meaningful" (true of the Pyth cascade,
+        which carries a real observation time; not true here until the batch
+        seam was widened to return one).
+
+        ``timestamp`` is kept as the poll-time FALLBACK — a vendor that ever
+        hands back a null bar time still produces a usable price, and it is
+        stamped with the only time we can honestly claim to know.
         """
         from archimedes.services.market_data_provider import get_provider, provider_name
 
         quotes = get_provider().get_intraday_quotes_batch(symbols)
         source = provider_name()
         return [
-            AssetPrice(symbol=synth_symbol, price_usd=price, timestamp=timestamp, source=source)
-            for synth_symbol, price in quotes.items()
+            AssetPrice(symbol=synth_symbol, price_usd=price, timestamp=bar_ts or timestamp, source=source)
+            for synth_symbol, (price, bar_ts) in quotes.items()
         ]
 
     async def _fetch_crypto(self, timestamp: datetime) -> list[AssetPrice]:
