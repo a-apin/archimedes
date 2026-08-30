@@ -600,6 +600,51 @@ thing — measure it.
 > alternative" (recurring Fargate cost — an infra spend commitment, Dan's
 > call per `CLAUDE.md` § "When to ask before acting").
 
+**Truth in labeling — this INSTRUMENTS the deploy window, it does not close
+it.** The nginx `healthCheck` (`infra/ecs.tf`) gives the one container that
+is actually the ALB target a health signal it never had, and the script below
+makes the acceptance criterion a runnable measurement instead of prose. That
+is the whole of it. Every knob that actually governs the gap the #1309
+incident measured is **untouched by this change**: the backend target group
+(`aws_lb_target_group.backend`, `infra/alb.tf`) still sets no
+`deregistration_delay`, so it keeps the AWS default of 300s — and that value
+governs how long a *draining* target holds in-flight connections, not when
+deregistration begins, so it was never the lever here anyway;
+`healthy_threshold = 2` × `interval = 30` is unchanged,
+so a replacement target still needs ≥60s of passing checks before the ALB will
+route to it; and `deployment_minimum_healthy_percent = 100` /
+`deployment_maximum_percent = 200` (`infra/ecs.tf`) are unchanged. **Issue
+#1309 stays open.** It closes on a measured, passing run of the script across
+a real deploy — not on this merge.
+
+**And it is INERT until someone applies it.** The `healthCheck` lives in
+`aws_ecs_task_definition.backend`, so merging changes nothing about running
+infrastructure by itself. Two things have to happen, in order: (1) a manual
+`terraform apply` — Dan-only, per this runbook's own header — to register a
+new task-definition revision that contains the check; and only then (2) CI
+carries it forward, because `.github/workflows/deploy.yml`'s `deploy-ecs` job
+clones the **currently registered** task definition (`aws ecs
+describe-task-definition`, `deploy.yml:633`) and rewrites only the three image
+fields — it never re-derives the definition from `infra/ecs.tf`. So a
+merged-but-unapplied `healthCheck` is invisible to every subsequent deploy,
+and a probe run before that apply is measuring the OLD behavior. Do not read
+such a run — pass or fail — as evidence about this change.
+
+**Both health endpoints in play are LIVENESS signals, not readiness signals.**
+`/nginx-health` (`nginx/nginx.conf`) returns a literal `200 "ok"` straight from
+nginx: it proves nginx is listening with a validly-rendered config, and
+nothing whatsoever about backend or auth. `/health` (the chain-disconnected
+branch of the handler in `backend/archimedes/main.py`, around L559-575)
+returns **200 while degraded, by design** — when the Arc RPC is unreachable
+it logs `HEALTH_CHAIN_DISCONNECTED` and still answers 200, deliberately, so a
+transient RPC blip cannot cascade the whole ECS service down (#1039 N2). That
+is a contract, not a bug — but it means a 200 from `/health`, whether observed
+by the container check, the ALB target group, or this script's probe loop,
+does **not** mean "ready to serve correct answers". A green run below proves
+the criterion as written — "the ALB always had something answering 200" — not
+"the service was fully functional throughout". If you need a readiness signal,
+add an endpoint that fails closed; do not tighten these two.
+
 ```bash
 cd infra   # requires the S3 backend already initialized, or pass --alb-dns/--cluster/--service explicitly
 ./scripts/verify-zero-downtime-deploy.sh

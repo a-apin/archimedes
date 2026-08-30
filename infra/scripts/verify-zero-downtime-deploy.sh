@@ -13,7 +13,12 @@
 #      cache) and logs every response code + latency.
 #   2. Force-triggers a new ECS rolling deployment (same task definition —
 #      no new image needed to exercise the rolling-replace path).
-#   3. Waits for the service to reach steady state.
+#   3. Waits for the service to reach steady state. If that waiter gives up
+#      (non-zero exit), the run does NOT abort: it still stops the probe,
+#      scores the window, and prints a verdict plus the log path — a deploy
+#      that never stabilized is the #1309 symptom itself, so that is the
+#      moment the measurement matters most. A clean window under a failed
+#      waiter is reported as INCONCLUSIVE (exit 1), never as a PASS.
 #   4. Fails loudly (non-zero exit, and prints every offending line) if ANY
 #      request during the window was not a 200 — a 502/503/000/timeout is a
 #      real regression against issue #1309, not something to wave off as
@@ -129,8 +134,17 @@ trap cleanup EXIT
 loop_start_epoch="$(date -u +%s)"
 (
   while true; do
+    # `-w` output is written by curl even when curl itself exits non-zero
+    # (a connect failure or a --max-time abort still prints "000 <time>s"),
+    # so the old `... || echo "000 0s"` appended a SECOND verdict onto the
+    # first: a failed probe logged the mangled `000 0.000367s000 0s` rather
+    # than one clean sample. The `|| :` keeps a non-zero curl from killing
+    # this loop under `set -e` without adding that duplicate; the empty
+    # check below is the real fallback, for the case where curl printed
+    # nothing at all (e.g. the binary died before writing `-w`).
     code_and_time=$(curl -o /dev/null -s -w "%{http_code} %{time_total}s" \
-      --max-time 5 -H "Host: $HOST_HEADER" "https://$ALB_DNS/health" 2>/dev/null || echo "000 0s")
+      --max-time 5 -H "Host: $HOST_HEADER" "https://$ALB_DNS/health" 2>/dev/null || :)
+    [ -n "$code_and_time" ] || code_and_time="000 0s"
     # Epoch seconds FIRST — the field the verdict's window comparisons key
     # off of. A raw HH:MM:SS *string* compare (the previous approach) wraps
     # incorrectly across UTC midnight (e.g. "23:59:58" >= "00:00:09" is
@@ -161,9 +175,23 @@ aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --force-new-dep
 deploy_start="$(date -u +%H:%M:%S)"
 deploy_start_epoch="$(date -u +%s)"
 echo "Deploy started at $deploy_start (UTC) — waiting for steady state..."
-aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+# The waiter's exit code is CAPTURED, not allowed to abort the run under
+# `set -e`. It gives up after its own fixed budget (40 attempts x 15s = 10
+# min) and a failure there is exactly the case where the operator most needs
+# the measurement — a deploy that never stabilized is the #1309 symptom, and
+# dying here would have thrown away the probe log and printed no verdict at
+# all. The waiter's own reliability is separately tracked in issue #1532
+# (which replaces it in `.github/workflows/deploy.yml`); this script only has
+# to stop treating its failure as a reason to report nothing.
+wait_rc=0
+aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE" || wait_rc=$?
 deploy_end="$(date -u +%H:%M:%S)"
-echo "Steady state reached at $deploy_end (UTC)."
+if [ "$wait_rc" -eq 0 ]; then
+  echo "Steady state reached at $deploy_end (UTC)."
+else
+  echo "WARNING — 'aws ecs wait services-stable' exited $wait_rc at $deploy_end (UTC): the service did NOT reach steady state within the waiter's budget."
+  echo "Continuing to score the probe window anyway — the measurement below is the point."
+fi
 
 # Give the probe a few more seconds past steady-state before stopping, to
 # catch any post-"stable" wobble (e.g. a CloudFront/DNS propagation tail).
@@ -260,6 +288,18 @@ expected=$(( elapsed_seconds / PROBE_INTERVAL ))
 if [ $(( total_all * 2 )) -lt "$expected" ]; then
   echo "WARNING — only $total_all probes recorded over a ${elapsed_seconds}s run at ${PROBE_INTERVAL}s/probe (~$expected expected). The loop may have stalled partway through; treat this PASS with caution."
   echo
+fi
+
+# 0 non-200s is necessary but not sufficient: if the waiter never confirmed
+# steady state, the window this scored may simply have ended before the
+# rollout finished, so "0 non-200s" is not yet the acceptance criterion —
+# it's an inconclusive partial measurement, and reporting it as PASS would
+# be exactly the kind of false green this script exists to prevent.
+if [ "$wait_rc" -ne 0 ]; then
+  echo "INCONCLUSIVE — 0 non-200 responses across $window_total probes, but 'aws ecs wait services-stable' exited $wait_rc, so the rollout was never confirmed complete."
+  echo "The scored window may have closed mid-rollout; this is NOT a pass of issue #1309's acceptance criterion. Re-run once the service stabilizes."
+  echo "Full log kept at $LOG_FILE"
+  exit 1
 fi
 
 echo "PASS — 0 non-200 responses across $window_total probes during the rollout window."
