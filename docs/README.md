@@ -72,6 +72,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`analysis/faber-dsr-finding.md`](analysis/faber-dsr-finding.md) | findings | Önder Akkaya | — | Why Faber 2007 fails the gate, and why that is the correct outcome. |
 | [`benchmarks/stockbench-results.md`](benchmarks/stockbench-results.md) | findings | Önder Akkaya | — | StockBench evaluation results (`stockbench-results.json`, `stockbench-vs-baselines.png`). |
 | [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md) | spec | Önder Akkaya | 2026-07-28 | DSR + PBO + walk-forward + look-ahead audit math and thresholds. |
+| [`specs/mnemonik-integration-scoping.md`](specs/mnemonik-integration-scoping.md) | current | Dan Browne | 2026-08-30 | #714 sub-task C verdict: borrow patterns, do not integrate Mnemonik; residual gaps listed. |
 | [`specs/transaction-cost-turnover-model.md`](specs/transaction-cost-turnover-model.md) | shipped | Önder Akkaya | 2026-06-11 | Transaction-cost and turnover model in the analytics engine. |
 | [`cited-literature.md`](cited-literature.md) | current | Dan Browne | 2026-08-20 | The five load-bearing papers behind the gate, including the two that are cited against us. |
 
