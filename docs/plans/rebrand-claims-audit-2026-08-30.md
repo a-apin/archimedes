@@ -1,8 +1,9 @@
 # Rebrand Claims Audit — Landing / Security / PublicLayout
 
 **Working artifact for PR #1469 (v8 Lane 1.1 input).** Read-only claims extraction —
-no source edits in this pass. Owner: moved into the PR #1469 conversation by Dan; not
-indexed in `docs/README.md`.
+no source edits in this pass. Owner: Dan, who carries the findings into the PR #1469
+conversation. Indexed in [`docs/README.md`](../README.md) beside the other #1469 plan
+docs — a doc not in the index does not exist, and that holds for working artifacts too.
 
 **Scope:** `ui/src/components/Landing.jsx`, `ui/src/components/Security.jsx`,
 `ui/src/components/PublicLayout.jsx` on `origin/feat/calm-precision-product-rebrand`
@@ -29,9 +30,17 @@ not taken from any doc):**
   `false` — gates vaults, Marketplace, Publish, Subscriptions, Learnings per
   `ui/src/featureFlags.js`).
 - Paper trading works but is barely reachable.
-- Commit-reveal anchors a hash of **one free-text `reasoning` field** (a thin
-  one-paragraph summary) plus an Arc tx reference — **not** the debate transcript,
-  not structured citations, not a structured action log.
+- Commit-reveal anchors a hash of a **structured** decision record — **this bullet
+  revises the 2026-08-30 session fact sheet**, which says the anchor covers "one
+  free-text `reasoning` field" plus an Arc tx reference. Reading the model shows that
+  is wrong: `backend/archimedes/models/trace.py:77-91` pins a canonical 13-field hash
+  order — `id`, `vault_address`, `decision_type`, `trigger`, `timestamp`,
+  `market_context`, `portfolio_before`, `portfolio_after`, `reasoning`, `confidence`,
+  `trades_executed`, `strategies_referenced`, `consulted_paper_hashes` — and
+  `canonical_json()` serializes exactly those into the hashed bytes. What the fact
+  sheet gets right is the *exclusion*: the debate transcript is not in `_HASH_FIELDS`
+  and is not part of the trace. The real residual is reachability, not richness —
+  see rows 11 and 22.
 - The rigor gate (DSR/PBO/OOS/look-ahead) is real and runs on the live path,
   **but** `look_ahead_safe` on LLM-generated strategies is **self-declared by the
   generating LLM**, gated as pass/fail — not an independent static/AST audit of the
@@ -42,10 +51,13 @@ not taken from any doc):**
 
 **Headline finding, ahead of the full table:** the copy is more disciplined than the
 baseline facts above would suggest — no capacity multiplier, no curated pass count, no
-embeddings/semantic-search claim appears anywhere in these three files. The one real
-finding is a single default-visible sentence (row 22) that overclaims what the
-reasoning trace actually anchors; everything else in the table is either accurate,
-already hedged, or gated behind a flag that's off in production today.
+embeddings/semantic-search claim appears anywhere in these three files. The only
+**OVERSTATED** grade left is the leak leg (rows 7 and 21), where "rejects strategy code
+that reads data before it existed" describes an independent audit the gate does not
+perform. The two reasoning-trace rows (11, 22) survived a first pass as OVERSTATED and
+were regraded **CAUTION** after reading the model: the trace payload really is
+structured, and the residual is that a prod visitor cannot reach one. Everything else
+is accurate, already hedged, or gated behind a flag that's off in production today.
 
 **Truth-assessment key:** `PASS` (verified true, cited) · `PASS (roadmap-gated)` (true,
 but only rendered when `VITE_ROADMAP_SURFACES=true`, which is off in prod) · `CAUTION`
@@ -58,7 +70,7 @@ depends on the live payload, already fail-soft per the figcaption's own error st
 |---|---|---|---|---|
 | 1 | Landing.jsx:136 | "One cited candidate. Four ways to reject it." | PASS — 4 rejection checks (DSR/PBO/OOS/LEAK) are real; each generated strategy carries cited paper(s) from the corpus. | None. |
 | 2 | Landing.jsx:144 | Default hero lede: "Archimedes turns a plain-language brief into a paper-grounded strategy, then tests it for selection bias against a rigor gate it must pass before anything runs live." | PASS — matches the live path; "before anything runs live" is conditional phrasing, not a claim that Execute is live today. | None. |
-| 3 | roadmapCopy.js:44-47 (rendered via Landing.jsx:143 only when `VITE_ROADMAP_SURFACES=true`) | "…then runs accepted methods in a non-custodial vault on Arc." | PASS (roadmap-gated) — Execute/vaults are flag-off in prod, so this string never reaches a default visitor. Confirm it stays gated. | None while the flag stays off. If the flag ever flips on before Execute actually runs strategies unattended, revisit. |
+| 3 | roadmapCopy.js:42-45 (rendered via Landing.jsx:143 only when `VITE_ROADMAP_SURFACES=true`) | "…then runs accepted methods in a non-custodial vault on Arc." | PASS (roadmap-gated) — Execute/vaults are flag-off in prod, so this string never reaches a default visitor. Confirm it stays gated. | None while the flag stays off. If the flag ever flips on before Execute actually runs strategies unattended, revisit. |
 | 4 | Landing.jsx:24 | DSR method: "Corrects for multiple testing and non-normal returns." | PASS — matches `rigor_evaluator.py`'s DSR implementation. | None. |
 | 5 | Landing.jsx:30 | PBO method: "Compares many train and test splits, not one lucky cut." | PASS — CPCV is implemented (`rigor_evaluator.py` line ~1158 references Combinatorial Purged CV). | None. |
 | 6 | Landing.jsx:36 | OOS method: "Tested on a 30% chronological held-out window it never trained on." | PASS — verified 70/30 chronological holdout, `rigor_verify_routes.py:21,184,201`. | None. |
@@ -66,7 +78,7 @@ depends on the live payload, already fail-soft per the figcaption's own error st
 | 8 | Landing.jsx:51-54 | Debate step: "Candidate methods are challenged, ranked, and kept beside the alternatives they beat." | PASS — debate society is confirmed the sole live generation pipeline (`docs/adr/debate-society-sole-generation-pipeline.md`, Accepted); rejected alternatives are exposed via `proposals_routes.py` / `debate_engine.py`, not just used internally for the DSR trial count. | None. |
 | 9 | Landing.jsx:56-58 | Gate step: "...before sizing diagnostics expose its tradeoffs." | PASS — `strategy_sizer.py` is a real module; sizing diagnostics exist. | None. |
 | 10 | Landing.jsx:60-62 | Authorize step (roadmap-only, index 3, excluded by default `slice(0,3)`): "You review the passport and sign any vault action with your linked wallet." | PASS (roadmap-gated) — accurate to the ADR'd non-custodial model; not shown by default since Execute/vault-authorize is out of MVP scope. | None. |
-| 11 | Landing.jsx:64-66 | Inspect step (roadmap-only): "Reasoning traces bind context, papers, actions, and an Arc transaction reference into one record." | **OVERSTATED**, same family as #22 below — "context, papers, actions" implies a structured multi-part record; today it's one free-text `reasoning` string hashed on-chain (`traces_routes.py`). Currently roadmap-gated so a default visitor never sees it, but it's slated to ship with Execute per the roadmap. | Fix before the flag flips: reword to "Reasoning traces anchor a summary of the decision plus an Arc transaction reference," or expand the actual payload to be structured before shipping this copy. |
+| 11 | Landing.jsx:64-66 | Inspect step (roadmap-only): "Reasoning traces bind context, papers, actions, and an Arc transaction reference into one record." | **CAUTION** (regraded from OVERSTATED), same residual as #22 — the sentence is accurate about the payload, clause by clause: `trace.py:77-91` hashes `market_context` (context), `consulted_paper_hashes` (papers), `trades_executed` / `strategies_referenced` / `portfolio_after` (actions), and `arc_tx_hash` carries the transaction reference; `agent_runner.py:1465-1496` populates every one of them. The residual is **reachability, not structure**: the only producer a user can reach is the vault-rebalance path (`agent_runner.py` `_commit_trace` / `_publish_trace`), and vaults are flag-off in prod, so there is no trace to inspect today. "Context" also does not include the debate transcript — that is not a hashed field. | None. Ships with Execute, and the payload it describes already exists; the thing that has to land first is a reachable trace, not better copy. |
 | 12 | Landing.jsx:71-74 | FAQ: "Does a passed rigor gate guarantee returns? No. The gate reduces known sources of false confidence. It cannot remove market risk or guarantee future performance." | PASS — appropriately hedged. | None. |
 | 13 | Landing.jsx:76-79 | FAQ: "What happens when a strategy fails? ... does not receive the verified badge and cannot bypass the server-side deployment gate." | PASS — consistent with the live rigor gate / `rigor-gate-unification.md` ADR (server-side, not a client-trusted boolean). | None. |
 | 14 | Landing.jsx:81-84 | FAQ: "Do I need a wallet to explore Archimedes? No. ... Link a wallet only when you need proof of on-chain control or want to authorize a vault action." | PASS — matches Better-Auth-first identity model (`docs/security/auth-model.md`). | None. |
@@ -77,7 +89,7 @@ depends on the live payload, already fail-soft per the figcaption's own error st
 | 19 | Landing.jsx:190 | "Failed values remain visible." | PASS — matches the 4-state gate (`pass`/`fail`/`pending`/`degenerate`) described in `docs/architectural-principles.md`. | None. |
 | 20 | Landing.jsx:191 | "Wallet authority stays separate." | PASS — matches the Better-Auth-vs-wallet separation. | None. |
 | 21 | Landing.jsx:200-203 | "Four independent checks look for luck, overfitting, weak out-of-sample behavior, and leaked future data." / "Any failed check keeps the candidate unverified." | PASS, with the same caveat as row 7 on the leak leg's self-attestation. | Same fix as row 7 — this is the general statement of the same claim. |
-| 22 | Landing.jsx:291-297 | **Default-visible** "is-audit" card: "Audit what the agent saw, cited, decided, and recorded." / "Context and transaction evidence stay in one reviewable trail." | **OVERSTATED — highest-priority finding, not roadmap-gated.** This card renders unconditionally (only the sibling `is-custody` card is flag-gated). "What the agent saw, cited, decided" implies a structured, complete trail; the actual anchored artifact is one free-text `reasoning` field (`traces_routes.py:64,216-263`) whose full body is "not always available" per the code's own comment at line 287. Citations and full context are not structurally bound into the trace today. | Reword to match reality, e.g. "Audit the reasoning summary and transaction the agent recorded" — or hold this exact wording until the trace payload actually structures context/citations/actions separately (tracked implicitly by the commit-reveal spec). This is the one claim in these three files that a skeptical visitor could disprove today by opening a trace and finding a paragraph, not a structured audit trail. |
+| 22 | Landing.jsx:291-297 | **Default-visible** "is-audit" card: "Audit what the agent saw, cited, decided, and recorded." / "Context and transaction evidence stay in one reviewable trail." | **CAUTION** (regraded from OVERSTATED) — the trace is genuinely structured, so each verb maps to a real hashed field: `trace.py:77-91` fixes the canonical hash order over `market_context` (saw), `consulted_paper_hashes` (cited), `trades_executed` / `strategies_referenced` / `portfolio_after` (decided), and `reasoning` + `arc_tx_hash` (recorded); `agent_runner.py:1465-1496` populates all of them on the live rebalance path. The residual is **reachability, not richness**: the trace pipeline runs only on the vault-rebalance path, vaults are flag-off in prod (`portfolio` / `vault-detail` in `ROADMAP_PAGES`, `ui/src/featureFlags.js`), so a visitor who takes this card at its word and goes looking has nothing to open. And the debate transcript — the part of "what the agent saw" a reader is most likely to expect — is not a hashed field and is not part of the trace. | Not a wording fix; the wording matches the payload. Either gate this card with the rest of Execute until a trace is reachable, or keep it and accept that its subject is real code a prod visitor cannot yet reach. Either way, don't let "saw" be read as "the debate transcript" — that is the one part of the sentence the trace does not carry. |
 | 23 | Landing.jsx:286-289 | "is-research" card: "Run quant research without building a quant desk." / "Start in plain language. Inspect papers, backtests, and gates." | PASS. | None. |
 | 24 | Landing.jsx:277-282 | "is-custody" card (roadmap-only): "Test idle USDC without surrendering withdrawal authority." / "Arc public testnet keeps the experiment honest and reversible." | PASS (roadmap-gated). | None. |
 | 25 | Landing.jsx:310-329 | Tech-stack list: Arc "public testnet settlement" · Circle "native testnet USDC and wallet tooling" · AWS Bedrock "strategy reasoning" · Foundry "contract testing and deployment" · FastAPI + React "agent API and interface." | PASS on all five — matches `CLAUDE.md`'s stack section (`bedrock_converse`/`amazon.nova-micro-v1:0`, Foundry via `contracts-test.yml`, FastAPI+React confirmed in tree). | None. |
@@ -122,12 +134,12 @@ depends on the live payload, already fail-soft per the figcaption's own error st
 
 ## Notes out of scope for this audit (worth a separate issue)
 
-- **Row 63** (brand tagline word choice) and **row 22** (default-visible "is-audit" card
-  overstating trace richness) are the two items worth actually fixing before #1469 ships.
-  Row 7/11/21 (self-attested look-ahead flag) are lower urgency since the phrasing is
-  general enough to survive scrutiny, but the same self-attestation caveat applies
-  everywhere "look-ahead" is claimed as something the gate "rejects" rather than
-  "requires the strategy to declare."
+- **Row 63** (brand tagline word choice) and **rows 7 / 21** (the self-attested
+  look-ahead flag described as something the gate "rejects" rather than "requires the
+  strategy to declare") are the items worth actually fixing before #1469 ships. **Row
+  22** is *not* a copy fix — its wording matches the trace payload; what it needs is a
+  reachable trace, which arrives with Execute. Treat rows 11 and 22 as a note on the
+  Execute rollout, not a blocker on this PR.
 - This audit did not read `Architecture.jsx`, `roadmapCopyApp.js`, or any authenticated-app
   page — those are out of scope per the task but may carry the capacity-multiplier or
   curated-pass-count claims Dan flagged; worth the same pass if they feed into v8 Lane 1.1

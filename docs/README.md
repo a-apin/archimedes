@@ -163,6 +163,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`plans/2026-08-22-calm-precision-rebrand.md`](plans/2026-08-22-calm-precision-rebrand.md) | plan | Daniel Reis | 2026-08-22 | Calm-precision rebrand plan (PR #1469). |
 | [`plans/2026-08-23-phantom-inspired-public-landing.md`](plans/2026-08-23-phantom-inspired-public-landing.md) | plan | Daniel Reis | 2026-08-23 | Public landing redesign plan (PR #1469). |
 | [`plans/2026-08-23-security-posture-page.md`](plans/2026-08-23-security-posture-page.md) | plan | Daniel Reis | 2026-08-23 | Static /security posture page plan (PR #1469). |
+| [`plans/rebrand-claims-audit-2026-08-30.md`](plans/rebrand-claims-audit-2026-08-30.md) | plan | Dan Browne | 2026-08-30 | Claims audit of Landing/Security/PublicLayout for PR #1469: every visitor-testable sentence graded against verified code. |
 | [`plans/quant-roadmap.md`](plans/quant-roadmap.md) | plan | Önder Akkaya | — | The portfolio-math and backtest-rigor lane. |
 | [`plans/spine-plus-v2-plan.md`](plans/spine-plus-v2-plan.md) | plan | Dan Browne | — | Spine+ v2 phase plan. |
 | [`plans/second-wave-multi-asset-strategies.md`](plans/second-wave-multi-asset-strategies.md) | plan | Önder Akkaya | 2026-06-11 | Second-wave multi-asset strategies. |
