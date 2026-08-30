@@ -163,6 +163,42 @@ async def test_generated_strategy_found_and_graded_not_404():
     # Real numbers, not the MISSING/pending shape.
     assert body["gate_details"]["dsr"] != "MISSING (no backtest data)"
     assert body["dsr_p_value"] is not None
+    # A real, non-flat series is not degenerate — the inverse half of the guard
+    # below, so a mutation hard-coding degenerate=True on this path is caught.
+    assert body["degenerate"] is False
+
+
+async def test_generated_strategy_zero_variance_series_reports_degenerate():
+    """#1358 round-3: the generated single-strategy path must carry the same
+    ``degenerate`` discriminator the cohort path does.
+
+    A flat persisted series leaves dsr_p_value and oos_sharpe at None, which
+    trips ``blocked_by_floor`` — so without this field the passport receives a
+    row indistinguishable from a fully-graded correctness failure, and says
+    "fails an always-on correctness floor" about a series no floor measured.
+    ``pending`` cannot carry it: the series is long enough to be scored, it just
+    has no variance to score.
+    """
+    sid = "gen0000000000009"
+    _mk_strategy(sid, owner=_W_OWNER, published=False)
+    _mk_backtest(sid, returns=[0.0] * 300)
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(f"/api/selection-bias/gate/{sid}", cookies=_siwe_cookies(_W_OWNER))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degenerate"] is True, (
+        "a zero-variance persisted series must be reported as degenerate on the generated path too"
+    )
+    assert body["pending"] is False, (
+        "degenerate is not pending — this row has 300 persisted returns, they are merely flat"
+    )
+    # Documents WHY the field is needed: the floor trips mechanically here.
+    assert body["blocked_by_floor"] is True
+    assert body["min_passing_level"] is None
 
 
 async def test_generated_strategy_published_visible_to_anonymous_caller():
