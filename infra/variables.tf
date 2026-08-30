@@ -182,3 +182,32 @@ variable "privacy_inbox_email" {
   type        = string
   default     = ""
 }
+
+# ── Email authentication (#1462) ─────────────────────────────────────────────
+
+variable "google_site_verification" {
+  description = <<-EOT
+    The Google Search Console verification token already published in the apex
+    TXT record. It is carried here because Route 53 keeps one record set per
+    (name, type): the SPF string has to share the apex TXT with it, so both
+    values must be written in the same resource. Dropping this un-verifies
+    Search Console. A published DNS value, not a secret.
+  EOT
+  type        = string
+  default     = "google-site-verification=nHeZsrl8SxRsJeKWIQx0kaSQkHOlzPDdfRZU_ZCUqk8"
+}
+
+variable "dmarc_rua_address" {
+  description = <<-EOT
+    Mailbox for DMARC aggregate reports (the rua= tag).
+
+    Reports only ARRIVE once inbound mail for this address is actually handled
+    — the zone's MX already points at SES inbound, but the receipt rule that
+    delivers it is #1460's scope. Until then the DMARC record still publishes
+    the policy signal Gmail/Yahoo bulk-sender rules look for; the reports are
+    simply not collected yet, and a reporter that cannot deliver drops them
+    silently rather than bouncing at us.
+  EOT
+  type        = string
+  default     = "dmarc-reports@archimedes-arc.com"
+}

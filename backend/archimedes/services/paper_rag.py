@@ -121,6 +121,75 @@ def paper_rag_health(probe: bool = False) -> PaperRAGHealth:
     return PaperRAGHealth(status="degraded", reason="embedding model unavailable, TF-IDF fallback")
 
 
+@dataclass(frozen=True)
+class CorpusEmbeddingAtRest:
+    """Whether a STORED corpus embedding exists — not whether a model is loaded.
+
+    ``paper_rag_health`` answers "is a reranker available in this process". This
+    answers the different question every external claim actually depends on: are
+    there vectors on disk that survive a restart. They were conflated in
+    ``/api/health``'s ``corpus_embedded`` (#1488), whose name asserted the second
+    while its value measured the first.
+    """
+
+    embedded_at_rest: bool
+    reason: str
+
+
+# Column-name fragments that would indicate stored vectors. Deliberately loose:
+# this check exists to notice a stored-embedding surface arriving, and a false
+# positive is a test failure that someone reads, while a false negative is a
+# false claim shipped to the public health endpoint.
+_VECTOR_COLUMN_HINTS = ("embedding", "embeddings", "vector")
+
+
+def corpus_embedding_at_rest() -> CorpusEmbeddingAtRest:
+    """Derive the at-rest embedding state from the live schema, never a constant.
+
+    A hard-coded ``False`` here would be the same defect as the ``True`` it
+    replaces, one release later: correct today and silently wrong the day
+    someone adds pgvector. So the answer is read off ``Base.metadata``, which is
+    what the ORM actually declares.
+
+    Three outcomes, two of which are the same boolean on purpose:
+
+    - no vector-ish column anywhere -> ``False``, and the reason says so.
+    - a vector-ish column exists but nothing here counts its rows -> still
+      ``False``, with a reason naming the column. A discovered-but-unwired store
+      must read as a loud absence, not as a claim (CLAUDE.md fail-soft). The
+      guard test in ``test_corpus_embedding_claims.py`` fails in this state, so
+      it cannot sit unnoticed.
+    - wired and populated -> ``True``. Nothing reaches this today.
+    """
+    try:
+        from archimedes.db import Base
+    except Exception as exc:  # pragma: no cover - import-time DB failure
+        return CorpusEmbeddingAtRest(False, f"schema unreadable ({type(exc).__name__}) - reporting not-embedded")
+
+    found = [
+        f"{table.name}.{column.name}"
+        for table in Base.metadata.sorted_tables
+        for column in table.columns
+        if any(hint in column.name.lower() for hint in _VECTOR_COLUMN_HINTS)
+    ]
+    if not found:
+        return CorpusEmbeddingAtRest(False, "no stored-vector column in the schema")
+    return CorpusEmbeddingAtRest(
+        False,
+        f"stored-vector column(s) {', '.join(sorted(found))} exist but no count is wired - reporting not-embedded",
+    )
+
+
+def rerank_candidate_cap() -> int:
+    """How many keyword candidates the reranker actually scores.
+
+    Published on ``/api/health`` because it is the limit that makes "reranked"
+    an honest word: candidates past this point are appended at score 0.0 and are
+    never seen by the model.
+    """
+    return _RERANK_MAX_TEXTS
+
+
 def _semantic_enabled() -> bool:
     """Check the feature flag. Default ON for production."""
     val = os.getenv("FUSION_SEMANTIC_RETRIEVAL", "true").strip().lower()
