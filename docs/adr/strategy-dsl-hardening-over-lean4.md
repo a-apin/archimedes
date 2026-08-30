@@ -155,6 +155,12 @@ Each option is scored 1–5 on eight criteria; 40 is the maximum.
 | Ongoing maintenance burden | 3 | 4 | 2 | 4 |
 | **Total** | **33** | **32** | **27** | **26** |
 
+Also screened and scored below the cut in the same evaluation: Composer-style
+declarative JSON **26** (a UX pattern with no open spec or parser to adopt),
+Pine Script **17** and MQL5 **13** (retail/vendor-hosted DSLs with no path
+into the backtrader-based rigor gate). Recorded so the ranking is complete
+and no rejected option invites relitigation as an oversight.
+
 **1. Harden the existing DSL — 33. Chosen.** Loses badly on expressiveness and that is the
 honest cost. Wins everywhere else, and wins the one criterion that decided it: it is the
 only option that reaches a state we can describe truthfully in days rather than months,
