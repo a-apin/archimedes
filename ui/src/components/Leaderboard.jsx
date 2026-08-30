@@ -659,11 +659,17 @@ export default function Leaderboard() {
           pre-empted by the degraded banner above, which is a different claim. */}
       {!liveLoading && !liveError && liveData && !liveData.degraded && liveEntries.length === 0 && (
         <div className="body" style={{ color: 'var(--text-3)', padding: 20, textAlign: 'center', border: '1px dashed var(--glass-border)', borderRadius: 8 }}>
-          {LIVE_EMPTY_MESSAGE}.
-          {liveData.scope === 'own' && (
+          {liveData.scope === 'anonymous' ? (
+            <>This board ranks your own live paper deployments — sign in to see yours.</>
+          ) : (
             <>
-              {' '}Deploy one to paper trading from its strategy page, and its forward track record starts here the
-              day it produces its first observation.
+              {LIVE_EMPTY_MESSAGE}.
+              {liveData.scope === 'own' && (
+                <>
+                  {' '}Deploy one to paper trading from its strategy page, and its forward track record starts here the
+                  day it produces its first observation.
+                </>
+              )}
             </>
           )}
         </div>
@@ -677,7 +683,7 @@ export default function Leaderboard() {
                 <th style={{ padding: '8px 10px' }}>#</th>
                 <th style={{ padding: '8px 10px' }}>Strategy</th>
                 <th style={{ padding: '8px 10px' }} title="Compounded from every observation in the deployment's forward ledger">Return since inception</th>
-                <th style={{ padding: '8px 10px' }}>Days live</th>
+                <th style={{ padding: '8px 10px' }} title="Ledger observations appended so far — not calendar days since inception">Observations</th>
                 <th style={{ padding: '8px 10px' }}>Inception</th>
                 <th style={{ padding: '8px 10px' }} title="The date of the last ledger observation — what the return reflects">As of</th>
                 <th style={{ padding: '8px 10px' }}>Ledger</th>

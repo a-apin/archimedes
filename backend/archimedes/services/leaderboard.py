@@ -376,7 +376,9 @@ def build_live_paper_leaderboard(
         entry.rank = i
 
     total = len(rows)
-    board_as_of = max((e.as_of for e in rows), default=None)
+    # as_of must describe the rows actually SERVED: with a truncating limit,
+    # max() over the full set can postdate every visible row's ledger.
+    board_as_of = max((e.as_of for e in rows[:limit]), default=None)
     return LivePaperLeaderboardResponse(
         entries=rows[:limit],
         total=total,
