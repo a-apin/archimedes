@@ -11,18 +11,35 @@ Two axes, honestly separated:
     as honest "pending" until that data flows, so the engine visibly *pairs*
     them with validation (per Dan's call) without inventing values.
 
-This module is pure: it takes ``StrategyResponse`` objects and returns schema
+TWO BOARDS (Lane 3.4). ``build_leaderboard`` ranks by conviction, which is
+100% backtest-era; ``build_live_paper_leaderboard`` ranks ONLY what is running
+forward, compounded from the append-only paper ledger. They are separate
+functions returning separate response types on purpose — there is no blended
+score and no code path that produces one, because a blend would let a strong
+backtest carry a strategy that has traded forward for four days. Every row
+either function emits carries ``performance_basis`` naming which of the two it
+is.
+
+This module is pure: it takes ``StrategyResponse`` objects (or, for the
+forward board, already-loaded ``LivePaperLedger`` values) and returns schema
 objects. No DB, no network — trivially unit-testable.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from datetime import date, datetime
+
 from archimedes.api.leaderboard_schemas import (
+    BASIS_BACKTEST,
+    BASIS_LIVE_PAPER,
     LeaderboardEntry,
     LeaderboardForwardAxis,
     LeaderboardResponse,
     LeaderboardScoreComponents,
     LeaderboardScoringEngine,
+    LivePaperEntry,
+    LivePaperLeaderboardResponse,
     StockBenchGlobalContext,
 )
 from archimedes.api.schemas import StrategyResponse
@@ -158,6 +175,15 @@ def _entry(resp: StrategyResponse) -> LeaderboardEntry:
         cost_model_id=resp.cost_model_id,
         metrics_source=resp.metrics_source,
         forward=LeaderboardForwardAxis(),
+        # Provenance (Lane 3.4): this board's numbers are backtest-era, and the
+        # window they were measured over travels with them. Both fields already
+        # existed on StrategyResponse and simply stopped here — the same defect
+        # shape as backtest_engine/cost_model_id before #1187: the information
+        # existed all the way to the response builder and was dropped at the one
+        # surface that puts rows side by side.
+        performance_basis=BASIS_BACKTEST,
+        backtest_start=resp.backtest_start,
+        backtest_end=resp.backtest_end,
         regime_tag=resp.regime_tag,
         return_source=resp.return_source,
         status=resp.status,
@@ -241,10 +267,127 @@ def build_leaderboard(
     return LeaderboardResponse(
         entries=ranked,
         total=total,
+        performance_basis=BASIS_BACKTEST,
         sort_by=sort_by,
         order=order,
         scope=scope,
         scoring_engine=engine,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
+    )
+
+
+# ── Live paper board — the forward surface (Lane 3.4) ────────────────────────
+
+LIVE_PAPER_METHODOLOGY = (
+    "cumulative_return = ∏(1 + daily_return) − 1 over every observation the "
+    "append-only paper ledger holds for this deployment, from its inception "
+    "date to `as_of`. Not annualised, not extrapolated, not blended with any "
+    "backtest number."
+)
+
+LIVE_PAPER_DISCLAIMER = (
+    "Testnet — paper/simulated forward performance. These rows are ranked ONLY "
+    "on what each deployment has actually done since it went live; a few days "
+    "of forward data is a few days of forward data, and is not evidence the "
+    "edge is real. The research board's conviction score is a separate, "
+    "backtest-era claim and the two are never combined."
+)
+
+
+@dataclass(frozen=True)
+class LivePaperLedger:
+    """One active paper deployment plus the forward ledger already loaded for it.
+
+    The DTO boundary that keeps this module pure: the route layer does the DB
+    work (``paper_deployments`` ⋈ ``paper_daily_returns``) and hands the result
+    over as plain values, so the ranking itself stays trivially testable.
+
+    ``returns`` may legitimately be EMPTY — a deployment opened today, before
+    its first advance, has no observations. That case is the reason this type
+    exists rather than a pre-filtered list: the builder must be the thing that
+    drops it, so the drop is one auditable place with one test on it.
+    """
+
+    deployment_id: str
+    strategy_id: str
+    name: str
+    inception: date
+    returns: list[tuple[date, float]] = field(default_factory=list)
+    last_appended_at: datetime | None = None
+    drift_detected: bool = False
+
+
+def _cumulative_return(returns: list[tuple[date, float]]) -> float:
+    equity = 1.0
+    for _, r in returns:
+        equity *= 1.0 + r
+    return equity - 1.0
+
+
+def build_live_paper_leaderboard(
+    ledgers: list[LivePaperLedger],
+    *,
+    scope: str = "own",
+    limit: int = 50,
+    degraded: bool = False,
+    degraded_reason: str = "",
+) -> LivePaperLeaderboardResponse:
+    """Rank ACTIVE paper deployments by realised forward return. Pure — no I/O.
+
+    The one hard rule, and the only interesting logic in here: **a deployment
+    with an empty ledger is dropped, never rendered.** Not as a 0.0% row, not
+    as an em-dash row, not as a "pending" row that still occupies a rank. A
+    forward board that shows a strategy with no forward observations is making
+    a claim about performance out of nothing, which is precisely the failure
+    (#381's "invented math", the fixture-column leaderboard in
+    architectural-principles.md § fail-soft) this surface was split out to
+    stop. The drop is COUNTED into ``withheld_no_ledger`` so it reads as a
+    visible absence rather than a silence.
+
+    Ranking is by ``cumulative_return`` descending only. There is no
+    configurable sort and no secondary score: this board has exactly one
+    honest number.
+    """
+    graded = [led for led in ledgers if led.returns]
+    withheld = len(ledgers) - len(graded)
+
+    rows: list[LivePaperEntry] = []
+    for led in graded:
+        observations = sorted(led.returns, key=lambda item: item[0])
+        rows.append(
+            LivePaperEntry(
+                rank=0,  # assigned after sort
+                deployment_id=led.deployment_id,
+                strategy_id=led.strategy_id,
+                name=led.name,
+                performance_basis=BASIS_LIVE_PAPER,
+                cumulative_return=_cumulative_return(observations),
+                days_live=len(observations),
+                inception_date=led.inception.isoformat(),
+                as_of=observations[-1][0].isoformat(),
+                last_updated=led.last_appended_at.isoformat() if led.last_appended_at else None,
+                drift_detected=led.drift_detected,
+            )
+        )
+
+    rows.sort(key=lambda e: e.cumulative_return, reverse=True)
+    for i, entry in enumerate(rows, start=1):
+        entry.rank = i
+
+    total = len(rows)
+    board_as_of = max((e.as_of for e in rows), default=None)
+    return LivePaperLeaderboardResponse(
+        entries=rows[:limit],
+        total=total,
+        performance_basis=BASIS_LIVE_PAPER,
+        scope=scope,
+        sort_by="cumulative_return",
+        order="desc",
+        as_of=board_as_of,
+        withheld_no_ledger=withheld,
+        methodology=LIVE_PAPER_METHODOLOGY,
+        disclaimer=LIVE_PAPER_DISCLAIMER,
         degraded=degraded,
         degraded_reason=degraded_reason,
     )
