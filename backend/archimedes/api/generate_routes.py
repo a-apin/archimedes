@@ -37,6 +37,7 @@ from archimedes.api.funnel_middleware import record_funnel
 from archimedes.api.generate_schemas import (
     CandidatesListResponse,
     CandidateSummary,
+    CreditSummary,
     GenerateBrief,
     GenerateStartRequest,
     GenerateStartResponse,
@@ -353,6 +354,35 @@ async def get_generation_quote():
     ``generation_payment.quote()``, whose flat price is the seam #1217's
     measured budget later replaces."""
     return generation_payment.quote()
+
+
+@generate_router.get("/credits", response_model=list[CreditSummary])
+async def list_generation_credits(
+    user: CurrentUser = Depends(require_current_user),
+) -> list[CreditSummary]:
+    """The calling user's own generation-credit ledger (v8 Lane 1.3a).
+
+    Makes visible what ``_paywall_with_credit`` already does silently: an
+    unspent (``available``) credit from an earlier paid-but-undelivered run
+    pays for the NEXT generation, with no new charge (#1441). Requires
+    sign-in — unlike ``/quote``, a credit belongs to a specific account, so
+    there is nothing honest to show before auth.
+
+    A bare list, not the wrapped ``{jobs: [...]}`` shape sibling listings use
+    — the frontend's only question is "does an unspent credit exist", so
+    there is no envelope worth adding.
+    """
+    rows = generation_credits.list_credits(user.id)
+    return [
+        CreditSummary(
+            id=row["id"],
+            status=row["status"],
+            created_at=row["created_at"],
+            job_id=row["job_id"],
+            amount_usdc=(round(row["amount_base_units"] / 10**6, 2) if row["amount_base_units"] is not None else None),
+        )
+        for row in rows
+    ]
 
 
 @generate_router.post("/start", response_model=GenerateStartResponse, status_code=202)
