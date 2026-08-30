@@ -334,7 +334,13 @@ async def oracle_health(budget_seconds: float | None = None) -> OracleHealth:
             # reach this branch — they keep exactly the existing flat
             # threshold via the raw on-chain isFresh() read above.
             is_fresh = _equity_weekend_override_fresh(last_updated, now)
-        return is_fresh, last_updated
+            if is_fresh:
+                # Surface the override instead of silently massaging the
+                # verdict — the reason string names calendar-fresh symbols so
+                # an operator can always tell chain-fresh from calendar-fresh
+                # (fail-soft principle: transformations stay visible).
+                return is_fresh, last_updated, True
+        return is_fresh, last_updated, False
 
     budget = _PROBE_BUDGET_SECONDS if budget_seconds is None else budget_seconds
     try:
@@ -361,13 +367,16 @@ async def oracle_health(budget_seconds: float | None = None) -> OracleHealth:
             reason=f"oracle_health probe_timeout: exceeded {budget:.1f}s budget",
         )
 
+    calendar_fresh_symbols: list[str] = []
     for symbol, outcome in zip(symbols, outcomes, strict=True):
         if isinstance(outcome, BaseException):
             errors.append(f"{symbol}: {outcome}")
             continue
-        is_fresh, last_updated = outcome
+        is_fresh, last_updated, calendar_override = outcome
         ages.append(max(0, int(now - last_updated)))
         all_fresh_flags.append(is_fresh)
+        if calendar_override:
+            calendar_fresh_symbols.append(symbol)
 
     if not ages:
         # Every probed read failed — unobtainable, not confirmed-stale (mirrors
@@ -397,6 +406,10 @@ async def oracle_health(budget_seconds: float | None = None) -> OracleHealth:
     if all_fresh:
         status = "fresh"
         reason = f"{fresh_count}/{probed_count} probed oracle(s) fresh (of {universe_count} in the universe)"
+        if calendar_fresh_symbols:
+            reason += (
+                f"; {', '.join(sorted(calendar_fresh_symbols))} calendar-fresh (market closed since last update, #1525)"
+            )
     else:
         status = "stale"
         reason = (

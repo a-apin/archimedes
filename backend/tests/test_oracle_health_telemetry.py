@@ -250,6 +250,11 @@ class TestOracleHealthWeekendFreshness:
 
         assert diag.oracle_fresh is True
         assert diag.status == "fresh"
+        # The override must be VISIBLE, never a silent massage: the reason
+        # names the calendar-fresh symbol so an operator can always tell
+        # chain-fresh from calendar-fresh (fail-soft: transformations loud).
+        assert "sSPY calendar-fresh" in diag.reason
+        assert "#1525" in diag.reason
 
     @pytest.mark.asyncio
     async def test_equity_stale_flag_not_overridden_on_tuesday(self) -> None:
