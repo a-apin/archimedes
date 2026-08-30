@@ -92,23 +92,57 @@ LLM/RPC optional) then `docker compose up -d --build`. nginx publishes on rootle
 port 8080 (<http://localhost:8080>, `/docs` for the API); compose runs Alembic before
 starting auth/backend. Full walkthrough: `SETUP.md`.
 
-**The whole toolchain lives in the `archimedes` conda env — including Node.**
-`python` / `pytest` / `ruff` **and** `node` / `npm` / the `ui/` ESLint all come
-from the `archimedes` env; **none are on the base shell PATH.** A bare
-`command -v node` returning nothing does *not* mean Node is missing — it means
-the env isn't on PATH. Activate the env, or use its binaries directly. For a
-non-interactive shell (CI, or an agent's Bash tool), prepend the env's bin so
-the ESLint shebang can resolve Node:
+**Resolve the toolchain explicitly. Do not trust a bare `pytest` / `ruff` / `node`.**
+`environment.yml` declares the whole toolchain — `python`, `pytest`, `ruff`, `nodejs`,
+`terraform`, `awscli` — but a bare command name gives you whatever PATH resolves first,
+and on a real machine that is frequently not the env. Measured on one maintainer's box,
+2026-08-30:
+
+| command | resolved to | the env has |
+| --- | --- | --- |
+| `pytest` | `/Library/Frameworks/Python.framework/.../3.13/bin/pytest` — **Python 3.13.7**, fastapi 0.136.3 | Python 3.12.13 |
+| `ruff` | the same 3.13 framework install | its own copy |
+| `node` / `npm` | `/opt/homebrew/bin/node` (Homebrew) | **not installed** |
+| `terraform` | not installed at all; `tofu` (OpenTofu) is | **not installed** |
+| `python` | nothing — `command -v python` is empty | 3.12.13 |
+
+**The dangerous one is `pytest`.** It does not fail. It collects and runs the suite against
+a different interpreter and an unaligned package set, then reports a result you will
+believe. That is the same "works on my machine" defect the `environment.yml` /
+`backend/requirements.txt` alignment guard exists to catch, arriving through PATH instead
+of through version floors.
+
+`nodejs` / `terraform` / `awscli` were added to `environment.yml` on 2026-05-24 and
+2026-06-24. An env created before then and only ever pip-updated will not have them.
+`conda env update -f environment.yml` is how you would get them, and it will also shadow
+your Homebrew `node` and install HashiCorp `terraform` beside your OpenTofu. Worth knowing
+before you run it; to pick up a pip-block change only, install those specs directly.
+
+Check rather than assume, then use absolute paths:
 
 ```bash
-export PATH="$(conda info --base)/envs/archimedes/bin:$PATH"
-node --version            # v26.x ; npm 11.x
+ENV_BIN=/path/to/miniconda/envs/archimedes/bin   # `conda env list` prints the prefix
+"$ENV_BIN/python" -V                             # expect 3.12.x
+"$ENV_BIN/pytest" --version
+command -v node && node --version                # may be Homebrew's; that is fine for lint
+```
+
+`conda info --base` is **not** a reliable way to build that path. conda installs itself as
+a shell *function*, so in a non-interactive shell (CI, or an agent's Bash tool) it fails
+with `__conda_exe: permission denied`, and the surrounding `export PATH="$(...)/..."`
+silently produces a garbage prefix that falls through to whatever was already on PATH —
+the command then appears to work, for the wrong reason. Call the real binary at
+`<conda-root>/bin/conda`, or hard-code the prefix.
+
+For `ui/` lint, Node only has to resolve for the ESLint shebang, so Homebrew's is fine:
+
+```bash
 cd ui && npm run lint     # or scoped: ./node_modules/.bin/eslint src/<file>
 ```
 
-**Tests:** from the repo root in the `archimedes` conda env, just `pytest` — `pytest.ini`
-sets `pythonpath`/`testpaths` and a verbose default. Ask the suite for the case count rather
-than trusting a doc: `pytest --collect-only -q | tail -1`. Coverage: `pytest
+**Tests:** from the repo root, with the env's `pytest` (see above — a bare `pytest` may
+not be it), just `pytest` — `pytest.ini` sets `pythonpath`/`testpaths` and a verbose
+default. Ask the suite for the case count rather than trusting a doc: `pytest --collect-only -q | tail -1`. Coverage: `pytest
 --cov=archimedes --cov-report=term-missing`. The analytics-engine runs its own suite:
 `cd analytics-engine && uv run pytest`.
 
