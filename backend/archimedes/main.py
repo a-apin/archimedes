@@ -14,7 +14,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
@@ -556,14 +556,46 @@ app.include_router(metrics_private_router)
 app.include_router(leaderboard_router)
 
 
+# ── Liveness responses must never be cached (issue #1520) ──────────────
+# /health matched no CloudFront ordered_cache_behavior, so it fell through to
+# the default one (infra/cloudfront.tf) whose `html` policy has default_ttl=60.
+# With no Cache-Control from here, CloudFront cached it: measured `x-cache: Hit`
+# with `age: 17` on the live site, and — worse — cached 504s coming back in
+# 0.07s, far too fast to have reached the origin. A cached health check is not a
+# health check: it keeps reporting "ok" for up to a minute after the origin
+# starts failing, which is the plausible-substitute failure this codebase treats
+# as the primary defect class. The CloudFront behaviour is the other half of the
+# fix and needs a terraform apply; this half travels with the app, so it holds
+# wherever the app is deployed and whoever sits in front of it.
+_NO_STORE = "no-store, no-cache, must-revalidate, max-age=0"
+
+
+def _no_store(response: Response) -> None:
+    """Mark a liveness response uncacheable by any intermediary."""
+    response.headers["Cache-Control"] = _NO_STORE
+    response.headers["Pragma"] = "no-cache"
+
+
+def _no_store_headers() -> dict[str, str]:
+    """Same headers, for handlers that build their own Response object.
+
+    A handler that returns a JSONResponse directly never touches the injected
+    ``response``, so it needs these passed in explicitly — the AMM probe returns
+    503s that way, and an uncacheable 200 with a cacheable 503 is the worse half
+    to get wrong.
+    """
+    return {"Cache-Control": _NO_STORE, "Pragma": "no-cache"}
+
+
 @app.get("/health")
 @app.get("/api/health")
 @limiter.exempt
-async def health():
+async def health(response: Response):
     """Health check — used by Docker healthcheck and CI/CD.
 
     Reports corpus state so silent degradation is visible.
     """
+    _no_store(response)
 
     from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
     from archimedes.chain.client import chain_client
@@ -855,8 +887,9 @@ async def health():
 
 @app.get("/health/paper-rag")
 @limiter.exempt
-async def health_paper_rag():
+async def health_paper_rag(response: Response):
     """Dedicated paper-rag health endpoint."""
+    _no_store(response)
     from archimedes.services.paper_rag import paper_rag_health
 
     # probe=True: this endpoint exists to PROVE the model loads, so it is the
@@ -872,7 +905,7 @@ async def health_paper_rag():
 @app.get("/health/amm")
 @app.get("/api/health/amm")
 @limiter.exempt
-async def health_amm():
+async def health_amm(response: Response):
     """AMM pool liquidity health — per-pool status for operator/judge probes.
 
     Returns 200 with pool list when pools exist, or 503 with an explicit
@@ -882,12 +915,14 @@ async def health_amm():
 
     from archimedes.chain.client import chain_client
 
+    _no_store(response)
     try:
         connected = await chain_client.is_connected()
         if not connected:
             return JSONResponse(
                 status_code=503,
                 content={"status": "chain_disconnected", "reason": "Cannot reach Arc RPC"},
+                headers=_no_store_headers(),
             )
 
         from archimedes.chain.contracts import get_contract_loader
@@ -906,6 +941,7 @@ async def health_amm():
                     "reason": "No AMM pools exist yet. Run bootstrap_vaults to create pools.",
                     "pools": [],
                 },
+                headers=_no_store_headers(),
             )
 
         # For each pool, read basic state
@@ -951,6 +987,7 @@ async def health_amm():
                 "status": "amm_health_check_failed",
                 "reason": "AMM health check failed — see server logs.",
             },
+            headers=_no_store_headers(),
         )
 
 
