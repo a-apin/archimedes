@@ -27,8 +27,16 @@ Two entry points:
 Config (all env): ``GENERATION_PAYMENT_RECIPIENT`` (the DCW address — same
 value the paywall pays to), ``REVENUE_WALLET_ID`` (that DCW's Circle wallet
 id, needed for API signing), ``REVENUE_SWEEP_MIN_USDC`` (default "10.0" —
-must stay several multiples of Circle's ~2.01 USDC withdrawal fee, same
-rationale as settlement.SWEEP_WITHDRAW_THRESHOLD_USDC).
+enough that the sweep is worth a transaction), and
+``GATEWAY_WITHDRAW_FEE_RESERVE_USDC`` (default "0.05", shared with
+settlement — see ``marketplace.config``).
+
+A sweep withdraws the available balance **less the fee reserve**, never the
+whole thing: Circle charges its withdrawal fee on top of the burn amount, so
+``/v1/transfer`` rejects a full-balance request outright (measured in prod
+2026-08-26 — "available 36.000000, required 36.0035"). The 2.01 USDC figure
+that used to appear in these comments is circlekit's default *maxFee cap*,
+not the fee; the real fee on that withdrawal was 0.0035.
 
 Deliberately independent of PAYMENTS_DRY_RUN / GENERATION_PAYMENTS_DRY_RUN:
 those gate CHARGING USERS; this moves the platform's own already-settled
@@ -47,7 +55,11 @@ from decimal import Decimal
 from circlekit.client import GatewayClient
 from circlekit.wallets import CircleTxExecutor, CircleWalletSigner
 
-from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+from archimedes.marketplace.config import (
+    format_usdc,
+    gateway_chain,
+    gateway_sweep_amount,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +97,7 @@ def _client() -> GatewayClient:
         )
     signer = CircleWalletSigner(wallet_id=wallet_id, wallet_address=recipient)
     executor = CircleTxExecutor(wallet_id=wallet_id, wallet_address=recipient)
-    return GatewayClient(chain=DEFAULT_GATEWAY_CHAIN, signer=signer, tx_executor=executor)
+    return GatewayClient(chain=gateway_chain(), signer=signer, tx_executor=executor)
 
 
 async def check_revenue() -> dict:
@@ -101,9 +113,10 @@ async def check_revenue() -> dict:
 
 
 async def sweep_revenue(min_usdc: Decimal | None = None) -> dict:
-    """Withdraw the full available Gateway balance to the DCW's token balance
-    when it meets the threshold. Returns a structured outcome either way —
-    callers log it; the scheduler loop never raises out of a tick."""
+    """Withdraw the available Gateway balance, less Circle's fee reserve, to
+    the DCW's token balance when it meets the threshold. Returns a structured
+    outcome either way — callers log it; the scheduler loop never raises out
+    of a tick."""
     threshold = min_usdc if min_usdc is not None else _min_usdc()
     client = _client()
     balances = await client.get_gateway_balance()
@@ -114,17 +127,30 @@ async def sweep_revenue(min_usdc: Decimal | None = None) -> dict:
             "reason": f"available {available} USDC below threshold {threshold}",
             "available_usdc": str(available),
         }
-    amount = balances.formatted_available
-    result = await client.withdraw(amount=amount)
+    # NOT the whole balance: Circle charges its fee on top of the burn amount,
+    # so asking for all of it is always rejected (see marketplace.config).
+    try:
+        amount, fee_reserve_raw = gateway_sweep_amount(balances.available)
+    except ValueError as exc:
+        return {
+            "swept": False,
+            "reason": str(exc),
+            "available_usdc": str(available),
+        }
+    result = await client.withdraw(amount=amount, max_fee=fee_reserve_raw)
     logger.info(
-        "revenue sweep: withdrew %s USDC Gateway → wallet %s; mint tx=%s",
+        "revenue sweep: withdrew %s of %s USDC available (%s held for fee) Gateway → wallet %s; mint tx=%s",
         amount,
+        balances.formatted_available,
+        format_usdc(fee_reserve_raw),
         _recipient(),
         getattr(result, "mint_tx_hash", result),
     )
     return {
         "swept": True,
         "amount_usdc": amount,
+        "available_usdc": balances.formatted_available,
+        "fee_reserve_usdc": format_usdc(fee_reserve_raw),
         "mint_tx_hash": getattr(result, "mint_tx_hash", None),
     }
 

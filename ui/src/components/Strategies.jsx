@@ -701,7 +701,11 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
       // Published is a hidden roadmap surface (#1266/#1324) — its fetch must
       // not fire with the flag off, not just its tab stay unclickable.
       const [seedRes, genRes, gateRes, publishedRes] = await Promise.allSettled([
-        apiGet('/api/strategies/'),
+        // limit=100 (the backend's max): the endpoint defaults to 20 of the
+        // 34-strategy curated library, alphabetically — which structurally hid
+        // every currently-passing strategy (all sort past row 20). Found in
+        // the 2026-08-30 external product review ("0 of 20 examples pass").
+        apiGet('/api/strategies/?limit=100'),
         apiGet('/api/strategies/generated'),
         apiGet('/api/selection-bias/gate'),
         ROADMAP_SURFACES_ENABLED ? apiGet('/api/marketplace/my-published') : Promise.resolve([]),

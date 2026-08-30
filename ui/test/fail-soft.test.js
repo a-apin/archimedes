@@ -212,3 +212,12 @@ test("Leaderboard.jsx's degraded banner offers a Retry, matching the PR body's r
 	const degradedBannerRetry = /Board data is degraded\.<\/strong>\{' '\}\s*\{data\.degraded_reason[^}]*\}\{' '\}\s*<button type="button"[^>]*onClick=\{load\}/;
 	assert.match(leaderboard, degradedBannerRetry);
 });
+
+test("Strategies.jsx requests the whole curated library, not the default page", () => {
+	// The endpoint defaults to limit=20 of a 34-strategy library, sorted
+	// alphabetically — which structurally hid every currently-passing example
+	// (all sort past row 20; 2026-08-30 external review: "0 of 20 pass").
+	// The library fetch must always carry an explicit limit at the backend's
+	// max so the passing strategies are actually visible.
+	assert.match(strategies, /apiGet\(['"]\/api\/strategies\/\?limit=100['"]\)/);
+});
