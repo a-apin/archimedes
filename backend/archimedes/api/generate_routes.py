@@ -27,7 +27,11 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
-from archimedes.agents.generation_pipeline import run_generation
+from archimedes.agents.generation_pipeline import (
+    _invalid_brief_message,
+    cheap_brief_reject,
+    run_generation,
+)
 from archimedes.api.account_auth import CurrentUser, require_current_user
 from archimedes.api.funnel_middleware import record_funnel
 from archimedes.api.generate_schemas import (
@@ -355,6 +359,28 @@ async def start_generation(
                     f"The generation queue is full ({_WAITING_GENERATIONS} jobs waiting). "
                     "No payment was taken. Retry in a few minutes."
                 ),
+            },
+        )
+
+    # Cheap, deterministic brief prelude (Lane 1.3c: "never charge for a
+    # brief we can cheaply reject"). Deliberately BEFORE the payment gate —
+    # a caller must never be charged for a brief that is obviously invalid
+    # (empty / gibberish). Shares its exact criteria with the real (LLM)
+    # validator's own prelude in generation_pipeline._validate_brief via
+    # `cheap_brief_reject` — see that function's docstring for why the two
+    # call sites can never drift apart. Anything this misses (off-topic but
+    # grammatical text, jailbreak attempts) still gets the expensive LLM
+    # check post-payment, exactly as before — that outcome legitimately
+    # consumes work, so it stays a credit spend, not a pre-payment refusal.
+    cheap_reject = cheap_brief_reject(req.brief)
+    if cheap_reject is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "reason": "brief_invalid",
+                "code": "BRIEF_INVALID",
+                "message": _invalid_brief_message(cheap_reject.get("reason")),
+                "hint": cheap_reject.get("hint") or "Mention an asset class, a goal, or a risk appetite.",
             },
         )
 
