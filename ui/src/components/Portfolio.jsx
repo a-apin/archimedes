@@ -741,6 +741,19 @@ export default function Portfolio({
 																<span className="i-lucide-check-circle w-3.5 h-3.5" />{" "}
 																anchored on Arc
 															</span>
+														) : t.decision_type === "skip" ? (
+															// A skip anchors nothing BY DESIGN (#714): with no trade
+															// there is no tradeId for commit() to bind, so the agent
+															// never attempts a registry write for this trace. "anchor
+															// pending" would promise a write that is never coming;
+															// the honest state is a permanent, explained absence.
+															<span
+																className="flex items-center gap-1 text-[var(--text-3)]"
+																title="No trade was made, so there is nothing for an on-chain commitment to bind. The trace is hashed and persisted off-chain; no anchor is attempted or pending."
+															>
+																<span className="i-lucide-skip-forward w-3.5 h-3.5" />{" "}
+																not anchored (no trade to bind)
+															</span>
 														) : (
 															<span
 																className="flex items-center gap-1 text-[var(--text-3)]"

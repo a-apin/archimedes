@@ -217,3 +217,20 @@ class CandidatesListResponse(BaseModel):
     job_id: str
     best_candidate_id: str | None
     candidates: list[CandidateSummary]
+
+
+class CreditSummary(BaseModel):
+    """One row of the calling user's own generation-credit ledger (#1441 ->
+    v8 Lane 1.3a: make it visible, not just correct). Deliberately narrower
+    than ``GenerationCreditRecord.to_payload()`` — payer_wallet, network, and
+    settlement_ref are payment-plumbing internals the UI has no use for;
+    only what a human needs to recognize "I have an unspent credit" ships.
+    """
+
+    id: int
+    status: Literal["pending", "available", "consumed", "void"]
+    created_at: str | None = None
+    job_id: str | None = None
+    # USDC dollars, derived from the ledger's raw base units — None until a
+    # claim settles (mirrors the nullability of amount_base_units itself).
+    amount_usdc: float | None = None

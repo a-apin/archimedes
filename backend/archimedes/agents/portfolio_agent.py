@@ -380,18 +380,23 @@ class PortfolioAgent:
             # metered — so a metered job running through here would under-report
             # without this line.
             #
-            # INERT TODAY, deliberately. record_llm_call is a no-op when no meter
-            # is bound to the context, and nothing binds one on this path:
-            # propose_portfolio_with_tools() is not on the generation pipeline's
-            # call graph. Its only caller is GET /api/strategies/advisor, which
-            # never opens a cost_meter.measure() scope; the pipeline's two runners
-            # (_run_debate_leaderboard, _run_fixture_candidate) both accept an
-            # `agent` argument purely for signature parity and ignore it. So this
-            # call cannot contribute to any job's snapshot as the code stands.
+            # INERT TODAY, and now unreachable. record_llm_call is a no-op when
+            # no meter is bound to the context, and nothing binds one on this
+            # path: propose_portfolio_with_tools() is not on the generation
+            # pipeline's call graph. Its one caller, GET /api/strategies/advisor,
+            # was deleted on this branch, so the method has ZERO callers left —
+            # the pipeline's two runners (_run_debate_leaderboard,
+            # _run_fixture_candidate) accept an `agent` argument purely for
+            # signature parity and ignore it. Nothing reaches this loop, so the
+            # call cannot contribute to any job's snapshot.
             #
-            # It is kept because it is correct the moment that changes: whoever
-            # wires this loop into a metered job gets the coverage already in
-            # place rather than discovering a silent under-report afterwards.
+            # This whole method is therefore dead code awaiting the follow-up
+            # deletion PR (it survives here only because portfolio_agent.py's
+            # other exports — get_portfolio_agent / PortfolioAgent — are still
+            # imported by generation_pipeline.py and the StockBench adapter, so
+            # the module could not go in the same mechanical pass). Delete the
+            # method and this instrumentation together; do not treat the
+            # record_llm_call as coverage to preserve.
             record_llm_call(model=final_response_model, response=resp)
 
             # Capture the assistant turn for the next iteration

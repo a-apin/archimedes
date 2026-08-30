@@ -35,16 +35,24 @@ import logging
 import time as time_mod
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import archimedes.services.oracle_health as oracle_health_mod
 import pytest
 from archimedes.services.oracle_health import (
     OracleHealth,
+    _equity_weekend_override_fresh,
     _push_set_symbols,
     _universe_count,
     oracle_health,
 )
 from httpx import ASGITransport, AsyncClient
+
+_NY_TZ = ZoneInfo("America/New_York")
+
+
+def _ny(year: int, month: int, day: int, hour: int, minute: int) -> float:
+    return datetime(year, month, day, hour, minute, tzinfo=_NY_TZ).timestamp()
 
 
 def _mock_loader(per_symbol: dict[str, tuple[bool | None, int | None, Exception | None]]) -> MagicMock:
@@ -180,6 +188,116 @@ class TestOracleHealthOneStale:
         assert diag.oracle_oldest_age_s == stale_age
         assert diag.oracle_probed_count == 2
         assert "1/2" in diag.reason
+
+
+class TestEquityWeekendOverrideFreshUnit:
+    """Direct unit coverage of the calendar-override function (#1525) —
+    dates chosen to match the issue's own worked example: last update Friday
+    2026-08-28 15:59 ET (one push cycle before the nominal 16:00 close),
+    evaluated from Sunday 2026-08-30 (fresh) vs. Tuesday 2026-09-01 (stale —
+    the market has since opened Monday 2026-08-31 09:30 ET and reopened
+    again Tuesday, so a still-Friday price is a genuine miss, not a weekend
+    artifact)."""
+
+    def test_friday_close_still_fresh_on_sunday(self) -> None:
+        last_updated = _ny(2026, 8, 28, 15, 59)
+        now = _ny(2026, 8, 30, 12, 0)  # Sunday noon ET
+        assert _equity_weekend_override_fresh(int(last_updated), now) is True
+
+    def test_same_friday_timestamp_is_stale_once_evaluated_on_tuesday(self) -> None:
+        last_updated = _ny(2026, 8, 28, 15, 59)
+        now = _ny(2026, 9, 1, 12, 0)  # Tuesday noon ET — market open, 2 sessions since
+        assert _equity_weekend_override_fresh(int(last_updated), now) is False
+
+    def test_does_not_override_during_open_market_hours(self) -> None:
+        # Guard-rejects-something check: a stale-looking Tuesday-morning
+        # timestamp must NOT be waved through just because SOME calendar
+        # logic ran — the override must return False once the market has
+        # reopened, even mid-session.
+        last_updated = _ny(2026, 8, 28, 15, 59)
+        now = _ny(2026, 9, 1, 11, 0)  # Tuesday 11am ET, market open since 9:30
+        assert _equity_weekend_override_fresh(int(last_updated), now) is False
+
+    def test_fresh_through_pre_open_gap_before_market_reopens(self) -> None:
+        last_updated = _ny(2026, 8, 28, 15, 59)
+        now = _ny(2026, 8, 31, 7, 0)  # Monday 7am ET — before the 9:30 open
+        assert _equity_weekend_override_fresh(int(last_updated), now) is True
+
+
+class TestOracleHealthWeekendFreshness:
+    """End-to-end through oracle_health(): the on-chain isFresh() enforces a
+    flat threshold with no calendar awareness, so it reports sSPY not-fresh
+    both on a weekend AND on a weekday when it's genuinely 44h+ stale — the
+    Python-side override must relax ONLY the equity-weekend case."""
+
+    @pytest.mark.asyncio
+    async def test_equity_stale_flag_overridden_fresh_on_sunday(self) -> None:
+        now = _ny(2026, 8, 30, 12, 0)  # Sunday noon ET
+        friday_close = int(_ny(2026, 8, 28, 15, 59))
+        loader = _mock_loader(
+            {
+                "sBTC": (True, int(now) - 60, None),
+                # On-chain isFresh() says False (flat 24h window, ~44h old) —
+                # the exact #1525 symptom shape.
+                "sSPY": (False, friday_close, None),
+            }
+        )
+        with (
+            patch("archimedes.chain.contracts.get_contract_loader", return_value=loader),
+            patch.object(oracle_health_mod.time, "time", return_value=now),
+        ):
+            diag = await oracle_health()
+
+        assert diag.oracle_fresh is True
+        assert diag.status == "fresh"
+        # The override must be VISIBLE, never a silent massage: the reason
+        # names the calendar-fresh symbol so an operator can always tell
+        # chain-fresh from calendar-fresh (fail-soft: transformations loud).
+        assert "sSPY calendar-fresh" in diag.reason
+        assert "#1525" in diag.reason
+
+    @pytest.mark.asyncio
+    async def test_equity_stale_flag_not_overridden_on_tuesday(self) -> None:
+        now = _ny(2026, 9, 1, 12, 0)  # Tuesday noon ET — market reopened since
+        friday_close = int(_ny(2026, 8, 28, 15, 59))
+        loader = _mock_loader(
+            {
+                "sBTC": (True, int(now) - 60, None),
+                "sSPY": (False, friday_close, None),
+            }
+        )
+        with (
+            patch("archimedes.chain.contracts.get_contract_loader", return_value=loader),
+            patch.object(oracle_health_mod.time, "time", return_value=now),
+        ):
+            diag = await oracle_health()
+
+        assert diag.oracle_fresh is False
+        assert diag.status == "stale"
+        assert "1/2" in diag.reason
+
+    @pytest.mark.asyncio
+    async def test_crypto_44h_old_stays_stale_regardless_of_weekend(self) -> None:
+        # Crypto keeps the existing flat threshold — no calendar override
+        # ever applies to it, even when `now` falls on a weekend.
+        now = _ny(2026, 8, 30, 12, 0)  # Sunday noon ET
+        stale_age_s = 44 * 60 * 60  # 44h — past the 24h flat MAX_STALENESS
+        loader = _mock_loader(
+            {
+                # On-chain isFresh() correctly reports False for 44h-old data.
+                "sBTC": (False, int(now) - stale_age_s, None),
+                "sSPY": (True, int(now) - 60, None),
+            }
+        )
+        with (
+            patch("archimedes.chain.contracts.get_contract_loader", return_value=loader),
+            patch.object(oracle_health_mod.time, "time", return_value=now),
+        ):
+            diag = await oracle_health()
+
+        assert diag.oracle_fresh is False
+        assert diag.status == "stale"
+        assert diag.oracle_oldest_age_s == stale_age_s
 
 
 class TestOracleHealthChainReadFailure:

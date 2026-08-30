@@ -512,11 +512,44 @@ def _extract_result(
     sharpe_raw = strategy.analyzers.sharpe.get_analysis().get("sharperatio")
     sharpe = float(sharpe_raw) if sharpe_raw is not None else None
 
-    dd_analysis = strategy.analyzers.dd.get_analysis()
-    max_dd_pct_raw = _safe_get(dd_analysis, "max", "drawdown")
-    max_dd_len_raw = _safe_get(dd_analysis, "max", "len")
-    max_dd_pct = float(max_dd_pct_raw) if max_dd_pct_raw is not None else None
-    max_dd_len = int(max_dd_len_raw) if max_dd_len_raw is not None else None
+    # Derive the reported drawdown from the REPORTED equity curve.
+    #
+    # This is a single-source refactor, NOT a behaviour change: it used to read
+    # ``bt.analyzers.DrawDown``, which measures backtrader's own bar-by-bar
+    # ``broker.getvalue()`` path, while ``equity_curve`` above is rebuilt by
+    # compounding TimeReturn's per-bar returns off ``initial_cash``. Those two
+    # series are equal by algebraic identity — compounding
+    # ``v[i-1] * (v[i] / v[i-1])`` returns ``v[i]`` whatever the sign — so the
+    # numbers agreed, and ``test_drawdown_invariant.py`` pins that they still
+    # do (randomized equivalence + a direct cross-check against the analyzer,
+    # which stays registered as the external ground truth).
+    #
+    # What changes is that the agreement no longer rests on that identity. It
+    # is undefined at ``v[i-1] == 0`` — exactly the neighbourhood this metric
+    # gets read in when a run approaches ruin — and it left the shipped
+    # artifact carrying a drawdown that no reader could check against the
+    # series shipped beside it. Reading it off the curve makes the bound exact
+    # rather than incidental: ``max_drawdown_pct`` can exceed 100% if and only
+    # if the reported curve itself went non-positive. Ruin stays reportable —
+    # clamping the number would hide it — but it can no longer be reported
+    # spuriously, and a reader holding the curve can verify the claim.
+    #
+    # It also unifies the runners: ``combine_universe_results`` already
+    # computed its drawdown this way, so single-asset and composite results
+    # are no longer produced by two methods on two curves.
+    max_dd_pct, max_dd_len = _max_drawdown_from_curve(equity_curve)
+    if any(v <= 0.0 for v in equity_curve):
+        # Ruin. Every bar after the crossing is fiction — a real account cannot
+        # keep trading from negative equity — so say so loudly rather than let
+        # a >100% drawdown pass for an unusually bad but survivable loss.
+        logger.warning(
+            "_extract_result: equity curve went non-positive (min=%.2f of %.2f initial) — the account is "
+            "ruined at that bar and every later bar is fiction; max_drawdown_pct=%.2f is a RUIN marker, "
+            "not a survivable loss",
+            min(equity_curve),
+            initial_cash,
+            max_dd_pct if max_dd_pct is not None else float("nan"),
+        )
 
     cagr = _compute_cagr(initial_cash, final_value, bars)
 
@@ -749,6 +782,11 @@ def _add_analyzers(cerebro: bt.Cerebro) -> None:
         annualize=True,
         riskfreerate=RF_ANNUAL,
     )
+    # Kept registered although _extract_result now derives the reported
+    # drawdown from the equity curve: this analyzer is the external ground
+    # truth the curve-derived number is cross-validated against (see
+    # tests/test_drawdown_invariant.py), and dropping it would remove the only
+    # independent check on that arithmetic.
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name="dd")
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
     cerebro.addanalyzer(TurnoverAnalyzer, _name="turnover")
