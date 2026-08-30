@@ -27,12 +27,17 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
-from archimedes.agents.generation_pipeline import run_generation
+from archimedes.agents.generation_pipeline import (
+    _invalid_brief_message,
+    cheap_brief_reject,
+    run_generation,
+)
 from archimedes.api.account_auth import CurrentUser, require_current_user
 from archimedes.api.funnel_middleware import record_funnel
 from archimedes.api.generate_schemas import (
     CandidatesListResponse,
     CandidateSummary,
+    CreditSummary,
     GenerateBrief,
     GenerateStartRequest,
     GenerateStartResponse,
@@ -91,6 +96,15 @@ _JOB_HEARTBEAT_INTERVAL_SECONDS = 30.0
 # § Failure modes: "Lock-without-progress for > 5 min").
 _STALLED_AFTER_SECONDS = 300
 
+# Hard ceiling on one generation run (v8 Lane 1.3b — bound generation hangs).
+# `_STALLED_AFTER_SECONDS` only makes a dead run *observable*; nothing
+# previously stopped `run_generation` itself from hanging forever (an LLM
+# call with no client-side timeout, a stuck backtest thread) while quietly
+# holding the payer's consumed credit and a `_GENERATION_GATE` slot the whole
+# time. `_run_with_cleanup` wraps the awaited call in `asyncio.wait_for` at
+# this bound.
+_DEFAULT_GENERATION_TIMEOUT_SECONDS = 600
+
 # Live registry of in-flight asyncio tasks per job. Lets cancel_job actually
 # stop the work — without this, /cancel only flips Redis status while the
 # agent keeps burning LLM tokens to completion.
@@ -130,6 +144,25 @@ def _max_queued_generations() -> int:
         return max(0, int(os.getenv("GENERATION_MAX_QUEUE", "10")))
     except ValueError:
         return 10
+
+
+def _generation_timeout_seconds() -> float:
+    """Bound for one run, from `GENERATION_TIMEOUT_SECONDS` (v8 Lane 1.3b).
+
+    Parsed as defensively as `_max_concurrent_generations` above (and
+    `revenue_sweep._min_usdc`): a missing, non-numeric, or non-positive value
+    must never crash startup — it falls back to the default instead.
+
+    `GENERATION_TIMEOUT_SECONDS=inf` is the one intended escape hatch: `float`
+    accepts it, it passes the `> 0` floor, and `asyncio.wait_for` with an
+    infinite timeout never fires — restoring the old unbounded behaviour on
+    purpose (e.g. a long-running local batch) rather than by accident.
+    """
+    try:
+        value = float(os.getenv("GENERATION_TIMEOUT_SECONDS", str(_DEFAULT_GENERATION_TIMEOUT_SECONDS)))
+    except ValueError:
+        return float(_DEFAULT_GENERATION_TIMEOUT_SECONDS)
+    return value if value > 0 else float(_DEFAULT_GENERATION_TIMEOUT_SECONDS)
 
 
 def _generation_gate() -> asyncio.Semaphore:
@@ -323,6 +356,35 @@ async def get_generation_quote():
     return generation_payment.quote()
 
 
+@generate_router.get("/credits", response_model=list[CreditSummary])
+async def list_generation_credits(
+    user: CurrentUser = Depends(require_current_user),
+) -> list[CreditSummary]:
+    """The calling user's own generation-credit ledger (v8 Lane 1.3a).
+
+    Makes visible what ``_paywall_with_credit`` already does silently: an
+    unspent (``available``) credit from an earlier paid-but-undelivered run
+    pays for the NEXT generation, with no new charge (#1441). Requires
+    sign-in — unlike ``/quote``, a credit belongs to a specific account, so
+    there is nothing honest to show before auth.
+
+    A bare list, not the wrapped ``{jobs: [...]}`` shape sibling listings use
+    — the frontend's only question is "does an unspent credit exist", so
+    there is no envelope worth adding.
+    """
+    rows = generation_credits.list_credits(user.id)
+    return [
+        CreditSummary(
+            id=row["id"],
+            status=row["status"],
+            created_at=row["created_at"],
+            job_id=row["job_id"],
+            amount_usdc=(round(row["amount_base_units"] / 10**6, 2) if row["amount_base_units"] is not None else None),
+        )
+        for row in rows
+    ]
+
+
 @generate_router.post("/start", response_model=GenerateStartResponse, status_code=202)
 @limiter.limit("5/minute")
 async def start_generation(
@@ -355,6 +417,28 @@ async def start_generation(
                     f"The generation queue is full ({_WAITING_GENERATIONS} jobs waiting). "
                     "No payment was taken. Retry in a few minutes."
                 ),
+            },
+        )
+
+    # Cheap, deterministic brief prelude (Lane 1.3c: "never charge for a
+    # brief we can cheaply reject"). Deliberately BEFORE the payment gate —
+    # a caller must never be charged for a brief that is obviously invalid
+    # (empty / gibberish). Shares its exact criteria with the real (LLM)
+    # validator's own prelude in generation_pipeline._validate_brief via
+    # `cheap_brief_reject` — see that function's docstring for why the two
+    # call sites can never drift apart. Anything this misses (off-topic but
+    # grammatical text, jailbreak attempts) still gets the expensive LLM
+    # check post-payment, exactly as before — that outcome legitimately
+    # consumes work, so it stays a credit spend, not a pre-payment refusal.
+    cheap_reject = cheap_brief_reject(req.brief)
+    if cheap_reject is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "reason": "brief_invalid",
+                "code": "BRIEF_INVALID",
+                "message": _invalid_brief_message(cheap_reject.get("reason")),
+                "hint": cheap_reject.get("hint") or "Mention an asset class, a goal, or a risk appetite.",
             },
         )
 
@@ -575,16 +659,68 @@ async def _run_with_cleanup(
                 _WAITING_GENERATIONS -= 1
         else:
             await gate.acquire()
+        timeout_seconds = _generation_timeout_seconds()
         try:
-            await run_generation(
-                job_id=job_id,
-                brief=brief,
-                n_candidates=n_candidates,
-                mode=mode,
-                model=model,
-                owner_user_id=owner_user_id,
-                owner_wallet=owner_wallet,
-            )
+            try:
+                await asyncio.wait_for(
+                    run_generation(
+                        job_id=job_id,
+                        brief=brief,
+                        n_candidates=n_candidates,
+                        mode=mode,
+                        model=model,
+                        owner_user_id=owner_user_id,
+                        owner_wallet=owner_wallet,
+                    ),
+                    timeout=timeout_seconds,
+                )
+            # `asyncio.TimeoutError` IS the builtin `TimeoutError` on 3.11+ (a
+            # pure alias), so UP041 is right that this is redundant — but the
+            # alias is the intent: this catches the timeout `asyncio.wait_for`
+            # raises, NOT some `TimeoutError` bubbling up out of the pipeline's
+            # own socket/HTTP layer. Spelling it `asyncio.` keeps the next
+            # reader from having to rediscover which one is meant.
+            except asyncio.TimeoutError:  # noqa: UP041
+                # wait_for cancels the still-running run_generation coroutine
+                # on timeout and waits for it to unwind, so its own
+                # `except asyncio.CancelledError` branch has ALREADY run by the
+                # time we get here. That branch left two dishonest traces —
+                # nobody clicked Cancel:
+                #   1. status "cancelled"/"cancelled by client", and
+                #   2. an `error`/`CANCELLED` "job cancelled" event.
+                # (1) is overwritten below by update_status — not
+                # update_terminal_status, which treats "cancelled" as sticky on
+                # purpose for the real-cancel race. Any non-"done" terminal
+                # status still reaches `_release_credit_if_undelivered` in the
+                # outer finally, so the payer's credit restores either way.
+                # (2) cannot be overwritten: the event log is append-only, so
+                # the honest TIMEOUT frame is APPENDED after it. Who actually
+                # reads it: `_TERMINAL_EVENTS` makes `stream_events` return on
+                # the FIRST `error` frame, so a client connected for the whole
+                # run still closes on "job cancelled" — but a client resuming
+                # with `Last-Event-ID` past that frame gets TIMEOUT, and the
+                # log itself is the durable record of why the job really died.
+                message = f"generation exceeded the {timeout_seconds:g}-second limit"
+                logger.warning(
+                    "job %s exceeded GENERATION_TIMEOUT_SECONDS=%s — marking error",
+                    sanitize_log_value(job_id),
+                    timeout_seconds,
+                )
+                # Status first: it is the authoritative record, and it stays
+                # honest even if the event push below fails.
+                await store.update_status(job_id, "error", error=message)
+                await store.push_event(
+                    job_id,
+                    {
+                        "event": "error",
+                        "data": {
+                            "job_id": job_id,
+                            "message": message,
+                            "recoverable": False,
+                            "code": "TIMEOUT",
+                        },
+                    },
+                )
         finally:
             gate.release()
     except asyncio.CancelledError:

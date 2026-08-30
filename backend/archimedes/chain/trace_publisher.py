@@ -20,8 +20,10 @@ class TracePublisher:
     """Publishes reasoning trace hashes to on-chain ReasoningTraceRegistry.
 
     Two anchoring paths:
-      - ``publish`` → ``publishTrace`` (v1 anchor-after-the-fact; kept for the
-        legacy SKIP/error path and existing callers).
+      - ``publish`` → ``publishTrace`` (v1 anchor-after-the-fact). No longer used
+        by the agent tick — ``agent_runner`` was migrated off it in #714 — but kept
+        for the operator-driven ``POST /api/traces/publish`` route and any external
+        caller anchoring a trace that has no covered trade.
       - ``commit`` + ``reveal`` (v1.5 temporal binding): the agent commits the
         trace hash BEFORE the trade and reveals the canonical content AFTER it
         settles. The contract recomputes keccak256 on reveal and enforces
