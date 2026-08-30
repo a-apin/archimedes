@@ -323,8 +323,11 @@ test("the authenticated shell ships a skip link with a focusable target", () => 
 });
 
 test("a failed deep link does not share the landing page's title", () => {
-	assert.match(app, /'not-found': 'Page not found · Archimedes'/);
-	assert.match(app, /route\.kind === 'not-found' \? 'not-found' : route\.page/);
+	// Quote-style agnostic: the rebrand formats with double quotes; the
+	// guarded behavior (a dedicated not-found title, keyed off route.kind)
+	// is what matters, not the quoting.
+	assert.match(app, /["']not-found["']: ["']Page not found · Archimedes["']/);
+	assert.match(app, /route\.kind === ["']not-found["'] \? ["']not-found["'] : route\.page/);
 });
 
 // ── 2.1.1 Keyboard / 4.1.2 Name, Role, Value ──────────────────────────────

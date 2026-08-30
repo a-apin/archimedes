@@ -395,7 +395,7 @@ ECR_REGISTRY=037613907429.dkr.ecr.us-east-1.amazonaws.com
 aws ecr get-login-password --region us-east-1 | \
   docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-docker build -t archimedes-backend:manual -f backend/Dockerfile backend
+docker build -t archimedes-backend:manual -f backend/Dockerfile .
 docker tag archimedes-backend:manual "$ECR_REGISTRY/archimedes-backend:latest"
 docker push "$ECR_REGISTRY/archimedes-backend:latest"
 

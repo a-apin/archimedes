@@ -3,6 +3,7 @@ import { ROADMAP_PAGES, ROADMAP_SURFACES_ENABLED } from './featureFlags.js'
 const PUBLIC_PATHS = {
   '/': 'landing',
   '/architecture': 'architecture',
+  '/security': 'security',
 }
 
 const AUTH_PATHS = {
@@ -172,6 +173,7 @@ export function resolveRoute(pathname = '/', search = '', features = { quant: tr
 export function pageToPath(page, options = {}) {
   if (page === 'landing') return '/'
   if (page === 'architecture') return '/architecture'
+  if (page === 'security') return '/security'
   if (page === 'vault-detail' && options.vaultAddress) return `/app/portfolio/vaults/${options.vaultAddress}`
   if (page === 'strategy' && options.strategyId) return `/app/strategy/${encodeURIComponent(options.strategyId)}`
   if (page === 'market-strategy' && options.strategyId) return `/app/marketplace/strategy/${encodeURIComponent(options.strategyId)}`

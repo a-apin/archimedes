@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import WalletConnect from "./WalletConnect";
+import BrandMark from "./BrandMark";
 import Breadcrumbs from "./Breadcrumbs";
 import { getStoredWalletName } from "../config";
 import { deriveChainStatus } from "../chainStatus";
@@ -154,6 +155,8 @@ export default function Layout({
 	const [health, setHealth] = useState(null);
 	const [healthError, setHealthError] = useState(false);
 	const hamburgerRef = useRef(null);
+	const sidebarRef = useRef(null);
+	const closeButtonRef = useRef(null);
 	const chainStatus = deriveChainStatus(health, healthError);
 	const proofStage =
 		(page === "generate" ? journeyStage : null) ?? CORE_PAGE_STAGE[page];
@@ -215,18 +218,51 @@ export default function Layout({
 	// only clears overflow once every locker has released it. AssetModal.jsx
 	// isn't touched here — it keeps its own independent lock for now — but
 	// this same helper is available for it to adopt.
-	useEffect(() => {
-		if (!menuOpen) return;
-		lockBodyScroll();
-		return () => unlockBodyScroll();
-	}, [menuOpen]);
-
-	const closeMenu = () => {
+	const closeMenu = useCallback(() => {
 		setMenuOpen(false);
-		// Return focus to the hamburger button on close for keyboard/screen-reader
-		// parity — otherwise focus is dropped when the drawer unmounts/hides.
+		// Restore the trigger after the drawer closes.
 		hamburgerRef.current?.focus();
-	};
+	}, []);
+
+	// Mobile drawer behaves like a modal: lock background scroll, move focus
+	// inside, contain Tab navigation, close on Escape, then restore the trigger.
+	useEffect(() => {
+		if (!menuOpen) return undefined;
+		lockBodyScroll();
+		closeButtonRef.current?.focus();
+
+		const onKeyDown = (event) => {
+			if (event.key === "Escape") {
+				event.preventDefault();
+				closeMenu();
+				return;
+			}
+			if (event.key !== "Tab" || !sidebarRef.current) return;
+
+			const focusable = Array.from(
+				sidebarRef.current.querySelectorAll(
+					'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+				),
+			).filter((element) => element.getClientRects().length > 0);
+			if (focusable.length === 0) return;
+
+			const first = focusable[0];
+			const last = focusable[focusable.length - 1];
+			if (event.shiftKey && document.activeElement === first) {
+				event.preventDefault();
+				last.focus();
+			} else if (!event.shiftKey && document.activeElement === last) {
+				event.preventDefault();
+				first.focus();
+			}
+		};
+
+		document.addEventListener("keydown", onKeyDown);
+		return () => {
+			document.removeEventListener("keydown", onKeyDown);
+			unlockBodyScroll();
+		};
+	}, [closeMenu, menuOpen]);
 
 	const toggleTheme = () => {
 		const next = theme === "light" ? "dark" : "light";
@@ -264,20 +300,18 @@ export default function Layout({
 			)}
 
 			<aside
+				ref={sidebarRef}
 				className={`sidebar${menuOpen ? " sidebar-open" : ""}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}
 			>
 				<div className="sidebar-brand">
 					<div className="sidebar-brand-main">
-						<div className="logo-mark">
-							<svg viewBox="0 0 36 36" aria-hidden="true">
-								<path d="M18 18c-1.8 1.4-4.5.1-4.1-2.3.5-3.2 5.3-4.5 7.8-2.1 3.8 3.8.2 10.4-6 11.5-8.1 1.4-14.4-7.6-11.1-15.4 4-9.5 17-12.5 25.5-6" />
-							</svg>
-						</div>
+						<BrandMark className="logo-mark" />
 						<div className="logo-copy flex-1 min-w-0">
 							<div className="logo-text">Archimedes</div>
 							<div className="logo-sub">Evidence workspace</div>
 						</div>
 						<button
+							ref={closeButtonRef}
 							className="sidebar-close-btn"
 							onClick={closeMenu}
 							aria-label="Close menu"

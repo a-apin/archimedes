@@ -760,14 +760,17 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
   useEffect(() => { load() }, [load])
 
   return (
-    <div>
-      <div className="mb-[18px]">
-        <h2 className="serif text-[2rem] mb-2.5">Library</h2>
-        <p className="body mb-1.5">
+    <div className="strategies-page">
+      {/* #1370 item 7: the heading must name the same place the nav item, the
+          tab title and the breadcrumb name — all three say "Library". */}
+      <header className="app-page-heading">
+        <p className="app-eyebrow">Evidence library</p>
+        <h1>Library</h1>
+        <p>
           Your strategies, plus a clearly-separated set of example strategies
           drawn from published research so you can learn the metric format.
         </p>
-      </div>
+      </header>
 
       <div className="mb-5">
         <RigorStrictnessControl level={level} onChange={setLevel} />
