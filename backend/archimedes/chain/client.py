@@ -9,12 +9,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 from aiohttp import ClientError, ClientTimeout
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 from web3 import AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
@@ -88,6 +90,22 @@ def _resolve_ssot_addresses(defaults: dict[str, str], suffix: str) -> dict[str, 
     return resolved
 
 
+@dataclass(frozen=True)
+class ChainEndpoint:
+    """One resolved chain: which id, which RPC, and whether it was chosen.
+
+    ``explicit`` records whether this endpoint came from its own
+    ``ARC_PAYMENTS_*`` / ``ARC_EXECUTION_*`` variables or fell back to the
+    single-chain ``chain_id`` / ``arc_rpc_url``. Callers that need to know a
+    chain was *decided* rather than *inherited* — a mainnet payment path, a
+    startup assertion — read this instead of comparing ids and guessing.
+    """
+
+    chain_id: int
+    rpc_url: str
+    explicit: bool
+
+
 class ChainSettings(BaseSettings):
     """On-chain connection settings — loaded from .env or environment variables.
 
@@ -142,6 +160,27 @@ class ChainSettings(BaseSettings):
     # ARC_RPC_RETRIES overrides.
     rpc_retries: int = 2
 
+    # ── Two-chain split (#1240) ────────────────────────────────────────────
+    # Payments (USDC / x402 / Gateway / PaymentSplitter) and execution (vault,
+    # synth, AMM, oracle) run on one chain today and become two at the Arc
+    # mainnet cutover, where the payment rail goes to mainnet and execution
+    # stays on testnet.
+    #
+    # All four default to the single-chain values above, so an environment that
+    # sets none of them behaves exactly as it does now. That is the point: this
+    # is a seam, not a cutover. Setting them is what moves a chain.
+    #
+    # A HALF-CONFIGURED SPLIT IS REJECTED at construction rather than filled in
+    # from the other chain — see _reject_half_configured_split below. Silently
+    # borrowing the execution RPC for a payments chain id would mean settling
+    # real USDC against an endpoint nobody chose, which is the fail-soft
+    # pattern docs/architectural-principles.md forbids for anything a claim
+    # depends on. Money is the strongest such claim we make.
+    payments_chain_id: int | None = None  # ARC_PAYMENTS_CHAIN_ID
+    payments_rpc_url: str = ""  # ARC_PAYMENTS_RPC_URL
+    execution_chain_id: int | None = None  # ARC_EXECUTION_CHAIN_ID
+    execution_rpc_url: str = ""  # ARC_EXECUTION_RPC_URL
+
     # Agent account (the address that calls rebalance, publishes traces, etc.)
     agent_private_key: str = ""
     agent_address: str = ""  # Will be derived from private key if empty
@@ -177,6 +216,78 @@ class ChainSettings(BaseSettings):
     abi_dir: str = str(Path(__file__).resolve().parents[3] / "contracts" / "abis")
 
     model_config = {"env_prefix": "ARC_", "env_file": ".env", "extra": "ignore"}
+
+    @field_validator("payments_chain_id", "execution_chain_id", mode="before")
+    @classmethod
+    def _blank_chain_id_is_unset(cls, v: object) -> object:
+        """Treat an empty string as unset, because .env.example ships these blank.
+
+        ``cp .env.example .env`` — the documented first step in SETUP.md — puts
+        ``ARC_PAYMENTS_CHAIN_ID=`` in the environment as an empty string, and
+        pydantic will not parse that as an int. Without this the whole backend
+        refuses to start for anyone who follows the setup instructions, while
+        working fine for anyone whose .env predates these lines. Blank means
+        "no split configured", which is the same thing as absent.
+        """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @model_validator(mode="after")
+    def _reject_half_configured_split(self) -> ChainSettings:
+        """Refuse to boot on a chain id without its RPC, or an RPC without its id.
+
+        The tempting default is to fill the missing half from the single-chain
+        settings. That produces a process that reports one chain and talks to
+        another, and on the payments side it would do so while moving real USDC.
+        A missing half is an incomplete decision, so it stops here with the
+        variable name that would complete it.
+        """
+        for label, chain_id, rpc_url in (
+            ("PAYMENTS", self.payments_chain_id, self.payments_rpc_url),
+            ("EXECUTION", self.execution_chain_id, self.execution_rpc_url),
+        ):
+            if chain_id is not None and not rpc_url:
+                raise ValueError(
+                    f"ARC_{label}_CHAIN_ID is set to {chain_id} but ARC_{label}_RPC_URL is empty. "
+                    f"Set both or neither — a chain id without its own endpoint would silently "
+                    f"reuse the ARC_ARC_RPC_URL endpoint while reporting a different chain."
+                )
+            if rpc_url and chain_id is None:
+                raise ValueError(
+                    f"ARC_{label}_RPC_URL is set but ARC_{label}_CHAIN_ID is empty. "
+                    f"Set both or neither — an endpoint with no declared chain id cannot be "
+                    f"checked against what the RPC actually reports."
+                )
+        return self
+
+    @property
+    def payments_chain(self) -> ChainEndpoint:
+        """The chain USDC settles on. Falls back to the single-chain settings."""
+        if self.payments_chain_id is None:
+            return ChainEndpoint(chain_id=self.chain_id, rpc_url=self.arc_rpc_url, explicit=False)
+        return ChainEndpoint(chain_id=self.payments_chain_id, rpc_url=self.payments_rpc_url, explicit=True)
+
+    @property
+    def execution_chain(self) -> ChainEndpoint:
+        """The chain vaults, synths, AMM and oracles live on.
+
+        Every contract address on this settings object belongs to THIS chain,
+        which is why ``chain_id`` / ``arc_rpc_url`` keep their present meaning
+        and every existing signing call site stays correct without change.
+        """
+        if self.execution_chain_id is None:
+            return ChainEndpoint(chain_id=self.chain_id, rpc_url=self.arc_rpc_url, explicit=False)
+        return ChainEndpoint(chain_id=self.execution_chain_id, rpc_url=self.execution_rpc_url, explicit=True)
+
+    @property
+    def is_split_chain(self) -> bool:
+        """True when payments and execution resolve to different chain ids.
+
+        The browser wallet UX turns on this: one chain needs no switching, two
+        do. Reading it beats comparing ids at each call site and drifting.
+        """
+        return self.payments_chain.chain_id != self.execution_chain.chain_id
 
     @property
     def agent_account(self) -> LocalAccount | None:

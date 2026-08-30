@@ -88,7 +88,13 @@ def _pick_pipeline(
     """
     if mode_override and mode_override != "debate":
         logger.info("generation: ignoring legacy mode override %r (debate-only cutover)", mode_override)
-    return "debate", "debate society is the generation pipeline (T1.1 Phase-3 cutover)"
+    # This reason string is USER-FACING: it rides the SSE stream verbatim
+    # (run_generation's `pipeline_selected` emit) and GenerationStream.jsx
+    # renders it into every viewer's event log. Internal shorthand ("T1.1
+    # Phase-3 cutover") leaked to production screens this way (#1525-era
+    # review, 2026-08-30) — keep it plain product copy, and keep the
+    # no-internal-jargon regression test in test_generation_pipeline.py green.
+    return "debate", "the debate society — proposer and critic agents argue each candidate before the rigor gate"
 
 
 # ── Brief validation (real LLM step on the live path) ─────────────────────
