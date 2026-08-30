@@ -1599,7 +1599,42 @@ async def get_strategy(strategy_id: str, request: Request):
             raise HTTPException(status_code=404, detail="Strategy not found")
         record = get_passport(session, strategy_id)
         if record is not None:
-            return _passport_to_strategy_response(record, session=session)
+            resp = _passport_to_strategy_response(record, session=session)
+            # The user's own brief (v8 Lane 3.3) lives on strategy_store, not
+            # the strategy_passports row `_passport_to_strategy_response`
+            # reads — `row` (StrategyRecord) is already loaded above for the
+            # visibility check, so this is a free attribute read, not an
+            # extra query. Deliberately set HERE, not inside the shared
+            # helper: that helper also backs Library and the public
+            # leaderboard (`_passport_responses` /
+            # `_public_generated_strategy_responses`), and a user's free-text
+            # brief has no business on either of those.
+            #
+            # OWNER-GATED, and deliberately STRICTER than the 404 visibility
+            # check above: `is_strategy_visible` lets ANYONE read a PUBLISHED
+            # row, but the brief is the user's own words, and publishing a
+            # strategy consents to sharing the STRATEGY, not the sentence its
+            # owner typed to ask for it (same reasoning as
+            # `_redact_owner_wallet` for owner_wallet). So the same #850
+            # predicate is re-asked in ownership-only form — `is_example` and
+            # `is_published` pinned False in the row_view so neither
+            # public-visibility clause can grant it — which is exactly the
+            # shape `_owned_generated_strategy_responses` uses for the
+            # leaderboard's "own" scope. Never re-implement the owner match
+            # at a call site; ask the one predicate. Non-owners and anonymous
+            # callers keep the schema default (None).
+            if row is not None and is_strategy_visible(
+                {
+                    "is_example": False,
+                    "is_published": False,
+                    "owner_user_id": row.owner_user_id,
+                    "owner_wallet": row.owner_wallet,
+                },
+                caller,
+                caller_user_id=user.id if user else None,
+            ):
+                resp.brief_intent = row.brief_intent
+            return resp
 
     raise HTTPException(status_code=404, detail="Strategy not found")
 
