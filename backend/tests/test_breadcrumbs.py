@@ -180,23 +180,70 @@ def _extract_home_page(text: str) -> str:
     return m.group(1)
 
 
-def _extract_excluded_pages(text: str) -> set[str]:
-    """Page names listed under Breadcrumbs.jsx's `Deliberately excluded:` block.
+#: Minimum characters of prose after the em dash before an exclusion counts as
+#: justified. Long enough to reject a placeholder ("n/a", "TODO", "later"),
+#: short enough that a real one-clause reason clears it without padding.
+MIN_EXCLUSION_REASON_CHARS = 20
 
-    Only true bullet lines (`//   - name[, name...] — reason`) count; wrapped
-    continuation lines (`//     ...`, no leading `-`) are prose, not entries.
+
+def _extract_excluded_pages(text: str) -> dict[str, str]:
+    """Page names -> reason, from Breadcrumbs.jsx's `Deliberately excluded:` block.
+
+    Grammar, enforced rather than assumed (Önder, #1400 review): a bullet is
+    `//   - name[, name...] — reason`. Both halves are mandatory. Wrapped
+    continuation lines (`//     ...`, no leading `-`) are prose belonging to
+    the bullet above, not new entries.
+
+    This parser is deliberately strict on three things the loose earlier
+    version let through, because each one silently *widens* the exclusion set
+    that `test_every_app_page_has_a_crumb_or_a_documented_exclusion` trusts:
+
+    1. **No em dash, no entry.** The old parser did `line.split("—")[0]`, which
+       on an unseparated line returns the *whole* line — so `//   - account`
+       registered `account` as excluded with no reason given at all, and a
+       sentence of prose registered each comma-separated fragment of it as a
+       page name.
+    2. **Names must look like page ids** (`[a-z][a-z0-9-]*`). Prose fragments
+       that slipped through rule 1 could otherwise land in the set and, by
+       coincidence of wording, cover a real page.
+    3. **Reasons must be substantive** (see `MIN_EXCLUSION_REASON_CHARS`), so
+       `//   - account — TODO` does not clear the gate.
+
+    Malformed bullets raise rather than being skipped: skipping would make a
+    typo'd exclusion look like no exclusion, which reads as a *narrower* set
+    than intended and produces a confusing failure two tests downstream.
     """
     m = re.search(r"Deliberately excluded:\n(.*?)\n// Primary path", text, re.DOTALL)
     assert m, "'Deliberately excluded:' comment block not found in Breadcrumbs.jsx"
     block = m.group(1)
-    pages: set[str] = set()
+    excluded: dict[str, str] = {}
     for line in block.splitlines():
         item = re.match(r"^//\s{2,}-\s+(.+)$", line)
         if not item:
             continue
-        names_part = item.group(1).split("—")[0]
-        pages.update(n.strip() for n in names_part.split(",") if n.strip())
-    return pages
+        body = item.group(1)
+        names_part, sep, reason = body.partition("—")
+        assert sep, (
+            f"malformed 'Deliberately excluded' bullet (no ' — reason' half): {line.strip()!r}. "
+            "Grammar is `//   - name[, name...] — why it has no crumb`; the reason is what "
+            "makes this a documented exclusion rather than a silent one."
+        )
+        names = [n.strip() for n in names_part.split(",") if n.strip()]
+        assert names, f"'Deliberately excluded' bullet names no page: {line.strip()!r}"
+        bad_names = [n for n in names if not re.fullmatch(r"[a-z][a-z0-9-]*", n)]
+        assert not bad_names, (
+            f"'Deliberately excluded' bullet {line.strip()!r} lists {bad_names}, which are not "
+            "page ids — write prose after the em dash, not before it."
+        )
+        reason = reason.strip()
+        assert len(reason) >= MIN_EXCLUSION_REASON_CHARS, (
+            f"'Deliberately excluded' entry {names} gives reason {reason!r} "
+            f"({len(reason)} chars, need >= {MIN_EXCLUSION_REASON_CHARS}) — say why the page has "
+            "no crumb, so the next reader can tell a decision from an oversight."
+        )
+        for name in names:
+            excluded[name] = reason
+    return excluded
 
 
 def _extract_app_paths_pages(routes_text: str) -> set[str]:
@@ -227,7 +274,9 @@ def test_no_page_appears_twice_in_one_trail() -> None:
         f"{len(group_pages)} groupPage: values — every entry must declare exactly one of each."
     )
     dupes: dict[str, list[str]] = {}
-    for key, group, group_page in zip(keys, groups, group_pages):
+    # strict=True is belt-and-braces: the length assert above already fires
+    # first with a better message, but B905 wants the intent stated.
+    for key, group, group_page in zip(keys, groups, group_pages, strict=True):
         trail = [home_page]
         if group:
             trail.append(group_page)
@@ -238,15 +287,55 @@ def test_no_page_appears_twice_in_one_trail() -> None:
 
 
 def test_every_app_page_has_a_crumb_or_a_documented_exclusion() -> None:
-    """A CRUMB_MAP miss fails silently (Breadcrumbs returns null, #1219's
-    original bug) — #1370 item 2: 'account' is a real APP_PATHS route with no
-    crumb and no entry in the exclusion list, so it renders no trail at all.
+    """Guards against a *silently* omitted crumb, NOT against a missing crumb.
+
+    Read the name literally — the "or a documented exclusion" half is the whole
+    point, and it is satisfiable by writing a comment. A page with no crumb
+    passes this test the moment someone adds it to Breadcrumbs.jsx's
+    `Deliberately excluded:` block with a reason; `explore` and `architecture`
+    clear it exactly that way, and that is the intended behaviour, not a hole.
+    So: green here means every crumb-less APP_PATHS page has been *noticed and
+    justified in the file*. It does NOT mean every page renders a trail. Do not
+    cite this test as evidence that breadcrumbs are complete (Önder, #1400
+    review — the earlier docstring invited exactly that over-reading).
+
+    What it does buy: a CRUMB_MAP miss fails silently at runtime (`if (!info)
+    return null` — #1219's original bug), so the only cheap defence is to force
+    the omission to be written down. #1370 item 2 is the failure mode: 'account'
+    was a real APP_PATHS route with no crumb and no exclusion entry, so it
+    rendered no trail and nothing said so.
+
+    Three checks give the "documented" half teeth, since a comment is otherwise
+    free to write. `_extract_excluded_pages` enforces the bullet grammar and a
+    substantive reason; here we additionally require that an exclusion names a
+    page that actually exists, and that it does not contradict CRUMB_MAP.
     """
     text = BREADCRUMBS.read_text(encoding="utf-8")
-    app_pages = _extract_app_paths_pages(ROUTES.read_text(encoding="utf-8"))
+    routes_text = ROUTES.read_text(encoding="utf-8")
+    app_pages = _extract_app_paths_pages(routes_text)
+    all_pages = _extract_page_to_path_keys(routes_text)
     crumbs = _extract_crumb_keys(text)
     excluded = _extract_excluded_pages(text)
-    missing = sorted(app_pages - crumbs - excluded)
+
+    # An exclusion for a page that no longer exists is dead config that keeps
+    # this test green while covering nothing — the same unreachable-dead-config
+    # failure mode #1370 removed the `architecture` CRUMB_MAP key for.
+    phantom = sorted(set(excluded) - all_pages)
+    assert not phantom, (
+        f"'Deliberately excluded' names pages that are not routes at all: {phantom}. "
+        "Every excluded name must be a page in routes.js (PUBLIC_PATHS, APP_PATHS or a "
+        "deepRoutes row); drop the entry if the route is gone."
+    )
+
+    # An entry that is both excluded and mapped is a contradiction: whichever
+    # half the reader believes, the other one is wrong.
+    contradictory = sorted(set(excluded) & crumbs)
+    assert not contradictory, (
+        f"pages listed as deliberately excluded but also present in CRUMB_MAP: {contradictory}. "
+        "Remove the exclusion comment or remove the crumb — the file must not claim both."
+    )
+
+    missing = sorted(app_pages - crumbs - set(excluded))
     assert not missing, f"APP_PATHS pages with neither a crumb nor a documented exclusion: {missing}"
 
 
