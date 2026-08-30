@@ -174,11 +174,14 @@ class StrategyResponse(BaseModel):
     # The user's own free-text ask that produced this strategy (v8 Lane 3.3),
     # read from strategy_store.brief_intent — distinct from
     # methodology_summary, which is the DERIVED writeup. Populated ONLY by
-    # the single-strategy detail route (``get_strategy``); the shared
+    # the single-strategy detail route (``get_strategy``), and there only for
+    # the row's OWNER — publishing a strategy shares the strategy, not the
+    # sentence its owner typed to ask for it. The shared
     # ``_passport_to_strategy_response``/``_passport_responses`` helpers that
     # also back Library and the public leaderboard never set it, so it never
-    # reaches those list payloads. None = curated strategy (no brief) or a
-    # legacy generated row the backfill migration could not resolve.
+    # reaches those list payloads. None = not the caller's row, a curated
+    # strategy (no brief), or a legacy generated row the backfill migration
+    # could not resolve.
     brief_intent: str | None = None
     asset_universe: list[str]
     # Provenance of the asset_universe pick (#857): "user" | "model" | "full",

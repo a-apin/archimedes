@@ -675,7 +675,7 @@ def _seed_pre_brief_intent_rows(db_path: Path) -> None:
     brief_intent migration runs (i.e. after upgrading only to its own
     down_revision — strategy_store has no brief_intent column yet).
 
-    Four cases, one per strategy:
+    Six cases, one per strategy:
       * unambiguous  — one proposal, one intent -> backfilled.
       * ambiguous    — two proposals sharing the (name, thesis) key but
                         DIFFERENT intents (the fixture-path collision this
@@ -685,6 +685,14 @@ def _seed_pre_brief_intent_rows(db_path: Path) -> None:
       * curated       — generation_method='curated' -> never even considered,
                         left NULL, even though its (name, thesis) happens to
                         coincide with a real proposal.
+      * blank         — its one matching proposal logged a WHITESPACE-ONLY
+                        intent -> left NULL, not backfilled with blanks (this
+                        backfill is the second writer to the column and must
+                        normalize the same way ``upsert_strategy`` does; note
+                        ``"   "`` is truthy, so only the ``.strip()`` makes it
+                        fall out).
+      * padded        — a real intent with incidental surrounding whitespace
+                        -> backfilled TRIMMED.
     """
     import json as _json
     from datetime import UTC, datetime
@@ -751,6 +759,8 @@ def _seed_pre_brief_intent_rows(db_path: Path) -> None:
                 _strategy_row("ambig0001", "Ambiguous Strategy", "Its thesis"),
                 _strategy_row("nomatch01", "No Match Strategy", "Its thesis"),
                 _strategy_row("curated01", "Ambiguous Strategy", "Its thesis", method="curated"),
+                _strategy_row("blank0001", "Blank Brief Strategy", "Its thesis"),
+                _strategy_row("padded001", "Padded Brief Strategy", "Its thesis"),
             ],
         )
         conn.execute(
@@ -765,6 +775,12 @@ def _seed_pre_brief_intent_rows(db_path: Path) -> None:
                 # (most plausible with the deterministic fixture path).
                 _proposal_row("p-ambig-a", "gen-2", "Ambiguous Strategy", "Its thesis", "Brief A"),
                 _proposal_row("p-ambig-b", "gen-3", "Ambiguous Strategy", "Its thesis", "Brief B"),
+                # Whitespace-only and padded intents — the migration must
+                # normalize both the way upsert_strategy does.
+                _proposal_row("p-blank00", "gen-4", "Blank Brief Strategy", "Its thesis", "   \n\t "),
+                _proposal_row(
+                    "p-padded0", "gen-5", "Padded Brief Strategy", "Its thesis", "  Beat SPY in a drawdown \n"
+                ),
             ],
         )
 
@@ -798,6 +814,8 @@ def test_brief_intent_backfill_resolves_only_unambiguous_rows(tmp_path):
     assert by_id["ambig0001"] is None, "colliding (name, thesis) with two distinct intents must never be guessed"
     assert by_id["nomatch01"] is None, "no matching proposal at all must stay NULL"
     assert by_id["curated01"] is None, "curated rows are never considered, even on a coincidental name/thesis match"
+    assert by_id["blank0001"] is None, "a whitespace-only logged intent must stay NULL, not land as a row of blanks"
+    assert by_id["padded001"] == "Beat SPY in a drawdown", "a padded intent must be backfilled trimmed"
 
 
 def test_brief_intent_backfill_migration_upgrade_is_idempotent(tmp_path):

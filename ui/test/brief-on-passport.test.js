@@ -23,8 +23,14 @@ test("StrategyPassport.jsx does not render the brief unconditionally", () => {
 	// guard (e.g. moving the JSX but leaving the condition behind) — the
 	// label must appear strictly after a brief_intent truthiness check, not
 	// as a bare unconditional block.
-	const label = passport.indexOf("Your brief");
-	assert.notEqual(label, -1, "expected a 'Your brief' label in the source");
+	//
+	// Anchored on the RENDERED label (`>Your brief<`), not on the first
+	// occurrence of the words anywhere in the file: the explanatory comment
+	// above the card also names the copy, and a plain indexOf would find that
+	// instead and then look for a guard that legitimately sits after it.
+	const rendered = /> *Your brief *</.exec(passport);
+	assert.notEqual(rendered, null, "expected a rendered 'Your brief' label in the JSX");
+	const label = rendered.index;
 	const guard = passport.lastIndexOf("s.brief_intent &&", label);
 	assert.notEqual(guard, -1, "expected a `s.brief_intent &&` guard before the label");
 	// Nothing between the guard's `(` and the label must close that

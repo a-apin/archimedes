@@ -105,7 +105,13 @@ def upgrade() -> None:
             continue
         if not isinstance(payload, dict):
             continue
-        intent = payload.get("intent")
+        # Stripped, matching upsert_strategy's normalization of the same
+        # column — this backfill is the OTHER writer to brief_intent, and a
+        # whitespace-only logged intent must land as "no brief" (skipped
+        # below), not as a row of blanks that renders an empty "Your brief"
+        # card. `.strip()` before the truthiness check is what makes `"   "`
+        # (which is truthy) fall into that skip.
+        intent = (payload.get("intent") or "").strip()
         spec = payload.get("strategy_spec")
         if not intent or not isinstance(spec, dict):
             continue

@@ -260,8 +260,16 @@ def upsert_strategy(
     ``brief_intent`` is the user's own free-text ask (v8 Lane 3.3) — plain
     text, left NULL otherwise. Same never-overwrite backfill rule: a
     content-hash match only fills a NULL, never replaces an existing value.
+    Normalized once here (stripped; empty-or-whitespace → NULL) so BOTH write
+    branches below store the same thing: a blank brief has nothing to show,
+    and a row holding ``"   "`` would render an empty "Your brief" card on the
+    passport instead of no card at all.
     """
     owner_wallet = owner_wallet.lower() if owner_wallet else None
+    # Normalize before either branch reads it — see the docstring. Doing it in
+    # one place is what keeps the new-row branch and the backfill branch from
+    # disagreeing about what "no brief" means.
+    brief_intent = (brief_intent or "").strip() or None
     content_hash = _compute_content_hash(
         generation_method,
         strategy_name,
@@ -286,7 +294,9 @@ def upsert_strategy(
             existing.strategy_spec = json.dumps(strategy_spec)
             existing.updated_at = datetime.now(UTC)
             session.flush()
-        # Same never-overwrite backfill rule for the user's brief.
+        # Same never-overwrite backfill rule for the user's brief. `brief_intent`
+        # is already stripped-or-None at this point (top of the function), so a
+        # whitespace-only ask cannot backfill over a genuine NULL either.
         if brief_intent and not existing.brief_intent:
             existing.brief_intent = brief_intent
             existing.updated_at = datetime.now(UTC)
@@ -328,11 +338,11 @@ def upsert_strategy(
         # bare truthiness check would silently drop an explicitly-provided
         # empty dict ({}) by storing NULL instead of the serialized "{}".
         strategy_spec=json.dumps(strategy_spec) if strategy_spec is not None else None,
-        # Truthiness here (unlike strategy_spec above) is correct: brief_intent
-        # is plain text, not a dict where {} is a meaningful distinct value
-        # from "absent" — an empty/whitespace brief has nothing to show either
-        # way, so it collapses to NULL like any other "nothing here".
-        brief_intent=brief_intent or None,
+        # Already stripped-or-None at the top of the function (unlike
+        # strategy_spec above, where {} is a meaningful distinct value from
+        # "absent" and truthiness would be wrong): an empty or whitespace-only
+        # brief has nothing to show, so it is stored as NULL, not as blanks.
+        brief_intent=brief_intent,
     )
     if rigor_verdict:
         # Same transition rule as the upsert-existing branch above

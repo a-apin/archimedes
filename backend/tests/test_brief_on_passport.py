@@ -4,9 +4,10 @@ The free-text brief that produced a generated strategy previously lived only
 in ``strategy_proposals.payload["intent"]`` — an episodic, non-authoritative
 log the passport route never reads. This adds ``strategy_store.brief_intent``
 (written at generation time by ``generation_pipeline._persist_candidate``) and
-surfaces it as "Your brief" on ``GET /api/strategies/{id}`` ONLY.
+surfaces it as "Your brief" on ``GET /api/strategies/{id}`` — **to the row's
+OWNER only**.
 
-Three contracts under test:
+Four contracts under test:
 
   1. Pipeline — ``run_generation`` (fixture path) threads ``brief.intent``
      through ``_persist_candidate`` into ``StrategyRecord.brief_intent``.
@@ -18,28 +19,59 @@ Three contracts under test:
      ``StrategyRecord`` carries a real one. Only ``get_strategy`` (the
      single-strategy detail route) attaches it, from ``StrategyRecord`` it has
      already loaded for the visibility check.
-  3. Wire-level confirmation — ``GET /api/strategies/{id}`` exposes it;
-     ``GET /api/leaderboard`` (which re-shapes into the disjoint
-     ``LeaderboardEntry`` schema) never does, for the SAME underlying strategy.
+  3. Owner gate (the privacy contract) — ``GET /api/strategies/{id}`` returns
+     the brief to the OWNER, and returns ``null`` to everyone else, INCLUDING
+     on a PUBLISHED row that the same request is otherwise allowed to read in
+     full. Publishing a strategy shares the strategy, not the sentence its
+     owner typed to ask for it (the same reasoning ``_redact_owner_wallet``
+     already applies to ``owner_wallet``). The gate is the shared #850
+     predicate ``is_strategy_visible`` asked in ownership-only form.
+  4. List surfaces — the Library list route (``GET /api/strategies/generated``,
+     which serializes ``StrategyRecord.to_dict()`` rather than the passport
+     response schema) never carries the brief, not even for the owner asking
+     about their own row. Only the detail route surfaces it.
 
 Two hermetic patterns, matching what's already established in this suite:
   - In-memory sqlite + ``Base.metadata.create_all`` for the direct
     ``_passport_to_strategy_response`` unit check (test_multipaper_passport.py).
   - tmp-sqlite-file + ``db.init_db()`` + ``httpx.ASGITransport`` for the
     full-app route checks (test_strategy_ownership.py /
-    test_leaderboard_single_user_scope.py).
+    test_leaderboard_single_user_scope.py), authenticated with the signed SIWE
+    fixture cookie that conftest's autouse ``_legacy_siwe_test_adapter`` maps
+    onto a canonical Better Auth user.
 """
 
 from __future__ import annotations
 
+import time
+
 import httpx
 import pytest
+from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
 from archimedes.main import app
 from archimedes.models.chat import Base
 from archimedes.models.strategy_passport_record import StrategyPassportRecord
 from archimedes.models.strategy_store import StrategyRecord
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+
+_W_OWNER = "0xAbC0000000000000000000000000000000000001"  # mixed case on purpose
+_W_STRANGER = "0x0000000000000000000000000000000000000002"
+
+
+def _legacy_user_id(wallet: str) -> str:
+    """The canonical user id conftest's ``_legacy_siwe_test_adapter`` mints for
+    a SIWE fixture cookie. Derived, not hard-coded, so it cannot silently drift
+    from the adapter (which builds ``legacy-test:{wallet}`` from
+    ``auth_siwe._verify_session``, whose payload is lower-cased at signing)."""
+    return f"legacy-test:{wallet.lower()}"
+
+
+def _siwe_cookies(wallet: str) -> dict[str, str]:
+    """Valid signed SIWE session cookie for *wallet* — a real signed session,
+    not header spoofing (same helper shape as test_strategy_ownership.py)."""
+    return {_COOKIE_NAME: _sign_session(wallet, time.time())}
+
 
 # ── 1. Pipeline: brief.intent reaches StrategyRecord.brief_intent ─────────
 
@@ -85,10 +117,11 @@ def _tmp_db(tmp_path, monkeypatch):
 async def test_run_generation_persists_brief_intent_to_store(_tmp_db, monkeypatch):
     """Fixture-path run_generation stamps brief.intent onto every persisted
     strategy_store row (K=1: exactly the winner)."""
+    from unittest.mock import AsyncMock, patch
+
     import archimedes.db as db
     from archimedes.agents.generation_pipeline import run_generation
     from archimedes.api.generate_schemas import GenerateBrief
-    from unittest.mock import AsyncMock, patch
 
     monkeypatch.setenv("GENERATION_PIPELINE_FIXTURE", "1")
 
@@ -123,9 +156,17 @@ def _mem_session() -> Session:
     sess.close()
 
 
-def _seed_pair(session: Session, sid: str, *, brief_intent: str | None) -> StrategyPassportRecord:
-    """A StrategyRecord (carrying brief_intent) + its StrategyPassportRecord
-    mirror under the SAME id — exactly what ``_persist_candidate`` writes."""
+def _seed_pair(
+    session: Session,
+    sid: str,
+    *,
+    brief_intent: str | None,
+    owner_user_id: str | None = None,
+    is_published: bool = False,
+) -> StrategyPassportRecord:
+    """A StrategyRecord (carrying brief_intent + ownership) + its
+    StrategyPassportRecord mirror under the SAME id — exactly what
+    ``_persist_candidate`` writes."""
     session.add(
         StrategyRecord(
             id=sid,
@@ -138,7 +179,8 @@ def _seed_pair(session: Session, sid: str, *, brief_intent: str | None) -> Strat
             risk_profile="moderate",
             status="candidate",
             is_example=False,
-            is_published=True,
+            is_published=is_published,
+            owner_user_id=owner_user_id,
             brief_intent=brief_intent,
         )
     )
@@ -152,6 +194,7 @@ def _seed_pair(session: Session, sid: str, *, brief_intent: str | None) -> Strat
         status="candidate",
         regime_tag="regime_neutral",
         passes_rigor_gate=False,
+        owner_user_id=owner_user_id,
     )
     session.add(passport)
     session.flush()
@@ -176,60 +219,143 @@ def test_passport_to_strategy_response_never_sets_brief_intent(_mem_session):
     assert resp.brief_intent is None
 
 
-# ── 3. Wire-level: detail exposes it, leaderboard doesn't ─────────────────
+# ── 3. Owner gate on the detail route ─────────────────────────────────────
 
 
-def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+def _client(wallet: str | None = None) -> httpx.AsyncClient:
+    """ASGI client, optionally signed in as *wallet* (SIWE fixture cookie →
+    canonical user via conftest's autouse legacy adapter)."""
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        cookies=_siwe_cookies(wallet) if wallet else None,
+    )
 
 
-async def test_get_strategy_route_exposes_brief_intent(_tmp_db):
+async def test_get_strategy_route_returns_the_brief_to_its_owner(_tmp_db):
+    """The whole point of the feature: the owner asking about their own
+    strategy gets their own words back."""
     import archimedes.db as db
 
     with db.get_session() as session:
-        _seed_pair(session, "brief-detail-1", brief_intent="Low-vol income for retirement")
+        _seed_pair(
+            session,
+            "brief-detail-1",
+            brief_intent="Low-vol income for retirement",
+            owner_user_id=_legacy_user_id(_W_OWNER),
+        )
         session.commit()
 
-    async with _client() as client:
+    async with _client(_W_OWNER) as client:
         resp = await client.get("/api/strategies/brief-detail-1")
     assert resp.status_code == 200
     assert resp.json()["brief_intent"] == "Low-vol income for retirement"
 
 
-async def test_get_strategy_route_reports_none_when_no_brief_recorded(_tmp_db):
-    """A legacy/curated row with no brief reports None, not a fabricated string."""
+@pytest.mark.parametrize("caller_wallet", [_W_STRANGER, None], ids=["signed-in-stranger", "anonymous"])
+async def test_get_strategy_route_hides_the_brief_from_non_owners(_tmp_db, caller_wallet):
+    """PRIVACY GUARD — the negative half of the contract, and the one the
+    owner gate exists for.
+
+    The row is PUBLISHED, so ``is_strategy_visible`` grants the request in
+    full: the caller legitimately reads the strategy, gets a 200, and sees its
+    methodology. What they must NOT see is the owner's free-text brief.
+    Without the ownership check in ``get_strategy`` this returns the brief to
+    a stranger and to an anonymous visitor alike — every published strategy
+    leaking the sentence its owner typed.
+
+    Asserted on the raw response text as well as the field, so a future
+    refactor that free-forms the brief into some other key (a nested passport
+    blob, a debug echo) still trips this.
+    """
+    import archimedes.db as db
+
+    secret_brief = "A private brief that must never reach a stranger"
+    with db.get_session() as session:
+        _seed_pair(
+            session,
+            "brief-detail-published",
+            brief_intent=secret_brief,
+            owner_user_id=_legacy_user_id(_W_OWNER),
+            is_published=True,
+        )
+        session.commit()
+
+    async with _client(caller_wallet) as client:
+        resp = await client.get("/api/strategies/brief-detail-published")
+
+    assert resp.status_code == 200, "published row must stay readable — this is a redaction, not a 404"
+    body = resp.json()
+    assert body["id"] == "brief-detail-published"
+    assert body["methodology_summary"] == "Test methodology", "the strategy itself is still public"
+    assert body["brief_intent"] is None
+    assert secret_brief not in resp.text
+
+
+async def test_get_strategy_route_reports_none_to_the_owner_when_no_brief_recorded(_tmp_db):
+    """A legacy/curated row with no brief reports None, not a fabricated string.
+
+    Deliberately asked AS THE OWNER: with the owner gate in place, a
+    non-owner request would return None whatever the column holds, so an
+    anonymous caller here would prove nothing about the no-brief case.
+    """
     import archimedes.db as db
 
     with db.get_session() as session:
-        _seed_pair(session, "brief-detail-2", brief_intent=None)
+        _seed_pair(
+            session,
+            "brief-detail-2",
+            brief_intent=None,
+            owner_user_id=_legacy_user_id(_W_OWNER),
+        )
         session.commit()
 
-    async with _client() as client:
+    async with _client(_W_OWNER) as client:
         resp = await client.get("/api/strategies/brief-detail-2")
     assert resp.status_code == 200
     assert resp.json()["brief_intent"] is None
 
 
-async def test_leaderboard_never_exposes_brief_intent(_tmp_db):
-    """The SAME published strategy that carries a real brief on the detail
-    route (above) must not leak it through the leaderboard's ``scope=curated``
-    cohort, which re-shapes into the disjoint LeaderboardEntry schema via the
-    exact same ``_passport_to_strategy_response``/``_passport_responses``
-    helpers Test 2 pins directly. Asserting on the raw response text (not
-    just "no brief_intent key") also catches a future refactor that free-forms
-    extra fields onto an entry instead of using the typed schema."""
+# ── 4. List surfaces: the Library list never carries the brief ────────────
+
+
+async def test_library_list_route_never_exposes_brief_intent(_tmp_db):
+    """The Library list (``GET /api/strategies/generated``) serializes
+    ``StrategyRecord.to_dict()`` — the same ORM row the detail route reads the
+    brief off — so it is the one list surface that could pick the column up by
+    accident, simply by someone adding a ``"brief_intent"`` key to
+    ``to_dict()``.
+
+    Asked as the OWNER on purpose: this is not the ownership gate under test
+    (the owner is entitled to their brief), it is the surface rule — the brief
+    belongs on the single-strategy passport and nowhere else, so even the
+    owner's own Library row must not carry it.
+
+    (This replaces an earlier leaderboard assertion that could not fail: the
+    leaderboard re-shapes into the disjoint ``LeaderboardEntry`` schema, which
+    has no ``brief_intent`` field to populate and no ORM row to leak from, so
+    "brief_intent not in entry" held regardless of what the code under test
+    did. Test 2 above already pins the shared passport-response helper the
+    leaderboard actually goes through.)
+    """
     import archimedes.db as db
 
-    secret_brief = "A private brief that must never reach the public board"
+    secret_brief = "A private brief that belongs only on the passport"
     with db.get_session() as session:
-        _seed_pair(session, "brief-board-1", brief_intent=secret_brief)
+        _seed_pair(
+            session,
+            "brief-library-1",
+            brief_intent=secret_brief,
+            owner_user_id=_legacy_user_id(_W_OWNER),
+        )
         session.commit()
 
-    async with _client() as client:
-        resp = await client.get("/api/leaderboard?scope=curated")
+    async with _client(_W_OWNER) as client:
+        resp = await client.get("/api/strategies/generated")
+
     assert resp.status_code == 200
     body = resp.json()
+    row = next((r for r in body["strategies"] if r["id"] == "brief-library-1"), None)
+    assert row is not None, "owner's own generated strategy did not reach their Library list"
+    assert "brief_intent" not in row
     assert secret_brief not in resp.text
-    entry = next((e for e in body["entries"] if e["id"] == "brief-board-1"), None)
-    assert entry is not None, "seeded published strategy did not reach the curated board"
-    assert "brief_intent" not in entry
