@@ -60,7 +60,8 @@ limitation in both files' docstrings.
 2. A `scripts/compute_library_pbo.py` that loads the store, builds the returns
    matrix, runs the CSCV PBO over the full library, and prints per-strategy and
    library-level results.
-3. A findings note `docs/specs/library-pbo.md` reporting the honest number.
+3. A findings note [`quant/library-pbo.md`](../quant/library-pbo.md) reporting the honest
+   number.
 
 **The constraint that shapes everything (do not fight it):** the legacy
 strategies' fixture-era return series **cannot be reproduced** — current

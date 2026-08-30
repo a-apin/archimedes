@@ -321,7 +321,25 @@ def test_pick_pipeline_always_debate_after_cutover(monkeypatch):
     for override in (None, "fusion", "architect", "agent", "debate"):
         name, reason = gp._pick_pipeline(mode_override=override)
         assert name == "debate", f"override {override!r} routed off the society (got {name!r})"
-        assert "debate" in reason.lower() or "Phase-3" in reason
+        assert "debate" in reason.lower()
+
+
+def test_pick_pipeline_reason_is_user_copy_not_internal_jargon():
+    """The reason string is USER-FACING: run_generation emits it verbatim on the
+    SSE stream (`pipeline_selected`) and GenerationStream.jsx renders it into
+    every viewer's event log. Internal planning shorthand ("T1.1 Phase-3
+    cutover") shipped to production screens through exactly this pipe
+    (found in owner review, 2026-08-30). Guard: no issue-tracker numbering,
+    no cutover/phase/sprint/roadmap vocabulary, ever."""
+    import re
+
+    from archimedes.agents import generation_pipeline as gp
+
+    jargon = re.compile(r"T\d\.\d|cutover|Phase-|phase-\d|sprint|roadmap|TODO", re.IGNORECASE)
+    for override in (None, "fusion", "architect", "agent", "debate"):
+        _, reason = gp._pick_pipeline(mode_override=override)
+        hit = jargon.search(reason)
+        assert hit is None, f"internal jargon {hit.group(0)!r} in user-facing reason: {reason!r}"
 
 
 @pytest.mark.asyncio

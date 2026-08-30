@@ -362,12 +362,15 @@ request sent — unless the winning candidate's LIVE GATE read above is
 `deployable: true`. **Never weaken or skip that check to force a deploy.**
 
 `--deploy` defaults to a **DRY RUN**: the harness prints the exact payload
-and sends nothing. Pass `--deploy` to actually call the endpoint. Default OFF
-because, as of this writing, the contract suite was just redeployed (T3.2,
-2026-07-09) and issue [#588](https://github.com/a-apin/archimedes/issues/588)
-(whether the repo's cached ABI matches the live deployed bytecode) is still
-open — no vault, agent or human, had been created against the new deployment
-at the time this shipped.
+and sends nothing. Pass `--deploy` to actually call the endpoint. The default
+stays OFF, but the original reason no longer holds: the T3.2 redeploy landed
+2026-07-09 and issue
+[#588](https://github.com/a-apin/archimedes/issues/588) (whether the repo's
+cached ABI matches the live deployed bytecode) closed 2026-07-14. The
+`deploy` group has been `live` in the served manifest since
+[#1447](https://github.com/a-apin/archimedes/pull/1447). It stays OFF now for
+the ordinary reason: this call spends gas and creates a real on-chain vault,
+so it should be an explicit act, not a default.
 
 ### MONITOR — read vault health back
 

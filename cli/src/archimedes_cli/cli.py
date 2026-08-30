@@ -375,6 +375,34 @@ _CHECK_LABELS = (
 _STATUS_TAG = {"pass": "PASS", "fail": "FAIL", "not_evaluable": "N/A"}
 
 
+def _verify_verdict(body: dict) -> str:
+    """Classify a verify response as ``"pass"``, ``"fail"`` or ``"incomplete"``.
+
+    Never trusts ``passes`` on its own (#1481). The server computes it as a
+    quorum over runnable legs, but ``--api-url`` can point at any host,
+    including one predating that fix — which returns ``passes: true`` on a
+    4-bar series and carries no ``legs_*`` fields at all. So when the quorum
+    fields are absent we re-derive the quorum from the leg statuses rather
+    than assuming the evaluation was complete.
+    """
+    leg_statuses = [(body.get(key) or {}).get("status") for _name, key in _CHECK_LABELS]
+    if any(st == "fail" for st in leg_statuses):
+        return "fail"
+
+    evaluated = body.get("legs_evaluated")
+    runnable = body.get("legs_runnable")
+    if isinstance(evaluated, int) and isinstance(runnable, int):
+        complete = evaluated == runnable and runnable > 0
+    else:
+        # Older server: no quorum reported. Fail closed — an unreported
+        # quorum is an unproven one, not an assumed-complete one.
+        complete = bool(leg_statuses) and all(st == "pass" for st in leg_statuses)
+
+    if not complete:
+        return "incomplete"
+    return "pass" if body.get("passes") else "fail"
+
+
 def _render_verify(body: dict) -> None:
     click.echo(f"n_bars={body.get('n_bars')}  trials={body.get('trials')} (self-attested)")
     for name, key in _CHECK_LABELS:
@@ -396,7 +424,22 @@ def _render_verify(body: dict) -> None:
     rf_convention = body.get("rf_convention")
     if rf_convention:
         click.echo(f"rf_convention={rf_convention}")
-    click.echo("PASSES" if body.get("passes") else "FAILS")
+
+    evaluated, runnable = body.get("legs_evaluated"), body.get("legs_runnable")
+    total = body.get("legs_total")
+    if isinstance(evaluated, int) and isinstance(runnable, int):
+        suffix = f" of {total} in the full gate" if isinstance(total, int) else ""
+        click.echo(f"legs evaluated: {evaluated}/{runnable} runnable here{suffix}")
+
+    verdict = _verify_verdict(body)
+    if verdict == "pass":
+        # Never an unqualified "PASSES": PBO and the look-ahead audit cannot
+        # run on a bare returns series, so this is not the passport gate.
+        click.echo("PASSES (capped — PBO and look-ahead cannot be evaluated on a returns series)")
+    elif verdict == "incomplete":
+        click.echo("INCOMPLETE — not every runnable leg could be evaluated; this is not a verdict")
+    else:
+        click.echo("FAILS")
 
 
 @main.command()
@@ -493,7 +536,10 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, 
         click.echo(json.dumps({"ok": True, **body}))
     else:
         _render_verify(body)
-    sys.exit(exits.OK if body.get("passes") else exits.GATE_FAILED)
+    # Not a bare `passes` read (#1481): an incomplete evaluation exits with its
+    # own code so a CI job cannot read "too few bars" as "strategy rejected".
+    _verdict = _verify_verdict(body)
+    sys.exit(exits.OK if _verdict == "pass" else exits.GATE_FAILED if _verdict == "fail" else exits.INCOMPLETE)
 
 
 @main.command()

@@ -10,9 +10,11 @@ Covers the honesty contract this endpoint exists to enforce:
   3. PBO and look-ahead are ALWAYS ``not_evaluable`` for a bare returns series
      — never silently passed, never defaulted, never reported as a FAIL they
      were never evaluated for;
-  4. ``passes`` is true only when no evaluable check failed AND at least one
-     check was evaluable (a request where nothing was evaluable must not read
-     as passing by vacuous truth);
+  4. ``passes`` is true only when EVERY RUNNABLE leg (DSR + OOS consistency)
+     actually ran and passed — a quorum, not "no evaluable check failed"
+     (#1481). Neither the zero-evaluable case (vacuous truth) nor the
+     one-evaluable case (a 4-bar series where only DSR could run) may read as
+     passing;
   5. ``trials`` is self-attested, `>= 1` enforced at the schema (0 is a 422,
      not a silently-accepted degenerate deflation);
   6. the ADVERSARIAL demonstration the repo's guard-review rule requires: a
@@ -43,6 +45,13 @@ from fastapi import FastAPI
 _STRONG_SERIES = np.random.default_rng(7).normal(0.0015, 0.004, 300).tolist()  # DSR PASS, OOS PASS
 _WEAK_SERIES = np.random.default_rng(11).normal(-0.002, 0.01, 300).tolist()  # DSR FAIL, OOS FAIL
 _SHORT_SERIES = [0.01, -0.02, 0.015]  # T=3: DSR needs T>=4, OOS needs T>=10 -> both not_evaluable
+
+# #1481: the ONE-evaluable window. DSR becomes evaluable at T>=4; the OOS split
+# needs >=21 OOS bars, i.e. ~70 total at 70/30. So for 4 <= T < ~70 exactly one
+# runnable leg can run. At T=4 / seed 7 the DSR p-value is 0.6494 >= DSR_P_FLOOR
+# (0.50), so DSR PASSES while OOS is structurally not_evaluable — the precise
+# shape that used to return passes=true on one leg of four.
+_PARTIAL_SERIES = np.random.default_rng(7).normal(0.0015, 0.004, 4).tolist()
 
 
 def _returns_body(series: list[float], trials: int = 1) -> dict:
@@ -293,3 +302,67 @@ async def test_empty_returns_rejected_422(app, monkeypatch):
     async with _client(app) as client:
         resp = await client.post("/api/rigor/verify", json={"returns": [], "trials": 1})
     assert resp.status_code == 422
+
+
+# ── #1481: `passes` is a quorum over runnable legs ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_four_bar_series_with_passing_dsr_does_not_pass(app, monkeypatch):
+    """#1481 REGRESSION. One evaluable leg of four must not produce a pass.
+
+    DSR is evaluable at 4 bars and passes here; the OOS split needs ~70 bars so
+    it cannot run; PBO and look-ahead never run on a bare series. The old rule
+    ("no evaluable check failed AND at least one was evaluable") returned
+    ``passes: true`` on this exact body, and ``archimedes verify`` exited 0 on
+    it. Reverting the quorum in ``rigor_verify_routes`` makes this test fail.
+    """
+    _sign_in(monkeypatch)
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_returns_body(_PARTIAL_SERIES))
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # The precondition that makes this the one-evaluable case, asserted rather
+    # than assumed — if DSR stopped passing here the test would still be green
+    # for the wrong reason.
+    assert body["dsr"]["status"] == "pass"
+    assert body["oos_consistency"]["status"] == "not_evaluable"
+    assert body["pbo"]["status"] == "not_evaluable"
+    assert body["look_ahead"]["status"] == "not_evaluable"
+
+    assert body["passes"] is False
+    assert body["legs_evaluated"] == 1
+    assert body["legs_runnable"] == 2
+
+
+@pytest.mark.asyncio
+async def test_response_qualifies_the_scalar(app, monkeypatch):
+    """`passes` must be qualifiable without the caller re-deriving leg statuses:
+    the quorum counts and the structural cap are on every response."""
+    _sign_in(monkeypatch)
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_returns_body(_STRONG_SERIES))
+    body = resp.json()
+
+    assert body["legs_total"] == 4
+    assert body["legs_runnable"] == 2
+    # Always capped on this transport — PBO and look-ahead can never run here,
+    # so the verdict can never stand in for the passport gate.
+    assert body["verdict_capped"] is True
+    assert sorted(body["legs_not_run"]) == ["look_ahead", "pbo"]
+
+
+@pytest.mark.asyncio
+async def test_full_length_series_clearing_every_runnable_leg_still_passes(app, monkeypatch):
+    """The quorum must not make the endpoint permanently unable to pass: a
+    series long enough for both runnable legs, clearing both, still passes."""
+    _sign_in(monkeypatch)
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_returns_body(_STRONG_SERIES))
+    body = resp.json()
+
+    assert body["dsr"]["status"] == "pass"
+    assert body["oos_consistency"]["status"] == "pass"
+    assert body["legs_evaluated"] == body["legs_runnable"] == 2
+    assert body["passes"] is True

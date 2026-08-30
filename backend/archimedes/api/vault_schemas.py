@@ -99,3 +99,16 @@ class SetAllocationsResponse(BaseModel):
         default_factory=list,
         description="Selected strategies sized to zero (rigor-gate CANDIDATE/fail, or no stored kelly_fraction)",
     )
+    # Literal default rather than an import of
+    # services.portfolio_constructor.REGIME_CONVENTION_NEUTRAL_NO_FEED: this
+    # schemas module stays free of service imports. The route always sets the
+    # value explicitly from the constructor, so this default only covers a
+    # caller constructing the response directly.
+    regime_convention: str = Field(
+        default="neutral_no_feed",
+        description=(
+            "Whether the regime tilt actually ran: 'regime_tilt_applied' (a live regime scaled these "
+            "weights) or 'neutral_no_feed' (no regime input, weights are pure Kelly sizing). Without "
+            "this, an un-tilted allocation and a regime-tilted one that scored 1.0 look identical."
+        ),
+    )

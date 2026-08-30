@@ -46,6 +46,10 @@ operations. Circle wallet passkeys control Circle wallets; they do not log in to
   submit: `{ "returns": [{ "date": "...", "daily_return": ... }], "trials": N }`. Rate
   limited `5/minute`. DSR and walk-forward OOS are evaluable; PBO and look-ahead audit
   always report `not_evaluable` — bare series carries no selection set and no code.
+  `passes` is a QUORUM over the two runnable legs: true only when DSR and OOS both ran
+  and passed. Since PBO and look-ahead can never run here the verdict is CAPPED and is
+  not the strategy passport's gate. Read `legs_evaluated` / `legs_runnable` /
+  `legs_total` / `verdict_capped` alongside it; `passes` alone overstates the evidence.
   `passes` is true only when at least one check was evaluable and none failed.
 
 ## Optional wallet link (EIP-4361)
