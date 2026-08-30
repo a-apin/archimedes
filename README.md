@@ -151,9 +151,11 @@ Live numbers come from the live system, never from this file: contract census is
   model is loaded in-process, by lexical TF-IDF when it is not. Nothing is precomputed: the
   `papers` schema carries title and abstract text and no vector column, so no index is
   built ahead of the request. `/health` names the scorer that is actually live in
-  `paper_rag` and `paper_rag_reason` — and `corpus_embedded` is defined as
-  `paper_rag == "live"`, so read those fields rather than this line. Tracked in
-  [#778](https://github.com/a-apin/archimedes/issues/778).
+  `paper_rag` and `paper_rag_reason`, publishes `corpus_embedded_at_rest: false` for the
+  corpus itself, and publishes `rerank_candidate_cap` because only that many candidates
+  reach the model. Read those fields rather than this line. Tracked in
+  [#778](https://github.com/a-apin/archimedes/issues/778) and
+  [#1488](https://github.com/a-apin/archimedes/issues/1488).
 - **The knowledge graph is not built.** No KB artifact has ever been produced, so `/health`
   reports `corpus_kg_built: false` with zero entities and zero relations,
   `GET /api/corpus/graph` refuses with **503 `kb_artifact_not_found`** instead of

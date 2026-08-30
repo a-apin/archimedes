@@ -18,7 +18,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-force-graph-2d": "^1.29.1",
-    "viem": "^2.55.15"
+    "viem": "^2.56.0"
   },
   "overrides": {
     "ws": ">=8.21.0"
@@ -34,12 +34,12 @@
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",
     "cssnano": "^8.0.7",
-    "eslint": "^10.8.1",
+    "eslint": "^10.9.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.4",
-    "globals": "^17.9.0",
+    "globals": "^17.11.0",
     "sass-embedded": "^1.102.0",
-    "unocss": "^66.7.5",
+    "unocss": "^66.8.1",
     "vite": "^8.2.1"
   }
 }
