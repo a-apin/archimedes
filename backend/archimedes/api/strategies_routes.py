@@ -218,6 +218,19 @@ def _to_strategy_response(
             if s.real_backtest_end
             else (bt.backtest_end.isoformat() if bt and bt.backtest_end else None)
         ),
+        # ── Engine attribution (left-behind batch close, docs/sprint/a6-rerun.md /
+        # sprint README row 5) ────────────────────────────────────────────────
+        # Both columns have lived on BacktestResultRecord since the cost SSOT /
+        # 2026-08-03 provenance audit and are already declared on StrategyResponse
+        # (see schemas.py "Engine attribution"), but no construction site ever
+        # populated them — the values stopped at the DB. `bt` here is the
+        # BacktestResult dataclass hydrated straight off the latest
+        # BacktestResultRecord row (BacktestResultRecord.to_backtest_result(),
+        # via LocalStrategyProvider.get_backtest_result), so these are real,
+        # never fabricated: None when no persisted backtest exists, or when the
+        # row predates the column (both honest NULLs, never a guessed engine).
+        backtest_engine=(bt.backtest_engine if bt else None),
+        cost_model_id=(bt.cost_model_id if bt else None),
         regime_tag=s.regime_tag,
         return_source=return_source,
         return_source_note=return_source_note,
