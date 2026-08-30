@@ -166,6 +166,23 @@ variable "kb_runner_schedule_expression" {
   default     = "rate(1 day)"
 }
 
+variable "privacy_inbox_email" {
+  description = <<-EOT
+    Destination for mail sent to privacy@<domain> (SNS email subscription).
+
+    Empty by default and left empty in the repo ON PURPOSE: the live endpoint
+    is a personal inbox, and a personal address does not belong in a public
+    repository. Set it in infra/terraform.tfvars (gitignored) to bring the
+    existing subscription under management. Left unset, the subscription
+    resource is not created and the live one stays unmanaged — the status quo,
+    not a regression.
+
+    Mirrors the alarm_email pattern in cloudwatch.tf.
+  EOT
+  type        = string
+  default     = ""
+}
+
 # ── Email authentication (#1462) ─────────────────────────────────────────────
 
 variable "google_site_verification" {
