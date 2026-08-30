@@ -93,14 +93,14 @@ def quote() -> dict:
     per-generation budget replaces the internals of this function (and bumps
     the model name) without changing the paywall flow around it.
     """
-    from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+    from archimedes.marketplace.config import gateway_chain
 
     return {
         "payment_required": payment_required(),
         "pricing_model": "flat_v1",
         "price": _price(),
         "asset": "USDC",
-        "chain": os.getenv("GATEWAY_CHAIN", DEFAULT_GATEWAY_CHAIN).strip(),
+        "chain": gateway_chain(),
         "recipient": _recipient() or None,
         "dry_run": _payments_dry_run(),
         "how": (

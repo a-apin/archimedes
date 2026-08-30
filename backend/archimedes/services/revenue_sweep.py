@@ -47,7 +47,7 @@ from decimal import Decimal
 from circlekit.client import GatewayClient
 from circlekit.wallets import CircleTxExecutor, CircleWalletSigner
 
-from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+from archimedes.marketplace.config import gateway_chain
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def _client() -> GatewayClient:
         )
     signer = CircleWalletSigner(wallet_id=wallet_id, wallet_address=recipient)
     executor = CircleTxExecutor(wallet_id=wallet_id, wallet_address=recipient)
-    return GatewayClient(chain=DEFAULT_GATEWAY_CHAIN, signer=signer, tx_executor=executor)
+    return GatewayClient(chain=gateway_chain(), signer=signer, tx_executor=executor)
 
 
 async def check_revenue() -> dict:

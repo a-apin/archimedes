@@ -21,7 +21,7 @@ from decimal import Decimal
 from circlekit.client import GatewayClient
 from circlekit.wallets import CircleTxExecutor, CircleWalletSigner
 
-from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+from archimedes.marketplace.config import gateway_chain
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ SWEEP_WITHDRAW_THRESHOLD_USDC = os.getenv(
     "10.0",  # must exceed several multiples of the ~2.01 USDC withdrawal fee
 )
 SWEEP_MIN_DEPOSIT_RAW = int(os.getenv("SWEEP_MIN_DEPOSIT_RAW", "1000000"))  # 1 USDC, raw 6-dec
-GATEWAY_CHAIN = os.getenv("GATEWAY_CHAIN", DEFAULT_GATEWAY_CHAIN)
+GATEWAY_CHAIN = gateway_chain()
 
 _THRESHOLD_RAW = int(Decimal(SWEEP_WITHDRAW_THRESHOLD_USDC) * 10**6)
 
