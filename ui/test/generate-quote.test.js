@@ -378,7 +378,10 @@ test("buildTransferAuthorizationTypedData: message uses bigints for uint256 fiel
 	assert.equal(message.value, 2_000_000n);
 	assert.equal(typeof message.value, "bigint");
 	assert.equal(message.validAfter, 1_000_000n - 600n);
-	assert.equal(message.validBefore, 1_000_000n + 345_600n);
+	// maxTimeoutSeconds + the 24h skew margin — the facilitator measures
+	// remaining validity against ITS clock with zero grace (probed live
+	// 2026-08-21: a client clock 30s behind fails without the margin).
+	assert.equal(message.validBefore, 1_000_000n + 345_600n + 86_400n);
 	assert.equal(message.nonce, nonceHex);
 	assert.equal(message.to, fixtureRequirement.payTo);
 });
@@ -394,7 +397,7 @@ test("buildTransferAuthorizationTypedData: authorization (the wire payload) uses
 	assert.equal(authorization.to, fixtureRequirement.payTo);
 	assert.equal(authorization.value, "2000000");
 	assert.equal(authorization.validAfter, String(1_000_000 - 600));
-	assert.equal(authorization.validBefore, String(1_000_000 + 345_600));
+	assert.equal(authorization.validBefore, String(1_000_000 + 345_600 + 86_400));
 	assert.equal(authorization.nonce, nonceHex);
 	for (const key of ["from", "to", "value", "validAfter", "validBefore", "nonce"]) {
 		assert.equal(typeof authorization[key], "string", `authorization.${key} must be a string`);
@@ -556,10 +559,16 @@ test("Generate.jsx: the no-receipt success copy is honest — never claims settl
 	assert.doesNotMatch(generate, /Payment accepted unverified — no real charge/);
 });
 
-test("Generate.jsx: the deposit step's copy names the two on-chain steps (approve, then deposit)", () => {
-	assert.match(generate, /approve USDC, then deposit/i);
-	assert.match(generate, /handleDeposit/);
-	assert.match(generate, /depositStep/);
+test("Generate.jsx: one-click payment — deposit folds into the single pay flow (2026-08-21 UX fix)", () => {
+	// The separate "Approve & deposit" button is retired: ONE control runs
+	// the whole flow, narrating each step. (The click-time refetch moved to
+	// the not-yet-funded branch only — the funded tap signs with held
+	// requirements so WebKit's activation survives; see
+	// webauthn-activation.test.js.)
+	assert.doesNotMatch(generate, /Approve & deposit/);
+	assert.match(generate, /handlePayAndGenerate/);
+	assert.match(generate, /const fresh = held \?\? \(await refreshPaymentRequirements\(\)\)/);
+	assert.match(generate, /one-time\s+deposit covers many generations/);
 });
 
 test("Generate.jsx: the no-wallet state offers the connect flow (#1298 supersedes the old unsupported-wallet dead end)", () => {

@@ -27,12 +27,17 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
-from archimedes.agents.generation_pipeline import run_generation
+from archimedes.agents.generation_pipeline import (
+    _invalid_brief_message,
+    cheap_brief_reject,
+    run_generation,
+)
 from archimedes.api.account_auth import CurrentUser, require_current_user
 from archimedes.api.funnel_middleware import record_funnel
 from archimedes.api.generate_schemas import (
     CandidatesListResponse,
     CandidateSummary,
+    CreditSummary,
     GenerateBrief,
     GenerateStartRequest,
     GenerateStartResponse,
@@ -42,7 +47,7 @@ from archimedes.api.generate_schemas import (
 )
 from archimedes.api.limiter import limiter
 from archimedes.api.wallet_routes import get_linked_wallet_address
-from archimedes.services import generation_payment
+from archimedes.services import generation_credits, generation_payment
 from archimedes.services.generation_quota import enforce_generation_quota
 from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import EVENT_LOG_TTL, get_job_store
@@ -91,6 +96,15 @@ _JOB_HEARTBEAT_INTERVAL_SECONDS = 30.0
 # § Failure modes: "Lock-without-progress for > 5 min").
 _STALLED_AFTER_SECONDS = 300
 
+# Hard ceiling on one generation run (v8 Lane 1.3b — bound generation hangs).
+# `_STALLED_AFTER_SECONDS` only makes a dead run *observable*; nothing
+# previously stopped `run_generation` itself from hanging forever (an LLM
+# call with no client-side timeout, a stuck backtest thread) while quietly
+# holding the payer's consumed credit and a `_GENERATION_GATE` slot the whole
+# time. `_run_with_cleanup` wraps the awaited call in `asyncio.wait_for` at
+# this bound.
+_DEFAULT_GENERATION_TIMEOUT_SECONDS = 600
+
 # Live registry of in-flight asyncio tasks per job. Lets cancel_job actually
 # stop the work — without this, /cancel only flips Redis status while the
 # agent keeps burning LLM tokens to completion.
@@ -130,6 +144,25 @@ def _max_queued_generations() -> int:
         return max(0, int(os.getenv("GENERATION_MAX_QUEUE", "10")))
     except ValueError:
         return 10
+
+
+def _generation_timeout_seconds() -> float:
+    """Bound for one run, from `GENERATION_TIMEOUT_SECONDS` (v8 Lane 1.3b).
+
+    Parsed as defensively as `_max_concurrent_generations` above (and
+    `revenue_sweep._min_usdc`): a missing, non-numeric, or non-positive value
+    must never crash startup — it falls back to the default instead.
+
+    `GENERATION_TIMEOUT_SECONDS=inf` is the one intended escape hatch: `float`
+    accepts it, it passes the `> 0` floor, and `asyncio.wait_for` with an
+    infinite timeout never fires — restoring the old unbounded behaviour on
+    purpose (e.g. a long-running local batch) rather than by accident.
+    """
+    try:
+        value = float(os.getenv("GENERATION_TIMEOUT_SECONDS", str(_DEFAULT_GENERATION_TIMEOUT_SECONDS)))
+    except ValueError:
+        return float(_DEFAULT_GENERATION_TIMEOUT_SECONDS)
+    return value if value > 0 else float(_DEFAULT_GENERATION_TIMEOUT_SECONDS)
 
 
 def _generation_gate() -> asyncio.Semaphore:
@@ -235,6 +268,83 @@ def _persist_payment_receipt(*, user_id: str, payment, job_id: str) -> None:
         )
 
 
+async def _paywall_with_credit(request: Request, linked_wallet: str, user_id: str):
+    """Run the paywall so that money taken is always money accounted for (#1441).
+
+    Returns ``(payment, credit_id)``. ``credit_id`` names the credit this run
+    spends once it is safely enqueued; ``payment`` is the settled
+    ``PaymentInfo`` only when this request is what settled it.
+
+    The ordering below is the fix. The charge used to settle and the job to be
+    enqueued afterwards, with the entitlement gate in between — so a 402 from
+    that gate, an enqueue error, or a worker crash left the money taken and
+    nothing delivered. Now the charge buys a durable credit first, and only a
+    job that actually reaches the queue spends it.
+    """
+    # An unspent credit from an earlier paid-but-undelivered run pays for this
+    # one. Checked BEFORE the paywall, so a payer whose last generation died is
+    # never asked for money twice.
+    existing = generation_credits.take_credit(user_id)
+    if existing is not None:
+        logger.info("generation covered by unspent credit %s — no new charge", existing)
+        return None, existing
+
+    if not generation_payment.settles_real_value():
+        # Flag off or dry-run: the paywall still quotes and still exercises the
+        # 402 approval flow, but no value moves. Nothing to owe and nothing to
+        # record, so the ledger stays entirely out of the way.
+        settled = await generation_payment.enforce_generation_payment(request, linked_wallet)
+        return settled, None
+
+    idempotency_key = (request.headers.get("Idempotency-Key") or "").strip() or None
+    outcome, credit_id = generation_credits.claim(user_id, idempotency_key)
+
+    if outcome == "already_settled":
+        # This key already paid and the credit is still unspent. Spend it.
+        return None, credit_id
+    if outcome == "already_consumed":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "idempotency_key_already_used",
+                "message": (
+                    "This Idempotency-Key already paid for a generation that started. "
+                    "Use a new key to start another. No second charge was taken."
+                ),
+            },
+        )
+    if outcome == "in_flight":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "payment_in_flight",
+                "message": (
+                    "A payment with this Idempotency-Key is still settling. Wait for it to "
+                    "finish rather than retrying — a retry signs a fresh authorization and "
+                    "would charge you twice."
+                ),
+            },
+        )
+
+    try:
+        settled = await generation_payment.enforce_generation_payment(request, linked_wallet)
+    except BaseException:
+        # Includes the 402 the paywall raises when no payment was presented. The
+        # claim must not outlive the attempt: a `pending` row left behind reads
+        # as `in_flight` forever and locks that key out.
+        generation_credits.void(credit_id)
+        raise
+
+    if settled is None:
+        # settles_real_value() said otherwise, so this is a configuration race
+        # rather than an expected path. No value moved; release the claim.
+        generation_credits.void(credit_id)
+        return None, None
+
+    generation_credits.settle(credit_id, settled)
+    return settled, credit_id
+
+
 @generate_public_router.get("/quote")
 async def get_generation_quote():
     """The upfront generation cost estimate — public, so a human can see the
@@ -244,6 +354,35 @@ async def get_generation_quote():
     ``generation_payment.quote()``, whose flat price is the seam #1217's
     measured budget later replaces."""
     return generation_payment.quote()
+
+
+@generate_router.get("/credits", response_model=list[CreditSummary])
+async def list_generation_credits(
+    user: CurrentUser = Depends(require_current_user),
+) -> list[CreditSummary]:
+    """The calling user's own generation-credit ledger (v8 Lane 1.3a).
+
+    Makes visible what ``_paywall_with_credit`` already does silently: an
+    unspent (``available``) credit from an earlier paid-but-undelivered run
+    pays for the NEXT generation, with no new charge (#1441). Requires
+    sign-in — unlike ``/quote``, a credit belongs to a specific account, so
+    there is nothing honest to show before auth.
+
+    A bare list, not the wrapped ``{jobs: [...]}`` shape sibling listings use
+    — the frontend's only question is "does an unspent credit exist", so
+    there is no envelope worth adding.
+    """
+    rows = generation_credits.list_credits(user.id)
+    return [
+        CreditSummary(
+            id=row["id"],
+            status=row["status"],
+            created_at=row["created_at"],
+            job_id=row["job_id"],
+            amount_usdc=(round(row["amount_base_units"] / 10**6, 2) if row["amount_base_units"] is not None else None),
+        )
+        for row in rows
+    ]
 
 
 @generate_router.post("/start", response_model=GenerateStartResponse, status_code=202)
@@ -281,6 +420,28 @@ async def start_generation(
             },
         )
 
+    # Cheap, deterministic brief prelude (Lane 1.3c: "never charge for a
+    # brief we can cheaply reject"). Deliberately BEFORE the payment gate —
+    # a caller must never be charged for a brief that is obviously invalid
+    # (empty / gibberish). Shares its exact criteria with the real (LLM)
+    # validator's own prelude in generation_pipeline._validate_brief via
+    # `cheap_brief_reject` — see that function's docstring for why the two
+    # call sites can never drift apart. Anything this misses (off-topic but
+    # grammatical text, jailbreak attempts) still gets the expensive LLM
+    # check post-payment, exactly as before — that outcome legitimately
+    # consumes work, so it stays a credit spend, not a pre-payment refusal.
+    cheap_reject = cheap_brief_reject(req.brief)
+    if cheap_reject is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "reason": "brief_invalid",
+                "code": "BRIEF_INVALID",
+                "message": _invalid_brief_message(cheap_reject.get("reason")),
+                "hint": cheap_reject.get("hint") or "Mention an asset class, a goal, or a risk appetite.",
+            },
+        )
+
     # Payment gate (flag: GENERATION_PAYMENT_REQUIRED — Dan flips deliberately,
     # see the #834 flip-list). Order is deliberate: AFTER the quota (a
     # quota-blocked caller is refused 429 before ever being asked to pay) and
@@ -292,6 +453,7 @@ async def start_generation(
     # that is also the ONLY case a payment receipt is persisted (below, once
     # job_id exists).
     payment = None
+    credit_id = None
     if generation_payment.payment_required():
         if not linked_wallet:
             # The wallet-connection precondition. 409 (not 402): the blocker is
@@ -310,7 +472,7 @@ async def start_generation(
                     ),
                 },
             )
-        payment = await generation_payment.enforce_generation_payment(request, linked_wallet)
+        payment, credit_id = await _paywall_with_credit(request, linked_wallet, user.id)
         if payment is not None:
             # Surface the settlement receipt (PAYMENT-RESPONSE) to the payer.
             for name, value in (payment.response_headers or {}).items():
@@ -359,6 +521,11 @@ async def start_generation(
     # enqueue succeeds, so the receipt carries a real job_id.
     if payment is not None:
         _persist_payment_receipt(user_id=user.id, payment=payment, job_id=job_id)
+
+    # The credit is spent only now, once the job is queued — that is what makes
+    # every failure before this point cost the payer nothing (#1441).
+    if credit_id is not None:
+        generation_credits.consume(credit_id, job_id=job_id)
 
     # Fire-and-forget; the SSE stream tails events. User ownership is threaded
     # from this authenticated request, never client-supplied.
@@ -432,6 +599,41 @@ async def _heartbeat_loop(job_id: str, store) -> None:
             logger.exception("heartbeat: touch failed for job %s", sanitize_log_value(job_id))
 
 
+async def _release_credit_if_undelivered(job_id: str, store) -> None:
+    """Give the credit back unless the job actually delivered (#1441).
+
+    The charge bought a credit and the enqueue spent it. If the run then died —
+    worker crash, LLM failure, a container roll, or the payer cancelling — the
+    payer holds nothing, so the credit goes back and their next generation
+    spends it instead of asking for money again.
+
+    Terminal states other than ``done`` all restore. Cancellation is included
+    deliberately: a cancelled run produced no strategy, and charging for it
+    would make the paywall a fee on trying rather than a price for delivery.
+
+    A job whose Redis record has already expired reads as undelivered, which is
+    the safe direction to be wrong in — the alternative silently keeps money for
+    a run nobody can prove finished. ``restore_credit_for_job`` only ever moves
+    a ``consumed`` credit, so a second call cannot mint a second credit.
+
+    Fail-safe: this runs in a background task's ``finally`` with nobody to
+    report to, so it logs and returns.
+    """
+    try:
+        job = await store.get(job_id)
+        status = (job or {}).get("status")
+        if status == "done":
+            return
+        if generation_credits.restore_for_job(job_id):
+            logger.warning(
+                "job %s ended as %s — generation credit restored, the payer owes nothing",
+                sanitize_log_value(job_id),
+                sanitize_log_value(str(status)),
+            )
+    except Exception:
+        logger.exception("could not evaluate credit release for job %s", sanitize_log_value(job_id))
+
+
 async def _run_with_cleanup(
     job_id: str,
     brief: GenerateBrief,
@@ -457,16 +659,68 @@ async def _run_with_cleanup(
                 _WAITING_GENERATIONS -= 1
         else:
             await gate.acquire()
+        timeout_seconds = _generation_timeout_seconds()
         try:
-            await run_generation(
-                job_id=job_id,
-                brief=brief,
-                n_candidates=n_candidates,
-                mode=mode,
-                model=model,
-                owner_user_id=owner_user_id,
-                owner_wallet=owner_wallet,
-            )
+            try:
+                await asyncio.wait_for(
+                    run_generation(
+                        job_id=job_id,
+                        brief=brief,
+                        n_candidates=n_candidates,
+                        mode=mode,
+                        model=model,
+                        owner_user_id=owner_user_id,
+                        owner_wallet=owner_wallet,
+                    ),
+                    timeout=timeout_seconds,
+                )
+            # `asyncio.TimeoutError` IS the builtin `TimeoutError` on 3.11+ (a
+            # pure alias), so UP041 is right that this is redundant — but the
+            # alias is the intent: this catches the timeout `asyncio.wait_for`
+            # raises, NOT some `TimeoutError` bubbling up out of the pipeline's
+            # own socket/HTTP layer. Spelling it `asyncio.` keeps the next
+            # reader from having to rediscover which one is meant.
+            except asyncio.TimeoutError:  # noqa: UP041
+                # wait_for cancels the still-running run_generation coroutine
+                # on timeout and waits for it to unwind, so its own
+                # `except asyncio.CancelledError` branch has ALREADY run by the
+                # time we get here. That branch left two dishonest traces —
+                # nobody clicked Cancel:
+                #   1. status "cancelled"/"cancelled by client", and
+                #   2. an `error`/`CANCELLED` "job cancelled" event.
+                # (1) is overwritten below by update_status — not
+                # update_terminal_status, which treats "cancelled" as sticky on
+                # purpose for the real-cancel race. Any non-"done" terminal
+                # status still reaches `_release_credit_if_undelivered` in the
+                # outer finally, so the payer's credit restores either way.
+                # (2) cannot be overwritten: the event log is append-only, so
+                # the honest TIMEOUT frame is APPENDED after it. Who actually
+                # reads it: `_TERMINAL_EVENTS` makes `stream_events` return on
+                # the FIRST `error` frame, so a client connected for the whole
+                # run still closes on "job cancelled" — but a client resuming
+                # with `Last-Event-ID` past that frame gets TIMEOUT, and the
+                # log itself is the durable record of why the job really died.
+                message = f"generation exceeded the {timeout_seconds:g}-second limit"
+                logger.warning(
+                    "job %s exceeded GENERATION_TIMEOUT_SECONDS=%s — marking error",
+                    sanitize_log_value(job_id),
+                    timeout_seconds,
+                )
+                # Status first: it is the authoritative record, and it stays
+                # honest even if the event push below fails.
+                await store.update_status(job_id, "error", error=message)
+                await store.push_event(
+                    job_id,
+                    {
+                        "event": "error",
+                        "data": {
+                            "job_id": job_id,
+                            "message": message,
+                            "recoverable": False,
+                            "code": "TIMEOUT",
+                        },
+                    },
+                )
         finally:
             gate.release()
     except asyncio.CancelledError:
@@ -477,6 +731,7 @@ async def _run_with_cleanup(
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
+        await _release_credit_if_undelivered(job_id, store)
 
 
 @generate_router.get("/stream/{job_id}")

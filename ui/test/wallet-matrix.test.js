@@ -15,18 +15,23 @@ test("no-wallet branch offers the connect flow, not a dead end (#1298)", () => {
 	// The old copy told users to use a wallet without offering one — gone.
 	assert.doesNotMatch(generate, /isn't\s*\n?\s*supported for payments yet/);
 	// The replacement branch must dispatch the app's existing connect modal.
-	const branch = generate.match(/!walletSupportsPayment\(\) \? \(([\s\S]*?)\) : checkingBalance/);
+	const branch = generate.match(/!walletSupportsPayment\(\) \? \(([\s\S]*?)\) : \(/);
 	assert.ok(branch, "no-wallet branch missing");
 	assert.match(branch[1], /open-wallet-modal/);
 	assert.match(branch[1], /Connect wallet/);
 });
 
-test("circle passkey wallets sign and deposit instead of being refused (#1298)", () => {
+test("circle passkey wallets sign and deposit instead of being refused (#1298, re-railed by #1467)", () => {
 	// Kind-based branching exists and covers all three states.
 	assert.match(x402, /paymentWalletKind/);
-	// Passkey signing goes through the smart account's typed-data signer…
-	assert.match(x402, /smartAccount\.signTypedData\(\{ domain, types, primaryType, message \}\)/);
-	// …and passkey deposits go through the bundler executor as a batched op.
+	// SUPERSESSION (#1467, 2026-08-21): the smart account no longer signs
+	// payments — Circle's nanopayments facilitator rejects ERC-1271 outright
+	// (field-proven invalid_signature; delegates not honored either). The
+	// passkey kind now signs with the DEVICE PAYMENT KEY, a local EOA the
+	// smart account funds via depositFor.
+	assert.match(x402, /session\.signTypedData\(\{ domain, types, primaryType, message \}\)/);
+	assert.match(x402, /functionName: "depositFor"/);
+	// …and passkey funding still goes through the bundler executor batch.
 	assert.match(x402, /executeUserOp\(\{ smartAccount, client, calls/);
 	// The signature must NOT be re-wrapped (the #870/#871 double-ERC-6492 class).
 	assert.doesNotMatch(x402, /wrap6492|erc6492Wrap/i);

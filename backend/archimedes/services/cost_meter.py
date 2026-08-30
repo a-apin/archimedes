@@ -50,10 +50,12 @@ no meter is bound, which is the correct behaviour outside a job — but it also
 means instrumenting a code path proves nothing on its own about whether that path
 is measured. Only ``run_generation`` binds a meter today. In particular the
 :mod:`archimedes.agents.portfolio_agent` tool-use loop carries a
-:func:`record_llm_call` that is **inert**: its only caller is
-``GET /api/strategies/advisor``, which never opens a :func:`measure` scope, and
-the generation pipeline's runners ignore the ``agent`` argument they are handed.
-The call is correct-if-reached rather than a gap it closes today. See
+:func:`record_llm_call` that is **inert**: the method holding it,
+``propose_portfolio_with_tools()``, has no callers at all — the generation
+pipeline's runners ignore the ``agent`` argument they are handed, and the one
+route that used to call it was deleted. Nothing reaches that loop, so it
+records nothing; it is dead code queued for the follow-up deletion PR, not
+coverage this module depends on. See
 ``docs/generation-cost-instrumentation.md`` for the full coverage boundary.
 """
 

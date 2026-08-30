@@ -93,6 +93,17 @@ class LeaderboardEntry(BaseModel):
     out_of_sample_sharpe: float | None = None
     passes_rigor_gate: bool = False
     is_backtest_placeholder: bool = False
+    # Provenance of the numbers in this row. Three engines write
+    # backtest_results and this one board ranks them together, so a reader
+    # comparing two rows needs to know which engine produced each and on what
+    # cost basis. Both columns existed on the store and reached
+    # StrategyResponse, but stopped at `_entry` and never reached the board —
+    # the one surface where rows are placed side by side.
+    backtest_engine: str | None = None
+    cost_model_id: str | None = None
+    # See StrategyResponse.metrics_source: "live_gate" | "unavailable", with no
+    # "persisted_backtest" value by construction (#1187).
+    metrics_source: str = "unavailable"
 
     # Forward axis (paired, honest-pending).
     forward: LeaderboardForwardAxis

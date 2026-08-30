@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-> **Status:** current (last updated 2026-07-28). The ADR pattern is: capture a non-trivial technical decision
+> **Status:** current (last updated 2026-08-30). The ADR pattern is: capture a non-trivial technical decision
 > once, with the alternatives considered and the reasoning, so future contributors can
 > understand the choice without needing to relitigate it. The records below were written
 > as decisions landed; the 2026-06-27 batch back-fills decisions that shipped before the
@@ -34,8 +34,10 @@ the review named in the code has not happened.
 
 ## Index
 
-Eighteen records. Status and date are authoritative in each ADR's front-matter block;
-this table mirrors them.
+Twenty records. Status and date are authoritative in each ADR's front-matter block;
+this table mirrors them. (The count read "eighteen" while the table already held nineteen —
+the `generation-payment-credit-not-refund` row landed 2026-08-29 without a count bump.
+Corrected here.)
 
 | ADR | Status | Date | Owner | Decision |
 |---|---|---|---|---|
@@ -47,6 +49,7 @@ this table mirrors them.
 | [`portfolio-constructor-decision-tree.md`](portfolio-constructor-decision-tree.md) | Accepted | 2026-05-22 | Önder Akkaya | Which portfolio constructor runs when |
 | [`k1-generation-external-rigor-gate.md`](k1-generation-external-rigor-gate.md) | Accepted | 2026-05-23 | Dan Browne | Why generation emits **K=1** winner + considered-rejects, with the rigor gate run **externally** |
 | [`aws-account-migration.md`](aws-account-migration.md) | Accepted | 2026-06-24 | Dan Browne | Why prod moved to Dan's own AWS account (`037613907429`/`us-east-1`) post-Agora |
+| [`generation-payment-credit-not-refund.md`](generation-payment-credit-not-refund.md) | Accepted | 2026-08-29 | Önder Akkaya | Why an undelivered generation is repaid as a **durable credit, never a refund**, and why the idempotency claim is taken before the money moves (#1441) |
 | [`glm-to-bedrock-llm-migration.md`](glm-to-bedrock-llm-migration.md) | Accepted | 2026-06-24 | Dan Browne | Why the live LLM moved from **GLM to AWS Bedrock** (Nova Micro default, Converse backend) (#717) |
 | [`non-custodial-vault-owner-agent.md`](non-custodial-vault-owner-agent.md) | Accepted | 2026-06-26 | Dan Browne | Why vaults separate **owner (withdrawal)** from **agent (rebalance-only)** so a compromised agent key can't drain (#731) |
 | [`portfolio-constructor-consolidation.md`](portfolio-constructor-consolidation.md) | Accepted | 2026-06-26 | Önder Akkaya | Why legacy constructors were retired and a **dual-signal** (regime × consensus) sizer activated (#131, #662) |
@@ -57,6 +60,7 @@ this table mirrors them.
 | [`debate-society-sole-generation-pipeline.md`](debate-society-sole-generation-pipeline.md) | Accepted | 2026-07-09 | Dan Browne | Why the **debate society is the only generation path** — no routing tree, no flag, no silent fallback (#1064/#1074) |
 | [`num-trials-self-containment.md`](num-trials-self-containment.md) | **Accepted, pending quant sign-off** | 2026-07-09 | Dan Browne (quant reviewer: Önder Akkaya) | Why a strategy's DSR trial count depends **only on that strategy** — never `N + library_size`; curated single-paper strategies grade at `num_trials = 1` |
 | [`aurora-postgres-alembic-datastore.md`](aurora-postgres-alembic-datastore.md) | Accepted | 2026-07-28 | Dan Browne | Why **Aurora PostgreSQL Serverless v2 (18.3)** is the system of record, **Alembic** the only schema-change mechanism, **Redis 7.1** ephemeral-only |
+| [`strategy-dsl-hardening-over-lean4.md`](strategy-dsl-hardening-over-lean4.md) | Accepted | 2026-08-30 | Dan Browne | Why the generator's emission target stays the **closed-enum JSON DSL, hardened**, and **not Lean 4** — the no-generated-code property is already structural; a restricted sandbox is reserved for shapes the DSL cannot express |
 
 ### Open review debt
 
