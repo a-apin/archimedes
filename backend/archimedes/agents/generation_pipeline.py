@@ -88,7 +88,13 @@ def _pick_pipeline(
     """
     if mode_override and mode_override != "debate":
         logger.info("generation: ignoring legacy mode override %r (debate-only cutover)", mode_override)
-    return "debate", "debate society is the generation pipeline (T1.1 Phase-3 cutover)"
+    # This reason string is USER-FACING: it rides the SSE stream verbatim
+    # (run_generation's `pipeline_selected` emit) and GenerationStream.jsx
+    # renders it into every viewer's event log. Internal shorthand ("T1.1
+    # Phase-3 cutover") leaked to production screens this way (#1525-era
+    # review, 2026-08-30) — keep it plain product copy, and keep the
+    # no-internal-jargon regression test in test_generation_pipeline.py green.
+    return "debate", "the debate society — proposer and critic agents argue each candidate before the rigor gate"
 
 
 # ── Brief validation (real LLM step on the live path) ─────────────────────
@@ -1594,7 +1600,7 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             SOURCE_PIPELINE_DSL_FUSION,
             insert_backtest_if_missing,
         )
-        from archimedes.services.fusion_evaluator import DEFAULT_COST_MODEL_ID
+        from archimedes.services.fusion_evaluator import DEFAULT_COST_MODEL_ID, ENGINE_SINGLE_FEED
         from archimedes.services.live_rigor_gate import verdict_from_returns
 
         returns = list(c.return_series)
@@ -1635,7 +1641,12 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             pbo_score=_of("pbo"),
             out_of_sample_sharpe=_of("oos_sharpe"),
             look_ahead_audit_passed=bool(rv.get("lookahead_audit_passed", False)),
-            backtest_engine="dsl-fusion",
+            # A8: the runner's own label, not a hardcoded "dsl-fusion". The
+            # sleeve runner reports "dsl-fusion-sleeves" so a row graded as N
+            # independent equal-weighted single-asset backtests is
+            # distinguishable from a genuine single-feed run. Falls back to the
+            # single-feed label for verdict blobs written before A8.
+            backtest_engine=(rv.get("backtest_engine") or ENGINE_SINGLE_FEED),
             # Fixed cost basis every fusion/DSL backtest is charged — tx_cost_bps
             # and slippage_bps are never overridden by a caller on this path today
             # (see fusion_evaluator.DEFAULT_COST_MODEL_ID). Matches the mapper's

@@ -1,4 +1,5 @@
 import { createPublicClient, createWalletClient, custom, http } from 'viem'
+import { arcExecutionChain, EXECUTION_CHAIN_HEX } from './chain-config'
 import {
   connectCirclePasskey,
   clearCircleSession,
@@ -6,12 +7,9 @@ import {
   rehydrateSmartAccount,
 } from './circle-wallet'
 
-const arcTestnet = {
-  id: 5042002,
-  name: 'Arc Testnet',
-  nativeCurrency: { name: 'USD Coin', symbol: 'USDC', decimals: 18 },
-  rpcUrls: { default: { http: ['https://rpc.testnet.arc.network'] } },
-}
+// Chain identity lives in chain-config.js so the EOA path, the passkey path
+// and the switch-chain hex cannot drift apart (#1240).
+const arcTestnet = arcExecutionChain
 
 export const publicClient = createPublicClient({
   chain: arcTestnet,
@@ -41,17 +39,27 @@ let _lastSeenChainId = null
 // (Rabby/Brave/…) whose object is NOT window.ethereum (#921). Every handler
 // no-ops unless the event's provider is the one connectWallet selected
 // (_provider), so an announced-but-inactive wallet can't hijack the session.
+// Announce the module-level wallet state to the app. Components that copy
+// the connected address into their own state (Generate's payment panel:
+// getAddress() at mount + this event) can NOT see page-level setters like
+// AuthenticatedApp's onConnect — this event is their only resync. EVERY
+// transition of _address must fire it, or any panel mounted before the
+// transition keeps the stale address forever ("top bar says connected,
+// pay panel says connect wallet" split-brain).
+function announceWalletChanged() {
+  window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: _address } }))
+}
+
 function _onAccountsChanged(provider, accounts) {
   if (provider !== _provider) return
   if (!accounts?.length) {
-    disconnectWallet()
-    window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: null } }))
+    disconnectWallet() // announces the null address itself
     return
   }
   _address = accounts[0]
   if (_providerId) saveWalletMeta(_providerId, _address)
   _walletClient = createWalletClient({ account: _address, chain: arcTestnet, transport: custom(provider) })
-  window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: _address } }))
+  announceWalletChanged()
 }
 
 function _onChainChanged(provider, newChainId) {
@@ -326,6 +334,7 @@ export async function reconnectWallet() {
       _smartAccount = restored.smartAccount
       _smartAccountClient = restored.client
       saveWalletMeta(CIRCLE_PROVIDER_ID, _address)
+      announceWalletChanged()
       return { address: _address, provider: _providerId }
     } catch {
       // If rehydration fails (corrupted credential, SDK error, etc.)
@@ -358,6 +367,7 @@ export async function reconnectWallet() {
     })
 
     saveWalletMeta(_providerId, _address)
+    announceWalletChanged()
     return { address: _address, provider: _providerId }
   } catch {
     clearWalletMeta()
@@ -365,7 +375,8 @@ export async function reconnectWallet() {
   }
 }
 
-const ARC_CHAIN_HEX = '0x4cef52'  // 5042002
+// Derived from the chain id, never written twice — see chain-config.js.
+const ARC_CHAIN_HEX = EXECUTION_CHAIN_HEX
 
 // MetaMask returns -32002 when a wallet_requestPermissions / eth_requestAccounts
 // is already pending — usually because the user dismissed the popup without
@@ -450,6 +461,7 @@ export async function connectCircleWallet({ mode = 'login', walletName } = {}) {
   // discoverable so no name comes back; any previously stored name for this
   // address is left intact for getStoredWalletName().
   saveWalletMeta(CIRCLE_PROVIDER_ID, _address, result.walletName)
+  announceWalletChanged()
   return { address: _address, provider: CIRCLE_PROVIDER_ID }
 }
 
@@ -494,6 +506,7 @@ export async function connectWallet(providerId, opts) {
   })
 
   saveWalletMeta(providerId, _address)
+  announceWalletChanged()
   return { address: _address, provider: providerId }
 }
 
@@ -508,6 +521,7 @@ export function disconnectWallet() {
   _smartAccount = null
   _smartAccountClient = null
   clearWalletMeta()
+  announceWalletChanged()
 }
 
 export async function getWalletClient() {

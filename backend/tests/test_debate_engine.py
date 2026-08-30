@@ -466,7 +466,11 @@ def test_pick_pipeline_is_debate_unconditionally(monkeypatch):
     for override in (None, "fusion", "architect", "agent", "debate"):
         name, reason = _pick_pipeline(mode_override=override)
         assert name == "debate", f"override {override!r} must not route off the society"
-        assert "Phase-3" in reason
+        # The reason string is user-facing SSE copy — it must describe the
+        # debate society in product language, never internal planning
+        # shorthand ("T1.1 Phase-3 cutover" shipped to prod screens; see
+        # test_generation_pipeline.py's no-internal-jargon guard).
+        assert "debate" in reason.lower()
 
 
 # ── Test 9 — cited-paper union non-empty; transcript fixed role order ─────────
