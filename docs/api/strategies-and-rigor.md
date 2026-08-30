@@ -2,7 +2,7 @@
 
 This surface covers the strategy library (curated seed strategies plus
 fusion/architect-generated ones, unified through the `strategy_passports`
-table), the portfolio advisor, stress testing, and the rigor/selection-bias
+table), stress testing, and the rigor/selection-bias
 gate that grades every strategy on DSR (Deflated Sharpe Ratio), PBO
 (Probability of Backtest Overfitting), and chronological out-of-sample Sharpe
 before it is allowed to be promoted from `candidate` to `validated` or bound
@@ -12,8 +12,8 @@ into a vault's `strategy_ids`. The badge (`passes_rigor_gate` /
 gate run** `GET /api/selection-bias/gate` uses — none of these surfaces can
 disagree with another for the same strategy at the same strictness level.
 
-**Auth model.** Reads are anonymous by default — the library, passports, the
-advisor, stress testing, and every `/api/selection-bias/*` route are public.
+**Auth model.** Reads are anonymous by default — the library, passports,
+stress testing, and every `/api/selection-bias/*` route are public.
 Ownership-scoped reads (`GET /api/strategies/generated`) and mutations
 (`PATCH /api/strategies/{id}`, the legacy `POST /api/strategies/generate`)
 require a Better Auth account session (the `better-auth.session_token`
@@ -66,18 +66,6 @@ Errors: none explicit.
 curl -s https://archimedes-arc.com/api/strategies/signals
 ```
 Note: `regime` is the `flat_pct`-derived ensemble-consensus bucket, not a true market-regime detector output.
-
-### GET /api/strategies/advisor
-Portfolio allocation recommendation based on Kelly + risk-parity math
-(LLM-agent-assisted, with a rule-based fallback). | **Auth**: anonymous
-
-Request: query `risk_profile: "fixed_income"|"conservative"|"moderate"|"aggressive"|"hyper_risky"="moderate"`.
-Response: untyped dict (no `response_model`) — `regime, regime_confidence, regime_narrative, risk_profile, usdc_weight, synth_weight, allocations: [{symbol, sharpe, cagr, max_drawdown, vol_ann, kelly_fraction, weight, passes_rigor_gate, rigor_gate_status, deflated_sharpe_ratio, dsr_p_value, pbo_score, out_of_sample_sharpe, paper_claimed_*/paper_delta_*, ...}], expected_portfolio{sharpe,cagr,max_drawdown,vol_ann,diversification_ratio,risk_aversion_gamma,optimizer_converged}, risk_decomposition, correlation_pairs, rigor_summary{total_picks,passes_rigor_gate,dsr_significant,pbo_acceptable,oos_positive,...}, stress_tests, market_scan{universe_size,fetched,top_opportunities}, agent{used,thesis,model_id,served_model,num_picks,iterations,tool_calls}, reasoning_trace{trace_id,trace_hash,canonical_preview,anchored_on_chain,anchor_tx_hash,registry_address,decision_type,trigger}`. Degrades to `{"error": "No strategies with real backtest data available", "allocations": []}` when nothing qualifies.
-Errors: no `HTTPException` raised directly — every internal step (LLM agent call, price fetch, optimizer) fails soft into a fallback path.
-
-```bash
-curl -s "https://archimedes-arc.com/api/strategies/advisor?risk_profile=moderate"
-```
 
 ### GET /api/strategies/stress/scenarios
 List the available stress scenarios with descriptions. | **Auth**: anonymous
