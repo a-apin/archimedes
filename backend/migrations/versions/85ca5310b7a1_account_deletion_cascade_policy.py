@@ -57,7 +57,7 @@ Why the split, not "cascade everything" or "anonymize everything":
     account's to remove. SET NULL.
 
 Revision ID: 85ca5310b7a1
-Revises: f0ab58339d55
+Revises: a3f19c7d2e84
 Create Date: 2026-08-20 00:00:00.000000
 """
 
@@ -68,7 +68,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "85ca5310b7a1"
-down_revision: str | Sequence[str] | None = "f0ab58339d55"
+down_revision: str | Sequence[str] | None = "a3f19c7d2e84"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
