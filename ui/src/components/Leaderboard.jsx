@@ -127,17 +127,18 @@ export default function Leaderboard() {
   return (
     <div className="leaderboard-page" style={{ maxWidth: 1100 }}>
       <div style={{ marginBottom: 18 }}>
-        <h2 className="serif" style={{ fontSize: '2rem', marginBottom: 8 }}>
-          {isOwn ? 'Your Strategy Leaderboard' : 'Strategy Leaderboard'}
-        </h2>
-        <p className="body" style={{ maxWidth: 760 }}>
-          {isOwn
-            ? <>Your strategies, ranked against each other by a transparent <strong>conviction score</strong> built
-                from real rigor-gate and backtest results — the ugly numbers included. Build your track record now;
-                it carries to mainnet.</>
-            : <>The curated seed library, ranked by a transparent <strong>conviction score</strong> built from real
-                rigor-gate and backtest results — the ugly numbers included. A reference set, not a competition.</>}
-        </p>
+        <header className="app-page-heading">
+          <p className="app-eyebrow">Transparent ranking</p>
+          <h1>{isOwn ? 'Your strategy leaderboard' : 'Strategy leaderboard'}</h1>
+          <p>
+            {isOwn
+              ? <>Your strategies, ranked against each other by a transparent <strong>conviction score</strong> built
+                  from real rigor-gate and backtest results — the ugly numbers included. Build your track record now;
+                  it carries to mainnet.</>
+              : <>The curated seed library, ranked by a transparent <strong>conviction score</strong> built from real
+                  rigor-gate and backtest results — the ugly numbers included. A reference set, not a competition.</>}
+          </p>
+        </header>
 
         {/* Headline selectivity aggregate — see the derivation comment above
             (evaluatedCount / passingCount). Guarded identically to the

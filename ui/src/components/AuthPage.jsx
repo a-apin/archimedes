@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../AuthContext'
 import { oauthErrorMessage } from '../auth-errors'
 import {
-  getProviders,
   requestPasswordReset,
   resendVerificationEmail,
   resetPassword,
@@ -20,6 +19,7 @@ import {
   passwordStrength,
 } from '../password-rules'
 import { postAuthPath } from '../routes'
+import BrandMark from './BrandMark'
 
 const STRENGTH_COLORS = ['var(--text-4)', 'var(--text-4)', 'var(--warning, #b08a3e)', 'var(--accent)', 'var(--accent)']
 
@@ -212,7 +212,6 @@ export default function AuthPage({ mode, oauthError }) {
   // state declared below.
   const oauthNotice = !creating && !resetting ? oauthErrorMessage(oauthError) : null
   const { user, refresh } = useAuth()
-  const [providers, setProviders] = useState({ emailPassword: true, google: false, github: false })
   const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -227,10 +226,6 @@ export default function AuthPage({ mode, oauthError }) {
   const match = passwordsMatch(form.password, form.confirm)
   const showMismatch = creating && form.confirm.length > 0 && !match
   const canSubmit = !creating || (rulesMet && match)
-
-  useEffect(() => {
-    getProviders().then(setProviders).catch(() => {})
-  }, [])
 
   useEffect(() => {
     if (user && !resetting) window.location.replace(next)
@@ -290,8 +285,29 @@ export default function AuthPage({ mode, oauthError }) {
   const title = resetting ? 'Reset your password' : creating ? 'Create your account' : screen === 'forgot' ? 'Reset your password' : 'Sign in'
 
   return (
-    <main className="min-h-screen flex items-center justify-center px-4 py-12 bg-[var(--canvas)]">
-      <section className="card-flat w-full max-w-[430px] p-7" aria-labelledby="auth-title">
+    <main className="auth-site">
+      <div className="auth-shell">
+        <section className="auth-context" aria-label="Archimedes account boundary">
+          <a href="/" className="auth-brand" aria-label="Archimedes home">
+            <BrandMark />
+            <span>Archimedes</span>
+          </a>
+          <div>
+            <p className="public-kicker">Account before wallet</p>
+            <h2>Research stays linked to you.</h2>
+            <p>
+              Your account owns briefs, strategies, and settings. Wallet control
+              is separate and only needed for on-chain actions.
+            </p>
+          </div>
+          <ul className="auth-proof-list">
+            <li>Email and password work without a wallet.</li>
+            <li>Wallet linking requires signature proof.</li>
+            <li>Arc public testnet uses no real funds.</li>
+          </ul>
+        </section>
+
+        <section className="auth-form-panel" aria-labelledby="auth-title">
         <a href="/" className="caption text-[var(--accent)]">← Archimedes</a>
         <h1 id="auth-title" className="serif text-[2rem] mt-4 mb-2">{title}</h1>
 
@@ -416,12 +432,14 @@ export default function AuthPage({ mode, oauthError }) {
               </button>
             </form>
 
-            {(providers.google || providers.github) && (
-              <div className="mt-5 flex flex-col gap-2 border-t border-[var(--glass-border)] pt-5">
-                {providers.google && <button className="btn-secondary" onClick={() => social('google')} disabled={busy}>Continue with Google</button>}
-                {providers.github && <button className="btn-secondary" onClick={() => social('github')} disabled={busy}>Continue with GitHub</button>}
-              </div>
-            )}
+            <div className="mt-5 flex flex-col gap-2 border-t border-[var(--glass-border)] pt-5">
+              <button type="button" className="btn-secondary" onClick={() => social('google')} disabled={busy}>
+                Continue with Google
+              </button>
+              <button type="button" className="btn-secondary" onClick={() => social('github')} disabled={busy}>
+                Continue with GitHub
+              </button>
+            </div>
 
             <p className="caption mt-5 text-center">
               {creating ? 'Already registered?' : 'New to Archimedes?'}{' '}
@@ -434,7 +452,8 @@ export default function AuthPage({ mode, oauthError }) {
             </p>
           </>
         )}
-      </section>
+        </section>
+      </div>
     </main>
   )
 }
