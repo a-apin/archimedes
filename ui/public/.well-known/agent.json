@@ -101,25 +101,27 @@
         "read": "GET /api/paper/deployments/{deployment_id}",
         "stop": "POST /api/paper/deployments/{deployment_id}/stop"
       },
-      "note": "Simulated: no chain, no funds. The only deployment path that is live today."
+      "note": "Simulated: no chain, no funds. deploy is also live and puts real capital on-chain \u2014 choosing between them trades simulation for capital at risk, not working for not working."
     },
     "deploy": {
-      "status": "landing with the T3.2 redeploy (#588)",
+      "status": "live",
       "authRequired": true,
       "routes": {
         "createVault": "POST /api/vaults/create"
-      }
+      },
+      "note": "Creates a real, non-custodial vault on Arc: the caller's linked wallet owns it and the agent holds rebalance authority only, never withdraw-to-platform."
     },
     "marketplace": {
-      "status": "landing with the T3.2 redeploy (#588)",
+      "status": "live",
       "authRequired": true,
       "routes": {
         "publish": "POST /api/marketplace/publish",
         "subscribe": "POST /api/marketplace/subscribe"
-      }
+      },
+      "note": "live describes the routes: publish/subscribe are wired to the redeployed contracts. It does not assert that a subscription's recurring USDC charge settles for real \u2014 that is gated separately by PAYMENTS_DRY_RUN, and this manifest advertises no payment scheme."
     },
     "monitor": {
-      "status": "landing with the T3.2 redeploy (#588)",
+      "status": "live",
       "authRequired": false,
       "routes": {
         "vaultHealth": "GET /api/vaults/{address}/health"
@@ -143,25 +145,25 @@
       "id": "deploy-vault",
       "name": "Deploy vault",
       "description": "Execute a generated, rigor-passing strategy into a non-custodial USDC vault on Arc.",
-      "status": "landing with the T3.2 redeploy (#588)"
+      "status": "live"
     },
     {
       "id": "monitor",
       "name": "Monitor",
       "description": "Read a deployed vault's live health, allocations, and performance.",
-      "status": "landing with the T3.2 redeploy (#588)"
+      "status": "live"
     },
     {
       "id": "publish",
       "name": "Publish",
       "description": "Publish a strategy to the nanopayment marketplace for other agents or users to subscribe to.",
-      "status": "landing with the T3.2 redeploy (#588)"
+      "status": "live"
     },
     {
       "id": "subscribe",
       "name": "Subscribe",
       "description": "Subscribe to a published strategy via sub-cent USDC nanopayments (x402 / Circle Gateway).",
-      "status": "landing with the T3.2 redeploy (#588)"
+      "status": "live"
     }
   ]
 }
