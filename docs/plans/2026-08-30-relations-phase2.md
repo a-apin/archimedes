@@ -56,8 +56,11 @@ Three compounding facts, none of them individually wrong:
 1. Both mirror writers swallow their exception — `generation_pipeline.py:1485-1486`
    (*"unified passport persist failed (non-blocking)"*) and `strategy_provider.py:558`
    (*"unified table sync failed (non-blocking)"*).
-2. `passport_loader._update_record` (lines 195-229) refreshes **13** columns on a
-   `force_update` hit. `StrategyPassportRecord` has **48**. `total_trades`, `win_rate`,
+2. `passport_loader._update_record` (lines 195-229) refreshes **19** columns on a
+   `force_update` hit — 18 unconditionally, plus `universe_source` only when the incoming
+   passport carries one (lines 208-213 say why). `StrategyPassportRecord` has **49**
+   (`SELECT` it yourself: `len(StrategyPassportRecord.__table__.columns)`).
+   `total_trades`, `win_rate`,
    `calmar_ratio`, `correlation_to_spy`, `backtest_start`, `backtest_end`,
    `sharpe_ci_lower/upper`, `n_obs_daily` are written at INSERT and then **never updated
    again** — a re-graded strategy keeps its first-ever values in those columns forever.
@@ -124,7 +127,7 @@ erDiagram
     }
     BACKTEST_RESULTS {
         int id PK
-        string strategy_id "VARCHAR(64), 14857 rows / 6.3 GB"
+        string strategy_id "VARCHAR(64), big blobs -- size via Q9"
         string content_hash "per-RUN artifact hash -- C5, NOT joinable"
     }
     PAPER_DEPLOYMENTS {
@@ -181,7 +184,7 @@ the mirror it replaces.
 curated strategies until the seed lands, and would show *nothing at all* for any strategy
 whose best-effort seed failed. That converts today's divergence into silent data loss.
 
-**What replaces "mirror", then.** Classify all 48 passport columns and treat each class by
+**What replaces "mirror", then.** Classify all 49 passport columns and treat each class by
 its own law:
 
 | Class | What it is | Columns (representative) | Phase 2 treatment |
@@ -201,10 +204,17 @@ and the migration is a `CREATE VIEW`.
 
 ### 2.1 Run these first — read-only, no locks, no writes
 
-Every ALTER below is **gated on the result of the matching query**. Run all six against
-prod (read replica is fine) and record the counts in the migration's docstring, exactly as
-Phase 1's `f0ab58339d55` recorded its 646-row measurement. Phase 1's C1 stands: an unmeasured
-FK is a deploy-time hard failure waiting to happen.
+Every ALTER below is **gated on the result of the matching query**. Run them all against
+prod (read replica is fine) and record the counts in the migration's docstring.
+
+The precedent for that is **not** a Phase 1 revision — Phase 1's two revisions
+(`fb8d0bae8112`, `9c2e7b5a1f4d`) are still unmerged in #1438. It is
+`backend/migrations/versions/f0ab58339d55_dedupe_backtest_results_canonical_hash.py`
+(issue #1347, merged, `Revises: e2b7f4c81d93`), whose docstring records *"Measured against
+production 2026-08-20 (read-only query): **646 rows over 51 distinct strategies**, top
+offenders 31 / 25 / 24 rows"* — a measurement of `backtest_results`, taken before that
+migration deleted a single row. Copy the discipline, not the table. Phase 1's C1 stands: an
+unmeasured FK is a deploy-time hard failure waiting to happen.
 
 ```sql
 -- Q1  Passport rows with no strategy_store parent.  GATES: § 2.3 FK.
@@ -275,6 +285,16 @@ SELECT COUNT(*) AS orphan_backtests
   FROM backtest_results br
   LEFT JOIN strategy_store ss ON br.strategy_id = ss.id
  WHERE ss.id IS NULL;
+
+-- Q9  How big backtest_results actually is. GATES: § 5.1's sizing row and § 2.8's
+--     deferral. Neither the row count nor the on-disk size is derivable from this
+--     tree — see the note under § 5.1 for why the figure that used to sit there
+--     was not a measurement. total_ includes the TOAST relation, which is where the
+--     JSON payloads live; heap alone would understate it by most of the table.
+SELECT COUNT(*)                                                   AS n_rows,
+       pg_size_pretty(pg_total_relation_size('backtest_results')) AS total_size,
+       pg_size_pretty(pg_relation_size('backtest_results'))       AS heap_only
+  FROM backtest_results;
 ```
 
 ### 2.2 Widen `strategy_passports.id` to match its future parent
@@ -468,8 +488,10 @@ authenticated "claim my history" endpoint that calls `claim_legacy_wallet_data`,
 
 - **`backtest_results.strategy_id → strategy_store.id`.** Phase 1's C3 deferred it because
   both writers establishing the id-space equality are best-effort. That reasoning is
-  unchanged, and § 1's B4 finding *strengthens* it. Sizing (S4) is the second reason: 6.3 GB.
-  Run Q8 to measure; do not add the constraint in Phase 2.
+  unchanged, and § 1's B4 finding *strengthens* it. Sizing (S4) is the second reason: this
+  is the one table in the plan whose `VALIDATE` scan is not free — how un-free is Q9's
+  answer, not a number quoted here (§ 5.1). Run Q8 and Q9 to measure; do not add the
+  constraint in Phase 2.
 - **Any FK or join on `content_hash`.** See C5 — four columns, four hash spaces. The
   deliverable here is a comment on each of the four columns naming its algorithm, prefix
   convention, and payload, so the next reader cannot mistake them for one key.
@@ -489,7 +511,7 @@ authenticated "claim my history" endpoint that calls `claim_legacy_wallet_data`,
 
 | Column | Proof it can never be non-NULL |
 |---|---|
-| `on_chain_registration_block` | Not a parameter of the `StrategyPassportRecord(...)` constructor in `passport_loader.py:122-181`, and not assigned in `_update_record`. **No writer exists at all.** The only occurrence of the name in the tree is a `strategy_store` DDL patch (`db.py:174`) — a different table. |
+| `on_chain_registration_block` | Not a parameter of the `StrategyPassportRecord(...)` constructor in `passport_loader.py:122-181`, and not assigned in `_update_record`. **No writer exists at all.** The name is *not* rare in the tree, though — `grep -rn on_chain_registration_block --include='*.py' .` returns **eleven lines across six files** (twelve raw matches; `strategy_store.py:159` names it twice). None of them is a writer of *this* column, and the list is worth reading before the drop: `strategy_passport_record.py:100` is the column definition itself; `af9c6a9376e4_baseline_schema.py:300` is this table's own baseline DDL. The `strategy_store` namesake — a **different table**, out of scope for § 3.1 — accounts for `strategy_store.py:98,159`, `db.py:174`, `af9c6a9376e4_baseline_schema.py:375`, and `test_strategy_publisher.py:296,301,317,321` (which asserts on `StrategyRecord`, and must therefore keep passing untouched — if § 3.1's drop breaks it, the drop hit the wrong table). The one occurrence the drop **must** also remove: `models/strategy.py:138`, the `on_chain_registration_block: int \| None = None` field on the `StrategyPassport` **dataclass** — the in-memory shape the loader reads from. Leave it and the dataclass keeps a field no column can persist. |
 | `on_chain_registration_tx` | Written from `passport.on_chain_registration_tx` (`passport_loader.py:152`). Curated passes the literal `None` (`strategy_provider.py:433`); the generated path's `StrategyPassport(...)` (`generation_pipeline.py:1452-1469`) never sets it, so it takes the dataclass default. Both producers are exhaustive. |
 | `extraction_prompt_hash` | Same shape: `passport_loader.py:142` reads it; `strategy_provider.py:427` passes the literal `None`; the generated path never sets it. |
 | `paper_claim_blended_sharpe` | `passport_loader.py:156` reads it; **neither** producer sets it — absent from `strategy_provider.py`'s `Strategy(...)` construction and from `generation_pipeline.py`'s `StrategyPassport(...)`. Default `None` (`models/strategy.py:147`). |
@@ -525,8 +547,14 @@ Mechanics that are easy to get wrong:
   `create_all()` (the SQLite path, C2) and Alembic diverge and `test_alembic_migrations.py`'s
   parity gate fails. Readers to remove: `passport_loader.py:142,152,156`;
   `strategies_routes.py:158,160,1990,1992`; `api/schemas.py:199,255`;
-  `strategy_provider.py:427,433`; the `StrategyPassport` dataclass fields; and the
+  `strategy_provider.py:427,433`; the four `StrategyPassport` dataclass fields, which are
+  `models/strategy.py:119` (`extraction_prompt_hash`), `:137` (`on_chain_registration_tx`),
+  `:138` (`on_chain_registration_block`), `:147` (`paper_claim_blended_sharpe`); and the
   `Strategy`/`StrategyPassport` constructor arguments that pass literal `None`.
+  **Do not touch the `strategy_store` namesakes** — `strategy_store.py:98,159`, `db.py:174`,
+  `af9c6a9376e4_baseline_schema.py:375`, `test_strategy_publisher.py:296-321`. That is a
+  different table with its own on-chain columns, and § 3 says nothing about it. If
+  `test_strategy_publisher.py` goes red, the drop went one table too far.
 - **`strategies_routes.py` returns these in an API response model.** Removing a field from a
   Pydantic response is a wire-shape change. Both are always `null` today, so no consumer can
   depend on a value — but a UI destructuring `passport.on_chain_registration_tx` will now get
@@ -591,12 +619,25 @@ literally the G4 pattern, one table over. The plan:
 | `strategy_passports` | 96 | trivial | free (widen = catalog only; drop = catalog only) | free |
 | `strategy_proposals` | 117 | small (payload JSON) | free | free — *if* the parent exists (§ 2.5 says it will not, by design) |
 | `paper_deployments` | small | trivial | Phase 1 | Phase 1 |
-| `backtest_results` | **14,857** | **6.3 GB** (~425 KB/row; ~489 KB `artifact_json` + ~108 KB `equity_curve_json` per `backtest_repository.py:254-260`) | a `VARCHAR` widen is catalog-only and still cheap | **a full seq scan of 6.3 GB.** This is the only expensive operation anywhere in the plan. |
+| `backtest_results` | **run Q9** | **run Q9** — per-*row* weight is tree-derivable and is the point: ~489 KB `artifact_json` + ~108 KB `equity_curve_json`, measured at 0.58 MB of peak RSS per persisted row (`backtest_repository.py:258-263`) | a `VARCHAR` widen is catalog-only and still cheap | **a full seq scan of the entire table, blobs included.** This is the only expensive operation anywhere in the plan. |
 
 The whole passport/proposal/generation core is **~300 rows**. Every constraint in §§ 2.2–2.7
 is effectively instantaneous; the risk in this plan is entirely about *write ordering and
 correctness*, not about lock duration. `backtest_results` is the sole exception and is
 deliberately deferred (§ 2.8).
+
+**Why that row says "run Q9" instead of a number.** An earlier draft of this table carried
+"**14,857** rows / **6.3 GB**". Neither figure is derivable from this tree, and neither is
+recorded anywhere else either — `14,857` appears in no file in this repo or the private docs
+repo other than this document. The nearest genuine measurement is the private docs repo's
+`operations/aws-cost-baseline-2026-08-30.md`, and it **corrects** the premise rather than
+confirming it: its § *"The 6.3 GB `backtest_results` premise needs correcting"* records
+Aurora `VolumeBytesUsed` for the **whole database** at **2.25–4.43 GB** on 2026-08-30
+(growing ~0.5 GB/day) against a `Aurora:StorageUsage` bill of $0.19/mo — so "6.3 GB of
+`backtest_results`" cannot be a measured table size. What survives is the shape of the
+argument, and it survives intact: the blobs are real, they are why § 2.8 defers the FK, and
+per that cost baseline the money they cost is **read amplification, not storage**. So the
+number goes back to being a query, which is this document's own § 3 rule applied to itself.
 
 ### 5.2 Ordering — and the two dependencies that must not be violated
 
@@ -610,11 +651,11 @@ D2: § 2.2 (widen id to VARCHAR(128))     MUST PRECEDE  § 2.3 (the 1:1 FK)
 
 | Week | Ships | Why it can ship then | Risk |
 |---|---|---|---|
-| **W1** | Q1–Q8 against prod (read-only). § 3's `DROP COLUMN` migration + model/reader/schema removal. The four `COMMENT ON COLUMN` statements from § 2.8. | Zero dependencies. Zero locks worth naming. The audit output is what unblocks every later week. | **Low.** Only real risk is the API wire-shape change (§ 3.1) — grep `ui/src` first. |
+| **W1** | Q1–Q9 against prod (read-only). § 3's `DROP COLUMN` migration + model/reader/schema removal. The four `COMMENT ON COLUMN` statements from § 2.8. | Zero dependencies. Zero locks worth naming. The audit output is what unblocks every later week. | **Low.** Only real risk is the API wire-shape change (§ 3.1) — grep `ui/src` first. |
 | **W2** | § 2.4's `strategy_id` column + index + `persist_proposal` parameter + call site (G3). § 2.2's widen. | Additive column on a 117-row table; the widen is catalog-only. Both are FK-free, so neither can break a write path. | **Low.** The writer change is one keyword argument threaded from a value already in scope. |
 | **W3** | § 2.3.1's cold-boot order fix **with its empty-DB test**, then § 2.3's `NOT VALID` FK, then § 2.4's FK. Validate revision for both, gated on Q1. | D1 and D2 are both satisfied. This is the week the entity graph actually becomes a graph. | **Medium — the highest in the plan.** The order fix touches startup. It must be verified on an empty database; a warm DB hides the failure entirely. |
 | **W4** | § 2.5's `generations` table + the durable terminal-path write + the `_job_summary` Redis-then-Postgres fallback + the permanently-`NOT VALID` `generation_id` FK. | Needs W2/W3's `strategy_store` FK target to exist for `best_strategy_id`. | **Medium.** New write on a user-facing path; must stay non-blocking, same as every other write in that pipeline. |
-| **W5+** | § 2.6's `v_strategy_passport_live` + the Q2/Q3 divergence check. Then, separately: G1 (`generation_payments`), the `backtest_results` FK if Q8 comes back 0, class-A column removal. | The view is additive and depends on nothing; it is W5 only because it is the least urgent. | **Low** for the view. The class-A removal is Phase 3 and needs its own plan. |
+| **W5+** | § 2.6's `v_strategy_passport_live` + the Q2/Q3 divergence check. Then, separately: G1 (`generation_payments`), the `backtest_results` FK if Q8 comes back 0 and Q9 says the scan is affordable, class-A column removal. | The view is additive and depends on nothing; it is W5 only because it is the least urgent. | **Low** for the view. The class-A removal is Phase 3 and needs its own plan. |
 
 **If only one week is available, do W1 and W2.** W1 removes four columns that can never hold
 data and documents the four-hash trap that will otherwise cost someone a day. W2 closes G3 —
