@@ -8,6 +8,7 @@ with closures over the validated condition trees.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 import backtrader as bt
@@ -15,6 +16,23 @@ import backtrader as bt
 from archimedes.services.strategy_dsl import DSLError, StrategySpec
 
 logger = logging.getLogger(__name__)
+
+# Annualization factor for daily bars — the same 252 the live evaluator and the
+# sizing branches below use. One constant so the two interpreters cannot drift.
+_TRADING_DAYS = 252
+
+# Lookback (bars) for the SIZING volatility estimate. Frozen at 20 because the
+# volatility_target branch has always used 20 and published metrics depend on it.
+_SIZING_VOL_LOOKBACK = 20
+
+# Cap on the vol-scaling multiplier for volatility_target / inverse_vol. Without
+# it a quiet stretch (realized vol → 0) asks for unbounded leverage.
+_VOL_SCALE_CAP = 2.0
+
+# Reference annualized vol for ``inverse_vol`` when the spec does not name one.
+# 0.15 ≈ long-run US equity vol; a spec can override with
+# ``position_sizing.reference_vol_annual``.
+_DEFAULT_INVERSE_VOL_REFERENCE = 0.15
 
 
 # ── Condition evaluation ──────────────────────────────────────────────
@@ -57,6 +75,65 @@ def _eval_condition(
 # ── Indicator wiring ──────────────────────────────────────────────────
 
 
+class RealizedVolAnnualized(bt.Indicator):
+    """Annualized realized volatility of simple returns over ``period`` bars.
+
+    Deliberately NOT ``bt.indicators.StandardDeviation``. That one is a
+    population std (ddof=0); the live evaluator computes ``realized_vol`` as
+    ``prices.pct_change().tail(N).std() * sqrt(252)`` and pandas ``.std()`` is a
+    SAMPLE std (ddof=1). Shipping the population estimator here would put the
+    graded backtest and the live signal a factor of ``sqrt(N/(N-1))`` apart on
+    every bar — 5.4% at N=20 — which is exactly the silent-divergence class the
+    momentum (F1) and RSI (F5) findings were. This implementation reproduces the
+    pandas expression bit-for-bit; ``test_interpreter_parity.py::
+    test_realized_vol_parity_per_bar`` pins it per-bar against the live twin.
+
+    ``period`` returns need ``period + 1`` prices, so the minimum period is one
+    bar longer than the declared lookback.
+    """
+
+    lines = ("realized_vol",)
+    params = (("period", _SIZING_VOL_LOOKBACK), ("annualization", _TRADING_DAYS))
+
+    def __init__(self) -> None:
+        self.addminperiod(int(self.p.period) + 1)
+
+    def next(self) -> None:
+        n = int(self.p.period)
+        if n < 2:
+            # A 1-bar sample has no dispersion; pandas .std() on it is NaN, and
+            # NaN is the honest answer rather than a fabricated 0.0.
+            self.lines.realized_vol[0] = float("nan")
+            return
+        returns: list[float] = []
+        for i in range(n):
+            prev = float(self.data[-i - 1])
+            if prev == 0.0:
+                self.lines.realized_vol[0] = float("nan")
+                return
+            returns.append(float(self.data[-i]) / prev - 1.0)
+        mean = sum(returns) / n
+        variance = sum((r - mean) ** 2 for r in returns) / (n - 1)  # ddof=1
+        self.lines.realized_vol[0] = math.sqrt(variance) * math.sqrt(float(self.p.annualization))
+
+
+# Indicator stems ``_make_indicator`` can actually build. This is the single
+# source of truth for "backtestable" — ``strategy_dsl.INDICATOR_NAMES`` (what
+# validates) must equal it, and
+# ``test_dsl_sizing_and_indicators.py::test_every_validated_indicator_is_interpretable``
+# asserts that, so a name can never again be validator-legal but interpreter-fatal.
+SUPPORTED_INDICATORS = frozenset({"sma", "ema", "rsi", "momentum", "realized_vol"})
+
+
+def indicator_min_bars(name: str, period: int) -> int:
+    """Bars of history an indicator needs before its value is meaningful.
+
+    ``realized_vol_N`` differences prices, so it needs N+1 bars for N returns;
+    every other stem needs exactly its period.
+    """
+    return period + 1 if name == "realized_vol" else period
+
+
 def _make_indicator(
     data_line: bt.LineSeries,
     name: str,
@@ -73,6 +150,8 @@ def _make_indicator(
         return bt.indicators.ExponentialMovingAverage(data_line, period=period)
     if name == "rsi":
         return bt.indicators.RSI(data_line, period=period)
+    if name == "realized_vol":
+        return RealizedVolAnnualized(data_line, period=period)
     if name == "momentum":
         # TRAILING RETURN (centred on 0.0), not a price ratio (centred on 1.0).
         # The distinction decides whether momentum conditions mean anything:
@@ -116,12 +195,37 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
 
     Returns the class (not an instance). The caller is responsible for
     wiring it into a Cerebro via cerebro.addstrategy(cls).
+
+    ── The single-feed seam (read before touching position sizing) ──
+    The interpreted strategy reads exactly ONE instrument: ``self.data``. There
+    is no cross-sectional book here, so "equal weight across the universe"
+    cannot be expressed as N simultaneous target weights. It is expressed as a
+    per-slot weight instead, via the ``universe_slots`` parameter:
+
+      * ``universe_slots`` defaults to ``len(spec.asset_universe)`` — the
+        single-feed runner hands the strategy the WHOLE account, so one feed is
+        one of N equal slots and ``equal_weight`` targets ``1/N`` of the
+        account, leaving the other ``(N-1)/N`` in cash. That is the honest
+        reading: the run only ever saw one of the N names, so it must not claim
+        the exposure of all N.
+      * The sleeve runners (``fusion_evaluator.run_dsl_backtest_portfolio``,
+        ``paper_trading._sleeve_dated_returns``) already partition the cash N
+        ways and run this same strategy once per ticker. There the equal split
+        happens OUTSIDE, so those callers pass ``universe_slots=1`` and each
+        sleeve is fully invested in its own share. Aggregate exposure is 1.0
+        either way; applying 1/N on both sides would silently size at 1/N².
+
+    ``full_invested_when_in_market`` and ``volatility_target`` ignore
+    ``universe_slots`` by definition — "full invested" means all-in on the
+    account it was given, and the vol target is an account-level target.
     """
     spec_dict = spec.to_dict()
     entry_cond = spec.entry
     exit_cond = spec.exit
     ps_type = spec.position_sizing.get("type", "full_invested_when_in_market")
     vol_target = spec.position_sizing.get("annual_pct")
+    inverse_vol_reference = float(spec.position_sizing.get("reference_vol_annual") or _DEFAULT_INVERSE_VOL_REFERENCE)
+    default_slots = max(1, len(spec.asset_universe))
 
     indicator_map: dict[str, tuple[str, int]] = {}
     for ind_name in spec.indicators:
@@ -129,7 +233,10 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
         if len(parts) == 2:
             indicator_map[ind_name] = (parts[0], int(parts[1]))
 
-    max_period = max((p for _, p in indicator_map.values()), default=0)
+    max_period = max(
+        (indicator_min_bars(name, period) for name, period in indicator_map.values()),
+        default=0,
+    )
 
     class DSLStrategy(bt.Strategy):
         """Dynamically generated strategy from DSL spec."""
@@ -138,6 +245,9 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
             ("dsl_spec", spec_dict),
             ("exposure_fraction", 0.99),
             ("vol_target_annual", vol_target),
+            # See the seam note in interpret_spec's docstring. Callers that have
+            # ALREADY split the cash per ticker must pass 1.
+            ("universe_slots", default_slots),
         )
 
         def __init__(self) -> None:
@@ -146,6 +256,11 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
                 self._indicators[alias] = _make_indicator(self.data.close, name, period)
             self._warmup = max_period
             self._vol_target = self.params.vol_target_annual
+            # inverse_vol falls back to the unscaled slot weight before there is
+            # enough history for a vol estimate. Warn ONCE per run rather than
+            # every entry — a silent fallback is what we are fixing, but a
+            # per-bar warning is noise that gets filtered and becomes silence too.
+            self._vol_fallback_warned = False
             # Seed the counter so the first post-warmup bar rebalances instead of
             # waiting a full period first. _should_rebalance() increments before
             # testing the modulus, so starting one short of a period boundary makes
@@ -203,39 +318,124 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
                 if _eval_condition(exit_cond, bar_values):
                     self.close()
 
+        def notify_order(self, order: Any) -> None:
+            """Make a refused order audible.
+
+            backtrader delivers Margin/Rejected as a notification and otherwise
+            drops the order: no exception, no fill, no trade. The strategy then
+            reports a flat bar that is indistinguishable from "the entry
+            condition was false", and the equity curve simply shows no exposure
+            — a claim ("this strategy was out of the market") the run never
+            actually made. Log it loudly instead; the run stays alive because a
+            rejected order is a broker-state fact, not a spec error.
+            """
+            if order.status not in (order.Margin, order.Rejected):
+                return
+            logger.warning(
+                "DSL strategy %s: %s order was %s by the broker (ref=%s, requested size=%s, "
+                "last close=%.4f, cash=%.2f, value=%.2f) — the position was NOT taken and the "
+                "strategy stays flat this bar.",
+                spec.name,
+                "BUY" if order.isbuy() else "SELL",
+                bt.Order.Status[order.status],
+                getattr(order, "ref", "?"),
+                getattr(order.created, "size", None),
+                float(self.data.close[0]),
+                float(self.broker.getcash()),
+                float(self.broker.getvalue()),
+            )
+
+        def _slot_weight(self) -> float:
+            """Target weight for ONE equal slot of the declared universe.
+
+            See the seam note in ``interpret_spec``'s docstring.
+            """
+            return 1.0 / max(1, int(self.params.universe_slots))
+
+        def _sizing_realized_vol(self) -> float | None:
+            """Annualized trailing vol used by the SIZING branches, or None.
+
+            Estimator note (intentional, do not "reconcile"): this is the
+            root-mean-square of returns about ZERO over
+            ``_SIZING_VOL_LOOKBACK`` bars — the exact expression
+            ``volatility_target`` has always used, kept byte-for-byte because
+            every volatility_target number this repo has published came out of
+            it. The ``realized_vol_N`` *indicator* above is a sample std (ddof=1)
+            because it has a live-evaluator twin it must equal. The two differ
+            by the mean term and the ddof, which is immaterial for daily
+            returns; they are separate because one is a sizing knob and the
+            other is a graded signal.
+            """
+            if len(self) <= _SIZING_VOL_LOOKBACK:
+                return None
+            recent = [
+                float(self.data.close[-i]) / float(self.data.close[-i - 1]) - 1 for i in range(_SIZING_VOL_LOOKBACK)
+            ]
+            return (sum(r**2 for r in recent) / len(recent)) ** 0.5 * (_TRADING_DAYS**0.5)
+
+        def _order_full_invest(self, price: float) -> None:
+            """All of the account's cash (less the exposure buffer) into this feed."""
+            cash = float(self.broker.getcash())
+            size = int(cash * float(self.params.exposure_fraction) / price)
+            if size > 0:
+                self.order_target_size(target=size)
+
         def _enter_position(self) -> None:
             price = float(self.data.close[0])
             if price <= 0:
                 return
 
             if ps_type == "full_invested_when_in_market":
-                cash = float(self.broker.getcash())
-                size = int(cash * float(self.params.exposure_fraction) / price)
-                if size > 0:
-                    self.order_target_size(target=size)
+                self._order_full_invest(price)
             elif ps_type == "volatility_target" and self._vol_target:
                 # Scale position by target vol / realized vol
-                if len(self) > 20:
-                    recent = [float(self.data.close[-i]) / float(self.data.close[-i - 1]) - 1 for i in range(20)]
-                    realized_vol = (sum(r**2 for r in recent) / len(recent)) ** 0.5 * (252**0.5)
-                    if realized_vol > 0:
-                        scale = min(self._vol_target / realized_vol, 2.0)
-                        cash = float(self.broker.getcash())
-                        size = int(cash * float(self.params.exposure_fraction) * scale / price)
-                        if size > 0:
-                            self.order_target_size(target=size)
-                        return
+                realized_vol = self._sizing_realized_vol()
+                if realized_vol is not None and realized_vol > 0:
+                    scale = min(self._vol_target / realized_vol, _VOL_SCALE_CAP)
+                    cash = float(self.broker.getcash())
+                    size = int(cash * float(self.params.exposure_fraction) * scale / price)
+                    if size > 0:
+                        self.order_target_size(target=size)
+                    return
                 # Fallback: full invest if not enough data for vol estimate
-                cash = float(self.broker.getcash())
-                size = int(cash * float(self.params.exposure_fraction) / price)
-                if size > 0:
-                    self.order_target_size(target=size)
+                self._order_full_invest(price)
+            elif ps_type == "equal_weight":
+                # One equal slot of the declared universe. With N tickers and a
+                # single feed this is 1/N of the account, NOT the whole account
+                # — the run only observed one of the N names.
+                self.order_target_percent(target=self._slot_weight() * float(self.params.exposure_fraction))
+            elif ps_type == "inverse_vol":
+                # Equal slot, then scaled by reference vol / realized vol: the
+                # calmer the asset relative to the reference, the larger its
+                # share. Same scaling machinery (and same cap) as
+                # volatility_target, applied to a slot weight instead of the
+                # whole account.
+                weight = self._slot_weight()
+                realized_vol = self._sizing_realized_vol()
+                if realized_vol is not None and realized_vol > 0:
+                    weight *= min(inverse_vol_reference / realized_vol, _VOL_SCALE_CAP)
+                elif not self._vol_fallback_warned:
+                    self._vol_fallback_warned = True
+                    logger.warning(
+                        "DSL strategy %s: inverse_vol has no realized-vol estimate yet "
+                        "(needs > %d bars) — sizing at the unscaled slot weight %.4f.",
+                        spec.name,
+                        _SIZING_VOL_LOOKBACK,
+                        weight,
+                    )
+                target = min(weight, 1.0) * float(self.params.exposure_fraction)
+                self.order_target_percent(target=target)
             else:
-                # equal_weight or unknown: full invest
-                cash = float(self.broker.getcash())
-                size = int(cash * float(self.params.exposure_fraction) / price)
-                if size > 0:
-                    self.order_target_size(target=size)
+                # Unreachable for a validated spec: POSITION_SIZING_TYPES is a
+                # closed enum and every member has a branch above. Kept as a
+                # loud-ish backstop for an unvalidated spec handed straight to
+                # interpret_spec.
+                logger.warning(
+                    "DSL strategy %s: unhandled position_sizing type %r — falling back to full invest.",
+                    spec.name,
+                    ps_type,
+                )
+                self._order_full_invest(price)
 
     DSLStrategy.__name__ = f"DSL_{spec.name.replace(' ', '_').replace('-', '_')}"
     DSLStrategy.__qualname__ = DSLStrategy.__name__

@@ -24,10 +24,10 @@ SCOPE, stated exactly (the honest part):
     factor (1 - 2/(N+1))^k drives them together, so parity is asserted after
     a burn-in with a tight tolerance. If either side's seeding changes, the
     burn-in bound breaks here first.
-  * PINNED ASYMMETRIC: realized_vol computes live and RAISES in the backtest
-    (audit F6). The asymmetry itself is asserted, so both the silent arrival
-    of a backtest implementation (must then be promoted to PINNED EQUAL) and
-    a live-side removal are caught.
+  * PINNED EQUAL (was PINNED ASYMMETRIC, audit F6): realized_vol used to
+    compute live and RAISE in the backtest. The backtest now implements it with
+    the same ddof=1 estimator, so the asymmetry pin was retired and the
+    indicator promoted into the parity block above.
   * PINNED WITH A ONE-BAR EXECUTION OFFSET: the stateful/cadence cases compare
     DECISIONS, not fills. backtrader submits the order on the decision bar and
     the broker fills it at the next bar's open, so the backtest's observable
@@ -60,7 +60,7 @@ import backtrader as bt
 import pandas as pd
 import pytest
 from archimedes.services.dsl_to_backtrader import _eval_condition, _make_indicator, interpret_spec
-from archimedes.services.strategy_dsl import DSLError, validate_strategy_spec
+from archimedes.services.strategy_dsl import INDICATOR_NAMES, validate_strategy_spec
 from archimedes.services.strategy_signal_evaluator import (
     Signal,
     _compute_indicator_series,
@@ -164,6 +164,20 @@ def test_momentum_parity_per_bar(period):
     price ratio offset by exactly 1.0 — mutation-verified: reverting the -1.0
     in dsl_to_backtrader fails every bar here."""
     _compare("momentum", period, burn_in=period + 1, rel=1e-9)
+
+
+@pytest.mark.parametrize("period", [10, 20])
+def test_realized_vol_parity_per_bar(period):
+    """Post-F6: the backtest now HAS a realized_vol, and it equals the live one.
+
+    Promoted here from the pinned-ASYMMETRIC section below, which existed only
+    to catch this arrival. The estimator had to be written by hand
+    (``RealizedVolAnnualized``) rather than taken from
+    ``bt.indicators.StandardDeviation``: the live side is
+    ``pct_change().tail(N).std()``, pandas ``.std()`` is ddof=1, and
+    backtrader's built-in is ddof=0 — a sqrt(N/(N-1)) gap on every bar, 5.4% at
+    N=20. Mutation check: switching the ddof to N fails every bar here."""
+    _compare("realized_vol", period, burn_in=period + 2, rel=1e-9)
 
 
 def test_flat_state_daily_entry_decision_parity():
@@ -414,17 +428,18 @@ def test_ema_converges_after_seed_burn_in(period):
     _compare("ema", period, burn_in=period * 6, rel=1e-4)
 
 
-# ── Pinned ASYMMETRIC (F6) ──────────────────────────────────────────────────
+# ── No asymmetric indicators remain (F6 closed) ─────────────────────────────
 
 
-def test_realized_vol_is_live_only_and_that_asymmetry_is_pinned():
-    """realized_vol validates in the DSL grammar, computes on the live path,
-    and RAISES in the backtest interpreter (audit F6). Pinning the asymmetry
-    cuts both ways: if a backtest implementation quietly lands, this fails and
-    the indicator must be promoted to the pinned-EQUAL section above; if the
-    live side loses it, the strategy-affecting removal is caught too."""
-    live = _compute_indicator_value("realized_vol", 20, pd.Series(_SERIES[:60]))
-    assert isinstance(live, float) and not math.isnan(live) and live > 0
+def test_no_indicator_is_validator_legal_but_interpreter_fatal():
+    """Every name a spec may legally write must be buildable by BOTH sides.
 
-    with pytest.raises(DSLError):
-        _make_indicator(None, "realized_vol", 20)
+    This replaces the old realized_vol asymmetry pin (audit F6). That pin
+    asserted a one-sided indicator existed; this one asserts none does. It is
+    the generalized version — a new name added to the grammar without a
+    backtest implementation fails here rather than at C-rigor time."""
+    for name in sorted(INDICATOR_NAMES):
+        period = 20
+        live = _compute_indicator_value(name, period, pd.Series(_SERIES[:80]))
+        assert isinstance(live, float) and not math.isnan(live), f"{name} has no live value"
+        assert _bt_indicator_series(name, period), f"{name} has no backtest implementation"

@@ -177,6 +177,13 @@ def validate_strategy_spec(spec: dict[str, Any]) -> StrategySpec:
         target = ps.get("annual_pct")
         if not isinstance(target, (int, float)) or target <= 0:
             raise DSLError("volatility_target requires annual_pct > 0")
+    if ps["type"] == "inverse_vol" and "reference_vol_annual" in ps:
+        # Optional; the interpreter defaults it. But a present-and-nonsensical
+        # value must be rejected rather than silently coerced — a zero or
+        # negative reference makes the inverse-vol scale meaningless.
+        reference = ps["reference_vol_annual"]
+        if not isinstance(reference, (int, float)) or isinstance(reference, bool) or reference <= 0:
+            raise DSLError("inverse_vol reference_vol_annual must be a number > 0 when present")
 
     # source_arxiv_ids
     arxiv_ids = spec["source_arxiv_ids"]

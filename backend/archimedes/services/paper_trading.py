@@ -55,7 +55,12 @@ def _sleeve_dated_returns(spec, sym: str, factory, frame) -> dict[date, float]:
     """
     from archimedes.services.fusion_evaluator import run_dsl_backtest
 
-    metrics = run_dsl_backtest(spec, data_feed_factory=factory, data_source_label=f"paper:{sym}")
+    # universe_slots=1: this is ONE sleeve of the universe, capitalized in full,
+    # exactly like the graded path's run_dsl_backtest_portfolio. Letting the
+    # strategy default to len(asset_universe) here would size equal_weight /
+    # inverse_vol sleeves at 1/N of what the graded run used and manufacture a
+    # replay drift that has nothing to do with the data.
+    metrics = run_dsl_backtest(spec, data_feed_factory=factory, data_source_label=f"paper:{sym}", universe_slots=1)
     curve = list(metrics.equity_curve or [])
     if len(curve) < 2:
         raise PaperReplayError(f"sleeve {sym}: replay produced no equity path")

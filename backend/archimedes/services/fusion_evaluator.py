@@ -204,6 +204,16 @@ def is_admissible_source(data_source: str) -> bool:
     return data_source != _SYNTHETIC_SOURCE
 
 
+def _strategy_kwargs(universe_slots: int | None) -> dict[str, Any]:
+    """Per-run overrides for ``cerebro.addstrategy``.
+
+    Only forwards ``universe_slots`` when a caller explicitly set it, so the
+    strategy's own default (``len(spec.asset_universe)``) stays authoritative
+    for every existing call site.
+    """
+    return {} if universe_slots is None else {"universe_slots": int(universe_slots)}
+
+
 def run_dsl_backtest(
     spec: StrategySpec,
     *,
@@ -214,6 +224,7 @@ def run_dsl_backtest(
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
     slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
+    universe_slots: int | None = None,
 ) -> BacktestMetrics:
     """Run a backtest for a DSL-interpreted strategy.
 
@@ -224,12 +235,19 @@ def run_dsl_backtest(
     builds a ``GenericCSVData`` feed from the CSV. If all are None, generates a
     deterministic synthetic price series. The equity curve is captured
     **bar-by-bar** via a backtrader analyzer.
+
+    ``universe_slots`` overrides the per-slot weight the ``equal_weight`` /
+    ``inverse_vol`` sizing branches target (see ``interpret_spec``'s docstring).
+    Leave it None when this run owns the whole account — the strategy then
+    defaults to ``len(spec.asset_universe)`` slots. Pass ``1`` from a caller
+    that has already partitioned the cash per ticker, or the split is applied
+    twice and the sleeve sizes at 1/N².
     """
     import backtrader as bt
 
     strategy_cls = interpret_spec(spec)
     cerebro = bt.Cerebro(stdstats=False)
-    cerebro.addstrategy(strategy_cls)
+    cerebro.addstrategy(strategy_cls, **_strategy_kwargs(universe_slots))
 
     data_source = _data_source_label(data_feed, data_csv_path, data_feed_factory, data_source_label)
     if data_source == _SYNTHETIC_SOURCE:
@@ -335,6 +353,7 @@ def run_dsl_backtest_variants(
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
     slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
+    universe_slots: int | None = None,
 ) -> dict[str, BacktestMetrics]:
     """Run backtests for each cartesian-product point in the parameter grid.
 
@@ -358,6 +377,7 @@ def run_dsl_backtest_variants(
             initial_cash=initial_cash,
             tx_cost_bps=tx_cost_bps,
             slippage_bps=slippage_bps,
+            universe_slots=universe_slots,
         )
         return {"base": metrics}
 
@@ -387,6 +407,7 @@ def run_dsl_backtest_variants(
             initial_cash=initial_cash,
             tx_cost_bps=tx_cost_bps,
             slippage_bps=slippage_bps,
+            universe_slots=universe_slots,
         )
         results[variant_id] = variant_metrics
 
@@ -403,13 +424,14 @@ def _run_variant_backtest(
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
     slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
+    universe_slots: int | None = None,
 ) -> BacktestMetrics:
     """Run a single variant backtest given an already-interpreted strategy class."""
     import backtrader as bt
 
     data_source = _data_source_label(data_feed, data_csv_path, data_feed_factory, data_source_label)
     cerebro = bt.Cerebro(stdstats=False)
-    cerebro.addstrategy(strategy_cls)
+    cerebro.addstrategy(strategy_cls, **_strategy_kwargs(universe_slots))
 
     if data_feed is None and data_feed_factory is not None:
         data_feed = data_feed_factory()
@@ -577,7 +599,12 @@ def run_dsl_backtest_portfolio(
     tx_cost_bps: int = _DEFAULT_TX_BPS,
     slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
 ) -> BacktestMetrics:
-    """Backtest a DSL spec per asset over real feeds and aggregate the sleeves."""
+    """Backtest a DSL spec per asset over real feeds and aggregate the sleeves.
+
+    ``universe_slots=1``: the equal split across the universe is done HERE, by
+    ``sleeve_cash``. Each sleeve owns its own share outright, so the strategy
+    must not divide by N a second time (see ``interpret_spec``'s seam note).
+    """
     per_asset: dict[str, BacktestMetrics] = {}
     sleeve_cash = initial_cash / max(1, len(feed_factories))
     for sym, factory in feed_factories.items():
@@ -588,6 +615,7 @@ def run_dsl_backtest_portfolio(
             initial_cash=sleeve_cash,
             tx_cost_bps=tx_cost_bps,
             slippage_bps=slippage_bps,
+            universe_slots=1,
         )
     return _aggregate_portfolio_metrics(
         per_asset, label=label, backtest_start=backtest_start, backtest_end=backtest_end
@@ -639,6 +667,9 @@ def run_dsl_backtest_portfolio_variants(
                 initial_cash=sleeve_cash,
                 tx_cost_bps=tx_cost_bps,
                 slippage_bps=slippage_bps,
+                # Cash is already split N ways by sleeve_cash — same seam as
+                # run_dsl_backtest_portfolio.
+                universe_slots=1,
             )
             for sym, factory in feed_factories.items()
         }
