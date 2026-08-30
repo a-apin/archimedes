@@ -8,12 +8,13 @@
  */
 
 import { getAddress } from './config'
+import { EXECUTION_CHAIN_ID } from './chain-config'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
 function walletHeaders() {
   const address = getAddress()
-  return address ? { 'X-Wallet-Address': address, 'X-Wallet-Chain-Id': '5042002' } : {}
+  return address ? { 'X-Wallet-Address': address, 'X-Wallet-Chain-Id': String(EXECUTION_CHAIN_ID) } : {}
 }
 
 /**

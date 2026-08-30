@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from archimedes.chain.client import ChainEndpoint
 from archimedes.services.config_service import ConfigService
 
 
@@ -28,6 +29,14 @@ def _fake_settings() -> SimpleNamespace:
         synth_addresses={"sTSLA": "0xT", "sBTC": "0xB", "sNULL": ""},
         chain_id=5042002,
         arc_rpc_url="https://rpc.example",
+        # Two-chain endpoints (#1240), DERIVED from the single-chain values
+        # above rather than restated, so this fake cannot describe a split its
+        # own chain_id / arc_rpc_url do not support. Resolution and fallback
+        # rules are covered against real ChainSettings in
+        # backend/tests/chain/test_two_chain_config.py.
+        payments_chain=ChainEndpoint(chain_id=5042002, rpc_url="https://rpc.example", explicit=False),
+        execution_chain=ChainEndpoint(chain_id=5042002, rpc_url="https://rpc.example", explicit=False),
+        is_split_chain=False,
     )
 
 

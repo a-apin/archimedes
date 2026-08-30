@@ -47,6 +47,7 @@ this table mirrors them.
 | [`portfolio-constructor-decision-tree.md`](portfolio-constructor-decision-tree.md) | Accepted | 2026-05-22 | Önder Akkaya | Which portfolio constructor runs when |
 | [`k1-generation-external-rigor-gate.md`](k1-generation-external-rigor-gate.md) | Accepted | 2026-05-23 | Dan Browne | Why generation emits **K=1** winner + considered-rejects, with the rigor gate run **externally** |
 | [`aws-account-migration.md`](aws-account-migration.md) | Accepted | 2026-06-24 | Dan Browne | Why prod moved to Dan's own AWS account (`037613907429`/`us-east-1`) post-Agora |
+| [`generation-payment-credit-not-refund.md`](generation-payment-credit-not-refund.md) | Accepted | 2026-08-29 | Önder Akkaya | Why an undelivered generation is repaid as a **durable credit, never a refund**, and why the idempotency claim is taken before the money moves (#1441) |
 | [`glm-to-bedrock-llm-migration.md`](glm-to-bedrock-llm-migration.md) | Accepted | 2026-06-24 | Dan Browne | Why the live LLM moved from **GLM to AWS Bedrock** (Nova Micro default, Converse backend) (#717) |
 | [`non-custodial-vault-owner-agent.md`](non-custodial-vault-owner-agent.md) | Accepted | 2026-06-26 | Dan Browne | Why vaults separate **owner (withdrawal)** from **agent (rebalance-only)** so a compromised agent key can't drain (#731) |
 | [`portfolio-constructor-consolidation.md`](portfolio-constructor-consolidation.md) | Accepted | 2026-06-26 | Önder Akkaya | Why legacy constructors were retired and a **dual-signal** (regime × consensus) sizer activated (#131, #662) |

@@ -32,9 +32,23 @@ returns series can only ever support two of them:
     Archimedes never executes or uploads strategy code server-side (the
     README's hard boundary) — this endpoint accepts only numbers, on purpose.
 
-``passes`` is ``True`` iff no EVALUABLE check failed AND at least one check
-was evaluable — a request where every check is ``not_evaluable`` (e.g. a
-too-short series) must not report ``passes=True`` by vacuous truth.
+**The verdict is CAPPED, and ``passes`` is a quorum, not a majority (#1481).**
+Two of the four legs above are structurally ``not_evaluable`` on a bare
+series — always, for every request. So this endpoint can never reproduce the
+full passport gate, and a caller must not read ``passes`` as "cleared the
+rigor gate."
+
+``passes`` is ``True`` iff **every RUNNABLE leg actually ran and passed** —
+that is, both DSR and OOS consistency. Computing it over "whichever legs
+happened to be evaluable" is the #1481 defect: OOS needs ~70 bars while DSR
+needs only 4, so a 4-bar series had exactly one evaluable leg and returned
+``passes=True`` on one leg of four. The zero-evaluable case was already
+guarded ("vacuous truth is not honesty"); the one-evaluable case was not.
+
+``legs_evaluated`` / ``legs_runnable`` / ``legs_total`` and
+``verdict_capped`` are on the response so ``passes`` is qualifiable by a
+consumer without re-deriving the leg statuses itself. ``legs_total`` is the
+real gate's four; ``legs_runnable`` is the two this transport can support.
 
 Account-session-gated (Better Auth) + rate-limited ``5/minute`` per the issue
 spec, mirroring ``paper_routes.py`` / ``selection_bias_routes.py`` style.
@@ -58,6 +72,16 @@ from archimedes.services.rigor_evaluator import (
 from archimedes.services.rigor_profiles import DSR_P_FLOOR, OOS_ABS_FLOOR
 
 rigor_verify_router = APIRouter(prefix="/api/rigor", tags=["rigor"])
+
+# Legs that can ever be evaluated against a bare return series. PBO needs a
+# selection set and the look-ahead audit needs inspectable source; neither
+# exists on this transport, so both are structurally not_evaluable on every
+# request (see the module docstring's honesty contract). `passes` is a quorum
+# over RUNNABLE legs — never over "whichever legs happened to be evaluable",
+# which is what let a 4-bar series pass on one leg of four (#1481).
+_RUNNABLE_LEGS: tuple[str, ...] = ("dsr", "oos_consistency")
+_STRUCTURALLY_NOT_RUN_LEGS: tuple[str, ...] = ("pbo", "look_ahead")
+_LEGS_TOTAL = len(_RUNNABLE_LEGS) + len(_STRUCTURALLY_NOT_RUN_LEGS)
 
 CheckStatus = Literal["pass", "fail", "not_evaluable"]
 
@@ -109,6 +133,13 @@ class RigorVerifyResponse(BaseModel):
     trials: int
     self_attested: bool = True
     n_bars: int
+    # #1481: `passes` alone overstated the evidence. These make the scalar
+    # qualifiable without the caller re-deriving leg statuses.
+    legs_evaluated: int
+    legs_runnable: int
+    legs_total: int
+    legs_not_run: list[str]
+    verdict_capped: bool
     dsr: DsrCheckResult
     pbo: RigorCheck
     oos_consistency: OosConsistencyResult
@@ -199,15 +230,35 @@ async def verify_rigor(
     pbo_check = RigorCheck(status="not_evaluable", reason=_PBO_NOT_EVALUABLE_REASON)
     look_ahead_check = RigorCheck(status="not_evaluable", reason=_LOOK_AHEAD_NOT_EVALUABLE_REASON)
 
-    statuses = [dsr_check.status, pbo_check.status, oos_check.status, look_ahead_check.status]
-    evaluable = [s for s in statuses if s != "not_evaluable"]
-    passes = bool(evaluable) and all(s == "pass" for s in evaluable)
+    leg_status = {
+        "dsr": dsr_check.status,
+        "pbo": pbo_check.status,
+        "oos_consistency": oos_check.status,
+        "look_ahead": look_ahead_check.status,
+    }
+    runnable_statuses = [leg_status[leg] for leg in _RUNNABLE_LEGS]
+    legs_evaluated = sum(1 for st in runnable_statuses if st != "not_evaluable")
+
+    # QUORUM over runnable legs, not "all evaluable legs" (#1481). Every
+    # runnable leg must actually have run AND passed. A partially-evaluated
+    # series (DSR at 4 bars, OOS still short) is not a pass — it is an
+    # incomplete evaluation, and `passes` must not launder it into a verdict.
+    passes = legs_evaluated == len(_RUNNABLE_LEGS) and all(st == "pass" for st in runnable_statuses)
+
+    legs_not_run = [leg for leg, st in leg_status.items() if st == "not_evaluable"]
 
     return RigorVerifyResponse(
         passes=passes,
         trials=body.trials,
         self_attested=True,
         n_bars=len(daily_returns),
+        legs_evaluated=legs_evaluated,
+        legs_runnable=len(_RUNNABLE_LEGS),
+        legs_total=_LEGS_TOTAL,
+        legs_not_run=legs_not_run,
+        # Always true on this transport: PBO and look-ahead can never run
+        # here, so the verdict can never stand in for the passport gate.
+        verdict_capped=True,
         dsr=dsr_check,
         pbo=pbo_check,
         oos_consistency=oos_check,

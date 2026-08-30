@@ -314,10 +314,18 @@ in JSX where live endpoints exist (`/health`, `/api/config/contracts`, `/api/exp
 
 One item on that staleness list was corrected in the *wrong direction*. The "keyword/TF-IDF
 today" entry was rewritten to present MiniLM reranking as a standing property of the corpus,
-on the strength of `/health`'s `corpus_embedded` field. That field describes the process, not
-the corpus: it is `paper_rag == "live"`, i.e. whether sentence-transformers loaded in *this*
+on the strength of `/health`'s `corpus_embedded` field. That field described the process, not
+the corpus: it was `paper_rag == "live"`, i.e. whether sentence-transformers loaded in *this*
 worker. The stored corpus is text either way, and prod serves the lexical path. #778 carries
 the correction; `backend/tests/test_corpus_claim_integrity.py` pins it.
+
+The field itself was the remaining hazard and is gone (#1488). `/health` now publishes
+`paper_rerank_model_live` for the process-local fact and `corpus_embedded_at_rest` for the
+corpus one, the latter derived from the ORM schema rather than declared, alongside
+`rerank_candidate_cap` — the number of keyword candidates that actually reach the model.
+`backend/tests/test_corpus_embedding_claims.py` fails if any `/health` field would let a
+reader infer stored vectors from its name alone, and fails again if a stored-vector column
+appears without the field being rewired to count it.
 
 ## 11. Stack at a glance
 

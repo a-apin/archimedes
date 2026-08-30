@@ -28,6 +28,28 @@ export const GENERATION_QUOTE_ENABLED =
 export const ROADMAP_SURFACES_ENABLED =
 	import.meta.env?.VITE_ROADMAP_SURFACES === "true";
 
+// Gates the Topic Clusters (knowledge-graph) tab inside /app/corpus (#1406).
+//
+// Deliberately NOT a ROADMAP_PAGES entry, and not routed through
+// featureEnabled(): those gate *pages* — ids that resolve through the router
+// as /app/<page> — and this is one entry in CorpusExplorer.jsx's local TABS
+// array inside the single /app/corpus page. featureEnabled('knowledge-graph')
+// would silently no-op, hiding nothing.
+//
+// It is also a different KIND of gate. ROADMAP_SURFACES_ENABLED means "out of
+// scope for the MVP"; this tab is in scope and simply has no data yet —
+// kg_entities/kg_relations are 0 rows until #1090 produces a KB pipeline
+// artifact and #1092 backfills Postgres from it. Folding it into the roadmap
+// umbrella would mean previewing vaults also reveals an empty Topic Clusters
+// tab, and that when the data lands the fix is deleting a ROADMAP_PAGES entry
+// rather than flipping a flag.
+//
+// Off by default (the ROADMAP_SURFACES_ENABLED convention). Set
+// VITE_KNOWLEDGE_GRAPH_TAB=true to preview it; CorpusKG.jsx's /health-branched
+// zero-state (#1392) stays the honest fallback for anyone who does.
+export const KNOWLEDGE_GRAPH_TAB_ENABLED =
+	import.meta.env?.VITE_KNOWLEDGE_GRAPH_TAB === "true";
+
 // Page ids the flag hides. Consumed by routes.js featureEnabled() — the
 // single gate for nav visibility, flat routes, and deep links alike — plus
 // the two spots routing can't reach: the Breadcrumbs mid-crumb and in-page

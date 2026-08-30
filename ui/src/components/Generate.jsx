@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import GenerationStream from "./GenerationStream";
 import GenerationStatus from "./GenerationStatus";
 import ModelCostPanel from "./ModelCostPanel";
@@ -8,7 +8,8 @@ import { apiGet, apiPostWithMeta } from "../api";
 import { getAddress } from "../config";
 import { listLinkedWallets } from "../linked-wallets";
 import { GENERATION_QUOTE_ENABLED } from "../featureFlags";
-import { depositToGateway, getGatewayBalance, parseUsdcAmount, signGatewayPayment, walletSupportsPayment } from "../x402";
+import { depositToGateway, getGatewayBalance, parseUsdcAmount, paymentPayerAddress, paymentWalletKind, signGatewayPayment, walletSupportsPayment } from "../x402";
+import { ensureSessionLinked, getOrCreateSessionAccount } from "../payment-session";
 import {
 	DEPTH_OPTIONS,
 	PAYMENT_STATUS,
@@ -74,6 +75,10 @@ const ENGINE_C_ASSET_CAP = 6;
 // logic and the x402 wire-format parsing/building live in
 // ../generateQuote.js so they're unit-testable without a DOM or a wallet.
 
+// "$2.000000" reads like a debug dump — show money as money ("$2.00").
+// Server strings stay authoritative; this only trims display precision.
+const fmtUsd = (p) => (typeof p === "string" ? p.replace(/^(\$\d+\.\d{2})\d*$/, "$1") : p);
+
 const RISK_PROFILES = [
 	{ id: "fixed_income", label: "Fixed income" },
 	{ id: "conservative", label: "Conservative" },
@@ -137,6 +142,12 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// option) — see ../generateQuote.js's derivePaymentRequirements. Null
 	// until a 402 lands.
 	const [paymentRequirements, setPaymentRequirements] = useState(null);
+	// When the active requirements were parsed. WebKit refuses a WebAuthn
+	// ceremony after any await chain, so the pay tap must sign with HELD
+	// requirements, not refetched ones — this timestamp bounds how old a
+	// held set may be before we refetch anyway (the server window is 7
+	// days, #1452; the cap only guards a config change under an idle tab).
+	const [paymentRequirementsAt, setPaymentRequirementsAt] = useState(0);
 	// The 402 body's OWN quote ({price, asset, chain, dry_run, ...}) —
 	// captured independently of the upfront GET /api/generate/quote fetch so
 	// the payment step can show a price even when GENERATION_QUOTE_ENABLED
@@ -145,11 +156,9 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// Gateway balance (raw base-unit bigint) for the connected wallet against
 	// the active requirement's asset. Null while unknown/checking.
 	const [gatewayBalance, setGatewayBalance] = useState(null);
-	const [checkingBalance, setCheckingBalance] = useState(false);
 	// The approve+deposit funding flow — one faucet drip (20 USDC) funds
 	// exactly 10 generations at the $2.00 default price, hence the default.
 	const [depositAmount, setDepositAmount] = useState("20.00");
-	const [depositStep, setDepositStep] = useState("idle"); // idle | approving | approved | depositing | deposited | error
 	const [depositError, setDepositError] = useState("");
 	const [paying, setPaying] = useState(false);
 	// True only right after a /start retry succeeded WITHOUT a PAYMENT-RESPONSE
@@ -245,30 +254,44 @@ export default function Generate({ onNavigate, onStageChange }) {
 			return null;
 		}
 	}, [paymentRequirements]);
-	const needsDeposit =
-		requiredAmountRaw != null && gatewayBalance != null && gatewayBalance < requiredAmountRaw;
-
 	// Fetch the connected wallet's Gateway balance once a payable requirement
 	// is active and the payer is unambiguous (connected + linked agree).
 	useEffect(() => {
 		const requirements = paymentRequirements?.requirements;
-		if (!requirements || !walletAddr || payerMismatch) {
+		// The balance that matters is the PAYER's: the connected wallet for
+		// EOA kinds, the device payment key for the passkey kind (null until
+		// the first payment creates one — the deposit disclosure then shows).
+		const payer = paymentPayerAddress();
+		if (!requirements || !walletAddr || !payer || payerMismatch) {
 			setGatewayBalance(null);
 			return;
 		}
 		let cancelled = false;
-		setCheckingBalance(true);
-		getGatewayBalance(requirements, walletAddr)
+		getGatewayBalance(requirements, payer)
 			.then((bal) => {
 				if (!cancelled) setGatewayBalance(bal);
 			})
-			.finally(() => {
-				if (!cancelled) setCheckingBalance(false);
+			.catch(() => {
+				if (!cancelled) setGatewayBalance(null);
 			});
 		return () => {
 			cancelled = true;
 		};
 	}, [paymentRequirements, walletAddr, payerMismatch]);
+
+	// True exactly when the payment panel renders its own pay button — the
+	// main submit button hides then, so precisely ONE button is on screen
+	// (Dan's 2026-08-21 field report: "Pay & generate" next to "Approve &
+	// Generate" is redundant and confusing). Every other panel branch keeps
+	// the main button as the retry control after the user fixes the
+	// connect/link condition it describes.
+	const payPanelReady =
+		(paymentStatus === PAYMENT_STATUS.DRY_RUN ||
+			paymentStatus === PAYMENT_STATUS.LIVE_UNAVAILABLE) &&
+		!paymentRequirements?.error &&
+		!!walletAddr &&
+		!payerMismatch &&
+		walletSupportsPayment();
 
 	// ── Build the /start request body. No payment field on it anywhere —
 	// the ratified contract (#1296) gates entirely via status codes/headers,
@@ -284,21 +307,46 @@ export default function Generate({ onNavigate, onStageChange }) {
 		...(selectedModel ? { model: selectedModel } : {}),
 	});
 
+	// One idempotency key per payment ATTEMPT, reused across every /start call
+	// inside that attempt (the bare 402 probe, the signed retry, and any user
+	// re-click after an ambiguous failure) and regenerated only after a job is
+	// actually accepted. The backend's generation-credit ledger (#1498) dedups
+	// duplicate charges ONLY when this header is present — the 2026-08-30
+	// external review paid twice precisely because the frontend never sent it:
+	// each re-click signed a fresh EIP-3009 nonce, which settles as a brand-new
+	// payment (generation_credit.py's own docstring calls this out).
+	const paymentAttemptKeyRef = useRef(null);
+	const paymentAttemptKey = () => {
+		if (!paymentAttemptKeyRef.current) {
+			paymentAttemptKeyRef.current = crypto.randomUUID();
+		}
+		return paymentAttemptKeyRef.current;
+	};
+
 	// POST /start, optionally with a Payment-Signature header, and surface
 	// whatever the response carries (job id + PAYMENT-RESPONSE if present).
 	// Returns the receipt too (not just via the `receipt` state setter) so a
 	// caller mid-async-flow (handlePay) can branch on it immediately rather
 	// than reading stale state before the next render.
 	const submitStart = async (extraHeaders) => {
-		const { data, headers } = await apiPostWithMeta(
-			"/api/generate/start",
-			buildBrief(),
-			extraHeaders,
-		);
+		const { data, headers } = await apiPostWithMeta("/api/generate/start", buildBrief(), {
+			"Idempotency-Key": paymentAttemptKey(),
+			...extraHeaders,
+		});
 		setLastJobId(data.job_id);
 		const settledReceipt = extractReceipt(headers);
 		setReceipt(settledReceipt);
 		return { data, receipt: settledReceipt };
+	};
+
+	// A job was ACCEPTED (202): consume the attempt key so the next generation
+	// is a genuinely new attempt, and take the user straight into the running
+	// job's stream. Before this, a successful payment quietly re-armed the
+	// "Approve & Generate" button beside a small receipt line — which reads
+	// exactly like a failed payment, and is how the double-pay happened.
+	const enterStartedJob = (data) => {
+		paymentAttemptKeyRef.current = null;
+		if (data?.job_id) setDrillInJobId(data.job_id);
 	};
 
 	// Reset every payment-step-local piece of state — shared by a fresh
@@ -308,9 +356,9 @@ export default function Generate({ onNavigate, onStageChange }) {
 		setPaymentStatus(PAYMENT_STATUS.NONE);
 		setPaymentMessage("");
 		setPaymentRequirements(null);
+		setPaymentRequirementsAt(0);
 		setPaywallQuoteRaw(null);
 		setGatewayBalance(null);
-		setDepositStep("idle");
 		setDepositError("");
 		setNoSettlementNotice(false);
 	};
@@ -330,20 +378,29 @@ export default function Generate({ onNavigate, onStageChange }) {
 		resetPaymentStepState();
 		setReceipt(null);
 		try {
-			await submitStart();
+			const { data } = await submitStart();
 			// Re-quote for the next generation — flat pricing has nothing to
 			// consume, but the flag/dry_run/recipient could change underneath.
 			if (GENERATION_QUOTE_ENABLED) fetchQuote();
-			// Stay on the page — the job table will show the new row.
+			// Straight into the running job's stream — "stay on the page and
+			// find the new table row" read as a failed start (2026-08-30
+			// external review), and the stream IS the product moment.
+			enterStartedJob(data);
 		} catch (e) {
 			const dryRun = e?.detail?.quote?.dry_run ?? quote?.dry_run;
 			const state = derivePaymentState(e, dryRun);
 			if (state !== PAYMENT_STATUS.NONE) {
 				setPaymentStatus(state);
-				setPaymentMessage(paymentErrorMessage(e));
 				setPaywallQuoteRaw(e?.detail?.quote ?? null);
 				if (state === PAYMENT_STATUS.DRY_RUN || state === PAYMENT_STATUS.LIVE_UNAVAILABLE) {
+					// The 402 detail.message is agent/curl guidance ("Sign the
+					// PAYMENT-REQUIRED requirements…") — the interactive panel below
+					// IS the human version of that instruction; rendering both was
+					// pure noise (Dan's 2026-08-21 field report).
 					setPaymentRequirements(derivePaymentRequirements(extractPaymentRequiredHeader(e.headers)));
+					setPaymentRequirementsAt(Date.now());
+				} else {
+					setPaymentMessage(paymentErrorMessage(e));
 				}
 			} else {
 				setStartError(startErrorMessage(e, "Failed to start generation"));
@@ -353,56 +410,203 @@ export default function Generate({ onNavigate, onStageChange }) {
 		}
 	};
 
-	// ── Real payment: fund the Gateway balance (approve + deposit) ──
-	const handleDeposit = async () => {
-		const requirements = paymentRequirements?.requirements;
-		if (!requirements) return;
-		setDepositError("");
-		try {
-			const amountRaw = parseUsdcAmount(depositAmount);
-			await depositToGateway(requirements, amountRaw, setDepositStep);
-			const bal = await getGatewayBalance(requirements, walletAddr);
-			setGatewayBalance(bal);
-		} catch (err) {
-			setDepositStep("error");
-			setDepositError(err.shortMessage || err.message || "Deposit failed — try again.");
-		}
-	};
+	// One-click pay step ("idle" | "refreshing" | "approving" | "depositing"
+	// | "signing" | "starting" | "confirm") — drives the single button's
+	// label so the user watches ONE control narrate the whole flow instead
+	// of juggling a deposit button and a pay button (Dan's 2026-08-21 field
+	// report: "redundant, confusing" — this is the fix). "confirm" = a
+	// signature is ready to be requested but the browser needs a fresh tap
+	// to open the prompt (WebKit activation rules, or the user cancelled).
+	const [payStep, setPayStep] = useState("idle");
 
-	// ── Real payment: sign the EIP-712 authorization and retry /start ──
-	// Reaching this point means: a 402 landed, requirements parsed, the
-	// connected wallet equals the linked wallet (no payerMismatch), and the
-	// Gateway balance already covers the amount. If the response carries a
-	// PAYMENT-RESPONSE settlement receipt, submitStart's `receipt` state
-	// surfaces it; if it doesn't (PAYMENTS_DRY_RUN), the honest
-	// "accepted without settlement" notice renders instead — this UI never
-	// claims a payment succeeded without a receipt.
-	const handlePay = async () => {
-		const requirements = paymentRequirements?.requirements;
-		if (!requirements) return;
-		setPaying(true);
-		setPaymentMessage("");
+	// Re-fetch a FRESH 402 at click time. Requirements parsed from an earlier
+	// 402 rot in page state: the signed authorization's validity window is
+	// computed from them at signing time, so a tab left open across a server
+	// config change signs yesterday's window — the exact
+	// authorization_validity_too_short failure Dan hit in two browsers whose
+	// tabs predated the 7-day-window deploy. Returns null when the submit
+	// succeeded outright (paywall off), else the freshly parsed requirements.
+	const refreshPaymentRequirements = async () => {
 		try {
-			const header = await signGatewayPayment({
-				requirements,
-				resource: paymentRequirements.resource,
-				x402Version: paymentRequirements.x402Version,
-				payerAddress: walletAddr,
-			});
-			const { receipt: settledReceipt } = await submitStart({ "Payment-Signature": header });
+			const { receipt: settledReceipt } = await submitStart();
 			resetPaymentStepState();
 			setNoSettlementNotice(!settledReceipt);
 			if (GENERATION_QUOTE_ENABLED) fetchQuote();
+			return null;
 		} catch (e) {
-			// Surface the wallet/backend's OWN words — a generic "failed" here
-			// cost a full manual test cycle per wallet (#1298 field report).
-			setPaymentMessage(
-				paymentErrorMessage(e, e?.shortMessage || e?.message || "Payment failed — try again."),
-			);
-		} finally {
-			setPaying(false);
+			const fresh = derivePaymentRequirements(extractPaymentRequiredHeader(e.headers));
+			if (!fresh?.requirements) throw e;
+			setPaymentRequirements(fresh);
+			setPaymentRequirementsAt(Date.now());
+			setPaywallQuoteRaw(e?.detail?.quote ?? null);
+			return fresh;
 		}
 	};
+
+	// True when the browser refused to OPEN the signing prompt because the
+	// tap's transient user activation was already consumed by earlier awaits
+	// (ox Authentication.SignFailedError, surfaced verbatim as "Failed to
+	// request credential." in Dan's 2026-08-21 field test — the deposit
+	// prompt, close to the tap, succeeded; the payment prompt after the
+	// deposit's confirmation wait was refused every time, iPad and Mac
+	// alike). Not a wallet failure: the fix is a fresh tap that reaches the
+	// ceremony first.
+	const isActivationRefusal = (e) =>
+		e?.name === "Authentication.SignFailedError" ||
+		/failed to request credential/i.test(e?.message || "") ||
+		/failed to request credential/i.test(e?.cause?.message || "");
+
+	// Requirements already held in page state are signable without a
+	// click-time refetch while younger than this — the refetch was #1459's
+	// staleness guard, but awaiting it before the signature is exactly what
+	// kills the WebAuthn ceremony on WebKit. 10 minutes is far inside the
+	// 7-day validity window (#1452) while still bounding how long a server
+	// config change can sit unnoticed under an idle tab.
+	const REQUIREMENTS_FRESH_MS = 10 * 60 * 1000;
+	const heldSignableRequirements = () => {
+		const held = paymentRequirements;
+		if (!held?.requirements) return null;
+		if (Date.now() - paymentRequirementsAt > REQUIREMENTS_FRESH_MS) return null;
+		return held;
+	};
+
+	const finishStart = async (header) => {
+		setPayStep("starting");
+		const { data, receipt: settledReceipt } = await submitStart({ "Payment-Signature": header });
+		resetPaymentStepState();
+		setNoSettlementNotice(!settledReceipt);
+		if (GENERATION_QUOTE_ENABLED) fetchQuote();
+		enterStartedJob(data);
+	};
+
+	// ── One tap when funded: the signing ceremony runs FIRST, inside the
+	// tap's activation, against held requirements and the held balance.
+	// Deposit-needed taps run refetch → deposit (its prompt is close enough
+	// to the tap to survive), then TRY to finish; a browser that refuses
+	// the second ceremony arms payStep "confirm" so the next tap gives the
+	// payment signature its own activation. ──
+	const handlePayAndGenerate = async () => {
+		setPaying(true);
+		setPaymentMessage("");
+		setDepositError("");
+		try {
+			// ── Passkey path: the device payment key does everything. ──
+			// No WebAuthn ceremony is involved in SIGNING (local ECDSA key),
+			// so there is no user-activation ordering constraint here — the
+			// only prompt is the funding user-op, and only when the key's
+			// balance is short. See ../payment-session.js for why this rail
+			// exists (Circle's facilitator verifies EOA signatures only).
+			if (paymentWalletKind() === "circle") {
+				setPayStep("refreshing");
+				const fresh = heldSignableRequirements() ?? (await refreshPaymentRequirements());
+				if (!fresh) return; // started without payment (paywall off)
+				const req = fresh.requirements;
+				const need = BigInt(req.amount);
+				const session = getOrCreateSessionAccount(walletAddr);
+				await ensureSessionLinked(session);
+				let bal = await getGatewayBalance(req, session.address);
+				if (bal == null || bal < need) {
+					const amountRaw = parseUsdcAmount(depositAmount || "20.00");
+					if (amountRaw < need) {
+						throw new Error("Deposit amount must at least cover the generation price.");
+					}
+					await depositToGateway(req, amountRaw, (step) =>
+						setPayStep(step === "approving" ? "approving" : "depositing"),
+					);
+					bal = await getGatewayBalance(req, session.address);
+					setGatewayBalance(bal);
+				}
+				setPayStep("signing");
+				const header = await signGatewayPayment({
+					requirements: req,
+					resource: fresh.resource,
+					x402Version: fresh.x402Version,
+					payerAddress: session.address,
+				});
+				setPayStep("starting");
+				const { data, receipt: settledReceipt } = await submitStart({
+					"Payment-Signature": header,
+					// The paywall binds authorization.from to a LINKED wallet
+					// resolved from this header — it must name the payment
+					// key, not the connected passkey account.
+					"X-Wallet-Address": session.address,
+				});
+				resetPaymentStepState();
+				setNoSettlementNotice(!settledReceipt);
+				if (GENERATION_QUOTE_ENABLED) fetchQuote();
+				enterStartedJob(data);
+				return;
+			}
+
+			const held = heldSignableRequirements();
+			const funded =
+				held != null &&
+				requiredAmountRaw != null &&
+				gatewayBalance != null &&
+				gatewayBalance >= requiredAmountRaw;
+			if (funded) {
+				// NOTHING may be awaited between the tap and this call.
+				setPayStep("signing");
+				const header = await signGatewayPayment({
+					requirements: held.requirements,
+					resource: held.resource,
+					x402Version: held.x402Version,
+					payerAddress: walletAddr,
+				});
+				await finishStart(header);
+				return;
+			}
+			setPayStep("refreshing");
+			const fresh = held ?? (await refreshPaymentRequirements());
+			if (!fresh) return; // started without payment (paywall off)
+			const req = fresh.requirements;
+			const need = BigInt(req.amount);
+			let bal = await getGatewayBalance(req, walletAddr);
+			if (bal == null || bal < need) {
+				const amountRaw = parseUsdcAmount(depositAmount || "20.00");
+				if (amountRaw < need) {
+					throw new Error("Deposit amount must at least cover the generation price.");
+				}
+				await depositToGateway(req, amountRaw, (step) =>
+					setPayStep(step === "approving" ? "approving" : "depositing"),
+				);
+				bal = await getGatewayBalance(req, walletAddr);
+				setGatewayBalance(bal);
+			}
+			setPayStep("signing");
+			let header;
+			try {
+				header = await signGatewayPayment({
+					requirements: req,
+					resource: fresh.resource,
+					x402Version: fresh.x402Version,
+					payerAddress: walletAddr,
+				});
+			} catch (e) {
+				if (isActivationRefusal(e)) {
+					// Deposit landed; the browser just needs a fresh tap for
+					// the payment prompt. Not an error state.
+					setPayStep("confirm");
+					return;
+				}
+				throw e;
+			}
+			await finishStart(header);
+		} catch (e) {
+			if (isActivationRefusal(e)) {
+				setPayStep("confirm");
+			} else {
+				setPaymentMessage(
+					paymentErrorMessage(e, e?.shortMessage || e?.message || "Payment failed — try again."),
+				);
+			}
+		} finally {
+			setPaying(false);
+			setPayStep((s) => (s === "confirm" ? s : "idle"));
+		}
+	};
+
+
 
 	// ── Apply an example brief ──
 	const applyExample = (ex) => {
@@ -906,41 +1110,76 @@ export default function Generate({ onNavigate, onStageChange }) {
 											Connect wallet →
 										</button>
 									</div>
-								) : checkingBalance ? (
-									<p className="caption mb-0" style={{ marginTop: 6 }}>
-										Checking your Gateway balance…
-									</p>
-								) : needsDeposit ? (
+								) : (
 									<div style={{ marginTop: 6 }}>
 										<p className="caption mb-1">
-											Your Circle Gateway balance is below the {effectiveQuoteView?.price ?? "generation"}{" "}
-											price. Two on-chain steps fund it: approve USDC, then deposit into
-											your Gateway balance. A default of 20.00 USDC funds exactly 10 ×
-											$2.00 generations from one faucet drip.
+											{paymentWalletKind() === "circle" ? (
+												// Passkey wallets pay through a device payment key
+												// (see ../payment-session.js): Circle's nanopayments
+												// rail verifies EOA signatures only, so the passkey
+												// account funds a local key once and that key signs
+												// each payment silently. Copy states the custody
+												// bound plainly — the key lives in this browser and
+												// only ever controls its own deposited balance.
+												<>
+													Payments run from a device payment key your passkey
+													wallet funds — one passkey approval to set it up,
+													then each generation settles with no prompts. The
+													key stays in this browser and only controls its own
+													deposited balance.
+													{gatewayBalance != null && (
+														<> Payment balance: ${(Number(gatewayBalance) / 1e6).toFixed(2)}.</>
+													)}
+												</>
+											) : (
+												<>
+													Payments run from your Circle Gateway balance — a one-time
+													deposit covers many generations; each one is then a single
+													wallet signature.
+													{gatewayBalance != null && (
+														<> Your balance: ${(Number(gatewayBalance) / 1e6).toFixed(2)}.</>
+													)}
+												</>
+											)}
 										</p>
-										<input
-											type="text"
-											value={depositAmount}
-											onChange={(e) => setDepositAmount(e.target.value)}
-											aria-label="Deposit amount (USDC)"
-											className="chat-input"
-											style={{ width: 110, marginRight: 8 }}
-											disabled={depositStep === "approving" || depositStep === "depositing"}
-										/>
 										<button
 											type="button"
-											className="btn btn-outline btn-sm"
-											onClick={handleDeposit}
-											disabled={depositStep === "approving" || depositStep === "depositing"}
+											className="btn btn-primary btn-sm"
+											onClick={handlePayAndGenerate}
+											disabled={paying}
 										>
-											{depositStep === "approving"
-												? "Approving USDC…"
-												: depositStep === "depositing"
-													? "Depositing…"
-													: depositStep === "deposited"
-														? "Deposited ✓"
-														: "Approve & deposit →"}
+											{payStep === "refreshing"
+												? "Checking price…"
+												: payStep === "approving"
+													? "Approve USDC in your wallet…"
+													: payStep === "depositing"
+														? "Depositing into Gateway…"
+														: payStep === "signing"
+															? "Sign the payment in your wallet…"
+															: payStep === "starting"
+																? "Starting generation…"
+																: payStep === "confirm"
+																	? `Tap to approve the ${fmtUsd(effectiveQuoteView?.price) ?? ""} payment →`
+																	: `Pay ${fmtUsd(effectiveQuoteView?.price) ?? ""} & generate →`}
 										</button>
+										{(gatewayBalance == null ||
+											(requiredAmountRaw != null && gatewayBalance < requiredAmountRaw)) && (
+											<details style={{ marginTop: 6 }}>
+												<summary className="caption" style={{ cursor: "pointer" }}>
+													First payment? A one-time deposit of {depositAmount || "20.00"}{" "}
+													USDC is included automatically (covers ~10 generations — edit)
+												</summary>
+												<input
+													type="text"
+													value={depositAmount}
+													onChange={(e) => setDepositAmount(e.target.value)}
+													aria-label="Deposit amount (USDC)"
+													className="chat-input"
+													style={{ width: 110, marginTop: 6 }}
+													disabled={paying}
+												/>
+											</details>
+										)}
 										{depositError && (
 											<p
 												className="caption"
@@ -950,16 +1189,6 @@ export default function Generate({ onNavigate, onStageChange }) {
 											</p>
 										)}
 									</div>
-								) : (
-									<button
-										type="button"
-										className="btn btn-primary btn-sm"
-										onClick={handlePay}
-										disabled={paying}
-										style={{ marginTop: 6 }}
-									>
-										{paying ? "Signing & paying…" : `Pay ${effectiveQuoteView?.price ?? ""} & generate →`}
-									</button>
 								)}
 								{paymentMessage && (
 									<p className="caption mb-0" style={{ marginTop: 6 }}>
@@ -989,20 +1218,22 @@ export default function Generate({ onNavigate, onStageChange }) {
 							<div />
 						)}
 						</div>
-						<button
-							className="btn btn-primary"
-							onClick={startJob}
-							disabled={starting || !intent.trim() || !quoteReady}
-							aria-describedby={
-								!intent.trim() ? "generate-submit-hint" : undefined
-							}
-						>
-							{starting
-								? "Starting…"
-								: GENERATION_QUOTE_ENABLED
-									? "Approve & Generate →"
-									: "Generate →"}
-						</button>
+						{!payPanelReady && (
+							<button
+								className="btn btn-primary"
+								onClick={startJob}
+								disabled={starting || !intent.trim() || !quoteReady}
+								aria-describedby={
+									!intent.trim() ? "generate-submit-hint" : undefined
+								}
+							>
+								{starting
+									? "Starting…"
+									: GENERATION_QUOTE_ENABLED
+										? "Approve & Generate →"
+										: "Generate →"}
+							</button>
+						)}
 					</div>
 					{/* The submit button is disabled until a brief exists; state the
 					    cause rather than leaving the form looking stuck (3.3.1). */}
