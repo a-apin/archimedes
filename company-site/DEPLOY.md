@@ -8,23 +8,33 @@ this directory — no build step, no dependency install.
 Preferred because the `aprin.ai` Route 53 hosted zone will already exist once the domain
 finishes registering, so an ALIAS record is a two-minute step, not a new zone.
 
+**This option is now implemented as Terraform in `company-site/infra/main.tf`** — that is
+the path to use: `cd company-site/infra && terraform init && terraform apply`, then
+`aws s3 sync` the page up and invalidate. The raw `aws` CLI recipe below is kept as the
+fallback (and as a plain-English description of what the Terraform creates) for anyone who
+would rather click through it once than adopt a state file.
+
+`terraform plan` requires the `aprin.ai` hosted zone to already exist in account
+`037613907429` — `main.tf` reads it with `data "aws_route53_zone"`, so a plan run before
+the zone is there fails on the data source rather than on anything you wrote.
+
 **Owner-executed — this is infra spend on Dan's AWS account.** Exact steps once the zone
 is live:
 
 ```bash
 # 1. Create a private bucket (CloudFront reads it via Origin Access Control —
 #    the bucket itself is never public)
-aws s3 mb s3://aprin-ai-site --region us-east-1
+aws s3 mb s3://aprin-ai-site-037613907429 --region us-east-1
 
 # 2. Upload the site
-aws s3 cp company-site/index.html s3://aprin-ai-site/index.html
+aws s3 cp company-site/index.html s3://aprin-ai-site-037613907429/index.html
 
 # 3. Request an ACM certificate in us-east-1 — CloudFront requires the cert to
 #    live in us-east-1 regardless of where the bucket is
 aws acm request-certificate --domain-name aprin.ai --validation-method DNS --region us-east-1
 
 # 4. Create the CloudFront distribution
-#    - Origin: aprin-ai-site.s3.us-east-1.amazonaws.com, via Origin Access Control
+#    - Origin: aprin-ai-site-037613907429.s3.us-east-1.amazonaws.com, via Origin Access Control
 #    - Default root object: index.html
 #    - Alternate domain name (CNAME): aprin.ai
 #    - Attach the ACM certificate from step 3

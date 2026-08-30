@@ -20,6 +20,13 @@ chosen) and deployed on its own.
   static host and it works unmodified.
 - `DEPLOY.md` — the three hosting options considered, with exact steps for the preferred
   one (S3 + CloudFront + Route 53).
+- `infra/main.tf` — Terraform implementing that preferred option: a private S3 bucket
+  (`aprin-ai-site-037613907429`) read through CloudFront Origin Access Control, an ACM
+  cert, and the Route 53 alias records, with state in the shared
+  `archimedes-tfstate-037613907429` bucket under its own key. It stands up **billable AWS
+  resources on the production account** — CloudFront, ACM/Route 53 queries, S3 storage —
+  so `plan`/`apply` are owner-executed, never CI. Nothing in this repo applies it
+  automatically.
 
 ## Drop-in / extraction steps
 

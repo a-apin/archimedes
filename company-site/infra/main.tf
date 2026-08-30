@@ -117,15 +117,19 @@ resource "aws_cloudfront_distribution" "site" {
     cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
   }
 
-  # Single-page site: unknown paths render the page rather than an XML error.
+  # Single-page site: unknown paths render the page instead of S3's XML error, but they
+  # stay 404s. This is a one-pager, not an SPA with client-side routing — a typo'd path
+  # is genuinely not found, and answering 200 would lie to crawlers and link checkers.
+  # (S3 + OAC returns 403, not 404, for a missing key because ListBucket isn't granted,
+  # so both codes map to the same page.)
   custom_error_response {
     error_code         = 403
-    response_code      = 200
+    response_code      = 404
     response_page_path = "/index.html"
   }
   custom_error_response {
     error_code         = 404
-    response_code      = 200
+    response_code      = 404
     response_page_path = "/index.html"
   }
 
