@@ -8,12 +8,20 @@ real charges without a redeploy. These tests exercise ``_charge_one``
 directly rather than the full ``tick()`` pipeline (see
 ``test_per_step_charging.py`` / ``test_service_tick.py`` for that) since the
 halt check is a narrow, self-contained gate.
+
+The second half of the file is not about the tick rail at all: it is the
+structural guard that no NEW circlekit call site can escape the switch, plus
+the ``payments.charge`` backstop underneath ``_charge_one``. See the banner
+comment above ``_READ_ONLY_CIRCLEKIT`` for why per-site tests were not enough.
 """
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import archimedes
 import pytest
 from archimedes.marketplace.service import MarketService, Publisher, Subscriber
 from archimedes.marketplace.tick_registry import TickStep
@@ -113,3 +121,129 @@ async def test_payments_halt_false_reaches_the_real_charge_path(monkeypatch):
     assert paid is False
     assert override == "24h spend cap reached"
     assert charge_suppressed is False
+
+
+# ── Structural guard: no new circlekit call site may escape the switch ──────
+#
+# The failure this exists to prevent already happened once. #1240 wired the
+# switch into five call sites; while the PR sat open, `services/revenue_sweep.py`
+# landed on main with a live `GatewayClient.withdraw` and nothing noticed. Two
+# per-site tests cannot catch a SIXTH site that does not exist yet, so this
+# checks the property structurally: circlekit is the only way USDC moves out of
+# this backend, so every module that reaches for it must also reach for the
+# switch.
+#
+# Modelled on main's TestNoFifthCallSite (marketplace/test_gateway_chain.py),
+# which polices the GATEWAY_CHAIN accessor the same way.
+
+# Modules that import circlekit for something that cannot move value. Each entry
+# needs a reason a reviewer can check, not just a path.
+_READ_ONLY_CIRCLEKIT = {
+    "main.py": (
+        "imports get_chain_config only — a pure chain-name -> chain_id lookup "
+        "used by the boot-time GATEWAY_CHAIN/RPC assertion. No client, no "
+        "signer, no transfer."
+    ),
+}
+
+_CIRCLEKIT_IMPORT = re.compile(r"^\s*(?:from\s+circlekit[.\w]*\s+import|import\s+circlekit)", re.MULTILINE)
+
+
+def _package_root() -> Path:
+    return Path(archimedes.__file__).resolve().parent
+
+
+def _modules_importing_circlekit() -> dict[str, str]:
+    root = _package_root()
+    return {
+        str(path.relative_to(root)): path.read_text()
+        for path in root.rglob("*.py")
+        if _CIRCLEKIT_IMPORT.search(path.read_text())
+    }
+
+
+def test_every_circlekit_module_reaches_for_the_kill_switch():
+    """The property: importing the money SDK obliges you to import the brake."""
+    offenders = {
+        rel: "imports circlekit but never references payments_halted"
+        for rel, source in _modules_importing_circlekit().items()
+        if rel not in _READ_ONLY_CIRCLEKIT and "payments_halted" not in source
+    }
+    assert not offenders, (
+        f"These modules import circlekit without honouring PAYMENTS_HALT: {sorted(offenders)}. "
+        "Gate the fund-moving call (in the callee, so a caller cannot forget), or — if the "
+        "import genuinely cannot move value — add it to _READ_ONLY_CIRCLEKIT with the reason."
+    )
+
+
+def test_the_scan_reaches_the_modules_it_claims_to_police():
+    """Guard on the guard. A regex that matched nothing would pass the test
+    above forever; prove it sees every module that actually moves money today."""
+    scanned = set(_modules_importing_circlekit())
+    for expected in (
+        "marketplace/settlement.py",
+        "marketplace/payments.py",
+        "services/revenue_sweep.py",
+    ):
+        assert expected in scanned, f"the circlekit scan missed {expected} — the guard is not guarding"
+
+
+def test_the_allowlist_is_not_a_dumping_ground():
+    """Every exemption must name a module that still exists and still imports
+    circlekit, so a stale entry cannot silently exempt a file that later grew a
+    withdraw call under a recycled path."""
+    scanned = _modules_importing_circlekit()
+    for rel, reason in _READ_ONLY_CIRCLEKIT.items():
+        assert rel in scanned, f"_READ_ONLY_CIRCLEKIT entry {rel!r} no longer imports circlekit — drop it"
+        assert len(reason) > 40, f"_READ_ONLY_CIRCLEKIT entry {rel!r} needs a real reason, not a shrug"
+
+
+@pytest.mark.asyncio
+async def test_payments_charge_itself_refuses_while_halted(monkeypatch, caplog):
+    """Backstop, one level below _charge_one. Today unreachable — _charge_one
+    short-circuits first — so this pins the behaviour a future caller that goes
+    around that gate would get: no Circle round-trip, False, and an ERROR that
+    names the bypass rather than a silent success."""
+    from archimedes.marketplace import payments
+
+    monkeypatch.setenv("PAYMENTS_HALT", "true")
+    with (
+        patch.object(payments, "get_gateway_middleware", side_effect=AssertionError("no middleware while halted")),
+        caplog.at_level("ERROR"),
+    ):
+        paid = await payments.charge(
+            sub_id="sub_1",
+            wallet_id="wallet_1",
+            wallet_address="0xsub",
+            seller_address="0xseller",
+            strategy_id="strat_a",
+            tick_id="tick_1",
+            action_count=1,
+            flat_fee_raw=150_000,
+        )
+    assert paid is False
+    assert "PAYMENTS_HALT" in caplog.text and "bypassed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_payments_charge_unhalted_still_builds_the_middleware(monkeypatch):
+    """Adversarial companion: same call with the switch off DOES reach
+    get_gateway_middleware, so the refusal above is the switch and not the
+    argument shape. (charge() never raises, so the sentinel comes back as
+    False through its own except — what matters is that it was reached.)"""
+    from archimedes.marketplace import payments
+
+    monkeypatch.delenv("PAYMENTS_HALT", raising=False)
+    with patch.object(payments, "get_gateway_middleware", side_effect=RuntimeError("reached")) as mw:
+        paid = await payments.charge(
+            sub_id="sub_1",
+            wallet_id="wallet_1",
+            wallet_address="0xsub",
+            seller_address="0xseller",
+            strategy_id="strat_a",
+            tick_id="tick_1",
+            action_count=1,
+            flat_fee_raw=150_000,
+        )
+    mw.assert_called_once()
+    assert paid is False
