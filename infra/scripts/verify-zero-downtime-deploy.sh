@@ -8,6 +8,10 @@
 # committed and reusable so the check survives copy/paste drift.
 #
 # What it does:
+#   0. Takes one preflight probe and refuses to go further unless it is a
+#      200. A probe that cannot reach a healthy ALB would log nothing but
+#      non-200s and then blame the rollout for them; failing here means we
+#      never trigger a deploy this run has no ability to measure.
 #   1. Starts a 1-request/second GET /health loop against the ALB directly
 #      (bypasses CloudFront so it measures the target group, not the CDN
 #      cache) and logs every response code + latency.
@@ -26,9 +30,10 @@
 #
 # Requires: awscli (authenticated — same OIDC-assumed role or an operator's
 # IAM session; this repo has NO AWS credentials baked in, see CLAUDE.md
-# "AWS: ... ask Dan for a scoped IAM user"), curl, terraform (to read
-# outputs — run from infra/ with the S3 backend already initialized, see
-# infra/README.md).
+# "AWS: ... ask Dan for a scoped IAM user"), curl 7.49+ (for --connect-to;
+# see probe_once below for why that flag is load-bearing), terraform (to
+# read outputs — run from infra/ with the S3 backend already initialized,
+# see infra/README.md).
 #
 # Usage:
 #   cd infra && ./scripts/verify-zero-downtime-deploy.sh
@@ -131,19 +136,72 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# One probe, in exactly one place. The preflight below and the background
+# loop after it both call this, so the preflight genuinely exercises the
+# shipped probe form rather than an approximation of it.
+#
+# `--connect-to` is load-bearing, not a stylistic choice. The obvious form
+# — `-H "Host: $HOST_HEADER" "https://$ALB_DNS/health"` — CANNOT WORK over
+# TLS: a `Host:` header is an HTTP-layer thing, set after the TLS handshake
+# has already happened, so it changes neither the SNI curl sends nor the
+# name curl verifies the presented certificate against. Both are taken from
+# the URL's host, which in that form is the raw ALB DNS name
+# (`archimedes-alb-*.us-east-1.elb.amazonaws.com`), and the ALB's listener
+# certificate (`aws_acm_certificate.main`, `infra/alb.tf` — `domain_name =
+# var.domain_name`, no `subject_alternative_names`) covers
+# archimedes-arc.com and nothing else. So every
+# probe would fail at the TLS layer before sending any request (curl exits
+# 35 or 60 depending on the TLS backend) and `%{http_code}` would be `000`
+# — i.e. the script could only ever report a total outage, on every run, no
+# matter how healthy the service was. Reproduced against a real host:
+# `curl -H "Host: example.com" https://<example.com's IP>/` returns
+# http_code=000 (exit 35), while the `--connect-to` form below against the
+# identical IP returns http_code=200.
+# `--connect-to HOST:443:ALB:443` instead keeps the URL (and
+# therefore the SNI, the certificate check, and the Host header) as
+# $HOST_HEADER while pointing the TCP connection at the ALB — which is the
+# whole point of this probe: hit the target group directly, bypassing
+# CloudFront, without disabling TLS verification. (`-k` would also "work"
+# and is deliberately not used: it would mask a genuinely broken listener
+# certificate, which is itself an outage this probe should catch.)
+#
+# `-w` output is written by curl even when curl itself exits non-zero (a
+# connect failure or a --max-time abort still prints "000 <time>s"), so the
+# old `... || echo "000 0s"` appended a SECOND verdict onto the first: a
+# failed probe logged the mangled `000 0.000367s000 0s` rather than one
+# clean sample. The `|| :` keeps a non-zero curl from killing the caller
+# under `set -e` without adding that duplicate; callers handle empty output
+# (the case where curl printed nothing at all) themselves.
+probe_once() {
+  curl -o /dev/null -s -w "%{http_code} %{time_total}s" \
+    --max-time 5 \
+    --connect-to "$HOST_HEADER:443:$ALB_DNS:443" \
+    "https://$HOST_HEADER/health" 2>/dev/null || :
+}
+
+# ── Preflight ───────────────────────────────────────────────────────────
+# Take ONE probe, through the identical code path, BEFORE touching the
+# service. A probe that cannot reach a healthy ALB records nothing but
+# non-200s and then blames the rollout for them — a guaranteed FAIL that
+# says nothing about issue #1309 (the pre-`--connect-to` version of this
+# script had exactly that defect: TLS verification failed on every request,
+# so every run reported a total outage). Aborting here also means we never
+# trigger a deployment we have no ability to measure.
+echo "Preflight: one probe through the ALB before touching the service..."
+preflight_sample="$(probe_once)"
+preflight_code="${preflight_sample%% *}"
+if [ "$preflight_code" != "200" ]; then
+  echo "::error::preflight probe returned '${preflight_sample:-<no output>}', expected 200 — refusing to trigger a deploy this run could not measure." >&2
+  echo "Check, in order: (a) --alb-dns and --host are correct and the ALB listener serves a certificate valid for '$HOST_HEADER'; (b) this curl supports --connect-to (7.49+); (c) the service is actually healthy right now — a real ongoing outage fails here too, which is the point." >&2
+  exit 1
+fi
+echo "Preflight OK ($preflight_sample)."
+echo
+
 loop_start_epoch="$(date -u +%s)"
 (
   while true; do
-    # `-w` output is written by curl even when curl itself exits non-zero
-    # (a connect failure or a --max-time abort still prints "000 <time>s"),
-    # so the old `... || echo "000 0s"` appended a SECOND verdict onto the
-    # first: a failed probe logged the mangled `000 0.000367s000 0s` rather
-    # than one clean sample. The `|| :` keeps a non-zero curl from killing
-    # this loop under `set -e` without adding that duplicate; the empty
-    # check below is the real fallback, for the case where curl printed
-    # nothing at all (e.g. the binary died before writing `-w`).
-    code_and_time=$(curl -o /dev/null -s -w "%{http_code} %{time_total}s" \
-      --max-time 5 -H "Host: $HOST_HEADER" "https://$ALB_DNS/health" 2>/dev/null || :)
+    code_and_time="$(probe_once)"
     [ -n "$code_and_time" ] || code_and_time="000 0s"
     # Epoch seconds FIRST — the field the verdict's window comparisons key
     # off of. A raw HH:MM:SS *string* compare (the previous approach) wraps

@@ -583,8 +583,26 @@ thing — measure it.
 > **This did not hold in practice — see issue #1309.** A real deploy on
 > 2026-08-20 showed the old target deregistered ~9s after the new task
 > started, ~2.4 minutes before the new target registered healthy — a live
-> violation of this criterion, caught by the (manual, ad-hoc) version of the
-> probe below. `infra/ecs.tf` gained a Docker `healthCheck` on the `nginx`
+> violation of this criterion, read off the **ECS service event timeline**
+> (`23:59:04 started 1 tasks` → `23:59:13 deregistered 1 targets`) recorded
+> in the issue, and independently corroborated on 2026-08-30 by a `504` on
+> `/health` at 90.4s during a deploy. It was **not** caught by the
+> copy/paste probe this section used to print, and could not have been: that
+> snippet sent `-H "Host: archimedes-arc.com"` to `https://$ALB_DNS/health`,
+> and a `Host:` header is set *after* the TLS handshake — it changes neither
+> the SNI nor the name the certificate is verified against, both of which
+> come from the URL. Against the ALB's `archimedes-arc.com`-only listener
+> certificate (`aws_acm_certificate.main`, `infra/alb.tf`) every such request
+> fails at the TLS layer and reports `000`, so that loop could only ever have
+> printed a total outage — on a healthy service just the same. The committed
+> script below uses `--connect-to archimedes-arc.com:443:$ALB_DNS:443` so the
+> connection still goes straight to the ALB (bypassing CloudFront) while SNI,
+> certificate verification and `Host` all stay `archimedes-arc.com`, and it
+> takes a preflight probe that must return `200` before it will trigger a
+> deploy — so a probe that cannot reach the ALB fails as a broken
+> measurement instead of as a fake outage.
+>
+> `infra/ecs.tf` gained a Docker `healthCheck` on the `nginx`
 > container (previously the ONLY essential container without one, despite
 > being the actual ALB target) as a defensible hardening — see that file's
 > comment for the reasoning — but this was **not proven against a live
@@ -650,12 +668,17 @@ cd infra   # requires the S3 backend already initialized, or pass --alb-dns/--cl
 ./scripts/verify-zero-downtime-deploy.sh
 ```
 
-Runs a 1 req/s probe loop against the ALB directly (bypassing CloudFront, so
-it measures the target group, not the CDN cache) for the whole rollout
-window, triggers a `force-new-deployment`, waits for steady state, and exits
-non-zero with every offending log line if any request was not a `200` — see
-the script's own header comment for flags and what it does and does not
-prove. (This replaces the earlier copy/paste-bash version of this
+Takes a preflight probe and refuses to trigger anything unless it is a `200`
+(a probe that cannot reach a healthy ALB would log nothing but non-200s and
+then blame the rollout for them), then runs a 1 req/s probe loop against the
+ALB directly (bypassing CloudFront, so it measures the target group, not the
+CDN cache) for the whole rollout window, triggers a `force-new-deployment`,
+waits for steady state, and exits non-zero with every offending log line if
+any request was not a `200` — see the script's own header comment for flags
+and what it does and does not prove. If `aws ecs wait services-stable` itself
+gives up (the circuit-breaker-rollback case), the run does not die on that
+exit code: it still stops the probe, scores the window, prints the log path,
+and reports `INCONCLUSIVE` — never `PASS`. (This replaces the earlier copy/paste-bash version of this
 procedure — same acceptance check, now a committed, reusable artifact
 instead of prose that only exists if someone remembers to type it out.)
 
