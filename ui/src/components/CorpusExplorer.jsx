@@ -4,8 +4,15 @@ import CorpusGraph from './CorpusGraph'
 import CorpusKG from './CorpusKG'
 import { cleanLatex } from '../utils/latex'
 import { apiGet } from '../api'
+import { KNOWLEDGE_GRAPH_TAB_ENABLED } from '../featureFlags'
 
-const TABS = ['catalog', 'overview', 'graph', 'knowledge-graph']
+// The Topic Clusters tab is filtered out at build time unless the flag is on
+// (#1406). Its backing tables (kg_entities/kg_relations) are 0 rows until
+// #1090 produces the KB pipeline artifact and #1092 backfills Postgres, so
+// shipping the tab means a visitor has to click an empty capability to find
+// that out. #1392 made the zero-state itself honest; this stops the round
+// trip. The tab returns by flipping the flag, not by editing this array.
+const TABS = ['catalog', 'overview', 'graph', ...(KNOWLEDGE_GRAPH_TAB_ENABLED ? ['knowledge-graph'] : [])]
 
 const TAB_LABELS = {
   catalog: 'Catalog',
