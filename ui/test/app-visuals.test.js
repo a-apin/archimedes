@@ -103,10 +103,16 @@ test("onboarding uses proof-frame identity and verified product language", () =>
 	assert.doesNotMatch(onboarding, /Λ|bleeding-edge/i);
 });
 
-test("system preference supplies first theme when user has no saved choice", () => {
-	assert.match(theme, /matchMedia\(["']\(prefers-color-scheme: dark\)["']\)/);
-	assert.match(theme, /stored === ["']dark["']/);
-	assert.match(theme, /stored === ["']light["']/);
+test("getStoredTheme stays off window.matchMedia — dark is the product default (#1357)", () => {
+	// getStoredTheme runs as the lazy useState initializer on the render path
+	// of every /app page. An unguarded window.matchMedia there reintroduces
+	// the #1357 failure class (an uncaught throw unmounts the React root),
+	// and it contradicts theme.test.js's pinned behavior: any stored value
+	// other than 'light' — including nothing — resolves to 'dark'. If a
+	// system-preference first theme is ever wanted, it needs a guarded,
+	// test-reconciled design of its own; this guard rejects the shortcut.
+	assert.doesNotMatch(theme, /matchMedia/);
+	assert.match(theme, /stored === ["']light["'] \? ["']light["'] : ["']dark["']/);
 });
 
 test("social auth controls do not wait for provider discovery", () => {

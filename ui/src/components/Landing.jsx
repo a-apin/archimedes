@@ -407,7 +407,7 @@ function ProductWorkspace({
 			<figcaption aria-live="polite">
 				{contractsError || poolsUnread ? (
 					<>
-						<strong>Live census unavailable</strong>
+						<strong className="census-state census-state--error">Live census unavailable</strong>
 						<span>
 							{contractsError
 								? "Contract API did not respond. No cached count substituted."
@@ -416,12 +416,12 @@ function ProductWorkspace({
 					</>
 				) : totalLive == null ? (
 					<>
-						<strong>Reading Arc contract census</strong>
+						<strong className="census-state">Reading Arc contract census</strong>
 						<span>Waiting for live deployment data…</span>
 					</>
 				) : (
 					<>
-						<strong>Arc census live</strong>
+						<strong className="census-state census-state--live">Arc census live</strong>
 						<span>{`≥${totalLive} reported instances · ${coreCount}/${CORE_CONTRACT_FIELDS.length} core · ${synthCount} synths · ${poolCount} pools`}</span>
 					</>
 				)}
@@ -528,7 +528,7 @@ function AuthorityBoundary() {
 						<p className="authority-boundary__owner">Only you may</p>
 						<ul>
 							<li>Authorize deposits with your wallet</li>
-							<li>Withdraw assets from your vault</li>
+							<li>Retain withdrawal authority over your vault</li>
 							<li>Choose whether a validated strategy receives capital</li>
 						</ul>
 					</div>

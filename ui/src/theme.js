@@ -1,15 +1,21 @@
 const STORAGE_KEY = "archimedes.theme";
 
+// localStorage can throw (Safari ITP in an embedded/third-party context,
+// Chrome "block all cookies", an enterprise policy, a privacy extension).
+// getStoredTheme runs as the lazy useState initializer on the render path of
+// every /app page — including the anonymous-OK front doors (#1357) — so an
+// uncaught throw here unmounts the whole React root. Fail safe to the
+// default theme instead. Deliberately NO system-preference media-query
+// fallback: it would run unguarded on that same render path (the exact #1357
+// failure class), and the product default is dark by design — the test
+// "defaults to dark for any stored value other than 'light'" pins this.
 export function getStoredTheme() {
 	try {
 		const stored = localStorage.getItem(STORAGE_KEY);
-		if (stored === "dark" || stored === "light") return stored;
+		return stored === "light" ? "light" : "dark";
 	} catch {
-		// Storage can be unavailable in private browsing or embedded contexts.
+		return "dark";
 	}
-	return window.matchMedia("(prefers-color-scheme: dark)").matches
-		? "dark"
-		: "light";
 }
 
 export function applyTheme(theme) {
