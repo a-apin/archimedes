@@ -323,13 +323,16 @@ test("the authenticated shell ships a skip link with a focusable target", () => 
 });
 
 test("a failed deep link does not share the landing page's title", () => {
-	assert.match(app, /'not-found': 'Page not found · Archimedes'/);
+	// Quote-style agnostic: the rebrand formats with double quotes; the
+	// guarded behavior (a dedicated not-found title, keyed off route.kind)
+	// is what matters, not the quoting.
+	assert.match(app, /["']not-found["']: ["']Page not found · Archimedes["']/);
 	// A denied /app/insights admin-gate probe (owner directive 2026-08-20)
 	// titles the tab as 'not-found' too — see the next test — so this key
 	// computation ORs in that case rather than checking route.kind alone.
 	assert.match(
 		app,
-		/const key = route\.kind === 'not-found' \|\| deniedInsights \? 'not-found' : route\.page/,
+		/const key = route\.kind === ["']not-found["'] \|\| deniedInsights \? ["']not-found["'] : route\.page/,
 	);
 });
 
