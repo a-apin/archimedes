@@ -62,7 +62,23 @@ async def run() -> None:
                     if tx:
                         logger.info(f"Price push complete — first tx: {tx}")
                     else:
-                        logger.info("Prices fetched (no on-chain push — owner key not configured)")
+                        # NOT "owner key not configured" (#1525 adjudication):
+                        # this runner pushes exclusively via the Circle
+                        # Developer-Controlled-Wallets API — there is no raw
+                        # owner private key on this path at all, so that
+                        # phrasing is a holdover from a pre-Circle design and
+                        # is almost never the actual cause. `tx` is falsy
+                        # whenever zero submissions reached a terminal-success
+                        # state this cycle, and every one of those causes
+                        # (missing Circle creds, a failed/timed-out tx, a
+                        # rejected price) already logs its own WARNING/ERROR
+                        # with the real reason inside push_prices_on_chain —
+                        # this line only duplicated that detail, with the
+                        # wrong cause attached. Downgraded to DEBUG and
+                        # reworded rather than removed outright, so a quiet
+                        # cycle (nothing to push, nothing wrong) still leaves
+                        # a trace at debug verbosity.
+                        logger.debug("Prices fetched — no tx reached a terminal-success state this cycle")
                 else:
                     logger.error(
                         "[lease:%s] lease NOT held — SKIPPING on-chain price push this cycle "
