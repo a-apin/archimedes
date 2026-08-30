@@ -722,9 +722,14 @@ async def _run_debate_leaderboard(
         result_summary=f"pool_size={pool_size} actionable+conformant specs",
     )
 
-    # Step 2 — best-effort adversarial transcript (never gates).
+    # Step 2 — best-effort adversarial transcript (never gates). The return
+    # value is a real, paid 4-turn bull/bear transcript — captured here (not
+    # discarded) and stamped onto every leaderboard entry below, so it
+    # survives past this function into persistence (debate_transcripts,
+    # #<transcript-capture>). It never gates: build_leaderboard is called
+    # below whether this list is empty or not.
     with cost_meter.stage("debate_transcript"):
-        await _debate_round(pool, model, emit, candidate_id)
+        transcript = await _debate_round(pool, model, emit, candidate_id)
 
     # Step 3a — C-prov (non-votable, Xia 1/2/4): cull candidates citing outside the
     # embargo+decay surface. Does NOT change pool_size (the DSR denominator counts
@@ -776,6 +781,14 @@ async def _run_debate_leaderboard(
         regime_force_abstain=regime_gate["force_abstain"],
         regime_reason=regime_gate["reason"],
     )
+    # Stamp the ONE transcript this run produced onto every entry (winner AND
+    # the tail Considered Alternatives) — build_leaderboard is pure and knows
+    # nothing about the debate, so this is the single attachment point. Every
+    # entry shares the same list object: one debate happened, not one per
+    # candidate.
+    if transcript:
+        for entry in leaderboard:
+            entry.debate_transcript = transcript
     leader = leaderboard[0]
     await emit.emit(
         "tool_result",
