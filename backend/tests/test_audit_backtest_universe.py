@@ -344,3 +344,99 @@ def test_render_table_does_not_crash_on_empty_or_mixed_rows(_db, tmp_path) -> No
     table = audit_mod.render_table(rows)
     assert "only_strategy" in table
     assert "skipped" in table
+
+
+def test_before_after_rigor_columns_are_populated_from_backtest_results(_db, tmp_path) -> None:
+    """docs/sprint/a6-rerun.md's named deliverable: the before/after table must
+    carry Sharpe / DSR p / PBO / OOS straight off the persisted backtest_results
+    row (real field names: sharpe_ratio, dsr_p_value, pbo_score,
+    out_of_sample_sharpe) — never fabricated, never left off silently."""
+    strategies_dir = tmp_path / "analytics-engine" / "strategies"
+    strategies_dir.mkdir(parents=True)
+    _write_strategy(strategies_dir / "pipeline_buy_hold.py", asset_universe=["SPY"], regime_tag="bull")
+
+    returns = _spy_like_returns()
+    SessionLocal = _db
+    provider = default_provider(repo_root=tmp_path)
+    (strategy,) = provider.list_strategies()
+
+    result = BacktestResult(
+        strategy_id=strategy.id,
+        sharpe_ratio=1.2345,
+        sortino_ratio=0.5,
+        max_drawdown=0.2,
+        cagr=0.1,
+        calmar_ratio=0.5,
+        win_rate=0.5,
+        profit_factor=1.2,
+        total_trades=10,
+        avg_holding_period_days=5.0,
+        correlation_to_spy=0.3,
+        correlation_to_btc=0.1,
+        equity_curve=_equity_curve_from_returns(returns),
+        monthly_returns=[0.01],
+        dsr_p_value=0.9678,
+        pbo_score=0.4321,
+        out_of_sample_sharpe=0.789,
+        backtest_engine="backtrader",
+    )
+
+    with SessionLocal() as session:
+        insert_backtest_if_missing(
+            session,
+            strategy_id=strategy.id,
+            content_hash="h1",
+            result=result,
+            artifact_json=_artifact_json_with_daily_returns(returns),
+            source_pipeline="test",
+        )
+        session.commit()
+
+    rows = audit_mod.run_audit(repo_root=tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+
+    # Real values, read from the persisted row, not from the vol-plausibility verdict.
+    assert row.sharpe_ratio == pytest.approx(1.2345)
+    assert row.dsr_p_value == pytest.approx(0.9678)
+    assert row.pbo_score == pytest.approx(0.4321)
+    assert row.out_of_sample_sharpe == pytest.approx(0.789)
+
+    d = row.to_dict()
+    assert d["sharpe_ratio"] == pytest.approx(1.2345)
+    assert d["dsr_p_value"] == pytest.approx(0.9678)
+    assert d["pbo_score"] == pytest.approx(0.4321)
+    assert d["out_of_sample_sharpe"] == pytest.approx(0.789)
+
+    table = audit_mod.render_table(rows)
+    assert "sharpe" in table and "dsr_p" in table and "pbo" in table and "oos" in table
+    assert "1.23" in table  # sharpe_ratio, 2dp
+    assert "0.968" in table  # dsr_p_value, 3dp
+    assert "0.43" in table  # pbo_score, 2dp
+    assert "0.79" in table  # out_of_sample_sharpe, 2dp
+
+
+def test_before_after_rigor_columns_render_em_dash_when_never_persisted(_db, tmp_path) -> None:
+    """A strategy with no persisted backtest_results row at all (status
+    'skipped') must render '—' for the new columns, never a fabricated 0."""
+    strategies_dir = tmp_path / "analytics-engine" / "strategies"
+    strategies_dir.mkdir(parents=True)
+    _write_strategy(strategies_dir / "brand_new_strategy.py", asset_universe=["SPY"])
+
+    rows = audit_mod.run_audit(repo_root=tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+
+    assert row.sharpe_ratio is None
+    assert row.dsr_p_value is None
+    assert row.pbo_score is None
+    assert row.out_of_sample_sharpe is None
+
+    table = audit_mod.render_table(rows)
+    lines = [ln for ln in table.splitlines() if "brand_new_strategy" in ln]
+    assert len(lines) == 1
+    # The row's sharpe/dsr_p/pbo/oos cells must all be the em-dash placeholder,
+    # not "0.00" or "None".
+    assert "0.00" not in lines[0]
+    assert "None" not in lines[0]
+    assert "—" in lines[0]

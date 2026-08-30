@@ -881,6 +881,66 @@ def test_to_strategy_response_serves_null_not_bt_fixture_without_live_rigor_resu
     )
 
 
+def test_to_strategy_response_surfaces_backtest_provenance(monkeypatch):
+    """Left-behind batch close (docs/sprint/a6-rerun.md / sprint README row 5):
+    ``backtest_engine`` and ``cost_model_id`` have lived on ``BacktestResultRecord``
+    since the cost SSOT / 2026-08-03 provenance audit and were already declared on
+    ``StrategyResponse``, but no construction site in strategies_routes.py ever
+    populated them from ``bt`` — the values stopped at the DB. Same
+    monkeypatch-the-provider pattern as the #1187 sibling tests above: a
+    ``BacktestResult`` carrying real engine/cost-model values is what
+    ``strategy_provider().get_backtest_result`` returns, and both must reach the
+    served response verbatim.
+
+    Adversarial check: with the two ``backtest_engine=``/``cost_model_id=`` kwargs
+    removed from ``_to_strategy_response``'s ``StrategyResponse(...)`` call, this
+    test fails — it would observe ``None`` for both instead of the real values.
+    """
+    from archimedes.api.strategies_routes import _to_strategy_response, strategy_provider
+    from archimedes.models.backtest import BacktestResult
+    from archimedes.models.strategy import Strategy
+    from archimedes.services.live_rigor_gate import RigorGateVerdict
+
+    s = Strategy(id="test-provenance-bt-stub")
+    bt = BacktestResult(
+        strategy_id=s.id,
+        sharpe_ratio=1.0,
+        sortino_ratio=1.0,
+        max_drawdown=0.1,
+        cagr=0.1,
+        calmar_ratio=1.0,
+        win_rate=0.5,
+        profit_factor=1.5,
+        total_trades=10,
+        avg_holding_period_days=5.0,
+        correlation_to_spy=0.5,
+        correlation_to_btc=0.0,
+        backtest_engine="backtrader",
+        cost_model_id="cm1:d10:s5",
+    )
+    monkeypatch.setattr(strategy_provider(), "get_backtest_result", lambda strategy_id: bt)
+
+    resp = _to_strategy_response(s, verdict=RigorGateVerdict.pending(), rigor_result=None)
+
+    assert resp.backtest_engine == "backtrader"
+    assert resp.cost_model_id == "cm1:d10:s5"
+
+
+def test_to_strategy_response_backtest_provenance_is_none_without_persisted_backtest():
+    """No BacktestResultRecord row (``bt is None``) must serve None for both
+    provenance fields — never a fabricated engine name or cost-model id."""
+    from archimedes.api.strategies_routes import _to_strategy_response
+    from archimedes.models.strategy import Strategy
+    from archimedes.services.live_rigor_gate import RigorGateVerdict
+
+    s = Strategy(id="test-provenance-no-bt")
+
+    resp = _to_strategy_response(s, verdict=RigorGateVerdict.pending(), rigor_result=None)
+
+    assert resp.backtest_engine is None
+    assert resp.cost_model_id is None
+
+
 @pytest.mark.asyncio
 async def test_leaderboard_serves_null_not_fixture_without_real_returns(monkeypatch):
     """End-to-end companion to the unit test above, over the REAL curated
