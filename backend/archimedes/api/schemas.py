@@ -597,6 +597,17 @@ class ChatPostResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════
 
 
+class ChainEndpointResponse(BaseModel):
+    """One chain a client may need to talk to."""
+
+    chain_id: int
+    rpc_url: str
+    # False means this chain was inherited from the single-chain configuration
+    # rather than chosen for this role. A client that must not guess — anything
+    # about to move real money — can tell a decision from a default.
+    explicit: bool
+
+
 class ContractAddressesResponse(BaseModel):
     """All deployed contract addresses. Frontend needs these for direct on-chain calls."""
 
@@ -620,9 +631,23 @@ class ContractAddressesResponse(BaseModel):
     # Vault addresses. Same None-vs-{} distinction as `pools`.
     vaults: dict[str, str] | None  # symbol → address, e.g. {"vMOMENTUM": "0x..."}
 
-    # Chain info
+    # Chain info.
+    #
+    # These two keep their original meaning: the chain the contract addresses
+    # above are deployed on, i.e. the EXECUTION chain. Existing clients read
+    # them and stay correct. New clients should prefer the explicit blocks
+    # below, which say which chain they mean instead of leaving it implied.
     chain_id: int
     rpc_url: str
+
+    # Two-chain split (#1240). Payments and execution are the same chain today
+    # and diverge at the Arc mainnet cutover. Serving both unconditionally —
+    # rather than only once they differ — means a client never has to infer a
+    # missing block, and `split` says outright whether a wallet flow needs
+    # chain switching.
+    payments_chain: ChainEndpointResponse
+    execution_chain: ChainEndpointResponse
+    split_chain: bool
 
 
 # ═══════════════════════════════════════════════════════════════
