@@ -9,16 +9,19 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from aiohttp import ClientTimeout
+from aiohttp import ClientError, ClientTimeout
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 from web3 import AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.providers import AsyncHTTPProvider
+from web3.providers.rpc.utils import ExceptionRetryConfiguration
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +90,22 @@ def _resolve_ssot_addresses(defaults: dict[str, str], suffix: str) -> dict[str, 
     return resolved
 
 
+@dataclass(frozen=True)
+class ChainEndpoint:
+    """One resolved chain: which id, which RPC, and whether it was chosen.
+
+    ``explicit`` records whether this endpoint came from its own
+    ``ARC_PAYMENTS_*`` / ``ARC_EXECUTION_*`` variables or fell back to the
+    single-chain ``chain_id`` / ``arc_rpc_url``. Callers that need to know a
+    chain was *decided* rather than *inherited* — a mainnet payment path, a
+    startup assertion — read this instead of comparing ids and guessing.
+    """
+
+    chain_id: int
+    rpc_url: str
+    explicit: bool
+
+
 class ChainSettings(BaseSettings):
     """On-chain connection settings — loaded from .env or environment variables.
 
@@ -115,15 +134,52 @@ class ChainSettings(BaseSettings):
     # RPC
     arc_rpc_url: str = "https://rpc.testnet.arc.network"
     chain_id: int = 5042002  # Arc testnet chain ID (0x4cef52)
-    # Connect+read timeout for the AsyncHTTPProvider (N2 — dead-egress detection).
-    # A blackholed NAT (e.g. a NAT instance down, see infra/cloudwatch.tf's
-    # per-NAT StatusCheckFailed alarm) otherwise hangs the RPC call with no
-    # timeout at all, which can exceed /health's own health-check budget (the
+    # TOTAL wall-clock budget for one JSON-RPC call, retries and backoff included
+    # (N2 — dead-egress detection). A blackholed NAT (e.g. a NAT instance down,
+    # see infra/cloudwatch.tf's per-NAT StatusCheckFailed alarm) otherwise hangs
+    # the call with no timeout at all, which can exceed /health's own budget (the
     # ECS task healthCheck timeout is 5s — infra/ecs.tf) and gets a perfectly
     # healthy app process killed for an RPC-layer problem. 3s leaves headroom
     # inside that 5s budget for /health's other work (DB, corpus, LLM probes).
     # ARC_RPC_TIMEOUT_SECONDS overrides.
+    #
+    # "TOTAL" is load-bearing and is why rpc_retries exists below. Passing this
+    # as the aiohttp timeout alone bounds ONE ATTEMPT, not the call: web3 7.x
+    # retries allowlisted methods (eth_call, eth_chainId, eth_getBalance, ... —
+    # 43 of them) five times by default, so the real ceiling was
+    # 5 x 3s + backoff = 16.9s, measured, against a documented 3s. That gap is
+    # what turns a brief RPC blip into a 90s nginx 504 on /api/config/contracts
+    # instead of a 3s degraded read, and it defeats the very cascade this
+    # timeout was added to prevent. rpc_retry_policy() below re-derives the
+    # per-attempt timeout from this total so the number here is the truth.
     rpc_timeout_seconds: float = 3.0
+    # Attempts per call (1 = no retry). web3 counts this as the TOTAL attempt
+    # count, not extra tries beyond the first — see AsyncHTTPProvider._make_request,
+    # `for i in range(retries)`. Two keeps one cheap retry for a genuine transient
+    # blip while leaving each attempt ~1.4s, roughly 9x the live Arc round trip.
+    # ARC_RPC_RETRIES overrides.
+    rpc_retries: int = 2
+
+    # ── Two-chain split (#1240) ────────────────────────────────────────────
+    # Payments (USDC / x402 / Gateway / PaymentSplitter) and execution (vault,
+    # synth, AMM, oracle) run on one chain today and become two at the Arc
+    # mainnet cutover, where the payment rail goes to mainnet and execution
+    # stays on testnet.
+    #
+    # All four default to the single-chain values above, so an environment that
+    # sets none of them behaves exactly as it does now. That is the point: this
+    # is a seam, not a cutover. Setting them is what moves a chain.
+    #
+    # A HALF-CONFIGURED SPLIT IS REJECTED at construction rather than filled in
+    # from the other chain — see _reject_half_configured_split below. Silently
+    # borrowing the execution RPC for a payments chain id would mean settling
+    # real USDC against an endpoint nobody chose, which is the fail-soft
+    # pattern docs/architectural-principles.md forbids for anything a claim
+    # depends on. Money is the strongest such claim we make.
+    payments_chain_id: int | None = None  # ARC_PAYMENTS_CHAIN_ID
+    payments_rpc_url: str = ""  # ARC_PAYMENTS_RPC_URL
+    execution_chain_id: int | None = None  # ARC_EXECUTION_CHAIN_ID
+    execution_rpc_url: str = ""  # ARC_EXECUTION_RPC_URL
 
     # Agent account (the address that calls rebalance, publishes traces, etc.)
     agent_private_key: str = ""
@@ -161,6 +217,78 @@ class ChainSettings(BaseSettings):
 
     model_config = {"env_prefix": "ARC_", "env_file": ".env", "extra": "ignore"}
 
+    @field_validator("payments_chain_id", "execution_chain_id", mode="before")
+    @classmethod
+    def _blank_chain_id_is_unset(cls, v: object) -> object:
+        """Treat an empty string as unset, because .env.example ships these blank.
+
+        ``cp .env.example .env`` — the documented first step in SETUP.md — puts
+        ``ARC_PAYMENTS_CHAIN_ID=`` in the environment as an empty string, and
+        pydantic will not parse that as an int. Without this the whole backend
+        refuses to start for anyone who follows the setup instructions, while
+        working fine for anyone whose .env predates these lines. Blank means
+        "no split configured", which is the same thing as absent.
+        """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @model_validator(mode="after")
+    def _reject_half_configured_split(self) -> ChainSettings:
+        """Refuse to boot on a chain id without its RPC, or an RPC without its id.
+
+        The tempting default is to fill the missing half from the single-chain
+        settings. That produces a process that reports one chain and talks to
+        another, and on the payments side it would do so while moving real USDC.
+        A missing half is an incomplete decision, so it stops here with the
+        variable name that would complete it.
+        """
+        for label, chain_id, rpc_url in (
+            ("PAYMENTS", self.payments_chain_id, self.payments_rpc_url),
+            ("EXECUTION", self.execution_chain_id, self.execution_rpc_url),
+        ):
+            if chain_id is not None and not rpc_url:
+                raise ValueError(
+                    f"ARC_{label}_CHAIN_ID is set to {chain_id} but ARC_{label}_RPC_URL is empty. "
+                    f"Set both or neither — a chain id without its own endpoint would silently "
+                    f"reuse the ARC_ARC_RPC_URL endpoint while reporting a different chain."
+                )
+            if rpc_url and chain_id is None:
+                raise ValueError(
+                    f"ARC_{label}_RPC_URL is set but ARC_{label}_CHAIN_ID is empty. "
+                    f"Set both or neither — an endpoint with no declared chain id cannot be "
+                    f"checked against what the RPC actually reports."
+                )
+        return self
+
+    @property
+    def payments_chain(self) -> ChainEndpoint:
+        """The chain USDC settles on. Falls back to the single-chain settings."""
+        if self.payments_chain_id is None:
+            return ChainEndpoint(chain_id=self.chain_id, rpc_url=self.arc_rpc_url, explicit=False)
+        return ChainEndpoint(chain_id=self.payments_chain_id, rpc_url=self.payments_rpc_url, explicit=True)
+
+    @property
+    def execution_chain(self) -> ChainEndpoint:
+        """The chain vaults, synths, AMM and oracles live on.
+
+        Every contract address on this settings object belongs to THIS chain,
+        which is why ``chain_id`` / ``arc_rpc_url`` keep their present meaning
+        and every existing signing call site stays correct without change.
+        """
+        if self.execution_chain_id is None:
+            return ChainEndpoint(chain_id=self.chain_id, rpc_url=self.arc_rpc_url, explicit=False)
+        return ChainEndpoint(chain_id=self.execution_chain_id, rpc_url=self.execution_rpc_url, explicit=True)
+
+    @property
+    def is_split_chain(self) -> bool:
+        """True when payments and execution resolve to different chain ids.
+
+        The browser wallet UX turns on this: one chain needs no switching, two
+        do. Reading it beats comparing ids at each call site and drifting.
+        """
+        return self.payments_chain.chain_id != self.execution_chain.chain_id
+
     @property
     def agent_account(self) -> LocalAccount | None:
         if not self.agent_private_key:
@@ -192,6 +320,52 @@ class ChainSettings(BaseSettings):
         return _resolve_ssot_addresses(_ORACLE_DEFAULTS, "ORACLE_ADDRESS")
 
 
+# web3's retry backoff sleeps ``backoff_factor * 2**i`` between attempts, for
+# i = 0 .. retries-2 (AsyncHTTPProvider._make_request). Keeping the default here
+# means the only thing rpc_retry_policy has to solve for is the per-attempt timeout.
+RPC_BACKOFF_FACTOR = 0.125
+
+# Mirrors web3's own default set (AsyncHTTPProvider.exception_retry_configuration)
+# so this override changes ONLY the attempt count, never which failures retry.
+# Python 3.11+ aliases asyncio.TimeoutError to the builtin, so the builtin covers
+# the aiohttp ClientTimeout expiry too.
+RPC_RETRY_ERRORS = (ClientError, TimeoutError)
+
+
+def rpc_retry_policy(
+    total_seconds: float, retries: int, backoff_factor: float = RPC_BACKOFF_FACTOR
+) -> tuple[float, int]:
+    """Split a TOTAL wall-clock budget into web3's ``(per-attempt timeout, attempts)``.
+
+    web3 bounds one attempt; callers care about the whole call. Worst case is
+    ``attempts * per_attempt + backoff_factor * (2**(attempts-1) - 1)``, so this
+    subtracts the backoff web3 will sleep and divides what is left. Feed the
+    first element to ``ClientTimeout(total=...)`` and the second to
+    ``ExceptionRetryConfiguration(retries=...)`` — passing the requested
+    ``retries`` instead of the returned one reintroduces the bug.
+
+    Both halves are returned because a budget too small to split cannot be fixed
+    by shortening attempts alone: at 0.2s over 5 attempts the mandatory backoff
+    is 1.875s on its own, and a per-attempt timeout that fits would be negative.
+    That case drops to a single attempt spending the whole budget and logs it.
+    Fewer attempts is a degraded retry policy; a non-positive timeout is a broken
+    client, and holding ``retries`` while shortening the timeout is neither — it
+    just multiplies the budget by the attempt count again.
+    """
+    attempts = max(1, retries)
+    backoff_total = backoff_factor * (2 ** (attempts - 1) - 1)
+    per_attempt = (total_seconds - backoff_total) / attempts
+    if per_attempt <= 0:
+        logger.warning(
+            "rpc budget %.3fs cannot cover %d attempts (backoff alone is %.3fs) — falling back to a single attempt",
+            total_seconds,
+            attempts,
+            backoff_total,
+        )
+        return total_seconds, 1
+    return per_attempt, attempts
+
+
 class ChainClient:
     """Singleton Web3 client for all on-chain interactions."""
 
@@ -202,10 +376,19 @@ class ChainClient:
         # request itself, but web3's HTTPSessionManager.async_cache_and_return_session
         # separately accesses `request_timeout.total` on its own session-eviction
         # path, which requires an actual ClientTimeout instance (see N2).
+        per_attempt, attempts = rpc_retry_policy(self.settings.rpc_timeout_seconds, self.settings.rpc_retries)
         self.w3 = AsyncWeb3(
             AsyncHTTPProvider(
                 self.settings.arc_rpc_url,
-                request_kwargs={"timeout": ClientTimeout(total=self.settings.rpc_timeout_seconds)},
+                request_kwargs={"timeout": ClientTimeout(total=per_attempt)},
+                # Passed explicitly, never left to default: web3's default is five
+                # attempts, which multiplies rpc_timeout_seconds by five and breaks
+                # the total-budget promise the setting documents.
+                exception_retry_configuration=ExceptionRetryConfiguration(
+                    errors=RPC_RETRY_ERRORS,
+                    retries=attempts,
+                    backoff_factor=RPC_BACKOFF_FACTOR,
+                ),
             )
         )
 

@@ -24,6 +24,7 @@ import {
 	CIRCLE_PROVIDER_ID,
 	USDC_DECIMALS,
 	ensureArcChain,
+	getAddress,
 	getConnectedProvider,
 	getRawProvider,
 	getSmartAccount,
@@ -32,6 +33,7 @@ import {
 	publicClient,
 } from "./config";
 import { buildPaymentSignatureHeader, buildTransferAuthorizationTypedData } from "./generateQuote";
+import { getOrCreateSessionAccount, getSessionAccount } from "./payment-session";
 
 // Circle Gateway Wallet contract — just the two functions the balance-check
 // and deposit flow need. The contract address itself is NOT hardcoded here:
@@ -55,6 +57,19 @@ const GATEWAY_ABI = [
 		stateMutability: "nonpayable",
 		inputs: [
 			{ type: "address", name: "token" },
+			{ type: "uint256", name: "value" },
+		],
+		outputs: [],
+	},
+	{
+		// Deposit into ANOTHER address's Gateway balance — the passkey path
+		// funds its device payment key with this (see ./payment-session.js).
+		name: "depositFor",
+		type: "function",
+		stateMutability: "nonpayable",
+		inputs: [
+			{ type: "address", name: "token" },
+			{ type: "address", name: "depositor" },
 			{ type: "uint256", name: "value" },
 		],
 		outputs: [],
@@ -97,6 +112,21 @@ export function paymentWalletKind() {
 /** Back-compat boolean: any connected wallet can now attempt payment. */
 export function walletSupportsPayment() {
 	return paymentWalletKind() !== "none";
+}
+
+/**
+ * The address whose Gateway balance actually pays: the connected wallet for
+ * EOA kinds, the DEVICE PAYMENT KEY for the Circle passkey kind (Circle's
+ * nanopayments facilitator verifies EOA ERC-3009 signatures only — see
+ * ./payment-session.js for the field evidence). Null when nothing is
+ * connected, or for a passkey wallet whose device has no payment key yet
+ * (the first pay click creates one).
+ */
+export function paymentPayerAddress() {
+	const kind = paymentWalletKind();
+	if (kind === "none") return null;
+	if (kind === "circle") return getSessionAccount(getAddress())?.address ?? null;
+	return getAddress();
 }
 
 /**
@@ -148,18 +178,28 @@ export async function depositToGateway(requirements, amountRaw, onProgress = () 
 	const token = requirements?.asset;
 	if (!gateway || !token) throw new Error("Missing Gateway contract or asset address in the payment requirements.");
 
-	// Circle passkey path: approve + deposit as ONE batched user operation
-	// through the bundler — same executor DepositFlow.jsx's vault path uses.
+	// Circle passkey path: approve + depositFor as ONE batched user operation
+	// through the bundler — a single passkey prompt. The deposit lands in the
+	// DEVICE PAYMENT KEY's Gateway balance, not the smart account's, because
+	// the nanopayments facilitator only verifies authorizations the DEPOSITOR
+	// EOA signs itself (see ./payment-session.js — the SCA's own balance is
+	// unspendable on this rail, field-proven 2026-08-21).
 	if (paymentWalletKind() === "circle") {
 		const smartAccount = getSmartAccount();
 		const client = getSmartAccountClient();
 		if (!smartAccount || !client) {
 			throw new Error("Passkey wallet session expired — reconnect your Circle wallet and retry.");
 		}
+		const payer = getOrCreateSessionAccount(getAddress());
 		onProgress("approving");
 		const calls = [
 			encodeCall({ address: token, abi: USDC_APPROVE_ABI, functionName: "approve", args: [gateway, amountRaw] }),
-			encodeCall({ address: gateway, abi: GATEWAY_ABI, functionName: "deposit", args: [token, amountRaw] }),
+			encodeCall({
+				address: gateway,
+				abi: GATEWAY_ABI,
+				functionName: "depositFor",
+				args: [token, payer.address, amountRaw],
+			}),
 		];
 		onProgress("depositing");
 		const out = await executeUserOp({ smartAccount, client, calls, onStateChange: () => {} });
@@ -225,15 +265,22 @@ export async function signGatewayPayment({ requirements, resource, x402Version, 
 
 	let signature;
 	if (kind === "circle") {
-		// Circle passkey smart account: viem SmartAccount.signTypedData returns
-		// the ERC-1271 (or ERC-6492-wrapped while counterfactual) signature in
-		// the wire format Circle's own stack verifies — do NOT wrap it again
-		// (the #870/#871 double-wrap lesson from the SIWE path applies here).
-		const smartAccount = getSmartAccount();
-		if (!smartAccount?.signTypedData) {
-			throw new Error("Passkey wallet session expired — reconnect your Circle wallet and retry.");
+		// Circle passkey path: the DEVICE PAYMENT KEY signs, not the smart
+		// account. The prior build signed with smartAccount.signTypedData
+		// (ERC-1271) — the facilitator rejected every such payment with
+		// invalid_signature, because the nanopayments rail validates EOA
+		// ERC-3009 signatures only (field-proven + documented; the on-chain
+		// delegate route was probed and is not honored either — see
+		// ./payment-session.js). payerAddress here must be the payment key's
+		// address: the caller derives it via paymentPayerAddress().
+		const session = getSessionAccount(getAddress());
+		if (!session) {
+			throw new Error("No payment key on this device yet — the first payment sets one up automatically. Try again.");
 		}
-		signature = await smartAccount.signTypedData({ domain, types, primaryType, message });
+		if (payerAddress && payerAddress.toLowerCase() !== session.address.toLowerCase()) {
+			throw new Error("Payment payer does not match this device's payment key — reload and retry.");
+		}
+		signature = await session.signTypedData({ domain, types, primaryType, message });
 	} else {
 		await ensureArcChain(getRawProvider());
 		const walletClient = await getWalletClient();

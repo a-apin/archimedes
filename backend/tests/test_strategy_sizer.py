@@ -206,6 +206,10 @@ async def test_derive_allocations_sizes_passers_and_excludes_candidates(tmp_path
     assert resp.sized_strategies == {"val": pytest.approx(0.2)}
     assert resp.excluded_strategy_ids == ["cand"]
     assert resp.risk_profile == "moderate"
+    # #1264 review: the route wires no live regime feed, so the tilt did not
+    # run. The response has to say so — these weights are pure Kelly sizing,
+    # not a regime-tilted allocation that happened to score 1.0.
+    assert resp.regime_convention == "neutral_no_feed"
 
 
 @pytest.mark.asyncio

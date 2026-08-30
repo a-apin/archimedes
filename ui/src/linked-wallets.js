@@ -1,5 +1,6 @@
 import { apiDelete, apiGet, apiPost } from './api'
 import { CIRCLE_PROVIDER_ID, signSiweMessage } from './config'
+import { EXECUTION_CHAIN_ID } from './chain-config'
 
 const providerName = (provider) => {
   if (provider === CIRCLE_PROVIDER_ID) return 'circle'
@@ -10,7 +11,7 @@ const providerName = (provider) => {
 export async function linkConnectedWallet({ address, provider }) {
   const challenge = await apiPost('/api/wallets/challenge', {
     address,
-    chain_id: 5042002,
+    chain_id: EXECUTION_CHAIN_ID,
     provider: providerName(provider),
   })
   const signature = await signSiweMessage(challenge.message)

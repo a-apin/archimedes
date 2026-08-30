@@ -72,6 +72,17 @@ def _recipient() -> str:
     return os.getenv("GENERATION_PAYMENT_RECIPIENT", "").strip()
 
 
+def settles_real_value() -> bool:
+    """True only when a presented payment will actually be verified and settled.
+
+    The generation credit ledger (#1441) hangs off this. Under flag-off or
+    dry-run no value moves, so there is nothing to owe anybody and no claim
+    worth writing — the ledger stays completely inert, which is what keeps this
+    change a no-op in production until the payment stack is flipped on.
+    """
+    return payment_required() and not _payments_dry_run()
+
+
 def _price() -> str:
     """The circlekit "$X.XXXXXX" price string. Fails SAFE to the default on a
     malformed env value (a typo must not turn the paywall free or absurd)."""
@@ -93,14 +104,14 @@ def quote() -> dict:
     per-generation budget replaces the internals of this function (and bumps
     the model name) without changing the paywall flow around it.
     """
-    from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+    from archimedes.marketplace.config import gateway_chain
 
     return {
         "payment_required": payment_required(),
         "pricing_model": "flat_v1",
         "price": _price(),
         "asset": "USDC",
-        "chain": os.getenv("GATEWAY_CHAIN", DEFAULT_GATEWAY_CHAIN).strip(),
+        "chain": gateway_chain(),
         "recipient": _recipient() or None,
         "dry_run": _payments_dry_run(),
         "how": (
