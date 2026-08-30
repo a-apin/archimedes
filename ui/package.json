@@ -18,7 +18,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-force-graph-2d": "^1.29.1",
-    "viem": "^2.55.15"
+    "viem": "^2.56.0"
   },
   "overrides": {
     "ws": ">=8.21.0"
