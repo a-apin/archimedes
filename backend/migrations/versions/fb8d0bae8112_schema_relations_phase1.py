@@ -104,8 +104,17 @@ unverified data here is exactly the mistake this migration's ``NOT VALID``
 pattern exists to avoid making blind.
 
 Revision ID: fb8d0bae8112
-Revises: f0ab58339d55
+Revises: a3f19c7d2e84
 Create Date: 2026-08-20 00:00:00.000000
+
+SEQUENCING: originally authored against ``f0ab58339d55``, the chain head when
+this branch forked. Two revisions landed on ``main`` after that fork —
+``1752121b8d7c`` (payment_receipts) and ``a3f19c7d2e84`` (generation_credits)
+— so ``down_revision`` was re-pointed at ``a3f19c7d2e84``, the current head,
+to collapse the fork this created back to a single head. That is the exact
+failure mode ``.github/scripts/migration_chain_guard.py`` exists to catch;
+re-run it (or ``alembic heads``, which must print exactly one head) after any
+further rebase of this branch.
 """
 
 from __future__ import annotations
@@ -116,7 +125,7 @@ import sqlalchemy as sa
 from alembic import context, op
 
 revision: str = "fb8d0bae8112"
-down_revision: str | Sequence[str] | None = "f0ab58339d55"
+down_revision: str | Sequence[str] | None = "a3f19c7d2e84"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
