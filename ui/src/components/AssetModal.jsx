@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import PriceHistoryChart, { fmtPrice } from './PriceHistoryChart'
+import { changeWindowLabel } from '../statUtils'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 const RANGES = ['1D', '1W', '1M', '1Y', '5Y', '10Y', 'MAX']
@@ -151,7 +152,9 @@ export default function AssetModal({ asset, onClose }) {
             </div>
           </div>
           <div>
-            <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem' }}>24h change</div>
+            <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem' }}>
+              {changeWindowLabel(asset)} change
+            </div>
             <div
               className={`mono ${changeClass(asset.change_24h_pct)}`}
               style={{ fontSize: '1.1rem', fontWeight: 600 }}
