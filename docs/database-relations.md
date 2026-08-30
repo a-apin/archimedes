@@ -2,7 +2,7 @@
 
 > **status:** draft — pending merge (PR #1438, unmerged)
 > **owner:** Dan Browne
-> **updated:** 2026-08-20
+> **updated:** 2026-08-30
 > **superseded-by:** —
 
 Companion to [`database-architecture.md`](database-architecture.md) (the two-store
@@ -14,7 +14,10 @@ audit of that gap found once every claim was checked against the actual code, an
 **Nothing in § 2 is live.** PR #1438 is an unmerged draft — Dan reviews any migration
 touching prod before it merges. Everything below describes what that PR *would* do if
 merged, not the current state of prod. Phase 2 (§ 4, write-path changes) is a proposal
-only — nothing in it is built, and it is not part of PR #1438's scope either way.
+only — none of it is built *by this PR*, and it is not part of PR #1438's scope either
+way. One Phase 2 item, **G1**, shipped independently on `main` on 2026-08-21 while this
+PR sat in draft; § 1.2 and § 4 record that rather than leaving the original "not
+persisted anywhere" claim standing.
 
 ## 1. Audit summary
 
@@ -33,25 +36,42 @@ gap, originally labeled G2, was re-examined during review and found not to hold 
 | **C3** | `backtest_results.strategy_id` has no FK to `strategy_store.id`, framed as a plain oversight | Both id spaces are the *same value in practice* — [`main.py`](../backend/archimedes/main.py) seeds every provider strategy into `strategy_store` with `id=s.id`, and [`strategy_provider.py`](../backend/archimedes/services/strategy_provider.py) syncs the same objects into `strategy_passports`. **But both writers are explicitly best-effort**: `main.py` logs *"startup: example strategy seed failed (non-fatal)"* on exception, and `strategy_provider.py` logs *"unified table sync failed (non-blocking)"*. | The invariant is **plausible, not provable**. This PR does **not** add that FK. Doing so on unverified data would be exactly the mistake the `NOT VALID` pattern (§ 2.3) exists to avoid. |
 | **C4** | (Originally filed as gap "G2") `paper_deployments` is excluded from `claim_legacy_wallet_data`'s account-adoption sweep, so a paper deployment made before a wallet link is permanently unreachable by its owner | Re-checked against the actual write path: [`paper_routes.py`](../backend/archimedes/api/paper_routes.py)'s module docstring states plainly *"every route requires a Better Auth session and every deployment is owned by `owner_user_id`"* and *"the table shipped with this feature, so there are no legacy wallet-owned rows and no fallback tier."* `deploy_paper()` always creates the row with `owner_user_id=user.id` from an authenticated session (never `None` on the only production call path), and both `_owned_deployment()` and `list_paper_deployments()` key on `owner_user_id` alone — `owner_wallet` is "provenance only... it never grants access" per the same docstring. There is no pre-account, pre-wallet-link `paper_deployments` row for `claim_legacy_wallet_data` to ever need to backfill: `owner_user_id` is populated at INSERT time, unconditionally, on every row that exists in prod. | **Not a real gap.** Adding `PaperDeployment` to `claim_legacy_wallet_data`'s model tuple would be inert — the `model.owner_user_id.is_(None)` filter that drives that sweep would never match a `paper_deployments` row. Dropped from the gap list and from the Phase 2 proposal (§ 4 no longer lists it). |
 
-### 1.2 One gap the original audit missed
+### 1.2 One gap the original audit missed — since closed on `main`
 
-**G1 — Generation revenue is not persisted anywhere.**
+**G1 — Generation revenue was not persisted anywhere. Closed by
+[PR #1456](https://github.com/a-apin/archimedes/pull/1456), not by this PR.**
+
+As originally audited (2026-08-20),
 [`services/generation_payment.py`](../backend/archimedes/services/generation_payment.py)
-verifies and settles a real USDC payment through the Circle facilitator, then:
+verified and settled a real USDC payment through the Circle facilitator and then sent
+`payer`, `amount`, and `transaction` to **a log line and nowhere else** — no table, no
+model, so "how much has a user paid" was unanswerable from the database. That was filed
+as a Phase 2 item because closing it needs a writer change.
 
-```python
-payment = await middleware.settle(header, price)
-logger.info(
-    "generation payment settled: payer=%s amount=%s tx=%s",
-    payment.payer, payment.amount, payment.transaction,
-)
-return payment
-```
+**Re-verified 2026-08-30, when this branch was merged up to `main`: it landed
+independently in the interim and this finding is now stale.**
+[`1752121b8d7c_add_payment_receipts.py`](../backend/migrations/versions/1752121b8d7c_add_payment_receipts.py)
+creates `payment_receipts`, backed by `PaymentReceiptRecord`
+([`models/payment_receipt.py`](../backend/archimedes/models/payment_receipt.py)) — one row
+per settled payment carrying `user_id`, `payer_wallet`, `amount_base_units`, `price_usd`,
+`network`, `settlement_ref`, a nullable `job_id`, and `created_at`, indexed
+`ix_payment_receipts_user_id`. It is written at the settle site
+(`generate_routes.py`'s `_persist_payment_receipt`) and read back by `GET
+/api/payments/receipts`. The aggregate question G1 named is now answerable from Postgres.
 
-`payer`, `amount`, and `transaction` go to **a log line and nowhere else** — there is no
-`generation_payments` table and no model. **"How much has a user paid" is unanswerable
-from the database today.** Closing this requires a writer change, so it is a Phase 2 item
-(§ 4) — out of scope for an additive-only PR.
+Two things that remain true and are **not** claimed closed by the above:
+
+- **The receipt write is deliberately fail-safe** — `_persist_payment_receipt` swallows
+  every exception because the payment has already cleared and a receipt failure must
+  never fail the paid generation. So a `payment_receipts` row is best-effort, in exactly
+  the sense C3 uses that word: the table answers "what did we record," not provably "what
+  did we settle." Reconciliation against the facilitator is a separate question this doc
+  does not address.
+- **`payment_receipts.user_id` carries no FK to `auth_users.id`** — the same
+  identity/ownership gap class this PR closes elsewhere. The table did not exist when
+  `fb8d0bae8112` was authored, so it is **out of this PR's scope** rather than an
+  oversight; it is a natural candidate for the next additive pass. `settlement_ref` is a
+  Circle facilitator reference id, not an on-chain hash, and must never be linked as one.
 
 ### 1.3 Confirmed as originally stated
 
@@ -285,16 +305,22 @@ erDiagram
 plausible-but-unproven link from C3 is the point being made visually: everything else on
 this diagram is either a real constraint or an explicit, reasoned skip.
 
-## 4. Phase 2 — proposal, not built
+## 4. Phase 2 — proposal, not built by this PR
 
-Nothing below is implemented, and none of it is part of PR #1438. It requires a writer
-change, which is why it is excluded from the additive-only Phase 1 PR.
+None of this is part of PR #1438: it needs a writer change, which is why it is excluded
+from an additive-only Phase 1. **One item is no longer a proposal at all** — G1 shipped
+on `main` on 2026-08-21 (below). The rest remains unbuilt.
 
-**G1 — persist generation revenue.** Add a `generation_payments` table
-(payer, amount, transaction hash, strategy/job linkage, timestamp) and write to it at the
-point `generation_payment.py` currently only logs the settled payment. Until this lands,
-"how much has a user paid" stays unanswerable from the database — the log line is not a
-substitute for a row a query can aggregate.
+**G1 — persist generation revenue. ~~Proposed here~~ — done on `main`, not by this PR.**
+The proposal was a `generation_payments` table (payer, amount, transaction reference,
+strategy/job linkage, timestamp) written where `generation_payment.py` only logged. It
+shipped as `payment_receipts` in
+[PR #1456](https://github.com/a-apin/archimedes/pull/1456) (revision `1752121b8d7c`) on
+2026-08-21, while this PR was still an open draft — see § 1.2 for the verified shape and
+for the two caveats that survive it (the write is fail-safe, and `user_id` has no FK yet).
+**Nothing is left of G1 for Phase 2 to build.** Its remaining relational residue — an FK
+from `payment_receipts.user_id` to `auth_users.id` — belongs to the next additive pass,
+alongside Phase 1's four, not to a write-path phase.
 
 **Related, deliberately not proposed:** the `backtest_results.strategy_id` FK from C3.
 Both writers that establish the id-space equality are best-effort / non-fatal on failure;
