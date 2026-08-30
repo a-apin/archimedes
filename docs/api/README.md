@@ -53,7 +53,7 @@ Each level nests into the one above it (`linked-wallet` implies
 | Doc | Covers |
 |---|---|
 | [`generation.md`](generation.md) | `/api/generate/*` — the debate-society generation pipeline: job-based start/stream/poll, the x402 payment gate, and daily quotas. |
-| [`strategies-and-rigor.md`](strategies-and-rigor.md) | `/api/strategies/*` and `/api/selection-bias/*` — the strategy library, portfolio advisor, stress testing, and the DSR/PBO/OOS rigor gate. |
+| [`strategies-and-rigor.md`](strategies-and-rigor.md) | `/api/strategies/*` and `/api/selection-bias/*` — the strategy library, stress testing, and the DSR/PBO/OOS rigor gate. |
 
 ### Trading & marketplace
 

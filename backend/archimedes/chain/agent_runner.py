@@ -1455,9 +1455,10 @@ class StrategyRunner:
 
         Builds the canonical trace ONCE and commits its keccak256 via the registry's
         real ``commit()`` (with claimedExecutionTime and tradeId) so the same bytes
-        can be revealed after settlement and the on-chain hash binding holds. Falls
-        back to the v1 ``publishTrace`` anchor when the deployed registry is pre-v1.5
-        (#588 redeploy).
+        can be revealed after settlement and the on-chain hash binding holds. There is
+        no anchor of last resort: if the deployed registry has no ``commit()`` the tick
+        anchors NOTHING and logs it loudly — the v1 ``publishTrace`` fallback was
+        removed once the #588 redeploy landed (#714).
 
         Every hashed field — including ``portfolio_after`` — is FINAL here: mutating
         any of them after this point changes ``canonical_json()`` and the on-chain
@@ -1476,7 +1477,9 @@ class StrategyRunner:
         Returns (trace, on_chain_trace_id, commit_tx_hash, commit_block_number,
         claimed_execution_time, reverted). The trace is always returned so reveal()
         can submit the identical content; trace_id is None when commit-reveal is
-        unavailable (publishTrace fallback); claimed_execution_time is non-None only
+        unavailable, and so are commit_tx/commit_block — nothing was anchored at all,
+        rather than a v1 anchor standing in for a commitment (#714);
+        claimed_execution_time is non-None only
         on the real commit-reveal path so the reveal phase knows how long to wait.
         ``reverted`` is True only on a CONFIRMED on-chain revert of the commit tx —
         a reverted commit still has a real commit_tx_hash (diagnostic trail), so
@@ -1571,24 +1574,21 @@ class StrategyRunner:
                     )
                 return trace, trace_id, commit_tx, commit_block, claimed_execution_time, reverted
 
-            # Fallback: v1 publishTrace anchor (no temporal binding).
-            arc_tx = await trace_publisher.publish(trace)
-            commit_block = None
-            if arc_tx:
-                try:
-                    receipt = await chain_client.w3.eth.get_transaction_receipt(
-                        chain_client.w3.to_bytes(hexstr=arc_tx.removeprefix("0x"))
-                    )
-                    commit_block = receipt.blockNumber
-                except Exception as e:
-                    logger.warning("[tick %s] Cannot get commit block: %s", tick_id, e)
-                logger.info(
-                    "[tick %s] COMMIT anchored (publishTrace fallback): tx=%s block=%s",
-                    tick_id,
-                    arc_tx[:16],
-                    commit_block,
-                )
-            return trace, None, arc_tx, commit_block, None, False
+            # No commit-reveal on the deployed registry. Until the #588 redeploy this
+            # fell back to the v1 ``publishTrace`` anchor; that fallback is gone (#714).
+            # The redeploy landed 2026-07-09, so reaching here means the cached ABI in
+            # contracts/abis/ or the configured registry address is stale — a loud,
+            # visible absence is the correct degraded state, not a v1 anchor whose tx
+            # would then be persisted as ``commit_tx_hash`` while binding nothing
+            # (CLAUDE.md § fail-soft is wrong for anything a claim depends on).
+            logger.error(
+                "[tick %s] COMMIT SKIPPED: deployed ReasoningTraceRegistry exposes no "
+                "commit()/reveal() — nothing anchored this cycle. The registry is pre-v1.5; "
+                "the #588 redeploy landed 2026-07-09, so check the cached ABI and the "
+                "configured registry address.",
+                tick_id,
+            )
+            return trace, None, None, None, None, False
         except Exception as e:
             logger.error("[tick %s] COMMIT FAILED: %s", tick_id, e)
             return trace, None, None, None, None, False
@@ -1648,7 +1648,8 @@ class StrategyRunner:
             # the renewal loop's own clock — is caught before the write, not
             # just at the top of the tick.
             try:
-                if trace_id is not None and trace_publisher.supports_commit_reveal():
+                supports_commit_reveal = trace_publisher.supports_commit_reveal()
+                if trace_id is not None and supports_commit_reveal:
                     if claimed_execution_time is not None:
                         wait_s = claimed_execution_time + self._REVEAL_SKEW_BUFFER_S - datetime.now(UTC).timestamp()
                         if wait_s > 0:
@@ -1668,22 +1669,21 @@ class StrategyRunner:
                             "(fail-closed; the commit stays unrevealed until a fresh cycle)",
                             tick_id,
                         )
-                elif self._lease_ok:
-                    # Pre-v1.5 registry: anchor the canonical content via publishTrace.
-                    reveal_tx = await trace_publisher.publish(trace)
-                    if reveal_tx:
-                        try:
-                            receipt = await chain_client.w3.eth.get_transaction_receipt(
-                                chain_client.w3.to_bytes(hexstr=reveal_tx.removeprefix("0x"))
-                            )
-                            reveal_block = receipt.blockNumber
-                        except Exception:
-                            logger.debug("reveal receipt block lookup failed", exc_info=True)
                 else:
+                    # Nothing to reveal: either commit() never minted a trace id or the
+                    # deployed registry predates commit/reveal. Until the #588 redeploy
+                    # this anchored the canonical bytes via the v1 ``publishTrace`` path;
+                    # that fallback is gone (#714). A v1 anchor reveals no commitment, so
+                    # persisting its tx as ``reveal_tx_hash`` would report an unbound
+                    # anchor as a completed reveal — and would set ``is_verified`` true
+                    # for it. Leave the trace unanchored and say exactly why.
                     logger.error(
-                        "[tick %s] LEASE NOT HELD — skipping on-chain REVEAL (publishTrace fallback) "
-                        "this cycle (fail-closed)",
+                        "[tick %s] REVEAL SKIPPED: no on-chain commitment to reveal "
+                        "(trace_id=%s, commit_reveal_supported=%s) — trace persisted "
+                        "off-chain only, unanchored",
                         tick_id,
+                        trace_id,
+                        supports_commit_reveal,
                     )
                 if reveal_tx:
                     logger.info(
@@ -1724,10 +1724,11 @@ class StrategyRunner:
                 "ipfs_cid": ipfs_cid,
                 # Temporal binding fields. The "chain" source — and any True binding —
                 # require the REAL commit-reveal path: trace_id is non-None ONLY when
-                # ReasoningTraceRegistry.commit() minted an on-chain id (the publishTrace
-                # fallback returns trace_id=None but still carries a commit_block from its
-                # receipt). Gating on trace_id stops a fallback anchor's blocks from
-                # masquerading as a verified temporal binding (#714 / AUDIT_2026-06-14 #3).
+                # ReasoningTraceRegistry.commit() minted an on-chain id. Gating on
+                # trace_id stops a non-commitment anchor's blocks from masquerading as a
+                # verified temporal binding (#714 / AUDIT_2026-06-14 #3) — and since #714
+                # removed the v1 publishTrace fallback, no such anchor is written here
+                # any more; the gate stays because records persisted before it still are.
                 "commit_tx_hash": commit_tx,
                 "commit_block_number": commit_block,
                 "reveal_tx_hash": reveal_tx,
@@ -2251,7 +2252,14 @@ class StrategyRunner:
         commit_tx: str | None = None,
         commit_block: int | None = None,
     ) -> None:
-        """Build and publish a reasoning trace."""
+        """Build and record a reasoning trace for a NO-TRADE decision.
+
+        Every caller passes an empty trade list — this is the SKIP / error path. The
+        trace is hashed and persisted off-chain only: with no trade there is no tradeId
+        to bind, so neither ``commit()``/``reveal()`` nor the retired v1 ``publishTrace``
+        anchor applies (#714). ``is_verified`` is therefore always False here; a trace
+        that carries an on-chain claim comes from ``_commit_trace``/``_reveal_trace``.
+        """
         trace = ReasoningTrace(
             id=str(uuid.uuid4()),
             vault_address=vault_address,
@@ -2286,16 +2294,16 @@ class StrategyRunner:
         trace.compute_hash()
         logger.info("[tick %s] Trace hash: %s", tick_id, trace.trace_hash[:16])
 
-        if not DRY_RUN:
-            try:
-                arc_tx = await trace_publisher.publish(trace)
-                if arc_tx:
-                    logger.info("[tick %s] Trace anchored on-chain: %s", tick_id, arc_tx[:16])
-            except Exception as e:
-                logger.error("[tick %s] Trace publish FAILED: %s", tick_id, e)
-                arc_tx = None
-        else:
-            arc_tx = None
+        # No-trade decisions are never anchored on-chain (#714). Every caller of this
+        # method passes an empty trade list — it is the SKIP / error path — so there is
+        # no tradeId for ``commit()`` to bind and nothing for ``Vault.executeTrade()``
+        # to consume. Until the #588 redeploy this anchored the hash via the v1
+        # ``publishTrace`` path; that is gone. Synthesising a tradeId to force the
+        # commit-reveal path would write a commitment for a trade that never happens
+        # and pin ``_pendingTrade[vault][tradeId]`` until something clears it — a
+        # fabricated on-chain claim, which is precisely what this issue removes. The
+        # trace is still persisted off-chain below, honestly unverified.
+        logger.info("[tick %s] No-trade decision — recorded off-chain, not anchored", tick_id)
 
         # Persist off-chain to Redis (always, even in dry-run)
         try:
@@ -2313,8 +2321,10 @@ class StrategyRunner:
                 "trades_executed": trace.trades_executed,
                 "strategies_referenced": trace.strategies_referenced,
                 "trace_hash": trace.trace_hash,
-                "arc_tx_hash": arc_tx,
-                "is_verified": arc_tx is not None,
+                # Never anchored (see above): the honest values are a null tx and an
+                # unverified flag, not a v1 publishTrace hash standing in for one.
+                "arc_tx_hash": None,
+                "is_verified": False,
                 # Commit-reveal fields (if available)
                 "commit_tx_hash": commit_tx,
                 "commit_block_number": commit_block,

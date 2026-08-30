@@ -47,7 +47,7 @@ import sys
 from pathlib import Path
 
 from archimedes.db import get_session, init_db
-from archimedes.services.backtest_repository import get_daily_returns
+from archimedes.services.backtest_repository import get_daily_returns, latest_backtests_by_strategy
 from archimedes.services.rigor_evaluator import load_daily_returns_store
 from archimedes.services.strategy_provider import default_provider
 from archimedes.services.vol_plausibility import (
@@ -80,7 +80,25 @@ def _repo_root() -> Path:
 
 
 class StrategyAuditRow:
-    """One printable row: a strategy's declared universe vs. its persisted reality."""
+    """One printable row: a strategy's declared universe vs. its persisted reality.
+
+    Also carries the before/after rigor metrics ``docs/sprint/a6-rerun.md`` named as
+    this script's deliverable table: Sharpe, DSR p, PBO, OOS — read straight off the
+    latest ``BacktestResultRecord`` (``backtest_repository.latest_backtests_by_strategy``),
+    the same store the module docstring above already grades against. Two of the
+    named columns, turnover and cost drag, are deliberately NOT added: the analytics
+    engine computes ``turnover_annualized`` / ``cost_drag_annual_pct`` per-run
+    (``analytics-engine/.../engine.py::BacktestResult``), but
+    ``backtest_mapper.EngineMetricsModel`` declares ``extra="ignore"`` and does not
+    define either field, so they are dropped before ever reaching ``backtest_results``
+    — persisted rows structurally never carry them. Adding a column for a field that
+    does not exist on the model would render '—' for every row forever, which reads as
+    "measured but missing" when the truth is "never captured" — the fabrication this
+    module's docstring (and CLAUDE.md's hard constraint) warns against. Tracked as a
+    follow-up: persist the two fields on ``BacktestResultRecord`` (or read them back out
+    of ``artifact_json``, which does still carry them raw, the same way
+    ``get_daily_returns`` recovers ``daily_returns``) before adding those columns here.
+    """
 
     def __init__(
         self,
@@ -91,6 +109,10 @@ class StrategyAuditRow:
         asset_universe: list[str],
         verdict: PlausibilityVerdict | None,
         cross_store_vol: float | None,
+        sharpe_ratio: float | None = None,
+        dsr_p_value: float | None = None,
+        pbo_score: float | None = None,
+        out_of_sample_sharpe: float | None = None,
     ) -> None:
         self.name = name
         self.strategy_id = strategy_id
@@ -98,6 +120,13 @@ class StrategyAuditRow:
         self.asset_universe = asset_universe
         self.verdict = verdict  # None means "skipped: no persisted backtest_results row"
         self.cross_store_vol = cross_store_vol
+        # Before/after rigor metrics (a6-rerun.md deliverable table) — read directly
+        # off the latest backtest_results row, independent of the vol-plausibility
+        # verdict above. None means "no persisted BacktestResultRecord", NOT zero.
+        self.sharpe_ratio = sharpe_ratio
+        self.dsr_p_value = dsr_p_value
+        self.pbo_score = pbo_score
+        self.out_of_sample_sharpe = out_of_sample_sharpe
 
     @property
     def status(self) -> str:
@@ -152,6 +181,10 @@ class StrategyAuditRow:
             "cross_store_large_delta": self.cross_store_large_delta,
             "reasons": list(v.reasons) if v else [],
             "needs_attention": self.needs_attention,
+            "sharpe_ratio": self.sharpe_ratio,
+            "dsr_p_value": self.dsr_p_value,
+            "pbo_score": self.pbo_score,
+            "out_of_sample_sharpe": self.out_of_sample_sharpe,
         }
 
 
@@ -165,6 +198,7 @@ def run_audit(*, repo_root: Path | None = None, margin: float = BAND_MARGIN) -> 
 
     with get_session() as session:
         daily_by_strategy_id = {s.id: get_daily_returns(session, s.id) for s in strategies}
+        latest_by_strategy_id = latest_backtests_by_strategy(session, [s.id for s in strategies])
         cross_store, cross_store_vintage = load_daily_returns_store(session)
 
     if cross_store_vintage:
@@ -195,6 +229,12 @@ def run_audit(*, repo_root: Path | None = None, margin: float = BAND_MARGIN) -> 
             cross_stats = compute_vol_stats(cross_entry["daily_returns"])
             cross_store_vol = cross_stats.annualized_vol
 
+        # Before/after rigor metrics — read off the SAME latest row get_daily_returns
+        # resolved above, independent of whether the vol-plausibility verdict below
+        # runs (e.g. a persisted row with an unparseable daily_returns series would
+        # still have real sharpe_ratio/dsr_p_value/pbo_score/out_of_sample_sharpe).
+        latest_record = latest_by_strategy_id.get(strategy.id)
+
         if not daily_returns:
             # No persisted backtest_results row for this strategy — skipped, not
             # crashed, and not counted as a failure (nothing to grade yet).
@@ -206,6 +246,10 @@ def run_audit(*, repo_root: Path | None = None, margin: float = BAND_MARGIN) -> 
                     asset_universe=list(strategy.asset_universe),
                     verdict=None,
                     cross_store_vol=cross_store_vol,
+                    sharpe_ratio=latest_record.sharpe_ratio if latest_record else None,
+                    dsr_p_value=latest_record.dsr_p_value if latest_record else None,
+                    pbo_score=latest_record.pbo_score if latest_record else None,
+                    out_of_sample_sharpe=latest_record.out_of_sample_sharpe if latest_record else None,
                 )
             )
             continue
@@ -219,6 +263,10 @@ def run_audit(*, repo_root: Path | None = None, margin: float = BAND_MARGIN) -> 
                 asset_universe=list(strategy.asset_universe),
                 verdict=verdict,
                 cross_store_vol=cross_store_vol,
+                sharpe_ratio=latest_record.sharpe_ratio if latest_record else None,
+                dsr_p_value=latest_record.dsr_p_value if latest_record else None,
+                pbo_score=latest_record.pbo_score if latest_record else None,
+                out_of_sample_sharpe=latest_record.out_of_sample_sharpe if latest_record else None,
             )
         )
 
@@ -229,8 +277,29 @@ def _fmt_pct(value: float | None) -> str:
     return f"{value * 100:.2f}%" if value is not None else "—"
 
 
+def _fmt_num(value: float | None, decimals: int = 2) -> str:
+    """Plain-decimal formatter for ratio/probability fields (Sharpe, DSR p, PBO,
+    OOS Sharpe) — matches the UI convention (StrategyPassport.jsx / Leaderboard.jsx
+    render these with `fmt()`, not as a percentage). '—' for None; never fabricated."""
+    return f"{value:.{decimals}f}" if value is not None else "—"
+
+
 def render_table(rows: list[StrategyAuditRow]) -> str:
-    headers = ["strategy", "universe", "status", "n", "vol", "return", "baseline_Δ", "cross_Δ", "reason"]
+    headers = [
+        "strategy",
+        "universe",
+        "status",
+        "n",
+        "vol",
+        "return",
+        "sharpe",
+        "dsr_p",
+        "pbo",
+        "oos",
+        "baseline_Δ",
+        "cross_Δ",
+        "reason",
+    ]
     out_rows: list[list[str]] = []
     for row in rows:
         v = row.verdict
@@ -240,6 +309,10 @@ def render_table(rows: list[StrategyAuditRow]) -> str:
         n_obs = str(v.vol_stats.n_obs) if v else "—"
         vol = _fmt_pct(v.vol_stats.annualized_vol) if v else "—"
         ret = _fmt_pct(v.vol_stats.annualized_return) if v else "—"
+        sharpe = _fmt_num(row.sharpe_ratio)
+        dsr_p = _fmt_num(row.dsr_p_value, decimals=3)
+        pbo = _fmt_num(row.pbo_score)
+        oos = _fmt_num(row.out_of_sample_sharpe)
         baseline_delta = _fmt_pct(v.baseline_delta) if (v and v.baseline_delta is not None) else "—"
         cross_delta = _fmt_pct(row.cross_store_delta) if row.cross_store_delta is not None else "—"
         cross_flag = "!" if row.cross_store_large_delta else ""
@@ -255,6 +328,10 @@ def render_table(rows: list[StrategyAuditRow]) -> str:
                 n_obs,
                 vol,
                 ret,
+                sharpe,
+                dsr_p,
+                pbo,
+                oos,
                 baseline_delta,
                 f"{cross_delta}{cross_flag}",
                 reason,
