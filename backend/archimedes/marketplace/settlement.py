@@ -1,7 +1,9 @@
 """Settlement sweep: Gateway balance → agent wallet → PaymentSplitter.depositToPool → withdraw.
 
 Three cadences:
-  Stage A — Gateway → wallet (threshold-based, ~2.01 USDC fee per withdrawal).
+  Stage A — Gateway → wallet (threshold-based; Circle's fee is charged on top
+            of the burn amount, so the request holds back a reserve — see
+            ``marketplace.config``).
   Stage B — wallet USDC → depositToPool (per tick interval, 1 USDC min).
   Stage C — PaymentSplitter.withdraw(pool_id, amount) — creator/platform payout.
 
@@ -21,14 +23,18 @@ from decimal import Decimal
 from circlekit.client import GatewayClient
 from circlekit.wallets import CircleTxExecutor, CircleWalletSigner
 
-from archimedes.marketplace.config import gateway_chain
+from archimedes.marketplace.config import (
+    format_usdc,
+    gateway_chain,
+    gateway_sweep_amount,
+)
 
 logger = logging.getLogger(__name__)
 
 # Config
 SWEEP_WITHDRAW_THRESHOLD_USDC = os.getenv(
     "SWEEP_WITHDRAW_THRESHOLD_USDC",
-    "10.0",  # must exceed several multiples of the ~2.01 USDC withdrawal fee
+    "10.0",  # enough that a withdrawal is worth its own transaction
 )
 SWEEP_MIN_DEPOSIT_RAW = int(os.getenv("SWEEP_MIN_DEPOSIT_RAW", "1000000"))  # 1 USDC, raw 6-dec
 GATEWAY_CHAIN = gateway_chain()
@@ -123,12 +129,22 @@ class SettlementSweeper:
                 )
                 return
 
-            amount = balances.formatted_available  # decimal string e.g. "12.50"
-            result = await client.withdraw(amount=amount)
+            # NOT the whole balance: Circle charges its withdrawal fee on top
+            # of the burn amount, so requesting all of it is always rejected
+            # with "available X, required X+fee" (see marketplace.config).
+            try:
+                amount, fee_reserve_raw = gateway_sweep_amount(balances.available)
+            except ValueError as exc:
+                logger.info("[%s] Stage A: %s — skip withdraw", pub.strategy_id, exc)
+                return
+
+            result = await client.withdraw(amount=amount, max_fee=fee_reserve_raw)
             logger.info(
-                "[%s] Stage A: withdrew %s USDC from Gateway → wallet; tx=%s",
+                "[%s] Stage A: withdrew %s of %s USDC available (%s held for fee) from Gateway → wallet; tx=%s",
                 pub.strategy_id,
                 amount,
+                balances.formatted_available,
+                format_usdc(fee_reserve_raw),
                 result.mint_tx_hash,
             )
         except Exception:
