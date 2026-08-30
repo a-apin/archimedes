@@ -32,6 +32,34 @@ def normalize_ohlcv(data: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
         # silently shorten the series, misaligning cross-strategy PBO splits.
         logger.warning("normalize_ohlcv(%s): dropped %d row(s) with NaN values", symbol, dropped)
 
+    # Non-positive marks. Every runner in engine.py models a position as an
+    # unlevered cash-equity holding: backtrader's stock-like commission scheme
+    # marks it at `size * price`, and `broker.getvalue()` = cash + that mark is
+    # the equity curve every metric is computed from. A non-positive price is
+    # outside that model — the mark goes NEGATIVE, so mark-to-market "equity"
+    # stops being the account's equity and can cross zero, which is what makes
+    # an impossible >100% drawdown come out the other end. This is not
+    # hypothetical for the declared universe: OIL resolves to `CL=F`, whose
+    # front-month settled at -$37.63 on 2020-04-20. Note the PCA stat-arb
+    # strategy already refuses to build a RETURN from a non-positive price
+    # (`if prev <= 0: return None`) — the signal path was guarded and the
+    # marking path was not. Drop the bars, loudly, so the two agree.
+    price_cols = [c for c in ("Open", "High", "Low", "Close") if c in out.columns]
+    if price_cols:
+        positive = (out[price_cols] > 0).all(axis=1)
+        n_bad = int((~positive).sum())
+        if n_bad:
+            bad_dates = [str(d) for d in out.index[~positive][:5]]
+            logger.warning(
+                "normalize_ohlcv(%s): dropped %d bar(s) with a non-positive price (first: %s) — "
+                "the engine marks positions as unlevered cash equity (size * price), so a "
+                "non-positive mark would corrupt portfolio value and every metric derived from it",
+                symbol,
+                n_bad,
+                ", ".join(bad_dates),
+            )
+            out = out[positive]
+
     # yfinance occasionally returns duplicate or out-of-order timestamps (seen
     # on some corporate-action dates); a non-monotonic index makes backtrader's
     # PandasData feed advance incorrectly and introduces look-ahead bias.

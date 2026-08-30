@@ -37,7 +37,7 @@ import asyncio
 import logging
 import math
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 
 from archimedes.api.explore_schemas import (
@@ -280,6 +280,77 @@ def _pct_change(prices: list[float], n: int) -> float | None:
     ``_pct_change_with_reason`` for the full contract. Thin wrapper kept for
     callers (and the existing unit-test surface) that only need the value."""
     return _pct_change_with_reason(prices, n)[0]
+
+
+def _bar_timestamp(value: Any) -> datetime | None:
+    """Best-effort parse of one history index entry into a ``datetime``.
+
+    The index arrives in three shapes depending on the source: a pandas
+    ``Timestamp`` (the live ``_fetch_price_histories`` path), a ``date`` /
+    ``datetime`` object, or an ISO string (the ``{"close": [...],
+    "dates": [...]}`` dict shape). Anything unparseable returns ``None``,
+    which callers turn into an honest "window unknown" rather than a guess.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    if hasattr(value, "to_pydatetime"):  # pandas Timestamp, if not already a datetime
+        try:
+            return value.to_pydatetime()
+        except Exception:
+            return None
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def _change_window(dates: list[Any]) -> tuple[float | None, str | None]:
+    """Elapsed hours between the last two bars, and an honest short label.
+
+    ``change_24h_pct`` is a *one-bar* change, not a 24-hour change (#1378).
+    For a 24/7 crypto feed the two coincide. For an equity they do not: the
+    Friday-to-Monday bar pair spans 72 hours, a mid-week holiday spans 48,
+    and a longer feed gap spans more. The old UI labelled all of them "24h".
+
+    Relabelling the field "1-bar change" would be true and useless — a reader
+    cannot tell what window that covers. So measure the window the value
+    actually covers and name it.
+
+    Returns ``(hours, label)``. Both are ``None`` when the window cannot be
+    determined (fewer than two bars, or an index we cannot parse). The UI
+    renders that as a non-specific "prev close" rather than falling back to
+    the "24h" claim this exists to remove — an unknown window must not
+    resolve to the most flattering guess.
+    """
+    if len(dates) < 2:
+        return None, None
+    last = _bar_timestamp(dates[-1])
+    prev = _bar_timestamp(dates[-2])
+    if last is None or prev is None:
+        return None, None
+    # Mixing an aware and a naive datetime raises TypeError on subtraction,
+    # and the two shapes genuinely co-occur here (pandas Timestamps carry a
+    # tz, bare ISO dates do not). Drop to naive for the delta only; we want an
+    # elapsed duration, not a wall-clock instant.
+    if (last.tzinfo is None) != (prev.tzinfo is None):
+        last = last.replace(tzinfo=None)
+        prev = prev.replace(tzinfo=None)
+    hours = (last - prev).total_seconds() / 3600.0
+    if hours <= 0:
+        # Unsorted or duplicated index. Say nothing rather than something wrong.
+        return None, None
+    # Daily bars sit on whole-day multiples, give or take a DST hour, so
+    # rounding to days is exact in practice: 24h -> 1, 48h -> 2, 72h -> 3.
+    # A borderline gap rounds *up* and away from the "24h" claim, which is the
+    # direction that discloses rather than flatters.
+    days = round(hours / 24)
+    return hours, ("24h" if days <= 1 else f"{days}d")
 
 
 def _realized_vol_annual_with_reason(
@@ -723,15 +794,39 @@ class AssetMarketService:
             # _fetch_price_histories returns {symbol: pd.Series} (close prices)
             # Convert Series to a plain list for downstream math.
             raw_hist = histories.get(synth)
+            # Bar timestamps, kept alongside the closes so the change window
+            # can be measured (#1378). Empty means "window unknown", which is
+            # served as such rather than defaulting to a 24h claim.
+            hist_dates: list[Any] = []
             if raw_hist is not None and hasattr(raw_hist, "tolist"):
                 # An object-dtype series (a feed gap, a mixed column) can hold
                 # None or other non-numbers. math.isnan() raises TypeError on a
                 # non-float, which previously aborted the entire /explore/assets
                 # response over one bad element — guard the type and drop those
                 # instead of dropping the whole universe (#928).
-                hist_prices = [float(v) for v in raw_hist.tolist() if isinstance(v, (int, float)) and not math.isnan(v)]
+                _values = raw_hist.tolist()
+                _index = list(raw_hist.index) if hasattr(raw_hist, "index") else []
+                if len(_index) == len(_values):
+                    # Filter dates and closes *together*. Dropping a NaN bar
+                    # from the closes while keeping the whole index would
+                    # misalign them, and the window would then be measured
+                    # between two bars the change was not computed from.
+                    _pairs = [
+                        (d, float(v))
+                        for d, v in zip(_index, _values, strict=True)
+                        if isinstance(v, (int, float)) and not math.isnan(v)
+                    ]
+                    hist_dates = [d for d, _ in _pairs]
+                    hist_prices = [p for _, p in _pairs]
+                else:
+                    hist_prices = [float(v) for v in _values if isinstance(v, (int, float)) and not math.isnan(v)]
             elif isinstance(raw_hist, dict):
                 hist_prices = raw_hist.get("close") or []
+                _dates = raw_hist.get("dates") or []
+                # Only trust the dates when they line up one-for-one with the
+                # closes; a mismatched pair of lists cannot be realigned here,
+                # and a wrong window is worse than no window.
+                hist_dates = list(_dates) if len(_dates) == len(hist_prices) else []
             else:
                 hist_prices = []
 
@@ -830,6 +925,10 @@ class AssetMarketService:
             if rej_vol:
                 rejected_fields.append("realized_vol_30d")
 
+            # The window change_24h_pct actually covers. One bar is 24h only
+            # when the feed has a bar every calendar day (#1378).
+            change_window_hours, change_window_label = _change_window(hist_dates)
+
             stat_dict: dict[str, Any] = {
                 "current_price": current_price,
                 "change_24h_pct": change_24h_pct,
@@ -862,6 +961,8 @@ class AssetMarketService:
                     price_source=price_source,
                     explanations=_explanations_for(stat_dict, is_247=is_247),
                     rejected_fields=rejected_fields,
+                    change_window_hours=change_window_hours,
+                    change_window_label=change_window_label,
                     **stat_dict,
                 )
             )

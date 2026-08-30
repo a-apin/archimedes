@@ -8,6 +8,7 @@ factory and the strategies directory — never internals.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -81,6 +82,32 @@ def _spy_like_returns(n: int = 5659, seed: int = 20260727) -> list[float]:
 def _near_zero_returns(n: int = 5659, seed: int = 7) -> list[float]:
     rng = np.random.default_rng(seed)
     return rng.normal(loc=0.00007, scale=0.0006, size=n).tolist()
+
+
+def _row_cells(table: str, stem: str) -> dict[str, str]:
+    """Parse ``render_table`` output into {header: cell} for one strategy's row.
+
+    ``render_table`` ljust-pads every cell and joins with a two-space separator,
+    so 2+ consecutive spaces is exactly the column boundary and no cell value
+    contains one (universe is comma-joined, reason is "; "-joined, the rest are
+    single tokens). Indexing the row by header name is what makes a column
+    assertion actually about THAT column: a bare ``"—" in line`` substring check
+    passes on any row that has an em-dash anywhere — including the n/vol/return
+    cells a skipped row always fills with '—' — so it would pass even if the new
+    sharpe/dsr_p/pbo/oos columns rendered "0.00" or were deleted outright.
+    """
+    lines = table.splitlines()
+    headers = re.split(r"\s{2,}", lines[0].strip())
+    matches = [ln for ln in lines[2:] if stem in ln]
+    assert len(matches) == 1, f"expected exactly one row for {stem!r}, got {len(matches)}"
+    # The strategy cell carries a leading needs-attention marker ('*' or ' ');
+    # strip() drops the blank marker so cell 0 lines up with headers[0].
+    cells = re.split(r"\s{2,}", matches[0].strip())
+    # The trailing 'reason' cell is empty for clean/skipped rows and vanishes in
+    # the strip(); pad so every header is addressable.
+    cells += [""] * (len(headers) - len(cells))
+    assert len(cells) == len(headers), f"row/header column mismatch: {cells} vs {headers}"
+    return dict(zip(headers, cells, strict=True))
 
 
 @pytest.fixture
@@ -344,3 +371,187 @@ def test_render_table_does_not_crash_on_empty_or_mixed_rows(_db, tmp_path) -> No
     table = audit_mod.render_table(rows)
     assert "only_strategy" in table
     assert "skipped" in table
+
+
+def test_before_after_rigor_columns_are_populated_from_backtest_results(_db, tmp_path) -> None:
+    """docs/sprint/a6-rerun.md's named deliverable: the before/after table must
+    carry Sharpe / DSR p / PBO / OOS straight off the persisted backtest_results
+    row (real field names: sharpe_ratio, dsr_p_value, pbo_score,
+    out_of_sample_sharpe) — never fabricated, never left off silently."""
+    strategies_dir = tmp_path / "analytics-engine" / "strategies"
+    strategies_dir.mkdir(parents=True)
+    _write_strategy(strategies_dir / "pipeline_buy_hold.py", asset_universe=["SPY"], regime_tag="bull")
+
+    returns = _spy_like_returns()
+    SessionLocal = _db
+    provider = default_provider(repo_root=tmp_path)
+    (strategy,) = provider.list_strategies()
+
+    result = BacktestResult(
+        strategy_id=strategy.id,
+        sharpe_ratio=1.2345,
+        sortino_ratio=0.5,
+        max_drawdown=0.2,
+        cagr=0.1,
+        calmar_ratio=0.5,
+        win_rate=0.5,
+        profit_factor=1.2,
+        total_trades=10,
+        avg_holding_period_days=5.0,
+        correlation_to_spy=0.3,
+        correlation_to_btc=0.1,
+        equity_curve=_equity_curve_from_returns(returns),
+        monthly_returns=[0.01],
+        dsr_p_value=0.9678,
+        pbo_score=0.4321,
+        out_of_sample_sharpe=0.789,
+        backtest_engine="backtrader",
+    )
+
+    with SessionLocal() as session:
+        insert_backtest_if_missing(
+            session,
+            strategy_id=strategy.id,
+            content_hash="h1",
+            result=result,
+            artifact_json=_artifact_json_with_daily_returns(returns),
+            source_pipeline="test",
+        )
+        session.commit()
+
+    rows = audit_mod.run_audit(repo_root=tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+
+    # Real values, read from the persisted row, not from the vol-plausibility verdict.
+    assert row.sharpe_ratio == pytest.approx(1.2345)
+    assert row.dsr_p_value == pytest.approx(0.9678)
+    assert row.pbo_score == pytest.approx(0.4321)
+    assert row.out_of_sample_sharpe == pytest.approx(0.789)
+
+    d = row.to_dict()
+    assert d["sharpe_ratio"] == pytest.approx(1.2345)
+    assert d["dsr_p_value"] == pytest.approx(0.9678)
+    assert d["pbo_score"] == pytest.approx(0.4321)
+    assert d["out_of_sample_sharpe"] == pytest.approx(0.789)
+
+    table = audit_mod.render_table(rows)
+    assert "sharpe" in table and "dsr_p" in table and "pbo" in table and "oos" in table
+    # Column-indexed, not substring-in-table. ``assert "1.23" in table`` only
+    # says the digits appear SOMEWHERE in the rendered output — it does not bind
+    # a value to the column meant to carry it. Transpose two of these columns in
+    # ``render_table`` and all four ``in table`` checks still pass while the
+    # table reports each strategy's PBO under the Sharpe heading.
+    cells = _row_cells(table, "pipeline_buy_hold")
+    assert cells["sharpe"] == "1.23"  # sharpe_ratio, 2dp
+    assert cells["dsr_p"] == "0.968"  # dsr_p_value, 3dp
+    assert cells["pbo"] == "0.43"  # pbo_score, 2dp
+    assert cells["oos"] == "0.79"  # out_of_sample_sharpe, 2dp
+
+
+def test_before_after_rigor_columns_render_em_dash_when_never_persisted(_db, tmp_path) -> None:
+    """A strategy with no persisted backtest_results row at all (status
+    'skipped') must render '—' for the new columns, never a fabricated 0."""
+    strategies_dir = tmp_path / "analytics-engine" / "strategies"
+    strategies_dir.mkdir(parents=True)
+    _write_strategy(strategies_dir / "brand_new_strategy.py", asset_universe=["SPY"])
+
+    rows = audit_mod.run_audit(repo_root=tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+
+    assert row.sharpe_ratio is None
+    assert row.dsr_p_value is None
+    assert row.pbo_score is None
+    assert row.out_of_sample_sharpe is None
+
+    table = audit_mod.render_table(rows)
+    cells = _row_cells(table, "brand_new_strategy")
+    # Index the four NEW columns specifically. A bare ``"—" in line`` check would
+    # pass on this row no matter what those four cells contained: a skipped row's
+    # n / vol / return / baseline_Δ / cross_Δ cells are all '—' already.
+    assert cells["sharpe"] == "—"
+    assert cells["dsr_p"] == "—"
+    assert cells["pbo"] == "—"
+    assert cells["oos"] == "—"
+    assert "None" not in table
+
+
+def test_measured_zero_rigor_metrics_render_as_zero_not_em_dash(_db, tmp_path) -> None:
+    """A measured 0.0 must render '0.00'; only a NULL may render '—'.
+
+    ``pbo_score == 0.0`` ("no overfit detected across the CSCV splits") and
+    ``sharpe_ratio == 0.0`` ("this strategy is flat") are real, expensive
+    measurements. ``dsr_p_value``/``out_of_sample_sharpe`` being NULL on the same
+    row means those legs never ran. The table must keep the two apart, so
+    ``_fmt_num``'s guard has to stay an identity check against None: rewrite it as
+    a truthiness test (``if value`` / ``value or "—"``) and every measured zero
+    silently becomes "never measured" — fabrication by omission, the defect this
+    module's docstring exists to prevent. No other test in this file constrains
+    that: the sibling tests use non-zero values throughout, so a truthiness
+    rewrite passes all of them.
+    """
+    strategies_dir = tmp_path / "analytics-engine" / "strategies"
+    strategies_dir.mkdir(parents=True)
+    _write_strategy(strategies_dir / "measured_zero_strategy.py", asset_universe=["SPY"], regime_tag="bull")
+
+    returns = _spy_like_returns()
+    SessionLocal = _db
+    provider = default_provider(repo_root=tmp_path)
+    (strategy,) = provider.list_strategies()
+
+    result = BacktestResult(
+        strategy_id=strategy.id,
+        # Measured zeros — real numbers off a real run.
+        sharpe_ratio=0.0,
+        pbo_score=0.0,
+        # Never measured — honest NULLs.
+        dsr_p_value=None,
+        out_of_sample_sharpe=None,
+        sortino_ratio=0.5,
+        max_drawdown=0.2,
+        cagr=0.1,
+        calmar_ratio=0.5,
+        win_rate=0.5,
+        profit_factor=1.2,
+        total_trades=10,
+        avg_holding_period_days=5.0,
+        correlation_to_spy=0.3,
+        correlation_to_btc=0.1,
+        equity_curve=_equity_curve_from_returns(returns),
+        monthly_returns=[0.01],
+        backtest_engine="backtrader",
+    )
+
+    with SessionLocal() as session:
+        insert_backtest_if_missing(
+            session,
+            strategy_id=strategy.id,
+            content_hash="h-measured-zero",
+            result=result,
+            artifact_json=_artifact_json_with_daily_returns(returns),
+            source_pipeline="test",
+        )
+        session.commit()
+
+    rows = audit_mod.run_audit(repo_root=tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+
+    # The zeros survive the round-trip as 0.0, not as None.
+    assert row.sharpe_ratio == 0.0
+    assert row.pbo_score == 0.0
+    assert row.dsr_p_value is None
+    assert row.out_of_sample_sharpe is None
+
+    d = row.to_dict()
+    assert d["sharpe_ratio"] == 0.0
+    assert d["pbo_score"] == 0.0
+    assert d["dsr_p_value"] is None
+    assert d["out_of_sample_sharpe"] is None
+
+    cells = _row_cells(audit_mod.render_table(rows), "measured_zero_strategy")
+    assert cells["sharpe"] == "0.00", "a measured zero Sharpe must print as 0.00, never as the missing-value dash"
+    assert cells["pbo"] == "0.00", "a measured zero PBO must print as 0.00, never as the missing-value dash"
+    assert cells["dsr_p"] == "—", "an unmeasured DSR p must print as the dash, never as a fabricated 0.000"
+    assert cells["oos"] == "—", "an unmeasured OOS Sharpe must print as the dash, never as a fabricated 0.00"

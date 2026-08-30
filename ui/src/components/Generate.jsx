@@ -170,6 +170,30 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// the response carried one (only true payments settled — live mode).
 	const [receipt, setReceipt] = useState(null);
 
+	// ── The caller's own generation-credit ledger (v8 Lane 1.3a) ──
+	// Surfaces what `_paywall_with_credit` already does silently server-side:
+	// an unspent ("available") credit from an earlier paid-but-undelivered
+	// run pays for the NEXT generation, no new charge (#1441). The FETCH runs
+	// independently of GENERATION_QUOTE_ENABLED — a credit is a real balance
+	// regardless of whether the upfront quote card renders. The NOTICE below
+	// additionally needs the quote's payment_required, so with the quote flag
+	// explicitly off (it defaults on, featureFlags.js) the balance is still
+	// read but nothing is claimed about it — the honest degraded state here is
+	// silence, not an unverified "no new charge".
+	const [credits, setCredits] = useState([]);
+	const [creditNoticeDismissed, setCreditNoticeDismissed] = useState(false);
+
+	const fetchCredits = useCallback(() => {
+		apiGet("/api/generate/credits")
+			.then((data) => setCredits(Array.isArray(data) ? data : []))
+			.catch(() => {
+				// Quiet on failure (e.g. not signed in yet) — this is a
+				// nice-to-have notice, not a gate; nothing here may block or
+				// error the page.
+				setCredits([]);
+			});
+	}, []);
+
 	const fetchQuote = useCallback(() => {
 		if (!GENERATION_QUOTE_ENABLED) return;
 		setQuoteStatus("loading");
@@ -189,6 +213,10 @@ export default function Generate({ onNavigate, onStageChange }) {
 	useEffect(() => {
 		fetchQuote();
 	}, [fetchQuote]);
+
+	useEffect(() => {
+		fetchCredits();
+	}, [fetchCredits]);
 
 	// Wallet connect/disconnect is a global event (config.js), not React
 	// state — re-derive our copy on change so the payer-mismatch note and
@@ -225,6 +253,14 @@ export default function Generate({ onNavigate, onStageChange }) {
 			cancelled = true;
 		};
 	}, [paymentActive, quote?.payment_required]);
+
+	// A still-spendable credit, if any. Note the route lists NEWEST-first
+	// (models/generation_credit.list_credits orders created_at DESC) while the
+	// ledger drains OLDEST-first (take_available_credit orders created_at
+	// ASC) — so this is NOT necessarily the credit the next submit spends.
+	// That's fine: only its PRESENCE drives the notice, never its identity,
+	// and the notice must not name or price a specific credit for that reason.
+	const unspentCredit = useMemo(() => credits.find((c) => c.status === "available") ?? null, [credits]);
 
 	const quoteView = useMemo(() => deriveQuoteView(quote), [quote]);
 	// The price/asset/chain/dry_run to show in the payment step: the upfront
@@ -382,6 +418,9 @@ export default function Generate({ onNavigate, onStageChange }) {
 			// Re-quote for the next generation — flat pricing has nothing to
 			// consume, but the flag/dry_run/recipient could change underneath.
 			if (GENERATION_QUOTE_ENABLED) fetchQuote();
+			// A just-spent credit (or a fresh one this run settled but didn't
+			// spend) changes the ledger — refresh regardless of the quote flag.
+			fetchCredits();
 			// Straight into the running job's stream — "stay on the page and
 			// find the new table row" read as a failed start (2026-08-30
 			// external review), and the stream IS the product moment.
@@ -432,6 +471,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 			resetPaymentStepState();
 			setNoSettlementNotice(!settledReceipt);
 			if (GENERATION_QUOTE_ENABLED) fetchQuote();
+			fetchCredits();
 			return null;
 		} catch (e) {
 			const fresh = derivePaymentRequirements(extractPaymentRequiredHeader(e.headers));
@@ -476,6 +516,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 		resetPaymentStepState();
 		setNoSettlementNotice(!settledReceipt);
 		if (GENERATION_QUOTE_ENABLED) fetchQuote();
+		fetchCredits();
 		enterStartedJob(data);
 	};
 
@@ -534,6 +575,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 				resetPaymentStepState();
 				setNoSettlementNotice(!settledReceipt);
 				if (GENERATION_QUOTE_ENABLED) fetchQuote();
+				fetchCredits();
 				enterStartedJob(data);
 				return;
 			}
@@ -990,6 +1032,47 @@ export default function Generate({ onNavigate, onStageChange }) {
 									)}
 								</div>
 							)}
+						</div>
+					)}
+
+					{/* ── Paid generation credit notice (v8 Lane 1.3a) ──
+					    _paywall_with_credit already spends an unspent credit
+					    silently, BEFORE the paywall even runs — this just makes
+					    that real behavior visible instead of leaving the payer
+					    to discover it only from the receipt list.
+
+					    Gated on quote.payment_required as well as the credit:
+					    "no new charge" only says something true when there is a
+					    charge to avoid. With the paywall flag off there is no
+					    charge either way, and the sentence would imply the payer
+					    is being spared one — so the notice stays out of the way
+					    entirely rather than being softened into vagueness. */}
+					{unspentCredit && quote?.payment_required && !creditNoticeDismissed && (
+						<div
+							className="info-box mb-3 flex items-center justify-between gap-2"
+							role="status"
+							aria-live="polite"
+						>
+							<span>
+								You have a paid generation credit — this run will use
+								it, no new charge.
+							</span>
+							<button
+								type="button"
+								onClick={() => setCreditNoticeDismissed(true)}
+								className="caption"
+								aria-label="Dismiss credit notice"
+								style={{
+									background: "none",
+									border: "none",
+									cursor: "pointer",
+									color: "var(--text-3)",
+									padding: 0,
+									flexShrink: 0,
+								}}
+							>
+								Dismiss
+							</button>
 						</div>
 					)}
 
