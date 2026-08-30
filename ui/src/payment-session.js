@@ -40,6 +40,7 @@
 
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { apiPost } from "./api";
+import { EXECUTION_CHAIN_ID } from "./chain-config";
 import { listLinkedWallets } from "./linked-wallets";
 
 const STORAGE_PREFIX = "archimedes_payment_key:";
@@ -92,7 +93,7 @@ export async function ensureSessionLinked(account) {
 	}
 	const challenge = await apiPost("/api/wallets/challenge", {
 		address: account.address,
-		chain_id: 5042002,
+		chain_id: EXECUTION_CHAIN_ID,
 		provider: "headless",
 	});
 	const signature = await account.signMessage({ message: challenge.message });
