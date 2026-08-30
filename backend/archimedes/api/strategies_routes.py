@@ -2285,7 +2285,18 @@ async def get_strategy(strategy_id: str, request: Request):
             raise HTTPException(status_code=404, detail="Strategy not found")
         record = get_passport(session, strategy_id)
         if record is not None:
-            return _passport_to_strategy_response(record, session=session)
+            resp = _passport_to_strategy_response(record, session=session)
+            # The user's own brief (v8 Lane 3.3) lives on strategy_store, not
+            # the strategy_passports row `_passport_to_strategy_response`
+            # reads — `row` (StrategyRecord) is already loaded above for the
+            # visibility check, so this is a free attribute read, not an
+            # extra query. Deliberately set HERE, not inside the shared
+            # helper: that helper also backs Library and the public
+            # leaderboard (`_passport_responses` /
+            # `_public_generated_strategy_responses`), and a user's free-text
+            # brief has no business on either of those.
+            resp.brief_intent = row.brief_intent if row is not None else None
+            return resp
 
     raise HTTPException(status_code=404, detail="Strategy not found")
 

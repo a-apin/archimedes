@@ -390,6 +390,101 @@ class TestStrategySpecPersistence:
         assert json.loads(r2.strategy_spec) == DSL_SPEC  # unchanged, not other_spec
 
 
+class TestBriefIntentPersistence:
+    """v8 Lane 3.3: the user's own free-text ask, persisted alongside the
+    derived thesis. Same never-overwrite backfill contract as strategy_spec
+    above, exercised the same way."""
+
+    def test_insert_with_brief_persists(self, session):
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Momentum Clone",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="Something that beats SPY in a recession",
+        )
+        assert r.brief_intent == "Something that beats SPY in a recession"
+
+    def test_insert_without_brief_is_null(self, session):
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="No Brief Debate",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+        )
+        assert r.brief_intent is None
+
+    def test_insert_with_empty_string_brief_collapses_to_null(self, session):
+        """Unlike strategy_spec's `is not None` (where {} is a meaningful
+        distinct payload), brief_intent is plain text — an empty/whitespace
+        string carries nothing to show and is treated as absent, matching the
+        `brief_intent or None` truthiness check in upsert_strategy."""
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Empty Brief Explicitly Provided",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="",
+        )
+        assert r.brief_intent is None
+
+    def test_content_hash_match_backfills_missing_brief(self, session):
+        """Same content, first call with no brief, second call WITH one —
+        the existing row is backfilled (never a duplicate row)."""
+        r1 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Backfill My Brief",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+        )
+        assert r1.brief_intent is None
+
+        r2 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Backfill My Brief",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="Low-vol income strategy",
+        )
+        assert r1.id == r2.id
+        assert session.query(StrategyRecord).count() == 1
+        assert r2.brief_intent == "Low-vol income strategy"
+
+    def test_content_hash_match_never_overwrites_existing_brief(self, session):
+        """A row that already has a brief keeps it — a later upsert (even
+        with a DIFFERENT brief string) never clobbers the persisted one."""
+        r1 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Keep My Brief",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="Original brief",
+        )
+        r2 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Keep My Brief",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="A different brief entirely",
+        )
+        assert r1.id == r2.id
+        assert r2.brief_intent == "Original brief"  # unchanged, not the second call's text
+
+
 class TestToStrategyPassport:
     """StrategyRecord -> StrategyPassport adapter (used by the live agent
     runner to evaluate a generated strategy's own DSL spec)."""

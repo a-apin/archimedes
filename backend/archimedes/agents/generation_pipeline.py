@@ -1422,6 +1422,11 @@ async def _persist_candidate(
                 # strategy can be autonomously rebalanced by the agent runner.
                 # None on the fixture/buy-and-hold path — nothing to persist.
                 strategy_spec=c.strategy_spec,
+                # The user's own free-text ask (v8 Lane 3.3), surfaced on the
+                # passport as "Your brief" — already in hand here, no
+                # strategy_proposals lookup needed for a strategy persisted
+                # from this call.
+                brief_intent=brief.intent,
             )
             # Stamp the generating wallet so wallet_can_publish() returns True
             # for this wallet/strategy pair (D5 publish gate).

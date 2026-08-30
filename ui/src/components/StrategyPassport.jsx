@@ -397,6 +397,23 @@ export default function StrategyPassport({
 				<div className="passport-evidence">
 					{/* Methodology + source paper(s) */}
 					<div className="passport-sources fade-up fade-up-3">
+						{/* The user's own free-text ask (v8 Lane 3.3) — distinct from
+						    Methodology below, which is the DERIVED writeup. Only the
+						    single-strategy detail fetch populates this field, and only
+						    when the brief is known, so this renders for neither a
+						    curated strategy nor a legacy generated one the backfill
+						    could not resolve. */}
+						{s.brief_intent && (
+							<div className="card passport-panel">
+								<div className="label mb-2">Your brief</div>
+								<p
+									className="body leading-relaxed"
+									style={{ fontStyle: "italic" }}
+								>
+									"{s.brief_intent}"
+								</p>
+							</div>
+						)}
 						<div className="card passport-panel">
 							<div className="label mb-3">Methodology</div>
 							<p className="body leading-relaxed">
