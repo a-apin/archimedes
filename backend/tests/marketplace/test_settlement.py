@@ -12,6 +12,7 @@ from archimedes.marketplace.settlement import (
     SWEEP_MIN_DEPOSIT_RAW,
     SettlementSweeper,
 )
+
 from tests.gateway_fake import FakeGatewayClient
 
 
@@ -105,8 +106,13 @@ async def test_payments_halt_sweep_publisher_is_noop(settings, pub, monkeypatch)
     sweeper = SettlementSweeper(settings, payments_dry_run=False)
     sweeper._get_signer = MagicMock(side_effect=AssertionError("signer must not run while PAYMENTS_HALT"))
     sweeper._get_executor = MagicMock(side_effect=AssertionError("executor must not run while PAYMENTS_HALT"))
-    result = await sweeper.sweep_publisher(pub)
-    assert result is None
+    await sweeper.sweep_publisher(pub)
+    # No return-value assertion: sweep_publisher is `-> None` on every path,
+    # so `result is None` holds whether or not the guard fired and proves
+    # nothing. The discriminator is that neither accessor was reached — the
+    # `pub` fixture sets agent_wallet_id AND gateway_seller_address, so
+    # without the guard this call falls through to _stage_a_gateway_to_wallet
+    # and calls _get_signer.
     sweeper._get_signer.assert_not_called()
     sweeper._get_executor.assert_not_called()
 

@@ -1074,7 +1074,6 @@ class MarketService:
         a loud TypeError at call time instead of silently re-persisting
         charged=True for every survivor (the exact failure this parameter
         exists to prevent)."""
-        suppressed = charge_suppressed_ids or set()
         for sub in active:
             await self.record_subscriber_tick(
                 SubscriberTickRecord(
@@ -1086,7 +1085,7 @@ class MarketService:
                     halted=True,
                     halt_source=HaltSource.PUBLISHER,
                     halt_reason=reason,
-                    charged=sub.sub_id not in suppressed,
+                    charged=sub.sub_id not in charge_suppressed_ids,
                     action_count=1,
                 )
             )
