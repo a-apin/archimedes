@@ -53,6 +53,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 |---|---|---|---|---|
 | [`user-stories.md`](user-stories.md) | current | Dan Browne | 2026-05-20 | The locked product spine. Canonical statement of what the product is. |
 | [`agent-api.md`](agent-api.md) | current | Dan Browne | — | Driving the full journey programmatically; the agent-native surface. |
+| [`agent-quickstart.md`](agent-quickstart.md) | current | Dan Browne | 2026-08-30 | Zero to paper-traded for an external agent: eleven steps, exact response shapes, and an error table (401/402/409/422/429). Includes the live x402 paywall — production charges $2.00 USDC per generation, so steps 6a–6b link a wallet and pay. Narrower than `agent-api.md` on purpose: no vault, no capital deployed. Route strings and worked commands are drift-guarded by `backend/tests/test_agent_quickstart_drift.py`. |
 | [`asset-universe.md`](asset-universe.md) | current | Dan Browne | — | Tradable universe and how it is assembled. |
 | [`demo-script-lepton.md`](demo-script-lepton.md) | current | Dan Browne | 2026-07-06 | Current demo video script. |
 
