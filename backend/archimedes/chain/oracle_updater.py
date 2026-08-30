@@ -58,9 +58,33 @@ CIRCLE_BLOCKCHAIN = "ARC-TESTNET"
 # NOT "landed on-chain" — the tx can still FAIL/revert later. Every push is
 # polled to a terminal state before the price is treated as pushed; mirrors
 # circle_signer._poll_transaction's states/cadence.
-_TX_TERMINAL_STATES = {"COMPLETE", "FAILED", "DENIED", "CANCELLED"}
+#
+# Split into success/failure subsets (#1525) so a submission response can be
+# graded correctly: "COMPLETE"/"CONFIRMED" are terminal successes (Circle can
+# return either depending on how far the tx got before the API call returned
+# — e.g. a fast testnet tx that already landed by the time the create-call's
+# response is built), "FAILED"/"DENIED"/"CANCELLED" are terminal failures.
+# Before #1525, the create-response handler only trusted HTTP 201 and logged
+# EVERY OTHER response — including a 200 carrying a terminal-success state —
+# as "Circle API error", which buried genuine failures under bogus ones.
+_TX_SUCCESS_STATES = {"COMPLETE", "CONFIRMED"}
+_TX_FAILURE_STATES = {"FAILED", "DENIED", "CANCELLED"}
+_TX_TERMINAL_STATES = _TX_SUCCESS_STATES | _TX_FAILURE_STATES
 _TX_POLL_INTERVAL_S = 2.0
 _TX_MAX_POLLS = 60  # 2 minutes max per tx
+
+# ─── Wedged-tx abandonment (#1525) ───
+# _TX_MAX_POLLS/_TX_POLL_INTERVAL_S bound how long ONE push cycle will poll a
+# tx before giving up (2 minutes). They do NOT protect against a tx that is
+# wedged on Circle's side across MANY CYCLES: the per-symbol idempotency key
+# is deterministic on (wallet, contract, price), so an unchanged price (e.g.
+# an equity synth over a weekend) reproduces the SAME key every cycle, Circle
+# dedups to the SAME never-resolving tx id, and this runner re-polls that one
+# id forever with no path back to a fresh submission. After this many
+# consecutive cycles seeing the identical unresolved id for a symbol, abandon
+# it (WARN) and force a new Circle tx next cycle. Override via
+# ORACLE_TX_MAX_REPOLLS.
+DEFAULT_TX_MAX_REPOLLS = 10
 
 # ─── Sanity bounds for on-chain pushes (audit #13 / issue #508) ───
 # Max allowed move vs the last known good price, in basis points.
@@ -155,6 +179,17 @@ class OracleUpdater:
         self._crosscheck_max_staleness_s: int = _int_env(
             "PRICE_CROSSCHECK_MAX_STALENESS_SECONDS", DEFAULT_CROSSCHECK_MAX_STALENESS_SECONDS
         )
+
+        # Wedged-tx abandonment (#1525).
+        self._tx_max_repolls: int = _int_env("ORACLE_TX_MAX_REPOLLS", DEFAULT_TX_MAX_REPOLLS)
+        # symbol -> (tx id, consecutive cycles seen unresolved). Cleared as soon
+        # as that symbol's tx reaches any terminal state, or a different tx id
+        # shows up (a legitimate new submission, not a wedge).
+        self._wedge_tracking: dict[str, tuple[str, int]] = {}
+        # symbol -> salt bumped on abandonment so the next idempotency key is
+        # guaranteed to differ from the wedged one even if the price hasn't
+        # moved (the whole reason the old key kept deduping to the dead tx).
+        self._tx_retry_salt: dict[str, int] = {}
 
     # ─── Public API ──────────────────────────────────────────────
 
@@ -300,6 +335,24 @@ class OracleUpdater:
                     logger.warning(f"Refusing to push {price.symbol} price {price.price_usd}: {rejection}")
                     continue
 
+                # Wedged-tx abandonment (#1525): if the LAST cycle's tx for this
+                # symbol has now been seen unresolved for `_tx_max_repolls`
+                # consecutive cycles, it is never going to resolve on its own —
+                # bump the retry salt so the idempotency key below is
+                # guaranteed fresh (Circle would otherwise dedup right back to
+                # the same dead tx) and drop the old tracking entry.
+                wedged_id, wedged_count = self._wedge_tracking.get(price.symbol, (None, 0))
+                if wedged_count >= self._tx_max_repolls:
+                    logger.warning(
+                        "Circle tx %s for %s re-polled %d consecutive cycles with no "
+                        "terminal state — abandoning it and submitting fresh",
+                        wedged_id,
+                        price.symbol,
+                        wedged_count,
+                    )
+                    self._tx_retry_salt[price.symbol] = self._tx_retry_salt.get(price.symbol, 0) + 1
+                    self._wedge_tracking.pop(price.symbol, None)
+
                 try:
                     ciphertext = _encrypt_entity_secret(self._entity_secret, public_key)
 
@@ -312,13 +365,16 @@ class OracleUpdater:
                     # genuinely different push (different oracle or price)
                     # still produces a different key. uuid5 is used so the
                     # result is a validly-formatted UUID per Circle's
-                    # IdempotencyKey schema.
+                    # IdempotencyKey schema. `retrySalt` defaults to 0 (no
+                    # behavior change) and only moves once wedge-abandonment
+                    # above has fired for this symbol (#1525).
                     idempotency_source = json.dumps(
                         {
                             "walletId": self._wallet_id,
                             "contractAddress": oracle_addr,
                             "abiFunctionSignature": "setPrice(uint256)",
                             "abiParameters": [str(price_int)],
+                            "retrySalt": self._tx_retry_salt.get(price.symbol, 0),
                         },
                         sort_keys=True,
                     )
@@ -344,25 +400,49 @@ class OracleUpdater:
                         },
                     ) as resp:
                         body = await resp.json()
-                        if resp.status == 201:
-                            tx_id = body["data"]["id"]
+                        # Circle's create-transaction call can validly return
+                        # either 201 or 200 with a transaction id — including a
+                        # terminal-success state already (a fast testnet tx, or
+                        # an idempotency-key dedup hitting an already-resolved
+                        # tx). Grading solely on `resp.status == 201` treated
+                        # every one of those legitimate 200s as an error (#1525:
+                        # "Circle API error for sBTC (200): {'state': 'COMPLETE'}"
+                        # logged every cycle for a push that had already
+                        # succeeded). Grade on the payload instead: a usable tx
+                        # id whose state isn't a genuine failure is a success;
+                        # only a terminal failure state or a response with no
+                        # usable id at all is a real error, named explicitly.
+                        data = body.get("data") if isinstance(body, dict) else None
+                        tx_id = data.get("id") if isinstance(data, dict) else None
+                        state = data.get("state") if isinstance(data, dict) else None
+                        if tx_id and state not in _TX_FAILURE_STATES:
                             submitted.append((price.symbol, price.price_usd, price_int, tx_id))
-                            logger.info(f"Submitted {price.symbol} price {price.price_usd:.2f} → Circle tx {tx_id}")
+                            logger.info(
+                                f"Submitted {price.symbol} price {price.price_usd:.2f} → Circle tx {tx_id}"
+                                + (f" ({state})" if state else "")
+                            )
                         else:
-                            logger.error(f"Circle API error for {price.symbol} ({resp.status}): {body}")
+                            logger.error(
+                                "Circle API error for %s (%s): %s",
+                                price.symbol,
+                                resp.status,
+                                f"tx {tx_id} state={state}" if tx_id else body,
+                            )
                 except Exception:
                     logger.exception(f"Failed to push price for {price.symbol}")
 
             # ── Confirmation phase (#905): poll each submission to a terminal
-            # state. Only a COMPLETE tx counts as pushed; anything else leaves
-            # the cached deviation reference untouched and is logged loudly so
-            # a stuck oracle is visible to operators, never masked.
+            # state. Only a terminal-success tx (COMPLETE/CONFIRMED, #1525)
+            # counts as pushed; anything else leaves the cached deviation
+            # reference untouched and is logged loudly so a stuck oracle is
+            # visible to operators, never masked.
             for symbol, price_usd, price_int, tx_id in submitted:
                 state = await self._poll_circle_tx(session, tx_id)
-                if state == "COMPLETE":
+                if state in _TX_SUCCESS_STATES:
                     self._last_pushed_price_int[symbol] = price_int
                     confirmed_tx_ids.append(tx_id)
-                    logger.info(f"Pushed {symbol} price {price_usd:.2f} on-chain (Circle tx {tx_id} COMPLETE)")
+                    self._wedge_tracking.pop(symbol, None)
+                    logger.info(f"Pushed {symbol} price {price_usd:.2f} on-chain (Circle tx {tx_id} {state})")
                 else:
                     logger.error(
                         "Oracle push for %s (price %.2f, Circle tx %s) ended %s — "
@@ -372,6 +452,21 @@ class OracleUpdater:
                         tx_id,
                         state,
                     )
+                    # Wedged-tx tracking (#1525): only a TIMEOUT — this exact
+                    # tx never reaching ANY terminal state within the poll
+                    # budget — is evidence of a wedge. A genuine terminal
+                    # failure (FAILED/DENIED/CANCELLED) is a resolved outcome,
+                    # not a wedge: clear any prior tracking so a legitimately
+                    # failed-then-freshly-retried tx doesn't inherit a stale
+                    # count.
+                    if state == "TIMEOUT":
+                        wedged_id, wedged_count = self._wedge_tracking.get(symbol, (None, 0))
+                        self._wedge_tracking[symbol] = (
+                            tx_id,
+                            wedged_count + 1 if wedged_id == tx_id else 1,
+                        )
+                    else:
+                        self._wedge_tracking.pop(symbol, None)
 
         return confirmed_tx_ids[0] if confirmed_tx_ids else None
 

@@ -25,6 +25,20 @@ class AssetExploreItem(BaseModel):
     realized_vol_30d: float | None = Field(
         default=None, description="Annualized standard deviation of daily returns over last 30 trading days"
     )
+    change_window_hours: float | None = Field(
+        default=None,
+        description="Hours actually spanned by change_24h_pct — the elapsed time between the "
+        "last two bars. Null when it cannot be determined (fewer than two bars, or an "
+        "unparseable index).",
+    )
+    change_window_label: str | None = Field(
+        default=None,
+        description="Short honest label for that window: '24h' when the last two bars are a "
+        "day apart, otherwise '3d' / '4d' etc. change_24h_pct is a one-bar change, and one bar "
+        "is 24 hours only on a 24/7 feed — a Friday-to-Monday equity pair spans 72 (#1378). "
+        "Null means the window is unknown; render it as an unspecific 'prev close' rather than "
+        "falling back to '24h'.",
+    )
     oracle_address: str | None = None
     last_updated: str | None = Field(default=None, description="ISO8601 timestamp of last price update")
     price_source: Literal["oracle", "yfinance", "none"] = Field(
