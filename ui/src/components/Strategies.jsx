@@ -68,7 +68,12 @@ function downloadStrategy(strategy, format) {
   } else {
     const rows = [
       ['Field', 'Value'],
-      ['Title', strategy.paper_title],
+      // Two distinct facts, exported as two rows. 'Paper Title' sits directly
+      // above the paper's authors and year, so labelling it 'Title' while a
+      // generated row's own name occupied it made the export claim the
+      // strategy name was the citation.
+      ...(strategy.strategy_name ? [['Strategy Name', strategy.strategy_name]] : []),
+      ['Paper Title', strategy.paper_title],
       ['Authors', strategy.paper_authors?.join(', ')],
       ['Year', strategy.paper_year],
       ['Status', strategy.status],
@@ -166,6 +171,13 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
     s.paper_authors?.[0]?.split(' ').pop(),
     s.paper_year && `(${s.paper_year})`,
   ].filter(Boolean).join(' ')
+  // A generated row carries its own name (the LLM's name for the strategy),
+  // which is a DIFFERENT fact from the title of the paper it cites. Curated
+  // rows have no separate name — there the paper title IS the strategy's
+  // identity — so `strategy_name` is absent and nothing below changes for
+  // them. See coerceGenerated: paper_title is the CITED PAPER, always.
+  const rowLabel = s.strategy_name || s.paper_title
+  const citedPaperTitle = s.strategy_name ? s.paper_title : null
 
   // Real API fields (backend/archimedes/api/schemas.py) — the singular-CI
   // and drift-boolean fields this used to read never existed in any API
@@ -237,7 +249,7 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
             onClick={(e) => { e.stopPropagation(); setOpen(o => !o) }}
           >
             <span aria-hidden="true" className={`${open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'} w-3 h-3 mr-1.5 text-[var(--text-4)] flex-shrink-0 inline-block`} />
-            {s.paper_title}
+            {rowLabel}
           </button>
           {(s.papers || []).length > 1 && (
             <span
@@ -249,7 +261,10 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
             </span>
           )}
         </td>
-        <td className="caption">{paperCite || (s.paper_year ? `(${s.paper_year})` : '—')}</td>
+        <td className="caption">
+          {citedPaperTitle && <div>{citedPaperTitle}</div>}
+          {paperCite || (citedPaperTitle ? null : (s.paper_year ? `(${s.paper_year})` : '—'))}
+        </td>
         <td>
           <div className="flex items-center gap-1.5 flex-wrap">
             <span
@@ -527,7 +542,10 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
       <div className="lib-card-header">
         <span className={`${open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'} w-3.5 h-3.5 text-[var(--text-4)] flex-shrink-0`} />
         <div className="lib-card-title">
-          {s.paper_title}
+          {/* Same split as StrategyRow: the card's headline is the strategy's
+              own name when it has one; paper_title is the CITED PAPER and
+              belongs under the "Source paper" heading in the detail panel. */}
+          {s.strategy_name || s.paper_title}
           {(s.papers || []).length > 1 && (
             <span className="tag tag-accent" style={{ fontSize: '0.66rem', marginLeft: 6 }} title={`Fused from ${s.papers.length} papers`}>
               {s.papers.length} papers
@@ -643,8 +661,23 @@ function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigo
 // signal that fusion-to-backtest hasn't run yet.
 function coerceGenerated(row) {
   const sourcePapers = Array.isArray(row.source_papers) ? row.source_papers : []
-  const firstPaper = sourcePapers[0]?.arxiv_id || ''
-  const year = row.created_at ? new Date(row.created_at).getFullYear() : null
+  const citedPaper = sourcePapers[0] || null
+  const firstPaper = citedPaper?.arxiv_id || ''
+  // Citation truth: this column is the CITED PAPER's title. It used to be
+  // bound to row.strategy_name — the LLM's name for the strategy rendered
+  // where a real citation belongs, which is a fabricated citation, not a
+  // missing one. The backend now resolves real titles from the papers corpus
+  // (list_generated_strategies -> _resolve_source_papers). When resolution
+  // genuinely fails we say so and name the id a reader can look up; the one
+  // thing that must never appear here is the strategy's own name.
+  const resolvedTitle = (citedPaper?.resolved_title || '').trim()
+  const paperTitle = citedPaper
+    ? (resolvedTitle || `title unavailable — arXiv:${firstPaper || 'unknown'}`)
+    : 'no cited paper'
+  // Publication year of the CITED PAPER, resolved from the corpus alongside
+  // the title. Never row.created_at — that is when the STRATEGY was generated,
+  // and printing it under a paper citation invented a publication date.
+  const paperYear = typeof citedPaper?.resolved_year === 'number' ? citedPaper.resolved_year : null
   // rigor_verdict is the real shape the backend persists (see
   // StrategyRecord.to_dict() in backend/archimedes/models/strategy_store.py
   // and generation_pipeline.py ~line 1272): {dsr, dsr_p_value, pbo,
@@ -664,10 +697,13 @@ function coerceGenerated(row) {
     : (row.status || 'candidate')
   return {
     id: row.id,
-    paper_title: row.strategy_name || '(unnamed)',
+    // The strategy's OWN name, kept as its own field rather than smuggled into
+    // paper_title. It is the row's headline; the citation is paper_title.
+    strategy_name: row.strategy_name || '(unnamed)',
+    paper_title: paperTitle,
     paper_arxiv_id: firstPaper,
     paper_authors: [],
-    paper_year: year,
+    paper_year: paperYear,
     paper_venue: row.generation_method,
     methodology_summary: row.thesis || '',
     status: honestStatus,

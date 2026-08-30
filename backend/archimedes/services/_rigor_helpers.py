@@ -279,30 +279,40 @@ def _dsr_from_stats(
         E_max_N = 0.0
     else:
         # Correlated trials are not independent tests: a parameter sweep whose
-        # variants move together carries fewer effective trials than its nominal
-        # count. Convert N to an effective count under an equicorrelation model
-        # with average pairwise correlation ρ:
-        #     N_eff = N / (1 + (N − 1)·ρ)
-        # the standard "effective number of independent tests" (Cheverud 2001;
-        # Nyholt 2004 — the equicorrelated effective sample size). ρ=0 → N_eff=N
-        # (full multiple-testing penalty); ρ=1 → N_eff=1 (all variants collapse
-        # to a single test, so there is no selection bias to deflate). This
-        # replaces a previous ad-hoc E[max]·sqrt(1 − ρ) factor that had no
-        # published source and let deflation vanish without a principled basis.
+        # variants move together offers fewer distinct chances to get lucky, so
+        # the expected best-of-N null is lower. Under equicorrelation with
+        # average pairwise correlation ρ ≥ 0, the one-factor representation
+        #     X_i = √ρ·Z + √(1−ρ)·ε_i      (Z, ε_i iid standard normal)
+        # gives every X_i unit variance and pairwise correlation ρ, and since Z
+        # is common to all of them it factors straight out of the maximum:
+        #     max_i X_i = √ρ·Z + √(1−ρ)·max_i ε_i
+        #     E[max_i X_i] = √(1−ρ)·E[max of N iid]
+        # so the correlated E[max] is exactly the iid one scaled by √(1−ρ). This
+        # is Bailey-LdP's own √(V[{SR_n}]) term specialised to equicorrelation:
+        # the cross-sectional variance of N equicorrelated null Sharpes has
+        # expectation (1−ρ), which is the same factor under the square root.
+        # Because SR_zero below substitutes the closed-form null variance
+        # 1/(T−1) for the paper's empirical V[{SR_n}], that shrinkage is not
+        # carried implicitly and has to be applied here.
+        #
+        # ρ=0 → the full independent-trial penalty; ρ=1 → all variants are one
+        # test and there is no selection bias to deflate. Negative ρ is clamped
+        # away: equicorrelation is only positive-semidefinite for ρ > −1/(N−1),
+        # and the identity above needs ρ ≥ 0 for √ρ to be real.
+        #
+        # #1558: this REPLACES an effective-trial-count form
+        # N_eff = N/(1 + (N−1)ρ) fed through the quantile approximation. That is
+        # the Kish design effect (effective sample size for a mean), not an
+        # expectation-of-maximum, and it under-deflated by 2×–10× across
+        # ρ ∈ [0.3, 0.9] — at N=16, ρ=0.7 the null gate admitted noise 28.9% of
+        # the time against a nominal 10%. It was also wrong in shape, not just
+        # scale: N_eff → 1/ρ as N grows, so deflation saturated and a
+        # 10,000-variant sweep drew the same penalty as a 64-variant one.
         rho = max(0.0, min(1.0, average_correlation))
-        n_eff = N / (1.0 + (N - 1) * rho) if rho > 0.0 else float(N)
-
-        # The Bailey-LdP two-quantile E[max] approximation is only well-behaved
-        # for ≥ 2 trials (norm.ppf(1 − 1/N) → −∞ as N → 1). Evaluate it at
-        # max(2, N_eff) and linearly taper the result to 0 across the effective
-        # range [1, 2], so a fully correlated grid (N_eff → 1) carries no penalty
-        # without the ppf blow-up a literal non-integer N_eff < 2 would cause.
-        n_for_emax = max(2.0, n_eff)
-        phi_inv_1 = float(norm.ppf(1.0 - 1.0 / n_for_emax))
-        phi_inv_2 = float(norm.ppf(1.0 - 1.0 / (n_for_emax * math.e)))
+        phi_inv_1 = float(norm.ppf(1.0 - 1.0 / N))
+        phi_inv_2 = float(norm.ppf(1.0 - 1.0 / (N * math.e)))
         e_max_full = (1.0 - _EULER_MASCHERONI) * phi_inv_1 + _EULER_MASCHERONI * phi_inv_2
-        taper = min(1.0, max(0.0, n_eff - 1.0))
-        E_max_N = e_max_full * taper
+        E_max_N = e_max_full * math.sqrt(1.0 - rho)
 
     # SR_zero: expected best-of-N under the null, scaled to per-bar variance
     # (under iid normal returns, per-bar SR has variance 1/(T-1))
