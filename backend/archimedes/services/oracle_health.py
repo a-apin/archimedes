@@ -46,6 +46,8 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from datetime import date, datetime, time as dtime, timedelta
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,120 @@ logger = logging.getLogger(__name__)
 # asset_market_service._ORACLE_TOTAL_BUDGET_SECONDS already guards, tightened
 # for the health path's smaller budget.
 _PROBE_BUDGET_SECONDS = 1.5
+
+# ── Weekend-blind freshness fix (#1525) ──────────────────────────────────
+#
+# ``PriceOracle.isFresh()`` enforces one flat ``MAX_STALENESS`` (24h) window
+# on-chain, identically for every symbol — it has no notion of a trading
+# calendar. That is correct for a 24/7 market (crypto) and wrong for an
+# equity synth: the US equity market is closed ~64/168 hours a week (more
+# with holidays), so an equity synth's on-chain price cannot update while
+# closed, and the flat threshold flips `isFresh()` false every single
+# weekend "by design" (the symptom this issue reports). A signal that fires
+# every weekend trains operators to ignore it, which is exactly how a real
+# weekday staleness incident goes unnoticed.
+#
+# Fix: for equity synths only, when the on-chain `isFresh()` says NOT fresh,
+# apply a dep-free trading-calendar override — `zoneinfo` is stdlib, no new
+# dependency — using the SAME `lastUpdated()` timestamp already read from
+# chain (never a liveness/heartbeat signal; see the module docstring's trap
+# note). A last update at/after the most recently completed US market
+# session is still that session's valid closing price until the market
+# reopens; only once the market has reopened without a fresh push does this
+# fall through to the chain's own (already-computed) not-fresh verdict.
+# Crypto synths are never touched by this override — they keep exactly the
+# existing flat-threshold behavior via the raw on-chain `isFresh()` read.
+_NY_TZ = ZoneInfo("America/New_York")
+_MARKET_OPEN = dtime(9, 30)
+_MARKET_CLOSE = dtime(16, 0)
+
+# Static 2026 NYSE full-closure holiday list — dep-free approximation (no
+# holidays/pandas_market_calendars dependency). Source: NYSE's published 2026
+# holiday calendar. Only full-market closures are listed; NYSE has no
+# early-close observance that matters here (this override only cares about
+# whether the market is open AT ALL, not intraday half-day hours).
+_NYSE_HOLIDAYS_2026: frozenset[date] = frozenset(
+    {
+        date(2026, 1, 1),  # New Year's Day
+        date(2026, 1, 19),  # Martin Luther King, Jr. Day
+        date(2026, 2, 16),  # Washington's Birthday
+        date(2026, 4, 3),  # Good Friday
+        date(2026, 5, 25),  # Memorial Day
+        date(2026, 6, 19),  # Juneteenth National Independence Day
+        date(2026, 7, 3),  # Independence Day (observed — July 4 falls on a Saturday)
+        date(2026, 9, 7),  # Labor Day
+        date(2026, 11, 26),  # Thanksgiving Day
+        date(2026, 12, 25),  # Christmas Day
+    }
+)
+
+
+def _is_trading_day(d: date) -> bool:
+    return d.weekday() < 5 and d not in _NYSE_HOLIDAYS_2026
+
+
+def _previous_trading_day(d: date) -> date:
+    d -= timedelta(days=1)
+    while not _is_trading_day(d):
+        d -= timedelta(days=1)
+    return d
+
+
+def _next_trading_day(d: date) -> date:
+    d += timedelta(days=1)
+    while not _is_trading_day(d):
+        d += timedelta(days=1)
+    return d
+
+
+def _most_recent_close_before(now_ny: datetime) -> datetime:
+    """The most recent scheduled 16:00 ET close at/before ``now_ny``.
+
+    On a trading day after close, that is today's close. On a trading day
+    before close (market open or pre-open), or on a weekend/holiday, that is
+    the previous trading day's close.
+    """
+    d = now_ny.date()
+    if _is_trading_day(d) and now_ny.time() >= _MARKET_CLOSE:
+        close_day = d
+    else:
+        close_day = _previous_trading_day(d)
+    return datetime.combine(close_day, _MARKET_CLOSE, tzinfo=_NY_TZ)
+
+
+def _next_open_after(close_dt: datetime) -> datetime:
+    """The next scheduled 09:30 ET open strictly after ``close_dt``'s day."""
+    open_day = _next_trading_day(close_dt.date())
+    return datetime.combine(open_day, _MARKET_OPEN, tzinfo=_NY_TZ)
+
+
+def _equity_weekend_override_fresh(last_updated_ts: int, now_ts: float) -> bool:
+    """True iff an equity synth's on-chain-stale verdict should be overridden.
+
+    Only ever called to relax an on-chain ``isFresh() == False`` read for an
+    equity synth — never to make a genuinely-stale weekday miss look fresh.
+    Returns ``False`` (no override; defer to the chain's own verdict) unless
+    ``now`` is currently within a closed-market gap (weekend, holiday, or
+    overnight) that opened at/after ``last_updated``'s trading session — i.e.
+    the market has not reopened since the last known price was pushed, so
+    that price is still the operative truth.
+
+    Compares by NY-local calendar DATE, not exact clock time, against the
+    most recently completed session: a push landing at 15:59 ET (one push
+    cycle before the nominal 16:00 close, or any other time that trading
+    day — including the market-open push) is still that session's price, not
+    a stale earlier one.
+    """
+    now_ny = datetime.fromtimestamp(now_ts, tz=_NY_TZ)
+    last_ny = datetime.fromtimestamp(last_updated_ts, tz=_NY_TZ)
+    close_before_now = _most_recent_close_before(now_ny)
+    next_open = _next_open_after(close_before_now)
+    if now_ny >= next_open:
+        # The market has reopened at least once since that close — a fresh
+        # push should have landed by now; a still-stale on-chain read is a
+        # genuine miss, not a weekend/holiday artifact.
+        return False
+    return last_ny.date() >= close_before_now.date()
 
 
 @dataclass(frozen=True)
@@ -110,6 +226,19 @@ def _push_set_symbols() -> list[str]:
     equity_synths = {s for s in YFINANCE_MAP if s.startswith("s")}
     crypto_synths = set(CRYPTO_MAP)
     return sorted(equity_synths | crypto_synths)
+
+
+def _is_equity_symbol(symbol: str) -> bool:
+    """True iff ``symbol`` is one of the equity synths in the push set (#1525).
+
+    Same source of truth and same filter as ``_push_set_symbols()`` —
+    ``YFINANCE_MAP`` keys with the leading-``"s"`` synth filter (excluding the
+    ``^GSPC``/``^VIX`` regime-signal tickers). Crypto symbols (``CRYPTO_MAP``)
+    are never equities and get no calendar override.
+    """
+    from archimedes.chain.oracle_updater import YFINANCE_MAP
+
+    return symbol in YFINANCE_MAP and symbol.startswith("s")
 
 
 def _universe_count() -> int:
@@ -191,7 +320,21 @@ async def oracle_health(budget_seconds: float | None = None) -> OracleHealth:
             oracle.functions.isFresh().call(),
             oracle.functions.lastUpdated().call(),
         )
-        return bool(is_fresh), int(last_updated)
+        is_fresh = bool(is_fresh)
+        last_updated = int(last_updated)
+        if not is_fresh and _is_equity_symbol(symbol):
+            # Weekend-blind freshness (#1525): the on-chain isFresh() enforces
+            # one flat MAX_STALENESS window with no trading-calendar
+            # awareness, so an equity synth reads stale every weekend by
+            # design. Override with the dep-free calendar check below, using
+            # the SAME lastUpdated() timestamp already read from chain — this
+            # can only turn a chain-verdict False into True (never the
+            # reverse), and only during a genuine closed-market gap; a real
+            # weekday miss still reports not-fresh. Crypto symbols never
+            # reach this branch — they keep exactly the existing flat
+            # threshold via the raw on-chain isFresh() read above.
+            is_fresh = _equity_weekend_override_fresh(last_updated, now)
+        return is_fresh, last_updated
 
     budget = _PROBE_BUDGET_SECONDS if budget_seconds is None else budget_seconds
     try:
