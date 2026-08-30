@@ -1,8 +1,8 @@
-# ADR: `num_trials` is self-contained — a strategy's rigor depends only on that strategy
+# ADR: `num_trials` is self-contained — a strategy's trial count depends only on that strategy
 
 > **Audience:** Archimedes team
-> **Status:** **Accepted, pending quant sign-off** (Önder Akkaya, portfolio math — see "Ratification" below)
-> **Date:** 2026-07-09 (reversal shipped); spec addendum 2026-07-14; amended 2026-08-19 (fixture-leak class)
+> **Status:** **Accepted** — ratified 2026-08-31 by Önder Akkaya (portfolio math), [#1555](https://github.com/a-apin/archimedes/issues/1555) outcome 3; see "Ratification" below
+> **Date:** 2026-07-09 (reversal shipped); spec addendum 2026-07-14; amended 2026-08-19 (fixture-leak class); ratified + four corrections folded in 2026-08-31 (#1555)
 > **Owner:** Dan Browne (quant reviewer of record: Önder Akkaya)
 > **Supersedes:** the `N + library_size` DSR convention from [#770](https://github.com/a-apin/archimedes/issues/770) / #811 / [#820](https://github.com/a-apin/archimedes/issues/820)
 > **Superseded-by:** —
@@ -17,7 +17,9 @@ implementation is graded at `num_trials = 1`, because there is no search of ours
 the paper's headline configuration is the only configuration we tried. **Cross-strategy
 comparison belongs on the Leaderboard and the Marketplace, not in the per-strategy gate.**
 Promoting a strategy into a bigger library must not retroactively change its Deflated
-Sharpe.
+Sharpe. One deliberate exception is named below: PBO (criterion 4) is cohort-level by
+construction and stays in the gate — the self-containment claim is about `num_trials`,
+not the whole verdict (see "The PBO carve-out").
 
 ## Context
 
@@ -64,6 +66,10 @@ sourced, and with one generation path
    `_society_num_trials(selection_pool_size)` returns `max(1, selection_pool_size)` —
    the N generated candidates the winner was chosen from, **not** `N + library_size`
    ([`generation_pipeline.py:645-660`](../../backend/archimedes/agents/generation_pipeline.py)).
+   *(Precision added at ratification, 2026-08-31:)* the count that actually reaches DSR is
+   the debate's own assembled pool, `pool_size = len(pool)` (`debate_engine.py:695`) — not
+   the user-requested `n_candidates`, which earlier drafts of this ADR named. The pool the
+   search actually considered is the right count, and it is what was ratified.
    Candidates carry their own `dsr_num_trials` and are re-scored at the same count
    (`generation_pipeline.py:484,514-516`), so a re-computation reproduces the original
    verdict.
@@ -82,9 +88,30 @@ sourced, and with one generation path
    ([`generation_pipeline.py:394-395`](../../backend/archimedes/agents/generation_pipeline.py)),
    so a passport records which convention produced its verdict and old and new verdicts are
    distinguishable rather than silently mixed.
-5. **The effective-N correlation correction is unchanged.** Where several return series are
-   compared, `N_eff = N / (1 + (N-1)ρ̄)` still relaxes the penalty for correlated
-   strategies. Self-containment changes *what N is*, not the correlation adjustment.
+
+### The PBO carve-out — what the headline does not claim (2026-08-31)
+
+Decision #3 reads as an absolute, and for `num_trials`/DSR it is. It is **not** true of the
+whole verdict: criterion 4 is PBO, and PBO is a library-level metric by construction (CSCV
+— `compute_pbo`'s own docstring says adding or removing a neighbour can flip it). Gating is
+suppressed below `MIN_LIBRARY_N_FOR_PBO_GATING = 10`
+([`rigor_evaluator.py:570`](../../backend/archimedes/services/rigor_evaluator.py)) and the
+gate currently grades 34 strategies, so cohort PBO is a **live** gating criterion today:
+curating a 35th strategy can move an existing strategy's `passes_all` through PBO — the
+retroactivity this ADR removes from `num_trials`, arriving through a different criterion.
+That is accepted, not scheduled away: a self-contained PBO is not a thing. This is why the
+headline claim is "`num_trials` is self-contained," deliberately not "the gate is."
+5. **Correlation enters through the equicorrelated E[max], not an effective trial count**
+   *(corrected 2026-08-31).* This item originally recorded `N_eff = N / (1 + (N-1)ρ̄)` as
+   the correlation adjustment. [#1558](https://github.com/a-apin/archimedes/issues/1558)
+   showed that form is the Kish design effect — the wrong functional form for an
+   expectation of a maximum: it saturates in N and under-deflates, admitting pure noise at
+   up to ~29% against a nominal 10% under a zero-Sharpe null.
+   [#1559](https://github.com/a-apin/archimedes/pull/1559) (merged 2026-08-31) replaced it
+   with the exact one-factor result `E[max] = √(1−ρ̄) · E[max of N iid]`. The decision
+   boundary is unchanged either way: self-containment decides *what N counts*; how ρ̄
+   enters is the DSR implementation's concern, and ratifying this ADR does not bless it
+   (nor did the bug invalidate the convention).
 
 ## Consequences
 
@@ -112,35 +139,55 @@ sourced, and with one generation path
   claim we cannot currently support; the live rigor gate is the only answer.
 - **We give up a real signal.** There genuinely is a portfolio-level multiple-testing
   problem: selecting from a 40-strategy library *is* a selection event for the user doing
-  the selecting. This decision moves that concern to the Leaderboard/Marketplace surface
-  rather than solving it — and that surface does not yet implement a selection-bias
-  correction of its own. **This is an open gap, not a solved one.**
+  the selecting. This decision moves that concern to the Leaderboard/Marketplace surface.
+  *(Gap resized 2026-08-31.)* The correction now **exists and is served**: a board-level
+  Benjamini–Hochberg FDR
+  ([`compute_board_level_fdr`, `rigor_evaluator.py:405`](../../backend/archimedes/services/rigor_evaluator.py))
+  surfaces `board_fdr_significant` / `board_fdr_adjusted_p` / `board_fdr_confidence` per
+  strategy plus `n_tested` / `n_significant` — exactly the shape Decision #3 prescribes,
+  and BH is the right method under the positive dependence of strategies sharing a
+  universe. The remaining gap is **wiring, not spec**: nothing under `ui/src/` consumes
+  `board_fdr*`, so it is computed, served, and invisible. Smaller than this ADR originally
+  described, but still open until a ranking surface renders it.
 - **Two conventions exist in the historical record.** Verdicts computed before 2026-07-09
   used formula (A); `num_trials_convention` distinguishes them, but any longitudinal
   comparison of pass rates across that boundary is invalid.
 
-## Ratification — the sign-off has not happened
+## Ratification — signed off 2026-08-31
 
-Two code comments name Önder Akkaya's portfolio-math sign-off as required:
+**Önder Akkaya ratified both legs on 2026-08-31** — the society pool-size count and the
+curated `num_trials = 1` — as outcome 3 of
+[#1555](https://github.com/a-apin/archimedes/issues/1555)
+([the review](https://github.com/a-apin/archimedes/issues/1555#issuecomment-5471788506)),
+after reading the live code rather than this document's description of it. Status is plain
+**Accepted**. The two code comments that named the sign-off as required
+(`generation_pipeline.py`, `selection_bias_routes.py`) were updated in the same commit as
+this stamp.
 
-- [`generation_pipeline.py:~657`](../../backend/archimedes/agents/generation_pipeline.py) —
-  *"Needs Önder's sign-off (portfolio math) — it changes DSR p-values."*
-- [`selection_bias_routes.py:~310`](../../backend/archimedes/api/selection_bias_routes.py) —
-  *"REVERSES the prior library-size deflation (#770/#820) — needs Önder's sign-off; it
-  raises curated pass rates by removing a cross-strategy penalty."*
+What the review affirmed, in its own terms:
 
-**That sign-off has never been obtained.** The spec addendum (#1075) records the same
-pending state for the earlier formula. The change is nevertheless live on every rigor-gate
-path and has been since 2026-07-09, which is why this ADR is marked **Accepted, pending
-quant sign-off** rather than simply Accepted: it is accepted because it is what the code
-does, and pending because the review the code itself asks for has not happened.
+- **Self-containment**, on a stronger form of the retroactivity argument than this ADR
+  carried: under `N + library_size` a p-value is not recomputable from the strategy's own
+  artifacts, which makes the passport unverifiable by anyone outside the system — the
+  property [`k1-generation-external-rigor-gate`](k1-generation-external-rigor-gate.md)
+  is built on. *"A verdict you cannot reproduce from what you published is not provenance."*
+- **Curated `num_trials = 1`** as the honest floor, with an explicit anti-goal: do not
+  later adopt "deflate by the paper's reported configuration count" without a source for
+  the count.
+- **The loosening** judged the removal of a penalty charged for a search nobody ran — a
+  correctness consequence, not grade inflation.
 
-**Action:** Önder Akkaya to review the self-contained convention (both the society
-`n_candidates` count and the curated `num_trials = 1` case) and either sign off — at which
-point this ADR becomes plain `Accepted` — or dispute it, at which point it needs a
-superseding ADR, not a code patch. This is the single largest outstanding rigor risk in the
-tree, because it is a loosening of a statistical control that the product's core claim
-rests on.
+An earlier revision of this section called the missing sign-off "the single largest
+outstanding rigor risk in the tree." That sentence was removed at the reviewer's request as
+part of the stamp: while it stood, a larger and undocumented error sat in the same
+statistic — the DSR's correlated-trials correction used the wrong functional form
+([#1558](https://github.com/a-apin/archimedes/issues/1558), fixed in
+[#1559](https://github.com/a-apin/archimedes/pull/1559)), admitting noise at up to ~29%
+against a nominal 10%. The general lesson is recorded here because it is the same class as
+this ADR's 2026-08-19 amendment: **provenance is not correctness, and endpoint tests are
+not a guard** — both the removed `√(1−ρ)` factor and the wrong `N_eff` form satisfied the
+ρ=0 endpoint, the ρ=1 endpoint, and monotonicity between them, so the suite could not tell
+a formula off by 10× from the right one.
 
 ## Alternatives considered
 - **`N + library_size` (formula A, #770) — rejected**, and reversed. Makes a strategy's
@@ -182,3 +229,23 @@ run for a strategy (#868 contract), and the fail-closed sentinel is never a verd
 downstream consumers render "pending"/omission, not "fail". The leaderboard (#868), the
 library badge (#821), the advisor, the portfolio LLM prompt, and vault chat (#1272) now
 all comply; any new consumer of these fields starts from this rule.
+
+## Amendment (2026-08-31): ratification stamp + four corrections
+
+Ratified as recorded under "Ratification." Four corrections were folded into the sections
+they touch in the same commit — at the reviewer's request, rather than appended
+out-of-line — and each edit is dated where it lands:
+
+1. **The "single largest outstanding rigor risk" framing removed** (Ratification): the
+   risk ranking was wrong while #1558 sat undocumented in the same statistic for eleven
+   weeks.
+2. **The headline narrowed to `num_trials`** (title, TL;DR) and the live PBO cohort
+   coupling named explicitly (the carve-out under the Decision list) — the gate contains
+   one library-level criterion by construction, and this ADR must not be citable for a
+   property the gate does not have.
+3. **The Leaderboard/Marketplace "open gap" resized** (Consequences): board-level BH FDR
+   is computed and served; the remaining gap is UI wiring, not a missing spec.
+4. **Decision #5 rewritten**: it cited the `N_eff` form that #1558 showed to be the wrong
+   functional form and #1559 removed. Found during the stamp, not in the review — the
+   document claimed the code did something it no longer does. (A matching stale comment in
+   `selection_bias_routes.py` was corrected in the same commit.)

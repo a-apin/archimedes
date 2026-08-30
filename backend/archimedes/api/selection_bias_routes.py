@@ -372,13 +372,15 @@ async def evaluate_rigor_gate(
         # generation search of ours, so its self-contained trial count is 1 (the
         # paper's headline config) — with num_trials=1 the DSR expectation-of-max
         # term collapses, so the strategy is judged purely on its own return series.
-        # REVERSES the prior library-size deflation (#770/#820) — needs Önder's
-        # sign-off; it raises curated pass rates by removing a cross-strategy penalty.
+        # REVERSES the prior library-size deflation (#770/#820) — ratified by Önder
+        # 2026-08-31 (#1555); it raises curated pass rates by removing a cross-strategy
+        # penalty, reviewed as the removal of a penalty for a search nobody ran.
         num_trials = 1
 
         # The strategy library is the multiple-testing selection set; correlated
         # strategies (overlapping assets/signals) carry fewer independent trials, so
-        # the DSR effective-N correction relaxes the penalty via N_eff = N/(1+(N-1)ρ̄).
+        # the DSR relaxes the penalty via the equicorrelated E[max] shrinkage
+        # √(1−ρ̄) (#1558/#1559 — the earlier N_eff form was the wrong shape).
         #
         # NOTE: this cohort-wide correlation is INERT today because num_trials=1
         # above (see _dsr_from_stats: E[max_N]=0 when N==1) — it is computed and
