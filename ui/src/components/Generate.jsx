@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import GenerationStream from "./GenerationStream";
 import GenerationStatus from "./GenerationStatus";
 import ModelCostPanel from "./ModelCostPanel";
@@ -343,21 +343,46 @@ export default function Generate({ onNavigate, onStageChange }) {
 		...(selectedModel ? { model: selectedModel } : {}),
 	});
 
+	// One idempotency key per payment ATTEMPT, reused across every /start call
+	// inside that attempt (the bare 402 probe, the signed retry, and any user
+	// re-click after an ambiguous failure) and regenerated only after a job is
+	// actually accepted. The backend's generation-credit ledger (#1498) dedups
+	// duplicate charges ONLY when this header is present — the 2026-08-30
+	// external review paid twice precisely because the frontend never sent it:
+	// each re-click signed a fresh EIP-3009 nonce, which settles as a brand-new
+	// payment (generation_credit.py's own docstring calls this out).
+	const paymentAttemptKeyRef = useRef(null);
+	const paymentAttemptKey = () => {
+		if (!paymentAttemptKeyRef.current) {
+			paymentAttemptKeyRef.current = crypto.randomUUID();
+		}
+		return paymentAttemptKeyRef.current;
+	};
+
 	// POST /start, optionally with a Payment-Signature header, and surface
 	// whatever the response carries (job id + PAYMENT-RESPONSE if present).
 	// Returns the receipt too (not just via the `receipt` state setter) so a
 	// caller mid-async-flow (handlePay) can branch on it immediately rather
 	// than reading stale state before the next render.
 	const submitStart = async (extraHeaders) => {
-		const { data, headers } = await apiPostWithMeta(
-			"/api/generate/start",
-			buildBrief(),
-			extraHeaders,
-		);
+		const { data, headers } = await apiPostWithMeta("/api/generate/start", buildBrief(), {
+			"Idempotency-Key": paymentAttemptKey(),
+			...extraHeaders,
+		});
 		setLastJobId(data.job_id);
 		const settledReceipt = extractReceipt(headers);
 		setReceipt(settledReceipt);
 		return { data, receipt: settledReceipt };
+	};
+
+	// A job was ACCEPTED (202): consume the attempt key so the next generation
+	// is a genuinely new attempt, and take the user straight into the running
+	// job's stream. Before this, a successful payment quietly re-armed the
+	// "Approve & Generate" button beside a small receipt line — which reads
+	// exactly like a failed payment, and is how the double-pay happened.
+	const enterStartedJob = (data) => {
+		paymentAttemptKeyRef.current = null;
+		if (data?.job_id) setDrillInJobId(data.job_id);
 	};
 
 	// Reset every payment-step-local piece of state — shared by a fresh
@@ -389,14 +414,17 @@ export default function Generate({ onNavigate, onStageChange }) {
 		resetPaymentStepState();
 		setReceipt(null);
 		try {
-			await submitStart();
+			const { data } = await submitStart();
 			// Re-quote for the next generation — flat pricing has nothing to
 			// consume, but the flag/dry_run/recipient could change underneath.
 			if (GENERATION_QUOTE_ENABLED) fetchQuote();
 			// A just-spent credit (or a fresh one this run settled but didn't
 			// spend) changes the ledger — refresh regardless of the quote flag.
 			fetchCredits();
-			// Stay on the page — the job table will show the new row.
+			// Straight into the running job's stream — "stay on the page and
+			// find the new table row" read as a failed start (2026-08-30
+			// external review), and the stream IS the product moment.
+			enterStartedJob(data);
 		} catch (e) {
 			const dryRun = e?.detail?.quote?.dry_run ?? quote?.dry_run;
 			const state = derivePaymentState(e, dryRun);
@@ -484,11 +512,12 @@ export default function Generate({ onNavigate, onStageChange }) {
 
 	const finishStart = async (header) => {
 		setPayStep("starting");
-		const { receipt: settledReceipt } = await submitStart({ "Payment-Signature": header });
+		const { data, receipt: settledReceipt } = await submitStart({ "Payment-Signature": header });
 		resetPaymentStepState();
 		setNoSettlementNotice(!settledReceipt);
 		if (GENERATION_QUOTE_ENABLED) fetchQuote();
 		fetchCredits();
+		enterStartedJob(data);
 	};
 
 	// ── One tap when funded: the signing ceremony runs FIRST, inside the
@@ -536,7 +565,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 					payerAddress: session.address,
 				});
 				setPayStep("starting");
-				const { receipt: settledReceipt } = await submitStart({
+				const { data, receipt: settledReceipt } = await submitStart({
 					"Payment-Signature": header,
 					// The paywall binds authorization.from to a LINKED wallet
 					// resolved from this header — it must name the payment
@@ -547,6 +576,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 				setNoSettlementNotice(!settledReceipt);
 				if (GENERATION_QUOTE_ENABLED) fetchQuote();
 				fetchCredits();
+				enterStartedJob(data);
 				return;
 			}
 
