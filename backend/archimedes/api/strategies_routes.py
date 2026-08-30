@@ -1816,6 +1816,20 @@ def _generation_cost_for(strategy_id: str, session) -> dict | None:
 _RETURNS_NOT_PREFETCHED = object()
 
 
+def _rollback_quietly(session) -> None:
+    """Roll back after a swallowed read so the transaction is usable again.
+
+    Postgres aborts the whole transaction on a failed statement; every later
+    statement then raises InFailedSqlTransaction. sqlite does not, so a suite
+    that runs on sqlite cannot observe the difference — which is why this is
+    written down rather than left to the reader.
+    """
+    try:
+        session.rollback()
+    except Exception:  # pragma: no cover — nothing useful to do if rollback fails
+        pass
+
+
 def _passport_rigor_status(record, daily_returns: list[float]) -> tuple[str, bool]:
     """Tri-state + degenerate status for a generated/fusion passport row.
 
@@ -1901,6 +1915,9 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
                     record.id,
                     type(exc).__name__,
                 )
+                # See _passport_responses: without this, everything later in the
+                # request fails on Postgres and succeeds on sqlite.
+                _rollback_quietly(session)
     else:
         _returns = list(daily_returns or [])
 
@@ -2024,15 +2041,22 @@ def _passport_responses(records, session) -> list[StrategyResponse]:
 
     #1184 made ``_passport_to_strategy_response`` consult each row's persisted
     daily-return series so a zero-variance one reports ``degenerate`` instead of
-    ``pending``. Doing that per row would add a backtest read per strategy to
-    every list endpoint — the N+1 that #1436's latency tail is about. This
-    resolves the whole cohort through ``get_all_daily_returns``, the same DB
+    ``pending``. This routes that through ``get_all_daily_returns`` — the same DB
     boundary ``live_rigor_gate`` and the selection-bias route already read
-    through (and the one the suite mocks), then hands each row its own slice.
+    through, and the one the suite mocks — then hands each row its own slice.
+
+    **Cost, stated honestly:** ``get_all_daily_returns`` is a Python loop over
+    ``get_daily_returns``, so this is N indexed single-row reads, not one batched
+    query. It is the same query count reading per row would cost; the helper buys
+    a single mocking boundary and one failure decision, not a batching win. Each
+    read deserializes that strategy's whole ``artifact_json`` blob, so the real
+    cost scales with the generated corpus, and ``list_passports`` has no LIMIT.
+    Making the degenerate answer cheap needs it persisted at write time rather
+    than re-derived on read — tracked separately; do not paper over it here by
+    skipping rows, because which rows you skip is exactly the claim at stake.
     """
     if not records:
         return []
-    returns_by_id: dict[str, list[float]] = {}
     try:
         from archimedes.services.backtest_repository import get_all_daily_returns
 
@@ -2041,9 +2065,18 @@ def _passport_responses(records, session) -> list[StrategyResponse]:
         import logging as _logging
 
         _logging.getLogger(__name__).warning(
-            "cohort persisted-returns read failed (%s) — rigor status falls back to the stored aggregate",
+            "cohort persisted-returns read failed (%s) — falling back to a per-row read",
             type(exc).__name__,
         )
+        # A failed statement aborts the surrounding Postgres transaction, so
+        # every later read in this request would raise InFailedSqlTransaction.
+        # sqlite tolerates it, which is why no test can see this.
+        _rollback_quietly(session)
+        # NOT ``{}``: an empty map would hand every row [] — "the read found no
+        # series" — when the truth is "we do not know". That collapse is what
+        # sends a flat series back to "pending", the exact false claim #1184 is
+        # about. The sentinel makes each row decide for itself instead.
+        return [_passport_to_strategy_response(r, session) for r in records]
     return [_passport_to_strategy_response(r, session, returns_by_id.get(r.id, [])) for r in records]
 
 

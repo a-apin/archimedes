@@ -312,7 +312,10 @@ def _add_backtest_row(
             artifact_json=_json.dumps({"results": [{"metrics": {"daily_returns": daily_returns}}]}),
         )
     )
-    session.flush()
+    # commit, not flush: the fallback path under test rolls the session back
+    # before retrying, and a rollback discards un-committed rows. Production
+    # rows are committed, so flushing here would test a state that cannot occur.
+    session.commit()
 
 
 def _passport_with_aggregate(
@@ -325,7 +328,7 @@ def _passport_with_aggregate(
     record = _make_passport_record(session, strategy_id, [{"arxiv_id": "2301.00009", "title": "T"}])
     record.sharpe_ratio = sharpe_ratio
     record.passes_rigor_gate = passes
-    session.flush()
+    session.commit()  # see _add_backtest_row
     return record
 
 
@@ -397,6 +400,36 @@ class TestZeroVarianceSeriesReportsDegenerate:
         _add_backtest_row(session, "flat-oos", varied + [0.0] * 120)
 
         assert _passport_to_strategy_response(record, session).rigor_gate_status == "degenerate"
+
+    def test_a_SHORT_flat_series_is_degenerate(self, session: Session):
+        """MUTATION: drop the ``is_zero_variance_series`` half of the OR.
+
+        The mirror of the OOS case above, and the one my first pass missed. Every
+        other flat fixture here is 400 bars, where BOTH predicates fire — so the
+        full-series half was never load-bearing and could have been deleted with
+        the suite still green. It is only load-bearing below ~60 bars, where the
+        OOS slice is too short for ``is_oos_zero_variance_series`` to return True:
+
+            n=25  is_zero_variance_series=True  is_oos_zero_variance_series=False
+
+        A zero-trade backtest is exactly this shape, and it is one of the two
+        causes #1184 names.
+        """
+        from archimedes.api.strategies_routes import _passport_to_strategy_response
+
+        record = _passport_with_aggregate(session, "flat-short", sharpe_ratio=None, passes=False)
+        _add_backtest_row(session, "flat-short", [0.0] * 25)
+
+        assert _passport_to_strategy_response(record, session).rigor_gate_status == "degenerate"
+
+    def test_a_short_flat_series_is_degenerate_through_the_bulk_path_too(self, session: Session):
+        """Same mutation, via the list path — the two must not diverge."""
+        from archimedes.api.strategies_routes import _passport_responses
+
+        record = _passport_with_aggregate(session, "bulk-flat-short", sharpe_ratio=None, passes=False)
+        _add_backtest_row(session, "bulk-flat-short", [0.0] * 25)
+
+        assert _passport_responses([record], session)[0].rigor_gate_status == "degenerate"
 
     def test_a_real_series_with_no_stored_sharpe_still_reports_pending(self, session: Session):
         """CONTROL. MUTATION: relabel unconditionally, ignoring the series.
@@ -475,3 +508,27 @@ class TestTheListPathAgreesWithTheDetailPath:
 
         # Explicit empty slice: do NOT go back to the DB, even though a row exists.
         assert _passport_to_strategy_response(record, session, []).rigor_gate_status == "pending"
+
+
+class TestACohortReadFailureDoesNotSilentlyBecomePending:
+    """The failure branch of the bulk read is itself claim-bearing.
+
+    Handing every row ``[]`` when the cohort read raises would report a flat
+    series as "pending" again — the exact false claim this work removes — while
+    every other test in this file stayed green.
+    """
+
+    def test_a_failed_cohort_read_falls_back_to_per_row_not_to_pending(self, session: Session, monkeypatch):
+        """MUTATION: swallow the failure and hand every row ``[]``."""
+        import archimedes.services.backtest_repository as repo
+        from archimedes.api.strategies_routes import _passport_responses
+
+        record = _passport_with_aggregate(session, "cohort-boom", sharpe_ratio=None, passes=False)
+        _add_backtest_row(session, "cohort-boom", [0.0] * 400)
+
+        def _boom(*a, **k):
+            raise RuntimeError("cohort read exploded")
+
+        monkeypatch.setattr(repo, "get_all_daily_returns", _boom)
+
+        assert _passport_responses([record], session)[0].rigor_gate_status == "degenerate"
