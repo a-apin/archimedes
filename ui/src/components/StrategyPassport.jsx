@@ -426,10 +426,10 @@ export default function StrategyPassport({
 										: gateDegenerate
 											? "Zero-variance persisted return series — nothing for the rigor gate to measure; not a graded failure"
 											: blockedByFloor
-											? "Fails an always-on rigor floor — cannot deploy at any level"
-											: needsHigherLevel
-												? `Raise strictness to level ${minLevel} to deploy`
-												: "Open deploy modal"
+												? "Fails an always-on rigor floor — cannot deploy at any level"
+												: needsHigherLevel
+													? `Raise strictness to level ${minLevel} to deploy`
+													: "Open deploy modal"
 								}
 							>
 								Deploy as Vault →
