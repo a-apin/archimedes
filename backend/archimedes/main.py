@@ -106,6 +106,16 @@ def _assert_marketplace_live_or_dry(marketplace_router_obj: object, payments_dry
     fail-soft-is-wrong-for-anything-a-claim-depends-on rule. Pulled into its
     own function so the assertion is unit-testable without importing the
     whole app.
+
+    KNOWN LIMITATION (#1240 follow-up, not fixed here): this gates on the
+    GLOBAL PAYMENTS_DRY_RUN, which infra/ecs.tf pins to "true" in prod. The
+    rail actually settling real money today is the generation paywall, which
+    is live via the generation-scoped GENERATION_PAYMENTS_DRY_RUN="false"
+    (the 2026-08-20 split, #1428) — a switch this assertion does not read. So
+    in prod as configured this guard is INERT: it will not refuse to boot even
+    though real value is moving. Widening it to "any rail is live" is a
+    behavior change to the boot path and wants its own PR; recorded here so
+    the guard is not mistaken for protection it does not currently give.
     """
     if marketplace_router_obj is None and not payments_dry_run:
         raise RuntimeError(
@@ -166,6 +176,14 @@ async def _assert_gateway_chain_matches_rpc(
     OTHER exception (e.g. get_chain_id() raising for connectivity reasons)
     propagates as whatever type it naturally is, unmodified, precisely so
     the caller can tell the two failure modes apart by type.
+
+    KNOWN LIMITATION (#1240 follow-up, not fixed here): see the same note on
+    _assert_marketplace_live_or_dry — the ``payments_dry_run`` this receives
+    is the GLOBAL switch, "true" in prod, so the fatal branch never fires
+    there. It bites hardest on this assertion specifically: the live
+    generation paywall quotes ``chain: gateway_chain()`` to real payers, so a
+    fat-fingered GATEWAY_CHAIN is exactly the failure this function exists to
+    catch, and today it would only be logged as a warning.
     """
     from circlekit.constants import get_chain_config
 

@@ -77,9 +77,25 @@ def _payments_dry_run() -> bool:
 
 def _payments_halted() -> bool:
     """#1240 kill switch — see marketplace.config.payments_halted's docstring.
-    This is the metered-API path, the one surface the mainnet scope decision
-    allows to run PAYMENTS_DRY_RUN=false on, so it needs the same no-redeploy
-    stop lever as the marketplace tick-charging rail."""
+
+    This surface needs the switch MORE than the marketplace tick-charging rail
+    does, and for a reason that is easy to state wrong. In prod today
+    (infra/ecs.tf money-switch block) the global PAYMENTS_DRY_RUN is "true";
+    what makes this path settle real value is the generation-scoped override
+    GENERATION_PAYMENTS_DRY_RUN="false" (the 2026-08-20 split, #1428) plus
+    GENERATION_PAYMENT_REQUIRED="true". So this is the only rail currently
+    moving real money — while the marketplace sweeps and withdraws stay dry
+    behind the global, blocked on #975.
+
+    The consequence for the kill switch: _payments_dry_run() above, which is
+    what stops value moving everywhere else, is deliberately False here. This
+    is therefore the one place where PAYMENTS_HALT is not a redundant second
+    belt but the only no-redeploy way to stop a live charge.
+
+    (Do not restate this as "the one surface allowed to run
+    PAYMENTS_DRY_RUN=false" — that was true of the original scope decision,
+    but the split replaced the mechanism, and the global is true in prod.)
+    """
     from archimedes.marketplace.config import payments_halted
 
     return payments_halted()
